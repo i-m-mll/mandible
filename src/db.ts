@@ -2014,6 +2014,263 @@ const MIGRATIONS: Migration[] = [
       `INSERT OR IGNORE INTO settings (key, value, updated_at)
        VALUES ('app_theme', 'system', CAST(strftime('%s','now') * 1000 AS INTEGER))`
     ]
+  },
+  {
+    version: 83,
+    name: "spaces_core",
+    // Issue: b395083 (umbrella de56ffa) — Spaces P1' core schema: the "core four"
+    // tables for the authored organizing surface, per docs/spaces/UMBRELLA-PLAN.md §3.
+    // FIRST link of the serial migration chain (C1 → C11 space_blocks → C13a
+    // space_exports); space_blocks/space_exports are intentionally NOT here.
+    //
+    // Relationship-semantics bright line (UMBRELLA-PLAN §4): these authored edge
+    // systems are DISTINCT from the ledger/artifact relationship systems and must
+    // never be silently merged:
+    //   - ledger_issue_relationships / ledger_relationship_edges → operational/
+    //     semantic issue relationships (9 fixed link_type values, issue/comment
+    //     endpoints).
+    //   - artifact_links → artifact custody/context links.
+    //   - space_items / space_occurrences → authored organizing membership +
+    //     presentation.
+    //   - space_edges → authored local/rhetorical canvas edges (FREE labels,
+    //     unlike the fixed ledger link_type set).
+    // A space_edge becomes a ledger relationship ONLY via an explicit "promote to
+    // ledger relationship" action (writes a ledger_relationship_edges row) — never
+    // silent mirroring. Space membership is canonical in space_items and is NOT
+    // duplicated into artifact_links.
+    //
+    // ON DELETE choice — RESTRICT on spaces.project_id is deliberate (matches
+    // ledger_issues). Spaces are precious authored state; deleting a project must
+    // NOT silently delete its Spaces. Do NOT assume CASCADE here by analogy with
+    // lighter project-local tables. The space-INTERNAL cascade (spaces → items /
+    // occurrences / edges) is ON DELETE CASCADE: deleting a Space tears down its
+    // own contents, which is the intended cleanup.
+    //
+    // Inline UNIQUE(...) and composite FKs are intentional (review B2/B3/B4): the
+    // metadata backup (src/ledger/backup.ts) emits table DDL + rows only and NO
+    // standalone CREATE INDEX DDL, so a uniqueness rule that lived only as an
+    // external CREATE UNIQUE INDEX would be LOST on backup/restore. Every
+    // composite-FK target and membership-uniqueness rule is therefore an inline
+    // table-level UNIQUE; only non-unique performance indexes stay as separate
+    // CREATE INDEX statements.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS spaces (
+        id               TEXT PRIMARY KEY,
+        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title            TEXT NOT NULL,
+        default_renderer TEXT NOT NULL DEFAULT 'canvas'
+                           CHECK(default_renderer IN ('canvas','document','board','collection')),
+        description      TEXT,
+        metadata_json    TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_spaces_project_updated
+        ON spaces(project_id, updated_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS space_items (
+        id            TEXT NOT NULL,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        ref_type      TEXT NOT NULL
+                        CHECK(ref_type IN ('issue','comment','artifact','external_ref')),
+        ref_id        TEXT NOT NULL CHECK(ref_id != ''),
+        ref_uri       TEXT,
+        title         TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        UNIQUE (space_id, ref_type, ref_id),
+        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_items_lookup
+        ON space_items(space_id, ref_type, ref_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_items_by_ref
+        ON space_items(ref_type, ref_id, space_id)`,
+      `CREATE TABLE IF NOT EXISTS space_occurrences (
+        id            TEXT NOT NULL,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        item_id       TEXT,
+        renderer      TEXT NOT NULL DEFAULT 'canvas'
+                        CHECK(renderer IN ('canvas','board','collection')),
+        parent_id     TEXT,
+        x             REAL,
+        y             REAL,
+        width         REAL,
+        height        REAL,
+        z_index       INTEGER,
+        sort_key      TEXT,
+        section_id    TEXT,
+        note          TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        FOREIGN KEY (space_id, item_id)
+          REFERENCES space_items(space_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (space_id, parent_id)
+          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_occurrences_render
+        ON space_occurrences(space_id, renderer, sort_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_occurrences_item
+        ON space_occurrences(space_id, item_id) WHERE item_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_space_occurrences_tree
+        ON space_occurrences(space_id, parent_id, sort_key)`,
+      `CREATE TABLE IF NOT EXISTS space_edges (
+        id            TEXT PRIMARY KEY,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        source        TEXT NOT NULL,
+        target        TEXT NOT NULL,
+        label         TEXT,
+        style         TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        FOREIGN KEY (space_id, source)
+          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (space_id, target)
+          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_edges_source ON space_edges(space_id, source)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_edges_target ON space_edges(space_id, target)`
+    ]
+  },
+  {
+    version: 84,
+    name: "space_blocks",
+    // Issue: d2a8e77 (umbrella de56ffa) — Spaces document/canvas blocks, per
+    // docs/spaces/UMBRELLA-PLAN.md §3.5. SECOND link of the serial migration
+    // chain (C1 spaces_core → C11 space_blocks → C13a space_exports); this table
+    // is intentionally separate from the core-four migration.
+    //
+    // The block tree is the storage backing for the `spaces-doc.v1` document
+    // serialization (C12, src/spaces/serialize.ts): the round-tripped columns
+    // (id, parent_id, sort_key, block_type, item_id, markdown) are exactly the
+    // C12 DocBlock fields, and `block_type` is kept in lockstep with the C12
+    // BLOCK_TYPES list. Do NOT diverge the CHECK set from that list.
+    //
+    // FK / cascade semantics (review-frozen):
+    //   - space_id → spaces(id) ON DELETE CASCADE: deleting a Space tears down
+    //     its blocks (same as the core-four space-internal cascade).
+    //   - (space_id, parent_id) → space_blocks(space_id, id) ON DELETE CASCADE:
+    //     a self-referential block tree, scoped to one Space so cross-space
+    //     parent refs are impossible. Parent-CYCLE rejection is enforced in the
+    //     route/helper layer (SQLite FKs cannot detect cycles).
+    //   - (space_id, item_id) → space_items(space_id, id) ON DELETE RESTRICT:
+    //     an item embedded in a block CANNOT be silently deleted. The detach/
+    //     degrade operation (drop item_id, preserve item_snapshot_json as a
+    //     placeholder) is the only way to remove the embed; see src/ledger/
+    //     space-blocks.ts.
+    //
+    // Snapshot invariant (review2 + codex [Blocker], precedent at the work_units
+    // trigger guards above): assigning an item_id REQUIRES a non-null
+    // item_snapshot_json so a placeholder always survives the item's deletion.
+    // The CHECK(item_id IS NULL OR item_snapshot_json IS NOT NULL) enforces this
+    // at the DB level — the Round-3 DDL only validated the snapshot WHEN present,
+    // which let item_id be assigned with no snapshot at all.
+    //
+    // Inline UNIQUE(space_id, id) + composite FKs are intentional (same rationale
+    // as the core four): the metadata backup (src/ledger/backup.ts) emits table
+    // DDL + rows only and NO standalone CREATE INDEX DDL, so a uniqueness rule
+    // that lived only as an external CREATE UNIQUE INDEX would be LOST on
+    // backup/restore. Only the non-unique tree-walk performance index stays as a
+    // separate CREATE INDEX statement.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS space_blocks (
+        id                 TEXT NOT NULL,
+        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        parent_id          TEXT,
+        block_type         TEXT NOT NULL
+                             CHECK(block_type IN (
+                               'heading','paragraph','reference','artifact_embed',
+                               'issue_embed','comment_embed','todo'
+                             )),
+        item_id            TEXT,
+        item_snapshot_json TEXT
+                             CHECK(item_snapshot_json IS NULL
+                               OR (json_valid(item_snapshot_json)
+                                   AND json_type(item_snapshot_json)='object')),
+        sort_key           TEXT NOT NULL,
+        markdown           TEXT NOT NULL DEFAULT '',
+        metadata_json      TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),
+        FOREIGN KEY (space_id, parent_id)
+          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (space_id, item_id)
+          REFERENCES space_items(space_id, id) ON DELETE RESTRICT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_blocks_tree
+        ON space_blocks(space_id, parent_id, sort_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_blocks_item
+        ON space_blocks(space_id, item_id) WHERE item_id IS NOT NULL`
+    ]
+  },
+  {
+    version: 85,
+    name: "space_exports",
+    // Issue: 9041bb3 (umbrella de56ffa) — Spaces document-custody tracking table,
+    // per docs/spaces/DOCUMENT-CUSTODY-DESIGN.md §2.1. THIRD link of the serial
+    // migration chain (C1 spaces_core → C11 space_blocks → C13a space_exports);
+    // this table is intentionally separate from the core-four and blocks migrations.
+    //
+    // This is the MUTABLE tracking record for a document exported to a repo: the
+    // immutable bytes live in `artifacts` rows (last_export / pre_export snapshot),
+    // while this row carries the authority (mandible|repo) and drift status
+    // (clean|stale|repo_changed|worktree_dirty|conflict). No export/commit backend
+    // (C13b), drift detection (C13c), or UI (C13d) ships here — schema + backup only.
+    //
+    // Repo identity (Round-4 fix, review2 + codex [Blocker]): repo_id references
+    // `ledger_project_checkouts.id` (src/db.ts:1014-1024) — a project-scoped,
+    // BACKED-UP identity carrying root/name/default_branch/remote_url — NOT
+    // `work_repos.id`, which is in REPRODUCIBLE_OR_RUNTIME_TABLES and excluded from
+    // backup (src/ledger/backup.ts:70-90). Keying tracking rows to a non-backed-up
+    // table would orphan them on restore even though the space_exports row survives.
+    //
+    // Identity is an INLINE table-level UNIQUE(repo_id, branch, path), NOT an
+    // external CREATE UNIQUE INDEX: the metadata backup emits table DDL + INSERTs
+    // and NO standalone CREATE INDEX DDL (src/ledger/backup.ts:153,172), so an
+    // external unique index would be LOST on backup/restore, silently allowing
+    // duplicate tracking rows. Inline UNIQUE survives restore (UMBRELLA-PLAN §3
+    // inline-UNIQUE rule, review B3). Only the non-unique perf indexes below stay as
+    // separate CREATE INDEX statements.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS space_exports (
+        id                              TEXT PRIMARY KEY,
+        space_id                        TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        repo_id                         TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,
+        branch                          TEXT NOT NULL,
+        path                            TEXT NOT NULL,
+        authority                       TEXT NOT NULL DEFAULT 'mandible'
+                                          CHECK(authority IN ('mandible','repo')),
+        status                          TEXT NOT NULL DEFAULT 'clean'
+                                          CHECK(status IN ('clean','stale','repo_changed','worktree_dirty','conflict')),
+        last_export_artifact_id         TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        pre_export_snapshot_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        last_export_commit              TEXT,
+        last_export_blob_sha            TEXT,
+        last_export_content_sha256      TEXT,
+        last_seen_commit                TEXT,
+        last_seen_content_sha256        TEXT,
+        created_at                      INTEGER NOT NULL,
+        updated_at                      INTEGER NOT NULL,
+        UNIQUE (repo_id, branch, path)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_exports_space
+        ON space_exports(space_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_exports_repo
+        ON space_exports(repo_id, branch, path)`
+    ]
   }
 ];
 

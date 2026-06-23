@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import path from "node:path";
 
@@ -24,11 +24,17 @@ export interface AuthMergeExecutionContext {
 }
 
 export interface AuthMergeReviewMetadata {
-  filesChanged: number;
-  additions: number;
-  deletions: number;
-  diffSummary: string;
-  commitMessage: string;
+  filesChanged?: number;
+  additions?: number;
+  deletions?: number;
+  diffSummary?: string;
+  commitMessage?: string;
+}
+
+export interface AuthMergeReviewMetadataOptions {
+  counts?: boolean;
+  diffSummary?: boolean;
+  commitMessage?: boolean;
 }
 
 export class AuthExecutionContextError extends Error {
@@ -40,7 +46,8 @@ export class AuthExecutionContextError extends Error {
 
 const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
 const MAX_DIFF_BYTES = 102400;
-const MAX_DIFF_BUFFER_BYTES = 50 * 1024 * 1024;
+const MAX_DIFF_PREVIEW_BYTES = MAX_DIFF_BYTES;
+const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
 
 export function isAuthMergeCommand(input: AuthMergeContextInput): boolean {
   const command = input.command ?? "";
@@ -105,44 +112,118 @@ export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
   );
 }
 
-export function computeAuthMergeReviewMetadata(
+export async function computeAuthMergeReviewMetadata(
   repoRoot: string,
   baseBranch: string,
-  headBranch: string
-): AuthMergeReviewMetadata {
+  headBranch: string,
+  options: AuthMergeReviewMetadataOptions = {
+    counts: true,
+    diffSummary: true,
+    commitMessage: true,
+  }
+): Promise<AuthMergeReviewMetadata> {
   const range = `refs/heads/${baseBranch}..refs/heads/${headBranch}`;
-  const shortstat = execFileSync("git", ["diff", "--shortstat", range], {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    timeout: 10000,
-  }).trim();
-  const { filesChanged, additions, deletions } = parseGitShortstat(shortstat);
+  const metadata: AuthMergeReviewMetadata = {};
 
-  const fullDiff = execFileSync("git", ["diff", range], {
-    cwd: repoRoot,
-    encoding: "utf-8",
-    timeout: 10000,
-    maxBuffer: MAX_DIFF_BUFFER_BYTES,
-  });
-  const diffSummary =
-    fullDiff.length > MAX_DIFF_BYTES
-      ? `${fullDiff.slice(0, MAX_DIFF_BYTES)}\n... [truncated: ${fullDiff.length} bytes total, showing first ${MAX_DIFF_BYTES}]`
-      : fullDiff;
-
-  const commitMessage =
-    execFileSync("git", ["log", "--format=- %s", "-20", range], {
+  if (options.counts !== false) {
+    const shortstat = execFileSync("git", ["diff", "--shortstat", range], {
       cwd: repoRoot,
       encoding: "utf-8",
       timeout: 10000,
-    }).trim() || `Merge ${headBranch}`;
+    }).trim();
+    const { filesChanged, additions, deletions } = parseGitShortstat(shortstat);
+    metadata.filesChanged = filesChanged;
+    metadata.additions = additions;
+    metadata.deletions = deletions;
+  }
 
-  return {
-    filesChanged,
-    additions,
-    deletions,
-    diffSummary,
-    commitMessage,
-  };
+  if (options.diffSummary !== false) {
+    metadata.diffSummary = await readBoundedDiffPreview(repoRoot, range);
+  }
+
+  if (options.commitMessage !== false) {
+    metadata.commitMessage =
+      execFileSync("git", ["log", "--format=- %s", "-20", range], {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        timeout: 10000,
+      }).trim() || `Merge ${headBranch}`;
+  }
+
+  return metadata;
+}
+
+async function readBoundedDiffPreview(repoRoot: string, range: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    let bytesRead = 0;
+    let truncated = false;
+    let timedOut = false;
+
+    const child = spawn("git", ["diff", range], {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+    }, 10000);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      if (truncated) {
+        return;
+      }
+      const remaining = MAX_DIFF_PREVIEW_READ_BYTES - bytesRead;
+      if (chunk.length > remaining) {
+        chunks.push(chunk.subarray(0, Math.max(remaining, 0)));
+        bytesRead += remaining;
+        truncated = true;
+        child.kill("SIGTERM");
+        return;
+      }
+      chunks.push(chunk);
+      bytesRead += chunk.length;
+      if (bytesRead >= MAX_DIFF_PREVIEW_READ_BYTES) {
+        truncated = true;
+        child.kill("SIGTERM");
+      }
+    });
+
+    child.stderr.on("data", (chunk: Buffer) => {
+      if (Buffer.concat(stderrChunks).length < 4096) {
+        stderrChunks.push(chunk);
+      }
+    });
+
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new AuthExecutionContextError("Timed out while collecting auth merge diff preview."));
+        return;
+      }
+      if (code !== 0 && !truncated) {
+        const stderr = Buffer.concat(stderrChunks).toString("utf-8").trim();
+        reject(new AuthExecutionContextError(
+          stderr ? `Unable to collect auth merge diff preview: ${stderr}` : "Unable to collect auth merge diff preview."
+        ));
+        return;
+      }
+
+      const previewBytes = Buffer.concat(chunks).subarray(0, MAX_DIFF_PREVIEW_BYTES);
+      const preview = previewBytes.toString("utf-8");
+      resolve(
+        truncated
+          ? `${preview}\n... [truncated: diff preview exceeded ${MAX_DIFF_PREVIEW_BYTES} bytes]`
+          : preview
+      );
+    });
+  });
 }
 
 function parseGitShortstat(shortstat: string): {

@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
-import { artifactDetailHref, compactArtifactRef, displayArtifactRef, linkifyArtifactRefs } from '../../artifact-links';
+import {
+  artifactDetailHref,
+  attachResourceRefResolution,
+  compactArtifactRef,
+  displayResourceRef,
+  linkifyResourceRefs,
+} from '../../resource-refs';
 import type {
   LedgerIssueDetailAssociatedArtifact,
   LedgerIssueDetailAuthRequest,
@@ -35,6 +41,13 @@ export type LedgerIssueDetailProps = {
   onOpenEntity?: (type: EntityType, id: string, repoId?: string) => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
   onResolveConflict?: (conflictId: string, resolution: string, status?: 'resolved' | 'dismissed') => Promise<void> | void;
+  // Add-to-Space affordance (umbrella de56ffa, child 08c312a). When provided,
+  // the issue-actions menu surfaces an "Add to Space" item even on otherwise
+  // read-only panes — hence it is part of the `hasIssueActions` gate below, not
+  // just a menu addition. The host wires the actual Space picker (it owns the
+  // project scope + ref); IssueDetail only renders the entry point so the
+  // graph/issue surfaces stay pickers rather than Space editors.
+  onAddToSpace?: () => void;
 };
 
 export function LedgerIssueDetail({
@@ -49,6 +62,7 @@ export function LedgerIssueDetail({
   onOpenEntity,
   onShowChildren,
   onResolveConflict,
+  onAddToSpace,
 }: LedgerIssueDetailProps): JSX.Element {
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
@@ -75,6 +89,7 @@ export function LedgerIssueDetail({
     (!isInitialDetail && onStartAgent) ||
     onSetStatus ||
     onAddComment ||
+    onAddToSpace ||
     detail.auth_requests.length > 0 ||
     (detail.labels.includes('umbrella') && onShowChildren)
   );
@@ -146,6 +161,7 @@ export function LedgerIssueDetail({
                 onStartAgent={isInitialDetail ? undefined : onStartAgent}
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
+                onAddToSpace={onAddToSpace}
                 onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
                 onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
               />
@@ -293,8 +309,8 @@ function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): str
 
 function artifactTitle(artifact: LedgerIssueDetailAssociatedArtifact): string {
   const ref = artifact.refs[0];
-  if (ref) return displayArtifactRef(ref);
-  return artifactFileLabel(artifact.uri) || displayArtifactRef(artifact.uri) || compactArtifactRef(artifact.content_hash);
+  if (ref) return displayResourceRef(ref);
+  return artifactFileLabel(artifact.uri) || displayResourceRef(artifact.uri) || compactArtifactRef(artifact.content_hash);
 }
 
 function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
@@ -326,6 +342,7 @@ function IssueActionsMenu({
   onStartAgent,
   onSetStatus,
   onAddComment,
+  onAddToSpace,
   onShowAuthEvidence,
   onShowChildren,
 }: {
@@ -340,6 +357,7 @@ function IssueActionsMenu({
   onStartAgent?: () => Promise<void> | void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
+  onAddToSpace?: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
@@ -392,6 +410,19 @@ function IssueActionsMenu({
               onClick={() => closeAfter(onAddComment)}
             >
               Add Comment
+            </button>
+          )}
+          {/* Add-to-Space region (child 08c312a) — disjoint from and after C6's
+              linkify call-site region (which lives in MarkdownBlock, below). */}
+          {onAddToSpace && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onAddToSpace)}
+            >
+              Add to Space
             </button>
           )}
           {onShowChildren && (
@@ -960,12 +991,18 @@ function MarkdownBlock({
     if (!source) return '';
     const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
     const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-    return linkifyArtifactRefs(linkifyLedgerRefs(sanitized, detail));
+    return linkifyResourceRefs(linkifyLedgerRefs(sanitized, detail));
   }, [source, detail.id, detail.display_id, detail.project.repo_id]);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node || !html) return undefined;
+    return attachResourceRefResolution(node);
+  }, [html]);
   if (!html) {
     return <div className={`${className} spec-panel--empty`}>{empty}</div>;
   }
-  return <div className={className} dangerouslySetInnerHTML={{ __html: html }} />;
+  return <div ref={containerRef} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
 }
 
 function normalizeMarkdownSource(source: string): string {

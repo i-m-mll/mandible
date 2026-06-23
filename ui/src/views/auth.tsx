@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
-import { linkifyArtifactRefs } from '../artifact-links';
+import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,

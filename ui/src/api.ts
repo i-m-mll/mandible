@@ -22,6 +22,52 @@ import type {
   WorkUnitLiveness as ContractWorkUnitLiveness,
   WorkUnitState as ContractWorkUnitState,
   WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
+  Space as ContractSpace,
+  SpaceItem as ContractSpaceItem,
+  SpaceOccurrence as ContractSpaceOccurrence,
+  SpaceEdge as ContractSpaceEdge,
+  SpaceExport as ContractSpaceExport,
+  SpaceExportStatus as ContractSpaceExportStatus,
+  CreateSpaceRequest,
+  UpdateSpaceRequest,
+  AddSpaceItemRequest,
+  UpdateSpaceItemRequest,
+  CreateSpaceOccurrenceRequest,
+  UpdateSpaceOccurrenceRequest,
+  BatchSpaceOccurrenceEntry,
+  BatchSpaceOccurrenceResponse,
+  CreateSpaceEdgeRequest,
+  UpdateSpaceEdgeRequest,
+  AddSpaceItemResponse,
+  SeedSpaceRequest,
+  SeedSpaceResult,
+  ResolverResult,
+} from '../../src/contracts';
+export type {
+  Space,
+  SpaceItem,
+  SpaceOccurrence,
+  SpaceEdge,
+  SpaceBlock,
+  SpaceExport,
+  SpaceExportStatus,
+  SpaceExportAuthority,
+  SpaceRenderer,
+  SpaceOccurrenceRenderer,
+  SpaceItemRefType,
+  CreateSpaceRequest,
+  UpdateSpaceRequest,
+  AddSpaceItemRequest,
+  UpdateSpaceItemRequest,
+  CreateSpaceOccurrenceRequest,
+  UpdateSpaceOccurrenceRequest,
+  BatchSpaceOccurrenceEntry,
+  CreateSpaceEdgeRequest,
+  UpdateSpaceEdgeRequest,
+  SeedSpaceRequest,
+  SeedSpaceResult,
+  ResolverResult,
+  ResolverRefKind,
 } from '../../src/contracts';
 export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 export type AuthRequestAction = ContractAuthRequestAction;
@@ -2210,4 +2256,327 @@ export async function rollbackRuntime(): Promise<{ ok: boolean }> {
 export async function resetRuntime(): Promise<{ ok: boolean }> {
   const response = await apiPost('/api/runtime/reset');
   return (await parseMaybeJson(response)) as { ok: boolean };
+}
+
+// ---------------------------------------------------------------------------
+// Spaces (umbrella de56ffa) — typed client helpers over the C2 routes
+// (`src/routes/spaces.ts`). Each helper returns the unwrapped record(s) the
+// renderers consume; request/response envelope types come from `contracts`.
+// ---------------------------------------------------------------------------
+
+export async function listSpaces(projectId: string): Promise<ContractSpace[]> {
+  const response = await apiGet(`/api/spaces${buildQuery({ project_id: projectId })}`);
+  const payload = (await parseMaybeJson(response)) as { spaces: ContractSpace[] };
+  return payload.spaces;
+}
+
+export async function getSpace(spaceId: string): Promise<ContractSpace> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  return payload.space;
+}
+
+/**
+ * Full Space fact packet (space + items/occurrences/edges) read from
+ * `GET /api/spaces/:id` (umbrella plan §5.1). The renderers (C8 collection,
+ * C9a canvas, …) assemble their `SpaceViewModel` from this single read. Older
+ * responses that omit the collections degrade to empty arrays.
+ */
+export async function getSpaceFactPacket(spaceId: string): Promise<{
+  space: ContractSpace;
+  items: ContractSpaceItem[];
+  occurrences: ContractSpaceOccurrence[];
+  edges: ContractSpaceEdge[];
+}> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  const payload = (await parseMaybeJson(response)) as {
+    space: ContractSpace;
+    items?: ContractSpaceItem[];
+    occurrences?: ContractSpaceOccurrence[];
+    edges?: ContractSpaceEdge[];
+  };
+  return {
+    space: payload.space,
+    items: payload.items ?? [],
+    occurrences: payload.occurrences ?? [],
+    edges: payload.edges ?? [],
+  };
+}
+
+export async function createSpace(body: CreateSpaceRequest): Promise<ContractSpace> {
+  const response = await apiPost('/api/spaces', body);
+  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  return payload.space;
+}
+
+export async function updateSpace(spaceId: string, body: UpdateSpaceRequest): Promise<ContractSpace> {
+  const response = await apiPatch(`/api/spaces/${encodeURIComponent(spaceId)}`, body);
+  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  return payload.space;
+}
+
+export async function deleteSpace(spaceId: string): Promise<void> {
+  await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}`);
+}
+
+// --- items ---
+
+export async function addSpaceItem(spaceId: string, body: AddSpaceItemRequest): Promise<AddSpaceItemResponse> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/items`, body);
+  return (await parseMaybeJson(response)) as AddSpaceItemResponse;
+}
+
+export async function updateSpaceItem(
+  spaceId: string,
+  itemId: string,
+  body: UpdateSpaceItemRequest,
+): Promise<ContractSpaceItem> {
+  const response = await apiPatch(
+    `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}`,
+    body,
+  );
+  const payload = (await parseMaybeJson(response)) as { item: ContractSpaceItem };
+  return payload.item;
+}
+
+export async function deleteSpaceItem(spaceId: string, itemId: string): Promise<void> {
+  await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}`);
+}
+
+// --- occurrences ---
+
+export async function createSpaceOccurrence(
+  spaceId: string,
+  body: CreateSpaceOccurrenceRequest,
+): Promise<ContractSpaceOccurrence> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/occurrences`, body);
+  const payload = (await parseMaybeJson(response)) as { occurrence: ContractSpaceOccurrence };
+  return payload.occurrence;
+}
+
+export async function updateSpaceOccurrence(
+  spaceId: string,
+  occurrenceId: string,
+  body: UpdateSpaceOccurrenceRequest,
+): Promise<ContractSpaceOccurrence> {
+  const response = await apiPatch(
+    `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/${encodeURIComponent(occurrenceId)}`,
+    body,
+  );
+  const payload = (await parseMaybeJson(response)) as { occurrence: ContractSpaceOccurrence };
+  return payload.occurrence;
+}
+
+export async function deleteSpaceOccurrence(spaceId: string, occurrenceId: string): Promise<void> {
+  await apiDelete(
+    `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/${encodeURIComponent(occurrenceId)}`,
+  );
+}
+
+/** Batch occurrence write (drag persistence / re-layout): entries with a known `id` update, others create. */
+export async function batchWriteSpaceOccurrences(
+  spaceId: string,
+  occurrences: BatchSpaceOccurrenceEntry[],
+): Promise<BatchSpaceOccurrenceResponse> {
+  const response = await apiPost(
+    `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/batch`,
+    { occurrences },
+  );
+  return (await parseMaybeJson(response)) as BatchSpaceOccurrenceResponse;
+}
+
+// --- edges ---
+
+export async function createSpaceEdge(
+  spaceId: string,
+  body: CreateSpaceEdgeRequest,
+): Promise<ContractSpaceEdge> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/edges`, body);
+  const payload = (await parseMaybeJson(response)) as { edge: ContractSpaceEdge };
+  return payload.edge;
+}
+
+export async function updateSpaceEdge(
+  spaceId: string,
+  edgeId: string,
+  body: UpdateSpaceEdgeRequest,
+): Promise<ContractSpaceEdge> {
+  const response = await apiPatch(
+    `/api/spaces/${encodeURIComponent(spaceId)}/edges/${encodeURIComponent(edgeId)}`,
+    body,
+  );
+  const payload = (await parseMaybeJson(response)) as { edge: ContractSpaceEdge };
+  return payload.edge;
+}
+
+export async function deleteSpaceEdge(spaceId: string, edgeId: string): Promise<void> {
+  await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}/edges/${encodeURIComponent(edgeId)}`);
+}
+
+// --- seed-from-filter ---
+
+export async function seedSpace(spaceId: string, body: SeedSpaceRequest): Promise<SeedSpaceResult> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/seed`, body);
+  return (await parseMaybeJson(response)) as SeedSpaceResult;
+}
+
+// --- unified ref resolver ---
+
+export async function resolveSpaceRef(ref: string): Promise<ResolverResult> {
+  const response = await apiGet(`/api/refs/resolve${buildQuery({ ref })}`);
+  const payload = (await parseMaybeJson(response)) as { resolution: ResolverResult };
+  return payload.resolution;
+}
+
+// --- Spaces document custody: export-and-track + repo-file registration (C13b
+// backend, issue 8730bf9) typed client glue consumed by the export dialog + the
+// repo-file registration UI (C13f, issue f7be021). Committing a document to a
+// repo is ALWAYS an explicit user action: these helpers are only ever called
+// from an explicit user-triggered dialog submit, never on a background tick.
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolved export settings for a Space: the global default repo-relative path /
+ * branch, the resolved value after applying any per-repo override, and the repo
+ * scope the dialog is operating against. Mirrors `resolveDocsSettings`
+ * (`src/spaces/export.ts`) which the `GET .../exports` route returns.
+ */
+export type SpaceExportSettings = {
+  /** Effective repo-relative export path after global → per-repo resolution. */
+  path: string;
+  /** Effective docs branch after global → per-repo resolution. */
+  branch: string;
+  /** True when a per-repo override (not just the global default) is in effect. */
+  overridden?: boolean;
+};
+
+/**
+ * The export tracking read surface for a Space: the existing `space_exports`
+ * rows + the resolved export settings + the repo scope. Backs the export dialog
+ * default/override resolution (custody-doc §5.1).
+ */
+export type SpaceExportsReadResult = {
+  exports: ContractSpaceExport[];
+  repo_id: string;
+  settings: SpaceExportSettings;
+};
+
+/** Read the tracked exports + resolved export settings for a Space. */
+export async function getSpaceExports(
+  spaceId: string,
+  repoId?: string,
+): Promise<SpaceExportsReadResult> {
+  const response = await apiGet(
+    `/api/spaces/${encodeURIComponent(spaceId)}/exports${buildQuery({ repo_id: repoId })}`,
+  );
+  return (await parseMaybeJson(response)) as SpaceExportsReadResult;
+}
+
+/** Confirmed inputs the export dialog posts for an explicit export-and-track. */
+export type ExportAndTrackRequest = {
+  /** Confirmed repo-relative target path (dialog confirm/override output). */
+  path?: string | null;
+  /** Docs branch override; defaults to the resolved per-repo/global branch. */
+  branch?: string | null;
+  /** Explicit project-checkout id; defaults to the Space's project checkout. */
+  repo_id?: string | null;
+  /** Issue refs for the `Mandible-Issue:` trailer on the docs commit (required). */
+  issues: string[];
+  /** Commit subject; a deterministic default is used when omitted. */
+  message?: string | null;
+};
+
+export type ExportAndTrackResult = {
+  export: ContractSpaceExport;
+  document_content_sha256: string;
+  commit: string;
+  pre_export_snapshot_artifact_id: string;
+  last_export_artifact_id: string;
+};
+
+/**
+ * Explicit export-and-track: serialize the Space document, write it to the
+ * managed docs-branch worktree at the confirmed path, agent-key linked-commit
+ * it, and upsert the `space_exports` tracking row. Re-exporting the SAME
+ * document to the SAME confirmed path is idempotent (custody-doc §5.2). This is
+ * ONLY ever invoked from the export dialog's explicit user confirm.
+ */
+export async function exportSpaceTracked(
+  spaceId: string,
+  body: ExportAndTrackRequest,
+): Promise<ExportAndTrackResult> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/exports`, body);
+  return (await parseMaybeJson(response)) as ExportAndTrackResult;
+}
+
+/** Persist the global default or a per-repo export-path override. */
+export type SetExportSettingsRequest = {
+  /** Per-repo override target; omit/empty for the global default. */
+  repo_id?: string | null;
+  path?: string | null;
+  branch?: string | null;
+};
+
+export async function setSpaceExportSettings(
+  body: SetExportSettingsRequest,
+): Promise<{ ok: boolean; scope: 'global' | 'repo'; repo_id: string | null }> {
+  const response = await apiPost('/api/spaces/exports/settings', body);
+  return (await parseMaybeJson(response)) as {
+    ok: boolean;
+    scope: 'global' | 'repo';
+    repo_id: string | null;
+  };
+}
+
+/**
+ * Register an EXISTING tracked repo file as a Space document with link custody
+ * (custody-doc §1.4): the canonical bytes stay in the repo, the document starts
+ * at `authority='repo'`, and its source is a `repo://<repo>@<ref>/<path>` ref.
+ * This is an explicit user action (no auto-track), so it only ever fires from
+ * the registration dialog's confirm.
+ *
+ * Backend glue: `POST /api/spaces/:id/exports/register` (C13b owned route,
+ * issue 8730bf9). The route creates the `authority='repo'` `space_exports` row
+ * + the link-custody artifact and returns the new tracking row.
+ */
+export type RegisterRepoFileRequest = {
+  /** Explicit project-checkout id; defaults to the Space's project checkout. */
+  repo_id?: string | null;
+  /** Docs branch / ref the existing file lives on. */
+  branch?: string | null;
+  /** Repo-relative path of the existing tracked file to register. */
+  path: string;
+};
+
+export type RegisterRepoFileResult = {
+  export: ContractSpaceExport;
+  /** The `repo://<repo>@<ref>/<path>` source ref recorded for the document. */
+  source_ref: string;
+};
+
+export async function registerRepoFileDocument(
+  spaceId: string,
+  body: RegisterRepoFileRequest,
+): Promise<RegisterRepoFileResult> {
+  const response = await apiPost(
+    `/api/spaces/${encodeURIComponent(spaceId)}/exports/register`,
+    body,
+  );
+  return (await parseMaybeJson(response)) as RegisterRepoFileResult;
+}
+
+/** Re-check drift for one tracked export row (custody-doc §6). */
+export type ExportDriftResult = {
+  export_id: string;
+  status: ContractSpaceExportStatus;
+  changed: boolean;
+  last_seen_commit: string | null;
+  last_seen_content_sha256: string | null;
+};
+
+export async function getSpaceExportDrift(
+  spaceId: string,
+): Promise<{ space_id: string; drift: ExportDriftResult[] }> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/exports/drift`);
+  return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
 }

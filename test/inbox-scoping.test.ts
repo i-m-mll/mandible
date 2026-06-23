@@ -129,6 +129,33 @@ function createAuthMergeFixtureRepo(tempDir: string): string {
   return repoRoot;
 }
 
+function createLargeAuthMergeFixtureRepo(tempDir: string): string {
+  const repoRoot = path.join(tempDir, "repo");
+  execFileSync("git", ["init", "-b", "main", repoRoot], { stdio: "ignore" });
+  const git = (...args: string[]) => execFileSync(
+    "git",
+    [
+      "-C",
+      repoRoot,
+      "-c",
+      "user.name=Mandible Test",
+      "-c",
+      "user.email=test@example.invalid",
+      ...args,
+    ],
+    { stdio: "ignore" },
+  );
+  writeFileSync(path.join(repoRoot, "README.md"), "base\n");
+  git("add", "README.md");
+  git("commit", "-m", "init");
+  git("checkout", "-b", "feature/large-diff");
+  writeFileSync(path.join(repoRoot, "README.md"), `base\n${"x".repeat(52 * 1024 * 1024)}\n`);
+  git("add", "README.md");
+  git("commit", "-m", "typed trailer\n\nMandible-Issue: abc1234");
+  git("checkout", "main");
+  return repoRoot;
+}
+
 function seedSession(db: InstanceType<typeof Database>, id: string, cwd: string): void {
   db.prepare("INSERT INTO sessions (id, app, cwd, status) VALUES (?, ?, ?, ?)").run(
     id,
@@ -1402,6 +1429,81 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(request?.deletions).toBe(7);
       expect(request?.diff_summary).toBe("client diff");
       expect(request?.commit_message).toBe("client commit");
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not collect diff previews when clients provide complete auth merge metadata", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-large-explicit-"));
+    try {
+      const repoRoot = createLargeAuthMergeFixtureRepo(tempDir);
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/large-diff --into main",
+          title: "Explicit large metadata request",
+          target_repo_root: repoRoot,
+          base_branch: "main",
+          head_branch: "feature/large-diff",
+          files_changed: 9,
+          additions: 8,
+          deletions: 7,
+          diff_summary: "client diff",
+          commit_message: "client commit",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.files_changed).toBe(9);
+      expect(request?.additions).toBe(8);
+      expect(request?.deletions).toBe(7);
+      expect(request?.diff_summary).toBe("client diff");
+      expect(request?.commit_message).toBe("client commit");
+      db.close();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("submits auth merge requests with bounded previews for large diffs", async () => {
+    const tempDir = mkdtempSync(path.join(os.tmpdir(), "mandible-auth-metadata-large-preview-"));
+    try {
+      const repoRoot = createLargeAuthMergeFixtureRepo(tempDir);
+      const db = setupInMemoryDb();
+      const queue = new AuthQueue({ db });
+      registerWorkRepo(db, repoRoot);
+      const app = new TestRouteRegistrar();
+      registerAuthRoutes(app, queue, new AuthAutoApproveManager({ db }));
+
+      const response = await app.invoke("POST", "/api/auth/request", {
+        body: {
+          command: "mandible auth merge feature/large-diff --into main",
+          title: "Large preview metadata request",
+          target_repo_root: repoRoot,
+          base_branch: "main",
+          head_branch: "feature/large-diff",
+        },
+      });
+
+      expect(response.statusCode).toBe(201);
+      const requestId = (response.body as { request_id: string }).request_id;
+      const request = queue.getRequest(requestId);
+      expect(request?.files_changed).toBe(1);
+      expect(request?.additions).toBe(1);
+      expect(request?.deletions).toBe(0);
+      expect(request?.diff_summary).toContain("diff --git");
+      expect(request?.diff_summary).toContain("[truncated: diff preview exceeded 102400 bytes]");
+      expect(request?.diff_summary?.length).toBeLessThan(110000);
+      expect(request?.commit_message).toBe("- typed trailer");
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });

@@ -1,0 +1,171 @@
+/* Read-only Spaces document renderer (umbrella de56ffa, C14b / issue 591e568).
+ * Owned by the C14b lane; never edits the global ui/src/style.css. */
+
+.spaces-doc-renderer {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+  overflow: auto;
+  min-height: 0;
+}
+
+.spaces-doc-renderer--empty,
+.spaces-doc-renderer__status,
+.spaces-doc-renderer__error {
+  color: var(--muted, #888);
+  font-size: 0.9rem;
+}
+
+.spaces-doc-renderer__error {
+  color: var(--danger, #c0392b);
+}
+
+.spaces-doc {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 72ch;
+}
+
+.spaces-doc__empty,
+.spaces-doc-renderer--empty {
+  font-style: italic;
+}
+
+.spaces-doc__prose,
+.spaces-doc-block__prose,
+.spaces-doc-embed__body {
+  line-height: 1.55;
+  word-break: break-word;
+}
+
+.spaces-doc__prose :where(h1, h2, h3),
+.spaces-doc-block__prose :where(h1, h2, h3) {
+  margin: 0.6em 0 0.3em;
+}
+
+.spaces-doc__prose pre,
+.spaces-doc-block__prose pre {
+  overflow: auto;
+  padding: 0.5rem 0.75rem;
+  background: var(--code-bg, rgba(127, 127, 127, 0.12));
+  border-radius: 4px;
+}
+
+.spaces-doc-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  position: relative;
+}
+
+.spaces-doc-block__children {
+  margin-left: 1rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--border, rgba(127, 127, 127, 0.2));
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.spaces-doc-block__toggle {
+  align-self: flex-start;
+  border: none;
+  background: transparent;
+  color: var(--muted, #888);
+  cursor: pointer;
+  font: inherit;
+  padding: 0 0.25rem 0 0;
+  line-height: 1;
+}
+
+.spaces-doc-block__refs,
+.spaces-doc__refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.2rem;
+}
+
+/* Inline + embed reference placeholders (C6 unresolved-ref UI). */
+.spaces-doc-ref {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
+  font-size: 0.92em;
+}
+
+.spaces-doc-ref__link {
+  color: var(--accent, #2d7ff9);
+  text-decoration: none;
+}
+
+.spaces-doc-ref__link:hover {
+  text-decoration: underline;
+}
+
+.spaces-doc-ref__label {
+  background: var(--code-bg, rgba(127, 127, 127, 0.12));
+  border-radius: 3px;
+  padding: 0 0.3em;
+}
+
+.spaces-doc-ref__resolve {
+  font: inherit;
+  font-size: 0.85em;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+  background: transparent;
+  border-radius: 3px;
+  cursor: pointer;
+  padding: 0 0.4em;
+  color: var(--muted, #888);
+}
+
+.spaces-doc-ref__status {
+  font-size: 0.82em;
+  color: var(--muted, #888);
+}
+
+.spaces-doc-ref__status--ok {
+  color: var(--success, #2e8b57);
+}
+
+.spaces-doc-ref__status--err {
+  color: var(--danger, #c0392b);
+}
+
+/* Embedded item preview (fixed component, read-only). */
+.spaces-doc-embed {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
+  border-radius: 6px;
+  background: var(--panel, rgba(127, 127, 127, 0.05));
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.spaces-doc-embed__caption {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--muted, #888);
+}
+
+.spaces-doc-embed__kind {
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 3px;
+  background: var(--code-bg, rgba(127, 127, 127, 0.12));
+}
+
+.spaces-doc-embed__placeholder {
+  font-style: italic;
+  color: var(--muted, #888);
+  font-size: 0.88rem;
+}

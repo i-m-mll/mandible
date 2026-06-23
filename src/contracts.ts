@@ -365,3 +365,287 @@ export type ArtifactResolveResult = {
   artifact: ArtifactRecord | null;
   alias: ArtifactAliasRecord | null;
 };
+
+// ---------------------------------------------------------------------------
+// Spaces (umbrella de56ffa) — shared records, request/response envelopes, and
+// the seed/block/export contract surface.
+//
+// These types mirror the FROZEN C2 route shapes (`src/routes/spaces.ts` over
+// `src/ledger/spaces.ts`). They are declared structurally here, in the
+// dependency-light shared module, so daemon route code and browser UI code can
+// import one contract without pulling the ledger storage layer into the bundle.
+//
+// The backend record types in `src/ledger/spaces.ts` are the source of truth;
+// the record shapes below are kept structurally identical to them and are
+// compile-checked against that module by the contract tests. The `SpaceBlock`
+// (C11) and `SpaceExport` (C13a) records mirror the planned `space_blocks` /
+// `space_exports` schemas (docs/spaces UMBRELLA-PLAN §3.5 and
+// DOCUMENT-CUSTODY-DESIGN §2.1); those routes are added by later children and
+// MUST consume these types rather than re-declaring them.
+// ---------------------------------------------------------------------------
+
+/** Space-level renderer. `document` is only valid at the Space level (occurrences use the narrower {@link SpaceOccurrenceRenderer}). */
+export type SpaceRenderer = 'canvas' | 'document' | 'board' | 'collection';
+/** Occurrence-level renderer. `document` is intentionally excluded — document structure lives in {@link SpaceBlock}, not occurrences. */
+export type SpaceOccurrenceRenderer = 'canvas' | 'board' | 'collection';
+export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref';
+
+export const SPACE_RENDERERS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
+export const SPACE_OCCURRENCE_RENDERERS: readonly SpaceOccurrenceRenderer[] = ['canvas', 'board', 'collection'];
+export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref'];
+
+export type Space = {
+  id: string;
+  project_id: string;
+  title: string;
+  default_renderer: SpaceRenderer;
+  description: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SpaceItem = {
+  id: string;
+  space_id: string;
+  ref_type: SpaceItemRefType;
+  ref_id: string;
+  ref_uri: string | null;
+  title: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SpaceOccurrence = {
+  id: string;
+  space_id: string;
+  item_id: string | null;
+  renderer: SpaceOccurrenceRenderer;
+  parent_id: string | null;
+  x: number | null;
+  y: number | null;
+  width: number | null;
+  height: number | null;
+  z_index: number | null;
+  sort_key: string | null;
+  section_id: string | null;
+  note: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type SpaceEdge = {
+  id: string;
+  space_id: string;
+  source: string;
+  target: string;
+  label: string | null;
+  style: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+/**
+ * Document block (C11 `space_blocks`). Mirrors the planned schema at
+ * docs/spaces/UMBRELLA-PLAN.md §3.5. An `item_id` embed ALWAYS carries an
+ * `item_snapshot_json` placeholder (DB-level invariant) so it degrades to a
+ * resolvable node when the embedded item is deleted.
+ */
+export type SpaceBlockType =
+  | 'heading'
+  | 'paragraph'
+  | 'reference'
+  | 'artifact_embed'
+  | 'issue_embed'
+  | 'comment_embed'
+  | 'todo';
+
+export type SpaceBlock = {
+  id: string;
+  space_id: string;
+  parent_id: string | null;
+  block_type: SpaceBlockType;
+  item_id: string | null;
+  /** Resolvable placeholder snapshot; non-null whenever `item_id` is set. */
+  item_snapshot: Record<string, unknown> | null;
+  sort_key: string;
+  markdown: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+/**
+ * Mutable export-tracking record (C13a `space_exports`). Mirrors the planned
+ * schema at docs/spaces/DOCUMENT-CUSTODY-DESIGN.md §2.1. `authority` records who
+ * owns the bytes; `status` is the drift state computed against live repo state.
+ */
+export type SpaceExportAuthority = 'mandible' | 'repo';
+export type SpaceExportStatus = 'clean' | 'stale' | 'repo_changed' | 'worktree_dirty' | 'conflict';
+
+export type SpaceExport = {
+  id: string;
+  space_id: string;
+  /** References `ledger_project_checkouts.id` (the backed-up project-checkout identity), NOT `work_repos.id`. */
+  repo_id: string;
+  branch: string;
+  path: string;
+  authority: SpaceExportAuthority;
+  status: SpaceExportStatus;
+  last_export_artifact_id: string | null;
+  pre_export_snapshot_artifact_id: string | null;
+  last_export_commit: string | null;
+  last_export_blob_sha: string | null;
+  last_export_content_sha256: string | null;
+  last_seen_commit: string | null;
+  last_seen_content_sha256: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+// --- request bodies ---------------------------------------------------------
+
+export type CreateSpaceRequest = {
+  project_id: string;
+  title: string;
+  default_renderer?: SpaceRenderer;
+  description?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type UpdateSpaceRequest = {
+  title?: string;
+  default_renderer?: SpaceRenderer;
+  description?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type AddSpaceItemRequest = {
+  ref_type: SpaceItemRefType;
+  ref_id: string;
+  ref_uri?: string | null;
+  title?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type UpdateSpaceItemRequest = {
+  ref_uri?: string | null;
+  title?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type SpaceOccurrenceInput = {
+  item_id?: string | null;
+  renderer?: SpaceOccurrenceRenderer;
+  parent_id?: string | null;
+  x?: number | null;
+  y?: number | null;
+  width?: number | null;
+  height?: number | null;
+  z_index?: number | null;
+  sort_key?: string | null;
+  section_id?: string | null;
+  note?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type CreateSpaceOccurrenceRequest = SpaceOccurrenceInput;
+export type UpdateSpaceOccurrenceRequest = SpaceOccurrenceInput;
+
+/** One entry in a batch occurrence write; an `id` matching an existing occurrence updates it, otherwise it is created. */
+export type BatchSpaceOccurrenceEntry = SpaceOccurrenceInput & { id?: string };
+
+export type BatchSpaceOccurrenceRequest = {
+  occurrences: BatchSpaceOccurrenceEntry[];
+};
+
+export type CreateSpaceEdgeRequest = {
+  source: string;
+  target: string;
+  label?: string | null;
+  style?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+export type UpdateSpaceEdgeRequest = {
+  source?: string;
+  target?: string;
+  label?: string | null;
+  style?: string | null;
+  metadata?: Record<string, unknown>;
+};
+
+/**
+ * Seed request. The C2 route accepts the predicate under either `predicate` or
+ * the legacy `scope` alias; the client helper sends `predicate`. The predicate
+ * is the shared Timeline issue-predicate AST (`TimelineIssuePredicate`), kept as
+ * an opaque object here so this contract module stays dependency-light.
+ */
+export type SeedSpaceRequest = {
+  predicate: Record<string, unknown>;
+  with_shelf_occurrences?: boolean;
+  include_artifacts?: boolean;
+};
+
+// --- response envelopes -----------------------------------------------------
+
+export type SpaceListResponse = { spaces: Space[] };
+export type SpaceResponse = { space: Space };
+export type DeleteSpaceResponse = { ok: true; id: string };
+
+export type AddSpaceItemResponse = {
+  item: SpaceItem;
+  created: boolean;
+  already_present: boolean;
+};
+export type SpaceItemResponse = { item: SpaceItem };
+export type DeleteSpaceItemResponse = { ok: true; id: string };
+
+export type SpaceOccurrenceResponse = { occurrence: SpaceOccurrence };
+export type DeleteSpaceOccurrenceResponse = { ok: true; id: string };
+export type BatchSpaceOccurrenceResponse = {
+  occurrences: SpaceOccurrence[];
+  created: number;
+  updated: number;
+};
+
+export type SpaceEdgeResponse = { edge: SpaceEdge };
+export type DeleteSpaceEdgeResponse = { ok: true; id: string };
+
+/** One diagnostic emitted by predicate evaluation during seeding (opaque shape mirroring `TimelineDiagnostic`). */
+export type SpaceSeedDiagnostic = Record<string, unknown>;
+
+export type SeedSpaceResult = {
+  matched_issue_ids: string[];
+  items: SpaceItem[];
+  items_created: number;
+  items_existing: number;
+  occurrences: SpaceOccurrence[];
+  diagnostics: SpaceSeedDiagnostic[];
+};
+
+/** Read-only fact packet for a Space (items/occurrences/edges) as returned by `loadSpaceFactPacket`. */
+export type SpaceFactPacket = {
+  space: Space;
+  items: SpaceItem[];
+  occurrences: SpaceOccurrence[];
+  edges: SpaceEdge[];
+};
+
+// --- unified ref resolver ---------------------------------------------------
+
+export type ResolverRefKind = 'issue' | 'comment' | 'artifact' | 'mandible' | 'repo' | 'unknown';
+
+export type ResolverResult = {
+  ref: string;
+  kind: ResolverRefKind;
+  resolved: boolean;
+  entity: Record<string, unknown> | null;
+  detail?: Record<string, unknown> | null;
+  error?: string;
+};
+
+export type ResolveRefResponse = { resolution: ResolverResult };

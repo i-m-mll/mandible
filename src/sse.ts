@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SSEEvent, SseEvent, StartupCommitInfo } from "./types.js";
 import { getDb } from "./db.js";
+import { isSpaceEvent, type SpaceEvent } from "./spaces/events.js";
 
 const MAX_CLIENT_BUFFER_BYTES = 1024 * 1024;
 
@@ -201,6 +202,23 @@ export function broadcast(eventOrType: string | SseEvent, data?: unknown): void 
     data: eventData,
     timestamp: new Date().toISOString()
   });
+}
+
+/**
+ * Broadcast a frozen `space:*` SSE event over the existing {@link broadcast}
+ * helper. Space-mutating routes (C2 `src/routes/spaces.ts` and later
+ * route-adding children) call this with a value from the shared
+ * `SPACE_EVENTS` enum (`src/spaces/events.ts`); C5 owns this single broadcast
+ * seam so no per-child SSE plumbing is required.
+ *
+ * The event name is validated against the frozen enum via {@link isSpaceEvent}
+ * so an unregistered ad-hoc string can never leak onto the `space:*` SSE topic.
+ * `space:` topic subscribers receive these through the existing prefix-match
+ * topic filter in {@link SseManager.broadcast}; there is no new SSE transport.
+ */
+export function broadcastSpaceEvent(event: SpaceEvent, data?: unknown): void {
+  if (!isSpaceEvent(event)) return;
+  broadcast(event, data);
 }
 
 export type { SseEvent };

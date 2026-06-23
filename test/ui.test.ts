@@ -289,11 +289,17 @@ describe('App routing', () => {
     });
   });
 
-  it('routes removed Switchboard hashes to the default graph workspace', () => {
+  it('routes removed Switchboard hashes to the default Spaces workspace', () => {
     expect(parseRouteFromHash('#/switchboard')).toEqual({
-      tab: 'graph',
+      tab: 'spaces',
       params: {},
     });
+  });
+
+  it('defaults empty and unknown hashes to the Spaces workspace', () => {
+    expect(parseRouteFromHash('')).toEqual({ tab: 'spaces', params: {} });
+    expect(parseRouteFromHash('#/')).toEqual({ tab: 'spaces', params: {} });
+    expect(parseRouteFromHash('#/not-a-real-tab')).toEqual({ tab: 'spaces', params: {} });
   });
 
   it('parses sidebar=hidden as the route-scoped view sidebar hide request', () => {
@@ -316,6 +322,11 @@ describe('App routing', () => {
       '#/issues?repo=dotfiles&issue=e70757d',
     );
     expect(hashWithViewSidebarHidden('#/auth?request=abc')).toBe('#/auth?request=abc&sidebar=hidden');
+  });
+
+  it('falls back to the Spaces default when toggling the sidebar on an empty hash', () => {
+    expect(hashWithViewSidebarHidden('')).toBe('#/spaces?sidebar=hidden');
+    expect(hashWithViewSidebarVisible('')).toBe('#/spaces');
   });
 
   it('maps mandible issue deep links onto the existing Issues hash route', () => {
@@ -662,6 +673,37 @@ describe('app shell', () => {
     ).toBeTruthy());
     expect(reactFlowMockState.mountCount).toBe(1);
     expect(reactFlowMockState.unmountCount).toBe(0);
+  });
+
+  it('resolves an empty hash to the Spaces workspace on mount', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '');
+    expect(window.location.hash).toBe('');
+
+    render(h(App, {}));
+
+    const nav = await screen.findByLabelText('Main navigation');
+    await waitFor(() => {
+      const spacesNav = within(nav).getByLabelText('Spaces');
+      expect(spacesNav.getAttribute('aria-current')).toBe('page');
+    });
+    const graphNav = within(nav).getByLabelText('Graph');
+    expect(graphNav.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('resolves an unknown hash to the Spaces workspace on mount', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/not-a-real-tab');
+
+    render(h(App, {}));
+
+    const nav = await screen.findByLabelText('Main navigation');
+    await waitFor(() => {
+      const spacesNav = within(nav).getByLabelText('Spaces');
+      expect(spacesNav.getAttribute('aria-current')).toBe('page');
+    });
   });
 });
 

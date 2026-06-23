@@ -173,6 +173,28 @@ export class FileRpcTransport {
   }
 }
 
+/**
+ * Per-route file-RPC allowlist (issue 511506d, standing AC #1).
+ *
+ * The sandboxed file transport can only reach routes that are enumerated here
+ * by an exact method + path match (literal path or an anchored `^…$` regex for
+ * a single parameterized shape). This is the deliberate convention:
+ *
+ * 1. Every allowlisted route is method-specific and path-specific. There is no
+ *    blanket prefix allow (no `pathname.startsWith("/api/spaces")`,
+ *    `/^\/api\/spaces/`, or any other catch-all). A new route is unreachable
+ *    over the file transport until its owner adds an explicit entry.
+ * 2. Each route-adding child self-allowlists ONLY its own routes. For the
+ *    Spaces feature, C5 (this file) lands the base `/api/knowledge-backrefs`
+ *    entry and this documented convention; C2/C11/C13b add their own
+ *    `/api/spaces…` entries in their own branches. C5 does NOT blanket-allow
+ *    `/api/spaces*`.
+ * 3. Write routes must stay within the file transport's write/auth boundary:
+ *    approval, merge, admin, and config routes are never allowlisted (auth
+ *    approval/merge remain user/dashboard actions). Only narrow, non-privileged
+ *    writes (ledger mutations, work-unit mechanism calls, knowledge backrefs,
+ *    spaces CRUD) are exposed.
+ */
 export function isAllowedFileRpcRoute(method: string, pathname: string): boolean {
   const normalizedMethod = method.toUpperCase();
   if (normalizedMethod === "GET" && pathname === "/api/conversations") return true;
@@ -224,6 +246,60 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  // Knowledge backrefs (C5, issue 511506d): the Phase-6 HumbleB return channel.
+  // GET reads existing backrefs; POST is the return-channel write that records a
+  // knowledge backref. Both are narrow, non-privileged surfaces — no approval,
+  // merge, admin, or config authority — so they stay within the file-transport
+  // write boundary (standing AC #1).
+  if (normalizedMethod === "GET" && pathname === "/api/knowledge-backrefs") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/knowledge-backrefs") return true;
+  // Spaces (C2, issue f108bba): self-allowlisted per the per-route convention
+  // (§5.3). Reads + writes for spaces / items / occurrences / edges / seed and
+  // the unified ref resolver; destructive DELETE ops are listed explicitly.
+  if (normalizedMethod === "GET" && pathname === "/api/spaces/resolve") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/refs/resolve") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/spaces") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/spaces") return true;
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/items$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/items\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/items\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/occurrences$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/occurrences\/batch$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/occurrences\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/occurrences\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/edges$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/edges\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/edges\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/seed$/.test(pathname)) return true;
+  // Spaces blocks (C11, issue d2a8e77): the document/canvas block tree.
+  // Reads + narrow non-privileged writes (block CRUD + item detach/degrade);
+  // no approval/merge/admin/config authority, so within the file-transport
+  // write boundary (standing AC #1). Self-allowlisted per the per-route
+  // convention — no blanket `/api/spaces*` allow.
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/blocks$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/blocks$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/blocks\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/blocks\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/items\/[^/]+\/detach-blocks$/.test(pathname)) return true;
+  // Spaces export / custody (C13b, issue 8730bf9): export-and-track,
+  // untracked export-of-copy, the tracking-row read surface, and the docs-path
+  // settings surface. The tracked-export write produces an AGENT-KEY docs-branch
+  // linked commit — routine agent-key git, NOT an auth/approval/merge action —
+  // so it stays within the file-transport write boundary (standing AC #1). No
+  // blanket `/api/spaces*` allow; each route is self-allowlisted explicitly.
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/exports\/untracked$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && pathname === "/api/spaces/exports/settings") return true;
+  // C13c (drift/status detection, issue 21f36cb): read-only LIVE drift re-checks
+  // that refresh `status` + `last_seen_*` on the tracking row (custody-doc §6).
+  // GET reads with a tracking-row refresh side effect — no repo mutation, no auth
+  // queue — so they stay within the file-transport read boundary (standing AC #1).
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/drift$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/[^/]+\/drift$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;

@@ -864,6 +864,61 @@ describe("project timeline projection", () => {
       expect.objectContaining({ row_spec_id: "bad-label", kind: "invalid_predicate" }),
     ]));
   });
+
+  it("preserves predicate-driven projection output after evaluator extraction", () => {
+    // Regression guard for the shared-evaluator extraction (issue dce57b1):
+    // the Timeline projection's predicate-derived membership must be byte-for-byte
+    // unchanged from before src/ledger/issue-predicate.ts was split out.
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_specs: [
+        { id: "review", scope: { type: "label", name: "needs-review" } },
+        {
+          id: "review-feature",
+          scope: {
+            type: "and",
+            predicates: [
+              { type: "label", name: "needs-review" },
+              { type: "kind", kind: "feature" },
+            ],
+          },
+        },
+        { id: "subtree", scope: { type: "parent_subtree", issue_id: fixture.issues.rootA.short_id } },
+        {
+          id: "or-not",
+          scope: {
+            type: "or",
+            predicates: [
+              { type: "kind", kind: "umbrella" },
+              { type: "not", predicate: { type: "label", name: "needs-review" } },
+            ],
+          },
+        },
+        { id: "residual", scope: { type: "residual" } },
+      ],
+    });
+
+    expect(memberIssueIds(projection, "review")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(projection, "review-feature")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+    ]);
+    expect(memberIssueIds(projection, "subtree")).toEqual([
+      fixture.issues.shared.id,
+      fixture.issues.nested.id,
+      fixture.issues.cycle.id,
+    ]);
+    expect(memberIssueIds(projection, "or-not")).toEqual([
+      fixture.issues.rootA.id,
+      fixture.issues.rootB.id,
+      fixture.issues.cycle.id,
+      fixture.issues.loner.id,
+    ]);
+    expect(memberIssueIds(projection, "residual")).toEqual([]);
+  });
 });
 
 function eventBySource(
