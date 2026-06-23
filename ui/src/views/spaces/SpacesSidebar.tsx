@@ -31,7 +31,6 @@ import {
   type Space,
   type SpaceGroup,
 } from '../../api';
-import { useSidebarResize } from '../../hooks/useSidebarResize';
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
 import './SpacesSidebar.css';
@@ -62,6 +61,12 @@ export type SpacesSidebarProps = {
   createSpaceFn?: typeof createSpace;
   /** Refresh nonce: bump to force a re-read after an external mutation. */
   refreshToken?: number;
+  /**
+   * Controlled sidebar width in pixels. Lifted from the shell (which owns
+   * useSidebarResize) so the resize handle can be a flex sibling. When omitted,
+   * no inline width is applied (CSS controls sizing, useful for tests).
+   */
+  width?: number | null;
 };
 
 type CreateTarget =
@@ -176,6 +181,7 @@ export function SpacesSidebar({
   loadGroups = listSpacesGrouped,
   createSpaceFn = createSpace,
   refreshToken,
+  width: sidebarWidth = null,
 }: SpacesSidebarProps): JSX.Element | null {
   const [groups, setGroups] = useState<SpaceGroup[]>([]);
   const [loading, setLoading] = useState(false);
@@ -194,12 +200,6 @@ export function SpacesSidebar({
   const [internalRefresh, setInternalRefresh] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
-
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 300,
-    minWidth: 220,
-    storageKey: 'sidebar-width:spaces',
-  });
 
   // --- data load (grouped read) ---
   useEffect(() => {
@@ -509,8 +509,6 @@ export function SpacesSidebar({
       data-testid="spaces-sidebar"
       style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}
     >
-      <div className="sidebar-drag-handle spaces-tree__resize-handle" onMouseDown={handleMouseDown} />
-
       {/* FIXED header row (outside the scroll region) */}
       <div className="spaces-tree__header">
         <input

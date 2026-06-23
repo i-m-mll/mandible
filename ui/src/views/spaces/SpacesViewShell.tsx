@@ -24,6 +24,7 @@ import type { SpaceRenderer } from '../../api';
 // records from `../../../src/contracts`).
 import { SPACE_RENDERERS } from '../../../../src/contracts';
 import { SpacesSidebar } from './SpacesSidebar';
+import { useSidebarResize } from '../../hooks/useSidebarResize';
 import './SpacesViewShell.css';
 
 /**
@@ -119,6 +120,15 @@ export function SpacesViewShell({
     [renderers],
   );
 
+  // Sidebar resize: the hook lives here so the drag handle can be a flex sibling
+  // of .spaces-tree (matching the graph-view sidebar pattern). Width + handler
+  // are passed down to SpacesSidebar which applies the inline width to its root.
+  const { width: sidebarWidth, handleMouseDown: handleResizeMouseDown } = useSidebarResize({
+    defaultWidth: 300,
+    minWidth: 220,
+    storageKey: 'sidebar-width:spaces',
+  });
+
   return (
     <section
       className="spaces-shell"
@@ -126,13 +136,19 @@ export function SpacesViewShell({
       data-active-renderer={activeRenderer}
       aria-label="Spaces"
     >
-      <SpacesSidebar
-        hidden={sidebarHidden}
-        selectedSpaceId={spaceId}
-        onSelectSpace={(args) =>
-          onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
-        }
-      />
+      {!sidebarHidden && (
+        <>
+          <SpacesSidebar
+            hidden={false}
+            selectedSpaceId={spaceId}
+            width={sidebarWidth}
+            onSelectSpace={(args) =>
+              onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
+            }
+          />
+          <div className="sidebar-drag-handle" onMouseDown={handleResizeMouseDown} />
+        </>
+      )}
       <div className="spaces-shell__main">
         <header className="spaces-shell__header">
           {spaceId ? (
