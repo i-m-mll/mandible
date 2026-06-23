@@ -62,6 +62,14 @@ export const METADATA_BACKUP_TABLES = [
   "artifact_aliases",
   "artifact_links",
   "knowledge_backrefs",
+  // Spaces P1' core four (issue b395083 / umbrella de56ffa). Parent-before-child
+  // order; the metadata backup emits inline UNIQUE/composite-FK constraints as
+  // part of each table's own DDL, so uniqueness survives backup/restore.
+  // space_blocks / space_exports are NOT here (later serial-chain children).
+  "spaces",
+  "space_items",
+  "space_occurrences",
+  "space_edges",
   ...LEDGER_BACKUP_TABLES,
 ] as const;
 

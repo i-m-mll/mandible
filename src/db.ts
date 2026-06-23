@@ -2014,6 +2014,132 @@ const MIGRATIONS: Migration[] = [
       `INSERT OR IGNORE INTO settings (key, value, updated_at)
        VALUES ('app_theme', 'system', CAST(strftime('%s','now') * 1000 AS INTEGER))`
     ]
+  },
+  {
+    version: 83,
+    name: "spaces_core",
+    // Issue: b395083 (umbrella de56ffa) — Spaces P1' core schema: the "core four"
+    // tables for the authored organizing surface, per docs/spaces/UMBRELLA-PLAN.md §3.
+    // FIRST link of the serial migration chain (C1 → C11 space_blocks → C13a
+    // space_exports); space_blocks/space_exports are intentionally NOT here.
+    //
+    // Relationship-semantics bright line (UMBRELLA-PLAN §4): these authored edge
+    // systems are DISTINCT from the ledger/artifact relationship systems and must
+    // never be silently merged:
+    //   - ledger_issue_relationships / ledger_relationship_edges → operational/
+    //     semantic issue relationships (9 fixed link_type values, issue/comment
+    //     endpoints).
+    //   - artifact_links → artifact custody/context links.
+    //   - space_items / space_occurrences → authored organizing membership +
+    //     presentation.
+    //   - space_edges → authored local/rhetorical canvas edges (FREE labels,
+    //     unlike the fixed ledger link_type set).
+    // A space_edge becomes a ledger relationship ONLY via an explicit "promote to
+    // ledger relationship" action (writes a ledger_relationship_edges row) — never
+    // silent mirroring. Space membership is canonical in space_items and is NOT
+    // duplicated into artifact_links.
+    //
+    // ON DELETE choice — RESTRICT on spaces.project_id is deliberate (matches
+    // ledger_issues). Spaces are precious authored state; deleting a project must
+    // NOT silently delete its Spaces. Do NOT assume CASCADE here by analogy with
+    // lighter project-local tables. The space-INTERNAL cascade (spaces → items /
+    // occurrences / edges) is ON DELETE CASCADE: deleting a Space tears down its
+    // own contents, which is the intended cleanup.
+    //
+    // Inline UNIQUE(...) and composite FKs are intentional (review B2/B3/B4): the
+    // metadata backup (src/ledger/backup.ts) emits table DDL + rows only and NO
+    // standalone CREATE INDEX DDL, so a uniqueness rule that lived only as an
+    // external CREATE UNIQUE INDEX would be LOST on backup/restore. Every
+    // composite-FK target and membership-uniqueness rule is therefore an inline
+    // table-level UNIQUE; only non-unique performance indexes stay as separate
+    // CREATE INDEX statements.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS spaces (
+        id               TEXT PRIMARY KEY,
+        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        title            TEXT NOT NULL,
+        default_renderer TEXT NOT NULL DEFAULT 'canvas'
+                           CHECK(default_renderer IN ('canvas','document','board','collection')),
+        description      TEXT,
+        metadata_json    TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_spaces_project_updated
+        ON spaces(project_id, updated_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS space_items (
+        id            TEXT NOT NULL,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        ref_type      TEXT NOT NULL
+                        CHECK(ref_type IN ('issue','comment','artifact','external_ref')),
+        ref_id        TEXT NOT NULL CHECK(ref_id != ''),
+        ref_uri       TEXT,
+        title         TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        UNIQUE (space_id, ref_type, ref_id),
+        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_items_lookup
+        ON space_items(space_id, ref_type, ref_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_items_by_ref
+        ON space_items(ref_type, ref_id, space_id)`,
+      `CREATE TABLE IF NOT EXISTS space_occurrences (
+        id            TEXT NOT NULL,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        item_id       TEXT,
+        renderer      TEXT NOT NULL DEFAULT 'canvas'
+                        CHECK(renderer IN ('canvas','board','collection')),
+        parent_id     TEXT,
+        x             REAL,
+        y             REAL,
+        width         REAL,
+        height        REAL,
+        z_index       INTEGER,
+        sort_key      TEXT,
+        section_id    TEXT,
+        note          TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        FOREIGN KEY (space_id, item_id)
+          REFERENCES space_items(space_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (space_id, parent_id)
+          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_occurrences_render
+        ON space_occurrences(space_id, renderer, sort_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_occurrences_item
+        ON space_occurrences(space_id, item_id) WHERE item_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_space_occurrences_tree
+        ON space_occurrences(space_id, parent_id, sort_key)`,
+      `CREATE TABLE IF NOT EXISTS space_edges (
+        id            TEXT PRIMARY KEY,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        source        TEXT NOT NULL,
+        target        TEXT NOT NULL,
+        label         TEXT,
+        style         TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        FOREIGN KEY (space_id, source)
+          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (space_id, target)
+          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_edges_source ON space_edges(space_id, source)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_edges_target ON space_edges(space_id, target)`
+    ]
   }
 ];
 
