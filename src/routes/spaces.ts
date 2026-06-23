@@ -18,6 +18,8 @@ import {
   listSpaceItems,
   listSpaceOccurrences,
   listSpaces,
+  listSpacesGrouped,
+  listTopLevelSpaces,
   seedSpaceFromPredicate,
   updateSpace,
   updateSpaceEdge,
@@ -162,8 +164,13 @@ function projectExists(db: Db, projectId: string): boolean {
 }
 
 /**
- * Enforce the project-scoping policy: `issue`/`comment` refs must belong to the
- * Space's project; `artifact`/`external_ref` may cross project boundaries.
+ * Validate that an item ref exists. Cross-project membership is a UNIVERSAL,
+ * item-level capability for EVERY Space (issue 812df41): a Space's optional
+ * `project_id` only controls where it appears in the sidebar (under that
+ * project's header, or top-level when null), never which items it may contain.
+ * So `issue`/`comment` refs from ANY project are accepted for ANY Space —
+ * project-scoped and top-level alike — exactly like `artifact`/`external_ref`
+ * refs. The only constraint is existence: the ref must resolve to a real row.
  */
 function validateItemProjectScope(
   db: Db,
@@ -171,15 +178,13 @@ function validateItemProjectScope(
   refType: SpaceItemRefType,
   refId: string,
 ): void {
+  void space;
   if (refType === "artifact" || refType === "external_ref") return;
   if (refType === "issue") {
     const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?").get(refId) as
       | { project_id: string }
       | undefined;
     if (!row) throw new HttpError(400, `issue ref not found: ${refId}`);
-    if (row.project_id !== space.project_id) {
-      throw new HttpError(400, "issue ref belongs to a different project than the space");
-    }
     return;
   }
   // comment
@@ -190,9 +195,6 @@ function validateItemProjectScope(
       WHERE c.id = ?`,
   ).get(refId) as { project_id: string } | undefined;
   if (!row) throw new HttpError(400, `comment ref not found: ${refId}`);
-  if (row.project_id !== space.project_id) {
-    throw new HttpError(400, "comment ref belongs to a different project than the space");
-  }
 }
 
 // --- unified ref resolver ----------------------------------------------------
@@ -360,11 +362,27 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
   router.get("/api/refs/resolve", resolveHandler);
 
   // --- spaces CRUD ---
+  // List modes (issue 812df41):
+  //   ?project_id=<id>  → that project's Spaces (each carries its nullable project_id)
+  //   ?scope=top-level  → only top-level / global Spaces (project_id IS NULL)
+  //   (neither)         → grouped list: { groups: [...] } with a top-level group
+  //                       first, then one group per project. The flat `spaces`
+  //                       field (every Space, all groups flattened) is included so
+  //                       existing flat-list callers keep working.
   router.get("/api/spaces", (req, res) => {
     try {
+      const db = getDb();
       const projectId = queryString(req, "project_id");
-      if (!projectId) throw new HttpError(400, "project_id query parameter required");
-      sendJson(res, 200, { spaces: listSpaces(getDb(), projectId) });
+      if (projectId) {
+        sendJson(res, 200, { spaces: listSpaces(db, projectId) });
+        return;
+      }
+      if (queryString(req, "scope") === "top-level") {
+        sendJson(res, 200, { spaces: listTopLevelSpaces(db) });
+        return;
+      }
+      const groups = listSpacesGrouped(db);
+      sendJson(res, 200, { groups, spaces: groups.flatMap((group) => group.spaces) });
     } catch (error) {
       handleError(res, error);
     }
@@ -374,8 +392,13 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try {
       const db = getDb();
       const body = bodyRecord(req);
-      const projectId = requireString(body, "project_id");
-      if (!projectExists(db, projectId)) throw new HttpError(400, "project not found");
+      // project_id is OPTIONAL (issue 812df41): omitted or null creates a
+      // top-level / global Space owned by no project. When present it must
+      // resolve to a real project.
+      const projectId = optionalString(body, "project_id") ?? null;
+      if (projectId !== null && !projectExists(db, projectId)) {
+        throw new HttpError(400, "project not found");
+      }
       const space = createSpace(db, {
         project_id: projectId,
         title: requireString(body, "title"),

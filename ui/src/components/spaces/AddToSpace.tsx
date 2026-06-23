@@ -13,9 +13,16 @@
 // user click, and Space membership is read back from the C2 API — never
 // promoted from local state.
 
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import { addSpaceItem, listSpaces, type Space, type SpaceItemRefType } from '../../api';
+import {
+  addSpaceItem,
+  listSpaces,
+  listSpacesGrouped,
+  type Space,
+  type SpaceGroup,
+  type SpaceItemRefType,
+} from '../../api';
 import './AddToSpace.css';
 
 /**
@@ -47,6 +54,18 @@ export type AddToSpaceProps = {
   disabled?: boolean;
   /** Optional className passthrough for the trigger (so each surface can style it). */
   className?: string;
+  /**
+   * When true (default), the picker also lists Spaces from OTHER projects and the
+   * top-level / global bucket — grouped by project, with the item's own project
+   * first — so an item can be added to a cross-project or top-level Space. Set
+   * false to keep the picker strictly single-project.
+   *
+   * Cross-project membership is a universal, item-level capability: the backend
+   * (src/routes/spaces.ts `validateItemProjectScope`) accepts an item from any
+   * project into any Space, project-scoped or top-level, issue 812df41. A Space's
+   * project only governs sidebar placement, not which items it may contain.
+   */
+  includeCrossProject?: boolean;
   /** Notified after a successful add so the host can surface a toast/refresh if it wants. */
   onAdded?: (space: Space, results: AddToSpaceResult[]) => void;
 };
@@ -57,11 +76,37 @@ export type AddToSpaceResult = {
   alreadyPresent: boolean;
 };
 
+/** One rendered section of the picker: a project (or top-level) and its spaces. */
+type SpaceSection = { key: string; label: string; spaces: Space[] };
+
 type LoadState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; spaces: Space[] }
+  | { status: 'ready'; sections: SpaceSection[] }
   | { status: 'error'; message: string };
+
+/**
+ * Order the grouped sections so the item's own project comes first, then the
+ * top-level / global bucket, then the remaining projects. A flat single-project
+ * load (cross-project disabled) collapses to one unlabeled section.
+ */
+function buildSections(groups: SpaceGroup[], ownProjectId: string | null | undefined): SpaceSection[] {
+  const own: SpaceSection[] = [];
+  const top: SpaceSection[] = [];
+  const rest: SpaceSection[] = [];
+  for (const group of groups) {
+    if (group.spaces.length === 0) continue;
+    const section: SpaceSection = {
+      key: group.project_id ?? '__top_level__',
+      label: group.project_id === null ? 'Top level' : group.project_name ?? 'Project',
+      spaces: group.spaces,
+    };
+    if (group.project_id && ownProjectId && group.project_id === ownProjectId) own.push(section);
+    else if (group.project_id === null) top.push(section);
+    else rest.push(section);
+  }
+  return [...own, ...top, ...rest];
+}
 
 export function AddToSpace({
   projectId,
@@ -70,6 +115,7 @@ export function AddToSpace({
   label = 'Add to Space',
   disabled = false,
   className,
+  includeCrossProject = true,
   onAdded,
 }: AddToSpaceProps): JSX.Element {
   const [open, setOpen] = useState(false);
@@ -83,14 +129,21 @@ export function AddToSpace({
 
   // Lazily load Spaces the first time the popover opens (and re-load if the
   // project changes between opens). Backend refreshes are reconciliation inputs;
-  // we only fetch on the explicit open action.
+  // we only fetch on the explicit open action. When cross-project is enabled we
+  // read the grouped list (own project + top-level + other projects); otherwise
+  // we keep the strict single-project read.
   useEffect(() => {
     if (!open || !projectId) return undefined;
     let active = true;
     setLoad({ status: 'loading' });
-    listSpaces(projectId)
-      .then((spaces) => {
-        if (active) setLoad({ status: 'ready', spaces });
+    const loader = includeCrossProject
+      ? listSpacesGrouped().then((groups) => buildSections(groups, projectId))
+      : listSpaces(projectId).then((spaces) => (
+        spaces.length > 0 ? [{ key: projectId, label: '', spaces }] : []
+      ));
+    loader
+      .then((sections) => {
+        if (active) setLoad({ status: 'ready', sections });
       })
       .catch((error: unknown) => {
         if (active) {
@@ -100,7 +153,7 @@ export function AddToSpace({
     return () => {
       active = false;
     };
-  }, [open, projectId]);
+  }, [open, projectId, includeCrossProject]);
 
   // Close on outside pointer / Escape, matching the issue-actions menu behavior.
   useEffect(() => {
@@ -165,6 +218,11 @@ export function AddToSpace({
     .filter(Boolean)
     .join(' ');
 
+  const readySectionCount = useMemo(
+    () => (load.status === 'ready' ? load.sections.reduce((n, s) => n + s.spaces.length, 0) : 0),
+    [load],
+  );
+
   return (
     <div className="add-to-space" ref={containerRef} data-testid="add-to-space">
       <button
@@ -188,22 +246,29 @@ export function AddToSpace({
           {load.status === 'error' && (
             <div className="add-to-space__status add-to-space__status--error">{load.message}</div>
           )}
-          {load.status === 'ready' && load.spaces.length === 0 && (
-            <div className="add-to-space__status">No Spaces in this project yet.</div>
+          {load.status === 'ready' && readySectionCount === 0 && (
+            <div className="add-to-space__status">No Spaces yet.</div>
           )}
           {load.status === 'ready' &&
-            load.spaces.map((space) => (
-              <button
-                key={space.id}
-                type="button"
-                className="add-to-space__option"
-                role="menuitem"
-                disabled={pendingSpaceId !== null}
-                onClick={() => void addToSpace(space)}
-              >
-                <span className="add-to-space__option-title">{space.title}</span>
-                {pendingSpaceId === space.id && <span className="add-to-space__option-busy">adding…</span>}
-              </button>
+            load.sections.map((section) => (
+              <div key={section.key} className="add-to-space__section" data-testid={`add-to-space-section-${section.key}`}>
+                {section.label ? (
+                  <div className="add-to-space__section-label">{section.label}</div>
+                ) : null}
+                {section.spaces.map((space) => (
+                  <button
+                    key={space.id}
+                    type="button"
+                    className="add-to-space__option"
+                    role="menuitem"
+                    disabled={pendingSpaceId !== null}
+                    onClick={() => void addToSpace(space)}
+                  >
+                    <span className="add-to-space__option-title">{space.title}</span>
+                    {pendingSpaceId === space.id && <span className="add-to-space__option-busy">adding…</span>}
+                  </button>
+                ))}
+              </div>
             ))}
         </div>
       )}

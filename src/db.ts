@@ -2046,6 +2046,12 @@ const MIGRATIONS: Migration[] = [
     // occurrences / edges) is ON DELETE CASCADE: deleting a Space tears down its
     // own contents, which is the intended cleanup.
     //
+    // project_id NULLABILITY — `project_id` is NULLABLE (issue 812df41, v86): a
+    // top-level / global Space has NO owning project (project_id IS NULL). Existing
+    // DBs get this via the v86 rebuild; fresh DBs get it directly from this DDL so
+    // the two paths converge on the same schema. RESTRICT still applies to non-NULL
+    // project edges.
+    //
     // Inline UNIQUE(...) and composite FKs are intentional (review B2/B3/B4): the
     // metadata backup (src/ledger/backup.ts) emits table DDL + rows only and NO
     // standalone CREATE INDEX DDL, so a uniqueness rule that lived only as an
@@ -2056,7 +2062,7 @@ const MIGRATIONS: Migration[] = [
     statements: [
       `CREATE TABLE IF NOT EXISTS spaces (
         id               TEXT PRIMARY KEY,
-        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        project_id       TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,
         title            TEXT NOT NULL,
         default_renderer TEXT NOT NULL DEFAULT 'canvas'
                            CHECK(default_renderer IN ('canvas','document','board','collection')),
@@ -2271,6 +2277,36 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_space_exports_repo
         ON space_exports(repo_id, branch, path)`
     ]
+  },
+  {
+    version: 86,
+    name: "spaces_nullable_project_id",
+    // Issue: 812df41 (umbrella de56ffa) — top-level / global Spaces. The C1
+    // spaces_core migration declared `spaces.project_id TEXT NOT NULL` so every
+    // Space was owned by exactly one project. A top-level Space has NO owning
+    // project, so `project_id` must become nullable (NULL = top-level). At-most-
+    // one owning project is preserved; cross-project membership is at the item
+    // level (space_items is ref-based and project-agnostic), NOT a project M:N.
+    //
+    // SQLite cannot drop a NOT NULL constraint in place, so the column change is a
+    // full table rebuild. Because `spaces` is the parent of FIVE child tables
+    // (space_items / space_occurrences / space_edges / space_blocks /
+    // space_exports), the rebuild (DROP + RENAME) must run with foreign_keys OFF
+    // and a foreign_key_check afterward — which cannot happen inside the migration
+    // transaction (PRAGMA foreign_keys is a no-op inside a transaction). The rebuild
+    // therefore lives in the `makeSpacesProjectIdNullable` post-migration helper
+    // (same mechanism as the v70 ledger_issue_relationship_sources rebuild), gated
+    // on the live NOT NULL state so fresh DBs (whose spaces_core already emits the
+    // nullable DDL below for new installs) skip it.
+    //
+    // The rebuilt DDL preserves every spaces_core invariant verbatim EXCEPT the
+    // NOT NULL on project_id: the default_renderer CHECK, the object-only
+    // metadata_json json_valid CHECK, and the deliberate ON DELETE RESTRICT (a
+    // project with Spaces still cannot be silently deleted; a top-level Space has
+    // no project edge at all). The performance index idx_spaces_project_updated is
+    // recreated. `spaces` stays in METADATA_BACKUP_TABLES (src/ledger/backup.ts):
+    // no inline UNIQUE changes, so the backup round-trip is unaffected.
+    statements: []
   }
 ];
 
@@ -2467,6 +2503,16 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v74_ensure_conversation_integer_timestamps", () => {
       ensureConversationIntegerTimestampColumns(db);
+    });
+  }
+  // Issue: 812df41 — make spaces.project_id nullable (top-level Spaces). Runs as a
+  // FK-safe table rebuild (foreign_keys OFF, own transaction, foreign_key_check)
+  // because spaces is the parent of five child tables.
+  if (shouldRunPostMigration(db, "v86_spaces_nullable_project_id", pending, 86, () =>
+    hasNonNullableSpacesProjectId(db)
+  )) {
+    runPostMigration(db, "v86_spaces_nullable_project_id", () => {
+      makeSpacesProjectIdNullable(db);
     });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
@@ -3160,6 +3206,89 @@ function hasLegacyIssueRelationshipSourceKinds(db: Db): boolean {
     )
     .get();
   return Boolean(row);
+}
+
+/**
+ * Issue 812df41 — true when the live `spaces` table still has a NOT NULL
+ * `project_id` (the pre-v86 spaces_core shape). Fresh DBs created from the updated
+ * spaces_core DDL already emit a nullable column, so this is false for them and the
+ * rebuild is skipped. Absent table → false (a partial-schema test fixture).
+ */
+function hasNonNullableSpacesProjectId(db: Db): boolean {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'spaces'")
+    .get();
+  if (!table) return false;
+  const columns = db.prepare("PRAGMA table_info(spaces)").all() as Array<{
+    name: string;
+    notnull: number;
+  }>;
+  const projectId = columns.find((column) => column.name === "project_id");
+  return Boolean(projectId && projectId.notnull === 1);
+}
+
+/**
+ * Issue 812df41 — rebuild `spaces` with a NULLABLE `project_id` (top-level /
+ * global Spaces). SQLite cannot drop a NOT NULL in place, so this is a full
+ * DROP + RENAME rebuild. `spaces` is the parent of five child tables, so the
+ * rebuild runs with foreign_keys OFF inside its own transaction and verifies
+ * with a foreign_key_check afterward — the same FK-safe mechanism the v70
+ * ledger_issue_relationship_sources rebuild uses. Every spaces_core invariant is
+ * preserved verbatim except the NOT NULL: default_renderer CHECK, object-only
+ * metadata_json json_valid CHECK, ON DELETE RESTRICT on project_id, and the
+ * idx_spaces_project_updated performance index.
+ */
+function makeSpacesProjectIdNullable(db: Db): void {
+  if (!hasNonNullableSpacesProjectId(db)) return;
+
+  const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS spaces_v86");
+      db.exec(
+        `CREATE TABLE spaces_v86 (
+          id               TEXT PRIMARY KEY,
+          project_id       TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+          title            TEXT NOT NULL,
+          default_renderer TEXT NOT NULL DEFAULT 'canvas'
+                             CHECK(default_renderer IN ('canvas','document','board','collection')),
+          description      TEXT,
+          metadata_json    TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+          created_at       INTEGER NOT NULL,
+          updated_at       INTEGER NOT NULL
+        )`,
+      );
+      db.exec(
+        `INSERT INTO spaces_v86 (
+          id, project_id, title, default_renderer, description,
+          metadata_json, created_at, updated_at
+        )
+        SELECT
+          id, project_id, title, default_renderer, description,
+          metadata_json, created_at, updated_at
+        FROM spaces`,
+      );
+      db.exec("DROP TABLE spaces");
+      db.exec("ALTER TABLE spaces_v86 RENAME TO spaces");
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_spaces_project_updated
+          ON spaces(project_id, updated_at DESC)`,
+      );
+    })();
+  } finally {
+    if (previousForeignKeys) {
+      db.pragma("foreign_keys = ON");
+    }
+  }
+
+  const violations = db.prepare("PRAGMA foreign_key_check").all();
+  if (violations.length > 0) {
+    throw new Error(
+      `spaces nullable project_id migration left ${violations.length} foreign key violations`,
+    );
+  }
 }
 
 function migrateLedgerEventHashIds(db: Db): void {

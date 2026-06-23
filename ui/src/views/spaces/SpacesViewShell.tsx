@@ -23,6 +23,7 @@ import type { SpaceRenderer } from '../../api';
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
 import { SPACE_RENDERERS } from '../../../../src/contracts';
+import { SpacesSidebar } from './SpacesSidebar';
 import './SpacesViewShell.css';
 
 /**
@@ -69,6 +70,20 @@ export type SpacesViewShellProps = {
    * empty-state rather than throwing, so the shell is renderable on its own.
    */
   renderers?: Partial<Record<SpaceRenderer, SpaceRendererMountPoint>>;
+  /**
+   * When true the shared view-sidebar is hidden (the rail toggle / `?sidebar=`
+   * param). Threaded down so the Spaces home sidebar participates in the same
+   * show/hide contract every other VIEW_SIDEBAR_TABS view uses.
+   */
+  sidebarHidden?: boolean;
+  /**
+   * Navigate the URL hash to open a space or switch the active renderer. The
+   * host (app.tsx) rebuilds `#/spaces?project=…&space=…&renderer=…` preserving
+   * the `?sidebar=` param. Selection + renderer choice stay URL-canonical, never
+   * promoted to shell-owned state. When omitted the shell renders read-only
+   * (e.g. unit smoke tests) — the sidebar/switcher affordances no-op.
+   */
+  onNavigate?: (target: { projectId?: string | null; spaceId?: string | null; renderer?: string }) => void;
 };
 
 const DEFAULT_RENDERER: SpaceRenderer = 'collection';
@@ -83,6 +98,8 @@ export function SpacesViewShell({
   spaceId = null,
   renderer = DEFAULT_RENDERER,
   renderers,
+  sidebarHidden = false,
+  onNavigate,
 }: SpacesViewShellProps): JSX.Element {
   // Normalize to a known renderer so an unexpected value can never break the
   // frame; fall back to the default rather than rendering nothing.
@@ -95,6 +112,12 @@ export function SpacesViewShell({
   );
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
+  // The switcher only offers renderers that are actually registered, so a
+  // choice can never strand the user on the shell empty-state.
+  const availableRenderers = useMemo<SpaceRenderer[]>(
+    () => SPACE_RENDERERS.filter((value) => Boolean(renderers?.[value])),
+    [renderers],
+  );
 
   return (
     <section
@@ -103,20 +126,56 @@ export function SpacesViewShell({
       data-active-renderer={activeRenderer}
       aria-label="Spaces"
     >
-      <header className="spaces-shell__header">
-        <span className="spaces-shell__title">Spaces</span>
-        <span className="spaces-shell__renderer" data-testid="spaces-shell-renderer">
-          {activeRenderer}
-        </span>
-      </header>
-      <div className="spaces-shell__body" data-testid="spaces-shell-body">
-        {MountPoint ? (
-          <MountPoint projectId={projectId} spaceId={spaceId} renderer={activeRenderer} />
-        ) : (
-          <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-            No <strong>{activeRenderer}</strong> renderer is available yet.
-          </div>
-        )}
+      <SpacesSidebar
+        hidden={sidebarHidden}
+        selectedSpaceId={spaceId}
+        onSelectSpace={(args) =>
+          onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
+        }
+      />
+      <div className="spaces-shell__main">
+        <header className="spaces-shell__header">
+          {spaceId ? (
+            <div
+              className="spaces-shell__switcher"
+              role="tablist"
+              aria-label="Space renderer"
+              data-testid="spaces-shell-switcher"
+            >
+              {(availableRenderers.length > 0 ? availableRenderers : SPACE_RENDERERS).map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="tab"
+                  aria-selected={value === activeRenderer}
+                  className="spaces-shell__switcher-btn"
+                  data-active={value === activeRenderer}
+                  data-testid={`spaces-renderer-${value}`}
+                  onClick={() => onNavigate?.({ renderer: value })}
+                >
+                  {value}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <span className="spaces-shell__renderer" data-testid="spaces-shell-renderer">
+              {activeRenderer}
+            </span>
+          )}
+        </header>
+        <div className="spaces-shell__body" data-testid="spaces-shell-body">
+          {!spaceId ? (
+            <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
+              Select a space, or create one with the <strong>+</strong> in the sidebar.
+            </div>
+          ) : MountPoint ? (
+            <MountPoint projectId={projectId} spaceId={spaceId} renderer={activeRenderer} />
+          ) : (
+            <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
+              No <strong>{activeRenderer}</strong> renderer is available yet.
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );
