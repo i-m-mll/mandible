@@ -34,6 +34,7 @@ import {
   type SpaceRenderer,
 } from "../ledger/spaces.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
+import { broadcastSpaceEvent } from "../sse.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { TimelineIssuePredicate } from "../types.js";
 
@@ -682,6 +683,5 @@ function requireOccurrenceExists(db: Db, spaceId: string, occurrenceId: string, 
  * the shared {@link SPACE_EVENTS} enum so the integration is a one-line swap.
  */
 function emit(event: SpaceEvent, spaceId: string): void {
-  void event;
-  void spaceId;
+  broadcastSpaceEvent(event, { space_id: spaceId });
 }
