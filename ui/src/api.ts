@@ -22,6 +22,48 @@ import type {
   WorkUnitLiveness as ContractWorkUnitLiveness,
   WorkUnitState as ContractWorkUnitState,
   WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
+  Space as ContractSpace,
+  SpaceItem as ContractSpaceItem,
+  SpaceOccurrence as ContractSpaceOccurrence,
+  SpaceEdge as ContractSpaceEdge,
+  CreateSpaceRequest,
+  UpdateSpaceRequest,
+  AddSpaceItemRequest,
+  UpdateSpaceItemRequest,
+  CreateSpaceOccurrenceRequest,
+  UpdateSpaceOccurrenceRequest,
+  BatchSpaceOccurrenceEntry,
+  BatchSpaceOccurrenceResponse,
+  CreateSpaceEdgeRequest,
+  UpdateSpaceEdgeRequest,
+  AddSpaceItemResponse,
+  SeedSpaceRequest,
+  SeedSpaceResult,
+  ResolverResult,
+} from '../../src/contracts';
+export type {
+  Space,
+  SpaceItem,
+  SpaceOccurrence,
+  SpaceEdge,
+  SpaceBlock,
+  SpaceExport,
+  SpaceRenderer,
+  SpaceOccurrenceRenderer,
+  SpaceItemRefType,
+  CreateSpaceRequest,
+  UpdateSpaceRequest,
+  AddSpaceItemRequest,
+  UpdateSpaceItemRequest,
+  CreateSpaceOccurrenceRequest,
+  UpdateSpaceOccurrenceRequest,
+  BatchSpaceOccurrenceEntry,
+  CreateSpaceEdgeRequest,
+  UpdateSpaceEdgeRequest,
+  SeedSpaceRequest,
+  SeedSpaceResult,
+  ResolverResult,
+  ResolverRefKind,
 } from '../../src/contracts';
 export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 export type AuthRequestAction = ContractAuthRequestAction;
@@ -2170,4 +2212,147 @@ export async function rollbackRuntime(): Promise<{ ok: boolean }> {
 export async function resetRuntime(): Promise<{ ok: boolean }> {
   const response = await apiPost('/api/runtime/reset');
   return (await parseMaybeJson(response)) as { ok: boolean };
+}
+
+// ---------------------------------------------------------------------------
+// Spaces (umbrella de56ffa) — typed client helpers over the C2 routes
+// (`src/routes/spaces.ts`). Each helper returns the unwrapped record(s) the
+// renderers consume; request/response envelope types come from `contracts`.
+// ---------------------------------------------------------------------------
+
+export async function listSpaces(projectId: string): Promise<ContractSpace[]> {
+  const response = await apiGet(`/api/spaces${buildQuery({ project_id: projectId })}`);
+  const payload = (await parseMaybeJson(response)) as { spaces: ContractSpace[] };
+  return payload.spaces;
+}
+
+export async function getSpace(spaceId: string): Promise<ContractSpace> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  return payload.space;
+}
+
+export async function createSpace(body: CreateSpaceRequest): Promise<ContractSpace> {
+  const response = await apiPost('/api/spaces', body);
+  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  return payload.space;
+}
+
+export async function updateSpace(spaceId: string, body: UpdateSpaceRequest): Promise<ContractSpace> {
+  const response = await apiPatch(`/api/spaces/${encodeURIComponent(spaceId)}`, body);
+  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  return payload.space;
+}
+
+export async function deleteSpace(spaceId: string): Promise<void> {
+  await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}`);
+}
+
+// --- items ---
+
+export async function addSpaceItem(spaceId: string, body: AddSpaceItemRequest): Promise<AddSpaceItemResponse> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/items`, body);
+  return (await parseMaybeJson(response)) as AddSpaceItemResponse;
+}
+
+export async function updateSpaceItem(
+  spaceId: string,
+  itemId: string,
+  body: UpdateSpaceItemRequest,
+): Promise<ContractSpaceItem> {
+  const response = await apiPatch(
+    `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}`,
+    body,
+  );
+  const payload = (await parseMaybeJson(response)) as { item: ContractSpaceItem };
+  return payload.item;
+}
+
+export async function deleteSpaceItem(spaceId: string, itemId: string): Promise<void> {
+  await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}`);
+}
+
+// --- occurrences ---
+
+export async function createSpaceOccurrence(
+  spaceId: string,
+  body: CreateSpaceOccurrenceRequest,
+): Promise<ContractSpaceOccurrence> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/occurrences`, body);
+  const payload = (await parseMaybeJson(response)) as { occurrence: ContractSpaceOccurrence };
+  return payload.occurrence;
+}
+
+export async function updateSpaceOccurrence(
+  spaceId: string,
+  occurrenceId: string,
+  body: UpdateSpaceOccurrenceRequest,
+): Promise<ContractSpaceOccurrence> {
+  const response = await apiPatch(
+    `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/${encodeURIComponent(occurrenceId)}`,
+    body,
+  );
+  const payload = (await parseMaybeJson(response)) as { occurrence: ContractSpaceOccurrence };
+  return payload.occurrence;
+}
+
+export async function deleteSpaceOccurrence(spaceId: string, occurrenceId: string): Promise<void> {
+  await apiDelete(
+    `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/${encodeURIComponent(occurrenceId)}`,
+  );
+}
+
+/** Batch occurrence write (drag persistence / re-layout): entries with a known `id` update, others create. */
+export async function batchWriteSpaceOccurrences(
+  spaceId: string,
+  occurrences: BatchSpaceOccurrenceEntry[],
+): Promise<BatchSpaceOccurrenceResponse> {
+  const response = await apiPost(
+    `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/batch`,
+    { occurrences },
+  );
+  return (await parseMaybeJson(response)) as BatchSpaceOccurrenceResponse;
+}
+
+// --- edges ---
+
+export async function createSpaceEdge(
+  spaceId: string,
+  body: CreateSpaceEdgeRequest,
+): Promise<ContractSpaceEdge> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/edges`, body);
+  const payload = (await parseMaybeJson(response)) as { edge: ContractSpaceEdge };
+  return payload.edge;
+}
+
+export async function updateSpaceEdge(
+  spaceId: string,
+  edgeId: string,
+  body: UpdateSpaceEdgeRequest,
+): Promise<ContractSpaceEdge> {
+  const response = await apiPatch(
+    `/api/spaces/${encodeURIComponent(spaceId)}/edges/${encodeURIComponent(edgeId)}`,
+    body,
+  );
+  const payload = (await parseMaybeJson(response)) as { edge: ContractSpaceEdge };
+  return payload.edge;
+}
+
+export async function deleteSpaceEdge(spaceId: string, edgeId: string): Promise<void> {
+  await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}/edges/${encodeURIComponent(edgeId)}`);
+}
+
+// --- seed-from-filter ---
+
+export async function seedSpace(spaceId: string, body: SeedSpaceRequest): Promise<SeedSpaceResult> {
+  const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/seed`, body);
+  return (await parseMaybeJson(response)) as SeedSpaceResult;
+}
+
+// --- unified ref resolver ---
+
+export async function resolveSpaceRef(ref: string): Promise<ResolverResult> {
+  const response = await apiGet(`/api/refs/resolve${buildQuery({ ref })}`);
+  const payload = (await parseMaybeJson(response)) as { resolution: ResolverResult };
+  return payload.resolution;
 }
