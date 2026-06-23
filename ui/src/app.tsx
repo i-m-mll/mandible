@@ -60,6 +60,7 @@ import { GraphView } from './views/graph';
 import type { GraphNodeType } from './views/graph';
 import { TimelineView } from './views/timeline';
 import { PresetsView } from './views/presets';
+import { SpacesViewShell } from './views/spaces/SpacesViewShell';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
@@ -165,7 +166,20 @@ const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
   'issues',
   'artifacts',
   'inbox',
+  'spaces',
 ]);
+
+function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {
+  // Lucide-style "layout-grid": Spaces are an authored grid of surfaces.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
 
 function SunIcon({ size = 18 }: { size?: number }): JSX.Element {
   return (
@@ -1034,6 +1048,13 @@ function App(): JSX.Element {
       icon: ArtifactsIcon,
     },
     {
+      tab: 'spaces',
+      href: '#/spaces',
+      label: 'Spaces',
+      title: 'Spaces',
+      icon: SpacesIcon,
+    },
+    {
       tab: 'inbox',
       href: '#/inbox',
       label: 'Inbox',
@@ -1282,7 +1303,7 @@ function App(): JSX.Element {
               </nav>
           </aside>
         <main
-          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}`}
+          className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}`}
         >
         {route.tab === 'auth' && (
           <AuthQueueView
@@ -1392,6 +1413,13 @@ function App(): JSX.Element {
           <PresetsView
             presetsState={state.presetsState}
             dispatch={dispatch}
+          />
+        )}
+        {route.tab === 'spaces' && (
+          <SpacesViewShell
+            projectId={route.params.project ?? ''}
+            spaceId={route.params.space ?? null}
+            renderer={route.params.renderer}
           />
         )}
         </main>
