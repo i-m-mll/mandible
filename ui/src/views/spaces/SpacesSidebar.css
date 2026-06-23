@@ -1,0 +1,275 @@
+/*
+ * SpacesSidebar styles (umbrella de56ffa, child 6a4a69a).
+ *
+ * Per the Spaces per-component CSS convention (./README.md), this component owns
+ * its OWN stylesheet. Only the cross-view layout contract selector
+ * (`.app-layout--view-sidebar-open .spaces-tree`) lives in the global
+ * ui/src/style.css alongside the other view sidebars; everything visual is here.
+ * Theme tokens come from CSS custom properties so the sidebar inherits the app
+ * theme.
+ */
+
+.spaces-tree {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+  border-right: 1px solid var(--border, #2a2a2a);
+  background: var(--surface, #161616);
+  overflow: hidden;
+}
+
+.spaces-tree__resize-handle {
+  position: absolute;
+  top: 0;
+  right: -2px;
+  width: 4px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 3;
+}
+
+/* FIXED header row — never scrolls. */
+.spaces-tree__header {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.5rem;
+  border-bottom: 1px solid var(--border, #2a2a2a);
+  flex: 0 0 auto;
+}
+
+.spaces-tree__filter-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-primary, #e8e8e8);
+  background: var(--surface-raised, #1e1e1e);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+}
+
+.spaces-tree__filter-input:focus {
+  outline: none;
+  border-color: var(--accent, #4a8df0);
+}
+
+/* Bare "+" create icon — NO border, NO background container. */
+.spaces-tree__create {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.spaces-tree__create:hover {
+  color: var(--text-primary, #e8e8e8);
+  background: var(--surface-raised, #1e1e1e);
+}
+
+.spaces-tree__scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.35rem 0;
+}
+
+.spaces-tree__status {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--text-muted, #888);
+}
+
+.spaces-tree__status--error {
+  color: var(--danger, #e06c6c);
+}
+
+.spaces-tree__group {
+  display: flex;
+  flex-direction: column;
+}
+
+.spaces-tree__group--dragging {
+  opacity: 0.6;
+}
+
+.spaces-tree__group-label {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #888);
+}
+
+.spaces-tree__group-header {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem 0.25rem 0.4rem;
+  cursor: grab;
+  user-select: none;
+}
+
+.spaces-tree__group-header:hover {
+  background: var(--surface-raised, #1e1e1e);
+}
+
+.spaces-tree__group-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--text-muted, #888);
+  cursor: pointer;
+}
+
+.spaces-tree__group-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-primary, #e8e8e8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spaces-tree__group-spaces {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Single name-only line, slightly indented under its header. */
+.spaces-tree__space {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 0.28rem 0.75rem 0.28rem 1.6rem;
+  border: none;
+  background: none;
+  font-size: 0.8rem;
+  color: var(--text-secondary, #c8c8c8);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.spaces-tree__space:hover {
+  background: var(--surface-raised, #1e1e1e);
+  color: var(--text-primary, #e8e8e8);
+}
+
+.spaces-tree__space--active {
+  background: var(--accent-soft, rgba(74, 141, 240, 0.16));
+  color: var(--text-primary, #e8e8e8);
+  font-weight: 600;
+}
+
+.spaces-tree__group--top .spaces-tree__space {
+  padding-left: 1.2rem;
+}
+
+.spaces-tree__empty-group {
+  padding: 0.25rem 0.75rem 0.25rem 1.6rem;
+  font-size: 0.74rem;
+  color: var(--text-muted, #888);
+  font-style: italic;
+}
+
+/* Create chooser popover. */
+.spaces-tree__chooser {
+  position: absolute;
+  top: 3rem;
+  left: 0.5rem;
+  right: 0.5rem;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.6rem;
+  background: var(--surface-raised, #1e1e1e);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  box-shadow: var(--shadow-rail, 0 6px 18px rgba(0, 0, 0, 0.4));
+}
+
+.spaces-tree__chooser-title {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-primary, #e8e8e8);
+}
+
+.spaces-tree__chooser-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--text-muted, #888);
+}
+
+.spaces-tree__chooser-field input {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  color: var(--text-primary, #e8e8e8);
+  background: var(--surface, #161616);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+}
+
+.spaces-tree__chooser-error {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--danger, #e06c6c);
+}
+
+.spaces-tree__chooser-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.spaces-tree__chooser-action {
+  flex: 1 1 auto;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.76rem;
+  color: var(--text-primary, #e8e8e8);
+  background: var(--surface, #161616);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.spaces-tree__chooser-action:hover:not(:disabled) {
+  border-color: var(--accent, #4a8df0);
+}
+
+.spaces-tree__chooser-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Seed dialog overlay (mounts the otherwise-orphaned SpaceSeedDialog). */
+.spaces-tree__seed-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+  background: rgba(0, 0, 0, 0.45);
+}

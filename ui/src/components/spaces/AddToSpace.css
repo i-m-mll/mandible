@@ -113,3 +113,20 @@
   color: var(--text-muted, #888);
   font-size: 0.8em;
 }
+
+/* Cross-project grouping: a label per project/top-level section (umbrella de56ffa,
+   child 6a4a69a). The own-project section renders first; subsequent sections get
+   a muted heading so the user can tell which project a Space belongs to. */
+.add-to-space__section + .add-to-space__section {
+  border-top: 1px solid var(--border, #2a2a2a);
+  margin-top: 2px;
+  padding-top: 2px;
+}
+
+.add-to-space__section-label {
+  padding: 4px 8px 2px;
+  font-size: 0.7em;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #888);
+}
