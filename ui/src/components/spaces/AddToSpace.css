@@ -1,0 +1,115 @@
+/* AddToSpace picker (umbrella de56ffa, child 08c312a).
+ *
+ * Per the Spaces per-component CSS convention (ui/src/views/spaces/README.md),
+ * this component owns its own stylesheet rather than adding rules to the global
+ * ui/src/style.css. Every selector is scoped under `.add-to-space` and uses
+ * theme tokens so the picker inherits the active theme. */
+
+.add-to-space {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.add-to-space__trigger {
+  cursor: pointer;
+  font: inherit;
+  color: var(--text, inherit);
+  background: transparent;
+  border: 1px solid var(--border, #d0d0d0);
+  border-radius: 6px;
+  padding: 4px 10px;
+  white-space: nowrap;
+}
+
+.add-to-space__trigger:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.add-to-space__trigger--menuitem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  border-radius: 0;
+  padding: 6px 12px;
+  background: transparent;
+}
+
+.add-to-space__trigger--menuitem:hover:not(:disabled) {
+  background: var(--surface-hover, rgba(127, 127, 127, 0.12));
+}
+
+.add-to-space__trigger--button:hover:not(:disabled) {
+  border-color: var(--accent, #4c7ef3);
+}
+
+.add-to-space__popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 40;
+  min-width: 200px;
+  max-height: 280px;
+  overflow-y: auto;
+  background: var(--surface, #1c1c1c);
+  border: 1px solid var(--border, #d0d0d0);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  padding: 4px;
+}
+
+.add-to-space__status {
+  padding: 8px 12px;
+  color: var(--text-muted, #888);
+  font-size: 0.85em;
+}
+
+.add-to-space__status--error {
+  color: var(--danger, #e05555);
+}
+
+.add-to-space__option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text, inherit);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+
+.add-to-space__option:hover:not(:disabled) {
+  background: var(--surface-hover, rgba(127, 127, 127, 0.12));
+}
+
+.add-to-space__option:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.add-to-space__option-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.add-to-space__option-busy {
+  color: var(--text-muted, #888);
+  font-size: 0.8em;
+  flex: none;
+}
+
+.add-to-space__feedback {
+  margin-top: 4px;
+  color: var(--text-muted, #888);
+  font-size: 0.8em;
+}
