@@ -11,7 +11,7 @@ import {
   type ArtifactResolveResult,
   type KnowledgeBackrefRecord,
 } from '../api';
-import { artifactDetailHref, compactArtifactRef, displayArtifactRef } from '../artifact-links';
+import { artifactDetailHref, compactArtifactRef, displayResourceRef } from '../resource-refs';
 import { sanitizeMarkdown } from '../sanitize';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 
@@ -671,7 +671,7 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
 }
 
 function artifactTitleCandidate(value: string): string {
-  return value && displayArtifactRef(value) === value ? value : '';
+  return value && displayResourceRef(value) === value ? value : '';
 }
 
 function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
