@@ -347,7 +347,7 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     expect(artifactResolution.entity?.id).toBe(artifactId);
   });
 
-  it("still rejects a cross-project issue ref on a PROJECT-SCOPED Space", async () => {
+  it("accepts a cross-project issue ref on a PROJECT-SCOPED Space (cross-project membership is universal)", async () => {
     seedProject(db, "proj-a", "Alpha");
     seedProject(db, "proj-b", "Beta");
     const store = new LedgerStore(db);
@@ -362,12 +362,14 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     });
     const bRes = await call("POST", "/api/spaces", { project_id: "proj-b", title: "B Space" });
     const bId = (bRes.body as { space: { id: string } }).space.id;
-    // A project-scoped Space still enforces same-project issue refs.
+    // Cross-project membership is universal: project_id only governs sidebar placement.
+    // A project-B-scoped Space accepts issue refs from project A.
     const add = await call("POST", `/api/spaces/${bId}/items`, {
       ref_type: "issue",
       ref_id: issueA.id,
     });
-    expect(add.status).toBe(400);
+    expect(add.status).toBe(201);
+    expect((add.body as { created: boolean }).created).toBe(true);
   });
 
   it("lists top-level Spaces via ?scope=top-level and grouped via no query", async () => {
