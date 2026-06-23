@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 import {
   getArtifact,
   getArtifactContent,
@@ -13,7 +12,7 @@ import {
   type KnowledgeBackrefRecord,
 } from '../api';
 import { artifactDetailHref, compactArtifactRef, displayResourceRef } from '../resource-refs';
-import { sanitizeMarkdown } from '../sanitize';
+import { renderDocumentText } from './spaces/DocumentRenderer';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 
@@ -737,8 +736,15 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
     return { kind: 'html', value: content.preview.text };
   }
   if (content.kind === 'markdown' && content.preview) {
-    const parsed = marked.parse(content.preview.text, { async: false });
-    return { kind: 'markdown', value: sanitizeMarkdown(typeof parsed === 'string' ? parsed : '') };
+    // Repo-authoritative document path (Spaces C14b, issue 591e568). A
+    // registered repo file that is Markdown / `spaces-doc.v1` renders directly
+    // through the SECURE, NON-EXECUTABLE C14a pipeline (parse -> sanitize via
+    // DOMPurify) instead of a raw `marked.parse`, so no document directive can
+    // execute script. `spaces-doc.v1` block prose is composed in document order;
+    // plain Markdown renders as a single sanitized prose body. Both forms have
+    // their resource refs linkified through the shared C6 unresolved-ref UI.
+    const rendered = renderDocumentText(content.preview.text);
+    return { kind: 'markdown', value: rendered.html };
   }
   if (content.kind === 'text' && content.preview) {
     return { kind: 'text', value: content.preview.text };
