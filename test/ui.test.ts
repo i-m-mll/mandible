@@ -35,6 +35,7 @@ import { getInstructionMessageMeta } from '../ui/src/views/conversations';
 import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import { useSidebarResize } from '../ui/src/hooks/useSidebarResize';
 import {
+  IssuesView,
   resolveIssueIdDeepLink,
   resolveIssueRepoDeepLink,
   type IssueRepoSummary,
@@ -498,6 +499,65 @@ describe('app shell', () => {
 
     await waitFor(() => expect(screen.getByPlaceholderText('Filter issues...')).toBeTruthy());
     expect(window.location.hash).toBe('#/issues?repo=dotfiles&issue=e70757d');
+  });
+
+  it('renders a deep-linked issue detail while the global issue list is pending', async () => {
+    stubEventSource();
+    if (typeof window.localStorage.removeItem === 'function') {
+      window.localStorage.removeItem('mandible_state_cache');
+    }
+    window.history.replaceState(
+      null,
+      '',
+      '#/issues?repo=mandible&issue=4c26383&sidebar=hidden',
+    );
+    const fetchCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url === '/api/issues') {
+        return new Promise<Response>(() => undefined);
+      }
+      if (
+        url === '/api/issues/mandible/4c26383/ledger-detail?stage=initial' ||
+        url === '/api/issues/mandible/4c26383/ledger-detail'
+      ) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Route detail before list',
+          comments: ['Detail loaded before sidebar list'],
+          stage: url.includes('stage=initial') ? 'initial' : 'full',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url === '/api/inbox/global') {
+        return Promise.resolve(new Response(JSON.stringify({
+          continuations: [],
+          auth_results: [],
+          open_issues: [],
+          total: 0,
+        }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.startsWith('/api/conversations')) {
+        return Promise.resolve(new Response(JSON.stringify({ conversations: [], total: 0 }), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+
+    render(h(App, {}));
+
+    expect(await screen.findByRole('heading', { name: 'Route detail before list' })).toBeTruthy();
+    expect(screen.getByText('Detail loaded before sidebar list')).toBeTruthy();
+    expect(fetchCalls).toContain('/api/issues');
+    expect(fetchCalls).toContain('/api/issues/mandible/4c26383/ledger-detail?stage=initial');
   });
 
   it('keeps the bottom rail sidebar toggle functional for Inbox', async () => {
@@ -1029,7 +1089,307 @@ describe('issue deep links', () => {
 
     expect(repoId).toBe('dotfiles');
   });
+
+  it('renders selected issue metadata while ledger detail is still loading', async () => {
+    let resolveDetail: (response: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
+      resolveDetail = resolve;
+    })));
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    expect(screen.getByText('Loading full issue detail; more timeline entries may appear.')).toBeTruthy();
+    expect(screen.queryByText('Loading...')).toBeNull();
+
+    await act(async () => {
+      resolveDetail(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Hydrated detail title',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Hydrated detail title' })).toBeTruthy();
+  });
+
+  it('renders the pending issue body inside the normal comment card box', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const pendingRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [{
+        ...repos[0].issues[0],
+        description: 'Pending issue **body**',
+      }],
+    }];
+
+    render(h(IssuesView, {
+      repos: pendingRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    const card = document.querySelector('.ledger-comment-card.ledger-timeline-card');
+    expect(card).toBeTruthy();
+    expect(card?.getAttribute('id')).toBe('comment-0');
+    expect(card?.getAttribute('data-comment-ordinal')).toBe('0');
+    expect(card?.querySelector('.ledger-comment-card__body.spec-panel')?.textContent).toContain('Pending issue body');
+  });
+
+  it('renders initial-stage comments before full ledger detail resolves', async () => {
+    let resolveFullDetail: (response: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('stage=initial')) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Initial detail title',
+          comments: ['First visible comment'],
+          stage: 'initial',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return new Promise<Response>((resolve) => {
+        resolveFullDetail = resolve;
+      });
+    }));
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByText('First visible comment')).toBeTruthy();
+    expect(screen.getByText('Loading full issue detail; more timeline entries may appear.')).toBeTruthy();
+    expect(screen.queryByText('Full detail comment')).toBeNull();
+
+    await act(async () => {
+      resolveFullDetail(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Full detail title',
+        comments: ['First visible comment', 'Full detail comment'],
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Full detail title' })).toBeTruthy();
+    expect(screen.getByText('Full detail comment')).toBeTruthy();
+  });
+
+  it('does not refetch selected issue detail when repo summaries refresh', async () => {
+    const fetchCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      if (url.includes('stage=initial')) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Stable initial detail',
+          comments: ['Visible before poll'],
+          stage: 'initial',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Stable full detail',
+        comments: ['Visible before poll', 'Still mounted after poll'],
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+
+    const { rerender } = render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Stable full detail' })).toBeTruthy();
+    const detailFetchCount = () => fetchCalls
+      .filter((url) => url.includes('/api/issues/mandible/4c26383/ledger-detail'))
+      .length;
+    expect(detailFetchCount()).toBe(2);
+
+    await act(async () => {
+      rerender(h(IssuesView, {
+        repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
+        onRescan: async () => undefined,
+        initialRepoId: 'mandible',
+        initialIssueId: '4c26383',
+      }));
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Still mounted after poll')).toBeTruthy();
+    expect(detailFetchCount()).toBe(2);
+  });
+
+  it('ignores stale ledger detail responses after selecting a different issue', async () => {
+    const multiRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        repos[0].issues[0],
+        {
+          id: '9f0e111',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Second issue',
+          status: 'open',
+          labels: ['feature'],
+          author: 'MLL',
+          created_at: '2026-05-31T12:00:00.000Z',
+          description: 'Second body',
+        },
+      ],
+    }];
+    const pending: Array<(response: Response) => void> = [];
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
+      pending.push(resolve);
+    })));
+
+    render(h(IssuesView, {
+      repos: multiRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Second issue' }));
+    expect(await screen.findByRole('heading', { name: 'Second issue' })).toBeTruthy();
+
+    await act(async () => {
+      pending[0](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Stale first initial detail',
+        stage: 'initial',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      pending[1](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Stale first detail',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(screen.queryByRole('heading', { name: 'Stale first detail' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Stale first initial detail' })).toBeNull();
+
+    await act(async () => {
+      pending[2](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '9f0e111',
+        title: 'Second initial detail',
+        stage: 'initial',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Second initial detail' })).toBeTruthy();
+
+    await act(async () => {
+      pending[3](new Response(JSON.stringify(issueDetailProjection({
+        displayId: '9f0e111',
+        title: 'Second hydrated detail',
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Second hydrated detail' })).toBeTruthy();
+  });
 });
+
+function issueDetailProjection({
+  displayId,
+  title,
+  comments = [],
+  stage = 'full',
+}: {
+  displayId: string;
+  title: string;
+  comments?: string[];
+  stage?: 'initial' | 'full';
+}) {
+  const now = Date.now();
+  const author = { id: null, type: 'mandible_user', display: 'MLL' };
+  const commentEntries = comments.map((body, index) => ({
+    id: `${displayId}-comment-${index + 1}`,
+    ordinal: index + 1,
+    body,
+    author,
+    source: 'mandible',
+    created_at: now + index + 1,
+    updated_at: null,
+  }));
+  return {
+    id: displayId,
+    display_id: displayId,
+    project: {
+      id: 'proj_1',
+      display_name: 'mandible',
+      remote_identity: '',
+      upstream_identity: '',
+      repo_id: 'mandible',
+      repo_name: 'mandible',
+      repo_root: '/repo',
+      default_branch: 'main',
+    },
+    title,
+    body: 'Hydrated body',
+    status: 'open',
+    resolution: null,
+    kind: 'bug',
+    priority: 'normal',
+    source: 'mandible',
+    author,
+    created_at: now,
+    updated_at: now,
+    closed_at: null,
+    aliases: [],
+    labels: ['error'],
+    comments: commentEntries,
+    checkpoints: [],
+    timeline: [
+      {
+        id: `${displayId}:body`,
+        kind: 'body',
+        ordinal: 0,
+        body: 'Hydrated body',
+        author,
+        source: 'mandible',
+        created_at: now,
+        updated_at: null,
+      },
+      ...commentEntries.map((comment) => ({
+        id: comment.id,
+        kind: 'comment',
+        comment_id: comment.id,
+        ordinal: comment.ordinal,
+        body: comment.body,
+        author: comment.author,
+        source: comment.source,
+        created_at: comment.created_at,
+        updated_at: comment.updated_at,
+      })),
+    ],
+    relationships: [],
+    work_units: [],
+    sessions: [],
+    auth_requests: [],
+    associated_artifacts: [],
+    conflicts: [],
+    sync: {
+      state: 'clean',
+      outbox: {},
+      open_conflicts: 0,
+      latest_jobs: [],
+    },
+    detail_stage: stage,
+    timeline_partial: stage === 'initial',
+  };
+}
 
 describe('useSidebarResize', () => {
   function stubLocalStorage(initial: Record<string, string> = {}): void {
@@ -1620,10 +1980,10 @@ describe('ArtifactsView', () => {
         title: 'demo-report.md',
         filename: 'demo-report.md',
       },
-      pinned: false,
+      pinned: true,
       custody_mode: 'managed',
       home_repo_id: 'mandible',
-      repo_locator: {},
+      repo_locator: { repo_id: 'mandible', path: 'reports/demo-report.md' },
       availability: 'present',
       retention: {},
       reference: {},
@@ -1697,7 +2057,18 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
     expect(screen.getAllByText('demo-report.md').length).toBeGreaterThan(0);
+    const detailHeader = document.querySelector('.artifact-detail__header');
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('demo-report.md');
+    expect(detailHeader?.textContent).not.toContain('present');
+    expect(detailHeader?.textContent).not.toContain('pinned');
+    const sidebarItem = screen.getByRole('button', { name: /demo-report\.md/ });
+    expect(sidebarItem.textContent).not.toContain('present');
+    expect(sidebarItem.textContent).not.toContain('pinned');
+    expect(sidebarItem.querySelector('.artifacts-sidebar__badges')).toBeNull();
+    const sidebarMeta = sidebarItem.querySelector('.artifacts-sidebar__meta');
+    expect(sidebarMeta?.textContent).toContain('mandible');
+    expect(sidebarMeta?.textContent).toContain('reports/demo-report.md');
+    expect(sidebarMeta?.textContent).toContain('report');
     const filterButton = screen.getByLabelText('Artifact filters');
     expect(filterButton.textContent).not.toContain('⋯');
     expect(filterButton.querySelector('svg')).toBeTruthy();
@@ -1811,8 +2182,9 @@ describe('ArtifactsView', () => {
     const mockFetch = vi.fn((input: RequestInfo) => {
       const url = String(input);
       if (url.startsWith('/api/artifacts?')) {
-        listCalls += 1;
-        if (listCalls > 1) {
+        const params = new URLSearchParams(url.split('?')[1] ?? '');
+        if (params.get('limit') === '200') listCalls += 1;
+        if (params.get('limit') === '200' && listCalls > 1) {
           return new Promise<Response>(() => undefined);
         }
         return Promise.resolve(new Response(JSON.stringify({ artifacts: [firstArtifact, secondArtifact] }), {
@@ -1873,6 +2245,194 @@ describe('ArtifactsView', () => {
     expect(screen.queryByText('Loading artifacts...')).toBeNull();
     expect(screen.getByRole('button', { name: /one\.md/ })).toBeTruthy();
     expect(screen.getByRole('button', { name: /two\.md/ })).toBeTruthy();
+  });
+
+  it('uses lightweight list records and renders selected identity before preview content resolves', async () => {
+    const summaryArtifact = {
+      id: 'artifact:sha256:5555555555555555555555555555555555555555555555555555555555555555',
+      algorithm: 'sha256',
+      content_hash: '5555555555555555555555555555555555555555555555555555555555555555',
+      uri: 'repo://mandible@main/results/fast-summary.md',
+      media_type: 'text/markdown',
+      role: 'report',
+      size_bytes: 42,
+      provider_id: 'feedbax',
+      manifest_id: null,
+      metadata: {
+        title: 'fast-summary.md',
+        filename: 'fast-summary.md',
+      },
+      pinned: false,
+      custody_mode: 'managed',
+      home_repo_id: 'mandible',
+      repo_locator: { repo_id: 'mandible', ref: 'main', path: 'results/fast-summary.md' },
+      availability: 'present',
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      alias_schemes: ['artifact', 'repo'],
+    };
+    const fullArtifact = {
+      ...summaryArtifact,
+      metadata: {
+        ...summaryArtifact.metadata,
+        nested: { full: true },
+      },
+      reference: { owner_system: 'repo' },
+      aliases: [
+        {
+          id: 'alias-1',
+          artifact_id: summaryArtifact.id,
+          scheme: 'repo',
+          alias: summaryArtifact.uri,
+          normalized_ref: summaryArtifact.uri,
+          locator: {},
+          resolution_status: 'resolved',
+          source: 'artifact_registry',
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ],
+      links: [],
+    };
+    let listUrl = '';
+    let resolveDetail: (response: Response) => void = () => undefined;
+    const detailPromise = new Promise<Response>((resolve) => {
+      resolveDetail = resolve;
+    });
+    const contentPromise = new Promise<Response>(() => undefined);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        listUrl = url;
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: [summaryArtifact] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return contentPromise;
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.includes(encodeURIComponent(summaryArtifact.id))) {
+        return detailPromise;
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(listUrl).toContain('summary=true'));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
+    await waitFor(() => expect(screen.getByText('Loading preview...')).toBeTruthy());
+    expect(screen.getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
+
+    resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Locators')).toBeTruthy());
+    expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
+    expect(screen.getByText('Loading preview...')).toBeTruthy();
+  });
+
+  it('keeps artifact facet options available after selecting a facet value', async () => {
+    const makeArtifact = (
+      hashChar: string,
+      title: string,
+      role: string,
+      repo: string,
+      provider: string,
+      custody: string,
+      availability: string,
+    ) => ({
+      id: `artifact:sha256:${hashChar.repeat(64)}`,
+      algorithm: 'sha256',
+      content_hash: hashChar.repeat(64),
+      uri: `repo://${repo}@main/results/${title}`,
+      media_type: 'text/markdown',
+      role,
+      size_bytes: 42,
+      provider_id: provider,
+      manifest_id: null,
+      metadata: {
+        title,
+        filename: title,
+      },
+      pinned: false,
+      custody_mode: custody,
+      home_repo_id: repo,
+      repo_locator: { repo_id: repo, ref: 'main', path: `results/${title}` },
+      availability,
+      retention: {},
+      reference: {},
+      created_at: Date.now(),
+      alias_schemes: ['repo'],
+    });
+    const inputArtifact = makeArtifact('6', 'input.md', 'input', 'repo-a', 'provider-a', 'linked', 'present');
+    const outputArtifact = makeArtifact('7', 'output.md', 'output', 'repo-b', 'provider-b', 'managed', 'remote_only');
+    const artifacts = [inputArtifact, outputArtifact];
+    const listUrls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts?')) {
+        listUrls.push(url);
+        const params = new URLSearchParams(url.split('?')[1] ?? '');
+        let rows = artifacts;
+        const role = params.get('role');
+        const repo = params.get('repo');
+        if (role) rows = rows.filter((artifact) => artifact.role === role);
+        if (repo) rows = rows.filter((artifact) => artifact.home_repo_id === repo);
+        return Promise.resolve(new Response(JSON.stringify({ artifacts: rows }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.endsWith('/content')) {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return Promise.resolve(new Response(JSON.stringify({ backrefs: [] }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      for (const artifact of artifacts) {
+        if (url.includes(encodeURIComponent(artifact.id))) {
+          return Promise.resolve(new Response(JSON.stringify({ artifact }), {
+            headers: { 'content-type': 'application/json' },
+          }));
+        }
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /input\.md/ })).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Artifact filters'));
+
+    const roleSelect = screen.getByLabelText('Role') as HTMLSelectElement;
+    const repoSelect = screen.getByLabelText('Repo') as HTMLSelectElement;
+    await waitFor(() => {
+      expect(Array.from(roleSelect.options).map((option) => option.value)).toEqual(['', 'input', 'output']);
+    });
+    expect(Array.from(repoSelect.options).map((option) => option.value)).toEqual(['', 'repo-a', 'repo-b']);
+
+    changeSelect(roleSelect, 'output');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /output\.md/ })).toBeTruthy());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /input\.md/ })).toBeNull());
+    expect(Array.from(roleSelect.options).map((option) => option.value)).toEqual(['', 'input', 'output']);
+    expect(Array.from(repoSelect.options).map((option) => option.value)).toEqual(['', 'repo-a', 'repo-b']);
+
+    changeSelect(roleSelect, 'input');
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /input\.md/ })).toBeTruthy());
+    await waitFor(() => expect(screen.queryByRole('button', { name: /output\.md/ })).toBeNull());
+    expect(listUrls.length).toBeGreaterThan(1);
+    expect(listUrls.every((url) => url.includes('summary=true'))).toBe(true);
   });
 
   it('resolves direct artifact refs without selecting the first sidebar item', async () => {

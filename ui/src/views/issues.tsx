@@ -2,7 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import {
   addLedgerIssueComment,
+  getLedgerIssueDetailByIssueId,
   getLedgerIssueDetailByRef,
+  getLedgerIssueInitialDetailByIssueId,
+  getLedgerIssueInitialDetailByRef,
   patchLedgerIssue,
   resolveLedgerConflict,
   spawnIssueAgent,
@@ -220,12 +223,14 @@ function ledgerDetailMatchesSelection(
   repoId: string | null,
   issueId: string | null,
 ): detail is LedgerIssueDetailProjection {
-  if (!detail || !repoId || !issueId) return false;
-  const repoMatches =
-    detail.project.repo_id === repoId ||
-    detail.project.repo_name === repoId ||
-    detail.project.display_name === repoId;
-  if (!repoMatches) return false;
+  if (!detail || !issueId) return false;
+  if (repoId) {
+    const repoMatches =
+      detail.project.repo_id === repoId ||
+      detail.project.repo_name === repoId ||
+      detail.project.display_name === repoId;
+    if (!repoMatches) return false;
+  }
 
   const refs = new Set<string>([detail.id, detail.display_id]);
   for (const alias of detail.aliases) {
@@ -233,6 +238,90 @@ function ledgerDetailMatchesSelection(
     if (alias.external_id) refs.add(alias.external_id);
   }
   return [...refs].some((ref) => ref === issueId || ref.startsWith(issueId) || issueId.startsWith(ref));
+}
+
+function shouldAcceptInitialLedgerDetail(
+  current: LedgerIssueDetailProjection | null,
+  initial: LedgerIssueDetailProjection,
+  repoId: string | null,
+  issueId: string,
+): boolean {
+  if (!ledgerDetailMatchesSelection(initial, repoId, issueId)) return false;
+  if (!current || !ledgerDetailMatchesSelection(current, repoId, issueId)) return true;
+  return current.detail_stage === 'initial' || current.timeline_partial === true;
+}
+
+function synthesizeLedgerIssueDetail(
+  repo: IssueRepoSummary,
+  issue: IssueSummary,
+): LedgerIssueDetailProjection {
+  const createdAt = Date.parse(issue.created_at);
+  const timestamp = Number.isFinite(createdAt) ? createdAt : Date.now();
+  const author = { id: null, type: 'mandible_user' as const, display: issue.author || 'Mandible' };
+  const labels = issue.labels ?? [];
+  const kind = labels.includes('umbrella')
+    ? 'umbrella'
+    : labels.some((label) => label === 'error' || label === 'bug')
+      ? 'bug'
+      : labels.includes('deferred')
+        ? 'deferred'
+        : labels.includes('coordination')
+          ? 'coordination'
+          : 'feature';
+  const priority = labels.includes('important')
+    ? 'important'
+    : labels.includes('user-action-required')
+      ? 'user-action-required'
+      : 'normal';
+  const resolution = issue.status === 'closed' && labels.includes('merged') ? 'merged' : null;
+  return {
+    id: issue.id,
+    display_id: issue.id,
+    project: {
+      id: repo.repo_id,
+      display_name: repo.repo_name,
+      remote_identity: '',
+      upstream_identity: '',
+      repo_id: repo.repo_id,
+      repo_name: repo.repo_name,
+      repo_root: repo.repo_root ?? null,
+      default_branch: null,
+    },
+    title: issue.title,
+    body: issue.description ?? '',
+    status: issue.status,
+    resolution,
+    kind,
+    priority,
+    source: 'mandible',
+    author,
+    created_at: timestamp,
+    updated_at: timestamp,
+    closed_at: null,
+    aliases: [],
+    labels,
+    comments: [],
+    checkpoints: [],
+    timeline: [{
+      id: `${issue.id}:body`,
+      kind: 'body',
+      ordinal: 0,
+      body: issue.description ?? '',
+      author,
+      source: 'mandible',
+      created_at: timestamp,
+      updated_at: null,
+    }],
+    relationships: [],
+    work_units: [],
+    sessions: [],
+    auth_requests: [],
+    associated_artifacts: [],
+    conflicts: [],
+    sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
+    detail_stage: 'initial',
+    timeline_partial: true,
+  };
 }
 
 function issueRouteHash(repoId: string, issueId: string, commentId?: string | null): string {
@@ -281,11 +370,13 @@ export function IssuesView({
   const [sortField] = useState<SortField>('created_at');
   const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoadFailed, setDetailLoadFailed] = useState(false);
   const [actionInFlight, setActionInFlight] = useState(false);
 
   // Bug: a44fd6a — gate deep-link to run once per route change (not on every repos update)
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
+  const detailRequestSeqRef = useRef(0);
   const filterEditedRef = useRef(false);
 
   useEffect(() => {
@@ -320,6 +411,8 @@ export function IssuesView({
       setSelectedRepoId(canonicalRepoId);
       setSelectedIssueId(canonicalIssueId);
     } else {
+      setSelectedRepoId(null);
+      setSelectedIssueId(initialIssueId);
       const found = repos
         .flatMap((repo) => repo.issues.map((issue) => ({ repo, issue })))
         .find(({ issue }) => issue.id === initialIssueId || issue.id.startsWith(initialIssueId));
@@ -448,41 +541,89 @@ export function IssuesView({
     [repos],
   );
 
+  const selectedIssueSummary = useMemo(() => {
+    if (!selectedRepoId || !selectedIssueId) return null;
+    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
+    const repo = repos.find((candidate) => candidate.repo_id === repoId);
+    if (!repo) return null;
+    const issueId = resolveIssueId(repoId, selectedIssueId);
+    const issue = repo.issues.find((candidate) => (
+      candidate.id === issueId ||
+      candidate.id.startsWith(issueId) ||
+      issueId.startsWith(candidate.id)
+    ));
+    return issue ? { repo, issue } : null;
+  }, [repos, selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
+
+  const synthesizedLedgerIssueDetail = useMemo(
+    () => selectedIssueSummary
+      ? synthesizeLedgerIssueDetail(selectedIssueSummary.repo, selectedIssueSummary.issue)
+      : null,
+    [selectedIssueSummary],
+  );
+
   const visibleLedgerIssueDetail = useMemo(
     () => ledgerDetailMatchesSelection(ledgerIssueDetail, selectedRepoId, selectedIssueId)
       ? ledgerIssueDetail
-      : null,
-    [ledgerIssueDetail, selectedRepoId, selectedIssueId],
+      : synthesizedLedgerIssueDetail,
+    [ledgerIssueDetail, selectedRepoId, selectedIssueId, synthesizedLedgerIssueDetail],
   );
 
   // Fetch canonical ledger detail when selection changes.
   useEffect(() => {
-    if (!selectedRepoId || !selectedIssueId) {
+    if (!selectedIssueId) {
+      detailRequestSeqRef.current += 1;
       setLedgerIssueDetail(null);
       setDetailLoading(false);
+      setDetailLoadFailed(false);
       return;
     }
-    const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
-    const issueId = resolveIssueId(repoId, selectedIssueId);
-    let cancelled = false;
+    const repoId = selectedRepoId;
+    const issueId = selectedIssueId;
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
     setDetailLoading(true);
-    getLedgerIssueDetailByRef(repoId, issueId)
+    setDetailLoadFailed(false);
+    const initialDetail = repoId
+      ? getLedgerIssueInitialDetailByRef(repoId, issueId)
+      : getLedgerIssueInitialDetailByIssueId(issueId);
+    const fullDetail = repoId
+      ? getLedgerIssueDetailByRef(repoId, issueId)
+      : getLedgerIssueDetailByIssueId(issueId);
+    initialDetail
       .then((detail) => {
-        if (cancelled) return;
+        if (detailRequestSeqRef.current !== requestSeq) return;
+        setLedgerIssueDetail((current) => (
+          shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
+        ));
+      })
+      .catch(() => {
+        // The full projection fetch below remains authoritative.
+      });
+    fullDetail
+      .then((detail) => {
+        if (detailRequestSeqRef.current !== requestSeq) return;
         setLedgerIssueDetail(detail);
       })
       .catch(() => {
-        if (!cancelled) setLedgerIssueDetail(null);
+        if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (detailRequestSeqRef.current === requestSeq) setDetailLoading(false);
       });
     return () => {
-      cancelled = true;
+      if (detailRequestSeqRef.current === requestSeq) detailRequestSeqRef.current += 1;
     };
-  }, [selectedRepoId, selectedIssueId, resolveRepoId, resolveIssueId]);
+  }, [selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
+    const repo = repos.find((candidate) => candidate.repo_id === repoId);
+    const issue = repo?.issues.find((candidate) => candidate.id === issueId);
+    if (repo && issue) {
+      setLedgerIssueDetail(synthesizeLedgerIssueDetail(repo, issue));
+      setDetailLoading(true);
+      setDetailLoadFailed(false);
+    }
     const nextHash = issueRouteHash(repoId, issueId);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
       window.history.pushState(null, '', nextHash);
@@ -490,15 +631,18 @@ export function IssuesView({
     }
     setSelectedRepoId(repoId);
     setSelectedIssueId(issueId);
-  }, []);
+  }, [repos]);
 
   const refreshLedgerIssueDetail = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId) return;
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
+    setDetailLoadFailed(false);
     try {
       const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
-      setLedgerIssueDetail(detail);
+      if (detailRequestSeqRef.current === requestSeq) setLedgerIssueDetail(detail);
     } catch {
-      setLedgerIssueDetail(null);
+      if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
     }
   }, [selectedRepoId, selectedIssueId]);
 
@@ -809,6 +953,8 @@ export function IssuesView({
           <div className="issues-detail__content">
             <LedgerIssueDetail
               detail={visibleLedgerIssueDetail}
+              hydrating={detailLoading}
+              fullLoadFailed={detailLoadFailed}
               actionInFlight={actionInFlight}
               onAddComment={handleAddCommentBody}
               onSetStatus={(status) => status === 'open' ? handleReopenIssue() : handleCloseIssue()}

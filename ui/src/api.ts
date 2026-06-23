@@ -691,6 +691,15 @@ export type LedgerIssueTimelineEntry =
     }
   | {
       id: string;
+      kind: 'event';
+      event_type: string;
+      author: LedgerIssueDetailActor;
+      source: string;
+      created_at: number;
+      payload: Record<string, unknown>;
+    }
+  | {
+      id: string;
       kind: 'checkpoint';
       checkpoint_id: string;
       checkpoint_kind: string;
@@ -898,6 +907,8 @@ export type LedgerIssueDetailProjection = {
       updated_at: number;
     }>;
   };
+  detail_stage?: 'initial' | 'full';
+  timeline_partial?: boolean;
 };
 
 export type LedgerBodyRevision = {
@@ -955,6 +966,34 @@ export async function getLedgerIssueDetailByRef(
 ): Promise<LedgerIssueDetailProjection> {
   const response = await apiGet(
     `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueDetailByIssueId(
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/ledger/issues/${encodeURIComponent(issueId)}`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueInitialDetailByRef(
+  repoId: string,
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/issues/${encodeURIComponent(repoId)}/${encodeURIComponent(issueId)}/ledger-detail?stage=initial`
+  );
+  return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
+}
+
+export async function getLedgerIssueInitialDetailByIssueId(
+  issueId: string,
+): Promise<LedgerIssueDetailProjection> {
+  const response = await apiGet(
+    `/api/ledger/issues/${encodeURIComponent(issueId)}?stage=initial`
   );
   return (await parseMaybeJson(response)) as LedgerIssueDetailProjection;
 }
@@ -1791,6 +1830,7 @@ export type ArtifactQueryParams = {
   location?: string;
   linked_entity?: string;
   limit?: number;
+  summary?: boolean;
 };
 
 export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<ArtifactRecord[]> {

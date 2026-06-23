@@ -25,7 +25,9 @@ import {
   type LedgerWorkerStatus,
 } from "../ledger/types.js";
 import {
+  buildLedgerIssueDetailInitialProjection,
   buildLedgerIssueDetailProjection,
+  buildLedgerIssueDetailProjectionWithProfile,
   type LedgerIssueDetailProjection,
 } from "../ledger/issue-detail.js";
 import {
@@ -284,9 +286,24 @@ function sendLedgerIssueProjection(
   db: Db,
   issueId: string,
   warnings: MarkdownBodyPolicyWarning[] = [],
+  options: { stage?: "initial" | "full"; profile?: boolean } = {},
 ): void {
   try {
-    sendJson(res, 200, withMarkdownBodyWarnings(buildLedgerIssueDetailProjection(db, issueId), warnings));
+    if (options.profile) {
+      const profiled = buildLedgerIssueDetailProjectionWithProfile(db, issueId, {
+        stage: options.stage ?? "full",
+        includeProfile: true,
+      });
+      sendJson(res, 200, withMarkdownBodyWarnings({
+        ...profiled.projection,
+        profile: profiled.profile,
+      }, warnings));
+      return;
+    }
+    const projection = options.stage === "initial"
+      ? buildLedgerIssueDetailInitialProjection(db, issueId)
+      : buildLedgerIssueDetailProjection(db, issueId);
+    sendJson(res, 200, withMarkdownBodyWarnings(projection, warnings));
   } catch (error) {
     sendJson(res, 404, { error: error instanceof Error ? error.message : "ledger issue not found" });
   }
@@ -940,7 +957,10 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    sendLedgerIssueProjection(res, db, resolved.issue_id);
+    sendLedgerIssueProjection(res, db, resolved.issue_id, [], {
+      stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
+      profile: getQueryParam(req, "profile") === "1",
+    });
   });
 
   server.get("/api/ledger/issues/:issueId/umbrella-status", (req, res) => {
@@ -1315,7 +1335,10 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
-    sendLedgerIssueProjection(res, db, resolved.issue_id);
+    sendLedgerIssueProjection(res, db, resolved.issue_id, [], {
+      stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
+      profile: getQueryParam(req, "profile") === "1",
+    });
   });
 
   server.post("/api/issues/:repoId", (req, res) => {

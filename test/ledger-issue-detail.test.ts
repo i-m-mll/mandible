@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
-import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
+import {
+  buildLedgerIssueDetailInitialProjection,
+  buildLedgerIssueDetailProjection,
+  buildLedgerIssueDetailProjectionWithProfile,
+} from "../src/ledger/issue-detail.js";
+import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-migration.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
@@ -107,13 +112,22 @@ describe("ledger issue detail projection", () => {
     store.addIssueBranch(child.id, "feature/detail");
     store.setIssueStatus(child.id, "closed", "merged");
     store.setIssueStatus(child.id, "open", null);
-    store.upsertIssueRelationship({
+    const relationship = store.upsertIssueRelationship({
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
       provenance: "manual",
       metadata: { order: 2 },
     });
+    db.prepare(
+      `INSERT INTO ledger_events (
+        id, entity_type, entity_id, event_type, actor_type, source,
+        payload_json, occurred_at, observed_at
+      ) VALUES (
+        'relationship_event_1', 'issue_relationship', ?,
+        'relationship.added', 'agent', 'mandible', ?, ?, ?
+      )`,
+    ).run(relationship.id, JSON.stringify({ source_issue_id: parent.id, target_issue_id: child.id }), Date.now(), Date.now());
 
     insertSession("sess_live", "active");
     db.prepare(
@@ -179,13 +193,16 @@ describe("ledger issue detail projection", () => {
         author: { type: "agent", display: "Codex" },
       },
     ]);
-    expect(projection.timeline).toMatchObject([
+    expect(projection.timeline.slice(0, 5)).toMatchObject([
       { kind: "body", ordinal: 0, body: "Child body" },
       { kind: "comment", ordinal: 1, body: "Implementation note" },
       { kind: "checkpoint", checkpoint_kind: "delegation-manifest" },
       { kind: "state", event_type: "issue.closed", status: "closed", resolution: "merged" },
       { kind: "state", event_type: "issue.reopened", status: "open", resolution: null },
     ]);
+    expect(projection.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "event", event_type: "relationship.added" }),
+    ]));
     expect(projection.relationships).toMatchObject([
       {
         direction: "incoming",
@@ -207,6 +224,71 @@ describe("ledger issue detail projection", () => {
       { id: "auth_1", status: "completed", link_type: "resolves" },
     ]);
     expect(projection.conflicts[0].remote_value).toEqual({ target_ref: "missing" });
+  });
+
+  it("projects a lightweight initial detail with comments before secondary metadata", () => {
+    const checkout = createProject("repo");
+    const store = new LedgerStore(db);
+    const parent = store.createIssue({
+      project_id: checkout.project.id,
+      title: "Parent",
+      body: "Parent body",
+      kind: "umbrella",
+      labels: ["umbrella"],
+    });
+    const child = store.createIssue({
+      project_id: checkout.project.id,
+      title: "Child",
+      body: "Child body",
+      kind: "feature",
+      labels: ["feature"],
+    });
+    store.addComment(child.id, {
+      body: "Early comment",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "session",
+    });
+    store.upsertIssueRelationship({
+      source_issue_id: parent.id,
+      target_issue_id: child.id,
+      relationship_type: "parent_child",
+      provenance: "manual",
+    });
+    insertSession("sess_live", "active");
+    db.prepare(
+      `INSERT INTO work_units (
+        id, issue_id, repo_id, branch, kind, state, assigned_session_id,
+        created_at, ledger_issue_id
+      ) VALUES ('wu_1', ?, 'repo', 'feature/detail', 'solo', 'open', 'sess_live', ?, ?)`,
+    ).run(child.short_id, Date.now(), child.id);
+    linkWorkUnitToLedgerIssue(db, {
+      work_unit_id: "wu_1",
+      issue_ref: child.short_id,
+      repo_ref: checkout.checkout.root,
+    });
+    insertAuthRequest("auth_1", checkout.checkout.root);
+    linkAuthRequestToLedgerIssue(db, {
+      auth_request_id: "auth_1",
+      issue_ref: child.short_id,
+      repo_ref: checkout.checkout.root,
+    });
+
+    const projection = buildLedgerIssueDetailInitialProjection(db, child.id);
+
+    expect(projection.detail_stage).toBe("initial");
+    expect(projection.body).toBe("Child body");
+    expect(projection.comments).toMatchObject([{ body: "Early comment" }]);
+    expect(projection.timeline).toMatchObject([
+      { kind: "body", body: "Child body" },
+      { kind: "comment", body: "Early comment" },
+    ]);
+    expect(projection.relationships).toEqual([]);
+    expect(projection.work_units).toEqual([]);
+    expect(projection.sessions).toEqual([]);
+    expect(projection.auth_requests).toEqual([]);
+    expect(projection.associated_artifacts).toEqual([]);
+    expect(projection.sync).toMatchObject({ state: "clean", latest_jobs: [] });
   });
 
   it("projects deliberate relationship edges from both endpoint reports", () => {
@@ -302,6 +384,50 @@ describe("ledger issue detail projection", () => {
     expect(sourceAfterUnlink.relationships.map((relationship) => relationship.id)).toContain(derived.id);
   });
 
+  it("builds relationship timeline events from indexed relationship entities", () => {
+    const sourceCheckout = createProject("source-repo");
+    const targetCheckout = createProject("target-repo");
+    const store = new LedgerStore(db);
+    const source = store.createIssue({
+      project_id: sourceCheckout.project.id,
+      title: "Source",
+      body: "Source body",
+      kind: "feature",
+    });
+    const target = store.createIssue({
+      project_id: targetCheckout.project.id,
+      title: "Target",
+      body: "Target body",
+      kind: "feature",
+    });
+    store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "related",
+      provenance: "manual",
+      occurred_at: 1000,
+    });
+    store.unlinkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: source.id },
+      target_entities: [{ entity_type: "issue", entity_id: target.id }],
+      link_type: "related",
+      occurred_at: 2000,
+    });
+
+    const { projection, profile } = buildLedgerIssueDetailProjectionWithProfile(db, source.id, {
+      includeProfile: true,
+    });
+
+    expect(projection.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "event", event_type: "relationship.added" }),
+      expect.objectContaining({ kind: "event", event_type: "relationship.removed" }),
+    ]));
+    const phaseNames = profile?.phases.map((phase) => phase.name) ?? [];
+    expect(phaseNames).toContain("timeline:relationship_event_keys");
+    expect(phaseNames).toContain("timeline:relationship_events");
+    expect(phaseNames).not.toContain("timeline:relationship_event_filter");
+  });
+
   it("projects associated artifacts from explicit links and markdown refs", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
@@ -394,5 +520,32 @@ describe("ledger issue detail projection", () => {
     expect(states).toMatchObject([
       { event_type: "issue.closed", status: "closed", resolution: "merged" },
     ]);
+  });
+
+  it("resolves route issue ids without enumerating all scanner repos", () => {
+    const checkout = createProject("repo");
+    const issue = new LedgerStore(db).createIssue({
+      project_id: checkout.project.id,
+      title: "Route detail",
+      body: "Route detail body",
+      kind: "feature",
+      labels: ["feature"],
+      aliases: [{ alias_kind: "git_bug_human", alias: "rou1234", is_primary: true }],
+    });
+    const workScanner = {
+      getRepoById: () => {
+        throw new Error("route detail should not read scanner repo state");
+      },
+      getRepos: () => {
+        throw new Error("route detail should not enumerate scanner repos");
+      },
+    };
+
+    expect(resolveLedgerIssueIdForRoute(db, workScanner, "repo", "rou1234")).toMatchObject({
+      ok: true,
+      issue_id: issue.id,
+      project_id: checkout.project.id,
+      repo_id: "repo",
+    });
   });
 });

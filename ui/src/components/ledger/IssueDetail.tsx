@@ -32,6 +32,8 @@ type RenderTimelineEntry =
 export type LedgerIssueDetailProps = {
   detail: LedgerIssueDetailProjection;
   compact?: boolean;
+  hydrating?: boolean;
+  fullLoadFailed?: boolean;
   actionInFlight?: boolean;
   onAddComment?: (body: string) => Promise<void> | void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
@@ -51,6 +53,8 @@ export type LedgerIssueDetailProps = {
 export function LedgerIssueDetail({
   detail,
   compact = false,
+  hydrating = false,
+  fullLoadFailed = false,
   actionInFlight = false,
   onAddComment,
   onSetStatus,
@@ -79,9 +83,10 @@ export function LedgerIssueDetail({
   const associatedArtifacts = detail.associated_artifacts ?? [];
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
+  const isInitialDetail = detail.detail_stage === 'initial';
   const hasIssueActions = Boolean(
-    liveSession ||
-    onStartAgent ||
+    (!isInitialDetail && liveSession) ||
+    (!isInitialDetail && onStartAgent) ||
     onSetStatus ||
     onAddComment ||
     onAddToSpace ||
@@ -127,7 +132,10 @@ export function LedgerIssueDetail({
   };
 
   return (
-    <article className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}>
+    <article
+      className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}
+      aria-busy={hydrating ? 'true' : 'false'}
+    >
       <header className="ledger-issue-detail__header">
         <div className="ledger-issue-detail__heading">
           <div className="ledger-issue-detail__eyebrow">
@@ -150,7 +158,7 @@ export function LedgerIssueDetail({
                 primaryWorkUnit={primaryWorkUnit}
                 onToggle={() => setActionsOpen((prev) => !prev)}
                 onClose={() => setActionsOpen(false)}
-                onStartAgent={onStartAgent}
+                onStartAgent={isInitialDetail ? undefined : onStartAgent}
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
                 onAddToSpace={onAddToSpace}
@@ -193,6 +201,15 @@ export function LedgerIssueDetail({
             <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
           ))}
         </div>
+        {(isInitialDetail || hydrating || fullLoadFailed) && (
+          <p className="text-muted">
+            {fullLoadFailed
+              ? 'Full issue detail failed to load.'
+              : detail.timeline_partial
+                ? 'Loading full issue detail; more timeline entries may appear.'
+                : 'Loading full issue detail...'}
+          </p>
+        )}
         {onAddComment && (
           <div className="ledger-comment-composer">
             {!showComposer ? (
@@ -640,6 +657,20 @@ function TimelineEntryCard({
         <time>{formatRelativeTime(entry.created_at)}</time>
         <MetadataDisclosure label="Checkpoint payload">
           <MetadataRows rows={checkpointMetadataRows(entry)} />
+        </MetadataDisclosure>
+      </div>
+    );
+  }
+  if (entry.kind === 'event') {
+    return (
+      <div className="ledger-timeline-event ledger-timeline-event--state">
+        <span className="ledger-timeline-event__dot" aria-hidden="true" />
+        <span className="ledger-timeline-event__text">
+          <strong>{timelineEventLabel(entry)}</strong>
+        </span>
+        <time>{formatRelativeTime(entry.created_at)}</time>
+        <MetadataDisclosure label="Timeline metadata">
+          <MetadataRows rows={eventMetadataRows(entry)} />
         </MetadataDisclosure>
       </div>
     );
@@ -1150,6 +1181,19 @@ function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'sta
   ].filter(([, value]) => Boolean(value));
 }
 
+function eventMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): Array<[string, string]> {
+  const rows: Array<[string, string]> = [
+    ['Event ID', entry.id],
+    ['Event type', entry.event_type],
+    ['Author type', entry.author.type.replace(/_/g, ' ')],
+    ['Source', entry.source || 'unknown'],
+    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Payload', formatJsonValue(entry.payload)],
+  ];
+  if (entry.author.id) rows.push(['Author ID', entry.author.id]);
+  return rows.filter(([, value]) => Boolean(value));
+}
+
 function checkpointMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'checkpoint' }>): Array<[string, string]> {
   const rows: Array<[string, string]> = [
     ['Checkpoint ID', entry.checkpoint_id],
@@ -1167,6 +1211,12 @@ function stateEntryLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'state
   if (entry.status === 'closed') return entry.resolution ? `Closed: ${entry.resolution}` : 'Closed';
   if (entry.status === 'open') return 'Reopened';
   return 'State updated';
+}
+
+function timelineEventLabel(entry: Extract<LedgerIssueTimelineEntry, { kind: 'event' }>): string {
+  if (entry.event_type === 'relationship.added') return 'Relationship added';
+  if (entry.event_type === 'relationship.removed') return 'Relationship removed';
+  return entry.event_type;
 }
 
 function checkpointEntryLabel(kind: string): string {

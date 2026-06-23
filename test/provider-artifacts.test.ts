@@ -455,6 +455,45 @@ describe("provider/artifact substrate", () => {
     expect(detail?.aliases?.some((alias) => alias.scheme === "file")).toBe(true);
   });
 
+  it("can list lightweight artifact summaries while detail remains enriched", () => {
+    const artifact = ingestArtifact(db, {
+      provider_id: "mandible",
+      role: "metrics",
+      media_type: "application/json",
+      json: { accuracy: 0.95 },
+      metadata: {
+        title: "metrics.json",
+        filename: "metrics.json",
+        nested: { expensive: "x".repeat(1000) },
+      },
+      reference: {
+        owner_system: "repo",
+        nested: { expensive: "y".repeat(1000) },
+      },
+      link: {
+        entity_type: "issue",
+        entity_id: "mandible/419fa00",
+        link_type: "references",
+        repo_id: "mandible",
+      },
+    }, 1000, tempDir);
+
+    const summaries = listArtifacts(db, { summary: true });
+    const summary = summaries.find((item) => item.id === artifact.id);
+    const detail = getArtifact(db, artifact.id);
+
+    expect(summary).toBeTruthy();
+    expect(summary?.metadata).toEqual({ title: "metrics.json" });
+    expect(summary?.reference).toEqual({});
+    expect(summary?.aliases).toBeUndefined();
+    expect(summary?.links).toBeUndefined();
+    expect(summary?.alias_schemes).toEqual(expect.arrayContaining(["artifact", "file"]));
+    expect(detail?.metadata).toMatchObject({ nested: { expensive: expect.any(String) } });
+    expect(detail?.reference).toMatchObject({ owner_system: "repo" });
+    expect(detail?.aliases?.length).toBeGreaterThan(0);
+    expect(detail?.links?.map((link) => link.entity_id)).toContain("mandible/419fa00");
+  });
+
   it("resolves compact artifact hash prefixes without changing canonical artifact identity", () => {
     const hash = "1234567890abcdef".repeat(4);
     const artifact = ingestArtifact(db, {

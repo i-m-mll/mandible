@@ -81,8 +81,10 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [facetArtifacts, setFacetArtifacts] = useState<ArtifactRecord[]>([]);
   const initialRefRef = useRef(initialRef);
   const listRequestIdRef = useRef(0);
+  const facetRequestIdRef = useRef(0);
 
   useEffect(() => {
     setFilters((current) => {
@@ -111,11 +113,15 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         scheme: filters.scheme || undefined,
         location: filters.location || undefined,
         limit: 200,
+        summary: true,
       });
       if (listRequestIdRef.current !== requestId) return;
       setArtifacts(next);
       setSelectedId((current) => (
         current || initialRefRef.current || !next[0] ? current : next[0].id
+      ));
+      setSelectedArtifact((current) => (
+        current || initialRefRef.current || !next[0] ? current : next[0]
       ));
     } catch (err) {
       if (listRequestIdRef.current === requestId) {
@@ -131,6 +137,27 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   useEffect(() => {
     void loadArtifacts();
   }, [loadArtifacts]);
+
+  const loadFacetArtifacts = useCallback(async () => {
+    const requestId = facetRequestIdRef.current + 1;
+    facetRequestIdRef.current = requestId;
+    try {
+      const next = await getArtifacts({
+        q: filters.q || undefined,
+        location: filters.location || undefined,
+        limit: 500,
+        summary: true,
+      });
+      if (facetRequestIdRef.current !== requestId) return;
+      setFacetArtifacts(next);
+    } catch {
+      // Keep the last successful option corpus so transient reload failures do not collapse selects.
+    }
+  }, [filters.q, filters.location]);
+
+  useEffect(() => {
+    void loadFacetArtifacts();
+  }, [loadFacetArtifacts]);
 
   useEffect(() => {
     if (!initialArtifactId) return;
@@ -241,7 +268,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     };
   }, [selectedArtifact?.id]);
 
-  const facetOptions = useMemo(() => buildFacetOptions(artifacts), [artifacts]);
+  const facetOptions = useMemo(() => buildFacetOptions(facetArtifacts), [facetArtifacts]);
 
   const selectArtifact = (artifact: ArtifactRecord) => {
     setSelectedId(artifact.id);
@@ -321,11 +348,8 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
                 >
                   <span className="artifacts-sidebar__name">{artifactTitle(artifact)}</span>
                   <span className="artifacts-sidebar__meta">
-                    {artifact.home_repo_id || artifact.provider_id || artifact.custody_mode}
-                  </span>
-                  <span className="artifacts-sidebar__badges">
+                    <span>{artifactSidebarLocation(artifact)}</span>
                     <em>{artifact.role || artifact.media_type || 'artifact'}</em>
-                    <em>{artifact.availability}</em>
                   </span>
                 </button>
               ))}
@@ -343,7 +367,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         {!detailLoading && resolution && !resolution.artifact && (
           <UnresolvedArtifact resolution={resolution} />
         )}
-        {!detailLoading && selectedArtifact && (
+        {selectedArtifact && (
           <ArtifactDetail
             artifact={selectedArtifact}
             resolution={resolution}
@@ -374,12 +398,15 @@ function FacetSelect({ label, value, options, onChange }: {
   options: string[];
   onChange: (value: string) => void;
 }): JSX.Element {
+  const renderedOptions = value && !options.includes(value)
+    ? [...options, value].sort()
+    : options;
   return (
     <label className="artifacts-advanced__field">
       <span>{label}</span>
       <select value={value} onChange={(e) => onChange(e.currentTarget.value)}>
         <option value="">Any</option>
-        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        {renderedOptions.map((option) => <option key={option} value={option}>{option}</option>)}
       </select>
     </label>
   );
@@ -440,8 +467,6 @@ function ArtifactDetail({
             targets={spaceTargets}
             label="Add to Space"
           />
-          <span>{artifact.availability}</span>
-          {artifact.pinned && <span>pinned</span>}
         </div>
       </header>
       <section className="artifact-detail__section">
@@ -634,9 +659,6 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
           <div className="artifact-detail__type">unresolved reference</div>
           <h2>{resolution.normalized_ref}</h2>
         </div>
-        <div className="artifact-detail__status">
-          <span>{resolution.status}</span>
-        </div>
       </header>
       <section className="artifact-detail__section">
         <h3>Resolver</h3>
@@ -688,6 +710,9 @@ function buildFacetOptions(artifacts: ArtifactRecord[]): {
     for (const alias of artifact.aliases ?? []) {
       schemes.add(alias.scheme);
     }
+    for (const scheme of artifact.alias_schemes ?? []) {
+      schemes.add(scheme);
+    }
     const uriScheme = artifact.uri.match(/^([a-z][a-z0-9+.-]*):/i)?.[1];
     if (uriScheme) schemes.add(uriScheme.toLowerCase());
   }
@@ -720,6 +745,17 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
   if (!repoId || !repoPath) return '';
   const ref = typeof artifact.repo_locator.ref === 'string' ? artifact.repo_locator.ref : '';
   return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
+}
+
+function artifactSidebarLocation(artifact: ArtifactRecord): string {
+  const repoId = typeof artifact.repo_locator.repo_id === 'string'
+    ? artifact.repo_locator.repo_id
+    : artifact.home_repo_id || '';
+  const repoPath = typeof artifact.repo_locator.path === 'string'
+    ? artifact.repo_locator.path.replace(/^\/+/, '')
+    : '';
+  if (repoId && repoPath) return `${repoId}/${repoPath}`;
+  return artifact.home_repo_id || artifact.provider_id || artifact.custody_mode;
 }
 
 function artifactTitleCandidate(value: string): string {

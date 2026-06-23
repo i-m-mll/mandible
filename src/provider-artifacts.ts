@@ -215,6 +215,7 @@ export interface ArtifactListOptions {
   linkedEntityId?: string;
   limit?: number;
   offset?: number;
+  summary?: boolean;
 }
 
 interface ManifestEntityInput {
@@ -3116,9 +3117,15 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
      ORDER BY a.created_at DESC, a.id
      LIMIT @limit OFFSET @offset`;
-  return (db.prepare(sql).all(bindings) as Array<Record<string, unknown>>).map((row) => {
+  const rows = db.prepare(sql).all(bindings) as Array<Record<string, unknown>>;
+  if (options.summary) {
+    const artifacts = rows.map(summaryArtifactFromRow);
+    attachArtifactAliasSchemes(db, artifacts);
+    return artifacts;
+  }
+  return rows.map((row) => {
     const artifact = artifactFromRow(row);
-    if (artifactAliasTablesExist(db)) {
+    if (hasAliases && hasLinks) {
       artifact.aliases = listArtifactAliases(db, artifact.id);
       artifact.links = listArtifactLinks(db, artifact.id);
     }
@@ -3328,6 +3335,37 @@ function artifactFromRow(row: Record<string, unknown>): ArtifactRecord {
   };
 }
 
+function summaryArtifactFromRow(row: Record<string, unknown>): ArtifactRecord {
+  const artifact = artifactFromRow(row);
+  artifact.metadata = summaryArtifactMetadata(artifact.metadata);
+  artifact.repo_locator = summaryRepoLocator(artifact.repo_locator);
+  artifact.retention = {};
+  artifact.reference = {};
+  return artifact;
+}
+
+function summaryArtifactMetadata(metadata: Record<string, unknown>): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  for (const key of ["title", "filename", "logical_name"]) {
+    const value = metadata[key];
+    if (typeof value === "string" && value.trim()) {
+      summary[key] = value;
+    }
+  }
+  return summary;
+}
+
+function summaryRepoLocator(locator: Record<string, unknown>): Record<string, unknown> {
+  const summary: Record<string, unknown> = {};
+  for (const key of ["repo_id", "ref", "path", "local_only"]) {
+    const value = locator[key];
+    if (typeof value === "string" || typeof value === "boolean") {
+      summary[key] = value;
+    }
+  }
+  return summary;
+}
+
 function artifactAliasFromRow(row: Record<string, unknown>): ArtifactAliasRecord {
   const status = String(row.resolution_status);
   return {
@@ -3362,6 +3400,32 @@ function artifactLinkFromRow(row: Record<string, unknown>): ArtifactLinkRecord {
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   };
+}
+
+function attachArtifactAliasSchemes(db: Db, artifacts: ArtifactRecord[]): void {
+  if (artifacts.length === 0 || !tableExists(db, "artifact_aliases")) return;
+  const placeholders = artifacts.map(() => "?").join(",");
+  const rows = db.prepare(
+    `SELECT artifact_id, scheme
+       FROM artifact_aliases
+      WHERE artifact_id IN (${placeholders})
+      GROUP BY artifact_id, scheme
+      ORDER BY scheme`
+  ).all(...artifacts.map((artifact) => artifact.id)) as Array<{ artifact_id: string; scheme: string }>;
+  const byArtifact = new Map<string, Set<string>>();
+  for (const row of rows) {
+    const artifactId = String(row.artifact_id);
+    const scheme = String(row.scheme);
+    const schemes = byArtifact.get(artifactId) ?? new Set<string>();
+    schemes.add(scheme);
+    byArtifact.set(artifactId, schemes);
+  }
+  for (const artifact of artifacts) {
+    const schemes = byArtifact.get(artifact.id);
+    if (schemes?.size) {
+      artifact.alias_schemes = [...schemes].sort();
+    }
+  }
 }
 
 function listArtifactAliases(db: Db, artifactId: string): ArtifactAliasRecord[] {
