@@ -230,9 +230,9 @@ function AppThemeModeIcon({ mode, size = 18 }: { mode: AppThemeMode; size?: numb
 
 function parseHashRoute(): Route {
   if (typeof window === 'undefined') {
-    return { tab: 'graph', params: {} };
+    return { tab: 'spaces', params: {} };
   }
-  return parseRouteFromHash(window.location.hash || '#/graph');
+  return parseRouteFromHash(window.location.hash || '#/spaces');
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
@@ -300,7 +300,7 @@ function App(): JSX.Element {
   const navigateToSettings = useCallback(() => {
     if (typeof window !== 'undefined') {
       const currentRoute = parseHashRoute();
-      const currentHash = window.location.hash || '#/graph';
+      const currentHash = window.location.hash || '#/spaces';
       if (currentRoute.tab !== 'settings') {
         settingsReturnHashRef.current = currentHash;
       }
@@ -312,14 +312,14 @@ function App(): JSX.Element {
     if (typeof window === 'undefined') {
       return;
     }
-    navigateToHash(hashWithViewSidebarVisible(window.location.hash || '#/graph'));
+    navigateToHash(hashWithViewSidebarVisible(window.location.hash || '#/spaces'));
   }, [navigateToHash]);
 
   const hideViewSidebar = useCallback(() => {
     if (typeof window === 'undefined') {
       return;
     }
-    navigateToHash(hashWithViewSidebarHidden(window.location.hash || '#/graph'));
+    navigateToHash(hashWithViewSidebarHidden(window.location.hash || '#/spaces'));
   }, [navigateToHash]);
 
   const handleSettingsClose = useCallback(() => {
@@ -1012,13 +1012,6 @@ function App(): JSX.Element {
       icon: ChatIcon,
     },
     {
-      tab: 'graph',
-      href: '#/graph',
-      label: 'Graph',
-      title: 'Graph',
-      icon: GraphIcon,
-    },
-    {
       tab: 'timeline',
       href: '#/timeline',
       label: 'Timeline',
@@ -1073,6 +1066,13 @@ function App(): JSX.Element {
       title: 'Projects',
       badge: badges.work,
       icon: ProjectsIcon,
+    },
+    {
+      tab: 'graph',
+      href: '#/graph',
+      label: 'Graph',
+      title: 'Graph',
+      icon: GraphIcon,
     },
     {
       tab: 'review',
