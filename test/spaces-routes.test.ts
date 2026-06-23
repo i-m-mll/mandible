@@ -117,9 +117,11 @@ describe("spaces CRUD", () => {
     expect((await call("GET", `/api/spaces/${id}`)).status).toBe(404);
   });
 
-  it("rejects missing project_id, unknown project, bad renderer, and missing space", async () => {
-    expect((await call("GET", "/api/spaces")).status).toBe(400);
-    expect((await call("POST", "/api/spaces", { title: "x" })).status).toBe(400);
+  it("lists grouped without project_id, allows top-level create, rejects unknown project, bad renderer, and missing space", async () => {
+    // Issue 812df41: GET without project_id now returns the grouped list (200),
+    // and POST without project_id now creates a top-level / global Space (201).
+    expect((await call("GET", "/api/spaces")).status).toBe(200);
+    expect((await call("POST", "/api/spaces", { title: "x" })).status).toBe(201);
     expect((await call("POST", "/api/spaces", { project_id: "nope", title: "x" })).status).toBe(400);
     expect(
       (await call("POST", "/api/spaces", { project_id: PROJECT_ID, title: "x", default_renderer: "bogus" })).status,

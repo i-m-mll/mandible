@@ -50,7 +50,8 @@ export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = [
 
 export interface SpaceRecord {
   id: string;
-  project_id: string;
+  /** Owning project, or `null` for a top-level / global Space (issue 812df41). */
+  project_id: string | null;
   title: string;
   default_renderer: SpaceRenderer;
   description: string | null;
@@ -104,7 +105,7 @@ export interface SpaceEdgeRecord {
 
 interface SpaceRow {
   id: string;
-  project_id: string;
+  project_id: string | null;
   title: string;
   default_renderer: SpaceRenderer;
   description: string | null;
@@ -245,7 +246,8 @@ function mapEdge(row: SpaceEdgeRow): SpaceEdgeRecord {
 // --- spaces -----------------------------------------------------------------
 
 export interface CreateSpaceInput {
-  project_id: string;
+  /** Owning project, or `null`/omitted for a top-level / global Space (issue 812df41). */
+  project_id?: string | null;
   title: string;
   default_renderer?: SpaceRenderer;
   description?: string | null;
@@ -259,7 +261,7 @@ export function createSpace(db: Db, input: CreateSpaceInput, now = Date.now()): 
      VALUES (@id, @project_id, @title, @default_renderer, @description, @metadata_json, @created_at, @updated_at)`,
   ).run({
     id,
-    project_id: input.project_id,
+    project_id: input.project_id ?? null,
     title: input.title,
     default_renderer: input.default_renderer ?? "canvas",
     description: input.description ?? null,
@@ -275,11 +277,88 @@ export function getSpace(db: Db, id: string): SpaceRecord | null {
   return row ? mapSpace(row) : null;
 }
 
+/**
+ * List the Spaces owned by one project (project_id matches). Top-level Spaces
+ * (project_id IS NULL) are NOT returned here; use {@link listTopLevelSpaces} or
+ * {@link listSpacesGrouped} for those.
+ */
 export function listSpaces(db: Db, projectId: string): SpaceRecord[] {
   const rows = db.prepare(
     "SELECT * FROM spaces WHERE project_id = ? ORDER BY updated_at DESC, id ASC",
   ).all(projectId) as SpaceRow[];
   return rows.map(mapSpace);
+}
+
+/** List the top-level / global Spaces (project_id IS NULL, issue 812df41). */
+export function listTopLevelSpaces(db: Db): SpaceRecord[] {
+  const rows = db.prepare(
+    "SELECT * FROM spaces WHERE project_id IS NULL ORDER BY updated_at DESC, id ASC",
+  ).all() as SpaceRow[];
+  return rows.map(mapSpace);
+}
+
+/** List EVERY Space across all projects plus top-level (issue 812df41). */
+export function listAllSpaces(db: Db): SpaceRecord[] {
+  const rows = db.prepare(
+    "SELECT * FROM spaces ORDER BY updated_at DESC, id ASC",
+  ).all() as SpaceRow[];
+  return rows.map(mapSpace);
+}
+
+/** One group of Spaces in the grouped list: a project (with id) or the top-level bucket. */
+export interface SpaceGroup {
+  /** Owning project id, or `null` for the top-level / global group. */
+  project_id: string | null;
+  /** Project display name, or `null` for the top-level group (and for an unresolvable project). */
+  project_name: string | null;
+  spaces: SpaceRecord[];
+}
+
+/**
+ * Grouped Spaces list for the home view (issue 812df41): every Space across all
+ * projects, partitioned into one group per owning project plus a single top-level
+ * group (`project_id: null`). The top-level group sorts FIRST; project groups
+ * follow ordered by project display name (then id). Within each group, Spaces
+ * keep the canonical updated_at DESC, id ASC order. A group is emitted only when
+ * it has at least one Space, so empty projects do not appear.
+ */
+export function listSpacesGrouped(db: Db): SpaceGroup[] {
+  const all = listAllSpaces(db);
+  const projectNameById = new Map<string, string | null>();
+  const projectRows = db
+    .prepare("SELECT id, display_name FROM ledger_projects")
+    .all() as Array<{ id: string; display_name: string | null }>;
+  for (const row of projectRows) projectNameById.set(row.id, row.display_name);
+
+  const topLevel: SpaceRecord[] = [];
+  const byProject = new Map<string, SpaceRecord[]>();
+  for (const space of all) {
+    if (space.project_id === null) {
+      topLevel.push(space);
+    } else {
+      const list = byProject.get(space.project_id) ?? [];
+      list.push(space);
+      byProject.set(space.project_id, list);
+    }
+  }
+
+  const groups: SpaceGroup[] = [];
+  if (topLevel.length > 0) {
+    groups.push({ project_id: null, project_name: null, spaces: topLevel });
+  }
+  const projectGroups = Array.from(byProject.entries()).map(([projectId, spaces]) => ({
+    project_id: projectId,
+    project_name: projectNameById.get(projectId) ?? null,
+    spaces,
+  }));
+  projectGroups.sort((a, b) => {
+    const an = a.project_name ?? "";
+    const bn = b.project_name ?? "";
+    if (an !== bn) return an < bn ? -1 : 1;
+    return a.project_id! < b.project_id! ? -1 : a.project_id! > b.project_id! ? 1 : 0;
+  });
+  groups.push(...projectGroups);
+  return groups;
 }
 
 export interface UpdateSpaceInput {
@@ -739,7 +818,10 @@ interface IssueArtifactRow {
  * Mirrors the (private) Timeline loader so `/seed` can reuse the C7a-extracted
  * `evaluatePredicate` against the same data.
  */
-function loadProjectIssueRows(db: Db, projectId: string): IssueRow[] {
+function loadProjectIssueRows(db: Db, projectId: string | null): IssueRow[] {
+  // A top-level Space (project_id IS NULL) owns no project issue set, so seeding
+  // from a project predicate yields no matches.
+  if (projectId === null) return [];
   return db.prepare(
     `SELECT i.*,
             COALESCE(group_concat(l.label, char(31)), '') AS labels
@@ -751,7 +833,8 @@ function loadProjectIssueRows(db: Db, projectId: string): IssueRow[] {
   ).all(projectId) as IssueRow[];
 }
 
-function loadProjectRelationshipSources(db: Db, projectId: string): LedgerIssueRelationshipSource[] {
+function loadProjectRelationshipSources(db: Db, projectId: string | null): LedgerIssueRelationshipSource[] {
+  if (projectId === null) return [];
   return db.prepare(
     `SELECT s.*
        FROM ledger_issue_relationship_sources s

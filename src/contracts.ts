@@ -396,7 +396,8 @@ export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comm
 
 export type Space = {
   id: string;
-  project_id: string;
+  /** Owning project, or `null` for a top-level / global Space (issue 812df41). */
+  project_id: string | null;
   title: string;
   default_renderer: SpaceRenderer;
   description: string | null;
@@ -509,7 +510,8 @@ export type SpaceExport = {
 // --- request bodies ---------------------------------------------------------
 
 export type CreateSpaceRequest = {
-  project_id: string;
+  /** Owning project. Omit or pass `null` to create a top-level / global Space (issue 812df41). */
+  project_id?: string | null;
   title: string;
   default_renderer?: SpaceRenderer;
   description?: string | null;
@@ -593,6 +595,24 @@ export type SeedSpaceRequest = {
 // --- response envelopes -----------------------------------------------------
 
 export type SpaceListResponse = { spaces: Space[] };
+
+/**
+ * One group in the grouped Spaces list (issue 812df41): a project (with id and
+ * name) or the top-level / global bucket (`project_id: null`, `project_name: null`).
+ */
+export type SpaceGroup = {
+  project_id: string | null;
+  project_name: string | null;
+  spaces: Space[];
+};
+
+/**
+ * Grouped Spaces list response (`GET /api/spaces` with no `project_id`/`scope`,
+ * issue 812df41). `groups` is the top-level group first (when non-empty) then one
+ * group per owning project. `spaces` is every Space flattened across the groups so
+ * existing flat-list callers keep working.
+ */
+export type SpaceGroupedListResponse = { groups: SpaceGroup[]; spaces: Space[] };
 export type SpaceResponse = { space: Space };
 export type DeleteSpaceResponse = { ok: true; id: string };
 
