@@ -1044,13 +1044,27 @@ a {
   overflow-y: auto;
 }
 
-/* 10px hit strip straddling the right edge so it isn't clipped by the rail. */
-.view-sidebar__resize-handle {
+/*
+ * Resize handle. The element carries BOTH `.sidebar-drag-handle` and
+ * `.view-sidebar__resize-handle`. The two-class selector below RAISES
+ * specificity so it always beats the single-class `.sidebar-drag-handle`
+ * (`position:relative; width:0`) regardless of source order — the original
+ * `.issues-tree__resize-handle` only won by being defined later, which broke
+ * when the rule moved earlier in the refactor (issue e29a8c5).
+ *
+ * It replicates the original working mechanism exactly: a 0-width absolutely
+ * positioned line pinned to the frame's right edge (`right:0`), with the
+ * actual ~10px clickable/hover hit strip painted by `.sidebar-drag-handle::before`
+ * (`left:-5px; width:10px`), so the strip straddles the right edge and is not
+ * doubled. Same frame-relative right edge serves the header/body (Spaces)
+ * variant too.
+ */
+.view-sidebar__resize-handle.sidebar-drag-handle {
   position: absolute;
   top: 0;
-  right: -5px;
-  width: 10px;
+  right: 0;
   bottom: 0;
+  width: 0;
   cursor: col-resize;
   z-index: 3;
 }

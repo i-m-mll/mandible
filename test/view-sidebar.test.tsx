@@ -4,9 +4,11 @@
 // (and drops the handle) when hidden, reads the per-view storageKey width,
 // renders the headerless single-block vs. header/body variant, and forwards
 // containerRef to the frame element.
-import { render, screen, cleanup } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRef } from 'preact';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { ViewSidebar } from '../ui/src/components/ViewSidebar';
 
@@ -130,6 +132,48 @@ describe('ViewSidebar', () => {
     expect(body).toBeTruthy();
     expect(header!.contains(screen.getByTestId('hdr'))).toBe(true);
     expect(body!.contains(screen.getByTestId('scroll'))).toBe(true);
+  });
+
+  it('keyboard ArrowRight/ArrowLeft resize the sidebar directly and persist the clamped width', () => {
+    // window.innerWidth in jsdom is 1024 → 50% clamp = 512.
+    localStorage.setItem('sidebar-width:issues', '420');
+    const { container } = render(
+      <ViewSidebar storageKey="sidebar-width:issues" defaultWidth={420} minWidth={280} ariaLabel="Issues" as="div">
+        <div>content</div>
+      </ViewSidebar>,
+    );
+    const frame = container.querySelector('.view-sidebar') as HTMLElement;
+    const handle = container.querySelector('.view-sidebar__resize-handle') as HTMLElement;
+    expect(frame.style.width).toBe('420px');
+
+    // ArrowRight (+8) widens and persists; no synthetic mouse events involved.
+    fireEvent.keyDown(handle, { key: 'ArrowRight' });
+    expect(frame.style.width).toBe('428px');
+    expect(localStorage.getItem('sidebar-width:issues')).toBe('428');
+
+    // Shift+ArrowLeft uses the larger 32px step.
+    fireEvent.keyDown(handle, { key: 'ArrowLeft', shiftKey: true });
+    expect(frame.style.width).toBe('396px');
+    expect(localStorage.getItem('sidebar-width:issues')).toBe('396');
+
+    // Clamps to minWidth (280): many big steps left can't go below the min.
+    for (let i = 0; i < 10; i += 1) fireEvent.keyDown(handle, { key: 'ArrowLeft', shiftKey: true });
+    expect(parseInt(frame.style.width, 10)).toBe(280);
+    expect(localStorage.getItem('sidebar-width:issues')).toBe('280');
+  });
+
+  // The runtime cascade bug (issue e29a8c5) is a source-order override of
+  // `.view-sidebar__resize-handle` by the later equal-specificity
+  // `.sidebar-drag-handle`. jsdom cannot compute the full cascade, so this only
+  // guards the selector SHAPE; CDP (headless Chrome getComputedStyle +
+  // getBoundingClientRect) is the real verification — see the issue's CDP run.
+  it('uses a higher-specificity two-class selector for the resize handle (cascade guard)', () => {
+    const css = readFileSync(join(process.cwd(), 'ui/src/style.css'), 'utf8');
+    // The winning rule must be the two-class form, pinned to the right edge.
+    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*position:\s*absolute/);
+    expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*right:\s*0/);
+    // The old single-class positioning rule (which lost to source order) is gone.
+    expect(css).not.toMatch(/(^|\n)\s*\.view-sidebar__resize-handle\s*\{[^}]*position:\s*absolute/);
   });
 
   it('forwards containerRef to the frame element', () => {

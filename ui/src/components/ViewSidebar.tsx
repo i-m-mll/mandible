@@ -62,40 +62,24 @@ export type ViewSidebarProps = {
 };
 
 export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
-  const { width, handleMouseDown } = useSidebarResize({
+  const { width, handleMouseDown, setWidth } = useSidebarResize({
     defaultWidth: props.defaultWidth,
     minWidth: props.minWidth,
     storageKey: props.storageKey,
   });
 
-  // Keyboard resize: Left/Right arrows nudge the width by the same hook math
-  // (clamp to min..50% viewport). Re-uses handleMouseDown by synthesizing the
-  // drag math here so mouse + keyboard stay consistent.
+  // Keyboard resize: Left/Right arrows nudge the width directly through the
+  // hook's clamped `setWidth` (min..50% viewport, persisted to storageKey by
+  // the hook's own effect). No synthetic mouse events — keyboard and mouse drag
+  // share one width path. Shift = larger step.
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
     e.preventDefault();
     const step = e.shiftKey ? 32 : 8;
     const delta = e.key === 'ArrowLeft' ? -step : step;
-    const max = typeof window !== 'undefined' ? Math.floor(window.innerWidth * 0.5) : Infinity;
     const current = width ?? props.defaultWidth;
-    const next = Math.max(props.minWidth, Math.min(max, current + delta));
-    if (props.storageKey && typeof localStorage !== 'undefined') {
-      // Persist immediately; useSidebarResize re-reads storageKey on mount but
-      // also tracks live state, so dispatch a synthetic resize to re-sync state.
-      try { localStorage.setItem(props.storageKey, String(next)); } catch { /* ignore */ }
-    }
-    // Drive the live width through the hook by simulating a 1px-equivalent drag
-    // from the current width to `next`. We do this with a fake mousedown +
-    // mousemove + mouseup sequence on the document.
-    if (typeof document !== 'undefined') {
-      const down = new MouseEvent('mousedown', { bubbles: true, clientX: 0 });
-      handleMouseDown(down);
-      const move = new MouseEvent('mousemove', { bubbles: true, clientX: next - current });
-      document.dispatchEvent(move);
-      const up = new MouseEvent('mouseup', { bubbles: true });
-      document.dispatchEvent(up);
-    }
-  }, [width, props.defaultWidth, props.minWidth, props.storageKey, handleMouseDown]);
+    setWidth(current + delta);
+  }, [width, props.defaultWidth, setWidth]);
 
   if (props.hidden) return null;
 
