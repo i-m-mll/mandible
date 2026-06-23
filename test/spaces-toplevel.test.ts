@@ -1,0 +1,372 @@
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
+import {
+  createSpace,
+  getSpace,
+  listSpaces,
+  listSpacesGrouped,
+  listTopLevelSpaces,
+  listAllSpaces,
+  addSpaceItem,
+} from "../src/ledger/spaces.js";
+import { LedgerStore } from "../src/ledger/store.js";
+import { registerSpacesRoutes } from "../src/routes/spaces.js";
+import { Router } from "../src/server.js";
+
+// Issue 812df41 (umbrella de56ffa): top-level / global Spaces + grouped-list API +
+// cross-project item resolution. The v86 migration rebuilds `spaces` with a
+// NULLABLE project_id (a top-level Space has no owning project).
+
+let tempDir = "";
+
+function now(): number {
+  return Date.now();
+}
+
+function seedProject(db: Db, id: string, name = `Project ${id}`): string {
+  db.prepare(
+    `INSERT INTO ledger_projects (id, display_name, remote_identity, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(id, name, `github.com/test/${id}`, now(), now());
+  return id;
+}
+
+beforeEach(() => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-spaces-toplevel-"));
+});
+
+afterEach(() => {
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+describe("spaces v86 nullable project_id schema (issue 812df41)", () => {
+  it("declares project_id NULLABLE at the head migration version", () => {
+    const db = openDb(path.join(tempDir, "head.db"));
+    try {
+      const columns = db.prepare("PRAGMA table_info(spaces)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>;
+      const projectId = columns.find((c) => c.name === "project_id");
+      expect(projectId, "spaces.project_id column should exist").toBeTruthy();
+      expect(projectId!.notnull, "spaces.project_id must be nullable").toBe(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("accepts a top-level Space (project_id NULL) and still RESTRICTs a project with Spaces", () => {
+    const db = openDb(path.join(tempDir, "toplevel.db"));
+    try {
+      const projectId = seedProject(db, "proj-1");
+      // Top-level Space: project_id NULL.
+      const top = createSpace(db, { title: "Global" });
+      expect(top.project_id).toBeNull();
+      // Project-scoped Space still works.
+      const scoped = createSpace(db, { project_id: projectId, title: "Scoped" });
+      expect(scoped.project_id).toBe(projectId);
+      // RESTRICT still guards a project that owns a Space.
+      expect(() => db.prepare("DELETE FROM ledger_projects WHERE id = ?").run(projectId)).toThrow();
+      db.prepare("DELETE FROM spaces WHERE id = ?").run(scoped.id);
+      expect(() =>
+        db.prepare("DELETE FROM ledger_projects WHERE id = ?").run(projectId),
+      ).not.toThrow();
+      // A surviving top-level Space is unaffected by project deletion.
+      expect(getSpace(db, top.id)?.project_id).toBeNull();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("rebuild preserves existing rows + nullability when an existing DB still has NOT NULL project_id", () => {
+    const dbPath = path.join(tempDir, "legacy.db");
+    const db = openDb(dbPath);
+    try {
+      const projectId = seedProject(db, "proj-1");
+      // Seed a Space, item, occurrence, and edge through the live (post-v86) schema.
+      const space = createSpace(db, { project_id: projectId, title: "Legacy Space", metadata: { a: 1 } });
+      db.prepare(
+        `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
+         VALUES ('item-1', ?, 'issue', 'issue-1', ?, ?)`,
+      ).run(space.id, now(), now());
+
+      // Simulate a PRE-v86 database: rebuild `spaces` with a NOT NULL project_id
+      // (FK off, child tables intact), preserving the row, then clear the
+      // post-migration done flag so migrate() re-runs the real rebuild helper.
+      db.pragma("foreign_keys = OFF");
+      db.transaction(() => {
+        db.exec(
+          `CREATE TABLE spaces_legacy (
+             id               TEXT PRIMARY KEY,
+             project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+             title            TEXT NOT NULL,
+             default_renderer TEXT NOT NULL DEFAULT 'canvas'
+                                CHECK(default_renderer IN ('canvas','document','board','collection')),
+             description      TEXT,
+             metadata_json    TEXT NOT NULL DEFAULT '{}'
+                                CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+             created_at       INTEGER NOT NULL,
+             updated_at       INTEGER NOT NULL
+           )`,
+        );
+        db.exec(
+          `INSERT INTO spaces_legacy SELECT id, project_id, title, default_renderer,
+             description, metadata_json, created_at, updated_at FROM spaces`,
+        );
+        db.exec("DROP TABLE spaces");
+        db.exec("ALTER TABLE spaces_legacy RENAME TO spaces");
+        db.exec(
+          `CREATE INDEX IF NOT EXISTS idx_spaces_project_updated
+             ON spaces(project_id, updated_at DESC)`,
+        );
+      })();
+      db.pragma("foreign_keys = ON");
+      db.prepare("DELETE FROM meta WHERE key = ?").run(
+        "post_migration.v86_spaces_nullable_project_id.complete",
+      );
+
+      // Confirm the simulated pre-v86 NOT NULL state.
+      const before = (db.prepare("PRAGMA table_info(spaces)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>).find((c) => c.name === "project_id");
+      expect(before!.notnull).toBe(1);
+
+      // Re-run migrations: the post-migration rebuild should fire.
+      migrate(db);
+
+      // project_id is now nullable, the row + its metadata survived, and the
+      // child item (FK to spaces) is intact.
+      const after = (db.prepare("PRAGMA table_info(spaces)").all() as Array<{
+        name: string;
+        notnull: number;
+      }>).find((c) => c.name === "project_id");
+      expect(after!.notnull).toBe(0);
+      const preserved = getSpace(db, space.id);
+      expect(preserved).toMatchObject({ id: space.id, project_id: projectId, title: "Legacy Space" });
+      expect(preserved!.metadata).toEqual({ a: 1 });
+      const itemCount = db
+        .prepare("SELECT COUNT(*) AS n FROM space_items WHERE space_id = ?")
+        .get(space.id) as { n: number };
+      expect(itemCount.n).toBe(1);
+      // A top-level Space can now be created in the rebuilt table.
+      expect(() => createSpace(db, { title: "Now Global" })).not.toThrow();
+      // No FK violations introduced by the rebuild.
+      expect(db.prepare("PRAGMA foreign_key_check").all()).toHaveLength(0);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("keeps `spaces` in METADATA_BACKUP_TABLES and round-trips a top-level row", () => {
+    const dbPath = path.join(tempDir, "backup.db");
+    const db = openDb(dbPath);
+    try {
+      expect(METADATA_BACKUP_TABLES).toContain("spaces");
+      seedProject(db, "proj-1");
+      createSpace(db, { project_id: "proj-1", title: "Scoped" });
+      createSpace(db, { title: "Global" }); // top-level, project_id NULL
+      const sql = buildMetadataBackupSql(db);
+      expect(sql).toContain("-- Table: spaces");
+
+      // Restore into a fresh DB using ONLY the backup SQL.
+      const restored = new Database(path.join(tempDir, "restored.db"));
+      restored.pragma("foreign_keys = ON");
+      restored.exec(sql);
+      const rows = restored
+        .prepare("SELECT project_id FROM spaces ORDER BY title")
+        .all() as Array<{ project_id: string | null }>;
+      expect(rows).toEqual([{ project_id: null }, { project_id: "proj-1" }]);
+      // The restored schema still permits a NULL project_id (nullability survived).
+      expect(() =>
+        restored
+          .prepare(
+            `INSERT INTO spaces (id, project_id, title, metadata_json, created_at, updated_at)
+             VALUES ('s-new', NULL, 'Another Global', '{}', ?, ?)`,
+          )
+          .run(now(), now()),
+      ).not.toThrow();
+      restored.close();
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("spaces grouped + top-level listing (issue 812df41)", () => {
+  it("partitions Spaces into a top-level group first, then project groups by name", () => {
+    const db = openDb(path.join(tempDir, "grouped.db"));
+    try {
+      seedProject(db, "proj-b", "Beta");
+      seedProject(db, "proj-a", "Alpha");
+      const top1 = createSpace(db, { title: "Top One" });
+      const top2 = createSpace(db, { title: "Top Two" });
+      const a1 = createSpace(db, { project_id: "proj-a", title: "Alpha Space" });
+      const b1 = createSpace(db, { project_id: "proj-b", title: "Beta Space" });
+
+      const groups = listSpacesGrouped(db);
+      // Top-level group first.
+      expect(groups[0]).toMatchObject({ project_id: null, project_name: null });
+      expect(groups[0].spaces.map((s) => s.id).sort()).toEqual([top1.id, top2.id].sort());
+      // Project groups ordered by display name: Alpha before Beta.
+      expect(groups[1]).toMatchObject({ project_id: "proj-a", project_name: "Alpha" });
+      expect(groups[1].spaces.map((s) => s.id)).toEqual([a1.id]);
+      expect(groups[2]).toMatchObject({ project_id: "proj-b", project_name: "Beta" });
+      expect(groups[2].spaces.map((s) => s.id)).toEqual([b1.id]);
+
+      // listTopLevelSpaces returns only the NULL-project Spaces.
+      expect(listTopLevelSpaces(db).map((s) => s.id).sort()).toEqual([top1.id, top2.id].sort());
+      // listSpaces(project) excludes top-level.
+      expect(listSpaces(db, "proj-a").map((s) => s.id)).toEqual([a1.id]);
+      // listAllSpaces returns everything.
+      expect(listAllSpaces(db)).toHaveLength(4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("omits empty groups (a project with no Spaces does not appear)", () => {
+    const db = openDb(path.join(tempDir, "empty-group.db"));
+    try {
+      seedProject(db, "proj-a", "Alpha");
+      seedProject(db, "proj-empty", "Empty");
+      createSpace(db, { project_id: "proj-a", title: "Only Space" });
+      const groups = listSpacesGrouped(db);
+      expect(groups.map((g) => g.project_id)).toEqual(["proj-a"]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("cross-project item resolution on a top-level Space (issue 812df41)", () => {
+  let db: Db;
+  let router: Router;
+
+  async function call(method: string, url: string, body?: unknown) {
+    return router.invoke({ method, url, body });
+  }
+
+  beforeEach(() => {
+    db = openDb(path.join(tempDir, "cross.db"));
+    setDb(db);
+    router = new Router();
+    registerSpacesRoutes(router);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it("adds a cross-project issue to a top-level Space and a cross-project artifact to a project-B Space; both resolve", async () => {
+    seedProject(db, "proj-a", "Alpha");
+    seedProject(db, "proj-b", "Beta");
+    const store = new LedgerStore(db);
+    const issueA = store.createIssue({
+      project_id: "proj-a",
+      title: "Issue in A",
+      body: "",
+      kind: "feature",
+      priority: "normal",
+      actor_type: "agent",
+      author_display: "Codex",
+    });
+    // An artifact (project-agnostic custody) discovered in project A's context.
+    const artifactId = "artifact:sha256:deadbeefcafe";
+    db.prepare(
+      `INSERT INTO artifacts (id, algorithm, content_hash, uri, created_at)
+       VALUES (?, 'sha256', 'deadbeefcafe', ?, ?)`,
+    ).run(artifactId, artifactId, now());
+
+    // Top-level Space: NO owning project, so an issue ref from ANY project is accepted.
+    const topRes = await call("POST", "/api/spaces", { title: "Global" });
+    expect(topRes.status).toBe(201);
+    const topId = (topRes.body as { space: { id: string } }).space.id;
+    const addTopIssue = await call("POST", `/api/spaces/${topId}/items`, {
+      ref_type: "issue",
+      ref_id: issueA.id,
+    });
+    expect(addTopIssue.status).toBe(201);
+
+    // Space owned by project B: a cross-project ARTIFACT crosses freely (item-level
+    // cross-project capability). Issue/comment refs stay project-scoped (covered by
+    // the sibling routes test); artifacts are the cross-project item type here.
+    const bRes = await call("POST", "/api/spaces", { project_id: "proj-b", title: "B Space" });
+    const bId = (bRes.body as { space: { id: string } }).space.id;
+    const addBArtifact = await call("POST", `/api/spaces/${bId}/items`, {
+      ref_type: "artifact",
+      ref_id: artifactId,
+    });
+    expect(addBArtifact.status).toBe(201);
+
+    // Both refs resolve through the unified resolver to their real entities.
+    const resolvedIssue = await call(
+      "GET",
+      `/api/spaces/resolve?ref=${encodeURIComponent(`issue:${issueA.id}`)}`,
+    );
+    expect(resolvedIssue.status).toBe(200);
+    const issueResolution = (resolvedIssue.body as { resolution: { resolved: boolean; kind: string; entity: { id: string } | null } }).resolution;
+    expect(issueResolution.resolved).toBe(true);
+    expect(issueResolution.kind).toBe("issue");
+    expect(issueResolution.entity?.id).toBe(issueA.id);
+
+    const resolvedArtifact = await call(
+      "GET",
+      `/api/spaces/resolve?ref=${encodeURIComponent(artifactId)}`,
+    );
+    expect(resolvedArtifact.status).toBe(200);
+    const artifactResolution = (resolvedArtifact.body as { resolution: { resolved: boolean; entity: { id: string } | null } }).resolution;
+    expect(artifactResolution.resolved).toBe(true);
+    expect(artifactResolution.entity?.id).toBe(artifactId);
+  });
+
+  it("still rejects a cross-project issue ref on a PROJECT-SCOPED Space", async () => {
+    seedProject(db, "proj-a", "Alpha");
+    seedProject(db, "proj-b", "Beta");
+    const store = new LedgerStore(db);
+    const issueA = store.createIssue({
+      project_id: "proj-a",
+      title: "Issue in A",
+      body: "",
+      kind: "feature",
+      priority: "normal",
+      actor_type: "agent",
+      author_display: "Codex",
+    });
+    const bRes = await call("POST", "/api/spaces", { project_id: "proj-b", title: "B Space" });
+    const bId = (bRes.body as { space: { id: string } }).space.id;
+    // A project-scoped Space still enforces same-project issue refs.
+    const add = await call("POST", `/api/spaces/${bId}/items`, {
+      ref_type: "issue",
+      ref_id: issueA.id,
+    });
+    expect(add.status).toBe(400);
+  });
+
+  it("lists top-level Spaces via ?scope=top-level and grouped via no query", async () => {
+    seedProject(db, "proj-a", "Alpha");
+    await call("POST", "/api/spaces", { title: "Global" });
+    await call("POST", "/api/spaces", { project_id: "proj-a", title: "Scoped" });
+
+    const top = await call("GET", "/api/spaces?scope=top-level");
+    expect(top.status).toBe(200);
+    const topSpaces = (top.body as { spaces: Array<{ project_id: string | null }> }).spaces;
+    expect(topSpaces).toHaveLength(1);
+    expect(topSpaces[0].project_id).toBeNull();
+
+    const grouped = await call("GET", "/api/spaces");
+    expect(grouped.status).toBe(200);
+    const body = grouped.body as {
+      groups: Array<{ project_id: string | null }>;
+      spaces: Array<{ project_id: string | null }>;
+    };
+    expect(body.groups[0].project_id).toBeNull();
+    expect(body.spaces).toHaveLength(2);
+  });
+});

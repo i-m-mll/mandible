@@ -23,6 +23,7 @@ import type {
   WorkUnitState as ContractWorkUnitState,
   WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
   Space as ContractSpace,
+  SpaceGroup as ContractSpaceGroup,
   SpaceItem as ContractSpaceItem,
   SpaceOccurrence as ContractSpaceOccurrence,
   SpaceEdge as ContractSpaceEdge,
@@ -45,6 +46,7 @@ import type {
 } from '../../src/contracts';
 export type {
   Space,
+  SpaceGroup,
   SpaceItem,
   SpaceOccurrence,
   SpaceEdge,
@@ -2266,6 +2268,25 @@ export async function resetRuntime(): Promise<{ ok: boolean }> {
 
 export async function listSpaces(projectId: string): Promise<ContractSpace[]> {
   const response = await apiGet(`/api/spaces${buildQuery({ project_id: projectId })}`);
+  const payload = (await parseMaybeJson(response)) as { spaces: ContractSpace[] };
+  return payload.spaces;
+}
+
+/**
+ * Grouped Spaces list for the home view (issue 812df41): `GET /api/spaces` with no
+ * `project_id`. Returns one group per owning project plus a single top-level group
+ * (`project_id: null`) first, so the UI can render a top-level section and a section
+ * per project. Each Space carries its nullable `project_id`.
+ */
+export async function listSpacesGrouped(): Promise<ContractSpaceGroup[]> {
+  const response = await apiGet('/api/spaces');
+  const payload = (await parseMaybeJson(response)) as { groups?: ContractSpaceGroup[] };
+  return payload.groups ?? [];
+}
+
+/** List only the top-level / global Spaces (project_id IS NULL, issue 812df41). */
+export async function listTopLevelSpaces(): Promise<ContractSpace[]> {
+  const response = await apiGet(`/api/spaces${buildQuery({ scope: 'top-level' })}`);
   const payload = (await parseMaybeJson(response)) as { spaces: ContractSpace[] };
   return payload.spaces;
 }
