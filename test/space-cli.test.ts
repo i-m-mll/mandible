@@ -103,19 +103,27 @@ afterEach(() => {
 });
 
 describe("space CLI surface", () => {
-  it("documents the non-block command surface and omits block", () => {
+  it("documents the command surface including block subcommands", () => {
     const result = runOffline(["space", "--help"]);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("mandible space create");
     expect(result.stdout).toContain("mandible space promote-edge");
     expect(result.stdout).toContain("mandible space seed-from-filter");
-    expect(result.stdout).not.toContain("mandible space block");
+    expect(result.stdout).toContain("mandible space block add");
+    expect(result.stdout).toContain("mandible space block edit");
+    expect(result.stdout).toContain("mandible space block rm");
   });
 
-  it("routes block subcommands to a C4b-owned message", () => {
-    const result = runOffline(["space", "block", "add"]);
+  it("rejects an unknown block subcommand", () => {
+    const result = runOffline(["space", "block", "bogus-sub"]);
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain("owned by C4b");
+    expect(result.stderr).toContain("Unknown block subcommand");
+  });
+
+  it("requires a block subcommand", () => {
+    const result = runOffline(["space", "block"]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("mandible space block <add|edit|rm>");
   });
 
   it("is wired into the top-level mandible dispatch + help", () => {
@@ -352,6 +360,187 @@ describe("space CLI promote-edge", () => {
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("Invalid --link-type");
+    expect(result.seen).toHaveLength(0);
+  });
+});
+
+describe("space CLI block subcommands", () => {
+  it("adds a prose block via POST /api/spaces/:id/blocks", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "add", "space-1", "--type", "paragraph", "--markdown", "hello world", "--json"],
+      (req) => {
+        expect(req.method).toBe("POST");
+        expect(req.path).toBe("/api/spaces/space-1/blocks");
+        expect(req.body).toMatchObject({ block_type: "paragraph", markdown: "hello world" });
+        expect(req.body).not.toHaveProperty("parent_id");
+        expect(req.body).not.toHaveProperty("item_id");
+        return { status: 201, body: { block: { id: "blk-1", block_type: "paragraph", parent_id: null, item_id: null } } };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).block).toMatchObject({ id: "blk-1", block_type: "paragraph" });
+  });
+
+  it("emits a human-readable summary for a non-json block add", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "add", "space-1", "--type", "heading", "--markdown", "Title"],
+      (req) => {
+        expect(req.body).toMatchObject({ block_type: "heading", markdown: "Title" });
+        return { status: 201, body: { block: { id: "blk-h", block_type: "heading", parent_id: null, item_id: null } } };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("added blk-h heading");
+  });
+
+  it("adds a nested embed block with parent, item, snapshot, and metadata", async () => {
+    const result = await runWithResponder(
+      [
+        "space", "block", "add", "space-1",
+        "--type", "issue_embed",
+        "--parent", "blk-root",
+        "--item", "item-1",
+        "--snapshot", '{"item_id":"item-1","ref_type":"issue","ref_id":"abc"}',
+        "--sort-key", "m",
+        "--metadata", '{"collapsed":true}',
+        "--json",
+      ],
+      (req) => {
+        expect(req.path).toBe("/api/spaces/space-1/blocks");
+        expect(req.body).toMatchObject({
+          block_type: "issue_embed",
+          parent_id: "blk-root",
+          item_id: "item-1",
+          item_snapshot: { item_id: "item-1", ref_type: "issue", ref_id: "abc" },
+          sort_key: "m",
+          metadata: { collapsed: true },
+        });
+        return { status: 201, body: { block: { id: "blk-2", block_type: "issue_embed", parent_id: "blk-root", item_id: "item-1" } } };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).block.item_id).toBe("item-1");
+  });
+
+  it("rejects an out-of-set block --type before calling the route", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "add", "space-1", "--type", "bogus"],
+      () => ({ status: 201, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Invalid --type");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("requires --type on block add", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "add", "space-1"],
+      () => ({ status: 201, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("mandible space block add");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("rejects a non-object --snapshot before calling the route", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "add", "space-1", "--type", "reference", "--item", "i1", "--snapshot", "[1,2]"],
+      () => ({ status: 201, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--snapshot must be a JSON object");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("rejects a non-object --metadata before calling the route", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "add", "space-1", "--type", "paragraph", "--metadata", "not-json"],
+      () => ({ status: 201, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--metadata must be a JSON object");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("edits a block via PATCH /api/spaces/:id/blocks/:block_id sending only provided fields", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "edit", "space-1", "blk-1", "--markdown", "updated", "--json"],
+      (req) => {
+        expect(req.method).toBe("PATCH");
+        expect(req.path).toBe("/api/spaces/space-1/blocks/blk-1");
+        expect(req.body).toEqual({ markdown: "updated" });
+        return { status: 200, body: { block: { id: "blk-1", block_type: "paragraph", parent_id: null, item_id: null } } };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).block.id).toBe("blk-1");
+  });
+
+  it("edits a block --type while validating against the set", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "edit", "space-1", "blk-1", "--type", "todo", "--json"],
+      (req) => {
+        expect(req.method).toBe("PATCH");
+        expect(req.body).toEqual({ block_type: "todo" });
+        return { status: 200, body: { block: { id: "blk-1", block_type: "todo", parent_id: null, item_id: null } } };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).block.block_type).toBe("todo");
+  });
+
+  it("allows clearing parent on edit by passing an empty --parent", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "edit", "space-1", "blk-1", "--parent", "", "--json"],
+      (req) => {
+        expect(req.method).toBe("PATCH");
+        expect(req.body).toEqual({ parent_id: "" });
+        return { status: 200, body: { block: { id: "blk-1", block_type: "paragraph", parent_id: null, item_id: null } } };
+      },
+    );
+    expect(result.status).toBe(0);
+  });
+
+  it("rejects an out-of-set --type on block edit before calling the route", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "edit", "space-1", "blk-1", "--type", "bogus"],
+      () => ({ status: 200, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Invalid --type");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("requires a block-id on block edit", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "edit", "space-1", "--markdown", "x"],
+      () => ({ status: 200, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("mandible space block edit");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("removes a block via DELETE /api/spaces/:id/blocks/:block_id", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "rm", "space-1", "blk-1", "--json"],
+      (req) => {
+        expect(req.method).toBe("DELETE");
+        expect(req.path).toBe("/api/spaces/space-1/blocks/blk-1");
+        return { status: 200, body: { ok: true, id: "blk-1" } };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ ok: true, id: "blk-1" });
+  });
+
+  it("requires a block-id on block rm", async () => {
+    const result = await runWithResponder(
+      ["space", "block", "rm", "space-1"],
+      () => ({ status: 200, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("mandible space block rm");
     expect(result.seen).toHaveLength(0);
   });
 });
