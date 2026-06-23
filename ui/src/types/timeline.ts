@@ -3,10 +3,29 @@ export type TimelineDensity = 'compact' | 'comfortable' | 'expanded';
 export type TimelineEventKind = 'body' | 'comment' | 'state';
 export type TimelineRowOccurrenceKind = 'root' | 'promoted_root' | 'explicit_root' | 'transient' | 'member';
 
+// Canonical issue-kind union, mirrored from the backend ledger
+// (`LEDGER_ISSUE_KINDS` in `src/ledger/types.ts`). Kept as a UI-local copy so
+// the bundle does not import backend modules; keep both lists in sync.
+export type LedgerIssueKind =
+  | 'bug'
+  | 'feature'
+  | 'umbrella'
+  | 'task'
+  | 'question'
+  | 'maintenance'
+  | 'deferred'
+  | 'unknown';
+
+// Canonical issue-predicate contract, shared with the backend
+// (`TimelineIssuePredicate` in `src/types.ts`, evaluated by
+// `src/ledger/issue-predicate.ts`). The label `membership` and the typed `kind`
+// must match the backend shape so predicates round-trip through `/seed` and the
+// Timeline projection identically.
+export type TimelineLabelMembershipMode = 'now' | 'ever_in_window';
 export type TimelineIssuePredicate =
   | { type: 'referenced_by'; issue_id: string }
-  | { type: 'label'; name: string }
-  | { type: 'kind'; kind: string }
+  | { type: 'label'; name: string; membership?: TimelineLabelMembershipMode }
+  | { type: 'kind'; kind: LedgerIssueKind }
   | { type: 'parent_subtree'; issue_id: string }
   | { type: 'residual' }
   | { type: 'and'; predicates: TimelineIssuePredicate[] }
