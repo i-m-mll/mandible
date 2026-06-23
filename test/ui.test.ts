@@ -614,6 +614,37 @@ describe('app shell', () => {
     expect(reactFlowMockState.mountCount).toBe(1);
     expect(reactFlowMockState.unmountCount).toBe(0);
   });
+
+  it('resolves an empty hash to the Spaces workspace on mount', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '');
+    expect(window.location.hash).toBe('');
+
+    render(h(App, {}));
+
+    const nav = await screen.findByLabelText('Main navigation');
+    await waitFor(() => {
+      const spacesNav = within(nav).getByLabelText('Spaces');
+      expect(spacesNav.getAttribute('aria-current')).toBe('page');
+    });
+    const graphNav = within(nav).getByLabelText('Graph');
+    expect(graphNav.getAttribute('aria-current')).toBeNull();
+  });
+
+  it('resolves an unknown hash to the Spaces workspace on mount', async () => {
+    stubAppShellFetch();
+    stubEventSource();
+    window.history.replaceState(null, '', '#/not-a-real-tab');
+
+    render(h(App, {}));
+
+    const nav = await screen.findByLabelText('Main navigation');
+    await waitFor(() => {
+      const spacesNav = within(nav).getByLabelText('Spaces');
+      expect(spacesNav.getAttribute('aria-current')).toBe('page');
+    });
+  });
 });
 
 describe('SettingsView', () => {
