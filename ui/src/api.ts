@@ -2232,6 +2232,33 @@ export async function getSpace(spaceId: string): Promise<ContractSpace> {
   return payload.space;
 }
 
+/**
+ * Full Space fact packet (space + items/occurrences/edges) read from
+ * `GET /api/spaces/:id` (umbrella plan §5.1). The renderers (C8 collection,
+ * C9a canvas, …) assemble their `SpaceViewModel` from this single read. Older
+ * responses that omit the collections degrade to empty arrays.
+ */
+export async function getSpaceFactPacket(spaceId: string): Promise<{
+  space: ContractSpace;
+  items: ContractSpaceItem[];
+  occurrences: ContractSpaceOccurrence[];
+  edges: ContractSpaceEdge[];
+}> {
+  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  const payload = (await parseMaybeJson(response)) as {
+    space: ContractSpace;
+    items?: ContractSpaceItem[];
+    occurrences?: ContractSpaceOccurrence[];
+    edges?: ContractSpaceEdge[];
+  };
+  return {
+    space: payload.space,
+    items: payload.items ?? [],
+    occurrences: payload.occurrences ?? [],
+    edges: payload.edges ?? [],
+  };
+}
+
 export async function createSpace(body: CreateSpaceRequest): Promise<ContractSpace> {
   const response = await apiPost('/api/spaces', body);
   const payload = (await parseMaybeJson(response)) as { space: ContractSpace };

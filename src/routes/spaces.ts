@@ -382,7 +382,19 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
 
   router.get("/api/spaces/:id", (req, res) => {
     try {
-      sendJson(res, 200, { space: loadSpaceOr404(getDb(), req.params.id) });
+      const db = getDb();
+      // Return the full fact packet (space + items/occurrences/edges) per the
+      // umbrella plan §5.1 / §589: `GET /api/spaces/:id` is the read surface the
+      // renderers (C8 collection, C9a canvas, …) load their model from. The
+      // `space` field is preserved for backward compatibility; the additional
+      // collections are a superset so existing callers are unaffected.
+      const space = loadSpaceOr404(db, req.params.id);
+      sendJson(res, 200, {
+        space,
+        items: listSpaceItems(db, space.id),
+        occurrences: listSpaceOccurrences(db, space.id),
+        edges: listSpaceEdges(db, space.id),
+      });
     } catch (error) {
       handleError(res, error);
     }

@@ -61,6 +61,7 @@ import type { GraphNodeType } from './views/graph';
 import { TimelineView } from './views/timeline';
 import { PresetsView } from './views/presets';
 import { SpacesViewShell } from './views/spaces/SpacesViewShell';
+import { SPACE_RENDERERS_REGISTRY } from './views/spaces/renderers';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
@@ -1420,6 +1421,7 @@ function App(): JSX.Element {
             projectId={route.params.project ?? ''}
             spaceId={route.params.space ?? null}
             renderer={route.params.renderer}
+            renderers={SPACE_RENDERERS_REGISTRY}
           />
         )}
         </main>
