@@ -10,15 +10,38 @@
 // C14b document, C17 board) append their own entries here in their branches;
 // an unregistered renderer falls back to the shell empty-state.
 
-import type { SpaceRendererMountPoint } from './SpacesViewShell';
+import type { SpaceRendererMountPoint, SpaceRendererMountProps } from './SpacesViewShell';
 import type { SpaceRenderer } from '../../api';
+import { getSpaceFactPacket } from '../../api';
 import { SpaceCollectionRenderer } from './space-collection';
 import { SpaceBoardRenderer } from './SpaceBoard';
 import { DocumentBlockEditor } from './DocumentBlockEditor';
+import { SpaceCanvas, type SpaceCanvasModel } from './SpaceCanvas';
+
+/**
+ * Default canvas loader: reads the Space fact packet (`GET /api/spaces/:id`) and
+ * projects it to the canvas's `{ occurrences, items }` model. SpaceCanvas accepts
+ * extra props beyond the frozen mount-point contract, so the registry adapter
+ * supplies the loader while exposing only `SpaceRendererMountProps` to the shell
+ * — keeping the registry entry a valid `SpaceRendererMountPoint`.
+ */
+async function loadCanvasModel(spaceId: string): Promise<SpaceCanvasModel> {
+  const packet = await getSpaceFactPacket(spaceId);
+  return { occurrences: packet.occurrences, items: packet.items };
+}
+
+function CanvasMountPoint(props: SpaceRendererMountProps): JSX.Element {
+  return <SpaceCanvas {...props} loadModel={loadCanvasModel} />;
+}
 
 export const SPACE_RENDERERS_REGISTRY: Partial<Record<SpaceRenderer, SpaceRendererMountPoint>> = {
   collection: SpaceCollectionRenderer,
   board: SpaceBoardRenderer,
+  // The `canvas` renderer (SpaceCanvas) takes a `loadModel` beyond the frozen
+  // mount-point contract; the adapter above injects the real fact-packet loader
+  // so the home renderer switcher's `canvas` option mounts a working canvas
+  // rather than the shell empty-state.
+  canvas: CanvasMountPoint,
   // The `document` renderer mounts the C14c block EDITOR. It gates against C13d
   // custody: a repo-authoritative + drifted document renders read-only/stale
   // with re-import / fork affordances, while Mandible-custody documents are

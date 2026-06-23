@@ -1015,6 +1015,7 @@ a {
 .app-layout--view-sidebar-open .artifacts-sidebar,
 .app-layout--view-sidebar-open .chat-history-sidebar,
 .app-layout--view-sidebar-open .graph-sidebar,
+.app-layout--view-sidebar-open .spaces-tree,
 .app-layout--view-sidebar-open .timeline-sidebar {
   position: relative;
   z-index: 2;

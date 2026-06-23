@@ -130,6 +130,11 @@ export function SpaceSeedDialog({
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   const [graphLoaded, setGraphLoaded] = useState(false);
+  // Opt-in cross-project seeding: when on, the graph-selection source pulls
+  // issue nodes from ALL projects (not just this Space's project + null-project
+  // nodes), so a Space can be seeded with cross-project items. Off by default to
+  // keep the common single-project case scoped. (umbrella de56ffa, child 6a4a69a)
+  const [allProjects, setAllProjects] = useState(false);
 
   // Load the project's issue nodes from the backend graph adapter the first time
   // the graph-selection source is chosen. This is the only source-of-truth read
@@ -146,7 +151,9 @@ export function SpaceSeedDialog({
         if (cancelled) return;
         const issueNodes = payload.nodes.filter(
           (node) => node.type === 'issue'
-            && (!projectId || node.detail?.project_id === projectId || node.detail?.project_id == null),
+            // When "all projects" is on, keep every issue node; otherwise scope to
+            // this Space's project (and null-project / cross nodes as before).
+            && (allProjects || !projectId || node.detail?.project_id === projectId || node.detail?.project_id == null),
         );
         setGraphNodes(issueNodes);
         setGraphLoaded(true);
@@ -161,7 +168,7 @@ export function SpaceSeedDialog({
       cancelled = true;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [source, repo, projectId]);
+  }, [source, repo, projectId, allProjects, graphLoaded]);
 
   const addChipToken = useCallback((token: string): boolean => {
     const chip = parseFilterToken(token);
@@ -313,6 +320,19 @@ export function SpaceSeedDialog({
 
         {source === 'graph' ? (
           <div className="space-seed-dialog__graph" data-testid="seed-graph-picker">
+            <label className="space-seed-dialog__option" data-testid="seed-all-projects-label">
+              <input
+                type="checkbox"
+                checked={allProjects}
+                data-testid="seed-all-projects"
+                onChange={(event) => {
+                  setAllProjects((event.currentTarget as HTMLInputElement).checked);
+                  // Re-read the graph under the new scope.
+                  setGraphLoaded(false);
+                }}
+              />
+              <span>Include issues from all projects</span>
+            </label>
             {graphLoading ? (
               <p className="space-seed-dialog__hint">Loading graph issues…</p>
             ) : graphError ? (

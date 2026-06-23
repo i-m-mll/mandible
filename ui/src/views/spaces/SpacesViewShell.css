@@ -25,10 +25,22 @@
   padding: 0;
 }
 
+/*
+ * Row layout: the home sidebar sits beside a column holding the header + body.
+ * (Mirrors `.issues-view` → `.issues-tree` + content.)
+ */
 .spaces-shell {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   height: 100%;
+  min-height: 0;
+}
+
+.spaces-shell__main {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
   min-height: 0;
 }
 
@@ -36,19 +48,46 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  min-height: 2.25rem;
   padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--border, #2a2a2a);
-}
-
-.spaces-shell__title {
-  font-weight: 600;
-  font-size: 0.95rem;
 }
 
 .spaces-shell__renderer {
   font-size: 0.75rem;
   color: var(--text-muted, #888);
   text-transform: capitalize;
+}
+
+/* Renderer switcher (segmented control). */
+.spaces-shell__switcher {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-raised, #1e1e1e);
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+}
+
+.spaces-shell__switcher-btn {
+  padding: 0.2rem 0.6rem;
+  font-size: 0.75rem;
+  text-transform: capitalize;
+  color: var(--text-muted, #888);
+  background: none;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.spaces-shell__switcher-btn:hover {
+  color: var(--text-primary, #e8e8e8);
+}
+
+.spaces-shell__switcher-btn[data-active='true'] {
+  color: var(--text-primary, #e8e8e8);
+  background: var(--accent-soft, rgba(74, 141, 240, 0.18));
+  font-weight: 600;
 }
 
 .spaces-shell__body {

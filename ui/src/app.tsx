@@ -326,6 +326,30 @@ function App(): JSX.Element {
     navigateToHash(settingsReturnHashRef.current ?? '#/console');
   }, [navigateToHash]);
 
+  // Spaces home navigation: open a space and/or switch its renderer by rebuilding
+  // the `#/spaces?project=…&space=…&renderer=…` hash. Selection + renderer choice
+  // stay URL-canonical (Dataful UX rule), and the existing `?sidebar=` param is
+  // preserved so opening a space never toggles the sidebar.
+  const navigateToSpace = useCallback(
+    (target: { projectId?: string | null; spaceId?: string | null; renderer?: string }) => {
+      if (typeof window === 'undefined') return;
+      const hash = window.location.hash || '#/spaces';
+      const queryPart = hash.replace(/^#/, '').split('?')[1] ?? '';
+      const params = new URLSearchParams(queryPart);
+      const setOrDelete = (key: string, value: string | null | undefined) => {
+        if (value === undefined) return; // leave untouched
+        if (value === null || value === '') params.delete(key);
+        else params.set(key, value);
+      };
+      setOrDelete('project', target.projectId);
+      setOrDelete('space', target.spaceId);
+      setOrDelete('renderer', target.renderer);
+      const query = params.toString();
+      navigateToHash(`#/spaces${query ? `?${query}` : ''}`);
+    },
+    [navigateToHash],
+  );
+
   useEffect(() => {
     const handleChange = () => setRoute(parseHashRoute());
     window.addEventListener('hashchange', handleChange);
@@ -1422,6 +1446,8 @@ function App(): JSX.Element {
             spaceId={route.params.space ?? null}
             renderer={route.params.renderer}
             renderers={SPACE_RENDERERS_REGISTRY}
+            sidebarHidden={viewSidebarHidden}
+            onNavigate={navigateToSpace}
           />
         )}
         </main>
