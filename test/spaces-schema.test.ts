@@ -98,16 +98,10 @@ describe("spaces core schema (issue b395083)", () => {
     expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(83);
   });
 
-  it("does NOT create space_exports (later serial-chain child C13a)", () => {
-    // space_blocks now exists once the C11 migration (issue d2a8e77) lands in the
-    // integration branch; only space_exports remains a later serial-chain child.
-    for (const table of ["space_exports"]) {
-      const row = db
-        .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-        .get(table) as { name: string } | undefined;
-      expect(row, `${table} must not exist in this child`).toBeUndefined();
-    }
-  });
+  // The C1 core-four migration no longer owns a "space_exports does not exist"
+  // placeholder: the C13a serial-chain child (issue 9041bb3) now creates that
+  // table, and asserts its schema + backup behavior in test/spaces-exports.test.ts.
+  // This mirrors how the C11 blocks child (d2a8e77) retired its own placeholder.
 
   it("rejects invalid JSON on every metadata_json column (object-only json_valid)", () => {
     const projectId = seedProject(db);

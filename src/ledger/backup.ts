@@ -75,6 +75,14 @@ export const METADATA_BACKUP_TABLES = [
   // the metadata backup emits inline UNIQUE/composite-FK + CHECK constraints as
   // part of the table's own DDL, so they survive backup/restore.
   "space_blocks",
+  // Spaces document-custody tracking (issue 9041bb3 / umbrella de56ffa). The
+  // MUTABLE tracking record keyed to the BACKED-UP `ledger_project_checkouts.id`
+  // (in LEDGER_BACKUP_TABLES below) — NOT the excluded `work_repos.id` — so its
+  // tracking identity survives restore. Child of `spaces`, so it follows here; the
+  // metadata backup emits the inline UNIQUE(repo_id, branch, path) as part of the
+  // table's own DDL, so duplicate (repo_id, branch, path) rows stay rejected after
+  // a backup round-trip. Omitting it from this list would orphan tracked documents.
+  "space_exports",
   ...LEDGER_BACKUP_TABLES,
 ] as const;
 
