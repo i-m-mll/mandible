@@ -254,13 +254,18 @@ CREATE TABLE space_exports (
   last_seen_commit              TEXT,             -- HEAD commit at last drift check
   last_seen_content_sha256      TEXT,             -- working-tree content hash at last drift check
   created_at                    INTEGER NOT NULL,
-  updated_at                    INTEGER NOT NULL
+  updated_at                    INTEGER NOT NULL,
+  -- Identity is an INLINE table-level UNIQUE, NOT an external CREATE UNIQUE INDEX:
+  -- the metadata backup emits only table DDL + INSERTs and NO standalone index DDL
+  -- (src/ledger/backup.ts:153,172), so an external unique index would be LOST on
+  -- backup/restore, silently allowing duplicate (repo_id, branch, path) tracking
+  -- rows. Inline UNIQUE survives restore (UMBRELLA-PLAN.md §3 inline-UNIQUE rule,
+  -- review B3). Only the non-unique perf index below stays a separate CREATE INDEX.
+  UNIQUE (repo_id, branch, path)
 );
 
 CREATE INDEX idx_space_exports_space   ON space_exports(space_id);
 CREATE INDEX idx_space_exports_repo    ON space_exports(repo_id, branch, path);
-CREATE UNIQUE INDEX idx_space_exports_identity
-  ON space_exports(repo_id, branch, path);
 ```
 
 - `authority` records who currently owns the bytes: `'mandible'` while working,
@@ -274,6 +279,14 @@ CREATE UNIQUE INDEX idx_space_exports_identity
 - **Backup:** `space_exports` **MUST** be added to `METADATA_BACKUP_TABLES`
   (`src/ledger/backup.ts:36-66`) like the other Spaces tables — losing tracking
   state on backup/restore would orphan tracked documents.
+- **Identity is inline `UNIQUE`, not an external index (review B3).** The
+  `(repo_id, branch, path)` identity constraint is an **inline table-level
+  `UNIQUE`** in the `CREATE TABLE` DDL, **not** a `CREATE UNIQUE INDEX`. The
+  metadata backup emits only table DDL + INSERTs and no standalone index DDL
+  (`src/ledger/backup.ts:153,172`), so an external unique index would be lost on
+  restore. **Acceptance criterion on the document-custody child:** an
+  inline-UNIQUE-survives-restore test asserts that, after a backup round-trip,
+  inserting a duplicate `(repo_id, branch, path)` row is still rejected.
 
 This table is part of the **document-custody child** (not the core `spaces_core`
 migration); it ships with the export-and-track work that needs it. See

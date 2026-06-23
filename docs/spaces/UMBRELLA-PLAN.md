@@ -86,13 +86,22 @@ These are decided. Encode them; do not reopen.
 
 ## 3. The P1′ schema
 
-New tables land as **new `MIGRATIONS` entries in `src/db.ts`** (latest version is
-currently **82**; new entries are **83+**). Per project convention, schema changes
-go in the `MIGRATIONS` array — never ad-hoc `CREATE TABLE IF NOT EXISTS` in
-modules, and never in `ensureSchema()` helpers (those are fresh-DB fallbacks
-only). Each migration carries its `CREATE TABLE` + `CREATE INDEX` statements in
-the `statements` array, mirroring `artifact_links` (migration 67) and
-`knowledge_backrefs` (migration 68) at `src/db.ts:1592-1648`.
+New tables land as **new `MIGRATIONS` entries in `src/db.ts`** (the latest version
+is currently **82**; new entries take the **next contiguous version**). Per project
+convention, schema changes go in the `MIGRATIONS` array — never ad-hoc `CREATE
+TABLE IF NOT EXISTS` in modules, and never in `ensureSchema()` helpers (those are
+fresh-DB fallbacks only). Each migration carries its `CREATE TABLE` + `CREATE
+INDEX` statements in the `statements` array, mirroring `artifact_links`
+(migration 67) and `knowledge_backrefs` (migration 68) at `src/db.ts:1592-1648`.
+
+> **No pre-reserved version numbers across parallel branches.**
+> `assertMigrationSequence` (`src/db.ts:2020`) requires the migration versions to be
+> **contiguous**. The three migration-bearing children (core schema; `space_blocks`;
+> `space_exports`) must be **serialized**: each uses the **next contiguous version,
+> assigned at integration in merge order** — do NOT hard-code `v83`/`v84`/`v85`
+> against parallel branches (a later-merging branch would collide or leave a gap).
+> The version labels used below (e.g. "v83 `spaces_core`") are illustrative of the
+> *ordering*, not reservations.
 
 > **Codex P1′-schema verdict (review B1): the three-table split is justified, not
 > over-engineered.** A single flat `space_members` table collapsing membership,
@@ -461,14 +470,24 @@ present in the backup list.
 
 ### 3.8 Migration strategy (review B10)
 
-- **v83 `spaces_core`** — one sequential migration after 82 shipping the *core
-  four* together: `spaces`, `space_items`, `space_occurrences`, `space_edges`. All
-  four are added to `METADATA_BACKUP_TABLES` in the same change.
-- **`space_blocks`** ships in a **later** migration tied to the **document-renderer
+- **`spaces_core`** — one sequential migration (the **next contiguous version**
+  after 82, assigned at integration) shipping the *core four* together: `spaces`,
+  `space_items`, `space_occurrences`, `space_edges`. All four are added to
+  `METADATA_BACKUP_TABLES` in the same change.
+- **`space_blocks`** ships in a **later** migration tied to the **blocks-schema
   child** — it is largely independent of the canvas/collection core (review
-  B1/B10). Added to `METADATA_BACKUP_TABLES` in that migration.
+  B1/B10). It uses the **next contiguous version after the core migration**, assigned
+  at integration in merge order (not a pre-reserved `v84`). Added to
+  `METADATA_BACKUP_TABLES` in that migration.
 - **`space_exports`** ships in the **document-custody child** migration (§2 of the
-  custody doc), also added to `METADATA_BACKUP_TABLES`.
+  custody doc), again using the **next contiguous version at integration** (not a
+  pre-reserved `v85`), also added to `METADATA_BACKUP_TABLES`. Its
+  `(repo_id, branch, path)` identity is an **inline `UNIQUE`**, not an external
+  `CREATE UNIQUE INDEX` (which would be lost on backup/restore — review B3).
+- **Serialization constraint.** Because `assertMigrationSequence` (`src/db.ts:2020`)
+  requires contiguous versions, these three migration-bearing children are
+  **serialized at integration**; no version number is pre-reserved across parallel
+  branches.
 - **Migration tests** (acceptance criteria): invalid JSON rejected; duplicate
   `space_items` (`UNIQUE(space_id, ref_type, ref_id)`) rejected; cross-space
   item/block/parent/edge refs rejected by the composite FKs; item deletion
@@ -907,40 +926,67 @@ overrides, with conflicts flagged.
 
 Issue IDs are **TBD** (the umbrella is not yet filed). One row per child unit,
 scoped to independent worktree lanes where possible. Branches are
-`feature/<name>` (sub-branches use `__`).
+`feature/<name>` (sub-branches use `__`). The full dispatch-ready decomposition
+(corrected owned-surfaces, acceptance criteria, non-goals, dependency DAG, and
+the ownership-collision matrix) is in
+[`UMBRELLA-DECOMPOSITION.md`](./UMBRELLA-DECOMPOSITION.md); this table is the
+canonical Children summary kept consistent with it (19 children: the backend lane
+split into API/CLI/transport-SSE; SpaceCanvas split into nodes/edges; the nav work
+split into an early nav shell and a late graph-demotion/default-route flip; the
+document lane split into serialization/blocks-schema/renderer with repo-file
+registration moved into doc-custody and the `block` CLI moved into the CLI child).
+**No migration version is pre-reserved** — each migration-bearing child uses the
+next contiguous `src/db.ts` version, assigned at integration in merge order
+(`assertMigrationSequence`, `src/db.ts:2020`).
 
 | issue | scope | branch | state |
 |---|---|---|---|
-| TBD | **Core schema + backup (v83 `spaces_core`)**: one migration after 82 for `spaces`, `space_items`, `space_occurrences`, `space_edges` (DDL per §3 — inline `UNIQUE`s, composite FKs, object `json_valid` CHECKs, `ref_id`/`external_ref` CHECKs, renderer CHECK excluding `'document'`, **RESTRICT** `project_id` FK with space-internal CASCADE); add all four to `METADATA_BACKUP_TABLES`; migration + backup tests (invalid JSON, dup items, cross-space refs, item-delete cascade). **AC: backup test asserts the four tables present; uniqueness is inline, not external-index-only.** `space_blocks` is NOT here (ships with document renderer). | `feature/spaces-schema` | TBD |
-| TBD | **Backend API + CLI + transport + SSE**: `/api/spaces*` CRUD incl. batch occurrences + `seed`; `mandible space ...` CLI (§5.2); add `/api/spaces*` and `/api/knowledge-backrefs` to file-RPC allowlist (`src/file-rpc-transport.ts`); broadcast `space:*` SSE; route tests. *Depends on core schema.* | `feature/spaces-backend` | TBD |
-| TBD | **Shared resource-ref parser** (foundational): one parser for `artifact:sha256:<hex>`, compact `artifact:<hex>`, `repo://<repo>@<ref>/<path>`, `mandible://<repo>/issue/<id>`, markdown links with those hrefs, **and `spaces-doc.v1` directive ref/embed nodes** (must agree on the directive grammar with the remark-directive renderer, §8); handles `artifact:sha256:<hash>` (not just compact `artifact:<hex>`), `repo://`, and `mandible://` without misrouting — the current `ui/src/artifact-links.ts` linkifier fails on all three; unresolved-ref UI; used by renderer, import, issue detail, and artifacts UI; replaces `ui/src/artifact-links.ts`'s bracket-only linkifier (review A4, §8). *Depends on backend; foundational for document renderer.* | `feature/spaces-ref-parser` | TBD |
-| TBD | **Shared filter extraction + seeding + Add-to-Space**: extract shared issue-predicate/filter component from Timeline (`TimelineFilterRowSpec`); wire seed endpoint; "Add to Space" in IssueDetail, artifacts, graph node detail. *Depends on backend.* | `feature/spaces-seed-filter` | TBD |
-| TBD | **Collection/list renderer**: membership list/tree with previews, add/remove, missing-ref handling, project scoping; first usable renderer. *Depends on backend.* | `feature/spaces-collection` | TBD |
-| TBD | **SpaceCanvas**: new React Flow editable canvas; persisted occurrences; shelf for unplaced; auto-arrange seed via `layoutGraph()`; freely-labeled `space_edges`; optimistic drag + autosave. *Depends on backend; parallel to collection.* | `feature/spaces-canvas` | TBD |
-| TBD | **Document renderer + serialization (+ `space_blocks` migration)**: ship the `space_blocks` table in its own migration (composite FKs, `item_snapshot_json`, added to `METADATA_BACKUP_TABLES`, block-delete-preserves-placeholder test); `space_blocks` editor; embedded previews; **canonical `spaces-doc.v1` serialization (Markdown + non-executable directives) — in-band, single source of truth, NO mandatory sidecar, NOT full MDX** (custody doc §1; full MDX rejected on security grounds); **adopt a remark-directive / micromark renderer** in the UI (NOT an MDX compiler/runtime; replaces the bare `marked` path in `ui/src/sanitize.ts` / `ui/src/views/artifacts.tsx`); support **registering an existing tracked repo file as a document** (link custody, `repo://<repo>@<ref>/<path>` source — ties to issue 2dc97b8, §3.5); uses the shared ref parser. **Embed-on-delete behavior is DEFERRED: the implementing agent MUST prompt the user for that decision when it becomes relevant — do not pick it unilaterally** (see §14). *Depends on backend + ref parser; informs custody.* | `feature/spaces-document` | TBD |
-| TBD | **Document custody / export (+ `space_exports` migration)**: ship `space_exports` (custody doc §2.1, added to `METADATA_BACKUP_TABLES`); **default custody = Mandible custody until the user explicitly requests a commit** — committing to a repo is always an explicit user action (the **export dialog**), **no auto-track / no silent auto-commit**; export dialog confirms or overrides the document location, driven by a **global default repo-relative path + per-repo overrides** (custody doc §5); export-and-track op writing canonical `spaces-doc.v1` (Markdown + non-executable directives) via **agent-key linked commits** on a docs branch; authority/drift via live worktree comparison (review A5); untracked export-of-copy = local file export (review A8); a registered existing repo file (§3.5) is already repo-authoritative. *Depends on document renderer + serialization.* | `feature/spaces-doc-custody` | TBD |
-| TBD | **Auth-merge / docs-branch promotion flow** (**modifies auth/merge infra**): short-lived `promote/docs/<ts>` proxy branch cut from docs-branch head submitted to the auth queue, leaving the long-lived docs worktree intact; optional `--preserve-head-branch` to skip `cleanup_merged_worktrees` (`cli/auth-merge.sh:410`); verify routine docs commits carry `Mandible-Issue:` trailers so promotion verification passes. **Per global rule, submit its own auth request from the protected-`main` checkout.** *Depends on doc-custody.* | `feature/spaces-docs-promotion` | TBD |
-| TBD | **Board/kanban renderer**: real renderer (columns/swimlanes/WIP via `section_id`/`sort_key`), NOT a probe. **Default column dimension = reuse issue `worker_status`; PLUS allow custom columns defined either by a filter predicate (reusing the shared filter, §6.1) or by manually adding specific issues to a column.** *Depends on backend.* | `feature/spaces-board` | TBD |
-| TBD | **Make Space documents ingestable as HumbleB sources** (v1 SHRUNK, under umbrella **a8fbc09**): render/export a Space document as a SOURCE and feed it through the **existing** Mandible→HumbleB bridge (`humbleb-repo/humbleb/sources/mandible.py`, `docs/mandible_document_bridge.md`) so its extracted triples enter RAG queries — contract (1), `source_type='artifact'`, repo-authoritative snapshot; parameterize hard-coded `d25bac5`. **DEFER live paragraph-level backref display + `mandible.space_snapshot.v1` to a later item (§10.1).** *Depends on document custody + serialization; coordinated under a8fbc09.* | `feature/spaces-humbleb` | TBD |
-| TBD | **Graph demotion + Spaces nav**: add top-level `Spaces` nav; demote graph to on-demand drill-down; change default route after Spaces is useful. *Parallel-able once collection/canvas exist.* | `feature/spaces-graph-demotion` | TBD |
-| TBD | **CLAUDE.md / Interface-Contract reflection** (**dotfiles repo**): propose `mandible space` commands + the decided docs-branch document-commit flow. *Filed in dotfiles repo; parallel.* | `feature/spaces-contract-reflection` (dotfiles) | TBD |
+| TBD | **Core P1′ schema + backup (`spaces_core`)**: one migration (next contiguous version at integration) for `spaces`, `space_items`, `space_occurrences`, `space_edges` (DDL per §3 — inline `UNIQUE`s, composite FKs, object `json_valid` CHECKs, `ref_id`/`external_ref` CHECKs, renderer CHECK excluding `'document'`, **RESTRICT** `project_id` FK with space-internal CASCADE); add all four to `METADATA_BACKUP_TABLES`; migration + backup tests (invalid JSON, dup items, cross-space refs, item-delete cascade, inline-UNIQUE-survives-restore). `space_blocks`/`space_exports` NOT here. | `feature/spaces-schema` | TBD |
+| TBD | **Spaces REST API (CRUD + batch + seed)**: `/api/spaces*` CRUD incl. batch occurrences + backend-evaluated `/seed`; routes via new `registerSpacesRoutes(router)` in `src/routes/spaces.ts` imported/called from `src/index.ts` (~84–127, analog `registerProviderRoutes`); **owns the shared event-name enum `src/spaces/events.ts`** (frozen for C4/C11); route tests. *Depends on core schema.* | `feature/spaces-api` | TBD |
+| TBD | **`mandible space` CLI** (shell): new `cli/space.sh` + `space)` dispatch in `bin/mandible` (`:84,112`) + help; subcommands incl. **`block add\|edit\|rm`** (moved here from blocks-schema); `--json` output. *Depends on API; `block` subcommands depend on blocks-schema.* | `feature/spaces-cli` | TBD |
+| TBD | **File-RPC transport allowlist + `space:*` SSE**: add `/api/spaces*` + `/api/knowledge-backrefs` to `isAllowedFileRpcRoute` (`src/file-rpc-transport.ts`); broadcast `space:*` via `src/sse.ts`, **consuming** the C2-owned `src/spaces/events.ts` enum (no cycle). *Depends on API.* | `feature/spaces-transport-sse` | TBD |
+| TBD | **Shared resource-ref parser FIX** (live bug): `ui/src/artifact-links.ts:3`'s `/^artifact:([0-9a-f]{7,64})$/i` cannot match `artifact:sha256:<hash>`. Replace with one shared parser for `artifact:sha256:<hex>`, compact `artifact:<hex>`, `repo://<repo>@<ref>/<path>`, `mandible://<repo>/issue/<id>`, markdown links with those hrefs; unresolved-ref UI; regression test; used by renderer/import/issue-detail/artifacts (review A4, §8). **Gate before the document renderer.** Lands the shared module that C12's directive grammar extends. *Depends on API; before seed-filter on shared files.* | `feature/spaces-ref-parser` | TBD |
+| TBD | **Shared filter extraction + seeding UI + Add-to-Space**: extract shared issue-predicate/filter from Timeline (`TimelineFilterRowSpec`); **seed UI posts to the C2-evaluated `/seed`** (backend evaluation stays in API); "Add to Space" in IssueDetail, artifacts, graph node detail. *Depends on API; after ref-parser on shared files; before late graph-demotion on `graph.tsx`.* | `feature/spaces-seed-filter` | TBD |
+| TBD | **Collection/list renderer**: membership list/tree with previews, add/remove, missing-ref handling, project scoping; first usable renderer; mounts into the nav shell. *Depends on API + ref-parser + nav-shell.* | `feature/spaces-collection` | TBD |
+| TBD | **SpaceCanvas nodes**: new React Flow editable canvas — occurrences, shelf for unplaced, auto-arrange seed via `layoutGraph()`, optimistic drag + autosave, SSE reconcile without zoom/selection reset. *Depends on API + nav-shell; parallel to collection.* | `feature/spaces-canvas__nodes` | TBD |
+| TBD | **SpaceCanvas edges**: `space_edges` UI + free labels + promote-to-ledger affordance (couples to CLI `promote-edge` semantics). *Depends on canvas nodes + API.* | `feature/spaces-canvas__edges` | TBD |
+| TBD | **Early Spaces nav/route shell**: add `'spaces'` to `Route['tab']` union (`ui/src/routing.ts:2`) + the duplicated allow-array (~`:35`) + a `Spaces` `primaryNavItems` entry (`ui/src/app.tsx:151,990`). **Does NOT flip the default route or demote graph.** *Depends on API; foundational for collection/canvas.* | `feature/spaces-nav-shell` | TBD |
+| TBD | **`space_blocks` schema + blocks API**: ship `space_blocks` in its own migration (next contiguous version; composite FKs, `item_snapshot_json`, inline `UNIQUE(space_id, id)`, added to `METADATA_BACKUP_TABLES`, block-delete-preserves-placeholder test); `/blocks*` routes extending `src/routes/spaces.ts`; `space:block:changed` via the C2 enum. **`block` CLI is NOT here (moved to CLI child).** Block identity agrees with serialization. *Depends on schema + API; coordinates with serialization.* | `feature/spaces-blocks-schema` | TBD |
+| TBD | **`spaces-doc.v1` serialization + ref-parser directive extension**: canonical Markdown + non-executable `spaces-doc.v1` directives — in-band, NO sidecar, NOT MDX (custody §1); round-trip `import(export(x))==x`; import-conflict policy (custody §1.3); **owns the `spaces-doc.v1` directive-grammar EXTENSION to the C5 shared parser module** (C5 lands base parser, this child extends it; renderer needs only the frozen grammar). *Depends on ref-parser; informs blocks-schema, custody, renderer.* | `feature/spaces-serialization` | TBD |
+| TBD | **Document custody / export (+ `space_exports`) + repo-file registration**: ship `space_exports` (custody §2.1) with **inline `UNIQUE(repo_id, branch, path)`** (NOT external index — lost on restore), added to `METADATA_BACKUP_TABLES` (inline-UNIQUE-survives-restore test); **default custody = Mandible until explicit commit** (no auto-track); **export dialog** (global default + per-repo override + per-export confirm); export-and-track via **agent-key linked commits** on a docs branch; drift via live worktree (review A5); untracked export-of-copy (review A8); **docs-branch worktree lifecycle** (provisioning + lock + dirty-rejection + path identity + settings storage); **repo-file-as-document registration** (`authority='repo'`, link custody, `repo://...` source — moved here from the renderer child, ties to 2dc97b8 §3.5). *Depends on serialization + renderer.* | `feature/spaces-doc-custody` | TBD |
+| TBD | **Document renderer + block editor**: block editor over `space_blocks`; embedded previews; **remark-directive (non-executable) renderer** replacing the bare `marked` path (`ui/src/sanitize.ts`, `ui/src/views/artifacts.tsx`); sanitized HTML via DOMPurify; sanitizer/iframe-security test; uses shared parser + frozen C12 grammar. **Repo-file registration is NOT here (moved to custody).** **Embed-on-delete DEFERRED — implementer MUST prompt the user** (§14). *Depends on ref-parser + serialization + blocks-schema; informs custody.* | `feature/spaces-document` | TBD |
+| TBD | **Make Space documents ingestable as HumbleB sources** (v1 SHRUNK, under umbrella **a8fbc09**): render/export a Space document as a SOURCE through the **existing** Mandible→HumbleB bridge (`humbleb-repo/humbleb/sources/mandible.py`, `docs/mandible_document_bridge.md`) — contract (1), `source_type='artifact'`, repo-authoritative snapshot; parameterize hard-coded `d25bac5`. **DEFER live paragraph-level backrefs + `mandible.space_snapshot.v1` (§10.1).** *Depends on custody + serialization + transport allowlist (`/api/knowledge-backrefs`); under a8fbc09.* | `feature/spaces-humbleb` | TBD |
+| TBD | **Auth-merge / docs-branch promotion flow** (**modifies auth/merge infra**): short-lived `promote/docs/<ts>` proxy branch cut from docs-branch head, leaving the long-lived docs worktree intact; optional `--preserve-head-branch` skipping `cleanup_merged_worktrees` (`cli/auth-merge.sh:410`); **the `Mandible-Issue:` trailer verification is in `src/routes/auth.ts`** (route ~109, `git log --no-merges` ~868, scan ~892) — owns that verification path, owns `cli/auth-merge.sh` only for cleanup/proxy. **Per global rule, submits its own auth request from the protected-branch (`main`) checkout.** *Depends on doc-custody.* | `feature/spaces-docs-promotion` | TBD |
+| TBD | **Board/kanban renderer**: real renderer (columns/swimlanes/WIP via `section_id`/`sort_key`). **Default columns = issue `worker_status`; PLUS custom columns by filter predicate (shared filter §6.1) or manual.** *Depends on API + shared filter + nav-shell.* | `feature/spaces-board` | TBD |
+| TBD | **Graph demotion + default-route flip**: demote graph to on-demand drill-down (`src/routes/graph.ts:31-73` perspectives preserved); flip the default route away from `graph` (`ui/src/routing.ts:35`) to Spaces **only after Spaces is useful**. (Nav item/route union already added by the nav shell.) *Depends on collection + canvas-nodes + nav-shell; after seed-filter on `graph.tsx`.* | `feature/spaces-graph-demotion` | TBD |
+| TBD | **CLAUDE.md / Interface-Contract reflection** (**dotfiles repo**): propose `mandible space` commands + the decided docs-branch document-commit flow; owns the dotfiles change itself. *Depends on CLI + promotion-flow design; filed in dotfiles repo.* | `feature/spaces-contract-reflection` (dotfiles) | TBD |
 
-Dependency summary: core schema → backend → {ref-parser, seed-filter, collection,
-canvas, board}; document renderer depends on backend + ref-parser (and carries the
-`space_blocks` migration) and feeds custody; custody (carrying the `space_exports`
-migration) feeds both the docs-branch promotion-flow child and the
-HumbleB-ingest-as-source child; graph-demotion and contract-reflection are
-parallel-able.
+Dependency summary: core schema → API (owns the `space:*` event enum + backend
+`/seed` evaluator) → {CLI, transport-SSE, ref-parser-FIX, seed-filter,
+collection, canvas-nodes, nav-shell, blocks-schema}; canvas-edges depends on
+canvas-nodes; ref-parser → serialization (which owns the `spaces-doc.v1` grammar
+extension to the ref-parser module) → {blocks-schema coordination, document
+renderer, custody}; custody (carrying `space_exports` + repo-file registration)
+feeds both the docs-branch promotion-flow child and the HumbleB-ingest child; the
+nav shell is early (so collection/canvas are reachable) and the graph-demotion +
+default-route flip is late (after Spaces is useful); board and contract-reflection
+are parallel-able. **No migration version is pre-reserved; contiguous versions are
+assigned at integration in merge order.**
 
 **Cross-umbrella / cross-issue relationships** (typed links to record on the
 umbrella when filed):
 
 | Target | Relationship | Why |
 |---|---|---|
-| **a8fbc09** (HumbleB umbrella) | `parent_child` / linked-under | the `spaces-humbleb` ingest-as-source child is coordinated **under** the existing HumbleB umbrella, not a new HumbleB apparatus (§10.1) |
-| **de2f8ac** (graph-workspace spec) | `implements` / `references` | the Spaces work implements/refines that graph-workspace direction |
-| **2dc97b8** (Project-canonical artifacts and documents) | `related` / `implements` | registering an existing repo file as a canonical document realizes part of 2dc97b8 (§3.5) |
+| **a8fbc09** (HumbleB umbrella) | `related` | the `spaces-humbleb` ingest-as-source child is coordinated **under** the existing HumbleB umbrella, not a new HumbleB apparatus (§10.1) |
+| **de2f8ac** (graph-workspace spec) | `references` (+ `related`) | **Downgraded from `implements`** — Spaces refines and diverges from that graph-workspace direction; `implements` would overstate the fidelity |
+| **2dc97b8** (Project-canonical artifacts and documents) | `related` | registering an existing repo file as a canonical document (now owned by the doc-custody child) realizes one facet of 2dc97b8 (§3.5); **`related`, not `implements`** — no single child faithfully realizes it |
 | **41d22a6**, **dc87eb3** (Timeline) | `related` — **shared filter component, COMPLEMENTARY** | Spaces reuses the Timeline filter component (§6.1) and is complementary to Timeline; **never** "supersedes" (§1) |
+
+> **No sibling `implements` edges.** The only ledger edges this umbrella creates
+> are `parent_child` (umbrella → each child) and the cross-issue edges above.
+> Inter-child relationships are **DAG dependencies** (build order), recorded in
+> `UMBRELLA-DECOMPOSITION.md`, not ledger relationship edges.
 
 ---
 
