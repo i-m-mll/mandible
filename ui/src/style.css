@@ -1009,6 +1009,52 @@ a {
   padding: 0;
 }
 
+/* Any tab that hosts a split/rail layout is full-bleed: the inner layout owns
+   its own gutters. Added by app.tsx for the resize-rail view-sidebar tabs
+   (issues, graph, timeline, spaces). A new full-bleed view can never forget it.
+   Shared container refactor — issue e29a8c5. */
+.app-content--view-sidebar {
+  padding: 0;
+}
+
+/* ── Shared view-sidebar container (issue e29a8c5) ──
+   One owner for every resize-rail view sidebar. Coexists with the per-view
+   selectors during migration; views opt in via <ViewSidebar>. */
+.view-sidebar {
+  position: relative;        /* anchor for the absolute resize handle */
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: 100%;
+}
+
+/* Headerless variant (issues/graph/timeline): the frame is the single scroll
+   owner. The per-view content class provides overflow-y:auto (e.g.
+   `.issues-tree { overflow-y:auto }`). */
+
+/* Header variant (spaces, later stage): fixed header, body is the single
+   scroll owner. */
+.view-sidebar__header {
+  flex: 0 0 auto;
+}
+
+.view-sidebar__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 10px hit strip straddling the right edge so it isn't clipped by the rail. */
+.view-sidebar__resize-handle {
+  position: absolute;
+  top: 0;
+  right: -5px;
+  width: 10px;
+  bottom: 0;
+  cursor: col-resize;
+  z-index: 3;
+}
+
 .app-layout--view-sidebar-open .auth-sidebar,
 .app-layout--view-sidebar-open .inbox-sidebar,
 .app-layout--view-sidebar-open .issues-tree,
@@ -1016,7 +1062,8 @@ a {
 .app-layout--view-sidebar-open .chat-history-sidebar,
 .app-layout--view-sidebar-open .graph-sidebar,
 .app-layout--view-sidebar-open .spaces-tree,
-.app-layout--view-sidebar-open .timeline-sidebar {
+.app-layout--view-sidebar-open .timeline-sidebar,
+.app-layout--view-sidebar-open .view-sidebar {
   position: relative;
   z-index: 2;
   box-shadow: var(--shadow-rail);
@@ -5720,10 +5767,9 @@ tr:hover .work-actions__trigger {
 
 .issues-view {
   display: flex;
-  height: calc(100% + 76px);
+  height: 100%;
   min-height: 0;
   gap: 0;
-  margin: -28px -32px -48px;
   overflow: hidden;
 }
 
@@ -6774,7 +6820,8 @@ code.inbox-detail__meta-value {
     border-bottom: 1px solid var(--neutral-alpha-06);
   }
 
-  .issues-tree__resize-handle {
+  .issues-tree__resize-handle,
+  .view-sidebar__resize-handle {
     display: none;
   }
 
