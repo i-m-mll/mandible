@@ -25,11 +25,13 @@ describe('Spaces routing', () => {
     expect(route.params).toMatchObject({ project: 'p1', space: 's1', renderer: 'canvas' });
   });
 
-  it('leaves the default route unchanged (still graph)', () => {
-    expect(parseRouteFromHash('').tab).toBe('graph');
-    expect(parseRouteFromHash('#/').tab).toBe('graph');
-    // An unknown path still falls back to graph, not spaces.
-    expect(parseRouteFromHash('#/not-a-real-tab').tab).toBe('graph');
+  it('defaults empty and unknown routes to spaces (graph demoted to drill-down)', () => {
+    expect(parseRouteFromHash('').tab).toBe('spaces');
+    expect(parseRouteFromHash('#/').tab).toBe('spaces');
+    // An unknown path now falls back to spaces, not graph.
+    expect(parseRouteFromHash('#/not-a-real-tab').tab).toBe('spaces');
+    // Graph remains reachable as an explicit drill-down route.
+    expect(parseRouteFromHash('#/graph').tab).toBe('graph');
   });
 });
 

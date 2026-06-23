@@ -1012,13 +1012,6 @@ function App(): JSX.Element {
       icon: ChatIcon,
     },
     {
-      tab: 'graph',
-      href: '#/graph',
-      label: 'Graph',
-      title: 'Graph',
-      icon: GraphIcon,
-    },
-    {
       tab: 'timeline',
       href: '#/timeline',
       label: 'Timeline',
@@ -1073,6 +1066,13 @@ function App(): JSX.Element {
       title: 'Projects',
       badge: badges.work,
       icon: ProjectsIcon,
+    },
+    {
+      tab: 'graph',
+      href: '#/graph',
+      label: 'Graph',
+      title: 'Graph',
+      icon: GraphIcon,
     },
     {
       tab: 'review',

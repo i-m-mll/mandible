@@ -288,11 +288,17 @@ describe('App routing', () => {
     });
   });
 
-  it('routes removed Switchboard hashes to the default graph workspace', () => {
+  it('routes removed Switchboard hashes to the default Spaces workspace', () => {
     expect(parseRouteFromHash('#/switchboard')).toEqual({
-      tab: 'graph',
+      tab: 'spaces',
       params: {},
     });
+  });
+
+  it('defaults empty and unknown hashes to the Spaces workspace', () => {
+    expect(parseRouteFromHash('')).toEqual({ tab: 'spaces', params: {} });
+    expect(parseRouteFromHash('#/')).toEqual({ tab: 'spaces', params: {} });
+    expect(parseRouteFromHash('#/not-a-real-tab')).toEqual({ tab: 'spaces', params: {} });
   });
 
   it('parses sidebar=hidden as the route-scoped view sidebar hide request', () => {
@@ -315,6 +321,11 @@ describe('App routing', () => {
       '#/issues?repo=dotfiles&issue=e70757d',
     );
     expect(hashWithViewSidebarHidden('#/auth?request=abc')).toBe('#/auth?request=abc&sidebar=hidden');
+  });
+
+  it('falls back to the Spaces default when toggling the sidebar on an empty hash', () => {
+    expect(hashWithViewSidebarHidden('')).toBe('#/spaces?sidebar=hidden');
+    expect(hashWithViewSidebarVisible('')).toBe('#/spaces');
   });
 
   it('maps mandible issue deep links onto the existing Issues hash route', () => {

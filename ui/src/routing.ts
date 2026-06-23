@@ -11,7 +11,7 @@ export function isViewSidebarHidden(route: Route): boolean {
 }
 
 function hashWithSidebarParam(hashValue: string, value: string | null): string {
-  const hash = hashValue || '#/graph';
+  const hash = hashValue || '#/spaces';
   const [pathPart, queryPart] = hash.replace(/^#/, '').split('?');
   const params = new URLSearchParams(queryPart ?? '');
   if (value === null) {
@@ -20,7 +20,7 @@ function hashWithSidebarParam(hashValue: string, value: string | null): string {
     params.set(VIEW_SIDEBAR_QUERY_PARAM, value);
   }
   const query = params.toString();
-  return `#${pathPart || '/graph'}${query ? `?${query}` : ''}`;
+  return `#${pathPart || '/spaces'}${query ? `?${query}` : ''}`;
 }
 
 export function hashWithViewSidebarHidden(hashValue: string): string {
@@ -32,9 +32,9 @@ export function hashWithViewSidebarVisible(hashValue: string): string {
 }
 
 export function parseRouteFromHash(hashValue: string): Route {
-  const hash = hashValue || '#/graph';
+  const hash = hashValue || '#/spaces';
   const [pathPart, queryPart] = hash.replace('#', '').split('?');
-  const path = pathPart.replace(/^\//, '') || 'graph';
+  const path = pathPart.replace(/^\//, '') || 'spaces';
   const params: Record<string, string> = {};
   if (queryPart) {
     const search = new URLSearchParams(queryPart);
@@ -51,6 +51,6 @@ export function parseRouteFromHash(hashValue: string): Route {
   ) ? 'console' : path;
   const tab = ['auth', 'artifacts', 'chat-history', 'work', 'review', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'presets', 'spaces'].includes(normalizedPath)
     ? (normalizedPath as Route['tab'])
-    : 'graph';
+    : 'spaces';
   return { tab, params };
 }
