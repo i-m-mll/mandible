@@ -23,14 +23,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
-  addSpaceItem,
   deleteSpaceItem,
   deleteSpaceOccurrence,
   getSpaceFactPacket,
   type SpaceItem,
-  type SpaceItemRefType,
 } from '../../api';
-import { SPACE_ITEM_REF_TYPES } from '../../../../src/contracts';
+import { SpaceItemPicker } from './SpaceItemPicker';
 import {
   parseResourceRef,
   resolveResourceRef,
@@ -248,8 +246,7 @@ function CollectionRow({
 export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
   const [viewState, setViewState] = useState<CollectionViewState>(EMPTY_COLLECTION_VIEW_STATE);
-  const [addRef, setAddRef] = useState('');
-  const [addType, setAddType] = useState<SpaceItemRefType>('issue');
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // The latest live id set, so view-state reconciliation can drop vanished ids
   // without resetting surviving selection/collapse on every refetch.
@@ -378,19 +375,13 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
     [spaceId, loadPacket],
   );
 
-  const onAddItem = useCallback(async () => {
-    if (!spaceId || !addRef.trim()) return;
-    setBusy(true);
-    try {
-      await addSpaceItem(spaceId, { ref_type: addType, ref_id: addRef.trim() });
-      setAddRef('');
-      await loadPacket(true);
-    } catch (error) {
-      setLoad({ status: 'error', message: String(error) });
-    } finally {
-      setBusy(false);
-    }
-  }, [spaceId, addRef, addType, loadPacket]);
+  // The picker adds the membership; a `space_item` with no collection occurrence
+  // is surfaced on this view's own unplaced shelf (never lost), so no extra
+  // occurrence is needed here. After a batch add we refetch the packet — a
+  // reconciliation input that preserves selection/filter/collapse.
+  const onItemsAdded = useCallback(() => {
+    void loadPacket(true);
+  }, [loadPacket]);
 
   if (!spaceId) {
     return (
@@ -416,37 +407,27 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
           }
         />
         <div className="space-collection__add">
-          <select
-            className="space-collection__button"
-            aria-label="Reference type"
-            value={addType}
-            onChange={(event) => setAddType((event.target as HTMLSelectElement).value as SpaceItemRefType)}
-          >
-            {SPACE_ITEM_REF_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {type}
-              </option>
-            ))}
-          </select>
-          <input
-            className="space-collection__add-ref"
-            type="text"
-            placeholder="ref id / uri"
-            aria-label="Reference id"
-            value={addRef}
-            onInput={(event) => setAddRef((event.target as HTMLInputElement).value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') void onAddItem();
-            }}
-          />
           <button
             type="button"
-            className="space-collection__button"
-            disabled={busy || !addRef.trim()}
-            onClick={() => void onAddItem()}
+            className="space-collection__button space-collection__button--primary"
+            aria-haspopup="dialog"
+            aria-expanded={pickerOpen}
+            disabled={busy}
+            data-testid="space-collection-add-items"
+            onClick={() => setPickerOpen((open) => !open)}
           >
-            Add
+            + Add items
           </button>
+          {pickerOpen ? (
+            <div className="space-collection__picker-anchor">
+              <SpaceItemPicker
+                spaceId={spaceId}
+                projectId={projectId}
+                onAdded={onItemsAdded}
+                onClose={() => setPickerOpen(false)}
+              />
+            </div>
+          ) : null}
         </div>
       </div>
 

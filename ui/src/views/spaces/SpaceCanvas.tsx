@@ -27,11 +27,12 @@ import { Background, Controls, ReactFlow, type NodeChange } from '@xyflow/react'
 import '@xyflow/react/dist/style.css';
 
 import type { SpaceItem, SpaceOccurrence, BatchSpaceOccurrenceEntry } from '../../api';
-import { batchWriteSpaceOccurrences } from '../../api';
+import { batchWriteSpaceOccurrences, createSpaceOccurrence } from '../../api';
 import { layoutGraph } from '../../graph/layout';
 import type { GraphEdge, GraphNode } from '../../types/graph';
 import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
+import { SpaceItemPicker } from './SpaceItemPicker';
 import './SpaceCanvas.css';
 
 // ---------------------------------------------------------------------------
@@ -247,6 +248,12 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
   loadModel?: SpaceCanvasLoader;
   /** Batch-write client (injected for tests); defaults to the real C2 client. */
   batchWrite?: typeof batchWriteSpaceOccurrences;
+  /**
+   * Single-occurrence create client (injected for tests); defaults to the real
+   * C2 client. Used by the "Add items" picker to materialize an unplaced
+   * `canvas` occurrence so a freshly-added item lands in the shelf.
+   */
+  createOccurrence?: typeof createSpaceOccurrence;
   /** SSE client factory (injected for tests); defaults to the shared client. */
   createSse?: () => SSEClient;
   /** Debounce window (ms) for the batched drag-position write. */
@@ -263,9 +270,11 @@ const OCCURRENCE_MOVED_EVENT = 'space:occurrence:moved';
 export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const {
     spaceId,
+    projectId,
     initialModel,
     loadModel,
     batchWrite = batchWriteSpaceOccurrences,
+    createOccurrence = createSpaceOccurrence,
     createSse = createSSEClient,
     debounceMs = DEFAULT_DEBOUNCE_MS,
   } = props;
@@ -278,6 +287,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // UI selection is ephemeral browser-local view state — never persisted, never
   // reset by SSE reconciliation.
   const [selection, setSelection] = useState<Set<string>>(() => new Set());
+  // Whether the "Add items" picker popover is open (transient browser-local).
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   // Refs that must not trigger re-render or re-subscribe.
   const draggingIds = useRef<Set<string>>(new Set());
@@ -452,9 +463,59 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     [items, scheduleFlush],
   );
 
+  // --- refetch (after an add) WITHOUT touching viewport/selection ---
+  // The shelf is derived from occurrences, so a freshly created unplaced
+  // occurrence must be read back. This mirrors the SSE reconciliation path: it
+  // reconciles occurrences (preserving in-flight drags) and never resets the
+  // ephemeral selection/viewport (Dataful-UX contract).
+  const reload = useCallback(async () => {
+    if (!spaceId || !loadModel) return;
+    const model = await loadModel(spaceId);
+    setItems(model.items);
+    setOccurrences((prev) => reconcileOccurrences(model.occurrences, draggingIds.current, prev));
+  }, [spaceId, loadModel]);
+
+  // --- "Add items" picker: create an unplaced canvas occurrence per new item ---
+  // The canvas shelf renders OCCURRENCES with no x/y, not bare items, so a
+  // newly-added `space_item` only appears once it has an unplaced `canvas`
+  // occurrence. The picker creates the item; this hook materializes its shelf
+  // occurrence so the round-trip surfaces it ready to drag onto the canvas.
+  const afterAddItem = useCallback(
+    async (item: SpaceItem) => {
+      if (!spaceId) return;
+      await createOccurrence(spaceId, { item_id: item.id, renderer: 'canvas' });
+    },
+    [spaceId, createOccurrence],
+  );
+
   return (
     <div className="space-canvas" data-testid="space-canvas">
       <div className="space-canvas__toolbar" role="toolbar" aria-label="Canvas actions">
+        <div className="space-canvas__add-items">
+          <button
+            type="button"
+            className="space-canvas__btn space-canvas__btn--primary"
+            onClick={() => setPickerOpen((open) => !open)}
+            aria-haspopup="dialog"
+            aria-expanded={pickerOpen}
+            data-testid="space-canvas-add-items"
+          >
+            + Add items
+          </button>
+          {pickerOpen && spaceId ? (
+            <div className="space-canvas__picker-anchor">
+              <SpaceItemPicker
+                spaceId={spaceId}
+                projectId={projectId}
+                afterAdd={afterAddItem}
+                onAdded={() => {
+                  void reload();
+                }}
+                onClose={() => setPickerOpen(false)}
+              />
+            </div>
+          ) : null}
+        </div>
         <button
           type="button"
           className="space-canvas__btn"

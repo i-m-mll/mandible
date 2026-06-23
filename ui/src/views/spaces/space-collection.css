@@ -36,21 +36,22 @@
 }
 
 .space-collection__add {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 0.35rem;
 }
 
-.space-collection__add-ref {
-  width: 14rem;
-  max-width: 40vw;
-  padding: 0.3rem 0.5rem;
-  font: inherit;
-  font-size: 0.85rem;
-  color: inherit;
-  background: var(--bg-subtle, transparent);
-  border: 1px solid var(--border, #2a2a2a);
-  border-radius: 4px;
+.space-collection__picker-anchor {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+}
+
+.space-collection__button--primary {
+  border-color: var(--accent, #4f8cff);
+  background: color-mix(in srgb, var(--accent, #4f8cff) 18%, transparent);
 }
 
 .space-collection__button {

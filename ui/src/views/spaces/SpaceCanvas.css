@@ -60,6 +60,23 @@
   cursor: default;
 }
 
+.space-canvas__btn--primary {
+  border-color: var(--accent, #4f8cff);
+  background: color-mix(in srgb, var(--accent, #4f8cff) 22%, var(--surface-raised, #1f1f1f));
+}
+
+.space-canvas__add-items {
+  position: relative;
+  display: inline-flex;
+}
+
+.space-canvas__picker-anchor {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+}
+
 .space-canvas__autosave {
   display: inline-flex;
   align-items: center;

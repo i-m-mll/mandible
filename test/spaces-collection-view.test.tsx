@@ -113,12 +113,26 @@ function makeOcc(id: string, extra: Record<string, unknown> = {}): Record<string
 function stubFetch(opts: {
   getPacket: () => Packet;
   onMutation?: (method: string, url: string) => void;
+  graphNodes?: Record<string, unknown>[];
+  artifacts?: Record<string, unknown>[];
 }): ReturnType<typeof vi.fn> {
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     if (method === 'GET' && /\/api\/spaces\/sp1(\?|$)/.test(url)) {
       return new Response(JSON.stringify(opts.getPacket()), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    // The "Add items" picker reads candidate issues from the graph adapter and
+    // artifacts from the artifacts list.
+    if (method === 'GET' && url.includes('/api/graph')) {
+      return new Response(JSON.stringify({ nodes: opts.graphNodes ?? [], edges: [] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (method === 'GET' && url.includes('/api/artifacts')) {
+      return new Response(JSON.stringify({ artifacts: opts.artifacts ?? [] }), {
         headers: { 'content-type': 'application/json' },
       });
     }
@@ -257,16 +271,22 @@ describe('SpaceCollectionRenderer', () => {
     });
   });
 
-  it('adds an item via the add affordance (POST to the C2 items route)', async () => {
+  it('adds an item via the searchable "Add items" picker (POST to the C2 items route)', async () => {
     const mutations: Array<[string, string]> = [];
     stubFetch({
       getPacket: () => fullPacket(),
       onMutation: (method, url) => mutations.push([method, url]),
+      graphNodes: [
+        { id: 'n1', type: 'issue', label: 'Issue 42', detail: { ledger_issue_id: 'issue-42', project_name: 'prj1' } },
+      ],
     });
     render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
     await screen.findByTestId('space-collection-body');
-    fireEvent.input(screen.getByLabelText('Reference id'), { target: { value: 'issue-42' } });
-    fireEvent.click(screen.getByText('Add'));
+    // Open the picker, find the searched issue, select + add it.
+    fireEvent.click(screen.getByTestId('space-collection-add-items'));
+    const option = await screen.findByText('Issue 42');
+    fireEvent.click(option);
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
     await waitFor(() => {
       expect(mutations.some(([m, u]) => m === 'POST' && u.includes('/api/spaces/sp1/items'))).toBe(true);
     });
