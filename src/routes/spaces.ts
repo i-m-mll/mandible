@@ -164,12 +164,13 @@ function projectExists(db: Db, projectId: string): boolean {
 }
 
 /**
- * Enforce the project-scoping policy. `artifact`/`external_ref` always cross
- * project boundaries freely. For a PROJECT-SCOPED Space, `issue`/`comment` refs
- * must belong to the Space's owning project. For a TOP-LEVEL Space
- * (project_id IS NULL, issue 812df41) there is no owning project to scope to, so
- * issue/comment refs from ANY project are accepted (cross-project membership is
- * an item-level capability); the ref must still exist.
+ * Validate that an item ref exists. Cross-project membership is a UNIVERSAL,
+ * item-level capability for EVERY Space (issue 812df41): a Space's optional
+ * `project_id` only controls where it appears in the sidebar (under that
+ * project's header, or top-level when null), never which items it may contain.
+ * So `issue`/`comment` refs from ANY project are accepted for ANY Space —
+ * project-scoped and top-level alike — exactly like `artifact`/`external_ref`
+ * refs. The only constraint is existence: the ref must resolve to a real row.
  */
 function validateItemProjectScope(
   db: Db,
@@ -177,15 +178,13 @@ function validateItemProjectScope(
   refType: SpaceItemRefType,
   refId: string,
 ): void {
+  void space;
   if (refType === "artifact" || refType === "external_ref") return;
   if (refType === "issue") {
     const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?").get(refId) as
       | { project_id: string }
       | undefined;
     if (!row) throw new HttpError(400, `issue ref not found: ${refId}`);
-    if (space.project_id !== null && row.project_id !== space.project_id) {
-      throw new HttpError(400, "issue ref belongs to a different project than the space");
-    }
     return;
   }
   // comment
@@ -196,9 +195,6 @@ function validateItemProjectScope(
       WHERE c.id = ?`,
   ).get(refId) as { project_id: string } | undefined;
   if (!row) throw new HttpError(400, `comment ref not found: ${refId}`);
-  if (space.project_id !== null && row.project_id !== space.project_id) {
-    throw new HttpError(400, "comment ref belongs to a different project than the space");
-  }
 }
 
 // --- unified ref resolver ----------------------------------------------------

@@ -60,9 +60,10 @@ export type AddToSpaceProps = {
    * first — so an item can be added to a cross-project or top-level Space. Set
    * false to keep the picker strictly single-project.
    *
-   * NOTE: the backend cross-project membership enforcement (src/routes/spaces.ts)
-   * currently rejects adding an item whose project differs from the Space's; the
-   * backend child owns relaxing that. Offering the targets here is the UI half.
+   * Cross-project membership is a universal, item-level capability: the backend
+   * (src/routes/spaces.ts `validateItemProjectScope`) accepts an item from any
+   * project into any Space, project-scoped or top-level, issue 812df41. A Space's
+   * project only governs sidebar placement, not which items it may contain.
    */
   includeCrossProject?: boolean;
   /** Notified after a successful add so the host can surface a toast/refresh if it wants. */

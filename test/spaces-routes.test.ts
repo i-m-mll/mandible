@@ -161,17 +161,32 @@ describe("space items + project scoping + idempotency", () => {
     expect(items.n).toBe(1);
   });
 
-  it("rejects a cross-project issue ref but allows cross-project artifact refs", async () => {
+  it("accepts a cross-project issue ref into a project-scoped space (universal membership, 812df41)", async () => {
+    // makeSpace() is owned by PROJECT_ID; the issue belongs to OTHER_PROJECT_ID.
+    // Cross-project membership is item-level and universal, so the add succeeds
+    // and the item persists. project_id only governs sidebar placement.
     const spaceId = await makeSpace();
     const foreignIssue = createIssue(OTHER_PROJECT_ID, "Foreign");
-    const rejected = await call("POST", `/api/spaces/${spaceId}/items`, {
+    const added = await call("POST", `/api/spaces/${spaceId}/items`, {
       ref_type: "issue",
       ref_id: foreignIssue,
     });
-    expect(rejected.status).toBe(400);
-    expect((rejected.body as { error: string }).error).toMatch(/different project/);
+    expect(added.status).toBe(201);
+    expect((added.body as { created: boolean }).created).toBe(true);
+    const persisted = db
+      .prepare("SELECT COUNT(*) AS n FROM space_items WHERE space_id = ? AND ref_type = 'issue' AND ref_id = ?")
+      .get(spaceId, foreignIssue) as { n: number };
+    expect(persisted.n).toBe(1);
 
-    // artifact refs may cross project boundaries (stated policy)
+    // A missing issue ref still 400s (existence check is preserved).
+    const missing = await call("POST", `/api/spaces/${spaceId}/items`, {
+      ref_type: "issue",
+      ref_id: "issue-does-not-exist",
+    });
+    expect(missing.status).toBe(400);
+    expect((missing.body as { error: string }).error).toMatch(/not found/);
+
+    // artifact refs may also cross project boundaries (stated policy)
     const ok = await call("POST", `/api/spaces/${spaceId}/items`, {
       ref_type: "artifact",
       ref_id: "artifact:sha256:deadbeef",
@@ -179,15 +194,28 @@ describe("space items + project scoping + idempotency", () => {
     expect(ok.status).toBe(201);
   });
 
-  it("rejects a cross-project comment ref", async () => {
+  it("accepts a cross-project comment ref into a project-scoped space (universal membership, 812df41)", async () => {
     const spaceId = await makeSpace();
     const foreignIssue = createIssue(OTHER_PROJECT_ID, "Foreign with comment");
     const comment = new LedgerStore(db).addComment(foreignIssue, { body: "hi", source: "mandible" });
-    const res = await call("POST", `/api/spaces/${spaceId}/items`, {
+    const added = await call("POST", `/api/spaces/${spaceId}/items`, {
       ref_type: "comment",
       ref_id: comment.id,
     });
-    expect(res.status).toBe(400);
+    expect(added.status).toBe(201);
+    expect((added.body as { created: boolean }).created).toBe(true);
+    const persisted = db
+      .prepare("SELECT COUNT(*) AS n FROM space_items WHERE space_id = ? AND ref_type = 'comment' AND ref_id = ?")
+      .get(spaceId, comment.id) as { n: number };
+    expect(persisted.n).toBe(1);
+
+    // A missing comment ref still 400s (existence check is preserved).
+    const missing = await call("POST", `/api/spaces/${spaceId}/items`, {
+      ref_type: "comment",
+      ref_id: "comment-does-not-exist",
+    });
+    expect(missing.status).toBe(400);
+    expect((missing.body as { error: string }).error).toMatch(/not found/);
   });
 
   it("requires external_ref items to carry a ref_uri (schema CHECK)", async () => {
