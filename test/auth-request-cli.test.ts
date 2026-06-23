@@ -22,6 +22,10 @@ function run(
       ...process.env,
       HOME: homeDir,
       MANDIBLE_PORT: "9",
+      // Pin base to the (dead) test port so a leaked dev-shell MANDIBLE_BASE
+      // (e.g. the live daemon at :19420) can never route this subprocess.
+      // Placed before extraEnv so explicit per-call overrides still win.
+      MANDIBLE_BASE: "http://127.0.0.1:9",
       ZELLIJ: "",
       TMUX: "",
       ...extraEnv,
@@ -42,6 +46,10 @@ function runAsync(
         ...process.env,
         HOME: homeDir,
         MANDIBLE_PORT: "9",
+        // Pin base to the (dead) test port so a leaked dev-shell MANDIBLE_BASE
+        // (e.g. the live daemon at :19420) can never route this subprocess.
+        // Placed before extraEnv so explicit per-call overrides still win.
+        MANDIBLE_BASE: "http://127.0.0.1:9",
         ZELLIJ: "",
         TMUX: "",
         ...extraEnv,

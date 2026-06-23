@@ -20,6 +20,11 @@ function run(
       env: {
         ...process.env,
         MANDIBLE_PORT: String(port),
+        // Pin base to the test stub so a leaked dev-shell MANDIBLE_BASE
+        // (e.g. the live daemon at :19420) can never route this subprocess.
+        // Placed before extraEnv so explicit per-call overrides (file:// RPC)
+        // still win.
+        MANDIBLE_BASE: `http://127.0.0.1:${port}`,
         ...extraEnv,
       },
     });

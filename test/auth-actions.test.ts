@@ -83,6 +83,11 @@ describe("auth request action schema", () => {
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         INSERT INTO meta (key, value) VALUES ('schema_version', '75');
         CREATE TABLE auth_requests (id TEXT PRIMARY KEY);
+        CREATE TABLE settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
       `);
       migrate(db);
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())

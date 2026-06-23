@@ -177,6 +177,11 @@ describe("ledger schema", () => {
         occurred_at INTEGER NOT NULL,
         observed_at INTEGER NOT NULL
       );
+      CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       INSERT INTO ledger_projects
         (id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at)
         VALUES ('prj_test', 'test', 'local:test', 'local:test', 'local', 1000, 1000);

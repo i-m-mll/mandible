@@ -230,6 +230,11 @@ describe("work unit routes", () => {
           state TEXT NOT NULL,
           assigned_session_id TEXT
         );
+        CREATE TABLE settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
       `);
       migrate(legacyDb);
       const columns = new Set(
