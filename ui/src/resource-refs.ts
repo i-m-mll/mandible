@@ -165,7 +165,13 @@ export function displayResourceRef(ref: string): string {
 // --- nav hrefs ---------------------------------------------------------------
 
 export function resourceRefHref(ref: string): string {
-  return `#/artifacts?ref=${encodeURIComponent(ref)}`;
+  // The artifacts route resolves a compact `artifact:<7-64hex>` ref by its bare
+  // hash (the historical `#/artifacts?ref=<hash>` contract). Canonical id and
+  // scheme forms (`artifact:sha256:<hash>`, `repo://…`, `mandible://…`) keep
+  // their full ref as the resolver authority.
+  const compact = COMPACT_ARTIFACT_REF.exec(ref.trim());
+  const navRef = compact ? compact[1] : ref;
+  return `#/artifacts?ref=${encodeURIComponent(navRef)}`;
 }
 
 export function artifactDetailHref(id: string): string {
@@ -213,6 +219,20 @@ const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|repo|mandible):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');
+}
+
+// `[artifact:<scheme>://…]` bracket syntax: the leading `artifact:` is a
+// bracket wrapper, not part of the ref, when `<inner>` is itself a non-artifact
+// `scheme://` URI (e.g. `[artifact:repo://…]`, `[artifact:feedbax://…]`). The
+// ref is the unwrapped inner so the display label and href match the canonical
+// resource form rather than the doubly-prefixed `artifact:repo://…`. Compact /
+// canonical artifact refs (`[artifact:<hex>]`, `[artifact:sha256:<hex>]`) are
+// left intact for the built-in grammar, which keeps the `artifact:` authority.
+function unwrapBracketRef(ref: string): string {
+  const inner = ref.replace(/^artifact:/i, '');
+  if (inner === ref) return ref;
+  if (inner.includes('://') && schemeForRef(inner) !== 'artifact') return inner;
+  return ref;
 }
 
 /**
@@ -321,7 +341,7 @@ function linkifyTextNodes(container: HTMLElement): void {
     let match: RegExpExecArray | null;
     const fragment = document.createDocumentFragment();
     while ((match = CUSTOM_BRACKET_PATTERN.exec(text))) {
-      const ref = trimTrailingPunctuation(match[1]);
+      const ref = unwrapBracketRef(trimTrailingPunctuation(match[1]));
       if (match.index > lastIndex) {
         fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
       }
