@@ -2215,6 +2215,62 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_space_blocks_item
         ON space_blocks(space_id, item_id) WHERE item_id IS NOT NULL`
     ]
+  },
+  {
+    version: 85,
+    name: "space_exports",
+    // Issue: 9041bb3 (umbrella de56ffa) — Spaces document-custody tracking table,
+    // per docs/spaces/DOCUMENT-CUSTODY-DESIGN.md §2.1. THIRD link of the serial
+    // migration chain (C1 spaces_core → C11 space_blocks → C13a space_exports);
+    // this table is intentionally separate from the core-four and blocks migrations.
+    //
+    // This is the MUTABLE tracking record for a document exported to a repo: the
+    // immutable bytes live in `artifacts` rows (last_export / pre_export snapshot),
+    // while this row carries the authority (mandible|repo) and drift status
+    // (clean|stale|repo_changed|worktree_dirty|conflict). No export/commit backend
+    // (C13b), drift detection (C13c), or UI (C13d) ships here — schema + backup only.
+    //
+    // Repo identity (Round-4 fix, review2 + codex [Blocker]): repo_id references
+    // `ledger_project_checkouts.id` (src/db.ts:1014-1024) — a project-scoped,
+    // BACKED-UP identity carrying root/name/default_branch/remote_url — NOT
+    // `work_repos.id`, which is in REPRODUCIBLE_OR_RUNTIME_TABLES and excluded from
+    // backup (src/ledger/backup.ts:70-90). Keying tracking rows to a non-backed-up
+    // table would orphan them on restore even though the space_exports row survives.
+    //
+    // Identity is an INLINE table-level UNIQUE(repo_id, branch, path), NOT an
+    // external CREATE UNIQUE INDEX: the metadata backup emits table DDL + INSERTs
+    // and NO standalone CREATE INDEX DDL (src/ledger/backup.ts:153,172), so an
+    // external unique index would be LOST on backup/restore, silently allowing
+    // duplicate tracking rows. Inline UNIQUE survives restore (UMBRELLA-PLAN §3
+    // inline-UNIQUE rule, review B3). Only the non-unique perf indexes below stay as
+    // separate CREATE INDEX statements.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS space_exports (
+        id                              TEXT PRIMARY KEY,
+        space_id                        TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        repo_id                         TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,
+        branch                          TEXT NOT NULL,
+        path                            TEXT NOT NULL,
+        authority                       TEXT NOT NULL DEFAULT 'mandible'
+                                          CHECK(authority IN ('mandible','repo')),
+        status                          TEXT NOT NULL DEFAULT 'clean'
+                                          CHECK(status IN ('clean','stale','repo_changed','worktree_dirty','conflict')),
+        last_export_artifact_id         TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        pre_export_snapshot_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        last_export_commit              TEXT,
+        last_export_blob_sha            TEXT,
+        last_export_content_sha256      TEXT,
+        last_seen_commit                TEXT,
+        last_seen_content_sha256        TEXT,
+        created_at                      INTEGER NOT NULL,
+        updated_at                      INTEGER NOT NULL,
+        UNIQUE (repo_id, branch, path)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_space_exports_space
+        ON space_exports(space_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_space_exports_repo
+        ON space_exports(repo_id, branch, path)`
+    ]
   }
 ];
 
