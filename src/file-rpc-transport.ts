@@ -224,6 +224,27 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  // Spaces (C2, issue f108bba): self-allowlisted per the per-route convention
+  // (§5.3). Reads + writes for spaces / items / occurrences / edges / seed and
+  // the unified ref resolver; destructive DELETE ops are listed explicitly.
+  if (normalizedMethod === "GET" && pathname === "/api/spaces/resolve") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/refs/resolve") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/spaces") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/spaces") return true;
+  if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/items$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/items\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/items\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/occurrences$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/occurrences\/batch$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/occurrences\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/occurrences\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/edges$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/spaces\/[^/]+\/edges\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "DELETE" && /^\/api\/spaces\/[^/]+\/edges\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/spaces\/[^/]+\/seed$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
