@@ -42,6 +42,7 @@ import {
   type TimelineFilterChip,
   type TimelineFilterField,
   type TimelineFilterRowSpec,
+  type LedgerIssueKind,
   type TimelineIssueRef,
   type TimelineIssuePredicate,
   type TimelineLink,
@@ -165,7 +166,7 @@ function normalizeFilterChips(chips: TimelineFilterChip[]): TimelineFilterChip[]
 function predicateForChip(chip: TimelineFilterChip): TimelineIssuePredicate | null {
   const predicates = chip.values.map<TimelineIssuePredicate | null>((value) => {
     if (chip.field === 'label') return { type: 'label', name: value };
-    if (chip.field === 'kind') return { type: 'kind', kind: value };
+    if (chip.field === 'kind') return { type: 'kind', kind: value as LedgerIssueKind };
     if (chip.field === 'referenced-by') return { type: 'referenced_by', issue_id: value };
     if (chip.field === 'subtree') return { type: 'parent_subtree', issue_id: value };
     return null;
