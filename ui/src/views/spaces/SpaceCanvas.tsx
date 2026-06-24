@@ -23,11 +23,27 @@
 // lane renders nodes + shelf + drag only.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { Background, Controls, ReactFlow, type NodeChange } from '@xyflow/react';
+import {
+  Background,
+  Controls,
+  Handle,
+  MarkerType,
+  Position,
+  ReactFlow,
+  type Connection,
+  type Edge as FlowEdge,
+  type NodeChange,
+} from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
-import type { SpaceItem, SpaceOccurrence, BatchSpaceOccurrenceEntry } from '../../api';
-import { batchWriteSpaceOccurrences, createSpaceOccurrence } from '../../api';
+import type {
+  SpaceItem,
+  SpaceOccurrence,
+  SpaceEdge,
+  BatchSpaceOccurrenceEntry,
+  CreateSpaceEdgeRequest,
+} from '../../api';
+import { batchWriteSpaceOccurrences, createSpaceEdge, createSpaceOccurrence } from '../../api';
 import { layoutGraph } from '../../graph/layout';
 import type { GraphEdge, GraphNode } from '../../types/graph';
 import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
@@ -115,6 +131,49 @@ function occurrenceLabel(occurrence: SpaceOccurrence, item: SpaceItem | null): s
 
 function occurrenceKind(occurrence: SpaceOccurrence, item: SpaceItem | null): string {
   return item?.ref_type ?? 'occurrence';
+}
+
+/**
+ * Map authored `space_edges` to React Flow edges so a connection the user draws
+ * (or one created via the SpaceEdgeLayer dropdown) renders as a line between the
+ * two placed nodes. `space_edge.source`/`.target` are OCCURRENCE ids, which are
+ * exactly the React Flow node ids (`flowNodes` uses `occurrence.id`), so the
+ * mapping is direct — no ref translation. Edges whose endpoints are not both
+ * currently placed on the canvas are skipped (an endpoint may be on the shelf).
+ */
+export function edgesToFlowEdges(
+  edges: SpaceEdge[],
+  placedIds: ReadonlySet<string>,
+): FlowEdge[] {
+  const flow: FlowEdge[] = [];
+  for (const edge of edges) {
+    if (!placedIds.has(edge.source) || !placedIds.has(edge.target)) continue;
+    flow.push({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      label: edge.label ?? undefined,
+      markerEnd: { type: MarkerType.ArrowClosed },
+      // React Flow's default edge styling is theme-agnostic; the concrete stroke
+      // colors come from `SpaceCanvas.css` (real theme tokens), not inline hex.
+      className: 'space-canvas__edge',
+    });
+  }
+  return flow;
+}
+
+/**
+ * Validate a React Flow connection into a `CreateSpaceEdgeRequest`, or null when
+ * the connection is not a valid authored edge (missing endpoints or a self-loop).
+ * Drag-created edges default to an EMPTY label; the user edits it afterward in
+ * the SpaceEdgeLayer panel (no blocking label prompt).
+ */
+export function connectionToEdgeRequest(
+  connection: Connection,
+): CreateSpaceEdgeRequest | null {
+  const { source, target } = connection;
+  if (!source || !target || source === target) return null;
+  return { source, target, label: '' };
 }
 
 /**
@@ -229,6 +288,11 @@ export function applyOptimisticPosition(
 export type SpaceCanvasModel = {
   occurrences: SpaceOccurrence[];
   items: SpaceItem[];
+  /**
+   * Authored `space_edges` to render as lines on the canvas. Optional so the
+   * frozen `{ occurrences, items }` callers stay valid; defaults to no edges.
+   */
+  edges?: SpaceEdge[];
 };
 
 export type SpaceCanvasLoader = (spaceId: string) => Promise<SpaceCanvasModel>;
@@ -249,6 +313,11 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
   /** Batch-write client (injected for tests); defaults to the real C2 client. */
   batchWrite?: typeof batchWriteSpaceOccurrences;
   /**
+   * Edge-create client (injected for tests); defaults to the real C2 client.
+   * Called by `onConnect` when the user drags a connection between two nodes.
+   */
+  createEdge?: typeof createSpaceEdge;
+  /**
    * Single-occurrence create client (injected for tests); defaults to the real
    * C2 client. Used by the "Add items" picker to materialize an unplaced
    * `canvas` occurrence so a freshly-added item lands in the shelf.
@@ -262,6 +331,7 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
 
 const DEFAULT_DEBOUNCE_MS = 400;
 const OCCURRENCE_MOVED_EVENT = 'space:occurrence:moved';
+const EDGE_EVENTS = ['space:edge:created', 'space:edge:updated', 'space:edge:removed'] as const;
 
 /**
  * The editable Spaces canvas (node half). Registered into `SpacesViewShell` as
@@ -274,6 +344,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     initialModel,
     loadModel,
     batchWrite = batchWriteSpaceOccurrences,
+    createEdge = createSpaceEdge,
     createOccurrence = createSpaceOccurrence,
     createSse = createSSEClient,
     debounceMs = DEFAULT_DEBOUNCE_MS,
@@ -283,6 +354,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     () => initialModel?.occurrences ?? [],
   );
   const [items, setItems] = useState<SpaceItem[]>(() => initialModel?.items ?? []);
+  // Authored `space_edges` rendered as lines on the canvas. Kept in sync with the
+  // SpaceEdgeLayer panel through the shared fact-packet loader + SSE edge events.
+  const [edges, setEdges] = useState<SpaceEdge[]>(() => initialModel?.edges ?? []);
   const [autosave, setAutosave] = useState<AutosaveStatus>('idle');
   // UI selection is ephemeral browser-local view state — never persisted, never
   // reset by SSE reconciliation.
@@ -311,6 +385,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       if (cancelled) return;
       setOccurrences(model.occurrences);
       setItems(model.items);
+      setEdges(model.edges ?? []);
     });
     return () => {
       cancelled = true;
@@ -350,10 +425,14 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   }, [flushPending, debounceMs]);
 
   // --- SSE reconciliation: refetch + reconcile WITHOUT touching viewport/sel ---
+  // Subscribes to both occurrence moves AND edge events so a drag-created or
+  // dropdown-created edge reconciles onto the canvas consistently with the
+  // SpaceEdgeLayer panel. Reconciliation only updates occurrence/edge data; it
+  // never resets selection or viewport (Dataful-UX contract).
   useEffect(() => {
     if (!spaceId || !loadModel) return;
     const client = createSse();
-    const unsubscribe = client.on(OCCURRENCE_MOVED_EVENT, (payload: SSEPayload) => {
+    const reconcile = (payload: SSEPayload) => {
       const data = (payload.data ?? payload) as { space_id?: string };
       if (data?.space_id && data.space_id !== spaceId) return;
       void loadModel(spaceId).then((model) => {
@@ -361,12 +440,16 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         setOccurrences((prev) =>
           reconcileOccurrences(model.occurrences, draggingIds.current, prev),
         );
+        setEdges(model.edges ?? []);
         // NOTE: selection and viewport state are intentionally untouched here.
       });
-    });
+    };
+    const unsubscribers = [OCCURRENCE_MOVED_EVENT, ...EDGE_EVENTS].map((event) =>
+      client.on(event, reconcile),
+    );
     client.connect();
     return () => {
-      unsubscribe();
+      for (const unsubscribe of unsubscribers) unsubscribe();
       client.close();
     };
   }, [spaceId, loadModel, createSse]);
@@ -388,6 +471,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   );
 
   const nodeTypes = useMemo(() => ({ spaceOccurrence: OccurrenceNode }), []);
+
+  // React Flow edges from the authored `space_edges`, drawn only between nodes
+  // that are both currently placed on the canvas.
+  const placedIds = useMemo(() => new Set(placed.map((n) => n.occurrence.id)), [placed]);
+  const flowEdges = useMemo(() => edgesToFlowEdges(edges, placedIds), [edges, placedIds]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -421,6 +509,34 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       if (positionChanged) scheduleFlush();
     },
     [scheduleFlush],
+  );
+
+  // --- onConnect: dragging from one node to another creates an authored edge ---
+  // React Flow node ids ARE occurrence ids, and `space_edge.source`/`.target`
+  // are occurrence ids too, so the connection maps directly. The edge is created
+  // with an empty label (editable later in the SpaceEdgeLayer panel); we add it
+  // optimistically so the line appears immediately, then let SSE/reload reconcile
+  // the canonical edge (which carries the server id) without duplicating it.
+  const onConnect = useCallback(
+    (connection: Connection) => {
+      if (!spaceId) return;
+      const request = connectionToEdgeRequest(connection);
+      if (!request) return;
+      void createEdge(spaceId, request)
+        .then((created) => {
+          // Replace any optimistic placeholder for this source/target with the
+          // canonical edge, and de-dupe in case an SSE echo already added it.
+          setEdges((prev) => {
+            if (prev.some((e) => e.id === created.id)) return prev;
+            return [...prev, created];
+          });
+        })
+        .catch(() => {
+          // Swallow: the SpaceEdgeLayer panel surfaces edge errors; a failed
+          // drag simply leaves the canvas unchanged.
+        });
+    },
+    [spaceId, createEdge],
   );
 
   // --- explicit user re-layout (seed/initial-arrange/re-layout-selected) ---
@@ -473,6 +589,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const model = await loadModel(spaceId);
     setItems(model.items);
     setOccurrences((prev) => reconcileOccurrences(model.occurrences, draggingIds.current, prev));
+    setEdges(model.edges ?? []);
   }, [spaceId, loadModel]);
 
   // --- "Add items" picker: create an unplaced canvas occurrence per new item ---
@@ -582,16 +699,17 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
           ) : (
             <ReactFlow
               nodes={flowNodes}
+              edges={flowEdges}
               nodeTypes={nodeTypes}
-              defaultEdges={[]}
               proOptions={{ hideAttribution: true }}
               fitView
               minZoom={0.2}
               maxZoom={1.8}
               nodesDraggable
-              nodesConnectable={false}
+              nodesConnectable
               elementsSelectable
               onNodesChange={onNodesChange}
+              onConnect={onConnect}
             >
               <Background gap={18} />
               <Controls showInteractive={false} />
@@ -627,8 +745,22 @@ function OccurrenceNode(props: {
       data-selected={props.selected ? 'true' : 'false'}
       data-testid="space-canvas-node"
     >
+      {/* Target handle (left): the drop side of a drag-to-connect gesture. */}
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="space-canvas__handle space-canvas__handle--target"
+        data-testid="space-canvas-handle-target"
+      />
       <div className="space-canvas__node-kind">{props.data.kind}</div>
       <div className="space-canvas__node-title">{props.data.label}</div>
+      {/* Source handle (right): drag from here to another node to author an edge. */}
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="space-canvas__handle space-canvas__handle--source"
+        data-testid="space-canvas-handle-source"
+      />
     </div>
   );
 }

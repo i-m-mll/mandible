@@ -252,3 +252,47 @@
   color: var(--text-muted, #9a9a9a);
   font-size: 13px;
 }
+
+/* --- connection handles + authored edges ---
+ * Drag from a node's source handle (right) to another node's target handle
+ * (left) to author a space_edge. Colors use REAL theme tokens so the handles
+ * and edge lines render correctly in BOTH light and dark themes. */
+
+.space-canvas__handle {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent-blue);
+  border: 1px solid var(--bg-secondary);
+  opacity: 0.55;
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+
+.space-canvas__node:hover .space-canvas__handle {
+  opacity: 1;
+}
+
+.space-canvas__handle:hover {
+  opacity: 1;
+  transform: scale(1.25);
+}
+
+/* Authored edge lines + arrowheads. The marker fill is set inline by React Flow
+ * from currentColor, so coloring the path also colors the arrow. */
+.react-flow__edge.space-canvas__edge .react-flow__edge-path {
+  stroke: var(--accent-blue);
+  stroke-width: 1.5px;
+}
+
+.react-flow__edge.space-canvas__edge .react-flow__edge-text {
+  fill: var(--text-primary);
+  font-size: 10px;
+}
+
+.react-flow__edge.space-canvas__edge .react-flow__edge-textbg {
+  fill: var(--bg-secondary);
+}
+
+.react-flow__edge.space-canvas__edge .react-flow__arrowhead {
+  fill: var(--accent-blue);
+}

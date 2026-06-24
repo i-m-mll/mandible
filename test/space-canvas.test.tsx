@@ -23,18 +23,20 @@ import type { SpaceItem, SpaceOccurrence } from '../ui/src/api';
 // a module-level hook so tests can fire position/select changes deterministically.
 
 let lastOnNodesChange: ((changes: unknown[]) => void) | null = null;
+let lastOnConnect: ((connection: unknown) => void) | null = null;
 
 vi.mock('@xyflow/react', () => {
   const ReactFlow = (props: {
     nodes: Array<{ id: string; position: { x: number; y: number }; selected?: boolean }>;
+    edges?: Array<{ id: string; source: string; target: string; label?: string }>;
     onNodesChange?: (changes: unknown[]) => void;
+    onConnect?: (connection: unknown) => void;
     children?: unknown;
   }) => {
     lastOnNodesChange = props.onNodesChange ?? null;
-    return h(
-      'div',
-      { 'data-testid': 'rf-mock' },
-      props.nodes.map((node) =>
+    lastOnConnect = props.onConnect ?? null;
+    return h('div', { 'data-testid': 'rf-mock' }, [
+      ...props.nodes.map((node) =>
         h(
           'div',
           {
@@ -48,11 +50,28 @@ vi.mock('@xyflow/react', () => {
           node.id,
         ),
       ),
-    );
+      ...(props.edges ?? []).map((edge) =>
+        h(
+          'div',
+          {
+            key: edge.id,
+            'data-testid': 'rf-edge',
+            'data-edge-id': edge.id,
+            'data-source': edge.source,
+            'data-target': edge.target,
+            'data-label': edge.label ?? '',
+          },
+        ),
+      ),
+    ]);
   };
   const Background = () => h('div', { 'data-testid': 'rf-bg' });
   const Controls = () => h('div', { 'data-testid': 'rf-controls' });
-  return { ReactFlow, Background, Controls };
+  const Handle = (props: { type?: string }) =>
+    h('div', { 'data-testid': 'rf-handle', 'data-handle-type': props.type ?? '' });
+  const Position = { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' };
+  const MarkerType = { ArrowClosed: 'arrowclosed', Arrow: 'arrow' };
+  return { ReactFlow, Background, Controls, Handle, Position, MarkerType };
 });
 
 // --- layoutGraph spy ----------------------------------------------------------
@@ -82,13 +101,17 @@ import {
   reconcileOccurrences,
   applyOptimisticPosition,
   occurrencesToGraph,
+  edgesToFlowEdges,
+  connectionToEdgeRequest,
   type SpaceCanvasModel,
 } from '../ui/src/views/spaces/SpaceCanvas';
+import type { SpaceEdge } from '../ui/src/api';
 import type { SSEClient, SSEHandler } from '../ui/src/sse-client';
 
 afterEach(() => {
   cleanup();
   lastOnNodesChange = null;
+  lastOnConnect = null;
   layoutCalls.count = 0;
   vi.useRealTimers();
 });
@@ -125,6 +148,20 @@ function item(id: string, title: string): SpaceItem {
     ref_id: id,
     ref_uri: null,
     title,
+    metadata: {},
+    created_at: 0,
+    updated_at: 0,
+  };
+}
+
+function edge(id: string, source: string, target: string, label: string | null = null): SpaceEdge {
+  return {
+    id,
+    space_id: 'sp1',
+    source,
+    target,
+    label,
+    style: null,
     metadata: {},
     created_at: 0,
     updated_at: 0,
@@ -434,5 +471,170 @@ describe('SpaceCanvas shelf placement', () => {
     expect(batchWrite).toHaveBeenCalledTimes(1);
     const [, entries] = batchWrite.mock.calls[0];
     expect(entries[0].id).toBe('b');
+  });
+});
+
+// ============================================================================
+// Edges: drag-to-connect (onConnect) + rendering space_edges on the canvas
+// ============================================================================
+
+describe('edgesToFlowEdges (pure)', () => {
+  it('maps space_edges to React Flow edges between placed nodes (occurrence ids == node ids)', () => {
+    const placed = new Set(['a', 'b', 'c']);
+    const flow = edgesToFlowEdges([edge('e1', 'a', 'b', 'blocks'), edge('e2', 'b', 'c')], placed);
+    expect(flow.map((e) => [e.id, e.source, e.target])).toEqual([
+      ['e1', 'a', 'b'],
+      ['e2', 'b', 'c'],
+    ]);
+    // Label passes through; an empty/null label becomes undefined (no chip).
+    expect(flow[0].label).toBe('blocks');
+    expect(flow[1].label).toBeUndefined();
+  });
+
+  it('skips edges whose endpoint is not currently placed on the canvas (shelf)', () => {
+    const placed = new Set(['a']); // 'b' is on the shelf
+    const flow = edgesToFlowEdges([edge('e1', 'a', 'b')], placed);
+    expect(flow).toHaveLength(0);
+  });
+});
+
+describe('connectionToEdgeRequest (pure)', () => {
+  it('builds a create request with an EMPTY label (no blocking prompt)', () => {
+    expect(connectionToEdgeRequest({ source: 'a', target: 'b' } as never)).toEqual({
+      source: 'a',
+      target: 'b',
+      label: '',
+    });
+  });
+
+  it('rejects a self-loop or a connection missing an endpoint', () => {
+    expect(connectionToEdgeRequest({ source: 'a', target: 'a' } as never)).toBeNull();
+    expect(connectionToEdgeRequest({ source: 'a', target: null } as never)).toBeNull();
+    expect(connectionToEdgeRequest({ source: null, target: 'b' } as never)).toBeNull();
+  });
+});
+
+describe('SpaceCanvas renders authored edges as lines', () => {
+  it('draws an rf-edge for each space_edge whose endpoints are both placed', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [edge('e1', 'a', 'b', 'relates')],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    const rendered = screen.getAllByTestId('rf-edge');
+    expect(rendered).toHaveLength(1);
+    expect(rendered[0].getAttribute('data-edge-id')).toBe('e1');
+    expect(rendered[0].getAttribute('data-source')).toBe('a');
+    expect(rendered[0].getAttribute('data-target')).toBe('b');
+  });
+});
+
+describe('SpaceCanvas onConnect (drag-to-create)', () => {
+  it('calls createSpaceEdge with the two node ids and an empty label, then renders the new edge', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [],
+    };
+    const createEdge = vi.fn().mockResolvedValue(edge('new1', 'a', 'b', ''));
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model, createEdge }));
+
+    // No edges yet.
+    expect(screen.queryAllByTestId('rf-edge')).toHaveLength(0);
+
+    // Simulate React Flow firing onConnect from a node-to-node drag.
+    await act(async () => {
+      lastOnConnect?.({ source: 'a', target: 'b' });
+    });
+
+    expect(createEdge).toHaveBeenCalledWith('sp1', { source: 'a', target: 'b', label: '' });
+    // The created edge renders optimistically.
+    await waitFor(() => expect(screen.getAllByTestId('rf-edge')).toHaveLength(1));
+    expect(screen.getByTestId('rf-edge').getAttribute('data-edge-id')).toBe('new1');
+  });
+
+  it('ignores a self-loop connection (does not create an edge)', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+      edges: [],
+    };
+    const createEdge = vi.fn();
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model, createEdge }));
+    await act(async () => {
+      lastOnConnect?.({ source: 'a', target: 'a' });
+    });
+    expect(createEdge).not.toHaveBeenCalled();
+  });
+
+  it('does not duplicate an edge already present when an SSE echo arrives', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [],
+    };
+    const created = edge('new1', 'a', 'b', '');
+    const createEdge = vi.fn().mockResolvedValue(created);
+    const { client, emit } = makeFakeSse();
+    // The reconciliation loader returns the canonical edge list (with the new edge).
+    const loadModel = vi.fn().mockResolvedValue({ ...model, edges: [created] });
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        createEdge,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    await act(async () => {
+      lastOnConnect?.({ source: 'a', target: 'b' });
+    });
+    await waitFor(() => expect(screen.getAllByTestId('rf-edge')).toHaveLength(1));
+
+    // An SSE created event refetches + reconciles; the edge must not duplicate.
+    await act(async () => {
+      emit('space:edge:created', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getAllByTestId('rf-edge')).toHaveLength(1);
+  });
+
+  it('reconciles a dropdown-created edge (SSE) onto the canvas without resetting selection', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [],
+    };
+    const { client, emit } = makeFakeSse();
+    // Simulates the SpaceEdgeLayer dropdown having created an edge server-side.
+    const loadModel = vi
+      .fn()
+      .mockResolvedValue({ ...model, edges: [edge('drop1', 'a', 'b', 'manual')] });
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    expect(screen.queryAllByTestId('rf-edge')).toHaveLength(0);
+    await act(async () => {
+      emit('space:edge:created', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(screen.getAllByTestId('rf-edge')).toHaveLength(1));
+    expect(screen.getByTestId('rf-edge').getAttribute('data-edge-id')).toBe('drop1');
   });
 });
