@@ -1,0 +1,208 @@
+/*
+ * SpaceItemPicker — search-and-add picker for the space view (issue e670176).
+ *
+ * Per the Spaces per-component CSS convention (./README.md §1): this component
+ * owns its OWN stylesheet, imported from SpaceItemPicker.tsx, and scopes every
+ * selector under `.space-item-picker`. Colors come from the REAL global theme
+ * tokens declared in ui/src/style.css (both light + dark blocks) so the picker
+ * inherits the active palette in every theme — no invented tokens, no hardcoded
+ * theme hex/rgb. (Earlier this file used undefined `var(--surface)` /
+ * `var(--text)` / `var(--accent)` names that silently fell back to light-mode
+ * hex, rendering a white panel with dark text in dark mode.)
+ */
+
+.space-item-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  /* Cap to the viewport so the popover never overflows horizontally on small
+     screens. The anchor (left:0 / right:0) plus 100vw clamp keeps the right
+     edge inside the viewport at ~390px while staying 28rem on desktop. */
+  width: min(28rem, calc(100vw - 1rem));
+  max-width: calc(100vw - 1rem);
+  max-height: min(32rem, 80vh);
+  padding: 0.75rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  color: var(--text-primary);
+}
+
+.space-item-picker__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.space-item-picker__title {
+  font-size: 0.95rem;
+  color: var(--text-primary);
+}
+
+.space-item-picker__close {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+
+.space-item-picker__close:hover {
+  color: var(--text-primary);
+}
+
+.space-item-picker__search {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+}
+
+.space-item-picker__search:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -1px;
+  border-color: var(--accent-blue);
+}
+
+.space-item-picker__results {
+  flex: 1;
+  min-height: 4rem;
+  overflow-y: auto;
+}
+
+.space-item-picker__status {
+  padding: 0.75rem 0.25rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.space-item-picker__status--error {
+  color: var(--status-danger);
+}
+
+.space-item-picker__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.space-item-picker__option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.4rem 0.5rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.space-item-picker__option:hover {
+  background: var(--overlay-hover);
+}
+
+.space-item-picker__option[data-selected='true'] {
+  background: var(--overlay-selected);
+}
+
+.space-item-picker__check {
+  flex: 0 0 1rem;
+  width: 1rem;
+  text-align: center;
+  color: var(--accent-blue);
+  font-weight: 700;
+}
+
+.space-item-picker__option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.space-item-picker__option-title {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.space-item-picker__option-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.space-item-picker__badge {
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.62rem;
+}
+
+.space-item-picker__badge[data-kind='artifact'] {
+  border-color: color-mix(in srgb, var(--accent-blue) 45%, var(--border));
+  color: var(--accent-blue);
+}
+
+.space-item-picker__project {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.space-item-picker__footer {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.space-item-picker__count {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.space-item-picker__feedback {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.space-item-picker__add {
+  margin-left: auto;
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--accent-blue);
+  border-radius: 6px;
+  background: var(--accent-blue);
+  color: #fff;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.space-item-picker__add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
