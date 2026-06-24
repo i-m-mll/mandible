@@ -29,7 +29,9 @@ import './renderers.css';
  */
 async function loadCanvasModel(spaceId: string): Promise<SpaceCanvasModel> {
   const packet = await getSpaceFactPacket(spaceId);
-  return { occurrences: packet.occurrences, items: packet.items };
+  // `edges` is included so the canvas renders authored `space_edges` as lines
+  // (drag-created and dropdown-created edges reconcile through the same packet).
+  return { occurrences: packet.occurrences, items: packet.items, edges: packet.edges };
 }
 
 /**
