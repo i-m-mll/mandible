@@ -24,10 +24,11 @@
 .space-canvas__toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 6px 10px;
   border-bottom: 1px solid var(--border, #2a2a2a);
-  background: var(--surface, #161616);
+  background: var(--bg-secondary);
   flex: 0 0 auto;
 }
 
@@ -38,8 +39,8 @@
 .space-canvas__btn {
   appearance: none;
   border: 1px solid var(--border, #2a2a2a);
-  background: var(--surface-raised, #1f1f1f);
-  color: var(--text, #e6e6e6);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
@@ -62,7 +63,7 @@
 
 .space-canvas__btn--primary {
   border-color: var(--accent, #4f8cff);
-  background: color-mix(in srgb, var(--accent, #4f8cff) 22%, var(--surface-raised, #1f1f1f));
+  background: color-mix(in srgb, var(--accent, #4f8cff) 22%, var(--bg-secondary));
 }
 
 .space-canvas__add-items {
@@ -75,6 +76,23 @@
   top: calc(100% + 6px);
   left: 0;
   z-index: 20;
+}
+
+/* On narrow viewports the left-anchored popover can run off the right edge
+   (issue e670176, CDP mobile review). Pin it to the viewport via fixed
+   positioning across both side margins so the picker's own width clamp
+   (min(28rem, 100vw - 1rem)) fills the screen without horizontal overflow. */
+@media (max-width: 30rem) {
+  .space-canvas__picker-anchor {
+    position: fixed;
+    top: 3rem;
+    left: 0.5rem;
+    right: 0.5rem;
+  }
+  .space-canvas__picker-anchor .space-item-picker {
+    width: auto;
+    max-width: none;
+  }
 }
 
 .space-canvas__autosave {
