@@ -1,27 +1,32 @@
 import path from "node:path";
 import type { Db } from "../db.js";
-import type { RepoInfo } from "../work-scanner.js";
+import { isEphemeralMountPath, type RepoInfo } from "../work-scanner.js";
 import { createLedgerId } from "./ids.js";
 import type { GitBugClient } from "./git-bug-client.js";
 import { exportGitBugOutbox, type GitBugExportResult } from "./git-bug-exporter.js";
 import { importGitBugCheckout, type GitBugImportResult } from "./git-bug-importer.js";
-import { resolveProjectForCheckout } from "./projects.js";
+import { resolveProjectForCheckoutReadOnly } from "./projects.js";
 import { resolveCheckoutPath } from "./project-registry.js";
 import type { LedgerProject, LedgerProjectCheckout } from "./types.js";
 
-// Issue 3d85f43: scanner-driven git-bug sync is the single AUDITED discovery
-// write path into the project registry. Before minting, it resolves the scanned
-// root through the registry (resolveCheckoutPath) and REUSES an already-registered
-// checkout/project instead of creating a duplicate. Genuinely-new checkouts still
-// get discovered (resolveProjectForCheckout, which now allocates a project_key),
-// and any project created this way is surfaced by auditRegistry (numbered
-// path-derived ids + local_projects), so phantom/duplicate minting for paths that
-// already resolve to a registered checkout is prevented without blocking
-// legitimate discovery of new local repos.
-function resolveOrDiscoverCheckout(
-  db: Db,
-  repo: RepoInfo,
-): { project: Pick<LedgerProject, "id">; checkout: LedgerProjectCheckout } {
+type CheckoutResolution =
+  | { status: "resolved"; project: Pick<LedgerProject, "id">; checkout: LedgerProjectCheckout }
+  | { status: "needs_registration"; root: string; identity: string; matched_project_id?: string };
+
+// Issue 3d85f43 / 70cf59d: scanner-driven git-bug sync is the single AUDITED
+// discovery path into the project registry, and it is NO-MINT. It resolves the
+// scanned root through the registry (resolveCheckoutPath) and REUSES an
+// already-registered checkout/project, refreshing only its discovery metadata.
+//
+// A genuinely-new root is NOT auto-minted: previously this fell through to
+// resolveProjectForCheckout and silently created a `ledger_projects` +
+// `ledger_project_checkouts` row, which let a sandbox-mounted Mandible mint
+// duplicate `local:` projects for host repos it could not read an origin remote
+// for. Instead we resolve read-only and, for an unregistered root, return a
+// structured needs_registration signal so the caller skips the root and surfaces
+// a "discovered, needs registration" suggestion (mirroring the issue-creation
+// guard) instead of writing to the registry.
+function resolveOrDiscoverCheckout(db: Db, repo: RepoInfo): CheckoutResolution {
   const resolvedRoot = path.resolve(repo.root);
   const registered = resolveCheckoutPath(db, resolvedRoot);
   if (registered) {
@@ -30,7 +35,7 @@ function resolveOrDiscoverCheckout(
       .get(resolvedRoot) as LedgerProjectCheckout | undefined;
     if (checkout) {
       // Refresh discovery metadata on the registered checkout without re-running
-      // identity resolution (which could repoint it to a freshly-minted project).
+      // identity resolution (which could repoint it to another project).
       db.prepare(
         `UPDATE ledger_project_checkouts
          SET work_repo_id = COALESCE(NULLIF(work_repo_id, ''), ?),
@@ -38,15 +43,25 @@ function resolveOrDiscoverCheckout(
              updated_at = ?
          WHERE id = ?`,
       ).run(repo.id, repo.default_branch ?? "", repo.default_branch ?? "", Date.now(), checkout.id);
-      return { project: { id: registered.id }, checkout };
+      return { status: "resolved", project: { id: registered.id }, checkout };
     }
   }
-  return resolveProjectForCheckout(db, {
+
+  const resolution = resolveProjectForCheckoutReadOnly(db, {
     root: repo.root,
     name: repo.name,
     workRepoId: repo.id,
     defaultBranch: repo.default_branch,
   });
+  if (resolution.status === "resolved") {
+    return { status: "resolved", project: { id: resolution.project.id }, checkout: resolution.checkout };
+  }
+  return {
+    status: "needs_registration",
+    root: resolution.root,
+    identity: resolution.identity,
+    matched_project_id: resolution.matchedProjectId,
+  };
 }
 
 export type LedgerSyncDirection = "import" | "export" | "full";
@@ -101,6 +116,12 @@ export interface RepoGitBugSyncResult {
   job_id?: string;
   error?: string;
   stats?: Record<string, unknown>;
+  // Issue 70cf59d: a discovered root that is not a registered project/checkout is
+  // skipped (never minted). When true, `matched_project_id` (if set) names an
+  // existing project the root could be attached to via `mandible project
+  // add-checkout`.
+  needs_registration?: boolean;
+  matched_project_id?: string;
 }
 
 export interface GitBugCorpusSyncResult {
@@ -111,6 +132,9 @@ export interface GitBugCorpusSyncResult {
   retryable: number;
   conflicted: number;
   skipped: number;
+  // Subset of `skipped` that was skipped specifically because the discovered
+  // root is not a registered project/checkout (issue 70cf59d).
+  needs_registration: number;
   results: RepoGitBugSyncResult[];
 }
 
@@ -207,8 +231,45 @@ export async function runGitBugSyncForRepos(
       continue;
     }
 
+    // Issue 70cf59d defense-in-depth: never sync an ephemeral sandbox/container
+    // mount root, even if one was persisted into work_repos before discovery
+    // started excluding it. A mounted-session Mandible must not sync host roots.
+    if (isEphemeralMountPath(repo.root)) {
+      results.push({
+        repo_id: repo.id,
+        repo_name: repo.name,
+        root: repo.root,
+        status: "skipped",
+        error: "ephemeral sandbox/container mount root excluded from discovery sync",
+      });
+      continue;
+    }
+
     try {
-      const { project, checkout } = resolveOrDiscoverCheckout(options.db, repo);
+      const resolution = resolveOrDiscoverCheckout(options.db, repo);
+      if (resolution.status === "needs_registration") {
+        const reason = resolution.matched_project_id
+          ? `discovered root is not a registered checkout (resolved identity '${resolution.identity}' ` +
+            `matches project ${resolution.matched_project_id}); register it with ` +
+            `'mandible project add-checkout' before syncing`
+          : `discovered root is not a registered project/checkout (resolved identity ` +
+            `'${resolution.identity}'); register it with 'mandible project add' before syncing`;
+        console.warn(
+          `[ledger-sync] needs-registration: skipping unregistered root ${resolution.root} ` +
+            `(identity ${resolution.identity}); no project minted`,
+        );
+        results.push({
+          repo_id: repo.id,
+          repo_name: repo.name,
+          root: repo.root,
+          status: "skipped",
+          needs_registration: true,
+          matched_project_id: resolution.matched_project_id,
+          error: reason,
+        });
+        continue;
+      }
+      const { project, checkout } = resolution;
       const job = await runGitBugSync({
         db: options.db,
         client: options.client,
@@ -328,12 +389,14 @@ function summarizeCorpusSync(
   let retryable = 0;
   let conflicted = 0;
   let skipped = 0;
+  let needsRegistration = 0;
   for (const result of results) {
     if (result.status === "completed") completed++;
     else if (result.status === "retryable") retryable++;
     else if (result.status === "conflicted") conflicted++;
     else if (result.status === "skipped") skipped++;
     else if (result.status === "failed") failed++;
+    if (result.needs_registration) needsRegistration++;
   }
   return {
     direction,
@@ -343,6 +406,7 @@ function summarizeCorpusSync(
     retryable,
     conflicted,
     skipped,
+    needs_registration: needsRegistration,
     results,
   };
 }

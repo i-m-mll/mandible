@@ -2291,6 +2291,34 @@ export async function listTopLevelSpaces(): Promise<ContractSpace[]> {
   return payload.spaces;
 }
 
+/**
+ * Minimal project summary for the space-creation project picker (issue 6fdd924).
+ * Sourced from the canonical project registry (`GET /api/projects`) so projects
+ * with zero spaces are still enumerable when creating the first space under them.
+ */
+export type ProjectPickerItem = {
+  id: string;
+  project_key: string;
+  display_name: string | null;
+};
+
+/**
+ * Fetch the project list from the registry for use in the space-creation picker
+ * (issue 6fdd924). Returns a lightweight summary array; callers display
+ * `display_name` (or fall back to `project_key`) as the option label.
+ */
+export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
+  const response = await apiGet('/api/projects');
+  const payload = (await parseMaybeJson(response)) as {
+    projects?: Array<{ id: string; project_key: string; display_name?: string | null }>;
+  };
+  return (payload.projects ?? []).map((p) => ({
+    id: p.id,
+    project_key: p.project_key,
+    display_name: p.display_name ?? null,
+  }));
+}
+
 export async function getSpace(spaceId: string): Promise<ContractSpace> {
   const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
   const payload = (await parseMaybeJson(response)) as { space: ContractSpace };

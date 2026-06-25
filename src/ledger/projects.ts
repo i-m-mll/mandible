@@ -75,13 +75,21 @@ export function readOriginRemote(root: string): string {
   return result.stdout.trim();
 }
 
-export function resolveProjectForCheckout(
-  db: Db,
-  input: ResolveProjectInput,
-  now = Date.now(),
-): ResolvedLedgerProject {
-  db.pragma("foreign_keys = ON");
+interface CheckoutIdentity {
+  root: string;
+  remoteUrl: string | null;
+  remoteIdentity: string;
+  upstreamIdentity: string;
+  namespacePolicy: LedgerNamespacePolicy;
+  identity: string;
+  displayName: string;
+}
 
+// Single source of truth for how a checkout root maps to a canonical project
+// identity. Both the minting resolver (resolveProjectForCheckout) and the
+// no-mint resolver (resolveProjectForCheckoutReadOnly) derive identity here so
+// they can never disagree about which project a root belongs to.
+function computeCheckoutIdentity(input: ResolveProjectInput): CheckoutIdentity {
   const root = path.resolve(input.root);
   const remoteUrl = input.remoteUrl ?? readOriginRemote(root);
   const remoteIdentity = normalizeRemoteIdentity(remoteUrl);
@@ -94,6 +102,77 @@ export function resolveProjectForCheckout(
       : remoteIdentity || `local:${root}`;
   const displayName =
     displayNameFromIdentity(identity) || input.name?.trim() || path.basename(root) || "Local project";
+  return { root, remoteUrl, remoteIdentity, upstreamIdentity, namespacePolicy, identity, displayName };
+}
+
+export type ResolveProjectReadOnlyResult =
+  | {
+      status: "resolved";
+      project: LedgerProject;
+      checkout: LedgerProjectCheckout;
+      identity: string;
+      root: string;
+    }
+  | {
+      status: "needs_registration";
+      identity: string;
+      root: string;
+      // Set when a canonical project already exists for this identity but the
+      // root is not (yet) a registered checkout. The operator can attach it
+      // explicitly via `mandible project add-checkout`; we never auto-attach
+      // because creating a checkout row at an unregistered (e.g. sandbox-mount)
+      // root is itself the registry pollution this resolver exists to prevent.
+      matchedProjectId?: string;
+    };
+
+// Issue 70cf59d: NO-MINT resolution. Resolve a checkout root to an ALREADY
+// REGISTERED project/checkout without ever inserting into ledger_projects or
+// ledger_project_checkouts. Returns { status: "resolved" } only when the root is
+// a registered checkout; otherwise { status: "needs_registration" }, optionally
+// carrying the id of a project that matches the resolved remote identity so the
+// caller can surface an explicit registration suggestion. This mirrors the
+// issue-creation guard's philosophy (reject unknown targets with suggestions
+// instead of minting) and is the resolver used by the git-bug sync discovery
+// path, which must not auto-mint projects from unregistered roots.
+export function resolveProjectForCheckoutReadOnly(
+  db: Db,
+  input: ResolveProjectInput,
+): ResolveProjectReadOnlyResult {
+  const { root, identity } = computeCheckoutIdentity(input);
+
+  const checkout = db
+    .prepare("SELECT * FROM ledger_project_checkouts WHERE root = ?")
+    .get(root) as LedgerProjectCheckout | undefined;
+  if (checkout) {
+    const project = db
+      .prepare("SELECT * FROM ledger_projects WHERE id = ?")
+      .get(checkout.project_id) as LedgerProject | undefined;
+    if (project) {
+      return { status: "resolved", project, checkout, identity, root };
+    }
+  }
+
+  const project = db
+    .prepare("SELECT * FROM ledger_projects WHERE remote_identity = ?")
+    .get(identity) as LedgerProject | undefined;
+
+  return {
+    status: "needs_registration",
+    identity,
+    root,
+    matchedProjectId: project?.id,
+  };
+}
+
+export function resolveProjectForCheckout(
+  db: Db,
+  input: ResolveProjectInput,
+  now = Date.now(),
+): ResolvedLedgerProject {
+  db.pragma("foreign_keys = ON");
+
+  const { root, remoteUrl, upstreamIdentity, namespacePolicy, identity, displayName } =
+    computeCheckoutIdentity(input);
 
   const transaction = db.transaction(() => {
     let project = db

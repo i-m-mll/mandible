@@ -129,9 +129,9 @@ describe('AddToSpace picker', () => {
 describe('AddToSpace cross-project (default)', () => {
   function groupedFixture() {
     return [
-      { project_id: null, project_name: null, spaces: [makeSpace('t1', 'Global')] },
-      { project_id: 'proj-1', project_name: 'Alpha', spaces: [makeSpace('s1', 'Roadmap')] },
-      { project_id: 'proj-2', project_name: 'Beta', spaces: [makeSpace('s2', 'Beta board')] },
+      { project_id: null, project_key: null, project_name: null, spaces: [makeSpace('t1', 'Global')] },
+      { project_id: 'proj-1', project_key: 'alpha', project_name: 'Alpha', spaces: [makeSpace('s1', 'Roadmap')] },
+      { project_id: 'proj-2', project_key: 'beta', project_name: 'Beta', spaces: [makeSpace('s2', 'Beta board')] },
     ];
   }
 
