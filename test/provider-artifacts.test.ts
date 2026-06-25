@@ -544,7 +544,7 @@ describe("provider/artifact substrate", () => {
     }, 1000, tempDir);
 
     const compact = resolveArtifactRef(db, "artifact:1234567890ab", 2000);
-    const unsupportedColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
+    const canonicalColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
     const unsupportedPlain = resolveArtifactRef(db, `sha256:${hash}`, 2000);
 
     expect(compact).toMatchObject({
@@ -556,7 +556,15 @@ describe("provider/artifact substrate", () => {
         locator: { algorithm: "sha256", prefix: "1234567890ab", resolved_hash: hash },
       },
     });
-    expect(unsupportedColon).toMatchObject({ status: "unsupported", artifact: null, alias: null });
+    expect(canonicalColon).toMatchObject({
+      status: "resolved",
+      artifact: { id: artifact.id, content_hash: hash },
+      alias: {
+        artifact_id: artifact.id,
+        normalized_ref: `artifact:${hash}`,
+        locator: { algorithm: "sha256", prefix: hash, hash },
+      },
+    });
     expect(unsupportedPlain).toMatchObject({ status: "unsupported", artifact: null, alias: null });
     expect(getArtifact(db, artifact.id)?.id).toBe(`artifact:sha256:${hash}`);
   });
