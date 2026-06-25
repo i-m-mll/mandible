@@ -71,6 +71,10 @@
       "description": "Append rendered Markdown comments with real newline characters and return the issue lifecycle status; --reopen atomically reopens and comments."
     },
     {
+      "name": "mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]",
+      "description": "Edit a comment body with optional stale-base checks; comment-ref accepts a raw comment id, <issue-ref>#<ordinal>, or <issue-ref>#last. Conflicts with a stale base return exit code 3."
+    },
+    {
       "name": "mandible issue description edit <issue-ref> -m <text>",
       "description": "Edit issue descriptions while preserving body revision history."
     },
