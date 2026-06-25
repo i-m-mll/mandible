@@ -565,16 +565,56 @@ export interface RegistryAudit {
 
 const NUMBERED_REPO_ID = /(^\d+-)|(-\d+$)/;
 
+// Issue 70cf59d — normalize a display name for duplicate detection so that
+// case-only and leading-dot-only differences collapse together. This makes
+// `HumbleB`/`humbleb` and `.dotfiles`/`dotfiles` (the sandbox-mount duplicate
+// shapes) group as duplicates / mergeable candidates instead of being missed by
+// an exact-string GROUP BY. This is DETECTION-ONLY normalization: it never
+// rewrites a stored display name and is not used by the merge/repair machinery.
+function normalizeDisplayNameForDuplicateDetection(name: string): string {
+  return (name ?? "").trim().replace(/^\.+/, "").toLowerCase();
+}
+
 export function auditRegistry(db: Db): RegistryAudit {
-  const duplicateDisplay = db
+  // Group display names case-insensitively and leading-dot-insensitively. The
+  // reported `display_name` is the lexicographically-first literal variant in
+  // each group, and `project_keys` falls back to the project id when a row has
+  // no key (preserving the previous GROUP_CONCAT(COALESCE(...)) behavior).
+  const allProjectRows = db
     .prepare(
-      `SELECT display_name, GROUP_CONCAT(COALESCE(NULLIF(project_key, ''), id), ',') AS keys, COUNT(*) AS n
+      `SELECT id, project_key, display_name, remote_identity, namespace_policy
        FROM ledger_projects
-       GROUP BY display_name
-       HAVING n > 1
-       ORDER BY display_name`,
+       ORDER BY display_name, project_key, id`,
     )
-    .all() as Array<{ display_name: string; keys: string; n: number }>;
+    .all() as Array<{
+      id: string;
+      project_key: string;
+      display_name: string;
+      remote_identity: string;
+      namespace_policy: LedgerNamespacePolicy;
+    }>;
+
+  const groupedByDisplay = new Map<string, { display_name: string; keys: string[] }>();
+  for (const row of allProjectRows) {
+    const norm = normalizeDisplayNameForDuplicateDetection(row.display_name);
+    if (!norm) continue;
+    const key = row.project_key || row.id;
+    const existing = groupedByDisplay.get(norm);
+    if (existing) {
+      existing.keys.push(key);
+    } else {
+      groupedByDisplay.set(norm, { display_name: row.display_name, keys: [key] });
+    }
+  }
+  const duplicateDisplay = Array.from(groupedByDisplay.values())
+    .filter((group) => group.keys.length > 1)
+    .sort((a, b) => a.display_name.localeCompare(b.display_name))
+    .map((group) => ({ display_name: group.display_name, keys: group.keys.join(",") }));
+  const duplicateNorms = new Set(
+    Array.from(groupedByDisplay.entries())
+      .filter(([, group]) => group.keys.length > 1)
+      .map(([norm]) => norm),
+  );
 
   const localProjects = db
     .prepare(
@@ -620,34 +660,33 @@ export function auditRegistry(db: Db): RegistryAudit {
     .all() as Array<{ id: string; display_name: string }>;
 
   // Classify each local project by how many remote-backed projects share its
-  // display name: exactly one => a safe consolidation target; zero or many =>
-  // not safely auto-mergeable (operator must decide).
+  // (normalized) display name: exactly one => a safe consolidation target; zero
+  // or many => not safely auto-mergeable (operator must decide). Matching uses
+  // the same case-/leading-dot-insensitive normalization as duplicate detection
+  // so a local `humbleb` consolidates into a remote `HumbleB`.
   const remoteByDisplay = new Map<string, string[]>();
-  const remoteRows = db
-    .prepare(
-      `SELECT project_key, display_name
-       FROM ledger_projects
-       WHERE namespace_policy != 'local'
-         AND remote_identity != ''
-         AND remote_identity NOT LIKE 'local:%'`,
-    )
-    .all() as Array<{ project_key: string; display_name: string }>;
-  for (const row of remoteRows) {
-    const keys = remoteByDisplay.get(row.display_name) ?? [];
+  for (const row of allProjectRows) {
+    const isLocal =
+      row.namespace_policy === "local" ||
+      row.remote_identity === "" ||
+      row.remote_identity.startsWith("local:");
+    if (isLocal) continue;
+    const norm = normalizeDisplayNameForDuplicateDetection(row.display_name);
+    const keys = remoteByDisplay.get(norm) ?? [];
     keys.push(row.project_key);
-    remoteByDisplay.set(row.display_name, keys);
+    remoteByDisplay.set(norm, keys);
   }
   const localSet = new Set(localProjects.map((row) => row.project_key));
-  const dupNames = new Set(duplicateDisplay.map((row) => row.display_name));
   const mergeable: RegistryAudit["mergeable_local_projects"] = [];
   const unmergeable: RegistryAudit["unmergeable_local_projects"] = [];
   // Only local projects whose display name is SHARED look like duplicates worth
   // consolidating; a unique-named local project is a legitimate project, not a
   // merge candidate, and is not flagged.
   for (const row of localProjects) {
-    if (!dupNames.has(row.display_name)) continue;
+    const norm = normalizeDisplayNameForDuplicateDetection(row.display_name);
+    if (!duplicateNorms.has(norm)) continue;
     // A target sharing the display name that is itself local does not count.
-    const remoteTargets = (remoteByDisplay.get(row.display_name) ?? []).filter(
+    const remoteTargets = (remoteByDisplay.get(norm) ?? []).filter(
       (key) => key !== row.project_key && !localSet.has(key),
     );
     if (remoteTargets.length === 1) {

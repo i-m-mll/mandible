@@ -79,6 +79,39 @@ interface WorktreeInfo {
 
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
 
+// Issue 70cf59d — ephemeral sandbox/container mount prefixes.
+//
+// A Mandible daemon running INSIDE a sandboxed session (Cowork/Codex container)
+// sees the host's repositories through a per-session bind mount such as
+// `/sessions/<session-id>/mnt/...`. If discovery scans those mounted roots and
+// the legacy git-bug sync then resolves them, it mints duplicate `local:`
+// projects for repos that already exist canonically on the host (this is what
+// produced the feedbax-2/-3/-4, humbleb-2 and dotfiles-2 duplicates).
+//
+// These patterns are DELIBERATELY narrow: they match only the known sandbox
+// session-mount shape, never a user's real `~/...` checkout. A path is excluded
+// from WorkScanner discovery AND from sync root selection if it lives under one
+// of these prefixes. Keep this list conservative — broadening it risks hiding a
+// legitimate repository.
+const EPHEMERAL_MOUNT_PATTERNS: RegExp[] = [
+  // Cowork/Codex per-session bind mount: /sessions/<session-id>/mnt[/...]
+  /^\/sessions\/[^/]+\/mnt(?:\/|$)/,
+  // Generic container session-mount root occasionally used for the same purpose.
+  /^\/mnt\/sessions\/[^/]+(?:\/|$)/,
+];
+
+/**
+ * True when `root` lives under an ephemeral sandbox/container session mount.
+ * Such roots are host repositories seen through a session bind mount and must
+ * not be discovered or synced (see issue 70cf59d). Exported for reuse by the
+ * git-bug sync runner's root-selection guard.
+ */
+export function isEphemeralMountPath(root: string): boolean {
+  if (!root) return false;
+  const resolved = path.resolve(root);
+  return EPHEMERAL_MOUNT_PATTERNS.some((pattern) => pattern.test(resolved));
+}
+
 function resolveHome(input: string): string {
   if (input.startsWith("~")) {
     return path.join(os.homedir(), input.slice(1));
@@ -855,6 +888,14 @@ export class WorkScanner {
   }
 
   private resolveRepoRoots(): string[] {
+    // Issue 70cf59d: drop ephemeral sandbox/container mount roots at the single
+    // root-resolution chokepoint, so they are excluded whether they arrive via
+    // an explicit override, the repos.json config, or filesystem discovery. A
+    // mounted-session Mandible must not even consider host mount roots.
+    return this.rawRepoRoots().filter((root) => !isEphemeralMountPath(root));
+  }
+
+  private rawRepoRoots(): string[] {
     if (this.repoRootsOverride) {
       return this.repoRootsOverride;
     }
