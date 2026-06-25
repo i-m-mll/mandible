@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import type { AddressInfo } from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -71,6 +73,46 @@ function startFileRpcResponder(
   return timer;
 }
 
+interface RecordedRequest {
+  method: string;
+  url: string;
+  body: Record<string, unknown> | undefined;
+}
+
+function startHttpRecorder(
+  handler: (req: RecordedRequest) => { status: number; body: unknown },
+): Promise<{ port: number; requests: RecordedRequest[]; close: () => Promise<void> }> {
+  const requests: RecordedRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(chunk as Buffer));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let body: Record<string, unknown> | undefined;
+      try {
+        body = raw ? (JSON.parse(raw) as Record<string, unknown>) : undefined;
+      } catch {
+        body = undefined;
+      }
+      const recorded: RecordedRequest = { method: req.method ?? "GET", url: req.url ?? "/", body };
+      requests.push(recorded);
+      const result = handler(recorded);
+      res.writeHead(result.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result.body));
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      const port = (server.address() as AddressInfo).port;
+      resolve({
+        port,
+        requests,
+        close: () => new Promise<void>((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
 function git(args: string[], cwd = tempDir): void {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
@@ -112,6 +154,21 @@ describe("artifact CLI", () => {
     expect(result.stdout).toContain("Recoverability:");
   });
 
+  it("documents the version identity command surface", () => {
+    const result = run(["artifact", "--help"], process.cwd());
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("mandible artifact versions <ref>");
+    expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
+    expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
+  });
+
+  it("rejects an unknown record kind without contacting the daemon", () => {
+    const result = run(["artifact", "record", "report.md", "--kind", "bogus"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Unknown --kind");
+  });
+
   it("classifies clean tracked files as commit-pinned repo links in dry-run JSON", () => {
     const result = run(["artifact", "ingest", "report.md", "--dry-run", "--json"]);
 
@@ -126,7 +183,7 @@ describe("artifact CLI", () => {
     expect(planned.metadata.warnings).toEqual([]);
   });
 
-  it("redacts copied bytes from snapshot dry-run JSON", () => {
+  it("computes copy snapshot identity without generating base64 in dry-run JSON", () => {
     const result = run(["artifact", "snapshot", "report.md", "--dry-run", "--json"]);
 
     expect(result.status).toBe(0);
@@ -134,7 +191,11 @@ describe("artifact CLI", () => {
     const planned = payload.registered[0].planned_payload;
     expect(planned.custody_mode).toBe("copy");
     expect(planned.metadata.recoverability).toBe("mandible_cas");
-    expect(planned.content_base64).toBe("<base64 omitted in dry-run>");
+    expect(planned.sha256).toMatch(/^[a-f0-9]{64}$/);
+    // Bytes never travel through dry-run: no inline base64, just a transport note.
+    expect(planned).not.toHaveProperty("content_base64");
+    expect(planned).not.toHaveProperty("content_path");
+    expect(planned.content_transport).toMatch(/path or file-RPC attachment/);
   });
 
   it("auto-selects copy custody for file RPC path ingest dry-runs", () => {
@@ -151,7 +212,8 @@ describe("artifact CLI", () => {
     expect(payload.custody_mode).toBe("copy");
     expect(planned.custody_mode).toBe("copy");
     expect(planned.metadata.recoverability).toBe("mandible_cas");
-    expect(planned.content_base64).toBe("<base64 omitted in dry-run>");
+    expect(planned).not.toHaveProperty("content_base64");
+    expect(planned.content_transport).toMatch(/path or file-RPC attachment/);
   });
 
   it("rejects explicit link custody in file RPC upload mode", () => {
@@ -166,36 +228,34 @@ describe("artifact CLI", () => {
     expect(result.stderr).toContain("link custody requires daemon-visible host paths");
   });
 
-  it("uploads snapshot bytes through file RPC and links the artifact to the issue", async () => {
+  it("sends snapshot bytes through a file RPC attachment, not inline base64", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
+    const attachmentReads: Array<{ ref: unknown; bytes: string }> = [];
     const timer = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       if (request.method === "GET" && request.path === "/api/ledger/issues/abc") {
         return {
           status: 200,
-          body: {
-            id: "issue-1",
-            display_id: "abc",
-            project: { repo_id: "mandible" },
-          },
+          body: { id: "issue-1", display_id: "abc", project: { repo_id: "mandible" } },
         };
       }
       if (request.method === "POST" && request.path === "/api/artifacts/ingest") {
         const body = request.body as Record<string, unknown>;
-        expect(body).toMatchObject({
-          custody_mode: "copy",
-          filename: "report.md",
-          media_type: "text/plain",
-        });
-        expect(typeof body.content_base64).toBe("string");
-        expect(body).not.toHaveProperty("path");
+        // The real transport injects content_path from the attachment; the mock
+        // daemon reads the attachment the CLI staged in the spool dir.
+        const attachments = request.attachments as Record<string, string> | undefined;
+        const attachmentName = attachments?.content_path;
+        const bytes = typeof attachmentName === "string"
+          ? fs.readFileSync(path.join(spoolDir, attachmentName), "utf8")
+          : "";
+        attachmentReads.push({ ref: body, bytes });
         return {
           status: 200,
           body: {
             artifact: {
-              id: `artifact:${body.sha256}`,
+              id: "artifact:sha256:deadbeef",
               custody_mode: "copy",
               availability: "present",
               metadata: { recoverability: "mandible_cas" },
@@ -203,7 +263,7 @@ describe("artifact CLI", () => {
           },
         };
       }
-      throw new Error(`unexpected file RPC request: ${JSON.stringify(request)}`);
+      return { status: 404, body: { error: "unexpected", path: request.path } };
     });
 
     try {
@@ -221,6 +281,52 @@ describe("artifact CLI", () => {
         "/api/ledger/issues/abc",
         "/api/artifacts/ingest",
       ]);
+      const ingest = seen.find((request) => request.path === "/api/artifacts/ingest")!;
+      const ingestBody = ingest.body as Record<string, unknown>;
+      expect(ingestBody).toMatchObject({ custody_mode: "copy", filename: "report.md", media_type: "text/plain" });
+      // Bytes are NOT inline in the request body — they ride as an attachment.
+      expect(ingestBody).not.toHaveProperty("content_base64");
+      expect(ingestBody).not.toHaveProperty("content_path");
+      expect((ingest.attachments as Record<string, string>).content_path).toMatch(/\.attach-content_path$/);
+      expect(attachmentReads).toHaveLength(1);
+      expect(attachmentReads[0].bytes).toBe("# Report\n\nReady.\n");
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it("carries a multi-MiB file RPC snapshot through an attachment, never argv (issue 833e972)", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
+    tempRoots.push(spoolDir);
+    fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
+    const bigPath = path.join(tempDir, "_artifacts", "big.bin");
+    const bigBytes = Buffer.alloc(2 * 1024 * 1024, 0x5a); // 2 MiB, far over ARG_MAX
+    fs.writeFileSync(bigPath, bigBytes);
+
+    let attachmentSize = -1;
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      if (request.method === "POST" && request.path === "/api/artifacts/ingest") {
+        const attachments = request.attachments as Record<string, string> | undefined;
+        const name = attachments?.content_path;
+        attachmentSize = typeof name === "string" ? fs.statSync(path.join(spoolDir, name)).size : -1;
+        return {
+          status: 200,
+          body: { artifact: { id: "artifact:sha256:big", custody_mode: "copy", availability: "present" } },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "snapshot", "_artifacts/big.bin", "--json"], tempDir, {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "10",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toMatch(/argument list too long/);
+      // The full 2 MiB rode as a spool attachment, not in the JSON body/argv.
+      expect(attachmentSize).toBe(bigBytes.length);
     } finally {
       clearInterval(timer);
     }
@@ -261,6 +367,112 @@ describe("artifact CLI", () => {
     expect(planned.metadata.recoverability).toBe("local_only");
     expect(planned.metadata.git.untracked).toBe(true);
     expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code)).toContain("untracked_local_only");
+  });
+
+  it("resolves a feature-worktree _artifacts symlink to a durable realpath URI in dry-run JSON (issue 2f9c3c3)", () => {
+    // Persistent repo-root _artifacts target, reached from a feature worktree
+    // through a symlink — the disposable-path scenario.
+    const persistentArtifacts = path.join(tempDir, "_artifacts");
+    fs.mkdirSync(persistentArtifacts, { recursive: true });
+    fs.writeFileSync(path.join(persistentArtifacts, "plot.html"), "<html>plot</html>\n", "utf8");
+    const featWorktree = path.join(tempDir, "worktrees", "feat");
+    fs.mkdirSync(path.dirname(featWorktree), { recursive: true });
+    git(["worktree", "add", "-b", "feat", featWorktree]);
+    fs.symlinkSync(persistentArtifacts, path.join(featWorktree, "_artifacts"));
+    const disposable = path.join(featWorktree, "_artifacts", "plot.html");
+    const persistentReal = fs.realpathSync(path.join(persistentArtifacts, "plot.html"));
+
+    const result = run(["artifact", "ingest", disposable, "--allow-local-only", "--dry-run", "--json"]);
+
+    expect(result.status).toBe(0);
+    const planned = JSON.parse(result.stdout).registered[0].planned_payload;
+    expect(planned.uri).toBe(`file://${persistentReal}`);
+    expect(planned.uri).not.toContain(`${path.sep}feat${path.sep}`);
+    expect(planned.metadata.recoverability).toBe("local_only");
+    expect(planned.metadata.path_decision.symlink_class).toBe("same_repo_durable");
+    expect(planned.metadata.path_decision.worktree_substitution).toBe(true);
+    // The disposable input path is preserved as metadata, never as the only ref.
+    expect(planned.metadata.input_path).toBe(disposable);
+    expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code))
+      .toContain("symlink_resolved_to_durable_target");
+  });
+
+  it("sends a daemon-visible content_path (not base64) for local HTTP copy ingest (issue 833e972)", async () => {
+    fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
+    const bigPath = path.join(tempDir, "_artifacts", "packet.zip");
+    fs.writeFileSync(bigPath, Buffer.alloc(2 * 1024 * 1024, 7)); // 2 MiB, over ARG_MAX
+
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
+        const body = req.body as Record<string, unknown>;
+        return {
+          status: 200,
+          body: {
+            artifact: {
+              id: `artifact:sha256:${body.sha256}`,
+              custody_mode: "copy",
+              availability: "present",
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "ingest", "_artifacts/packet.zip", "--copy", "--json"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      const ingest = recorder.requests.find((entry) => entry.url === "/api/artifacts/ingest");
+      expect(ingest).toBeDefined();
+      const body = ingest!.body as Record<string, unknown>;
+      // Bytes never travel in-band: a daemon-visible absolute path is sent.
+      // (realpath comparison: macOS resolves /var -> /private/var for the cwd.)
+      expect(body).not.toHaveProperty("content_base64");
+      expect(body).not.toHaveProperty("content_buffer");
+      expect(fs.realpathSync(body.content_path as string)).toBe(fs.realpathSync(bigPath));
+      expect(body.custody_mode).toBe("copy");
+      expect(body.sha256).toMatch(/^[a-f0-9]{64}$/);
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("reports an explicit failure when the daemon does not store path-based bytes (issue 833e972)", async () => {
+    fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
+    fs.writeFileSync(path.join(tempDir, "_artifacts", "packet.zip"), Buffer.alloc(1024 * 1024, 3));
+
+    // Simulate an older daemon: it ignores content_path and stores a hash-only
+    // record (availability "unchecked") rather than copying the bytes.
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
+        const body = req.body as Record<string, unknown>;
+        return {
+          status: 200,
+          body: {
+            artifact: { id: `artifact:sha256:${body.sha256}`, custody_mode: "external", availability: "unchecked" },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "ingest", "_artifacts/packet.zip", "--copy", "--json"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).not.toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.failed).toHaveLength(1);
+      expect(payload.failed[0].error).toMatch(/daemon_did_not_store_bytes/);
+      // Never a raw "argument list too long" / transport-level leak.
+      expect(result.stderr).not.toMatch(/argument list too long/);
+    } finally {
+      await recorder.close();
+    }
   });
 
   it("previews bundle identity while preserving member recoverability in dry-run JSON", () => {

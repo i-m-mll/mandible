@@ -12,7 +12,7 @@ import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
 import { SseManager, setSseManager } from "./sse.js";
 import { Router, createServer, startServer, attachWebSocketUpgrade } from "./server.js";
 import { FileRpcTransport } from "./file-rpc-transport.js";
-import { removePidFile, writePidFile } from "./lifecycle.js";
+import { isDaemonReady, removePidFile, setDaemonReady, writePidFile } from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerChatRoutes } from "./routes/chats.js";
@@ -35,6 +35,7 @@ import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
+import { registerProjectRoutes } from "./routes/projects.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
@@ -66,6 +67,11 @@ export interface StartOptions {
 }
 
 export async function startDaemon(options: StartOptions = {}): Promise<DaemonHandle> {
+  // Bug: 645f8a8 — arm the readiness gate before any startup work. Health
+  // reports ready:false from the moment the listener accepts connections until
+  // critical init completes below, so a page loaded mid-startup keeps the
+  // splash up and auth/dashboard mutations are blocked.
+  setDaemonReady(false);
   const port = options.port ?? getPort();
   const logger = createLogger();
   const db = openDb(options.dbPath);
@@ -124,6 +130,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerRuntimeRoutes(router);
   registerTimelineRoutes(router);
   registerSpacesRoutes(router);
+  // Issue: 3d85f43 — canonical project registry CLI/API
+  registerProjectRoutes(router);
   registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
@@ -142,6 +150,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     db, sse, logger, version, router,
     getStartupInfo: () => startupInfo,
     isRebuilding: () => authQueue.isRebuilding,
+    // Bug: 645f8a8 — report lifecycle-owned readiness in health.
+    isReady: () => isDaemonReady(),
   });
   const fileRpcTransport = new FileRpcTransport({ router, logger });
   fileRpcTransport.start();
@@ -192,6 +202,16 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }
   startupInfo = readStartupCommit(logger);
   sse.setStartupCommit(startupInfo);
+
+  // Bug: 645f8a8 — critical startup work is complete: the server is listening,
+  // routes are registered, the DB is open, the pid file is written, the session
+  // manager has initialized, and the startup commit is known. Normal dashboard
+  // mutations (auth approve/reject, etc.) are now safe. Flip the readiness gate
+  // so health reports ready:true and the UI can drop the splash / re-enable
+  // mutation controls. Deferred background scans (issue scan, session
+  // discovery) run after this point and intentionally do NOT gate readiness.
+  setDaemonReady(true);
+  logger("info", "daemon_ready", { port: actualPort });
 
   // Start conversation ingestion watchers
   try {
@@ -327,6 +347,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       process.exit(1);
     }
     closing = true;
+    // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
+    setDaemonReady(false);
 
     // Hard deadline: if graceful shutdown hasn't completed in 5 seconds,
     // force exit so we don't become a zombie.

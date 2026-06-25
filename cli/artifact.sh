@@ -23,6 +23,23 @@ die() {
   exit "${2:-1}"
 }
 
+# Map a non-2xx artifact byte-transport response to an explicit, actionable
+# error code instead of leaking a raw transport failure (issue 833e972).
+explain_transport_failure() {
+  local body_file="$1" fallback="${2:-api_ingest_failed}" detail=""
+  [[ -f "$body_file" ]] && detail="$(jq -r '.error // .detail // .message // empty' "$body_file" 2>/dev/null || true)"
+  case "$detail" in
+    *content_base64*content_path*|*"content_path, or json is required"*|*"content_base64, json, sha256"*)
+      printf 'daemon_missing_path_ingest_support: this Mandible daemon does not accept path-based artifact bytes (content_path); upgrade the daemon' ;;
+    *file_rpc_attachment*)
+      printf 'file_rpc_attachment_rejected: the daemon could not resolve the spool attachment for large bytes; upgrade the daemon' ;;
+    file_rpc_timeout)
+      printf 'file_rpc_timeout: no daemon response (raise MANDIBLE_FILE_RPC_TIMEOUT or check the daemon)' ;;
+    "") printf '%s' "$fallback" ;;
+    *) printf '%s: %s' "$fallback" "$detail" ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -34,6 +51,10 @@ Usage:
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
+  mandible artifact versions <ref> [--json]
+  mandible artifact diff <refA> <refB> [--json]
+  mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
+  mandible artifact record --ref <artifact-ref> --kind managed [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
   mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
@@ -79,8 +100,131 @@ import sys
 cmd = sys.argv[1]
 if cmd == "abs":
     print(os.path.abspath(os.path.expanduser(sys.argv[2])))
+elif cmd == "real":
+    print(os.path.realpath(os.path.expanduser(sys.argv[2])))
 elif cmd == "rel":
     print(os.path.relpath(sys.argv[2], sys.argv[3]).replace(os.sep, "/"))
+PY
+}
+
+# Classify how a user-supplied path relates to its realpath so the CLI stores a
+# durable (non-disposable) file:// URI and records why (issue 2f9c3c3). This
+# mirrors the backend classifyLocalSymlink() so CLI dry-run plans match what
+# POST /api/artifacts/plan and registerLocalArtifactPath would store. Prints a
+# JSON LocalPathDecision (minus stored_uri, which the caller fills in).
+#   artifact_symlink_plan LEXICAL_ABS RESOLVED_REAL REAL_REPO_ROOT
+artifact_symlink_plan() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import os
+import subprocess
+import sys
+import json
+
+lexical = sys.argv[1]
+real = sys.argv[2]
+real_root = sys.argv[3] or ""
+
+
+def git(directory, args):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", directory, *args],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return out or None
+
+
+def toplevel(directory):
+    out = git(directory, ["rev-parse", "--show-toplevel"])
+    return os.path.abspath(out) if out else None
+
+
+def common_dir(directory):
+    out = git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    return os.path.abspath(out) if out else None
+
+
+def lexical_worktree_dir(lex):
+    # First ancestor that is not itself a symlink: walking up past the leaf
+    # `_artifacts`-style directory symlink lands on the worktree the user wrote
+    # through (git still reports it as a linked worktree even when nested under
+    # the main repo), while stopping at the first real directory ignores benign
+    # prefix symlinks such as macOS /tmp -> /private/tmp.
+    directory = os.path.dirname(os.path.abspath(lex))
+    for _ in range(64):
+        try:
+            if not os.path.islink(directory):
+                return directory
+        except OSError:
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+    return None
+
+
+symlink_resolved = lexical != real
+inside_worktree = bool(real_root)
+decision = {
+    "input_path": lexical,
+    "resolved_path": real,
+    "symlink_resolved": symlink_resolved,
+}
+
+if not symlink_resolved:
+    decision.update(
+        symlink_class="none",
+        worktree_substitution=False,
+        decision_warnings=[],
+        reason="input path is already a realpath; stored as-is",
+    )
+elif not inside_worktree:
+    decision.update(
+        symlink_class="outside_repo",
+        worktree_substitution=False,
+        decision_warnings=["outside_repo_symlink"],
+        reason="input traverses a symlink whose target is outside any git repo; "
+        "link custody is non-durable, use --copy/--managed",
+    )
+else:
+    root_abs = os.path.abspath(real_root)
+    real_common = common_dir(os.path.dirname(real))
+    lex_dir = lexical_worktree_dir(lexical)
+    lex_root = toplevel(lex_dir) if lex_dir else None
+    lex_common = common_dir(lex_dir) if lex_dir else None
+    if lex_common and real_common and lex_common != real_common:
+        decision.update(
+            symlink_class="cross_repo",
+            worktree_substitution=True,
+            decision_warnings=["cross_repo_symlink"],
+            reason="input traverses a symlink crossing into a different git "
+            "repository; stored the cross-repo realpath",
+        )
+    elif lex_root and root_abs and lex_root != root_abs:
+        decision.update(
+            symlink_class="same_repo_durable",
+            worktree_substitution=True,
+            decision_warnings=["symlink_resolved_to_durable_target"],
+            reason="input traverses a same-repo worktree symlink; stored the "
+            "persistent realpath so it survives feature-worktree deletion",
+        )
+    else:
+        decision.update(
+            symlink_class="prefix_only",
+            worktree_substitution=False,
+            decision_warnings=[],
+            reason="input differs from its realpath only by a path-prefix "
+            "symlink; stored the realpath",
+        )
+
+print(json.dumps(decision))
 PY
 }
 
@@ -176,8 +320,9 @@ issue_link_json() {
 classify_path() {
   local input="$1"
   local role_override="${2:-}"
-  local abs dir root rel repo_id branch commit git_status tracked ignored index_status worktree_status staged dirty untracked
+  local abs real dir root rel repo_id branch commit git_status tracked ignored index_status worktree_status staged dirty untracked
   local sha size media filename role warnings repo_locator uri canonical_ref recoverability availability git_json
+  local symlink_json decision_codes path_decision
 
   abs="$(python_path abs "$input")"
   if [[ ! -e "$abs" ]]; then
@@ -189,18 +334,22 @@ classify_path() {
     return
   fi
 
-  dir="$(dirname "$abs")"
+  # Classify against the realpath (symlinks resolved) so a feature worktree's
+  # disposable `_artifacts` symlink resolves to its persistent repo-root target
+  # and the stored file:// URI survives worktree deletion (issue 2f9c3c3).
+  real="$(python_path real "$input")"
+  dir="$(dirname "$real")"
   root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
-  sha="$(stable_hash "$abs")"
-  size="$(wc -c < "$abs" | tr -d ' ')"
-  media="$(media_type_for "$abs")"
-  filename="$(basename "$abs")"
+  sha="$(stable_hash "$real")"
+  size="$(wc -c < "$real" | tr -d ' ')"
+  media="$(media_type_for "$real")"
+  filename="$(basename "$real")"
   role="${role_override:-$(infer_role "$input")}"
   availability="present"
   warnings='[]'
 
   if [[ -n "$root" ]]; then
-    rel="$(python_path rel "$abs" "$root")"
+    rel="$(python_path rel "$real" "$root")"
     repo_id="$(repo_id_for_root "$root")"
     branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
     commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
@@ -228,7 +377,8 @@ classify_path() {
       warnings="$(printf '%s' "$warnings" | jq '. + [{code:"mutable_ref", message:"repo locator uses a mutable worktree ref"}]')"
     else
       recoverability="local_only"
-      uri="file://${abs}"
+      # Durable realpath, not the possibly-disposable input path.
+      uri="file://${real}"
       canonical_ref="artifact:${sha}"
       repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$branch" --arg path "$rel" \
         '{repo_id:$repo_id, ref:$ref, path:$path, local_only:true}')"
@@ -246,13 +396,22 @@ classify_path() {
   else
     rel="$filename"
     repo_id=""
-    uri=""
+    uri="file://${real}"
     canonical_ref="artifact:${sha}"
     repo_locator='{}'
     recoverability="local_only"
     warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --copy or --managed for durable registration"}]')"
     git_json="$(jq -n '{repo_id:null, relative_path:null, tracked:false, ignored:false, staged:false, dirty:false, untracked:false}')"
   fi
+
+  # Record the symlink decision (input path, realpath, stored URI, why) so the
+  # stored artifact explains durable-path selection, and surface any symlink
+  # warning codes alongside the recoverability warnings.
+  symlink_json="$(artifact_symlink_plan "$abs" "$real" "$root")"
+  decision_codes="$(printf '%s' "$symlink_json" | jq -c '.decision_warnings')"
+  warnings="$(printf '%s' "$warnings" | jq --argjson codes "$decision_codes" \
+    '. + ($codes | map({code:., message:"symlink path decision"}))')"
+  path_decision="$(printf '%s' "$symlink_json" | jq --arg uri "$uri" '. + {stored_uri:$uri}')"
 
   jq -n \
     --arg input "$input" \
@@ -267,6 +426,7 @@ classify_path() {
     --argjson warnings "$warnings" \
     --argjson repo_locator "$repo_locator" \
     --argjson git "$git_json" \
+    --argjson path_decision "$path_decision" \
     '{
       input:$input,
       ok:true,
@@ -277,19 +437,21 @@ classify_path() {
       role:$role,
       size_bytes:$size_bytes,
       uri:$uri,
+      input_path:$path_decision.input_path,
       canonical_ref:(if $recoverability == "local_only" then "artifact:" + $sha256 else $uri end),
       recoverability:$recoverability,
       availability:$availability,
       custody_mode:"link",
       repo_locator:$repo_locator,
       git:$git,
+      path_decision:$path_decision,
       warnings:$warnings
     }'
 }
 
 payload_for_path() {
   local input="$1" mode="$2" role_override="$3" allow_local="$4" allow_dirty="$5" relation="$6"
-  local classified ok recoverability tracked dirty staged untracked ignored repo_id uri content_b64 links
+  local classified ok recoverability tracked dirty staged untracked ignored repo_id uri links
   classified="$(classify_path "$input" "$role_override")"
   ok="$(printf '%s' "$classified" | jq -r '.ok')"
   if [[ "$ok" != "true" ]]; then
@@ -320,16 +482,16 @@ payload_for_path() {
 
   links="$(issue_link_json "$relation" "$(printf '%s' "$classified" | jq -r '.role')")"
   if [[ "$mode" == "managed" || "$mode" == "copy" ]]; then
-    content_b64="$(base64 < "$(python_path abs "$input")" | tr -d '\n')"
+    # Bytes are NOT embedded here. They are delivered to the daemon out-of-band:
+    # a daemon-visible content_path over local HTTP, or a spool attachment over
+    # file-RPC (issue 833e972). This keeps large files off argv/JSON entirely.
     classified="$(printf '%s' "$classified" | jq \
       --arg custody "$mode" \
       '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact:" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
     printf '%s' "$classified" | jq \
-      --arg content_base64 "$content_b64" \
       --argjson links "$links" \
       '{
         canonical_ref:.canonical_ref,
-        content_base64:$content_base64,
         sha256,
         filename,
         logical_name,
@@ -340,8 +502,8 @@ payload_for_path() {
         availability,
         home_repo_id:(.git.repo_id // null),
         repo_locator,
-        reference:{owner_system:"artifact_cli", recoverability:.recoverability, git:.git, source_uri:.uri, preferred_ref:.canonical_ref},
-        metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref},
+        reference:{owner_system:"artifact_cli", recoverability:.recoverability, git:.git, source_uri:.uri, preferred_ref:.canonical_ref, path_decision:.path_decision},
+        metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref, source_path:.path_decision.resolved_path, input_path:.path_decision.input_path, path_decision:.path_decision},
         links:$links
       }'
     return 0
@@ -363,8 +525,8 @@ payload_for_path() {
       availability,
       home_repo_id:(.git.repo_id // null),
       repo_locator,
-      reference:{owner_system:"repo", recoverability:.recoverability, git:.git, preferred_ref:.canonical_ref, content_identity:{algorithm:"sha256", hash:.sha256}},
-      metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref},
+      reference:{owner_system:"repo", recoverability:.recoverability, git:.git, preferred_ref:.canonical_ref, content_identity:{algorithm:"sha256", hash:.sha256}, path_decision:.path_decision},
+      metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref, source_path:.path_decision.resolved_path, input_path:.path_decision.input_path, path_decision:.path_decision},
       links:$links
     }'
 }
@@ -411,11 +573,40 @@ cmd_ingest_like() {
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
   local registered='[]' failed='[]' planned='[]' payload response result
+  local needs_bytes=0
+  [[ "$mode" == "copy" || "$mode" == "managed" ]] && needs_bytes=1
   for path_arg in "${paths[@]}"; do
     if payload="$(payload_for_path "$path_arg" "$mode" "$role" "$allow_local" "$allow_dirty" "$relation")"; then
       planned="$(printf '%s' "$planned" | jq --argjson payload "$payload" '. + [$payload]')"
       if (( dry_run )); then
-        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" '. + [{input:($payload.metadata.git.relative_path // $payload.filename), planned_payload:($payload | if has("content_base64") then .content_base64="<base64 omitted in dry-run>" else . end)}]')"
+        # No bytes are generated in dry-run; annotate how bytes would travel so
+        # --json stays informative without ever building base64 (issue 833e972).
+        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" --argjson needs_bytes "$needs_bytes" \
+          '. + [{input:($payload.metadata.git.relative_path // $payload.filename),
+                 planned_payload:(if $needs_bytes == 1
+                   then ($payload + {content_transport:"daemon-visible path or file-RPC attachment (bytes omitted in dry-run)"})
+                   else $payload end)}]')"
+      elif (( needs_bytes )); then
+        local abs resp_tmp resp_status err availability
+        abs="$(python_path abs "$path_arg")"
+        resp_tmp="$(mktemp)"
+        resp_status="$(api_send_content POST "/api/artifacts/ingest" "$payload" "content_path" "$abs" "$resp_tmp")"
+        if [[ "$resp_status" =~ ^2 ]]; then
+          availability="$(jq -r '.artifact.availability // empty' "$resp_tmp" 2>/dev/null || true)"
+          if [[ "$availability" != "present" ]]; then
+            failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" \
+              '. + [{input:$input, error:"daemon_did_not_store_bytes: snapshot/copy bytes were not stored (daemon may predate path-based ingest); upgrade the daemon"}]')"
+            rm -f "$resp_tmp"
+            continue
+          fi
+          registered="$(printf '%s' "$registered" | jq --argjson artifact "$(jq '.artifact' "$resp_tmp")" '. + [{artifact:$artifact}]')"
+        else
+          err="$(explain_transport_failure "$resp_tmp" "api_ingest_failed")"
+          failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" --arg error "$err" '. + [{input:$input, error:$error}]')"
+          rm -f "$resp_tmp"
+          continue
+        fi
+        rm -f "$resp_tmp"
       else
         response="$(api_post "/api/artifacts/ingest" "$payload")" || {
           failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" '. + [{input:$input, error:"api_ingest_failed"}]')"
@@ -646,6 +837,138 @@ cmd_check() {
   fi
 }
 
+# Read-only version history for a logical artifact series (issue f7a994e).
+cmd_versions() {
+  local ref="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible artifact versions <ref> [--json]" 2
+  require_tools
+  local response
+  response="$(api_get "/api/artifacts/versions?ref=$(urlencode "$ref")")" \
+    || die "${RED}Failed to load artifact versions.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .history.series as $s
+      | "series \($s.id) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
+      (.history.versions[]
+        | "  v\(.version_no) \(.source_kind) \(.artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
+  fi
+}
+
+# Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
+# bytes (issue f7a994e). Refs may be hashes, artifact-version:/artifact-series:
+# refs, or any resolvable artifact ref.
+cmd_diff() {
+  local refs=() json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) refs+=("$1"); shift ;;
+    esac
+  done
+  (( ${#refs[@]} == 2 )) || die "Usage: mandible artifact diff <refA> <refB> [--json]" 2
+  require_tools
+  local response
+  response="$(api_get "/api/artifacts/diff?a=$(urlencode "${refs[0]}")&b=$(urlencode "${refs[1]}")")" \
+    || die "${RED}Failed to diff artifacts.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .diff as $d
+      | if ($d.diffable | not) then "no diff: \($d.reason // "unavailable")"
+        elif $d.identical then "identical (\($d.a.content_hash[0:12]))"
+        else $d.unified end'
+  fi
+}
+
+# EXPLICIT version recording (issue f7a994e). The only write path into version
+# history; ordinary ingest/preview/check never mutate it. For local-only files
+# this is the explicit observation command.
+cmd_record() {
+  local kind="" path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --kind) kind="$2"; shift 2 ;;
+      --ref) ref="$2"; shift 2 ;;
+      --series-key) series_key="$2"; shift 2 ;;
+      --logical-name) logical_name="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --note) note="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --custody) custody="$2"; shift 2 ;;
+      --provider) provider="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --issue) issue="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$path" ]] || die "Unexpected argument: $1" 2; path="$1"; shift ;;
+    esac
+  done
+  [[ -n "$kind" ]] || die "Usage: mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key K] [--logical-name N] [--provider P] [--repo R] [--issue I] [--label L] [--note T] [--role R] [--json]" 2
+  case "$kind" in tracked_repo|local_only|managed) ;; *) die "Unknown --kind: $kind (expected tracked_repo, local_only, or managed)" 2 ;; esac
+  if [[ -z "$path" && -z "$ref" ]]; then
+    die "record requires a <path> (or --ref for managed)" 2
+  fi
+  require_tools
+  local abs=""
+  if [[ -n "$path" ]]; then
+    abs="$(python_path abs "$path")"
+    [[ -f "$abs" ]] || die "${RED}Not a regular file: ${abs}${RESET}" 1
+  fi
+  local payload
+  payload="$(jq -n \
+    --arg source_kind "$kind" \
+    --arg path "$abs" \
+    --arg ref "$ref" \
+    --arg series_key "$series_key" \
+    --arg logical_name "$logical_name" \
+    --arg label "$label" \
+    --arg note "$note" \
+    --arg role "$role" \
+    --arg title "$title" \
+    --arg custody_mode "$custody" \
+    --arg provider_id "$provider" \
+    --arg repo_id "$repo" \
+    --arg issue "$issue" \
+    '{source_kind:$source_kind}
+      + (if $path != "" then {path:$path} else {} end)
+      + (if $ref != "" then {ref:$ref} else {} end)
+      + (if $series_key != "" then {series_key:$series_key} else {} end)
+      + (if $logical_name != "" then {logical_name:$logical_name} else {} end)
+      + (if $label != "" then {label:$label} else {} end)
+      + (if $note != "" then {note:$note} else {} end)
+      + (if $role != "" then {role:$role} else {} end)
+      + (if $title != "" then {title:$title} else {} end)
+      + (if $custody_mode != "" then {custody_mode:$custody_mode} else {} end)
+      + (if $provider_id != "" then {provider_id:$provider_id} else {} end)
+      + (if $repo_id != "" then {repo_id:$repo_id} else {} end)
+      + (if $issue != "" then {issue:$issue} else {} end)')"
+  local response
+  response="$(api_post "/api/artifacts/versions" "$payload")" \
+    || die "${RED}Failed to record artifact version.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .result as $r
+      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version.id)",
+        "series \($r.series.id) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
+        "artifact \($r.artifact.id)",
+        ( ($r.warnings // [])[] | "warning: \(.)" )'
+  fi
+}
+
 cmd_scan_repos() {
   local repo="" max_depth="" register=0 dry_run=0 json=0
   while (( $# > 0 )); do
@@ -705,37 +1028,46 @@ cmd_snapshot() {
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
-  local ref="${args[1]}" payload response artifact link_response result
-  if (( upload )) || api_is_file_rpc; then
-    local content_b64 sha media filename
-    content_b64="$(base64 < "$from_path" | tr -d '\n')"
-    sha="$(stable_hash "$from_path")"
+  local ref="${args[1]}" payload response artifact link_response result abs_from
+  abs_from="$(python_path abs "$from_path")"
+  if api_is_file_rpc; then
+    # Sandbox transport: bytes ride as a spool attachment, never inline base64
+    # through argv/JSON (issue 833e972). The daemon injects content_path.
+    local media filename resp_tmp resp_status
     media="$(media_type_for "$from_path")"
     filename="$(basename "$from_path")"
     payload="$(jq -n \
       --arg ref "$ref" \
-      --arg content_base64 "$content_b64" \
-      --arg sha256 "$sha" \
       --arg filename "$filename" \
       --arg media_type "$media" \
       --arg role "$role" \
-      --arg source_path "$from_path" \
+      --arg source_path "$abs_from" \
       '{
         ref:$ref,
-        content_base64:$content_base64,
-        sha256:$sha256,
         filename:$filename,
         logical_name:$filename,
         media_type:$media_type,
         custody_mode:"copy",
-        metadata:{source:"artifact_cli", upload_mode:true, snapshot_source_path:$source_path},
-        reference:{owner_system:"artifact_cli", upload_mode:true}
+        metadata:{source:"artifact_cli", snapshot_source_path:$source_path},
+        reference:{owner_system:"artifact_cli"}
       } + (if $role == "" then {} else {role:$role} end)')"
+    resp_tmp="$(mktemp)"
+    resp_status="$(api_send_content POST "/api/artifacts/snapshot" "$payload" "content_path" "$abs_from" "$resp_tmp")"
+    [[ "$resp_status" =~ ^2 ]] || {
+      local snap_err
+      snap_err="$(explain_transport_failure "$resp_tmp" "api_snapshot_failed")"
+      rm -f "$resp_tmp"
+      die "${RED}Failed to snapshot artifact bytes: ${snap_err}.${RESET}" 1
+    }
+    response="$(cat "$resp_tmp")"
+    rm -f "$resp_tmp"
   else
-    payload="$(jq -n --arg ref "$ref" --arg path "$from_path" --arg role "$role" \
+    # Local HTTP: the daemon shares the filesystem, so send the daemon-visible
+    # absolute path and let it read the bytes (no base64 anywhere).
+    payload="$(jq -n --arg ref "$ref" --arg path "$abs_from" --arg role "$role" \
       '{ref:$ref, path:$path, custody_mode:"copy"} + (if $role == "" then {} else {role:$role} end)')"
+    response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
   fi
-  response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
   artifact="$(printf '%s' "$response" | jq '.artifact')"
   if [[ -n "$issue_id" ]]; then
     link_response="$(api_post "/api/artifacts/link" "$(jq -n --arg ref "$(printf '%s' "$artifact" | jq -r '.id')" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg role "$role" \
@@ -978,6 +1310,9 @@ case "$cmd" in
   show) cmd_show "$@" ;;
   content) cmd_content "$@" ;;
   check) cmd_check "$@" ;;
+  versions) cmd_versions "$@" ;;
+  diff) cmd_diff "$@" ;;
+  record) cmd_record "$@" ;;
   scan-repos) cmd_scan_repos "$@" ;;
   bundle) cmd_bundle "$@" ;;
   *) die "Unknown artifact subcommand: $cmd" 2 ;;

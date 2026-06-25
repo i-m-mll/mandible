@@ -133,6 +133,8 @@ Usage:
   mandible issue description history <issue-ref> [--json] [--with-body]
                                                                   Show issue description revision history
   mandible issue comment add <issue-ref> -m <text> [--reopen]      Add a comment
+  mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
+                                                                  Edit a comment
   mandible issue parent-role <status|assume> <umbrella> [opts]     Inspect or record parent-role holder state
   mandible issue comment show <comment-ref> [--json]               Show one comment
   mandible issue comment history <comment-ref> [--json] [--with-body]
@@ -313,6 +315,81 @@ cmd_comment_add() {
   printf '%s\n' "$response" | jq -r '
     "comment \(((.comments // []) | sort_by(.created_at // 0) | last | .id) // "-") issue_status=\(.status // "unknown")"
   '
+}
+
+cmd_comment_edit() {
+  local comment_ref=""
+  local message=""
+  local base_revision_id=""
+  local base_body_hash=""
+
+  while (( $# > 0 )); do
+    case "$1" in
+      -m)
+        if (( $# < 2 )); then
+          die "Missing value for -m." 2
+        fi
+        message="$2"
+        shift 2
+        ;;
+      --base-revision|--base-body-revision)
+        if (( $# < 2 )); then
+          die "Missing value for $1." 2
+        fi
+        base_revision_id="$2"
+        shift 2
+        ;;
+      --base-body-hash)
+        if (( $# < 2 )); then
+          die "Missing value for --base-body-hash." 2
+        fi
+        base_body_hash="$2"
+        shift 2
+        ;;
+      -*)
+        die "Unknown option: $1" 2
+        ;;
+      *)
+        if [[ -z "$comment_ref" ]]; then
+          comment_ref="$1"
+        else
+          die "Unexpected argument: $1" 2
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -z "$comment_ref" || -z "$message" ]]; then
+    die "Usage: mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]" 2
+  fi
+
+  require_tools
+  local comment_id payload tmp_response status response
+  comment_id=$(resolve_comment_ref "$comment_ref")
+  payload=$(
+    jq -n \
+      --arg body "$message" \
+      --arg base_revision_id "$base_revision_id" \
+      --arg base_body_hash "$base_body_hash" \
+      '{body: $body}
+      + (if $base_revision_id == "" then {} else {base_body_revision_id: $base_revision_id} end)
+      + (if $base_body_hash == "" then {} else {base_body_hash: $base_body_hash} end)'
+  )
+  tmp_response=$(mktemp)
+  status=$(api_send_capture PATCH "/api/ledger/comments/$(urlencode "$comment_id")" "$payload" "$tmp_response")
+  response=$(cat "$tmp_response")
+  rm -f "$tmp_response"
+  if [[ "$status" =~ ^2 ]]; then
+    err "${GREEN}Edited comment ${comment_ref}${RESET}"
+    return 0
+  fi
+  if [[ "$status" == "409" ]]; then
+    printf '%s\n' "$response" | jq -r '"stale base conflict: \(.error // "base revision or hash does not match current comment")"' >&2
+    return 3
+  fi
+  printf '%s\n' "$response" >&2
+  die "${RED}Failed to edit comment ${comment_ref}${RESET}" 1
 }
 
 cmd_show() {
@@ -1078,6 +1155,7 @@ cmd_new() {
   local title=""
   local body=""
   local -a labels=()
+  local project_ref=""
 
   while (( $# > 0 )); do
     case "$1" in
@@ -1102,6 +1180,13 @@ cmd_new() {
         labels+=("$2")
         shift 2
         ;;
+      --project|--repo)
+        if (( $# < 2 )); then
+          die "Missing value for $1." 2
+        fi
+        project_ref="$2"
+        shift 2
+        ;;
       -*)
         die "Unknown option: $1" 2
         ;;
@@ -1112,16 +1197,25 @@ cmd_new() {
   done
 
   if [[ -z "$title" || -z "$body" ]]; then
-    die "Usage: mandible issue new -t <title> -m <body> [--label <label>]..." 2
+    die "Usage: mandible issue new -t <title> -m <body> [--label <label>] [--project <ref>]..." 2
   fi
 
   require_tools
   local root payload id label_json repo
   root=$(repo_root)
-  repo=$(basename "$root")
   label_json=$(labels_json "${labels[@]+"${labels[@]}"}")
-  payload=$(jq -n --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
-    '{title:$title, body:$body, root:$root, labels:$labels}')
+  if [[ -n "$project_ref" ]]; then
+    repo="$project_ref"
+    payload=$(jq -n \
+      --arg title "$title" --arg body "$body" --arg root "$root" \
+      --argjson labels "$label_json" --arg project "$project_ref" \
+      '{title:$title, body:$body, root:$root, labels:$labels, project:$project}')
+  else
+    repo=$(basename "$root")
+    payload=$(jq -n \
+      --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
+      '{title:$title, body:$body, root:$root, labels:$labels}')
+  fi
   id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
     || die "${RED}Failed to create issue${RESET}" 1
   err "${GREEN}Created issue ${id}${RESET}"
@@ -1668,6 +1762,10 @@ cmd_comment() {
       shift
       cmd_comment_add "$@"
       ;;
+    edit)
+      shift
+      cmd_comment_edit "$@"
+      ;;
     show)
       shift
       cmd_comment_show "$@"
@@ -1680,6 +1778,7 @@ cmd_comment() {
       cat <<'COMMENT_USAGE'
 Usage:
   mandible issue comment add <issue-ref> -m <text>
+  mandible issue comment edit <comment-ref> -m <body> [--base-revision <rev>] [--base-body-hash <hash>]
   mandible issue comment show <comment-ref> [--json]
   mandible issue comment history <comment-ref> [--json] [--with-body]
 

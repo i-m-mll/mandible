@@ -82,6 +82,13 @@ export type AuthQueueViewProps = {
   /** Deep-link: select and scroll to a specific request on mount (from graph node click). */
   initialRequestId?: string;
   sidebarHidden?: boolean;
+  /**
+   * Bug: 645f8a8 — daemon readiness gate. When false (daemon is rebuilding /
+   * starting / not yet ready for normal mutations), the mutating action buttons
+   * (Approve/Reject/Retry/Dismiss) are disabled and their handlers are blocked
+   * so no mutation POST fires into a half-initialized daemon. Defaults to true.
+   */
+  daemonReady?: boolean;
   onSelectAuth?: (id: string | null) => void;
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
@@ -1563,6 +1570,7 @@ export function AuthQueueView({
   onDismiss,
   onUpdateField,
   sidebarHidden = false,
+  daemonReady = true,
 }: AuthQueueViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -1877,6 +1885,12 @@ export function AuthQueueView({
 
   const runAction = useCallback(
     (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
+      // Bug: 645f8a8 — block all mutating actions while the daemon is not ready
+      // (rebuilding / starting). The buttons are also disabled, but gate here too
+      // so no mutation POST can fire from a keyboard/programmatic trigger.
+      if (!daemonReady) {
+        return;
+      }
       if (!id || inFlightRef.current.has(id)) {
         return;
       }
@@ -1900,7 +1914,7 @@ export function AuthQueueView({
           });
         });
     },
-    [setInFlightState],
+    [setInFlightState, daemonReady],
   );
 
   const handleApprove = useCallback(
@@ -2288,6 +2302,10 @@ export function AuthQueueView({
       // Completed/rejected/dismissed — no actions
       return null;
     }
+    // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
+    // mutating actions are blocked. Kept separate from actionDisabled (in-flight)
+    // so it doesn't trip the "Submitting…" label when nothing is actually queued.
+    const mutationsBlocked = !daemonReady;
     const actionDisabled = inFlight.has(id);
     // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
     // the inFlight window before the API returns (where status is still 'pending'
@@ -2308,7 +2326,7 @@ export function AuthQueueView({
             type="button"
             className="btn btn--success"
             onClick={() => handleRetry(id)}
-            disabled={actionDisabled}
+            disabled={actionDisabled || mutationsBlocked}
           >
             {isRetrying ? 'Retrying...' : 'Retry'}
           </button>
@@ -2316,7 +2334,7 @@ export function AuthQueueView({
             type="button"
             className={`btn btn--danger${dismissConfirmId === id ? ' btn--confirm' : ''}`}
             onClick={() => toggleDismissConfirm(id)}
-            disabled={actionDisabled}
+            disabled={actionDisabled || mutationsBlocked}
           >
             {actionDisabled && !isRetrying ? 'Dismissing...' : dismissConfirmId === id ? 'Confirm dismiss?' : 'Dismiss'}
           </button>
@@ -2373,7 +2391,7 @@ export function AuthQueueView({
           type="button"
           className="btn btn--success"
           onClick={handleApproveClick}
-          disabled={actionDisabled}
+          disabled={actionDisabled || mutationsBlocked}
         >
           Approve
         </button>
@@ -2381,7 +2399,7 @@ export function AuthQueueView({
           type="button"
           className={`btn btn--danger${rejectConfirmId === id ? ' btn--confirm' : ''}`}
           onClick={() => toggleRejectConfirm(id)}
-          disabled={actionDisabled}
+          disabled={actionDisabled || mutationsBlocked}
         >
           {rejectConfirmId === id ? 'Confirm reject?' : 'Reject'}
         </button>
@@ -2390,7 +2408,7 @@ export function AuthQueueView({
             type="button"
             className="btn btn--danger"
             onClick={() => handleDismiss(id)}
-            disabled={actionDisabled}
+            disabled={actionDisabled || mutationsBlocked}
           >
             Force Dismiss
           </button>

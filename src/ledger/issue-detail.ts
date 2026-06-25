@@ -148,10 +148,17 @@ export interface LedgerIssueDetailRelationship {
 
 export interface LedgerIssueDetailProject {
   id: string;
+  // Issue: 3d85f43 — stable canonical project slug, independent of display_name
+  // and of the path-derived WorkScanner work_repo_id.
+  project_key: string | null;
   display_name: string;
   remote_identity: string;
   upstream_identity: string;
   repo_id: string | null;
+  // The path-derived WorkScanner id for the representative checkout. Local
+  // discovery metadata only; surfaced so auth-queue/work-unit matching (which
+  // keys off this id) keeps working now that repo_id is the canonical key.
+  work_repo_id: string | null;
   repo_name: string | null;
   repo_root: string | null;
   default_branch: string | null;
@@ -1190,11 +1197,12 @@ function buildSyncSummary(
 
 function getProjectInfo(db: Db, projectId: string): LedgerIssueDetailProject {
   const project = db.prepare(
-    `SELECT id, display_name, remote_identity, upstream_identity
+    `SELECT id, project_key, display_name, remote_identity, upstream_identity
      FROM ledger_projects
      WHERE id = ?`,
   ).get(projectId) as {
     id: string;
+    project_key: string;
     display_name: string;
     remote_identity: string;
     upstream_identity: string;
@@ -1213,12 +1221,19 @@ function getProjectInfo(db: Db, projectId: string): LedgerIssueDetailProject {
         default_branch: string;
       } | undefined
     : undefined;
+  // Issue: 3d85f43 — the canonical project key is the route/display identity.
+  // Prefer it for `repo_id` so projections surface `feedbax`, not the
+  // path-derived WorkScanner id `20-feedbax-feedbax`; fall back to work_repo_id
+  // only when a key is somehow absent.
+  const projectKey = project?.project_key && project.project_key !== "" ? project.project_key : null;
   return {
     id: project?.id ?? projectId,
+    project_key: projectKey,
     display_name: project?.display_name ?? projectId,
     remote_identity: project?.remote_identity ?? "",
     upstream_identity: project?.upstream_identity ?? "",
-    repo_id: checkout?.work_repo_id ?? null,
+    repo_id: projectKey ?? checkout?.work_repo_id ?? null,
+    work_repo_id: checkout?.work_repo_id ?? null,
     repo_name: checkout?.name ?? null,
     repo_root: checkout?.root ?? null,
     default_branch: checkout?.default_branch ?? null,

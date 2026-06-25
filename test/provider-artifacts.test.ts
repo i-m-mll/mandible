@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +20,10 @@ import {
   ingestProviderManifest,
   listArtifacts,
   listProviders,
+  getArtifactSeries,
+  listArtifactVersions,
+  planLocalArtifactPath,
+  recordArtifactVersion,
   registerArtifactAlias,
   registerLocalArtifactPath,
   registerProvider,
@@ -116,6 +120,41 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX idx_artifact_links_role
       ON artifact_links(role)
       WHERE role IS NOT NULL;
+    CREATE TABLE artifact_series (
+      id TEXT PRIMARY KEY,
+      series_key TEXT NOT NULL,
+      source_kind TEXT NOT NULL DEFAULT 'managed'
+        CHECK(source_kind IN ('tracked_repo','local_only','managed','mixed')),
+      title TEXT,
+      repo_id TEXT,
+      logical_name TEXT,
+      latest_version_id TEXT,
+      version_count INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(series_key)
+    );
+    CREATE TABLE artifact_versions (
+      id TEXT PRIMARY KEY,
+      series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+      artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+      version_no INTEGER NOT NULL,
+      source_kind TEXT NOT NULL
+        CHECK(source_kind IN ('tracked_repo','local_only','managed')),
+      content_hash TEXT NOT NULL,
+      commit_sha TEXT,
+      repo_path TEXT,
+      observed_path TEXT,
+      custody_mode TEXT,
+      label TEXT,
+      note TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      UNIQUE(series_id, version_no)
+    );
+    CREATE INDEX idx_artifact_versions_series
+      ON artifact_versions(series_id, version_no DESC);
     CREATE TABLE provider_manifests (
       id TEXT PRIMARY KEY,
       provider_id TEXT NOT NULL,
@@ -935,6 +974,107 @@ describe("provider/artifact substrate", () => {
     });
   });
 
+  it("ingests multi-MiB bytes from a daemon-visible content_path without inline base64 (issue 833e972)", () => {
+    const big = crypto.randomBytes(3 * 1024 * 1024); // 3 MiB, well over OS ARG_MAX
+    const srcPath = path.join(tempDir, "big-ingest.bin");
+    fs.writeFileSync(srcPath, big);
+
+    const artifact = ingestArtifact(db, {
+      content_path: srcPath,
+      sha256: sha256(big),
+      filename: "big-ingest.bin",
+      media_type: "application/octet-stream",
+      custody_mode: "copy",
+      availability: "present",
+    }, 1000, tempDir);
+
+    expect(artifact).toMatchObject({
+      id: `artifact:sha256:${sha256(big)}`,
+      custody_mode: "copy",
+      availability: "present",
+      size_bytes: big.length,
+    });
+    const stored = getArtifactContent(db, artifact.id);
+    expect(stored).toMatchObject({ status: "available", download: { available: true } });
+  });
+
+  it("rejects a content_path ingest whose declared sha256 disagrees with the bytes (issue 833e972)", () => {
+    const big = crypto.randomBytes(2 * 1024 * 1024);
+    const srcPath = path.join(tempDir, "mismatch.bin");
+    fs.writeFileSync(srcPath, big);
+
+    expect(() =>
+      ingestArtifact(db, {
+        content_path: srcPath,
+        sha256: sha256("a different declared value"),
+        custody_mode: "copy",
+        availability: "present",
+      }, 1000, tempDir),
+    ).toThrow(/sha256 does not match supplied content/);
+  });
+
+  it("snapshots a multi-MiB content_path and still rejects declared-hash mismatch (issue 833e972)", () => {
+    const big = crypto.randomBytes(4 * 1024 * 1024); // 4 MiB
+    const srcPath = path.join(tempDir, "big-snapshot.bin");
+    fs.writeFileSync(srcPath, big);
+
+    const snapshotted = snapshotArtifactBytes(db, {
+      content_path: srcPath,
+      media_type: "application/octet-stream",
+      filename: "big-snapshot.bin",
+      custody_mode: "copy",
+    }, 1000, tempDir);
+
+    expect(snapshotted).toMatchObject({
+      id: `artifact:sha256:${sha256(big)}`,
+      custody_mode: "copy",
+      availability: "present",
+      size_bytes: big.length,
+      uri: expect.stringMatching(/^file:\/\//),
+    });
+    expect(getArtifactContent(db, snapshotted.id)).toMatchObject({
+      status: "available",
+      download: { available: true },
+    });
+
+    // Declared-hash integrity must survive the path/buffer transport: a snapshot
+    // onto a ref whose registered sha differs from the bytes is rejected.
+    const otherHash = sha256("registered-as-something-else");
+    resolveArtifactRef(db, `artifact:${otherHash}`, 1500); // mint a hash-only record
+    const conflictPath = path.join(tempDir, "conflict.bin");
+    fs.writeFileSync(conflictPath, crypto.randomBytes(1024 * 1024));
+    expect(() =>
+      snapshotArtifactBytes(db, {
+        ref: `artifact:${otherHash}`,
+        content_path: conflictPath,
+        custody_mode: "copy",
+      }, 2000, tempDir),
+    ).toThrow(/do not match registered sha256/);
+  });
+
+  it("copies a multi-MiB local path into custody via a single buffered read (issue 833e972)", () => {
+    const big = crypto.randomBytes(3 * 1024 * 1024);
+    const srcPath = path.join(tempDir, "local-copy.bin");
+    fs.writeFileSync(srcPath, big);
+
+    const registration = registerLocalArtifactPath(db, {
+      path: srcPath,
+      custody_mode: "copy",
+      filename: "local-copy.bin",
+    }, 1000, tempDir);
+
+    expect(registration.artifact).toMatchObject({
+      id: `artifact:sha256:${sha256(big)}`,
+      custody_mode: "copy",
+      availability: "present",
+      size_bytes: big.length,
+    });
+    expect(getArtifactContent(db, registration.artifact.id)).toMatchObject({
+      status: "available",
+      download: { available: true },
+    });
+  });
+
   it("preserves member refs and recoverability in mixed tracked/local bundle manifests", () => {
     const commit = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
     const runJson = '{"status":"complete"}\n';
@@ -1674,5 +1814,240 @@ describe("provider/artifact substrate", () => {
       role: "report",
     });
     expect(result.skipped.map((entry) => entry.reason)).toContain("excluded_dir");
+  });
+});
+
+describe("durable local-only artifact paths across worktree symlinks (issue 2f9c3c3)", () => {
+  function initRepo(root: string): void {
+    fs.mkdirSync(root, { recursive: true });
+    execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
+    git(root, ["config", "user.email", "test@example.invalid"]);
+    git(root, ["config", "user.name", "Test User"]);
+    git(root, ["config", "commit.gpgsign", "false"]);
+  }
+
+  function commitFile(root: string, rel: string, body: string): void {
+    const target = path.join(root, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, body, "utf8");
+    git(root, ["add", rel]);
+    git(root, ["commit", "-m", `add ${rel}`]);
+  }
+
+  // A persistent repo-root `_artifacts` directory reached from a feature
+  // worktree through a symlink — the canonical disposable-path scenario.
+  function buildWorktreeSymlinkFixture(): {
+    mainRepo: string;
+    featWorktree: string;
+    disposablePath: string;
+    persistentReal: string;
+  } {
+    const mainRepo = path.join(tempDir, "main-repo");
+    initRepo(mainRepo);
+    commitFile(mainRepo, "README.md", "# main\n");
+    const persistentArtifacts = path.join(mainRepo, "_artifacts");
+    fs.mkdirSync(persistentArtifacts, { recursive: true });
+    fs.writeFileSync(path.join(persistentArtifacts, "plot.html"), "<html>plot</html>\n", "utf8");
+    const featWorktree = path.join(tempDir, "worktrees", "feat");
+    fs.mkdirSync(path.dirname(featWorktree), { recursive: true });
+    git(mainRepo, ["worktree", "add", "-b", "feat", featWorktree]);
+    fs.symlinkSync(persistentArtifacts, path.join(featWorktree, "_artifacts"));
+    return {
+      mainRepo,
+      featWorktree,
+      disposablePath: path.join(featWorktree, "_artifacts", "plot.html"),
+      persistentReal: fs.realpathSync(path.join(persistentArtifacts, "plot.html")),
+    };
+  }
+
+  it("stores the persistent realpath and materializes after the feature worktree is deleted", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+
+    const registration = registerLocalArtifactPath(db, {
+      path: fixture.disposablePath,
+      role: "figure",
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    expect(registration.recoverability).toBe("local_only");
+    expect(registration.artifact.uri).toBe(`file://${fixture.persistentReal}`);
+    expect(registration.artifact.uri).not.toContain(`${path.sep}feat${path.sep}`);
+    expect(registration.warnings).toContain("symlink_resolved_to_durable_target");
+    expect(registration.artifact.metadata.path_decision).toMatchObject({
+      symlink_resolved: true,
+      symlink_class: "same_repo_durable",
+      worktree_substitution: true,
+      resolved_path: fixture.persistentReal,
+      input_path: path.resolve(fixture.disposablePath),
+      stored_uri: `file://${fixture.persistentReal}`,
+    });
+    // The disposable input path is preserved as metadata, not the only locator.
+    expect(registration.artifact.metadata.input_path).toBe(path.resolve(fixture.disposablePath));
+
+    expect(checkArtifactMaterialization(db, registration.artifact.id)).toMatchObject({ materializable: true });
+
+    // Remove the disposable feature worktree; the persistent target remains.
+    fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
+    expect(fs.existsSync(fixture.disposablePath)).toBe(false);
+    expect(fs.existsSync(fixture.persistentReal)).toBe(true);
+
+    expect(checkArtifactMaterialization(db, registration.artifact.id)).toMatchObject({ materializable: true });
+    expect(getArtifactContent(db, registration.artifact.id)).toMatchObject({ status: "available" });
+  });
+
+  it("plan endpoint classification equals what registration stores", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+    const plan = planLocalArtifactPath(db, { path: fixture.disposablePath, allow_local_only: true });
+    const registration = registerLocalArtifactPath(db, {
+      path: fixture.disposablePath,
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    expect(plan.uri).toBe(registration.artifact.uri);
+    expect(plan.recoverability).toBe(registration.recoverability);
+    expect(plan.sha256).toBe(registration.artifact.content_hash);
+    expect(plan.path_decision).toMatchObject(
+      registration.artifact.metadata.path_decision as Record<string, unknown>,
+    );
+  });
+
+  it("CLI dry-run classification matches backend registration for the symlink fixture", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+    const registration = registerLocalArtifactPath(db, {
+      path: fixture.disposablePath,
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    const cli = spawnSync(
+      path.join(process.cwd(), "bin", "mandible"),
+      ["artifact", "ingest", fixture.disposablePath, "--allow-local-only", "--dry-run", "--json"],
+      { cwd: fixture.featWorktree, encoding: "utf8", env: { ...process.env, MANDIBLE_PORT: "9" } },
+    );
+    expect(cli.status).toBe(0);
+    const planned = JSON.parse(cli.stdout).registered[0].planned_payload;
+    expect(planned.uri).toBe(registration.artifact.uri);
+    expect(planned.metadata.recoverability).toBe(registration.recoverability);
+    expect(planned.metadata.path_decision.symlink_class).toBe(
+      (registration.artifact.metadata.path_decision as Record<string, unknown>).symlink_class,
+    );
+    expect(planned.metadata.path_decision.resolved_path).toBe(
+      (registration.artifact.metadata.path_decision as Record<string, unknown>).resolved_path,
+    );
+  });
+
+  it("flags cross-repo symlinks while keeping them local-only", () => {
+    const repoA = path.join(tempDir, "repo-a");
+    const repoB = path.join(tempDir, "repo-b");
+    initRepo(repoA);
+    commitFile(repoA, "a.txt", "a\n");
+    initRepo(repoB);
+    commitFile(repoB, "b.txt", "b\n");
+    const repoBData = path.join(repoB, "data");
+    fs.mkdirSync(repoBData, { recursive: true });
+    fs.writeFileSync(path.join(repoBData, "result.bin"), "result\n", "utf8");
+    fs.symlinkSync(repoBData, path.join(repoA, "link"));
+    const crossPath = path.join(repoA, "link", "result.bin");
+
+    const registration = registerLocalArtifactPath(db, {
+      path: crossPath,
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    expect(registration.recoverability).toBe("local_only");
+    expect(registration.warnings).toContain("cross_repo_symlink");
+    expect(registration.artifact.metadata.path_decision).toMatchObject({
+      symlink_class: "cross_repo",
+      worktree_substitution: true,
+    });
+    expect(registration.artifact.uri).toBe(`file://${fs.realpathSync(path.join(repoBData, "result.bin"))}`);
+  });
+
+  it("rejects an outside-repo symlink for link custody unless explicitly allowed", () => {
+    const repoOut = path.join(tempDir, "repo-out");
+    initRepo(repoOut);
+    commitFile(repoOut, "a.txt", "a\n");
+    const outsideDir = path.join(tempDir, "outside-store");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, "blob.bin"), "blob\n", "utf8");
+    fs.symlinkSync(outsideDir, path.join(repoOut, "ext"));
+    const outsidePath = path.join(repoOut, "ext", "blob.bin");
+
+    // Without allow_local_only, link custody to an outside-repo symlink is gated
+    // (the override-required warning is the backend's "warn or reject" signal;
+    // the CLI turns the same classification into a hard outside_repo rejection).
+    const gated = registerLocalArtifactPath(db, {
+      path: outsidePath,
+    }, 1000, tempDir);
+    expect(gated.warnings).toEqual(
+      expect.arrayContaining(["outside_repo", "outside_repo_symlink", "local_only_link_requires_override_for_issue_evidence"]),
+    );
+
+    const allowed = registerLocalArtifactPath(db, {
+      path: outsidePath,
+      allow_local_only: true,
+    }, 2000, tempDir);
+    expect(allowed.recoverability).toBe("local_only");
+    expect(allowed.artifact.metadata.path_decision).toMatchObject({
+      symlink_class: "outside_repo",
+      worktree_substitution: false,
+    });
+    expect(allowed.artifact.uri).toBe(`file://${fs.realpathSync(path.join(outsideDir, "blob.bin"))}`);
+  });
+
+  it("freezes a durable realpath ref for a symlinked local-only bundle member", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+    const bundle = createArtifactBundle(db, {
+      name: "symlinked packet",
+      members: [{ path: fixture.disposablePath, role: "figure", allow_local_only: true }],
+    }, 2000, tempDir);
+
+    const member = bundle.members[0];
+    expect(member.artifact.uri).toBe(`file://${fixture.persistentReal}`);
+
+    const content = getArtifactContent(db, bundle.bundle.id);
+    const manifest = JSON.parse(content?.preview?.text ?? "{}");
+    expect(manifest.members[0].ref).toBe(`file://${fixture.persistentReal}`);
+    expect(manifest.members[0].input_path).toBe(fixture.disposablePath);
+
+    // The frozen ref still materializes after the feature worktree is deleted.
+    fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
+    expect(checkArtifactMaterialization(db, member.artifact.id)).toMatchObject({ materializable: true });
+  });
+});
+
+describe("artifact version series", () => {
+  it("records managed v1/v2 under one series with sequential version numbers", () => {
+    const r1 = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "rlrmp",
+      content: "v1\n",
+      media_type: "text/plain",
+      logical_name: "report",
+    }, 1000, tempDir);
+    const r2 = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "rlrmp",
+      content: "v2\n",
+      media_type: "text/plain",
+      logical_name: "report",
+    }, 2000, tempDir);
+
+    expect(r1.series.id).toBe(r2.series.id);
+    expect(r1.version.version_no).toBe(1);
+    expect(r2.version.version_no).toBe(2);
+    expect(r2.version.artifact_id).not.toBe(r1.version.artifact_id);
+    expect(getArtifactSeries(db, r1.series.id)?.version_count).toBe(2);
+    expect(listArtifactVersions(db, r1.series.id).map((v) => v.version_no)).toEqual([1, 2]);
+
+    // Re-recording identical bytes is an idempotent no-op observation.
+    const dup = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "rlrmp",
+      content: "v2\n",
+      media_type: "text/plain",
+      logical_name: "report",
+    }, 3000, tempDir);
+    expect(dup.created).toBe(false);
+    expect(getArtifactSeries(db, r1.series.id)?.version_count).toBe(2);
   });
 });

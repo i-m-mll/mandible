@@ -109,6 +109,7 @@ export function listLedgerIssueSummaries(db: Db, workScanner: Pick<WorkScanner, 
       repo_id: checkout.repo_id,
       repo_name: checkout.repo_name,
       repo_root: checkout.repo_root,
+      project_key: checkout.project_key || undefined,
       open_count: issues.filter((issue) => issue.status === "open").length,
       merged_count: issues.filter((issue) => issue.status === "closed" && issue.labels.includes("merged")).length,
       closed_count: issues.filter((issue) => issue.status === "closed" && !issue.labels.includes("merged")).length,
@@ -301,6 +302,7 @@ interface CheckoutProjection {
   repo_id: string;
   repo_name: string;
   repo_root: string;
+  project_key: string;
   last_scanned_at: string | null;
 }
 
@@ -368,7 +370,8 @@ function listCheckouts(db: Db, repos: RepoInfo[]): CheckoutProjection[] {
   const repoById = new Map(repos.map((repo) => [repo.id, repo]));
   const repoByRoot = new Map(repos.map((repo) => [repo.root, repo]));
   const rows = db.prepare(
-    `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name, p.display_name
+    `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name,
+            p.display_name, COALESCE(p.project_key, '') AS project_key
      FROM ledger_project_checkouts c
      JOIN ledger_projects p ON p.id = c.project_id
      ORDER BY c.name, c.root`,
@@ -379,6 +382,7 @@ function listCheckouts(db: Db, repos: RepoInfo[]): CheckoutProjection[] {
     root: string;
     name: string;
     display_name: string;
+    project_key: string;
   }>;
   return rows.map((row) => {
     const repo = (row.work_repo_id ? repoById.get(row.work_repo_id) : undefined) ?? repoByRoot.get(row.root);
@@ -388,6 +392,7 @@ function listCheckouts(db: Db, repos: RepoInfo[]): CheckoutProjection[] {
       repo_id: repo?.id ?? row.work_repo_id ?? row.project_id,
       repo_name: repo?.name ?? row.name ?? row.display_name,
       repo_root: repo?.root ?? row.root,
+      project_key: row.project_key,
       last_scanned_at: repo?.last_scanned_at ?? null,
     };
   });
@@ -400,6 +405,7 @@ function checkoutFromRow(row: {
   root: string;
   name: string;
   display_name: string;
+  project_key?: string;
 }, repo?: RepoInfo): CheckoutProjection {
   return {
     project_id: row.project_id,
@@ -407,6 +413,7 @@ function checkoutFromRow(row: {
     repo_id: repo?.id ?? row.work_repo_id ?? row.project_id,
     repo_name: repo?.name ?? row.name ?? row.display_name,
     repo_root: repo?.root ?? row.root,
+    project_key: row.project_key ?? "",
     last_scanned_at: repo?.last_scanned_at ?? null,
   };
 }
@@ -425,6 +432,9 @@ function findCheckoutByRepoRef(
   const values = [...candidates].filter((value) => value.trim() !== "");
   if (values.length === 0) return null;
   const placeholders = values.map(() => "?").join(", ");
+  // Issue: 3d85f43 — the canonical project_key is a valid repo ref, so links and
+  // routes that now carry the key (rather than the path-derived work_repo_id)
+  // resolve to the right checkout.
   const row = db.prepare(
     `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name, p.display_name
      FROM ledger_project_checkouts c
@@ -434,9 +444,10 @@ function findCheckoutByRepoRef(
         OR c.name IN (${placeholders})
         OR c.project_id IN (${placeholders})
         OR p.display_name IN (${placeholders})
+        OR (p.project_key != '' AND p.project_key IN (${placeholders}))
      ORDER BY c.updated_at DESC, c.name, c.root
      LIMIT 1`,
-  ).get(...values, ...values, ...values, ...values, ...values) as {
+  ).get(...values, ...values, ...values, ...values, ...values, ...values) as {
     checkout_id: string;
     project_id: string;
     work_repo_id: string | null;

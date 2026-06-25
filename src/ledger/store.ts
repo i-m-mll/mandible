@@ -2343,12 +2343,22 @@ export class LedgerStore {
   private resolveProjectId(projectRef: string | undefined, fallbackProjectId: string): string | null {
     const ref = projectRef?.trim();
     if (!ref) return fallbackProjectId;
+    // Issue 3d85f43: accept the canonical project_key (and the project id itself),
+    // case-insensitively, alongside display_name / checkout name / work_repo_id.
+    const hasProjectKey = (this.db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{
+      name: string;
+    }>).some((column) => column.name === "project_key");
     const rows = this.db.prepare(
-      `SELECT id FROM ledger_projects WHERE lower(display_name) = lower(?)
+      `SELECT id FROM ledger_projects
+        WHERE id = ? OR lower(display_name) = lower(?)${
+          hasProjectKey ? " OR (project_key != '' AND lower(project_key) = lower(?))" : ""
+        }
        UNION
        SELECT project_id AS id FROM ledger_project_checkouts
         WHERE lower(name) = lower(?) OR work_repo_id = ?`,
-    ).all(ref, ref, ref) as Array<{ id: string }>;
+    ).all(
+      ...(hasProjectKey ? [ref, ref, ref, ref, ref] : [ref, ref, ref, ref]),
+    ) as Array<{ id: string }>;
     if (rows.length === 1) return rows[0].id;
     return null;
   }

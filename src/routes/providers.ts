@@ -5,7 +5,7 @@ import {
 } from "../knowledge-backrefs.js";
 import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import { checkArtifactMaterialization, getArtifactContent } from "../artifact-content.js";
+import { checkArtifactMaterialization, diffArtifacts, getArtifactContent } from "../artifact-content.js";
 import {
   addArtifactBundleMembers,
   createArtifactBundle,
@@ -19,12 +19,16 @@ import {
   ingestProviderManifestFile,
   listArtifacts,
   listProviders,
+  planLocalArtifactPath,
+  recordArtifactVersion,
   registerLocalArtifactPath,
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
+  resolveArtifactVersionHistory,
   snapshotArtifactBytes,
 } from "../provider-artifacts.js";
+import type { ArtifactVersionSourceKind } from "../types.js";
 
 function sendJson(res: ResponseLike, code: number, payload: unknown): void {
   res.status(code).json(payload);
@@ -170,6 +174,25 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   });
 
+  app.post("/api/artifacts/plan", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const localPath = typeof body.path === "string" && body.path.trim()
+        ? body.path
+        : typeof body.local_path === "string" && body.local_path.trim()
+          ? body.local_path
+          : undefined;
+      if (!localPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      const plan = planLocalArtifactPath(getDb(), { ...body, path: localPath });
+      sendJson(res, 200, { plan });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
   app.post("/api/artifacts/scan-repos", (req, res) => {
     try {
       const body = bodyRecord(req);
@@ -258,6 +281,62 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     try {
       const artifact = snapshotArtifactBytes(getDb(), bodyRecord(req));
       sendJson(res, 200, { artifact });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  // Read-only version history for a logical artifact series. `ref` may be a
+  // series id, series_key, version id, or any artifact ref (resolves to the
+  // most recent series pinning that immutable artifact).
+  app.get("/api/artifacts/versions", (req, res) => {
+    try {
+      const ref = queryString(req, "ref") ?? queryString(req, "series");
+      if (!ref) {
+        sendJson(res, 400, { error: "ref query parameter required" });
+        return;
+      }
+      const history = resolveArtifactVersionHistory(getDb(), ref);
+      if (!history) {
+        sendJson(res, 404, { error: "no artifact version series found for ref" });
+        return;
+      }
+      sendJson(res, 200, { history });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  // Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
+  // bytes. Accepts any resolvable refs (hash, version, or series selectors).
+  app.get("/api/artifacts/diff", (req, res) => {
+    try {
+      const refA = queryString(req, "a") ?? queryString(req, "from");
+      const refB = queryString(req, "b") ?? queryString(req, "to");
+      if (!refA || !refB) {
+        sendJson(res, 400, { error: "a and b query parameters required" });
+        return;
+      }
+      sendJson(res, 200, { diff: diffArtifacts(getDb(), refA, refB) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  // EXPLICIT version recording — the only write path into the version tables.
+  app.post("/api/artifacts/versions", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const sourceKind = typeof body.source_kind === "string" ? body.source_kind : undefined;
+      if (!sourceKind) {
+        sendJson(res, 400, { error: "source_kind is required (tracked_repo, local_only, or managed)" });
+        return;
+      }
+      const result = recordArtifactVersion(getDb(), {
+        ...body,
+        source_kind: sourceKind as ArtifactVersionSourceKind,
+      });
+      sendJson(res, 200, { result });
     } catch (error) {
       handleError(res, error);
     }

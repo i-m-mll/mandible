@@ -17,7 +17,23 @@ export interface FileRpcRequest {
   query?: Record<string, unknown>;
   body?: unknown;
   ambient_identity?: unknown;
+  // Large request bytes (e.g. artifact snapshot/copy content) travel as sibling
+  // attachment files in the spool dir instead of inline base64 in argv/body
+  // (issue 833e972). Maps a body field name to a spool-local attachment file
+  // basename; the transport resolves it to the attachment's absolute path so
+  // the daemon reads its own spool, never an arbitrary client-named host path.
+  attachments?: Record<string, string>;
 }
+
+// Body fields an attachment is permitted to populate. Kept deliberately narrow:
+// an attachment may only supply a daemon-visible bytes path, never overwrite
+// arbitrary body fields.
+const ATTACHMENT_TARGET_FIELDS = new Set(["content_path"]);
+// Body fields that must never be honored straight from a file-RPC client body.
+// `content_path`/`content_buffer` would let a sandboxed caller make the daemon
+// read an arbitrary host path; over the file transport they may only be set by
+// the transport itself from a validated spool attachment.
+const STRIPPED_CLIENT_BODY_FIELDS = ["content_path", "content_buffer"];
 
 export interface FileRpcTransportOptions {
   router: Router;
@@ -88,12 +104,14 @@ export class FileRpcTransport {
       return;
     }
     this.activeFiles.add(requestPath);
+    const attachmentPaths: string[] = [];
     try {
       const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as FileRpcRequest;
       const requestId = safeRequestId(request.id, requestPath);
       const method = typeof request.method === "string" ? request.method.toUpperCase() : "GET";
       const requestUrl = buildRequestUrl(request);
-      const response = await this.dispatch(method, requestUrl, request.body, request.ambient_identity);
+      const body = this.resolveRequestBody(request, attachmentPaths);
+      const response = await this.dispatch(method, requestUrl, body, request.ambient_identity);
       this.writeResponse(requestId, response);
       fs.rmSync(requestPath, { force: true });
       this.logger?.("info", "file_rpc_request", {
@@ -115,8 +133,55 @@ export class FileRpcTransport {
         error: String(error),
       });
     } finally {
+      for (const attachment of attachmentPaths) {
+        fs.rmSync(attachment, { force: true });
+      }
       this.activeFiles.delete(requestPath);
     }
+  }
+
+  /**
+   * Build the dispatched body for a file-RPC request (issue 833e972).
+   *
+   * Client bodies may never set `content_path`/`content_buffer` directly — that
+   * would let a sandboxed caller make the daemon read an arbitrary host path.
+   * Those fields are stripped, then any declared `attachments` are resolved:
+   * each maps an allowlisted body field to a spool-local attachment file
+   * basename, which the transport rewrites to the attachment's absolute path so
+   * the daemon only ever reads bytes from its own spool directory.
+   */
+  private resolveRequestBody(request: FileRpcRequest, attachmentPaths: string[]): unknown {
+    const { body, attachments } = request;
+    const hasAttachments = attachments && typeof attachments === "object" && !Array.isArray(attachments);
+    if (!hasAttachments && (!body || typeof body !== "object" || Array.isArray(body))) {
+      return body;
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      // Attachments declared without a usable object body: nothing to inject.
+      return body;
+    }
+    const next: Record<string, unknown> = { ...(body as Record<string, unknown>) };
+    for (const field of STRIPPED_CLIENT_BODY_FIELDS) {
+      delete next[field];
+    }
+    if (hasAttachments) {
+      for (const [field, fileName] of Object.entries(attachments as Record<string, string>)) {
+        if (!ATTACHMENT_TARGET_FIELDS.has(field)) {
+          throw new Error(`file_rpc_attachment_field_not_allowed: ${field}`);
+        }
+        if (typeof fileName !== "string" || !isSafeAttachmentName(fileName)) {
+          throw new Error(`file_rpc_attachment_name_invalid: ${String(fileName)}`);
+        }
+        const attachmentPath = path.join(this.dir, fileName);
+        const resolved = path.resolve(attachmentPath);
+        if (path.dirname(resolved) !== path.resolve(this.dir) || !fs.existsSync(resolved)) {
+          throw new Error(`file_rpc_attachment_missing: ${fileName}`);
+        }
+        attachmentPaths.push(resolved);
+        next[field] = resolved;
+      }
+    }
+    return next;
   }
 
   private async dispatch(
@@ -231,6 +296,7 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/branches$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/labels$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/ledger\/comments\/[^/]+\/revisions$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/ledger\/comments\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/ledger\/body-revisions\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/auth/queue") return true;
   if (normalizedMethod === "GET" && /^\/api\/auth\/request\/[^/]+$/.test(pathname)) return true;
@@ -243,9 +309,17 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "GET" && pathname === "/api/artifacts") return true;
   if (normalizedMethod === "GET" && pathname === "/api/artifacts/resolve") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/ingest") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/artifacts/plan") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  // Artifact version identity (issue f7a994e): read-only version history + diff,
+  // plus the EXPLICIT version record write. Narrow, non-privileged surfaces (no
+  // approval/merge/admin/config authority), so they stay within the
+  // file-transport write boundary.
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/versions") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/diff") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/artifacts/versions") return true;
   // Knowledge backrefs (C5, issue 511506d): the Phase-6 HumbleB return channel.
   // GET reads existing backrefs; POST is the return-channel write that records a
   // knowledge backref. Both are narrow, non-privileged surfaces — no approval,
@@ -300,6 +374,19 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   // queue — so they stay within the file-transport read boundary (standing AC #1).
   if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/drift$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/[^/]+\/drift$/.test(pathname)) return true;
+  // Project registry (issue 3d85f43): canonical name-to-path resolution. Reads
+  // (list / show / audit) plus narrow non-privileged writes (register/update a
+  // project or checkout, guarded repair). No approval/merge/admin/config
+  // authority, so within the file-transport write boundary (standing AC #1).
+  // Self-allowlisted per the per-route convention — no blanket `/api/projects*`.
+  if (normalizedMethod === "GET" && pathname === "/api/projects") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/projects") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/projects/audit") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/projects/repair") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/projects/checkouts") return true;
+  if (normalizedMethod === "GET" && /^\/api\/projects\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/projects\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/projects\/[^/]+\/checkouts$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
@@ -318,6 +405,15 @@ function ensurePrivateDir(dir: string): void {
   } catch {
     // Some mounts do not support chmod; creation mode still documents intent.
   }
+}
+
+function isSafeAttachmentName(name: string): boolean {
+  // Plain spool-local basename only: no path separators, no traversal, no
+  // absolute paths. Keeps attachment reads confined to the spool directory.
+  if (!name || name.length > 255) return false;
+  if (name === "." || name === "..") return false;
+  if (name.includes("/") || name.includes("\\") || name.includes("\0")) return false;
+  return /^[A-Za-z0-9._-]+$/.test(name);
 }
 
 function safeRequestId(id: string | undefined, requestPath: string): string {

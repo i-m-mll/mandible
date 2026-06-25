@@ -28,6 +28,7 @@ import {
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
+import { daemonIsReady, shouldEnterSplashOnProbe, type DaemonHealthSnapshot } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
   hashWithViewSidebarHidden,
@@ -242,13 +243,22 @@ function parseHashRoute(): Route {
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
-function RebuildingSplash(): JSX.Element {
+// Bug: 645f8a8 — also used as a generic "daemon starting" splash for pages
+// loaded mid-startup (the daemon is alive but not yet ready for mutations).
+function RebuildingSplash({ reason = 'rebuilding' }: { reason?: 'rebuilding' | 'starting' }): JSX.Element {
+  const isRebuilding = reason === 'rebuilding';
   return (
     <div className="rebuilding-splash">
       <div className="rebuilding-splash__content">
         <div className="rebuilding-splash__spinner" aria-hidden="true" />
-        <div className="rebuilding-splash__title">Rebuilding &amp; restarting…</div>
-        <div className="rebuilding-splash__subtitle">Mandible is restarting after a self-merge. This page will reload automatically.</div>
+        <div className="rebuilding-splash__title">
+          {isRebuilding ? 'Rebuilding & restarting…' : 'Starting Mandible…'}
+        </div>
+        <div className="rebuilding-splash__subtitle">
+          {isRebuilding
+            ? 'Mandible is restarting after a self-merge. This page will reload automatically.'
+            : 'Mandible is finishing startup. This page will reload automatically when it is ready.'}
+        </div>
       </div>
     </div>
   );
@@ -275,6 +285,10 @@ function App(): JSX.Element {
   const settingsReturnHashRef = useRef<string | null>(null);
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
+  // Bug: 645f8a8 — splash for a page loaded mid-startup (or while the daemon is
+  // down/restarting) that detects a not-ready daemon via the mount probe / poll,
+  // even though it never saw the mandible:rebuilding SSE event.
+  const [daemonStarting, setDaemonStarting] = useState(false);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
@@ -701,15 +715,54 @@ function App(): JSX.Element {
     return () => window.clearInterval(timer);
   }, []);
 
-  // Bug: 326a3e2 — poll /api/health every 2s while rebuilding; reload when server responds.
-  // Bug: 4db692a — the health response includes a `rebuilding` flag while the
-  // daemon is still alive but about to restart after a self-merge. The poll must
-  // wait until the daemon responds WITHOUT the rebuilding flag (i.e., the new
-  // instance has started). Also fixed: the inner setInterval cleanup was returned
-  // from the setTimeout callback (dead code) instead of being tracked for the
-  // useEffect cleanup.
+  // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
+  // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
+  // while the splash is active: the daemon is not ready for normal use.
+  const splashActive = rebuilding || daemonStarting;
+  const daemonReady = !splashActive;
+
+  // Bug: 645f8a8 — initial mount probe. A page (re)loaded mid-rebuild or
+  // mid-startup will not have seen the mandible:rebuilding SSE event. Probe
+  // /api/health once on mount; enter the splash ONLY on a POSITIVE not-ready
+  // signal — a successful health response that reports rebuilding or ready
+  // !== true (see shouldEnterSplashOnProbe). A failed / indeterminate cold-mount
+  // probe (health === null) must NOT hijack the UI: a daemon that cannot serve
+  // health did not serve this page either, and we must not flash the splash on
+  // every normal load. (The POLL predicate keeps the splash up through the
+  // exit/restart gap once it is already active — that is a different question.)
   useEffect(() => {
-    if (!rebuilding) return;
+    let cancelled = false;
+    void (async () => {
+      let health: DaemonHealthSnapshot | null = null;
+      try {
+        const res = await fetch('/api/health');
+        health = res.ok ? ((await res.json()) as DaemonHealthSnapshot) : null;
+      } catch {
+        health = null;
+      }
+      if (cancelled) return;
+      if (!shouldEnterSplashOnProbe(health)) return; // ready, or unreachable cold mount — render normally
+      if (health?.rebuilding) {
+        setRebuilding(true);
+      } else {
+        setDaemonStarting(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Bug: 326a3e2 — poll /api/health every 2s while the splash is active; reload
+  // when the daemon reports it is ready.
+  // Bug: 4db692a — the health response includes a `rebuilding` flag while the
+  // old daemon is still alive but about to restart after a self-merge.
+  // Bug: 645f8a8 — and a lifecycle-owned `ready` flag. The poll must wait until
+  // the (restarted) daemon responds with rebuilding falsy AND ready === true,
+  // so we never reload into a daemon that is merely listening but still starting
+  // up. Reload happens exactly once; the post-reload mount probe confirms ready.
+  useEffect(() => {
+    if (!splashActive) return;
     const POLL_MS = 2_000;
     let intervalId: ReturnType<typeof window.setInterval> | null = null;
     // Give the daemon a moment to shut down before starting to poll
@@ -717,11 +770,10 @@ function App(): JSX.Element {
       intervalId = window.setInterval(async () => {
         try {
           const res = await fetch('/api/health');
-          if (res.ok) {
-            const data = await res.json();
-            // Don't reload while the old daemon is still alive and rebuilding —
-            // wait for the NEW daemon instance (which won't have rebuilding set).
-            if (data.rebuilding) return;
+          if (!res.ok) return; // not up yet — keep polling
+          const data = (await res.json()) as DaemonHealthSnapshot;
+          // Reload only once the restarted daemon is ready for normal mutations.
+          if (daemonIsReady(data)) {
             window.location.reload();
           }
         } catch {
@@ -733,7 +785,7 @@ function App(): JSX.Element {
       window.clearTimeout(startTimer);
       if (intervalId !== null) window.clearInterval(intervalId);
     };
-  }, [rebuilding]);
+  }, [splashActive]);
 
   // Persist cacheable state to localStorage for stale-while-revalidate on next load.
   // Bug: 099fa86 — eliminate blank flash when refreshing the page
@@ -1214,8 +1266,9 @@ function App(): JSX.Element {
   }, [bottomPanel]);
 
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
-  if (rebuilding) {
-    return <RebuildingSplash />;
+  // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
+  if (splashActive) {
+    return <RebuildingSplash reason={rebuilding ? 'rebuilding' : 'starting'} />;
   }
 
   return (
@@ -1345,6 +1398,7 @@ function App(): JSX.Element {
             selectedAuthId={state.selectedAuthId}
             initialRequestId={route.params.request}
             sidebarHidden={viewSidebarHidden}
+            daemonReady={daemonReady}
             onSelectAuth={handleSelectAuth}
             onApprove={handleApprove}
             onReject={handleReject}

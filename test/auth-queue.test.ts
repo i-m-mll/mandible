@@ -1804,6 +1804,86 @@ describe("auth queue", () => {
       }
     });
 
+    // Bug: 645f8a8 — the readiness gate relies on mandible:rebuilding being
+    // broadcast BEFORE the post-merge hooks run (so the splash is up during the
+    // build), and on auth:resolved remaining ordered after it. This locks that
+    // ordering in even as readiness wiring evolves.
+    it("broadcasts mandible:rebuilding before hooks run and before auth:resolved", async () => {
+      const events: SseEvent[] = [];
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+
+      // Prevent the real self-rebuild process.exit(0) from killing the test run.
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        if (ms === 2000) {
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      // A hook manager that records, in the same event stream, the moment hooks
+      // run — so we can assert mandible:rebuilding fired strictly before it.
+      const hookManager = {
+        executeHooks: async () => {
+          events.push({ event: "test:hooks-ran", data: {} });
+          return [];
+        },
+      } as unknown as AuthHookManager;
+
+      try {
+        commitOnBranch(repo, "feature/order-fix", { "order.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
+          hookManager,
+          broadcast: (event) => events.push(event),
+          executor: async () => ({
+            exit_code: 0,
+            signal: null,
+            stdout: "Merge made by recursive.\n",
+            stderr: "",
+            output: "Merge made by recursive.\n",
+            started_at: Date.now(),
+            finished_at: Date.now()
+          })
+        });
+
+        const request = queue.submit({
+          command: "mandible auth merge main",
+          title: "Self-merge ordering",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/order-fix",
+          cwd: repo,
+          execution_mode: "daemon"
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        await new Promise((resolve) => originalSetTimeout(resolve, 50));
+
+        const indexOf = (name: string) => events.findIndex((e) => e.event === name);
+        const rebuildingIdx = indexOf("mandible:rebuilding");
+        const hooksIdx = indexOf("test:hooks-ran");
+        const resolvedIdx = indexOf("auth:resolved");
+
+        expect(rebuildingIdx).toBeGreaterThanOrEqual(0);
+        expect(hooksIdx).toBeGreaterThanOrEqual(0);
+        expect(resolvedIdx).toBeGreaterThanOrEqual(0);
+        // rebuilding strictly before hooks, and before auth:resolved.
+        expect(hooksIdx).toBeGreaterThan(rebuildingIdx);
+        expect(resolvedIdx).toBeGreaterThan(rebuildingIdx);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
     it("uses a 2-second delay for self-rebuild exit to allow event delivery", async () => {
       let exitDelayMs: number | undefined;
       const repo = createAuthCheckRepo();
