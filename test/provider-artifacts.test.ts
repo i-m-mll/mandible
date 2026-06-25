@@ -20,7 +20,10 @@ import {
   ingestProviderManifest,
   listArtifacts,
   listProviders,
+  getArtifactSeries,
+  listArtifactVersions,
   planLocalArtifactPath,
+  recordArtifactVersion,
   registerArtifactAlias,
   registerLocalArtifactPath,
   registerProvider,
@@ -117,6 +120,41 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX idx_artifact_links_role
       ON artifact_links(role)
       WHERE role IS NOT NULL;
+    CREATE TABLE artifact_series (
+      id TEXT PRIMARY KEY,
+      series_key TEXT NOT NULL,
+      source_kind TEXT NOT NULL DEFAULT 'managed'
+        CHECK(source_kind IN ('tracked_repo','local_only','managed','mixed')),
+      title TEXT,
+      repo_id TEXT,
+      logical_name TEXT,
+      latest_version_id TEXT,
+      version_count INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(series_key)
+    );
+    CREATE TABLE artifact_versions (
+      id TEXT PRIMARY KEY,
+      series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+      artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+      version_no INTEGER NOT NULL,
+      source_kind TEXT NOT NULL
+        CHECK(source_kind IN ('tracked_repo','local_only','managed')),
+      content_hash TEXT NOT NULL,
+      commit_sha TEXT,
+      repo_path TEXT,
+      observed_path TEXT,
+      custody_mode TEXT,
+      label TEXT,
+      note TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      UNIQUE(series_id, version_no)
+    );
+    CREATE INDEX idx_artifact_versions_series
+      ON artifact_versions(series_id, version_no DESC);
     CREATE TABLE provider_manifests (
       id TEXT PRIMARY KEY,
       provider_id TEXT NOT NULL,
@@ -1974,5 +2012,39 @@ describe("durable local-only artifact paths across worktree symlinks (issue 2f9c
     // The frozen ref still materializes after the feature worktree is deleted.
     fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
     expect(checkArtifactMaterialization(db, member.artifact.id)).toMatchObject({ materializable: true });
+  });
+});
+
+describe("artifact version series", () => {
+  it("records managed v1/v2 under one series with sequential version numbers", () => {
+    const r1 = recordArtifactVersion(db, {
+      source_kind: "managed",
+      content: "v1\n",
+      media_type: "text/plain",
+      logical_name: "report",
+    }, 1000, tempDir);
+    const r2 = recordArtifactVersion(db, {
+      source_kind: "managed",
+      content: "v2\n",
+      media_type: "text/plain",
+      logical_name: "report",
+    }, 2000, tempDir);
+
+    expect(r1.series.id).toBe(r2.series.id);
+    expect(r1.version.version_no).toBe(1);
+    expect(r2.version.version_no).toBe(2);
+    expect(r2.version.artifact_id).not.toBe(r1.version.artifact_id);
+    expect(getArtifactSeries(db, r1.series.id)?.version_count).toBe(2);
+    expect(listArtifactVersions(db, r1.series.id).map((v) => v.version_no)).toEqual([1, 2]);
+
+    // Re-recording identical bytes is an idempotent no-op observation.
+    const dup = recordArtifactVersion(db, {
+      source_kind: "managed",
+      content: "v2\n",
+      media_type: "text/plain",
+      logical_name: "report",
+    }, 3000, tempDir);
+    expect(dup.created).toBe(false);
+    expect(getArtifactSeries(db, r1.series.id)?.version_count).toBe(2);
   });
 });

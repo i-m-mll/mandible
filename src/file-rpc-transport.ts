@@ -313,6 +313,13 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  // Artifact version identity (issue f7a994e): read-only version history + diff,
+  // plus the EXPLICIT version record write. Narrow, non-privileged surfaces (no
+  // approval/merge/admin/config authority), so they stay within the
+  // file-transport write boundary.
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/versions") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/diff") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/artifacts/versions") return true;
   // Knowledge backrefs (C5, issue 511506d): the Phase-6 HumbleB return channel.
   // GET reads existing backrefs; POST is the return-channel write that records a
   // knowledge backref. Both are narrow, non-privileged surfaces — no approval,

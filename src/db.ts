@@ -2333,6 +2333,69 @@ const MIGRATIONS: Migration[] = [
     // ledger_core migration never create it), so no DDL references a missing
     // table.
     statements: []
+  },
+  {
+    version: 88,
+    name: "artifact_versioning",
+    // Issue: f7a994e (umbrella ce690eb) — logical artifact identity (series) +
+    // version rows over the immutable `artifacts` content rows. ADDITIVE ONLY:
+    // two brand-new tables, no FK column on `artifacts` is touched and the
+    // `UNIQUE(algorithm, content_hash)` immutability of `artifacts` is intact.
+    // `artifact_series` is the stable logical identity (UNIQUE series_key is the
+    // "same logical artifact" dedupe anchor). `artifact_versions` pins immutable
+    // `artifacts.id` rows under a series (ON DELETE RESTRICT keeps content rows
+    // from being orphaned out from under a version); deterministic version ids
+    // (PRIMARY KEY) make re-records idempotent, and UNIQUE(series_id, version_no)
+    // keeps the per-series sequence well-formed. CREATE TABLE IF NOT EXISTS so
+    // fresh DBs (which replay this migration) and existing DBs converge; both
+    // tables join METADATA_BACKUP_TABLES (src/ledger/backup.ts) so their rows and
+    // inline UNIQUE/FK/CHECK constraints survive a backup round-trip.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS artifact_series (
+        id                TEXT PRIMARY KEY,
+        series_key        TEXT NOT NULL,
+        source_kind       TEXT NOT NULL DEFAULT 'managed'
+          CHECK(source_kind IN ('tracked_repo','local_only','managed','mixed')),
+        title             TEXT,
+        repo_id           TEXT,
+        logical_name      TEXT,
+        latest_version_id TEXT,
+        version_count     INTEGER NOT NULL DEFAULT 0,
+        metadata_json     TEXT NOT NULL DEFAULT '{}',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        UNIQUE(series_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_series_kind
+        ON artifact_series(source_kind)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_series_repo
+        ON artifact_series(repo_id)
+        WHERE repo_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS artifact_versions (
+        id            TEXT PRIMARY KEY,
+        series_id     TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        artifact_id   TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,
+        version_no    INTEGER NOT NULL,
+        source_kind   TEXT NOT NULL
+          CHECK(source_kind IN ('tracked_repo','local_only','managed')),
+        content_hash  TEXT NOT NULL,
+        commit_sha    TEXT,
+        repo_path     TEXT,
+        observed_path TEXT,
+        custody_mode  TEXT,
+        label         TEXT,
+        note          TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL,
+        UNIQUE(series_id, version_no)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_versions_series
+        ON artifact_versions(series_id, version_no DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_versions_artifact
+        ON artifact_versions(artifact_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_versions_hash
+        ON artifact_versions(content_hash)`
+    ]
   }
 ];
 

@@ -154,6 +154,21 @@ describe("artifact CLI", () => {
     expect(result.stdout).toContain("Recoverability:");
   });
 
+  it("documents the version identity command surface", () => {
+    const result = run(["artifact", "--help"], process.cwd());
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("mandible artifact versions <ref>");
+    expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
+    expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
+  });
+
+  it("rejects an unknown record kind without contacting the daemon", () => {
+    const result = run(["artifact", "record", "report.md", "--kind", "bogus"]);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Unknown --kind");
+  });
+
   it("classifies clean tracked files as commit-pinned repo links in dry-run JSON", () => {
     const result = run(["artifact", "ingest", "report.md", "--dry-run", "--json"]);
 

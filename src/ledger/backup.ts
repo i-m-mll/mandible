@@ -61,6 +61,15 @@ export const METADATA_BACKUP_TABLES = [
   "provider_manifests",
   "artifact_aliases",
   "artifact_links",
+  // Artifact version identity (issue f7a994e / umbrella ce690eb). Logical
+  // series + version rows over the immutable `artifacts` content rows. Listed
+  // AFTER `artifacts` and `artifact_links` so parents precede children
+  // (artifact_versions has FKs to both artifact_series and artifacts); the
+  // metadata backup emits each table's inline UNIQUE/FK/CHECK as part of its own
+  // DDL, so series_key uniqueness and the per-series version sequence survive a
+  // backup round-trip.
+  "artifact_series",
+  "artifact_versions",
   "knowledge_backrefs",
   // Spaces P1' core four (issue b395083 / umbrella de56ffa). Parent-before-child
   // order; the metadata backup emits inline UNIQUE/composite-FK constraints as

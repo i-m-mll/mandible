@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
-import { getArtifact } from "./provider-artifacts.js";
+import { getArtifact, resolveArtifactRef } from "./provider-artifacts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverability } from "./types.js";
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
@@ -665,4 +665,279 @@ function artifactFilename(artifact: ArtifactRecord): string | null {
 
 function stringValue(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+// ---------------------------------------------------------------------------
+// Artifact full-byte reads and text/JSON/Markdown diffs (issue f7a994e).
+//
+// Diffs are DERIVED from full snapshot bytes (never stored as the canonical
+// representation) — analogous to the issue/comment body-revision diff
+// precedent. The immutable artifact rows remain the source of truth.
+// ---------------------------------------------------------------------------
+
+const MAX_DIFF_BYTES = 4 * 1024 * 1024;
+const MAX_DIFF_CELLS = 4_000_000;
+
+export interface ArtifactDiffSide {
+  ref: string;
+  artifact_id: string | null;
+  content_hash: string | null;
+  media_type: string;
+  size_bytes: number | null;
+  available: boolean;
+  reason?: string;
+}
+
+export interface ArtifactDiffResult {
+  a: ArtifactDiffSide;
+  b: ArtifactDiffSide;
+  diffable: boolean;
+  identical: boolean;
+  kind: ArtifactContentKind;
+  unified: string | null;
+  stats: { added: number; removed: number } | null;
+  reason?: string;
+}
+
+function readArtifactBytesFull(
+  db: Db,
+  id: string,
+  maxBytes = MAX_DIFF_BYTES,
+): { ok: true; bytes: Buffer; source: string } | { ok: false; reason: string } {
+  const artifact = getArtifact(db, id);
+  if (!artifact) return { ok: false, reason: "artifact not found" };
+
+  // Prefer commit-pinned repo bytes so an old version reads its exact snapshot
+  // rather than the current working-tree state.
+  const commit = stringValue(artifact.repo_locator.commit);
+  if (commit && /^[a-f0-9]{40,64}$/i.test(commit)) {
+    const repo = readRepoArtifactBytes(db, artifact);
+    if (repo.ok) {
+      if (repo.bytes.byteLength > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
+      return { ok: true, bytes: repo.bytes, source: repo.source };
+    }
+  }
+
+  const resolved = resolveRegisteredArtifactPath(db, artifact);
+  if (resolved.ok) {
+    const stat = safeStat(resolved.path);
+    if (stat?.isFile()) {
+      if (stat.size > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
+      return { ok: true, bytes: fs.readFileSync(resolved.path), source: resolved.source?.kind ?? "file" };
+    }
+  }
+
+  const repo = readRepoArtifactBytes(db, artifact);
+  if (repo.ok) {
+    if (repo.bytes.byteLength > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
+    return { ok: true, bytes: repo.bytes, source: repo.source };
+  }
+
+  return { ok: false, reason: resolved.ok ? "artifact bytes are not available on disk" : resolved.reason };
+}
+
+function diffSideMeta(artifact: ArtifactRecord | null, ref: string): ArtifactDiffSide {
+  if (!artifact) {
+    return { ref, artifact_id: null, content_hash: null, media_type: "application/octet-stream", size_bytes: null, available: false, reason: "artifact ref did not resolve" };
+  }
+  return {
+    ref,
+    artifact_id: artifact.id,
+    content_hash: artifact.content_hash,
+    media_type: artifact.media_type ?? inferMediaType(artifact),
+    size_bytes: artifact.size_bytes,
+    available: true,
+  };
+}
+
+// Resolve a diff ref to its immutable artifact, accepting version/series refs,
+// registerable hash refs, and the canonical `artifact:sha256:<hash>` id form.
+function resolveDiffArtifact(db: Db, ref: string): ArtifactRecord | null {
+  return resolveArtifactRef(db, ref).artifact ?? getArtifact(db, ref);
+}
+
+export function diffArtifacts(db: Db, refA: string, refB: string): ArtifactDiffResult {
+  const artifactA = resolveDiffArtifact(db, refA);
+  const artifactB = resolveDiffArtifact(db, refB);
+  const sideA = diffSideMeta(artifactA, refA);
+  const sideB = diffSideMeta(artifactB, refB);
+
+  const fail = (reason: string, kind: ArtifactContentKind = "unavailable"): ArtifactDiffResult => ({
+    a: sideA, b: sideB, diffable: false, identical: false, kind, unified: null, stats: null, reason,
+  });
+
+  if (!artifactA || !artifactB) {
+    return fail("one or both artifact refs did not resolve");
+  }
+
+  const kindA = previewKind(sideA.media_type, artifactFilename(artifactA));
+  const kindB = previewKind(sideB.media_type, artifactFilename(artifactB));
+  if (kindA === "binary" || kindB === "binary") {
+    return fail("artifact content is not text-like; diff is unavailable", "binary");
+  }
+
+  const identical = artifactA.algorithm === "sha256"
+    && artifactB.algorithm === "sha256"
+    && artifactA.content_hash.toLowerCase() === artifactB.content_hash.toLowerCase();
+
+  const bytesA = readArtifactBytesFull(db, artifactA.id);
+  if (!bytesA.ok) {
+    sideA.available = false;
+    sideA.reason = bytesA.reason;
+    return fail(`left artifact bytes unavailable: ${bytesA.reason}`);
+  }
+  const bytesB = readArtifactBytesFull(db, artifactB.id);
+  if (!bytesB.ok) {
+    sideB.available = false;
+    sideB.reason = bytesB.reason;
+    return fail(`right artifact bytes unavailable: ${bytesB.reason}`);
+  }
+
+  const isJson = kindA === "json" || kindB === "json";
+  const textA = normalizeDiffText(bytesA.bytes.toString("utf8"), isJson);
+  const textB = normalizeDiffText(bytesB.bytes.toString("utf8"), isJson);
+  const kind: ArtifactContentKind = isJson
+    ? "json"
+    : (kindA === "markdown" || kindB === "markdown")
+      ? "markdown"
+      : (kindA === "html" || kindB === "html")
+        ? "html"
+        : "text";
+
+  if (identical || textA === textB) {
+    return { a: sideA, b: sideB, diffable: true, identical: true, kind, unified: "", stats: { added: 0, removed: 0 } };
+  }
+
+  const linesA = textA.split("\n");
+  const linesB = textB.split("\n");
+  if (linesA.length * linesB.length > MAX_DIFF_CELLS) {
+    return {
+      a: sideA,
+      b: sideB,
+      diffable: true,
+      identical: false,
+      kind,
+      unified: `# diff omitted: content too large for line-level diff (${linesA.length} vs ${linesB.length} lines)\n`,
+      stats: null,
+    };
+  }
+
+  const ops = diffLines(linesA, linesB);
+  const stats = ops.reduce(
+    (acc, op) => {
+      if (op.tag === "+") acc.added += 1;
+      if (op.tag === "-") acc.removed += 1;
+      return acc;
+    },
+    { added: 0, removed: 0 },
+  );
+  const unified = formatUnifiedDiff(
+    artifactFilename(artifactA) ?? sideA.artifact_id ?? refA,
+    artifactFilename(artifactB) ?? sideB.artifact_id ?? refB,
+    ops,
+  );
+  return { a: sideA, b: sideB, diffable: true, identical: false, kind, unified, stats };
+}
+
+function normalizeDiffText(text: string, isJson: boolean): string {
+  const stripped = text.replace(/\r\n/g, "\n");
+  if (!isJson) return stripped;
+  try {
+    return JSON.stringify(JSON.parse(stripped), null, 2);
+  } catch {
+    return stripped;
+  }
+}
+
+type DiffOp = { tag: " " | "-" | "+"; text: string };
+
+// Line-based LCS diff. Standard O(n*m) DP with backtracking; callers bound
+// n*m via MAX_DIFF_CELLS before invoking.
+function diffLines(a: string[], b: string[]): DiffOp[] {
+  const n = a.length;
+  const m = b.length;
+  const width = m + 1;
+  const dp = new Int32Array((n + 1) * width);
+  for (let i = n - 1; i >= 0; i -= 1) {
+    for (let j = m - 1; j >= 0; j -= 1) {
+      dp[i * width + j] = a[i] === b[j]
+        ? dp[(i + 1) * width + (j + 1)] + 1
+        : Math.max(dp[(i + 1) * width + j], dp[i * width + (j + 1)]);
+    }
+  }
+  const ops: DiffOp[] = [];
+  let i = 0;
+  let j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) {
+      ops.push({ tag: " ", text: a[i] });
+      i += 1;
+      j += 1;
+    } else if (dp[(i + 1) * width + j] >= dp[i * width + (j + 1)]) {
+      ops.push({ tag: "-", text: a[i] });
+      i += 1;
+    } else {
+      ops.push({ tag: "+", text: b[j] });
+      j += 1;
+    }
+  }
+  while (i < n) {
+    ops.push({ tag: "-", text: a[i] });
+    i += 1;
+  }
+  while (j < m) {
+    ops.push({ tag: "+", text: b[j] });
+    j += 1;
+  }
+  return ops;
+}
+
+// Group ops into unified-diff hunks with 3 lines of context.
+function formatUnifiedDiff(nameA: string, nameB: string, ops: DiffOp[], context = 3): string {
+  const lines: string[] = [`--- ${nameA}`, `+++ ${nameB}`];
+  const changeIdx = ops
+    .map((op, idx) => (op.tag === " " ? -1 : idx))
+    .filter((idx) => idx >= 0);
+  if (changeIdx.length === 0) return "";
+
+  // Compute hunk ranges (indices into ops) merged when within 2*context.
+  const ranges: Array<{ start: number; end: number }> = [];
+  for (const idx of changeIdx) {
+    const start = Math.max(0, idx - context);
+    const end = Math.min(ops.length - 1, idx + context);
+    const last = ranges[ranges.length - 1];
+    if (last && start <= last.end + 1) {
+      last.end = Math.max(last.end, end);
+    } else {
+      ranges.push({ start, end });
+    }
+  }
+
+  let aLine = 1;
+  let bLine = 1;
+  // Precompute per-op starting line numbers.
+  const aStarts: number[] = [];
+  const bStarts: number[] = [];
+  for (const op of ops) {
+    aStarts.push(aLine);
+    bStarts.push(bLine);
+    if (op.tag !== "+") aLine += 1;
+    if (op.tag !== "-") bLine += 1;
+  }
+
+  for (const range of ranges) {
+    let aCount = 0;
+    let bCount = 0;
+    for (let k = range.start; k <= range.end; k += 1) {
+      if (ops[k].tag !== "+") aCount += 1;
+      if (ops[k].tag !== "-") bCount += 1;
+    }
+    const aStart = aCount === 0 ? aStarts[range.start] - 1 : aStarts[range.start];
+    const bStart = bCount === 0 ? bStarts[range.start] - 1 : bStarts[range.start];
+    lines.push(`@@ -${aStart},${aCount} +${bStart},${bCount} @@`);
+    for (let k = range.start; k <= range.end; k += 1) {
+      lines.push(`${ops[k].tag}${ops[k].text}`);
+    }
+  }
+  return `${lines.join("\n")}\n`;
 }
