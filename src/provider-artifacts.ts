@@ -1587,6 +1587,265 @@ function recoverabilityForLocalPath(
   return { recoverability: "local_only", warnings };
 }
 
+export type LocalPathSymlinkClass =
+  | "none"
+  | "prefix_only"
+  | "same_repo_durable"
+  | "cross_repo"
+  | "outside_repo";
+
+export interface LocalPathDecision {
+  // The user-supplied path, lexically absolute (symlinks NOT resolved).
+  input_path: string;
+  // The filesystem realpath (symlinks resolved): where the bytes physically live.
+  resolved_path: string;
+  // The URI Mandible chose to store and later materialize from.
+  stored_uri: string;
+  // Whether the input path differed from its realpath (a symlink was followed).
+  symlink_resolved: boolean;
+  // How the resolved symlink relates to the input path's apparent location.
+  symlink_class: LocalPathSymlinkClass;
+  // True when the symlink moved the bytes to a different worktree of the SAME
+  // repo (e.g. a feature worktree's `_artifacts` symlink to the persistent
+  // repo-root `_artifacts`), so the stored realpath survives worktree deletion.
+  worktree_substitution: boolean;
+  // Warning codes contributed by symlink classification.
+  decision_warnings: string[];
+  // Human-readable explanation of why the stored URI was chosen.
+  reason: string;
+}
+
+function gitToplevelAbs(dir: string): string | null {
+  const out = runGit(dir, ["rev-parse", "--show-toplevel"]);
+  return out ? path.resolve(out) : null;
+}
+
+function gitCommonDirAbs(dir: string): string | null {
+  const out = runGit(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+  return out ? path.resolve(out) : null;
+}
+
+function safeRealpathSync(target: string): string {
+  try {
+    return fs.realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+// Find the input path's apparent worktree directory: the first ancestor that is
+// not itself a symlink. Walking up past the leaf `_artifacts`-style directory
+// symlink lands on the worktree the user actually wrote through (which git still
+// reports as a linked worktree even when it is nested under the main repo), and
+// stopping at the first real directory ignores benign prefix symlinks such as
+// macOS /tmp -> /private/tmp.
+function lexicalWorktreeDir(lexicalPath: string): string | null {
+  let dir = path.dirname(path.resolve(lexicalPath));
+  for (let i = 0; i < 64; i += 1) {
+    let isLink = false;
+    try {
+      isLink = fs.lstatSync(dir).isSymbolicLink();
+    } catch {
+      return dir;
+    }
+    if (!isLink) return dir;
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+  return null;
+}
+
+// Classify the relationship between a user-supplied local path and its realpath
+// so the durable-path planner can pick a non-disposable stored URI and explain
+// the decision (issue 2f9c3c3).
+function classifyLocalSymlink(
+  lexicalAbs: string,
+  resolvedAbs: string,
+  gitState: ArtifactGitState,
+): Omit<LocalPathDecision, "stored_uri"> {
+  const symlinkResolved = lexicalAbs !== resolvedAbs;
+  if (!symlinkResolved) {
+    return {
+      input_path: lexicalAbs,
+      resolved_path: resolvedAbs,
+      symlink_resolved: false,
+      symlink_class: "none",
+      worktree_substitution: false,
+      decision_warnings: [],
+      reason: "input path is already a realpath; stored as-is",
+    };
+  }
+  if (!gitState.inside_worktree) {
+    return {
+      input_path: lexicalAbs,
+      resolved_path: resolvedAbs,
+      symlink_resolved: true,
+      symlink_class: "outside_repo",
+      worktree_substitution: false,
+      decision_warnings: ["outside_repo_symlink"],
+      reason:
+        "input traverses a symlink whose target is outside any git repo; link custody is non-durable, use --copy/--managed",
+    };
+  }
+  const realRoot = gitState.repo_root ? path.resolve(gitState.repo_root) : null;
+  const realCommon = gitCommonDirAbs(path.dirname(resolvedAbs));
+  const lexDir = lexicalWorktreeDir(lexicalAbs);
+  const lexRoot = lexDir ? gitToplevelAbs(lexDir) : null;
+  const lexCommon = lexDir ? gitCommonDirAbs(lexDir) : null;
+  if (lexCommon && realCommon && lexCommon !== realCommon) {
+    return {
+      input_path: lexicalAbs,
+      resolved_path: resolvedAbs,
+      symlink_resolved: true,
+      symlink_class: "cross_repo",
+      worktree_substitution: true,
+      decision_warnings: ["cross_repo_symlink"],
+      reason:
+        "input traverses a symlink crossing into a different git repository; stored the cross-repo realpath",
+    };
+  }
+  if (lexRoot && realRoot && lexRoot !== realRoot) {
+    return {
+      input_path: lexicalAbs,
+      resolved_path: resolvedAbs,
+      symlink_resolved: true,
+      symlink_class: "same_repo_durable",
+      worktree_substitution: true,
+      decision_warnings: ["symlink_resolved_to_durable_target"],
+      reason:
+        "input traverses a same-repo worktree symlink; stored the persistent realpath so it survives feature-worktree deletion",
+    };
+  }
+  return {
+    input_path: lexicalAbs,
+    resolved_path: resolvedAbs,
+    symlink_resolved: true,
+    symlink_class: "prefix_only",
+    worktree_substitution: false,
+    decision_warnings: [],
+    reason: "input differs from its realpath only by a path-prefix symlink; stored the realpath",
+  };
+}
+
+export interface LocalArtifactPlan {
+  ok: true;
+  input_path: string;
+  resolved_path: string;
+  sha256: string;
+  size_bytes: number;
+  media_type: string;
+  filename: string;
+  logical_name: string;
+  custody_mode: ArtifactCustodyMode;
+  recoverability: ArtifactRecoverability;
+  uri: string;
+  canonical_ref: string;
+  repo_locator: JsonRecord;
+  git_state: ArtifactGitState;
+  warnings: string[];
+  path_decision: LocalPathDecision;
+}
+
+// Compute the cheap (no-bytes) classification + durable URI selection shared by
+// registration and the read-only plan endpoint. Both registration and the
+// /api/artifacts/plan dry run flow through this so the backend stays the single
+// source of truth for which path gets stored (issue 2f9c3c3).
+function computeLocalArtifactPlanCore(
+  db: Db,
+  input: LocalArtifactPathInput,
+): {
+  lexicalPath: string;
+  resolvedPath: string;
+  gitState: ArtifactGitState;
+  recoverability: ArtifactRecoverability;
+  warnings: string[];
+  repoLocator: JsonRecord;
+  uri: string;
+  decision: LocalPathDecision;
+  requestedCustody: ArtifactCustodyMode;
+} {
+  const lexicalPath = path.resolve(expandHomePath(input.path));
+  const resolvedPath = safeRealpathSync(lexicalPath);
+  const gitState = classifyLocalArtifactPath(db, lexicalPath);
+  const requestedCustody = asCustodyMode(input.custody_mode, "link");
+  const { recoverability, warnings } = recoverabilityForLocalPath(gitState, input, requestedCustody);
+  if (recoverability === "repo_worktree" && !input.allow_dirty_link && requestedCustody === "link") {
+    warnings.push("dirty_link_requires_override_for_issue_evidence");
+  }
+  if (recoverability === "local_only" && !input.allow_local_only && requestedCustody === "link") {
+    warnings.push("local_only_link_requires_override_for_issue_evidence");
+  }
+  const decisionBase = classifyLocalSymlink(lexicalPath, resolvedPath, gitState);
+  for (const code of decisionBase.decision_warnings) {
+    if (!warnings.includes(code)) warnings.push(code);
+  }
+  const repoLocator: JsonRecord = gitState.inside_worktree && gitState.repo_id && gitState.relative_path
+    ? {
+        repo_id: gitState.repo_id,
+        ref: recoverability === "repo_commit" ? gitState.commit : gitState.branch,
+        commit: gitState.commit,
+        branch: gitState.branch,
+        path: gitState.relative_path,
+        root: gitState.repo_root,
+      }
+    : {};
+  const repoUri = repoLocatorUri(repoLocator);
+  // For commit-pinned recoverability the durable identity is the repo:// locator.
+  // Otherwise store the realpath (never the possibly-disposable lexical input)
+  // so materialization survives feature-worktree deletion.
+  const uri = recoverability === "repo_commit" && repoUri ? repoUri : `file://${resolvedPath}`;
+  const decision: LocalPathDecision = { ...decisionBase, stored_uri: uri };
+  return {
+    lexicalPath,
+    resolvedPath,
+    gitState,
+    recoverability,
+    warnings,
+    repoLocator,
+    uri,
+    decision,
+    requestedCustody,
+  };
+}
+
+// Read-only classifier: report exactly what registration would store for a path
+// without mutating the ledger. Backs POST /api/artifacts/plan so CLI dry runs
+// and SDK callers can defer to the authoritative backend planner.
+export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): LocalArtifactPlan {
+  if (!input.path || typeof input.path !== "string") {
+    throw new Error("path is required");
+  }
+  const lexicalForStat = path.resolve(expandHomePath(input.path));
+  const stat = fs.statSync(lexicalForStat);
+  if (!stat.isFile()) {
+    throw new Error("artifact path must point to a regular file");
+  }
+  const core = computeLocalArtifactPlanCore(db, input);
+  const hash = hashBuffer(fs.readFileSync(core.resolvedPath));
+  const canonicalRef = core.recoverability === "repo_commit" && core.uri.startsWith("repo://")
+    ? core.uri
+    : `artifact:${hash}`;
+  return {
+    ok: true,
+    input_path: core.lexicalPath,
+    resolved_path: core.resolvedPath,
+    sha256: hash,
+    size_bytes: stat.size,
+    media_type: input.media_type ?? mediaTypeForPath(core.resolvedPath),
+    filename: input.filename ?? path.basename(core.resolvedPath),
+    logical_name: input.logical_name ?? core.gitState.relative_path ?? path.basename(core.resolvedPath),
+    custody_mode: core.requestedCustody,
+    recoverability: core.recoverability,
+    uri: core.uri,
+    canonical_ref: canonicalRef,
+    repo_locator: core.repoLocator,
+    git_state: core.gitState,
+    warnings: core.warnings,
+    path_decision: core.decision,
+  };
+}
+
 export function registerLocalArtifactPath(
   db: Db,
   input: LocalArtifactPathInput,
@@ -1601,54 +1860,47 @@ export function registerLocalArtifactPath(
   if (!stat.isFile()) {
     throw new Error("artifact path must point to a regular file");
   }
-  const gitState = classifyLocalArtifactPath(db, absolutePath);
-  const requestedCustody = asCustodyMode(input.custody_mode, "link");
-  const { recoverability, warnings } = recoverabilityForLocalPath(gitState, input, requestedCustody);
-  if (recoverability === "repo_worktree" && !input.allow_dirty_link && requestedCustody === "link") {
-    warnings.push("dirty_link_requires_override_for_issue_evidence");
-  }
-  if (recoverability === "local_only" && !input.allow_local_only && requestedCustody === "link") {
-    warnings.push("local_only_link_requires_override_for_issue_evidence");
-  }
+  const {
+    resolvedPath,
+    gitState,
+    recoverability,
+    warnings,
+    repoLocator,
+    uri,
+    decision,
+    requestedCustody,
+  } = computeLocalArtifactPlanCore(db, input);
 
   const needsBytes = requestedCustody === "copy" || requestedCustody === "managed";
-  const fileBuffer = fs.readFileSync(absolutePath);
+  // Read bytes through the realpath so a deleted worktree symlink can never make
+  // the read race the URI we store.
+  const fileBuffer = fs.readFileSync(resolvedPath);
   const hash = hashBuffer(fileBuffer);
-  const repoLocator = gitState.inside_worktree && gitState.repo_id && gitState.relative_path
-    ? {
-        repo_id: gitState.repo_id,
-        ref: recoverability === "repo_commit" ? gitState.commit : gitState.branch,
-        commit: gitState.commit,
-        branch: gitState.branch,
-        path: gitState.relative_path,
-        root: gitState.repo_root,
-      }
-    : {};
-  const repoUri = repoLocatorUri(repoLocator);
-  const uri = recoverability === "repo_commit" && repoUri
-    ? repoUri
-    : `file://${absolutePath}`;
   const metadata = mergeJsonRecords(input.metadata, {
-    filename: input.filename ?? path.basename(absolutePath),
-    logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(absolutePath),
+    filename: input.filename ?? path.basename(resolvedPath),
+    logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(resolvedPath),
     recoverability,
     git_state: gitState,
     warnings,
-    source_path: absolutePath,
+    // The durable materialization path (realpath); never the disposable input.
+    source_path: resolvedPath,
+    input_path: decision.input_path,
+    path_decision: decision,
   });
   const reference = mergeJsonRecords(input.reference, {
     owner_system: recoverability.startsWith("repo_") ? "repo" : "local",
     recoverability,
     git_state: gitState,
+    path_decision: decision,
     regenerable_from: input.regenerable_from,
   });
   const artifact = ingestArtifact(db, {
     sha256: hash,
     uri,
     role: input.role,
-    media_type: input.media_type ?? mediaTypeForPath(absolutePath),
-    filename: input.filename ?? path.basename(absolutePath),
-    logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(absolutePath),
+    media_type: input.media_type ?? mediaTypeForPath(resolvedPath),
+    filename: input.filename ?? path.basename(resolvedPath),
+    logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(resolvedPath),
     size_bytes: stat.size,
     custody_mode: requestedCustody,
     home_repo_id: gitState.repo_id ?? undefined,
@@ -1671,7 +1923,7 @@ export function registerLocalArtifactPath(
       role: input.link_role ?? input.role,
       repo_id: gitState.repo_id ?? undefined,
       source: "local_artifact_path",
-      metadata: { warnings, recoverability, source_path: absolutePath },
+      metadata: { warnings, recoverability, source_path: resolvedPath, path_decision: decision },
     }, now);
   }
 
@@ -1828,7 +2080,10 @@ function linkBundleMember(
     metadata: mergeJsonRecords(member.metadata, {
       bundle_id: bundleId,
       order,
-      member_ref: member.ref ?? member.artifact_ref ?? member.path ?? artifact.id,
+      // Freeze a durable ref (resolved artifact URI), not the possibly-disposable
+      // input path. The original path is kept separately for provenance.
+      member_ref: member.ref ?? member.artifact_ref ?? artifact.uri ?? artifact.id,
+      ...(member.path ? { member_input_path: member.path } : {}),
     }),
   }, now);
   upsertGraphEdge(db, {
@@ -1889,7 +2144,14 @@ export function createArtifactBundle(
     created_at: new Date(now).toISOString(),
     members: memberArtifacts.map((artifact, index) => ({
       artifact_id: artifact.id,
-      ref: input.members[index].ref ?? input.members[index].artifact_ref ?? input.members[index].path ?? artifact.id,
+      // Store the normalized, durable member ref. When a member was added by
+      // path, freeze the resolved artifact URI (a worktree `_artifacts` symlink
+      // becomes its persistent realpath) rather than the disposable input path.
+      ref: input.members[index].ref
+        ?? input.members[index].artifact_ref
+        ?? artifact.uri
+        ?? `artifact:${artifact.content_hash}`,
+      ...(input.members[index].path ? { input_path: input.members[index].path } : {}),
       role: input.members[index].role ?? artifact.role ?? null,
       order: index,
       recoverability: artifact.metadata.recoverability ?? artifact.reference.recoverability ?? null,

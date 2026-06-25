@@ -354,6 +354,34 @@ describe("artifact CLI", () => {
     expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code)).toContain("untracked_local_only");
   });
 
+  it("resolves a feature-worktree _artifacts symlink to a durable realpath URI in dry-run JSON (issue 2f9c3c3)", () => {
+    // Persistent repo-root _artifacts target, reached from a feature worktree
+    // through a symlink — the disposable-path scenario.
+    const persistentArtifacts = path.join(tempDir, "_artifacts");
+    fs.mkdirSync(persistentArtifacts, { recursive: true });
+    fs.writeFileSync(path.join(persistentArtifacts, "plot.html"), "<html>plot</html>\n", "utf8");
+    const featWorktree = path.join(tempDir, "worktrees", "feat");
+    fs.mkdirSync(path.dirname(featWorktree), { recursive: true });
+    git(["worktree", "add", "-b", "feat", featWorktree]);
+    fs.symlinkSync(persistentArtifacts, path.join(featWorktree, "_artifacts"));
+    const disposable = path.join(featWorktree, "_artifacts", "plot.html");
+    const persistentReal = fs.realpathSync(path.join(persistentArtifacts, "plot.html"));
+
+    const result = run(["artifact", "ingest", disposable, "--allow-local-only", "--dry-run", "--json"]);
+
+    expect(result.status).toBe(0);
+    const planned = JSON.parse(result.stdout).registered[0].planned_payload;
+    expect(planned.uri).toBe(`file://${persistentReal}`);
+    expect(planned.uri).not.toContain(`${path.sep}feat${path.sep}`);
+    expect(planned.metadata.recoverability).toBe("local_only");
+    expect(planned.metadata.path_decision.symlink_class).toBe("same_repo_durable");
+    expect(planned.metadata.path_decision.worktree_substitution).toBe(true);
+    // The disposable input path is preserved as metadata, never as the only ref.
+    expect(planned.metadata.input_path).toBe(disposable);
+    expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code))
+      .toContain("symlink_resolved_to_durable_target");
+  });
+
   it("sends a daemon-visible content_path (not base64) for local HTTP copy ingest (issue 833e972)", async () => {
     fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
     const bigPath = path.join(tempDir, "_artifacts", "packet.zip");

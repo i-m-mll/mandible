@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -20,6 +20,7 @@ import {
   ingestProviderManifest,
   listArtifacts,
   listProviders,
+  planLocalArtifactPath,
   registerArtifactAlias,
   registerLocalArtifactPath,
   registerProvider,
@@ -1775,5 +1776,203 @@ describe("provider/artifact substrate", () => {
       role: "report",
     });
     expect(result.skipped.map((entry) => entry.reason)).toContain("excluded_dir");
+  });
+});
+
+describe("durable local-only artifact paths across worktree symlinks (issue 2f9c3c3)", () => {
+  function initRepo(root: string): void {
+    fs.mkdirSync(root, { recursive: true });
+    execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
+    git(root, ["config", "user.email", "test@example.invalid"]);
+    git(root, ["config", "user.name", "Test User"]);
+    git(root, ["config", "commit.gpgsign", "false"]);
+  }
+
+  function commitFile(root: string, rel: string, body: string): void {
+    const target = path.join(root, rel);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, body, "utf8");
+    git(root, ["add", rel]);
+    git(root, ["commit", "-m", `add ${rel}`]);
+  }
+
+  // A persistent repo-root `_artifacts` directory reached from a feature
+  // worktree through a symlink — the canonical disposable-path scenario.
+  function buildWorktreeSymlinkFixture(): {
+    mainRepo: string;
+    featWorktree: string;
+    disposablePath: string;
+    persistentReal: string;
+  } {
+    const mainRepo = path.join(tempDir, "main-repo");
+    initRepo(mainRepo);
+    commitFile(mainRepo, "README.md", "# main\n");
+    const persistentArtifacts = path.join(mainRepo, "_artifacts");
+    fs.mkdirSync(persistentArtifacts, { recursive: true });
+    fs.writeFileSync(path.join(persistentArtifacts, "plot.html"), "<html>plot</html>\n", "utf8");
+    const featWorktree = path.join(tempDir, "worktrees", "feat");
+    fs.mkdirSync(path.dirname(featWorktree), { recursive: true });
+    git(mainRepo, ["worktree", "add", "-b", "feat", featWorktree]);
+    fs.symlinkSync(persistentArtifacts, path.join(featWorktree, "_artifacts"));
+    return {
+      mainRepo,
+      featWorktree,
+      disposablePath: path.join(featWorktree, "_artifacts", "plot.html"),
+      persistentReal: fs.realpathSync(path.join(persistentArtifacts, "plot.html")),
+    };
+  }
+
+  it("stores the persistent realpath and materializes after the feature worktree is deleted", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+
+    const registration = registerLocalArtifactPath(db, {
+      path: fixture.disposablePath,
+      role: "figure",
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    expect(registration.recoverability).toBe("local_only");
+    expect(registration.artifact.uri).toBe(`file://${fixture.persistentReal}`);
+    expect(registration.artifact.uri).not.toContain(`${path.sep}feat${path.sep}`);
+    expect(registration.warnings).toContain("symlink_resolved_to_durable_target");
+    expect(registration.artifact.metadata.path_decision).toMatchObject({
+      symlink_resolved: true,
+      symlink_class: "same_repo_durable",
+      worktree_substitution: true,
+      resolved_path: fixture.persistentReal,
+      input_path: path.resolve(fixture.disposablePath),
+      stored_uri: `file://${fixture.persistentReal}`,
+    });
+    // The disposable input path is preserved as metadata, not the only locator.
+    expect(registration.artifact.metadata.input_path).toBe(path.resolve(fixture.disposablePath));
+
+    expect(checkArtifactMaterialization(db, registration.artifact.id)).toMatchObject({ materializable: true });
+
+    // Remove the disposable feature worktree; the persistent target remains.
+    fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
+    expect(fs.existsSync(fixture.disposablePath)).toBe(false);
+    expect(fs.existsSync(fixture.persistentReal)).toBe(true);
+
+    expect(checkArtifactMaterialization(db, registration.artifact.id)).toMatchObject({ materializable: true });
+    expect(getArtifactContent(db, registration.artifact.id)).toMatchObject({ status: "available" });
+  });
+
+  it("plan endpoint classification equals what registration stores", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+    const plan = planLocalArtifactPath(db, { path: fixture.disposablePath, allow_local_only: true });
+    const registration = registerLocalArtifactPath(db, {
+      path: fixture.disposablePath,
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    expect(plan.uri).toBe(registration.artifact.uri);
+    expect(plan.recoverability).toBe(registration.recoverability);
+    expect(plan.sha256).toBe(registration.artifact.content_hash);
+    expect(plan.path_decision).toMatchObject(
+      registration.artifact.metadata.path_decision as Record<string, unknown>,
+    );
+  });
+
+  it("CLI dry-run classification matches backend registration for the symlink fixture", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+    const registration = registerLocalArtifactPath(db, {
+      path: fixture.disposablePath,
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    const cli = spawnSync(
+      path.join(process.cwd(), "bin", "mandible"),
+      ["artifact", "ingest", fixture.disposablePath, "--allow-local-only", "--dry-run", "--json"],
+      { cwd: fixture.featWorktree, encoding: "utf8", env: { ...process.env, MANDIBLE_PORT: "9" } },
+    );
+    expect(cli.status).toBe(0);
+    const planned = JSON.parse(cli.stdout).registered[0].planned_payload;
+    expect(planned.uri).toBe(registration.artifact.uri);
+    expect(planned.metadata.recoverability).toBe(registration.recoverability);
+    expect(planned.metadata.path_decision.symlink_class).toBe(
+      (registration.artifact.metadata.path_decision as Record<string, unknown>).symlink_class,
+    );
+    expect(planned.metadata.path_decision.resolved_path).toBe(
+      (registration.artifact.metadata.path_decision as Record<string, unknown>).resolved_path,
+    );
+  });
+
+  it("flags cross-repo symlinks while keeping them local-only", () => {
+    const repoA = path.join(tempDir, "repo-a");
+    const repoB = path.join(tempDir, "repo-b");
+    initRepo(repoA);
+    commitFile(repoA, "a.txt", "a\n");
+    initRepo(repoB);
+    commitFile(repoB, "b.txt", "b\n");
+    const repoBData = path.join(repoB, "data");
+    fs.mkdirSync(repoBData, { recursive: true });
+    fs.writeFileSync(path.join(repoBData, "result.bin"), "result\n", "utf8");
+    fs.symlinkSync(repoBData, path.join(repoA, "link"));
+    const crossPath = path.join(repoA, "link", "result.bin");
+
+    const registration = registerLocalArtifactPath(db, {
+      path: crossPath,
+      allow_local_only: true,
+    }, 1000, tempDir);
+
+    expect(registration.recoverability).toBe("local_only");
+    expect(registration.warnings).toContain("cross_repo_symlink");
+    expect(registration.artifact.metadata.path_decision).toMatchObject({
+      symlink_class: "cross_repo",
+      worktree_substitution: true,
+    });
+    expect(registration.artifact.uri).toBe(`file://${fs.realpathSync(path.join(repoBData, "result.bin"))}`);
+  });
+
+  it("rejects an outside-repo symlink for link custody unless explicitly allowed", () => {
+    const repoOut = path.join(tempDir, "repo-out");
+    initRepo(repoOut);
+    commitFile(repoOut, "a.txt", "a\n");
+    const outsideDir = path.join(tempDir, "outside-store");
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, "blob.bin"), "blob\n", "utf8");
+    fs.symlinkSync(outsideDir, path.join(repoOut, "ext"));
+    const outsidePath = path.join(repoOut, "ext", "blob.bin");
+
+    // Without allow_local_only, link custody to an outside-repo symlink is gated
+    // (the override-required warning is the backend's "warn or reject" signal;
+    // the CLI turns the same classification into a hard outside_repo rejection).
+    const gated = registerLocalArtifactPath(db, {
+      path: outsidePath,
+    }, 1000, tempDir);
+    expect(gated.warnings).toEqual(
+      expect.arrayContaining(["outside_repo", "outside_repo_symlink", "local_only_link_requires_override_for_issue_evidence"]),
+    );
+
+    const allowed = registerLocalArtifactPath(db, {
+      path: outsidePath,
+      allow_local_only: true,
+    }, 2000, tempDir);
+    expect(allowed.recoverability).toBe("local_only");
+    expect(allowed.artifact.metadata.path_decision).toMatchObject({
+      symlink_class: "outside_repo",
+      worktree_substitution: false,
+    });
+    expect(allowed.artifact.uri).toBe(`file://${fs.realpathSync(path.join(outsideDir, "blob.bin"))}`);
+  });
+
+  it("freezes a durable realpath ref for a symlinked local-only bundle member", () => {
+    const fixture = buildWorktreeSymlinkFixture();
+    const bundle = createArtifactBundle(db, {
+      name: "symlinked packet",
+      members: [{ path: fixture.disposablePath, role: "figure", allow_local_only: true }],
+    }, 2000, tempDir);
+
+    const member = bundle.members[0];
+    expect(member.artifact.uri).toBe(`file://${fixture.persistentReal}`);
+
+    const content = getArtifactContent(db, bundle.bundle.id);
+    const manifest = JSON.parse(content?.preview?.text ?? "{}");
+    expect(manifest.members[0].ref).toBe(`file://${fixture.persistentReal}`);
+    expect(manifest.members[0].input_path).toBe(fixture.disposablePath);
+
+    // The frozen ref still materializes after the feature worktree is deleted.
+    fs.rmSync(fixture.featWorktree, { recursive: true, force: true });
+    expect(checkArtifactMaterialization(db, member.artifact.id)).toMatchObject({ materializable: true });
   });
 });

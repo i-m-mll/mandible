@@ -19,6 +19,7 @@ import {
   ingestProviderManifestFile,
   listArtifacts,
   listProviders,
+  planLocalArtifactPath,
   registerLocalArtifactPath,
   registerProvider,
   resolveAndLinkArtifact,
@@ -165,6 +166,25 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       }
       const artifact = ingestArtifact(getDb(), body);
       sendJson(res, 200, { artifact });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.post("/api/artifacts/plan", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const localPath = typeof body.path === "string" && body.path.trim()
+        ? body.path
+        : typeof body.local_path === "string" && body.local_path.trim()
+          ? body.local_path
+          : undefined;
+      if (!localPath) {
+        sendJson(res, 400, { error: "path is required" });
+        return;
+      }
+      const plan = planLocalArtifactPath(getDb(), { ...body, path: localPath });
+      sendJson(res, 200, { plan });
     } catch (error) {
       handleError(res, error);
     }
