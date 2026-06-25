@@ -213,12 +213,63 @@ This is a backend-architecture change to project/repo identity, so per the
   change and should be filed as a Mandible issue in the dotfiles repo rather
   than edited here.
 
+## Codex adversarial-review revisions
+
+An external review before integration found real gaps; the corrections (design
+intact):
+
+1. **Merge move list completed (data safety).** `repairRegistry --merge` now
+   repoints EVERY project-id column in the schema, including the three the first
+   pass missed: `ledger_commit_issue_links.project_id` (a real
+   `REFERENCES ledger_projects(id) ON DELETE RESTRICT` FK that would otherwise
+   THROW at the source-project delete), `ledger_sync_jobs.project_id`, and
+   `ledger_reconciliation_mismatches.project_id` (non-FK, would otherwise
+   dangle). Decision: move ALL project-scoped columns so a merge leaves no row
+   pointing at a deleted project — `HISTORICAL_PROJECT_ID_COLUMNS` is therefore
+   empty. A `discoverProjectIdColumns()` helper + schema-audit test enumerate the
+   live schema and FAIL if a future table adds a project-id column absent from
+   both the move list and the historical allowlist, so this can't silently
+   regress.
+2. **Operational/relationship resolution understands `project_key`.**
+   `candidateProjectIds()`/`resolveOperationalIssueRef()` (operational-links) and
+   `LedgerStore.resolveProjectId()` now accept `project_key` case-insensitively,
+   so `work-unit claim --repo <key>`, auth-ref linking, and cross-project text
+   refs (`[issue:Feedbax/abc123]`) resolve.
+3. **Canonical key round-trips.** The key the issue-detail surface emits is now
+   accepted everywhere it lands: the `/api/issues?repo=` filter matches a new
+   (additive, optional) `IssueRepoSummary.project_key`; the `/r/issue/:ref`
+   redirect builder prefers `project_key` for its `repo` param; and auth-list's
+   `?repo=` alias lookup (which piggybacks on `/api/issues?repo=`) now collects
+   `project_key`. Both the canonical key AND the legacy `work_repo_id` resolve.
+4. **Scanner sync is the single audited discovery-write path.** git-bug sync
+   (`runGitBugSyncForRepos`) now resolves a scanned root through the registry
+   (`resolveCheckoutPath`) FIRST and reuses an already-registered
+   checkout/project instead of re-minting; genuinely-new checkouts still get
+   discovered (and now get a `project_key`). Phantom/duplicate minting for paths
+   that already resolve to a registered checkout is prevented without blocking
+   legitimate local discovery; `auditRegistry` flags discovery-created projects
+   via `numbered_repo_ids` + `local_projects`.
+5. **Generic key fallback.** `deriveProjectKeyBase` treats `repo`, `project`,
+   `local-project`, etc. as non-identifying: a generic basename is qualified with
+   the parent directory (`/x/myproj/repo` -> `myproj-repo`); the interactive
+   `mandible project add` path requires an explicit `--key`.
+6. **Blank-root rejection.** `addOrUpdateCheckout` validates the trimmed raw root
+   BEFORE `path.resolve` (which turns `""` into the daemon cwd), rejecting
+   empty/whitespace roots.
+
 ## Open questions / deferred
 
-- Promoting `project_key` to the canonical `repo_id` in repo **summaries** and
-  in route params everywhere (currently additive only) — deferred to avoid
+- **Backup index recreation (DEFERRED).** A blank-DB metadata restore in
+  `src/ledger/backup.ts` does not yet recreate the partial unique index
+  `idx_ledger_projects_project_key`. Restore is currently unimplemented, and
+  `backup.ts` is concurrently owned by a sibling artifact-versioning lane, so it
+  is intentionally NOT touched here — recreate the index when restore lands.
+- Promoting `project_key` to the *sole* canonical `repo_id` in repo summary
+  grouping and every route param (currently additive — both key and
+  `work_repo_id` are accepted; round-trip works) — deferred to avoid
   destabilizing sibling lanes mid-umbrella.
 - A dashboard surface for the registry (list/add/repair UI) — backend + CLI
   only here.
 - Auto-suggesting a merge target during `repair` (currently the operator picks
-  `--merge src dst`).
+  `--merge src dst`; `auditRegistry.mergeable_local_projects` already surfaces
+  the single-remote-target candidates).

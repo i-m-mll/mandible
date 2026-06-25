@@ -10,8 +10,11 @@ import {
   auditRegistry,
   backfillProjectKeys,
   deriveProjectKeyBase,
+  discoverProjectIdColumns,
+  HISTORICAL_PROJECT_ID_COLUMNS,
   listProjects,
   ProjectRegistryError,
+  PROJECT_ID_COLUMNS,
   repairRegistry,
   resolveCheckoutPath,
   resolveProjectRef,
@@ -20,6 +23,7 @@ import {
   updateProject,
 } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { resolveOperationalIssueRef } from "../src/ledger/operational-links.js";
 import { LedgerStore } from "../src/ledger/store.js";
 
 let tempDir = "";
@@ -634,5 +638,204 @@ describe("repairRegistry merge", () => {
 
     const projEStillExists = db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(projE.id);
     expect(projEStillExists).not.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Codex review fixes (3d85f43)
+// ---------------------------------------------------------------------------
+
+describe("merge move-list schema coverage (codex review #1)", () => {
+  it("every project-id column in the live schema is covered by the move list or historical allowlist", () => {
+    const moveSet = new Set<string>();
+    for (const { table, columns } of PROJECT_ID_COLUMNS) {
+      for (const column of columns) moveSet.add(`${table}.${column}`);
+    }
+    const historicalSet = new Set(
+      HISTORICAL_PROJECT_ID_COLUMNS.map((entry) => `${entry.table}.${entry.column}`),
+    );
+    const discovered = discoverProjectIdColumns(db);
+    expect(discovered.length).toBeGreaterThan(0);
+    const uncovered = discovered
+      .map((entry) => `${entry.table}.${entry.column}`)
+      .filter((key) => !moveSet.has(key) && !historicalSet.has(key));
+    expect(uncovered).toEqual([]);
+  });
+
+  it("explicitly covers the FK and non-FK tables the review flagged", () => {
+    const moveSet = new Set<string>();
+    for (const { table, columns } of PROJECT_ID_COLUMNS) {
+      for (const column of columns) moveSet.add(`${table}.${column}`);
+    }
+    expect(moveSet.has("ledger_commit_issue_links.project_id")).toBe(true);
+    expect(moveSet.has("ledger_sync_jobs.project_id")).toBe(true);
+    expect(moveSet.has("ledger_reconciliation_mismatches.project_id")).toBe(true);
+  });
+
+  it("merges a source project WITH commit links cleanly (FK ON DELETE RESTRICT)", () => {
+    const dirA = path.join(tempDir, "cl-a");
+    const dirB = path.join(tempDir, "cl-b");
+    fs.mkdirSync(dirA, { recursive: true });
+    fs.mkdirSync(dirB, { recursive: true });
+    const { project: projA } = resolveProjectForCheckout(db, {
+      root: dirA,
+      remoteUrl: "git@github.com:mll/cl-source.git",
+    });
+    const { project: projB } = resolveProjectForCheckout(db, {
+      root: dirB,
+      remoteUrl: "git@github.com:mll/cl-target.git",
+    });
+    const store = new LedgerStore(db);
+    const issueA = store.createIssue({
+      project_id: projA.id,
+      title: "Linked issue",
+      body: "body",
+      actor_type: "agent",
+      author_display: "Test",
+    });
+    db.prepare(
+      `INSERT INTO ledger_commit_issue_links (commit_sha, project_id, issue_id, link_type, source, created_at)
+       VALUES (?, ?, ?, 'fixed_by', 'auth_queue', ?)`,
+    ).run("deadbeef", projA.id, issueA.id, Date.now());
+
+    const report = repairRegistry(db, { apply: true, merge: { source: projA.id, target: projB.id } });
+
+    expect(report.merge!.applied).toBe(true);
+    expect(report.merge!.foreign_key_violations).toBe(0);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    // source project gone, commit link repointed to target
+    expect(db.prepare("SELECT id FROM ledger_projects WHERE id = ?").get(projA.id)).toBeUndefined();
+    const link = db
+      .prepare("SELECT project_id FROM ledger_commit_issue_links WHERE commit_sha = ?")
+      .get("deadbeef") as { project_id: string };
+    expect(link.project_id).toBe(projB.id);
+  });
+});
+
+describe("deriveProjectKeyBase generic fallback (codex review #5)", () => {
+  it("qualifies a generic basename with the parent directory", () => {
+    expect(deriveProjectKeyBase({ root: "/x/myproj/repo" })).toBe("myproj-repo");
+    expect(deriveProjectKeyBase({ root: "/home/work/code" })).toBe("work-code");
+  });
+
+  it("does not return a bare generic key when a distinctive basename exists", () => {
+    expect(deriveProjectKeyBase({ root: "/x/feedbax" })).toBe("feedbax");
+  });
+
+  it("falls back to a generic sentinel only when nothing is distinctive", () => {
+    expect(deriveProjectKeyBase({ root: "/repo" })).toBe("project");
+  });
+});
+
+describe("addOrUpdateCheckout blank-root rejection (codex review #6)", () => {
+  it("rejects an empty or whitespace-only root before path.resolve", () => {
+    const { project } = resolveProjectForCheckout(db, {
+      root: path.join(tempDir, "blank-root-proj"),
+      remoteUrl: "git@github.com:mll/blankroot.git",
+    });
+    for (const bad of ["", "   ", "\t"]) {
+      let caught: unknown;
+      try {
+        addOrUpdateCheckout(db, project.id, { root: bad });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(ProjectRegistryError);
+      expect((caught as ProjectRegistryError).code).toBe("missing_root");
+    }
+    // No checkout was registered at the daemon cwd as a side effect.
+    const cwdCheckout = db
+      .prepare("SELECT 1 FROM ledger_project_checkouts WHERE root = ?")
+      .get(path.resolve(""));
+    expect(cwdCheckout).toBeUndefined();
+  });
+});
+
+describe("operational + relationship resolution by project_key (codex review #2)", () => {
+  it("resolveOperationalIssueRef scopes by project_key, case-insensitively", () => {
+    const dirF = path.join(tempDir, "op-feedbax");
+    const dirO = path.join(tempDir, "op-other");
+    fs.mkdirSync(dirF, { recursive: true });
+    fs.mkdirSync(dirO, { recursive: true });
+    const { project: feedbax } = resolveProjectForCheckout(db, {
+      root: dirF,
+      remoteUrl: "git@github.com:mll/feedbax.git",
+    });
+    const { project: other } = resolveProjectForCheckout(db, {
+      root: dirO,
+      remoteUrl: "git@github.com:mll/other.git",
+    });
+    expect(resolveProjectRef(db, "feedbax").project?.id).toBe(feedbax.id);
+
+    const store = new LedgerStore(db);
+    const inF = store.createIssue({
+      project_id: feedbax.id,
+      title: "F issue",
+      body: "b",
+      actor_type: "agent",
+      author_display: "T",
+    });
+    const inO = store.createIssue({
+      project_id: other.id,
+      title: "O issue",
+      body: "b",
+      actor_type: "agent",
+      author_display: "T",
+    });
+    // Force a short-id collision across the two projects so only the project_key
+    // scope disambiguates.
+    db.prepare("UPDATE ledger_issues SET short_id = 'shared99' WHERE id IN (?, ?)").run(inF.id, inO.id);
+
+    // Unscoped: ambiguous across both projects.
+    const unscoped = resolveOperationalIssueRef(db, "shared99");
+    expect(unscoped.ok).toBe(false);
+
+    // Scoped by canonical key (and a cased variant) resolves to the feedbax issue.
+    const byKey = resolveOperationalIssueRef(db, "shared99", "feedbax");
+    expect(byKey.ok).toBe(true);
+    expect(byKey.ok && byKey.issue_id).toBe(inF.id);
+    const byCasedKey = resolveOperationalIssueRef(db, "shared99", "Feedbax");
+    expect(byCasedKey.ok).toBe(true);
+    expect(byCasedKey.ok && byCasedKey.issue_id).toBe(inF.id);
+  });
+
+  it("store.resolveProjectId resolves a cross-project text ref by project_key (case-insensitive)", () => {
+    const dirT = path.join(tempDir, "rel-target");
+    const dirS = path.join(tempDir, "rel-source");
+    fs.mkdirSync(dirT, { recursive: true });
+    fs.mkdirSync(dirS, { recursive: true });
+    const { project: target } = resolveProjectForCheckout(db, {
+      root: dirT,
+      remoteUrl: "git@github.com:mll/feedbax.git",
+    });
+    const { project: sourceProject } = resolveProjectForCheckout(db, {
+      root: dirS,
+      remoteUrl: "git@github.com:mll/consumer.git",
+    });
+    const store = new LedgerStore(db);
+    const targetIssue = store.createIssue({
+      project_id: target.id,
+      title: "Target",
+      body: "b",
+      actor_type: "agent",
+      author_display: "T",
+    });
+    const sourceIssue = store.createIssue({
+      project_id: sourceProject.id,
+      title: "Source",
+      body: "b",
+      actor_type: "agent",
+      author_display: "T",
+    });
+    // Cross-project ref by the canonical project_key (cased) -> resolveProjectId.
+    store.reconcileTextIssueReferences({
+      source_issue_id: sourceIssue.id,
+      source_entity_type: "issue_body",
+      source_entity_id: sourceIssue.id,
+      body: `See [issue:Feedbax/${targetIssue.short_id}]`,
+    });
+    const detail = store.getIssueDetail(sourceIssue.id);
+    const targets = detail.outgoing_relationships.map((rel) => rel.target_issue_id);
+    expect(targets).toContain(targetIssue.id);
   });
 });

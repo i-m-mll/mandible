@@ -201,8 +201,15 @@ function filterIssueSummaries(
   let filtered = summaries;
 
   if (filters.repo) {
+    // Issue 3d85f43: accept the canonical project_key as a repo filter (the
+    // value the issue-detail surface and /r/issue redirect now emit), alongside
+    // the legacy work_repo_id / name / root, so the key round-trips.
     filtered = filtered.filter(
-      (s) => s.repo_id === filters.repo || s.repo_name === filters.repo || s.repo_root === filters.repo,
+      (s) =>
+        s.repo_id === filters.repo ||
+        s.repo_name === filters.repo ||
+        s.repo_root === filters.repo ||
+        (s.project_key !== undefined && s.project_key === filters.repo),
     );
   }
 

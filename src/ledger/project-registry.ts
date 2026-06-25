@@ -484,8 +484,12 @@ export function addOrUpdateCheckout(
     });
   }
   const project = resolved.project;
-  const root = path.resolve(input.root.trim());
-  if (!root) throw new ProjectRegistryError("root is required", "missing_root");
+  // Validate the RAW trimmed root before path.resolve — path.resolve("") returns
+  // the daemon's cwd, so a blank/whitespace root would silently register the
+  // process working directory as a checkout.
+  const trimmedRoot = input.root?.trim() ?? "";
+  if (!trimmedRoot) throw new ProjectRegistryError("root is required", "missing_root");
+  const root = path.resolve(trimmedRoot);
 
   const existing = db
     .prepare("SELECT * FROM ledger_project_checkouts WHERE root = ?")
@@ -683,8 +687,19 @@ export function auditRegistry(db: Db): RegistryAudit {
 // Repair (guarded)
 // ---------------------------------------------------------------------------
 
-// (table, column) pairs that carry a project_id and must be repointed on merge.
-const PROJECT_ID_COLUMNS: Array<{ table: string; columns: string[] }> = [
+// (table, column) pairs that carry a project id and MUST be repointed on merge.
+// This is the authoritative list — every project-id-bearing column in the schema
+// is either here or in HISTORICAL_PROJECT_ID_COLUMNS below; the schema-audit test
+// (test/project-registry.test.ts) enumerates the live schema and fails if a
+// future table adds a project-id column that is in neither list. Columns with a
+// real `REFERENCES ledger_projects(id) ON DELETE RESTRICT` FK (ledger_issues,
+// ledger_issue_aliases, ledger_body_revisions, ledger_relationship_edges,
+// ledger_project_checkouts, ledger_commit_issue_links, spaces) would otherwise
+// THROW at the source-project delete; the non-FK ones (ledger_outbox,
+// ledger_external_refs, ledger_conflicts, ledger_sync_jobs,
+// ledger_reconciliation_mismatches) would silently dangle. Moving them all keeps
+// the merge orphan-free and FK-clean.
+export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[] }> = [
   { table: "ledger_issues", columns: ["project_id"] },
   { table: "ledger_issue_aliases", columns: ["project_id"] },
   { table: "ledger_body_revisions", columns: ["project_id"] },
@@ -692,9 +707,44 @@ const PROJECT_ID_COLUMNS: Array<{ table: string; columns: string[] }> = [
   { table: "ledger_external_refs", columns: ["project_id"] },
   { table: "ledger_outbox", columns: ["project_id"] },
   { table: "ledger_conflicts", columns: ["project_id"] },
+  { table: "ledger_commit_issue_links", columns: ["project_id"] },
+  { table: "ledger_sync_jobs", columns: ["project_id"] },
+  { table: "ledger_reconciliation_mismatches", columns: ["project_id"] },
   { table: "ledger_project_checkouts", columns: ["project_id"] },
   { table: "spaces", columns: ["project_id"] },
 ];
+
+// Project-id-bearing columns that are DELIBERATELY not repointed on merge (kept
+// as historical records). Currently empty: every project-scoped column moves, so
+// a merge leaves no row pointing at a deleted project. New entries here must be
+// justified (the row is immutable historical provenance whose project id is
+// part of the record, not a live reference).
+export const HISTORICAL_PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; column: string }> = [];
+
+const PROJECT_ID_COLUMN_NAMES = new Set(["project_id", "source_project_id", "target_project_id"]);
+
+/**
+ * Enumerate every (table, column) in the LIVE schema whose column name is a
+ * project-id column (`project_id`, `source_project_id`, `target_project_id`).
+ * Used by the schema-audit test to prove the merge move list stays exhaustive as
+ * the schema grows. Excludes SQLite internal and temp rebuild tables.
+ */
+export function discoverProjectIdColumns(db: Db): Array<{ table: string; column: string }> {
+  const tables = db
+    .prepare(
+      `SELECT name FROM sqlite_master
+       WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT LIKE '%_v'`,
+    )
+    .all() as Array<{ name: string }>;
+  const found: Array<{ table: string; column: string }> = [];
+  for (const { name } of tables) {
+    const columns = db.prepare(`PRAGMA table_info(${name})`).all() as Array<{ name: string }>;
+    for (const col of columns) {
+      if (PROJECT_ID_COLUMN_NAMES.has(col.name)) found.push({ table: name, column: col.name });
+    }
+  }
+  return found;
+}
 
 function tableExists(db: Db, table: string): boolean {
   return Boolean(

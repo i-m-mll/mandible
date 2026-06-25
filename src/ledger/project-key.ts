@@ -12,10 +12,25 @@ export function slugifyProjectKey(value: string | null | undefined): string {
     .replace(/^-+|-+$/g, "");
 }
 
+// Slugs that carry no project identity — a basename of `repo`, a default
+// "Local project" display name, etc. These never become a key on their own; the
+// derivation reaches for a more distinctive hint (the parent directory) first
+// and only falls back to a generic sentinel (which callers dedupe).
+const GENERIC_KEYS = new Set(["", "repo", "repos", "project", "local-project", "local", "src", "code", "git"]);
+
+export function isGenericProjectKey(slug: string | null | undefined): boolean {
+  return slug == null || GENERIC_KEYS.has(slug);
+}
+
 /**
  * Derive a base project key from canonical identity inputs, in priority order:
- * remote-identity tail, then display name, then checkout basename. The
- * path-derived WorkScanner id is deliberately NOT a source.
+ * remote-identity tail, then display name, then checkout basename, then — when
+ * the basename is itself generic (e.g. `repo`) — the parent directory as a
+ * qualifier (`/x/myproj/repo` -> `myproj-repo`). The path-derived WorkScanner id
+ * is deliberately NOT a source. When nothing distinctive is available a generic
+ * sentinel is returned (callers dedupe it); the interactive `mandible project
+ * add` path requires an explicit `--key` instead of accepting a generic
+ * derivation.
  */
 export function deriveProjectKeyBase(input: {
   remote_identity?: string | null;
@@ -26,15 +41,21 @@ export function deriveProjectKeyBase(input: {
   if (identity && !identity.startsWith("local:") && !identity.startsWith("file:")) {
     const tail = identity.split("/").filter(Boolean).at(-1);
     const slug = slugifyProjectKey(tail);
-    if (slug) return slug;
+    if (!isGenericProjectKey(slug)) return slug;
   }
   const fromDisplay = slugifyProjectKey(input.display_name);
-  if (fromDisplay && fromDisplay !== "local-project") return fromDisplay;
+  if (!isGenericProjectKey(fromDisplay)) return fromDisplay;
   const root = input.root?.trim();
   if (root) {
-    const fromRoot = slugifyProjectKey(path.basename(root));
-    if (fromRoot) return fromRoot;
+    const base = slugifyProjectKey(path.basename(root));
+    if (!isGenericProjectKey(base)) return base;
+    // The basename is generic (e.g. `repo`): qualify with the parent directory.
+    const parent = slugifyProjectKey(path.basename(path.dirname(root)));
+    if (!isGenericProjectKey(parent)) {
+      return base ? `${parent}-${base}` : parent;
+    }
   }
+  // Nothing distinctive — a generic, deduped-by-caller fallback.
   return fromDisplay || "project";
 }
 

@@ -265,6 +265,11 @@ export interface IssueRepoSummary {
   repo_id: string;
   repo_name: string;
   repo_root: string;
+  // Issue 3d85f43: the canonical project key (when this summary is ledger-backed),
+  // so the repo filter and auth-list alias lookup round-trip the key the issue
+  // detail surface and /r/issue redirect emit. Optional: scanner-only summaries
+  // omit it.
+  project_key?: string;
   open_count: number;
   merged_count: number;
   closed_count: number;

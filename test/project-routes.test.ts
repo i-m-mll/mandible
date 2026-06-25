@@ -4,8 +4,10 @@ import { migrate, setDb, type Db } from "../src/db.js";
 import { updateLedgerIssueMigrationConfig } from "../src/ledger/issue-migration.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import { LedgerStore } from "../src/ledger/store.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
+import { resolveLedgerIssueLinkFromDb } from "../src/routes/redirects.js";
 import { Router } from "../src/server.js";
 
 let db: Db;
@@ -302,5 +304,56 @@ describe("issue route project rejection", () => {
     expect(res.status).toBe(200);
     const body = res.body as { project?: { project_key?: string } };
     expect(body.project?.project_key).toBe("feedbax");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Canonical-key round-trip (codex review #3)
+// ---------------------------------------------------------------------------
+
+describe("canonical project_key round-trip", () => {
+  function seedFeedbax() {
+    const { project } = resolveProjectForCheckout(db, {
+      root: "/tmp/feedbax-rt",
+      name: "feedbax",
+      workRepoId: "20-feedbax-feedbax",
+      remoteUrl: "git@github.com:mll/feedbax.git",
+    });
+    const issue = new LedgerStore(db).createIssue({
+      project_id: project.id,
+      title: "Round-trip issue",
+      body: "body",
+      actor_type: "agent",
+      author_display: "Test",
+    });
+    return { project, issue };
+  }
+
+  it("GET /api/issues?repo=<project_key> returns the project's issues", async () => {
+    seedFeedbax();
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+    registerIssueRoutes(router, fakeScanner);
+
+    const byKey = await router.invoke({ method: "GET", url: "/api/issues?repo=feedbax" });
+    expect(byKey.status).toBe(200);
+    const keyBody = byKey.body as Array<{ repo_id: string; project_key?: string; issues: unknown[] }>;
+    expect(keyBody.length).toBe(1);
+    expect(keyBody[0].project_key).toBe("feedbax");
+    expect(keyBody[0].issues.length).toBe(1);
+
+    // The legacy path-derived work_repo_id still resolves too (accept both).
+    const byWorkRepo = await router.invoke({
+      method: "GET",
+      url: "/api/issues?repo=20-feedbax-feedbax",
+    });
+    expect(byWorkRepo.status).toBe(200);
+    expect((byWorkRepo.body as unknown[]).length).toBe(1);
+  });
+
+  it("/r/issue redirect resolves the canonical project_key as repo, not work_repo_id", () => {
+    const { issue } = seedFeedbax();
+    const resolved = resolveLedgerIssueLinkFromDb(db, issue.short_id);
+    expect(resolved.ok).toBe(true);
+    expect(resolved.ok && resolved.repoId).toBe("feedbax");
   });
 });
