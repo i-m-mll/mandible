@@ -51,6 +51,10 @@ Usage:
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
+  mandible artifact versions <ref> [--json]
+  mandible artifact diff <refA> <refB> [--json]
+  mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
+  mandible artifact record --ref <artifact-ref> --kind managed [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
   mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
@@ -833,6 +837,138 @@ cmd_check() {
   fi
 }
 
+# Read-only version history for a logical artifact series (issue f7a994e).
+cmd_versions() {
+  local ref="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible artifact versions <ref> [--json]" 2
+  require_tools
+  local response
+  response="$(api_get "/api/artifacts/versions?ref=$(urlencode "$ref")")" \
+    || die "${RED}Failed to load artifact versions.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .history.series as $s
+      | "series \($s.id) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
+      (.history.versions[]
+        | "  v\(.version_no) \(.source_kind) \(.artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
+  fi
+}
+
+# Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
+# bytes (issue f7a994e). Refs may be hashes, artifact-version:/artifact-series:
+# refs, or any resolvable artifact ref.
+cmd_diff() {
+  local refs=() json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) refs+=("$1"); shift ;;
+    esac
+  done
+  (( ${#refs[@]} == 2 )) || die "Usage: mandible artifact diff <refA> <refB> [--json]" 2
+  require_tools
+  local response
+  response="$(api_get "/api/artifacts/diff?a=$(urlencode "${refs[0]}")&b=$(urlencode "${refs[1]}")")" \
+    || die "${RED}Failed to diff artifacts.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .diff as $d
+      | if ($d.diffable | not) then "no diff: \($d.reason // "unavailable")"
+        elif $d.identical then "identical (\($d.a.content_hash[0:12]))"
+        else $d.unified end'
+  fi
+}
+
+# EXPLICIT version recording (issue f7a994e). The only write path into version
+# history; ordinary ingest/preview/check never mutate it. For local-only files
+# this is the explicit observation command.
+cmd_record() {
+  local kind="" path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --kind) kind="$2"; shift 2 ;;
+      --ref) ref="$2"; shift 2 ;;
+      --series-key) series_key="$2"; shift 2 ;;
+      --logical-name) logical_name="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --note) note="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --custody) custody="$2"; shift 2 ;;
+      --provider) provider="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --issue) issue="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$path" ]] || die "Unexpected argument: $1" 2; path="$1"; shift ;;
+    esac
+  done
+  [[ -n "$kind" ]] || die "Usage: mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key K] [--logical-name N] [--provider P] [--repo R] [--issue I] [--label L] [--note T] [--role R] [--json]" 2
+  case "$kind" in tracked_repo|local_only|managed) ;; *) die "Unknown --kind: $kind (expected tracked_repo, local_only, or managed)" 2 ;; esac
+  if [[ -z "$path" && -z "$ref" ]]; then
+    die "record requires a <path> (or --ref for managed)" 2
+  fi
+  require_tools
+  local abs=""
+  if [[ -n "$path" ]]; then
+    abs="$(python_path abs "$path")"
+    [[ -f "$abs" ]] || die "${RED}Not a regular file: ${abs}${RESET}" 1
+  fi
+  local payload
+  payload="$(jq -n \
+    --arg source_kind "$kind" \
+    --arg path "$abs" \
+    --arg ref "$ref" \
+    --arg series_key "$series_key" \
+    --arg logical_name "$logical_name" \
+    --arg label "$label" \
+    --arg note "$note" \
+    --arg role "$role" \
+    --arg title "$title" \
+    --arg custody_mode "$custody" \
+    --arg provider_id "$provider" \
+    --arg repo_id "$repo" \
+    --arg issue "$issue" \
+    '{source_kind:$source_kind}
+      + (if $path != "" then {path:$path} else {} end)
+      + (if $ref != "" then {ref:$ref} else {} end)
+      + (if $series_key != "" then {series_key:$series_key} else {} end)
+      + (if $logical_name != "" then {logical_name:$logical_name} else {} end)
+      + (if $label != "" then {label:$label} else {} end)
+      + (if $note != "" then {note:$note} else {} end)
+      + (if $role != "" then {role:$role} else {} end)
+      + (if $title != "" then {title:$title} else {} end)
+      + (if $custody_mode != "" then {custody_mode:$custody_mode} else {} end)
+      + (if $provider_id != "" then {provider_id:$provider_id} else {} end)
+      + (if $repo_id != "" then {repo_id:$repo_id} else {} end)
+      + (if $issue != "" then {issue:$issue} else {} end)')"
+  local response
+  response="$(api_post "/api/artifacts/versions" "$payload")" \
+    || die "${RED}Failed to record artifact version.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .result as $r
+      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version.id)",
+        "series \($r.series.id) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
+        "artifact \($r.artifact.id)",
+        ( ($r.warnings // [])[] | "warning: \(.)" )'
+  fi
+}
+
 cmd_scan_repos() {
   local repo="" max_depth="" register=0 dry_run=0 json=0
   while (( $# > 0 )); do
@@ -1174,6 +1310,9 @@ case "$cmd" in
   show) cmd_show "$@" ;;
   content) cmd_content "$@" ;;
   check) cmd_check "$@" ;;
+  versions) cmd_versions "$@" ;;
+  diff) cmd_diff "$@" ;;
+  record) cmd_record "$@" ;;
   scan-repos) cmd_scan_repos "$@" ;;
   bundle) cmd_bundle "$@" ;;
   *) die "Unknown artifact subcommand: $cmd" 2 ;;

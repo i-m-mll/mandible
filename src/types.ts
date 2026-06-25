@@ -1006,6 +1006,66 @@ export interface ArtifactResolveResult {
   normalized_ref: string;
   artifact: ArtifactRecord | null;
   alias: ArtifactAliasRecord | null;
+  // Populated only when `ref` is an artifact-version/artifact-series ref.
+  // Additive: existing resolver callers ignore these fields.
+  series?: ArtifactSeriesRecord | null;
+  version?: ArtifactVersionRecord | null;
+  warnings?: string[];
+}
+
+// A version's source kind. The series can additionally be 'mixed' when its
+// versions span more than one kind.
+export type ArtifactVersionSourceKind = "tracked_repo" | "local_only" | "managed";
+export type ArtifactSeriesSourceKind = ArtifactVersionSourceKind | "mixed";
+
+// Stable LOGICAL artifact identity. Separate from the immutable content rows in
+// `artifacts`; a series groups multiple `artifact_versions` rows that each pin
+// one immutable `artifacts.id`.
+export interface ArtifactSeriesRecord {
+  id: string;
+  series_key: string;
+  source_kind: ArtifactSeriesSourceKind;
+  title: string | null;
+  repo_id: string | null;
+  logical_name: string | null;
+  latest_version_id: string | null;
+  version_count: number;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+}
+
+// A version row under a series. `artifact_id` references an immutable
+// `artifacts` row (the source of truth); the version adds provenance/custody
+// history without mutating that content row.
+export interface ArtifactVersionRecord {
+  id: string;
+  series_id: string;
+  artifact_id: string;
+  version_no: number;
+  source_kind: ArtifactVersionSourceKind;
+  content_hash: string;
+  commit_sha: string | null;
+  repo_path: string | null;
+  observed_path: string | null;
+  custody_mode: string | null;
+  label: string | null;
+  note: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+}
+
+export interface ArtifactVersionHistory {
+  series: ArtifactSeriesRecord;
+  versions: ArtifactVersionRecord[];
+}
+
+export interface ArtifactVersionRecordResult {
+  series: ArtifactSeriesRecord;
+  version: ArtifactVersionRecord;
+  artifact: ArtifactRecord;
+  created: boolean;
+  warnings: string[];
 }
 
 export type KnowledgeBackrefSourceType = "artifact" | "document";

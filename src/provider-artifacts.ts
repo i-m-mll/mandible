@@ -4,6 +4,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "./db.js";
+// Cyclic import (artifact-content also imports from this module). Safe: both
+// sides reference each other only from inside functions, never at module-eval
+// top level. Used by recordArtifactVersion's managed-`ref` path to read the
+// full bytes of an existing artifact before snapshotting it into CAS.
+import { readArtifactBytesFull } from "./artifact-content.js";
 import type {
   ArtifactAliasRecord,
   ArtifactBundleMemberRecord,
@@ -13,6 +18,12 @@ import type {
   ArtifactRecord,
   ArtifactRecoverability,
   ArtifactResolveResult,
+  ArtifactSeriesRecord,
+  ArtifactSeriesSourceKind,
+  ArtifactVersionHistory,
+  ArtifactVersionRecord,
+  ArtifactVersionRecordResult,
+  ArtifactVersionSourceKind,
   GraphAction,
   GraphEdge,
   GraphMode,
@@ -173,6 +184,10 @@ export interface ArtifactSnapshotInput {
   // place of inline base64 so multi-MiB snapshots never travel through argv
   // (issue 833e972).
   content_path?: string;
+  // In-process Buffer handoff (e.g. recordArtifactVersion managed-ref -> snapshot)
+  // that avoids the base64 encode/decode amplification round-trip. Not
+  // JSON-serializable; only used within the same process.
+  content_buffer?: Buffer;
   json?: unknown;
   custody_mode?: "copy" | "managed" | string;
   media_type?: string;
@@ -460,6 +475,14 @@ function ensureDir(dir: string): void {
 
 function artifactPathForHash(hash: string, root = getArtifactRoot()): string {
   return path.join(root, "sha256", hash.slice(0, 2), hash);
+}
+
+// The content-addressed storage path for a sha256 hash. Exposed so materializers
+// can fall back to a durable CAS copy (e.g. one written by an explicit managed
+// snapshot) when an artifact's registered location is gone — the bytes are
+// hash-verified by construction.
+export function artifactCasPath(db: Db, hash: string): string {
+  return artifactPathForHash(hash, getArtifactRoot(db));
 }
 
 function contentBuffer(input: ArtifactInput): Buffer {
@@ -1995,6 +2018,9 @@ export function resolveAndLinkArtifact(
 }
 
 function bufferFromSnapshotInput(input: ArtifactSnapshotInput): Buffer {
+  if (Buffer.isBuffer(input.content_buffer)) {
+    return input.content_buffer;
+  }
   if (typeof input.path === "string" && input.path.trim()) {
     return fs.readFileSync(path.resolve(expandHomePath(input.path)));
   }
@@ -3427,7 +3453,671 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
   });
 }
 
+// ---------------------------------------------------------------------------
+// Artifact version identity (series) and custody history (issue f7a994e).
+//
+// The immutable `artifacts` rows remain the source of truth. A `artifact_series`
+// row is the stable LOGICAL identity; `artifact_versions` rows pin specific
+// immutable `artifacts.id` rows under a series. History is written ONLY through
+// the explicit recordArtifactVersion path — ordinary ingest/preview/check never
+// touch these tables.
+// ---------------------------------------------------------------------------
+
+const VERSION_SOURCE_KINDS = new Set<ArtifactVersionSourceKind>([
+  "tracked_repo",
+  "local_only",
+  "managed",
+]);
+
+function artifactVersioningTablesExist(db: Db): boolean {
+  return tableExists(db, "artifact_series") && tableExists(db, "artifact_versions");
+}
+
+function assertVersioningTables(db: Db): void {
+  if (!artifactVersioningTablesExist(db)) {
+    throw new Error("artifact versioning tables are not present in this database");
+  }
+}
+
+function seriesIdFromKey(seriesKey: string): string {
+  return artifactRegistryId("artifact-series", [seriesKey]);
+}
+
+function versionIdFor(seriesId: string, sourceKind: string, naturalKey: string): string {
+  return artifactRegistryId("artifact-version", [seriesId, sourceKind, naturalKey]);
+}
+
+// Percent-escape `:` (and the escape char itself) within a single series-key
+// component so a `:`-joined default key is unambiguous: namespace "a:b" + name
+// "c" must not collide with namespace "a" + role "b" + name "c".
+function escapeSeriesKeyComponent(value: string): string {
+  return value.replace(/%/g, "%25").replace(/:/g, "%3A");
+}
+
+function seriesFromRow(row: Record<string, unknown>): ArtifactSeriesRecord {
+  return {
+    id: String(row.id),
+    series_key: String(row.series_key),
+    source_kind: String(row.source_kind) as ArtifactSeriesSourceKind,
+    title: (row.title as string | null) ?? null,
+    repo_id: (row.repo_id as string | null) ?? null,
+    logical_name: (row.logical_name as string | null) ?? null,
+    latest_version_id: (row.latest_version_id as string | null) ?? null,
+    version_count: Number(row.version_count ?? 0),
+    metadata: parseJsonRecord(row.metadata_json as string | null),
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+function versionFromRow(row: Record<string, unknown>): ArtifactVersionRecord {
+  return {
+    id: String(row.id),
+    series_id: String(row.series_id),
+    artifact_id: String(row.artifact_id),
+    version_no: Number(row.version_no),
+    source_kind: String(row.source_kind) as ArtifactVersionSourceKind,
+    content_hash: String(row.content_hash),
+    commit_sha: (row.commit_sha as string | null) ?? null,
+    repo_path: (row.repo_path as string | null) ?? null,
+    observed_path: (row.observed_path as string | null) ?? null,
+    custody_mode: (row.custody_mode as string | null) ?? null,
+    label: (row.label as string | null) ?? null,
+    note: (row.note as string | null) ?? null,
+    metadata: parseJsonRecord(row.metadata_json as string | null),
+    created_at: Number(row.created_at),
+  };
+}
+
+export function getArtifactSeries(db: Db, idOrKey: string): ArtifactSeriesRecord | null {
+  if (!artifactVersioningTablesExist(db)) return null;
+  const row = db
+    .prepare("SELECT * FROM artifact_series WHERE id = ? OR series_key = ? LIMIT 1")
+    .get(idOrKey, idOrKey) as Record<string, unknown> | undefined;
+  return row ? seriesFromRow(row) : null;
+}
+
+export function getArtifactVersion(db: Db, id: string): ArtifactVersionRecord | null {
+  if (!artifactVersioningTablesExist(db)) return null;
+  const row = db
+    .prepare("SELECT * FROM artifact_versions WHERE id = ?")
+    .get(id) as Record<string, unknown> | undefined;
+  return row ? versionFromRow(row) : null;
+}
+
+export function listArtifactVersions(db: Db, seriesId: string): ArtifactVersionRecord[] {
+  if (!artifactVersioningTablesExist(db)) return [];
+  const rows = db
+    .prepare("SELECT * FROM artifact_versions WHERE series_id = ? ORDER BY version_no ASC")
+    .all(seriesId) as Array<Record<string, unknown>>;
+  return rows.map(versionFromRow);
+}
+
+export interface EnsureArtifactSeriesInput {
+  series_key: string;
+  source_kind: ArtifactSeriesSourceKind;
+  title?: string;
+  repo_id?: string;
+  logical_name?: string;
+  metadata?: JsonRecord;
+}
+
+export function ensureArtifactSeries(
+  db: Db,
+  input: EnsureArtifactSeriesInput,
+  now = Date.now(),
+): ArtifactSeriesRecord {
+  assertVersioningTables(db);
+  const seriesKey = input.series_key.trim();
+  if (!seriesKey) throw new Error("series_key is required");
+  const id = seriesIdFromKey(seriesKey);
+  db.prepare(
+    `INSERT INTO artifact_series (
+      id, series_key, source_kind, title, repo_id, logical_name,
+      latest_version_id, version_count, metadata_json, created_at, updated_at
+    ) VALUES (
+      @id, @series_key, @source_kind, @title, @repo_id, @logical_name,
+      NULL, 0, @metadata_json, @created_at, @created_at
+    )
+    ON CONFLICT(series_key) DO UPDATE SET
+      title = COALESCE(excluded.title, artifact_series.title),
+      repo_id = COALESCE(excluded.repo_id, artifact_series.repo_id),
+      logical_name = COALESCE(excluded.logical_name, artifact_series.logical_name),
+      metadata_json = CASE
+        WHEN artifact_series.metadata_json = '{}' THEN excluded.metadata_json
+        ELSE artifact_series.metadata_json
+      END,
+      updated_at = excluded.updated_at`,
+  ).run({
+    id,
+    series_key: seriesKey,
+    source_kind: input.source_kind,
+    title: input.title ?? null,
+    repo_id: input.repo_id ?? null,
+    logical_name: input.logical_name ?? null,
+    metadata_json: jsonStringify(input.metadata ?? {}),
+    created_at: now,
+  });
+  return getArtifactSeries(db, id) as ArtifactSeriesRecord;
+}
+
+export interface AppendArtifactVersionInput {
+  series_id: string;
+  artifact_id: string;
+  source_kind: ArtifactVersionSourceKind;
+  content_hash: string;
+  natural_key?: string;
+  commit_sha?: string;
+  repo_path?: string;
+  observed_path?: string;
+  custody_mode?: string;
+  label?: string;
+  note?: string;
+  metadata?: JsonRecord;
+}
+
+export function appendArtifactVersion(
+  db: Db,
+  input: AppendArtifactVersionInput,
+  now = Date.now(),
+): { version: ArtifactVersionRecord; created: boolean } {
+  assertVersioningTables(db);
+  if (!VERSION_SOURCE_KINDS.has(input.source_kind)) {
+    throw new Error(`unsupported version source_kind: ${input.source_kind}`);
+  }
+  // The MAX(version_no) read, the version insert, and the series-counter update
+  // must be one atomic unit so a crash never leaves version_count /
+  // latest_version_id / source_kind out of sync with the actual rows, and so a
+  // concurrent writer (separate process/connection) cannot read the same
+  // MAX(version_no). The deterministic version id keeps re-records idempotent
+  // (ON CONFLICT(id) DO NOTHING). We run with BEGIN IMMEDIATE so the write lock
+  // is taken before the MAX read; within one process better-sqlite3 is already
+  // serialized. If we are already inside a transaction, run inline (the caller's
+  // transaction provides the boundary).
+  const body = (): { version: ArtifactVersionRecord; created: boolean } => {
+    const series = getArtifactSeries(db, input.series_id);
+    if (!series) throw new Error(`artifact series not found: ${input.series_id}`);
+    const naturalKey = input.natural_key
+      ?? (input.source_kind === "tracked_repo"
+        ? `${input.commit_sha ?? ""}:${input.repo_path ?? ""}`
+        : input.content_hash);
+    const versionId = versionIdFor(series.id, input.source_kind, naturalKey);
+    const existing = getArtifactVersion(db, versionId);
+    if (existing) {
+      return { version: existing, created: false };
+    }
+    const nextNoRow = db
+      .prepare("SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_versions WHERE series_id = ?")
+      .get(series.id) as { n: number };
+    const versionNo = Number(nextNoRow.n) + 1;
+    const result = db.prepare(
+      `INSERT INTO artifact_versions (
+        id, series_id, artifact_id, version_no, source_kind, content_hash,
+        commit_sha, repo_path, observed_path, custody_mode, label, note,
+        metadata_json, created_at
+      ) VALUES (
+        @id, @series_id, @artifact_id, @version_no, @source_kind, @content_hash,
+        @commit_sha, @repo_path, @observed_path, @custody_mode, @label, @note,
+        @metadata_json, @created_at
+      )
+      ON CONFLICT(id) DO NOTHING`,
+    ).run({
+      id: versionId,
+      series_id: series.id,
+      artifact_id: input.artifact_id,
+      version_no: versionNo,
+      source_kind: input.source_kind,
+      content_hash: input.content_hash,
+      commit_sha: input.commit_sha ?? null,
+      repo_path: input.repo_path ?? null,
+      observed_path: input.observed_path ?? null,
+      custody_mode: input.custody_mode ?? null,
+      label: input.label ?? null,
+      note: input.note ?? null,
+      metadata_json: jsonStringify(input.metadata ?? {}),
+      created_at: now,
+    });
+    const created = result.changes > 0;
+    if (created) {
+      const nextSourceKind: ArtifactSeriesSourceKind =
+        series.version_count === 0
+          ? input.source_kind
+          : series.source_kind === "mixed" || series.source_kind === input.source_kind
+            ? series.source_kind
+            : "mixed";
+      db.prepare(
+        `UPDATE artifact_series
+            SET latest_version_id = @version_id,
+                version_count = version_count + 1,
+                source_kind = @source_kind,
+                updated_at = @now
+          WHERE id = @series_id`,
+      ).run({
+        version_id: versionId,
+        source_kind: nextSourceKind,
+        now,
+        series_id: series.id,
+      });
+    }
+    return { version: getArtifactVersion(db, versionId) as ArtifactVersionRecord, created };
+  };
+  if (db.inTransaction) return body();
+  return db.transaction(body).immediate();
+}
+
+export interface RecordArtifactVersionInput {
+  source_kind: ArtifactVersionSourceKind;
+  path?: string;
+  ref?: string;
+  content?: string;
+  content_base64?: string;
+  json?: unknown;
+  series_key?: string;
+  title?: string;
+  logical_name?: string;
+  label?: string;
+  note?: string;
+  role?: string;
+  media_type?: string;
+  custody_mode?: ArtifactCustodyMode | string;
+  // Namespace scopes for the DEFAULT managed series key so two unrelated
+  // artifacts that share a logical_name (e.g. "report") do not collide into one
+  // global series. At least one (or an explicit series_key) is required for
+  // managed records.
+  provider_id?: string;
+  repo_id?: string;
+  issue?: string;
+  metadata?: JsonRecord;
+}
+
+// Explicit version recording. This is the ONLY write path into the version
+// tables; ordinary ingest/preview/check never call it. For local-only files it
+// is the explicit observation command, satisfying the "preview/check must not
+// mutate history" rule.
+export function recordArtifactVersion(
+  db: Db,
+  input: RecordArtifactVersionInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): ArtifactVersionRecordResult {
+  assertVersioningTables(db);
+  if (!VERSION_SOURCE_KINDS.has(input.source_kind)) {
+    throw new Error(`unsupported version source_kind: ${input.source_kind}`);
+  }
+  const warnings: string[] = [];
+  // Per-kind work: ingest/snapshot the immutable artifact (outside the version
+  // transaction — artifact rows are content-addressed and idempotent) and
+  // compute the series + version descriptors. The ensure-series + append-version
+  // write is then done atomically below.
+  let artifact: ArtifactRecord;
+  let seriesInput: EnsureArtifactSeriesInput;
+  let versionInput: Omit<AppendArtifactVersionInput, "series_id">;
+
+  if (input.source_kind === "tracked_repo") {
+    if (!input.path) throw new Error("tracked_repo version requires a file path");
+    // Classify read-only first so we never register a commit-pinned link for a
+    // file that is not actually clean-committed.
+    const plan = planLocalArtifactPath(db, {
+      path: input.path,
+      role: input.role,
+      media_type: input.media_type,
+      logical_name: input.logical_name,
+      custody_mode: "link",
+    });
+    const git = plan.git_state;
+    if (!git.repo_id || !git.relative_path) {
+      throw new Error("tracked_repo version requires a tracked file inside a registered repo");
+    }
+    const seriesKey = input.series_key ?? `repo:${git.repo_id}:${git.relative_path}`;
+    if (plan.recoverability !== "repo_commit") {
+      // Dirty / staged / untracked: a commit-pinned tracked_repo version would
+      // (a) collapse repeated dirty records by commit:path even when bytes
+      // differ and (b) make diff/materialization read committed bytes via
+      // `git show`, not the dirty bytes whose hash we recorded. Instead snapshot
+      // the ACTUAL bytes into CAS and record a content-hash-keyed local_only
+      // observation under the same repo-derived series (no commit-pinned read).
+      warnings.push("tracked_repo_dirty_recorded_as_local_only", ...plan.warnings);
+      // Preserve provenance: the HEAD commit the dirty file was observed against
+      // (metadata only — commit_sha stays null since these bytes are NOT the
+      // committed bytes at that commit).
+      const dirtyProvenance = {
+        recoverability: "local_only" as const,
+        observed_path: plan.resolved_path,
+        repo_id: git.repo_id,
+        repo_path: git.relative_path,
+        dirty_at_commit: git.commit ?? null,
+        head_commit: git.commit ?? null,
+      };
+      artifact = snapshotArtifactBytes(db, {
+        path: input.path,
+        role: input.role,
+        media_type: input.media_type,
+        logical_name: input.logical_name ?? git.relative_path,
+        custody_mode: "copy",
+        metadata: mergeJsonRecords(input.metadata, dirtyProvenance),
+      }, now, artifactRoot);
+      seriesInput = {
+        series_key: seriesKey,
+        source_kind: "local_only",
+        title: input.title,
+        repo_id: git.repo_id,
+        logical_name: input.logical_name ?? git.relative_path,
+        metadata: input.metadata,
+      };
+      versionInput = {
+        artifact_id: artifact.id,
+        source_kind: "local_only",
+        content_hash: artifact.content_hash,
+        observed_path: plan.resolved_path,
+        repo_path: git.relative_path,
+        custody_mode: artifact.custody_mode,
+        label: input.label,
+        note: input.note,
+        metadata: mergeJsonRecords(input.metadata, {
+          dirty_at_commit: git.commit ?? null,
+          head_commit: git.commit ?? null,
+        }),
+      };
+    } else {
+      const reg = registerLocalArtifactPath(db, {
+        path: input.path,
+        role: input.role,
+        media_type: input.media_type,
+        logical_name: input.logical_name,
+        custody_mode: "link",
+        metadata: input.metadata,
+      }, now, artifactRoot);
+      warnings.push(...reg.warnings);
+      artifact = reg.artifact;
+      seriesInput = {
+        series_key: seriesKey,
+        source_kind: "tracked_repo",
+        title: input.title,
+        repo_id: git.repo_id,
+        logical_name: input.logical_name ?? git.relative_path,
+        metadata: input.metadata,
+      };
+      versionInput = {
+        artifact_id: reg.artifact.id,
+        source_kind: "tracked_repo",
+        content_hash: reg.artifact.content_hash,
+        commit_sha: reg.git_state.commit ?? undefined,
+        repo_path: reg.git_state.relative_path ?? git.relative_path,
+        custody_mode: reg.artifact.custody_mode,
+        label: input.label,
+        note: input.note,
+        metadata: input.metadata,
+      };
+    }
+  } else if (input.source_kind === "local_only") {
+    if (!input.path) throw new Error("local_only version requires a file path");
+    const observedPath = safeRealpathSync(path.resolve(expandHomePath(input.path)));
+    artifact = snapshotArtifactBytes(db, {
+      path: input.path,
+      role: input.role,
+      media_type: input.media_type,
+      logical_name: input.logical_name,
+      custody_mode: (input.custody_mode === "managed" ? "managed" : "copy"),
+      metadata: mergeJsonRecords(input.metadata, { recoverability: "local_only", observed_path: observedPath }),
+    }, now, artifactRoot);
+    seriesInput = {
+      series_key: input.series_key ?? `local:${observedPath}`,
+      source_kind: "local_only",
+      title: input.title,
+      repo_id: input.repo_id,
+      logical_name: input.logical_name ?? path.basename(observedPath),
+      metadata: input.metadata,
+    };
+    versionInput = {
+      artifact_id: artifact.id,
+      source_kind: "local_only",
+      content_hash: artifact.content_hash,
+      observed_path: observedPath,
+      custody_mode: artifact.custody_mode,
+      label: input.label,
+      note: input.note,
+      metadata: input.metadata,
+    };
+  } else {
+    // managed: always materialize a durable CAS snapshot (custody managed), even
+    // for a `ref` — resolving a ref alone could pin a link/repo/external artifact
+    // whose bytes later drift or disappear, defeating managed durability.
+    if (input.ref) {
+      const resolved = resolveArtifactRef(db, input.ref, now).artifact ?? getArtifact(db, input.ref);
+      if (!resolved) throw new Error(`managed version ref did not resolve: ${input.ref}`);
+      const bytes = readArtifactBytesFull(db, resolved.id);
+      if (!bytes.ok) {
+        throw new Error(`managed version ref bytes are not materializable (${bytes.reason}); cannot snapshot`);
+      }
+      artifact = snapshotArtifactBytes(db, {
+        content_buffer: bytes.bytes,
+        custody_mode: "managed",
+        media_type: input.media_type ?? resolved.media_type ?? undefined,
+        role: input.role ?? resolved.role ?? undefined,
+        logical_name: input.logical_name ?? asString(resolved.metadata.logical_name) ?? asString(resolved.metadata.filename),
+        metadata: mergeJsonRecords(input.metadata, { recoverability: "mandible_cas", managed_from_ref: input.ref }),
+      }, now, artifactRoot);
+    } else if (input.path || typeof input.content === "string" || typeof input.content_base64 === "string" || "json" in input) {
+      artifact = snapshotArtifactBytes(db, {
+        path: input.path,
+        content: input.content,
+        content_base64: input.content_base64,
+        ...("json" in input ? { json: input.json } : {}),
+        role: input.role,
+        media_type: input.media_type,
+        logical_name: input.logical_name,
+        custody_mode: (input.custody_mode === "copy" ? "copy" : "managed"),
+        metadata: mergeJsonRecords(input.metadata, { recoverability: "mandible_cas" }),
+      }, now, artifactRoot);
+    } else {
+      throw new Error("managed version requires a path, content, content_base64, json, or ref");
+    }
+    const logicalName = input.logical_name ?? asString(artifact.metadata.logical_name) ?? asString(artifact.metadata.filename);
+    // Scope the default managed series key by an explicit namespace so unrelated
+    // artifacts that merely share a logical_name do not silently share a series.
+    const namespace = asString(input.provider_id) ?? asString(input.repo_id) ?? asString(input.issue);
+    let seriesKey = input.series_key;
+    if (!seriesKey) {
+      if (!logicalName) {
+        throw new Error("managed version requires logical_name or series_key to identify the series");
+      }
+      if (!namespace) {
+        throw new Error(
+          `managed version requires an explicit series_key (or a provider_id/repo_id/issue namespace) so unrelated artifacts named '${logicalName}' do not share a series`,
+        );
+      }
+      const components = [namespace, ...(input.role ? [input.role] : []), logicalName];
+      seriesKey = `managed:${components.map(escapeSeriesKeyComponent).join(":")}`;
+    }
+    seriesInput = {
+      series_key: seriesKey,
+      source_kind: "managed",
+      title: input.title,
+      repo_id: input.repo_id,
+      logical_name: logicalName ?? undefined,
+      metadata: input.metadata,
+    };
+    versionInput = {
+      artifact_id: artifact.id,
+      source_kind: "managed",
+      content_hash: artifact.content_hash,
+      // Records the managed intent of this version. The shared immutable content
+      // row may report a different custody_mode when these exact bytes were
+      // first registered another way (content-addressed dedup) — but the bytes
+      // are durably in CAS, so the version is materializable regardless.
+      custody_mode: "managed",
+      label: input.label,
+      note: input.note,
+      metadata: input.metadata,
+    };
+  }
+
+  // Atomic ensure-series + append-version (+ counter update inside append).
+  const write = db.transaction(() => {
+    const series = ensureArtifactSeries(db, seriesInput, now);
+    const appended = appendArtifactVersion(db, { ...versionInput, series_id: series.id }, now);
+    return { seriesId: series.id, ...appended };
+  });
+  const { seriesId, version, created } = write.immediate();
+  return {
+    series: getArtifactSeries(db, seriesId) as ArtifactSeriesRecord,
+    version,
+    artifact: getArtifact(db, artifact.id) as ArtifactRecord,
+    created,
+    warnings: Array.from(new Set(warnings)),
+  };
+}
+
+// Flexible series resolver for read surfaces. Accepts a series id, a series_key,
+// a version id (-> its series), or any artifact ref (-> the most recent series
+// that pins that immutable artifact).
+export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVersionHistory | null {
+  if (!artifactVersioningTablesExist(db)) return null;
+  const trimmed = ref.trim();
+  let series: ArtifactSeriesRecord | null = null;
+  if (/^artifact-version:/i.test(trimmed)) {
+    const version = getArtifactVersion(db, trimmed);
+    if (version) series = getArtifactSeries(db, version.series_id);
+  } else {
+    series = getArtifactSeries(db, trimmed);
+  }
+  if (!series) {
+    // Accept any artifact ref, including the canonical `artifact:sha256:<hash>`
+    // id form. Read-only: this GET endpoint must not materialize registry rows.
+    const resolved = resolveArtifactRefReadonly(db, trimmed);
+    if (resolved) {
+      const row = db
+        .prepare(
+          `SELECT s.* FROM artifact_series s
+             JOIN artifact_versions v ON v.series_id = s.id
+            WHERE v.artifact_id = ?
+            ORDER BY v.version_no DESC LIMIT 1`,
+        )
+        .get(resolved.id) as Record<string, unknown> | undefined;
+      if (row) series = seriesFromRow(row);
+    }
+  }
+  if (!series) return null;
+  return { series, versions: listArtifactVersions(db, series.id) };
+}
+
+// Non-mutating ref resolution for read-only surfaces (history/diff GETs). Unlike
+// resolveArtifactRef, this NEVER materializes artifact rows, aliases, or graph
+// entities: it resolves version/series refs and looks up already-registered
+// artifacts/aliases only. Returns null for an unregistered ref.
+export function resolveArtifactRefReadonly(db: Db, ref: string): ArtifactRecord | null {
+  const trimmed = ref.trim();
+  if (/^artifact-version:/i.test(trimmed) || /^artifact-series:/i.test(trimmed)) {
+    return resolveArtifactVersionRef(db, trimmed, Date.now()).artifact;
+  }
+  const direct = getArtifact(db, trimmed);
+  if (direct) return direct;
+  if (tableExists(db, "artifact_aliases")) {
+    const normalized = normalizeRef(trimmed);
+    const alias = getArtifactAlias(db, normalized.scheme, normalized.normalizedRef);
+    if (alias?.artifact_id) return getArtifact(db, alias.artifact_id);
+  }
+  return null;
+}
+
+// Resolve artifact-version:/artifact-series: refs to their pinned immutable
+// artifact. Series-latest refs return a warning so a UI/CLI can flag that they
+// are not pinned. Issue links still pin the concrete artifact at link time, so
+// recording a newer version never silently retargets an existing link.
+function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactResolveResult {
+  const base: Omit<ArtifactResolveResult, "status" | "artifact" | "warnings"> = {
+    ref,
+    scheme: schemeFromRef(ref),
+    normalized_ref: ref,
+    alias: null,
+    series: null,
+    version: null,
+  };
+  if (!artifactVersioningTablesExist(db)) {
+    return { ...base, status: "unsupported", artifact: null, warnings: ["artifact_versioning_unavailable"] };
+  }
+
+  if (/^artifact-version:/i.test(ref)) {
+    const version = getArtifactVersion(db, ref);
+    if (!version) {
+      return { ...base, status: "unresolved", artifact: null, warnings: ["artifact_version_not_found"] };
+    }
+    const artifact = getArtifact(db, version.artifact_id);
+    const series = getArtifactSeries(db, version.series_id);
+    return {
+      ...base,
+      normalized_ref: version.id,
+      status: artifact ? "resolved" : "unresolved",
+      artifact,
+      series,
+      version,
+      warnings: [],
+    };
+  }
+
+  // artifact-series:<id>[@<sel>|#<sel>]
+  const match = /^(artifact-series:[^@#\s]+)(?:[@#](.+))?$/i.exec(ref);
+  if (!match) {
+    return { ...base, status: "unsupported", artifact: null, warnings: ["invalid_series_ref"] };
+  }
+  const seriesId = match[1];
+  const selector = match[2]?.trim().toLowerCase();
+  const series = getArtifactSeries(db, seriesId);
+  if (!series) {
+    return { ...base, status: "unresolved", artifact: null, series: null, warnings: ["artifact_series_not_found"] };
+  }
+  const versions = listArtifactVersions(db, series.id);
+  if (versions.length === 0) {
+    return { ...base, normalized_ref: series.id, status: "unresolved", artifact: null, series, warnings: ["artifact_series_empty"] };
+  }
+  let selected: ArtifactVersionRecord | undefined;
+  const warnings: string[] = [];
+  if (!selector || selector === "latest") {
+    selected = versions[versions.length - 1];
+    warnings.push("series_latest_not_pinned");
+  } else {
+    // A pinned selector must be an exact positive integer — reject `2abc`, `2.5`,
+    // `0`, etc. so `@<n>` means "exactly version n" and never silently truncates.
+    if (!/^[1-9][0-9]*$/.test(selector)) {
+      return {
+        ...base,
+        normalized_ref: series.id,
+        status: "unsupported",
+        artifact: null,
+        series,
+        warnings: ["invalid_series_version_selector"],
+      };
+    }
+    const versionNo = Number.parseInt(selector, 10);
+    selected = versions.find((v) => v.version_no === versionNo);
+    if (!selected) {
+      return {
+        ...base,
+        normalized_ref: series.id,
+        status: "unresolved",
+        artifact: null,
+        series,
+        warnings: ["artifact_series_version_not_found"],
+      };
+    }
+  }
+  const artifact = getArtifact(db, selected.artifact_id);
+  return {
+    ...base,
+    normalized_ref: selected.id,
+    status: artifact ? "resolved" : "unresolved",
+    artifact,
+    series,
+    version: selected,
+    warnings,
+  };
+}
+
 export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+  const trimmedRef = ref.trim();
+  if (/^artifact-version:/i.test(trimmedRef) || /^artifact-series:/i.test(trimmedRef)) {
+    return resolveArtifactVersionRef(db, trimmedRef, now);
+  }
   const normalized = normalizeRef(ref);
   const hashRef = artifactHashRefFromRef(ref);
   if (hashRef) {
