@@ -1155,6 +1155,7 @@ cmd_new() {
   local title=""
   local body=""
   local -a labels=()
+  local project_ref=""
 
   while (( $# > 0 )); do
     case "$1" in
@@ -1179,6 +1180,13 @@ cmd_new() {
         labels+=("$2")
         shift 2
         ;;
+      --project|--repo)
+        if (( $# < 2 )); then
+          die "Missing value for $1." 2
+        fi
+        project_ref="$2"
+        shift 2
+        ;;
       -*)
         die "Unknown option: $1" 2
         ;;
@@ -1189,16 +1197,25 @@ cmd_new() {
   done
 
   if [[ -z "$title" || -z "$body" ]]; then
-    die "Usage: mandible issue new -t <title> -m <body> [--label <label>]..." 2
+    die "Usage: mandible issue new -t <title> -m <body> [--label <label>] [--project <ref>]..." 2
   fi
 
   require_tools
   local root payload id label_json repo
   root=$(repo_root)
-  repo=$(basename "$root")
   label_json=$(labels_json "${labels[@]+"${labels[@]}"}")
-  payload=$(jq -n --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
-    '{title:$title, body:$body, root:$root, labels:$labels}')
+  if [[ -n "$project_ref" ]]; then
+    repo="$project_ref"
+    payload=$(jq -n \
+      --arg title "$title" --arg body "$body" --arg root "$root" \
+      --argjson labels "$label_json" --arg project "$project_ref" \
+      '{title:$title, body:$body, root:$root, labels:$labels, project:$project}')
+  else
+    repo=$(basename "$root")
+    payload=$(jq -n \
+      --arg title "$title" --arg body "$body" --arg root "$root" --argjson labels "$label_json" \
+      '{title:$title, body:$body, root:$root, labels:$labels}')
+  fi
   id=$(api_send POST "/api/issues/$(urlencode "$repo")" "$payload" | jq -r '.display_id // .id') \
     || die "${RED}Failed to create issue${RESET}" 1
   err "${GREEN}Created issue ${id}${RESET}"

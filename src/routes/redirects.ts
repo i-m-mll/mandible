@@ -103,12 +103,22 @@ export function resolveLedgerIssueLinkFromDb(db: Db, ref: string): IssueRedirect
     };
   }
 
+  // Issue 3d85f43: prefer the canonical project_key so /r/issue redirects land on
+  // the same repo identity the issue-detail surface shows (and which the issue
+  // listing repo filter now accepts), not the path-derived work_repo_id. Guarded
+  // so synthetic pre-v87 schemas (some tests) without the column still resolve.
+  const hasProjectKey = (db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{
+    name: string;
+  }>).some((column) => column.name === "project_key");
+  const repoIdExpr = hasProjectKey
+    ? "COALESCE(NULLIF(p.project_key, ''), NULLIF(c.work_repo_id, ''), NULLIF(c.name, ''), p.display_name, p.id)"
+    : "COALESCE(NULLIF(c.work_repo_id, ''), NULLIF(c.name, ''), p.display_name, p.id)";
   const row = db.prepare(`
     SELECT
       i.id,
       i.short_id,
       i.project_id,
-      COALESCE(NULLIF(c.work_repo_id, ''), NULLIF(c.name, ''), p.display_name, p.id) AS repo_id
+      ${repoIdExpr} AS repo_id
     FROM ledger_issues i
     JOIN ledger_projects p ON p.id = i.project_id
     LEFT JOIN ledger_project_checkouts c ON c.project_id = i.project_id

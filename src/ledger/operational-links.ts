@@ -688,10 +688,17 @@ function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
      WHERE work_repo_id = ? OR root = ? OR name = ? OR project_id = ?`,
   ).all(trimmed, trimmed, trimmed, trimmed) as Array<{ project_id: string }>;
   for (const row of checkoutRows) ids.add(row.project_id);
+  // Issue 3d85f43: the canonical project_key is a valid repo ref (case-insensitive,
+  // so `Feedbax` and `feedbax` resolve the same), so work-unit/auth/relationship
+  // refs that carry the key link to the right project.
+  const hasProjectKey = (db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>)
+    .some((column) => column.name === "project_key");
   const projectRows = db.prepare(
     `SELECT id FROM ledger_projects
-     WHERE id = ? OR display_name = ? OR remote_identity = ? OR upstream_identity = ?`,
-  ).all(trimmed, trimmed, trimmed, trimmed) as Array<{ id: string }>;
+     WHERE id = ? OR display_name = ? OR remote_identity = ? OR upstream_identity = ?${
+       hasProjectKey ? " OR (project_key != '' AND lower(project_key) = lower(?))" : ""
+     }`,
+  ).all(...(hasProjectKey ? [trimmed, trimmed, trimmed, trimmed, trimmed] : [trimmed, trimmed, trimmed, trimmed])) as Array<{ id: string }>;
   for (const row of projectRows) ids.add(row.id);
   return Array.from(ids).sort();
 }

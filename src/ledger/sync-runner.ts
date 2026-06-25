@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Db } from "../db.js";
 import type { RepoInfo } from "../work-scanner.js";
 import { createLedgerId } from "./ids.js";
@@ -5,7 +6,48 @@ import type { GitBugClient } from "./git-bug-client.js";
 import { exportGitBugOutbox, type GitBugExportResult } from "./git-bug-exporter.js";
 import { importGitBugCheckout, type GitBugImportResult } from "./git-bug-importer.js";
 import { resolveProjectForCheckout } from "./projects.js";
-import type { LedgerProjectCheckout } from "./types.js";
+import { resolveCheckoutPath } from "./project-registry.js";
+import type { LedgerProject, LedgerProjectCheckout } from "./types.js";
+
+// Issue 3d85f43: scanner-driven git-bug sync is the single AUDITED discovery
+// write path into the project registry. Before minting, it resolves the scanned
+// root through the registry (resolveCheckoutPath) and REUSES an already-registered
+// checkout/project instead of creating a duplicate. Genuinely-new checkouts still
+// get discovered (resolveProjectForCheckout, which now allocates a project_key),
+// and any project created this way is surfaced by auditRegistry (numbered
+// path-derived ids + local_projects), so phantom/duplicate minting for paths that
+// already resolve to a registered checkout is prevented without blocking
+// legitimate discovery of new local repos.
+function resolveOrDiscoverCheckout(
+  db: Db,
+  repo: RepoInfo,
+): { project: Pick<LedgerProject, "id">; checkout: LedgerProjectCheckout } {
+  const resolvedRoot = path.resolve(repo.root);
+  const registered = resolveCheckoutPath(db, resolvedRoot);
+  if (registered) {
+    const checkout = db
+      .prepare("SELECT * FROM ledger_project_checkouts WHERE root = ?")
+      .get(resolvedRoot) as LedgerProjectCheckout | undefined;
+    if (checkout) {
+      // Refresh discovery metadata on the registered checkout without re-running
+      // identity resolution (which could repoint it to a freshly-minted project).
+      db.prepare(
+        `UPDATE ledger_project_checkouts
+         SET work_repo_id = COALESCE(NULLIF(work_repo_id, ''), ?),
+             default_branch = CASE WHEN ? != '' THEN ? ELSE default_branch END,
+             updated_at = ?
+         WHERE id = ?`,
+      ).run(repo.id, repo.default_branch ?? "", repo.default_branch ?? "", Date.now(), checkout.id);
+      return { project: { id: registered.id }, checkout };
+    }
+  }
+  return resolveProjectForCheckout(db, {
+    root: repo.root,
+    name: repo.name,
+    workRepoId: repo.id,
+    defaultBranch: repo.default_branch,
+  });
+}
 
 export type LedgerSyncDirection = "import" | "export" | "full";
 export type LedgerSyncJobStatus =
@@ -166,12 +208,7 @@ export async function runGitBugSyncForRepos(
     }
 
     try {
-      const { project, checkout } = resolveProjectForCheckout(options.db, {
-        root: repo.root,
-        name: repo.name,
-        workRepoId: repo.id,
-        defaultBranch: repo.default_branch,
-      });
+      const { project, checkout } = resolveOrDiscoverCheckout(options.db, repo);
       const job = await runGitBugSync({
         db: options.db,
         client: options.client,

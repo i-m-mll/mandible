@@ -38,7 +38,11 @@ import {
   getMarkdownBodyEscapePolicy,
   type MarkdownBodyPolicyWarning,
 } from "../ledger/markdown-body.js";
-import { resolveProjectForCheckout } from "../ledger/projects.js";
+import {
+  resolveCheckoutPath,
+  resolveProjectRef,
+  suggestProjectRefs,
+} from "../ledger/project-registry.js";
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
@@ -197,8 +201,15 @@ function filterIssueSummaries(
   let filtered = summaries;
 
   if (filters.repo) {
+    // Issue 3d85f43: accept the canonical project_key as a repo filter (the
+    // value the issue-detail surface and /r/issue redirect now emit), alongside
+    // the legacy work_repo_id / name / root, so the key round-trips.
     filtered = filtered.filter(
-      (s) => s.repo_id === filters.repo || s.repo_name === filters.repo || s.repo_root === filters.repo,
+      (s) =>
+        s.repo_id === filters.repo ||
+        s.repo_name === filters.repo ||
+        s.repo_root === filters.repo ||
+        (s.project_key !== undefined && s.project_key === filters.repo),
     );
   }
 
@@ -561,6 +572,7 @@ function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): 
   }
   const repoAliases = new Set([
     projection.project.repo_id,
+    projection.project.work_repo_id,
     projection.project.repo_name,
     projection.project.repo_root,
   ].filter((value): value is string => typeof value === "string" && value.length > 0));
@@ -1367,13 +1379,46 @@ export function registerIssueRoutes(
     const markdownPolicy = applyMarkdownBodyPolicy(res, db, issueBody);
     if (!markdownPolicy.ok) return;
 
-    const repo = workScanner.getRepoById(root) ?? workScanner.getRepoById(repoRef);
-    const { project } = resolveProjectForCheckout(db, {
-      root: repo?.root ?? root,
-      name: repo?.name ?? repoRef,
-      workRepoId: repo?.id ?? repoRef,
-      defaultBranch: repo?.default_branch,
-    });
+    // Issue: 3d85f43 / dba7c41 — resolve to an ALREADY-REGISTERED project. Issue
+    // creation must never mint a project/checkout as a side effect: an explicit
+    // `project` ref wins, otherwise cwd inference resolves ONLY when the posted
+    // root (or repo param) is a registered checkout/project. Unknown targets are
+    // rejected with near-match suggestions, never auto-created.
+    const explicitProject =
+      typeof body.project === "string" && body.project.trim() ? body.project.trim() : "";
+    let project: { id: string } | null = null;
+    if (explicitProject) {
+      const resolved = resolveProjectRef(db, explicitProject);
+      if (resolved.ambiguous) {
+        sendJson(res, 409, {
+          error: `ambiguous project ref: ${explicitProject}`,
+          candidates: resolved.candidates ?? [],
+        });
+        return;
+      }
+      if (!resolved.ok || !resolved.project) {
+        sendJson(res, 400, {
+          error: `unknown project: ${explicitProject}`,
+          suggestions: suggestProjectRefs(db, explicitProject),
+        });
+        return;
+      }
+      project = resolved.project;
+    } else {
+      project =
+        resolveCheckoutPath(db, root) ??
+        resolveProjectRef(db, repoRef).project ??
+        (root !== repoRef ? resolveProjectRef(db, root).project ?? null : null);
+      if (!project) {
+        sendJson(res, 400, {
+          error:
+            `'${repoRef}' (root '${root}') does not resolve to a registered project; ` +
+            `pass --project <ref> or register the checkout with 'mandible project add-checkout'`,
+          suggestions: suggestProjectRefs(db, repoRef),
+        });
+        return;
+      }
+    }
     const store = new LedgerStore(db);
     const issue = store.createIssue({
       project_id: project.id,

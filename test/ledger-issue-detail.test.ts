@@ -169,7 +169,10 @@ describe("ledger issue detail projection", () => {
     expect(projection).toMatchObject({
       id: child.id,
       display_id: child.short_id,
-      project: { repo_id: "repo", repo_name: "repo" },
+      // Issue 3d85f43: repo_id is the canonical project_key. A generic `repo`
+      // basename is qualified with the parent directory (so it is never the bare
+      // generic `repo`); the checkout name stays the basename.
+      project: { repo_id: expect.stringMatching(/-repo$/), repo_name: "repo" },
       title: "Child",
       body: "Child body",
       worker_status: "in_progress",

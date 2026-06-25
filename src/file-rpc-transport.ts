@@ -367,6 +367,19 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   // queue — so they stay within the file-transport read boundary (standing AC #1).
   if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/drift$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/spaces\/[^/]+\/exports\/[^/]+\/drift$/.test(pathname)) return true;
+  // Project registry (issue 3d85f43): canonical name-to-path resolution. Reads
+  // (list / show / audit) plus narrow non-privileged writes (register/update a
+  // project or checkout, guarded repair). No approval/merge/admin/config
+  // authority, so within the file-transport write boundary (standing AC #1).
+  // Self-allowlisted per the per-route convention — no blanket `/api/projects*`.
+  if (normalizedMethod === "GET" && pathname === "/api/projects") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/projects") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/projects/audit") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/projects/repair") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/projects/checkouts") return true;
+  if (normalizedMethod === "GET" && /^\/api\/projects\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/projects\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/projects\/[^/]+\/checkouts$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/system/logs") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/claim") return true;
   if (normalizedMethod === "POST" && pathname === "/api/work-units/activate") return true;
