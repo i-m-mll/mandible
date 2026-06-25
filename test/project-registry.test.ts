@@ -384,6 +384,47 @@ describe("auditRegistry", () => {
     expect(dup!.project_keys).toContain("bb");
   });
 
+  it("groups duplicate_display_names case-insensitively (issue 70cf59d)", () => {
+    addProject(db, {
+      project_key: "humbleb-remote",
+      remote_identity: "git@github.com:mll/humbleb.git",
+      display_name: "HumbleB",
+    });
+    addProject(db, {
+      project_key: "humbleb-local",
+      display_name: "humbleb",
+    });
+
+    const audit = auditRegistry(db);
+    const dup = audit.duplicate_display_names.find(
+      (d) => d.display_name.toLowerCase() === "humbleb",
+    );
+    expect(dup).toBeDefined();
+    expect(dup!.project_keys).toContain("humbleb-remote");
+    expect(dup!.project_keys).toContain("humbleb-local");
+  });
+
+  it("flags case-/leading-dot-divergent local duplicates as mergeable (issue 70cf59d)", () => {
+    // Remote-backed canonical project ".dotfiles"; a local copy stored as
+    // "dotfiles" (leading-dot dropped) must consolidate into the remote one.
+    addProject(db, {
+      project_key: "dotfiles-remote",
+      remote_identity: "git@github.com:mll/dotfiles.git",
+      display_name: ".dotfiles",
+    });
+    addProject(db, {
+      project_key: "dotfiles-local",
+      display_name: "dotfiles",
+    });
+
+    const audit = auditRegistry(db);
+    const mergeable = audit.mergeable_local_projects.find(
+      (m) => m.project_key === "dotfiles-local",
+    );
+    expect(mergeable).toBeDefined();
+    expect(mergeable!.merge_into).toBe("dotfiles-remote");
+  });
+
   it("detects local_projects (no remote → namespace_policy=local)", () => {
     const dir = path.join(tempDir, "localrepo");
     fs.mkdirSync(dir, { recursive: true });

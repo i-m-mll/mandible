@@ -355,8 +355,12 @@ describe("ledger reconciliation reports", () => {
 });
 
 describe("ledger migration sync", () => {
-  it("seeds projects/checkouts and imports registered repo issues", async () => {
+  it("imports registered repo issues into the registered project/checkout", async () => {
     const repoInfo = repo("repo-1", "mandible");
+    // Issue 70cf59d: discovery sync is NO-MINT. The repo must be registered
+    // (here via explicit resolveProjectForCheckout) before sync resolves it;
+    // an unregistered root is skipped, not minted.
+    resolveProjectForCheckout(db, { root: repoInfo.root, workRepoId: repoInfo.id });
     const client = new FakeGitBugClient([
       makeDetail({
         id: "git-1",
@@ -394,6 +398,8 @@ describe("ledger migration sync", () => {
 
   it("skips missing or excluded repos without blocking other imports", async () => {
     const active = repo("repo-1", "active");
+    // Register the active repo so no-mint discovery resolves it (issue 70cf59d).
+    resolveProjectForCheckout(db, { root: active.root, workRepoId: active.id });
     const missing = { ...repo("repo-2", "missing"), exists: false };
     const excluded = { ...repo("repo-3", "excluded"), excluded: true };
     const client = new FakeGitBugClient([
