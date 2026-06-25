@@ -425,6 +425,9 @@ function findCheckoutByRepoRef(
   const values = [...candidates].filter((value) => value.trim() !== "");
   if (values.length === 0) return null;
   const placeholders = values.map(() => "?").join(", ");
+  // Issue: 3d85f43 — the canonical project_key is a valid repo ref, so links and
+  // routes that now carry the key (rather than the path-derived work_repo_id)
+  // resolve to the right checkout.
   const row = db.prepare(
     `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name, p.display_name
      FROM ledger_project_checkouts c
@@ -434,9 +437,10 @@ function findCheckoutByRepoRef(
         OR c.name IN (${placeholders})
         OR c.project_id IN (${placeholders})
         OR p.display_name IN (${placeholders})
+        OR (p.project_key != '' AND p.project_key IN (${placeholders}))
      ORDER BY c.updated_at DESC, c.name, c.root
      LIMIT 1`,
-  ).get(...values, ...values, ...values, ...values, ...values) as {
+  ).get(...values, ...values, ...values, ...values, ...values, ...values) as {
     checkout_id: string;
     project_id: string;
     work_repo_id: string | null;

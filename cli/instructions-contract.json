@@ -145,6 +145,38 @@
     {
       "name": "mandible instructions post-export get|set|clear <command>",
       "description": "Configure an optional command to run after instruction targets refresh, such as a module compiler."
+    },
+    {
+      "name": "mandible project list [--json]",
+      "description": "List canonical projects with keys, display names, remotes, checkouts, and issue counts."
+    },
+    {
+      "name": "mandible project show <ref> [--json]",
+      "description": "Resolve a project by key, id, work_repo_id, checkout root, remote, or display name and print its registry record."
+    },
+    {
+      "name": "mandible project add --key <k> [--display <name>] [--remote <url>] [--root <path>] [--namespace remote|upstream|local]",
+      "description": "Register a canonical project; optionally register its first checkout."
+    },
+    {
+      "name": "mandible project update <ref> [--key <k>] [--display <name>] [--remote <url>] [--namespace <p>]",
+      "description": "Update fields on an existing project registry entry."
+    },
+    {
+      "name": "mandible project add-checkout <ref> --root <path> [--work-repo-id <id>] [--default-branch <b>]",
+      "description": "Register or update a checkout for a project."
+    },
+    {
+      "name": "mandible project update-checkout --root <path> --project <ref> [--work-repo-id <id>] [--default-branch <b>]",
+      "description": "Update or register a checkout by root path, choosing its project."
+    },
+    {
+      "name": "mandible project audit [--json]",
+      "description": "Read-only registry audit: duplicate display names, local projects, numbered path-derived repo ids, ambiguous roots, missing keys."
+    },
+    {
+      "name": "mandible project repair [--apply] [--merge <src> <dst>] [--json]",
+      "description": "Guarded registry normalization: backfill keys and optionally merge duplicate projects (dry run unless --apply)."
     }
   ],
   "trailers": [

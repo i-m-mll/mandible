@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { compressContent } from "./compression.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
+import { backfillProjectKeys } from "./ledger/project-registry.js";
 
 export type Db = Database.Database;
 
@@ -2307,6 +2308,31 @@ const MIGRATIONS: Migration[] = [
     // recreated. `spaces` stays in METADATA_BACKUP_TABLES (src/ledger/backup.ts):
     // no inline UNIQUE changes, so the backup round-trip is unaffected.
     statements: []
+  },
+  {
+    version: 87,
+    name: "ledger_project_key",
+    // Issue: 3d85f43 (umbrella ce690eb) — canonical project registry. Adds a
+    // stable, human-meaningful `project_key` slug to ledger_projects, distinct
+    // from both the free-text `display_name` and the path-derived WorkScanner
+    // `work_repo_id`. This is ADDITIVE ONLY: a new column referenced by no
+    // foreign key, plus a partial UNIQUE index — no FK column is touched and no
+    // row moves, so there is no foreign-key risk. Existing rows get '' here and
+    // are backfilled to a deterministic, collision-free key by the idempotent
+    // `backfillProjectKeys` post-migration step below (gated on rows still
+    // missing a key, so fresh DBs and re-runs are no-ops). Destructive
+    // normalization (merging duplicate/mis-keyed projects) is intentionally NOT
+    // done here — it lives behind the explicit, guarded `mandible project
+    // repair` command (project-registry.ts), which pre-checks short-id/alias
+    // collisions and runs PRAGMA foreign_key_check. The ADD COLUMN is performed
+    // by the `ensureLedgerProjectKeyColumn` helper gated on this version (so a
+    // re-run from an older schema_version, as some migration tests do, is
+    // idempotent — `ALTER TABLE ADD COLUMN` cannot be IF NOT EXISTS). The helper
+    // also creates the partial UNIQUE index and short-circuits when
+    // ledger_projects does not exist (partial legacy DBs that start above the
+    // ledger_core migration never create it), so no DDL references a missing
+    // table.
+    statements: []
   }
 ];
 
@@ -2393,6 +2419,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 79) {
           ensureAuthRequestMergeFinalizerColumns(db);
+        }
+        if (migration.version === 87) {
+          ensureLedgerProjectKeyColumn(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -2513,6 +2542,16 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v86_spaces_nullable_project_id", () => {
       makeSpacesProjectIdNullable(db);
+    });
+  }
+  // Issue: 3d85f43 — backfill deterministic, collision-free project_key slugs
+  // for any ledger_projects row still missing one. Idempotent (gated on rows
+  // with project_key = ''), so fresh DBs and re-runs are no-ops.
+  if (shouldRunPostMigration(db, "v87_backfill_project_keys", pending, 87, () =>
+    hasProjectsMissingKeys(db)
+  )) {
+    runPostMigration(db, "v87_backfill_project_keys", () => {
+      backfillProjectKeys(db);
     });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
@@ -3686,6 +3725,35 @@ function setMeta(db: Db, key: string, value: string): void {
   db.prepare(
     "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run(key, value);
+}
+
+function ensureLedgerProjectKeyColumn(db: Db): void {
+  const hasTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_projects'")
+    .get();
+  if (!hasTable) return;
+  const columns = db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "project_key")) {
+    db.exec(`ALTER TABLE ledger_projects ADD COLUMN project_key TEXT NOT NULL DEFAULT ''`);
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_projects_project_key
+      ON ledger_projects(project_key)
+      WHERE project_key != ''`,
+  );
+}
+
+function hasProjectsMissingKeys(db: Db): boolean {
+  const hasTable = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_projects'")
+    .get();
+  if (!hasTable) return false;
+  const columns = db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "project_key")) return false;
+  const row = db
+    .prepare("SELECT 1 FROM ledger_projects WHERE project_key = '' LIMIT 1")
+    .get();
+  return Boolean(row);
 }
 
 function ensureIssueCoordinationColumns(db: Db): void {

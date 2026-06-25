@@ -964,6 +964,10 @@ describe("ledger issue route gate", () => {
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
     updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
+    // Issue 3d85f43: issue creation resolves against the registered ledger
+    // checkout (the live daemon registers it via git-bug sync); register it here
+    // so the route does not reject an unknown root.
+    resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
 
     const created = await server.invoke("POST", "/api/issues/:repoId", {
       params: { repoId: repoInfo.name },
@@ -994,6 +998,7 @@ describe("ledger issue route gate", () => {
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
     updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
 
+    resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
     const escapedBody = "Created through API.\\n\\nDetails:\\n- item";
     const created = await server.invoke("POST", "/api/issues/:repoId", {
       params: { repoId: repoInfo.name },
@@ -1033,6 +1038,7 @@ describe("ledger issue route gate", () => {
     updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
     setMarkdownBodyEscapePolicy("reject");
 
+    resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
     const realMarkdown = "Created through API.\n\nDetails:\n- item";
     const created = await server.invoke("POST", "/api/issues/:repoId", {
       params: { repoId: repoInfo.name },
