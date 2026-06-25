@@ -12,6 +12,7 @@ import {
   getArtifactVersion,
   listArtifactVersions,
   recordArtifactVersion,
+  registerLocalArtifactPath,
   resolveAndLinkArtifact,
   resolveArtifactRef,
   resolveArtifactVersionHistory,
@@ -186,8 +187,8 @@ describe("local_only observations", () => {
 
 describe("managed custody versions", () => {
   it("stores v1 and v2 as independently materializable full snapshots", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "m1\n", media_type: "text/plain", logical_name: "doc" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", content: "m2\n", media_type: "text/plain", logical_name: "doc" }, 2000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "m1\n", media_type: "text/plain", logical_name: "doc" }, 1000);
+    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "m2\n", media_type: "text/plain", logical_name: "doc" }, 2000);
     expect(r1.series.id).toBe(r2.series.id);
     expect(getArtifactSeries(db, r1.series.id)?.version_count).toBe(2);
 
@@ -202,8 +203,8 @@ describe("managed custody versions", () => {
 
 describe("diff derivation", () => {
   it("derives a text unified diff from two versions' full snapshot bytes", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "line1\nline2\nline3\n", media_type: "text/plain", logical_name: "doc" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", content: "line1\nline2-changed\nline3\n", media_type: "text/plain", logical_name: "doc" }, 2000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "line1\nline2\nline3\n", media_type: "text/plain", logical_name: "doc" }, 1000);
+    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "line1\nline2-changed\nline3\n", media_type: "text/plain", logical_name: "doc" }, 2000);
 
     const diff = diffArtifacts(db, r1.version.id, r2.version.id);
     expect(diff.diffable).toBe(true);
@@ -215,8 +216,8 @@ describe("diff derivation", () => {
   });
 
   it("normalizes JSON before diffing and reports identical content", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: '{"a":1,"b":2}', media_type: "application/json", logical_name: "cfg" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", content: '{"a":1,"b":3}', media_type: "application/json", logical_name: "cfg" }, 2000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":2}', media_type: "application/json", logical_name: "cfg" }, 1000);
+    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":3}', media_type: "application/json", logical_name: "cfg" }, 2000);
     const diff = diffArtifacts(db, r1.version.artifact_id, r2.version.artifact_id);
     expect(diff.kind).toBe("json");
     expect(diff.diffable).toBe(true);
@@ -231,7 +232,7 @@ describe("diff derivation", () => {
 
 describe("ref resolution backward-compat and no silent retarget", () => {
   it("keeps artifact:sha256 refs immutable and resolves version/series refs", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
     const fullId = r1.artifact.id; // artifact:sha256:<hash>
     // The documented registerable hash ref still resolves to the immutable row.
     const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
@@ -247,7 +248,7 @@ describe("ref resolution backward-compat and no silent retarget", () => {
 
   it("does not silently retarget an existing issue link when a newer version is recorded", () => {
     const issueId = createLedgerIssue("f7a994e");
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "evidence v1\n", media_type: "text/plain", logical_name: "ev" }, 1000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "evidence v1\n", media_type: "text/plain", logical_name: "ev" }, 1000);
     const artifactA = r1.artifact.id;
 
     const linked = resolveAndLinkArtifact(db, {
@@ -259,7 +260,7 @@ describe("ref resolution backward-compat and no silent retarget", () => {
     expect(linked.link?.artifact_id).toBe(artifactA);
 
     // Record a newer version into the SAME series.
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", content: "evidence v2\n", media_type: "text/plain", logical_name: "ev" }, 2000);
+    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "evidence v2\n", media_type: "text/plain", logical_name: "ev" }, 2000);
     expect(r2.series.id).toBe(r1.series.id);
     const artifactB = r2.artifact.id;
     expect(artifactB).not.toBe(artifactA);
@@ -285,8 +286,8 @@ describe("ref resolution backward-compat and no silent retarget", () => {
 
 describe("version history query", () => {
   it("resolves history from a series id, version id, or artifact ref", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "h1\n", media_type: "text/plain", logical_name: "hist" }, 1000);
-    recordArtifactVersion(db, { source_kind: "managed", content: "h2\n", media_type: "text/plain", logical_name: "hist" }, 2000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h1\n", media_type: "text/plain", logical_name: "hist" }, 1000);
+    recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h2\n", media_type: "text/plain", logical_name: "hist" }, 2000);
 
     const bySeries = resolveArtifactVersionHistory(db, r1.series.id);
     expect(bySeries?.versions).toHaveLength(2);
@@ -309,8 +310,8 @@ describe("backup/export coverage", () => {
   });
 
   it("round-trips artifact_series and artifact_versions through backup/restore", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "b1\n", media_type: "text/plain", logical_name: "bk" }, 1000);
-    const r2 = recordArtifactVersion(db, { source_kind: "managed", content: "b2\n", media_type: "text/plain", logical_name: "bk" }, 2000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b1\n", media_type: "text/plain", logical_name: "bk" }, 1000);
+    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b2\n", media_type: "text/plain", logical_name: "bk" }, 2000);
     const sql = buildMetadataBackupSql(db);
     expect(sql).toContain("-- Table: artifact_series");
     expect(sql).toContain("-- Table: artifact_versions");
@@ -321,7 +322,7 @@ describe("backup/export coverage", () => {
 
     const series = restored.prepare("SELECT * FROM artifact_series").all() as Array<{ id: string; series_key: string; version_count: number }>;
     expect(series).toHaveLength(1);
-    expect(series[0].series_key).toBe("managed:bk");
+    expect(series[0].series_key).toBe("managed:test:bk");
     expect(series[0].version_count).toBe(2);
     const versions = restored
       .prepare("SELECT id, version_no, content_hash FROM artifact_versions ORDER BY version_no")
@@ -334,7 +335,7 @@ describe("backup/export coverage", () => {
     expect(() =>
       restored.prepare(
         `INSERT INTO artifact_series (id, series_key, source_kind, version_count, created_at, updated_at)
-         VALUES ('dup', 'managed:bk', 'managed', 0, 1, 1)`,
+         VALUES ('dup', 'managed:test:bk', 'managed', 0, 1, 1)`,
       ).run(),
     ).toThrow(/UNIQUE/i);
     restored.close();
@@ -343,7 +344,7 @@ describe("backup/export coverage", () => {
 
 describe("appendArtifactVersion mixed source kinds", () => {
   it("marks a series mixed when versions span source kinds", () => {
-    const r1 = recordArtifactVersion(db, { source_kind: "managed", content: "x\n", media_type: "text/plain", logical_name: "mix", series_key: "shared:mix" }, 1000);
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "x\n", media_type: "text/plain", logical_name: "mix", series_key: "shared:mix" }, 1000);
     expect(getArtifactSeries(db, r1.series.id)?.source_kind).toBe("managed");
     // Append a local_only-kind version under the same series id directly.
     const art = getArtifact(db, r1.artifact.id)!;
@@ -358,5 +359,144 @@ describe("appendArtifactVersion mixed source kinds", () => {
     expect(appended.created).toBe(true);
     expect(getArtifactSeries(db, r1.series.id)?.source_kind).toBe("mixed");
     expect(getArtifactVersion(db, appended.version.id)?.source_kind).toBe("local_only");
+  });
+});
+
+describe("codex review fixes", () => {
+  it("HIGH-1: dirty tracked files become content-hash CAS snapshots, not commit-collapsed", () => {
+    const { root, filePath } = makeTrackedRepo("dirty-repo", "clean-v1\n");
+    createLedgerCheckout("mandible", fs.realpathSync(root));
+
+    // Clean commit → commit-pinned tracked_repo version.
+    const v1 = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 1000);
+    expect(v1.version.source_kind).toBe("tracked_repo");
+    expect(v1.warnings).not.toContain("tracked_repo_dirty_recorded_as_local_only");
+
+    // Dirty (uncommitted) bytes A → CAS snapshot, NOT commit-pinned.
+    fs.writeFileSync(filePath, "dirty-A\n", "utf8");
+    const v2 = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 2000);
+    expect(v2.version.source_kind).toBe("local_only");
+    expect(v2.warnings).toContain("tracked_repo_dirty_recorded_as_local_only");
+    expect(v2.version.commit_sha).toBeNull();
+
+    // Dirty bytes B (different) must NOT collapse into v2 (content-hash keyed).
+    fs.writeFileSync(filePath, "dirty-B\n", "utf8");
+    const v3 = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 3000);
+    expect(v3.created).toBe(true);
+    expect(v3.version.artifact_id).not.toBe(v2.version.artifact_id);
+    expect(getArtifactSeries(db, v1.series.id)?.version_count).toBe(3);
+    expect(getArtifactSeries(db, v1.series.id)?.source_kind).toBe("mixed");
+
+    // Re-recording the SAME dirty-B bytes is idempotent.
+    const v3again = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 3100);
+    expect(v3again.created).toBe(false);
+    expect(getArtifactSeries(db, v1.series.id)?.version_count).toBe(3);
+
+    // Materialization reads the recorded dirty bytes, never HEAD's committed bytes.
+    expect(getArtifactContent(db, v2.version.artifact_id)?.preview?.text).toBe("dirty-A\n");
+    expect(getArtifactContent(db, v3.version.artifact_id)?.preview?.text).toBe("dirty-B\n");
+
+    // Diff between the two dirty versions shows the recorded bytes.
+    const diff = diffArtifacts(db, v2.version.id, v3.version.id);
+    expect(diff.diffable).toBe(true);
+    expect(diff.unified).toContain("-dirty-A");
+    expect(diff.unified).toContain("+dirty-B");
+  });
+
+  it("HIGH-2: managed ref records a durable CAS snapshot that survives source deletion", () => {
+    const src = path.join(tempDir, "mutable-src.txt");
+    fs.writeFileSync(src, "managed-src\n", "utf8");
+    // A link-custody (mutable) local artifact.
+    const link = registerLocalArtifactPath(db, { path: src, custody_mode: "link", allow_local_only: true }, 1000);
+    expect(link.artifact.custody_mode).toBe("link");
+
+    const rec = recordArtifactVersion(db, {
+      source_kind: "managed",
+      ref: link.artifact.id,
+      logical_name: "src",
+      provider_id: "test",
+      media_type: "text/plain",
+    }, 2000);
+    // The version records managed intent; the bytes are durably snapshotted.
+    expect(rec.version.custody_mode).toBe("managed");
+
+    // Delete the source; the managed CAS snapshot still materializes (the link
+    // path is gone, but the hash-addressed CAS copy remains).
+    fs.rmSync(src);
+    const content = getArtifactContent(db, rec.version.artifact_id);
+    expect(content?.status).toBe("available");
+    expect(content?.preview?.text).toBe("managed-src\n");
+  });
+
+  it("MEDIUM-4: unrelated managed records sharing a logical_name do NOT share a series", () => {
+    const a = recordArtifactVersion(db, { source_kind: "managed", provider_id: "alpha", content: "a\n", media_type: "text/plain", logical_name: "report" }, 1000);
+    const b = recordArtifactVersion(db, { source_kind: "managed", provider_id: "beta", content: "b\n", media_type: "text/plain", logical_name: "report" }, 2000);
+    expect(a.series.id).not.toBe(b.series.id);
+    // No namespace and no series_key → reject rather than silently colliding.
+    expect(() =>
+      recordArtifactVersion(db, { source_kind: "managed", content: "c\n", media_type: "text/plain", logical_name: "report" }, 3000),
+    ).toThrow(/explicit series_key/i);
+  });
+
+  it("MEDIUM-5: read-only history/diff do not materialize rows for unregistered refs", () => {
+    const counts = () => ({
+      artifacts: (db.prepare("SELECT COUNT(*) AS n FROM artifacts").get() as { n: number }).n,
+      aliases: (db.prepare("SELECT COUNT(*) AS n FROM artifact_aliases").get() as { n: number }).n,
+      graph: (db.prepare("SELECT COUNT(*) AS n FROM graph_entities").get() as { n: number }).n,
+    });
+    const before = counts();
+    const hashA = `artifact:${"a".repeat(64)}`;
+    const hashB = `artifact:${"b".repeat(64)}`;
+    expect(resolveArtifactVersionHistory(db, hashA)).toBeNull();
+    const diff = diffArtifacts(db, hashA, hashB);
+    expect(diff.diffable).toBe(false);
+    expect(counts()).toEqual(before);
+  });
+
+  it("LOW-7: series version selector requires an exact positive integer", () => {
+    const r = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "s\n", media_type: "text/plain", logical_name: "sel" }, 1000);
+    expect(resolveArtifactRef(db, `${r.series.id}@1`).artifact?.id).toBe(r.artifact.id);
+    for (const bad of ["2abc", "1.5", "0", "-1", "01"]) {
+      const res = resolveArtifactRef(db, `${r.series.id}@${bad}`);
+      expect(res.artifact).toBeNull();
+      expect(res.status).not.toBe("resolved");
+    }
+  });
+
+  it("LOW-8/HIGH-3: latest_version_id and version_count stay consistent and survive backup", () => {
+    const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "c1\n", media_type: "text/plain", logical_name: "cache" }, 1000);
+    const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "c2\n", media_type: "text/plain", logical_name: "cache" }, 2000);
+    const series = getArtifactSeries(db, r1.series.id)!;
+    const rows = listArtifactVersions(db, series.id);
+    expect(series.version_count).toBe(rows.length);
+    expect(series.latest_version_id).toBe(rows[rows.length - 1].id);
+    expect(series.latest_version_id).toBe(r2.version.id);
+
+    const restored = new Database(path.join(tempDir, "cache-restored.db"));
+    restored.pragma("foreign_keys = ON");
+    restored.exec(buildMetadataBackupSql(db));
+    const rSeries = restored.prepare("SELECT latest_version_id, version_count FROM artifact_series WHERE id = ?").get(series.id) as { latest_version_id: string; version_count: number };
+    const rMax = restored.prepare("SELECT id FROM artifact_versions WHERE series_id = ? ORDER BY version_no DESC LIMIT 1").get(series.id) as { id: string };
+    expect(rSeries.version_count).toBe(2);
+    expect(rSeries.latest_version_id).toBe(rMax.id);
+    restored.close();
+  });
+
+  it("MEDIUM-6: migration 88 fails loudly on a pre-existing divergent table", () => {
+    const divergentPath = path.join(tempDir, "divergent.db");
+    const setup = openDb(divergentPath);
+    setup.exec("DROP TABLE artifact_versions");
+    // Columns present (so v88's CREATE INDEX statements still build) but the
+    // UNIQUE(series_id, version_no) constraint and the FKs are absent — exactly
+    // what CREATE TABLE IF NOT EXISTS would silently accept.
+    setup.exec(`CREATE TABLE artifact_versions (
+      id TEXT PRIMARY KEY, series_id TEXT, artifact_id TEXT, version_no INTEGER,
+      source_kind TEXT, content_hash TEXT, commit_sha TEXT, repo_path TEXT,
+      observed_path TEXT, custody_mode TEXT, label TEXT, note TEXT,
+      metadata_json TEXT, created_at INTEGER
+    )`);
+    setup.prepare("UPDATE meta SET value = '87' WHERE key = 'schema_version'").run();
+    expect(() => migrate(setup)).toThrow(/migration 88 verification/i);
+    setup.close();
   });
 });

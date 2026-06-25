@@ -175,3 +175,67 @@ evidence, which the no-silent-retarget rule enforces. If a future UI exposes
 series-latest links as first-class evidence, the "Mandible Artifacts" section
 should gain a sentence requiring an explicit pin step, but that is out of scope
 here.
+
+## Codex adversarial-review revisions
+
+An external Codex review found correctness bugs in the first pass. The series /
+version model is unchanged; these are corrections.
+
+- **HIGH — dirty/staged tracked files (`tracked_repo`).** Previously a dirty
+  tracked file was recorded as a commit-pinned `tracked_repo` version with only a
+  warning, so two dirty records at the same HEAD/path collapsed by
+  `commit:path` even with different bytes, and diff/materialization read
+  committed bytes via `git show`. Now `recordArtifactVersion` classifies the
+  path read-only first (`planLocalArtifactPath`): only `recoverability ===
+  "repo_commit"` is stored as a commit-pinned `tracked_repo` version. A
+  dirty/staged/untracked file is instead snapshotted into CAS and recorded as a
+  **content-hash-keyed `local_only`** version under the same repo-derived series
+  (warning `tracked_repo_dirty_recorded_as_local_only`), so different dirty bytes
+  are distinct versions and diff/materialization read the recorded bytes, never
+  HEAD.
+- **HIGH — managed `ref` did not snapshot.** The managed `ref` path now reads the
+  resolved artifact's full bytes (`readArtifactBytesFull`) and writes a real CAS
+  snapshot via `snapshotArtifactBytes(custody_mode: "managed")`. Because content
+  is hash-addressed, snapshotting bytes that already exist as a `link`/repo row
+  dedups to that row (one row per content hash); durability is still guaranteed
+  because (a) the CAS copy is written and (b) materialization now has a **CAS
+  fallback** (`resolveCasArtifact`): when an artifact's registered location is
+  gone but a hash-addressed CAS copy exists, it materializes from CAS. The
+  version row records `custody_mode: "managed"` to reflect the managed intent.
+- **HIGH — non-atomic `version_no` allocation.** `appendArtifactVersion` now runs
+  the MAX(version_no) read + insert + series-counter update inside one
+  `db.transaction(...).immediate()` (BEGIN IMMEDIATE takes the write lock before
+  the MAX read, so a concurrent writer cannot pick the same number; within one
+  process better-sqlite3 is already serialized). It detects `db.inTransaction` to
+  avoid nested-transaction errors, and `recordArtifactVersion` wraps
+  `ensureArtifactSeries` + append in one immediate transaction so the series,
+  version, and counters are all-or-nothing. The deterministic version id keeps
+  re-records idempotent.
+- **MEDIUM — global managed series key.** The default managed key is now scoped
+  by an explicit namespace: `managed:<provider_id|repo_id|issue>:<role?>:<logical_name>`.
+  If neither a namespace nor an explicit `series_key` is provided, the record is
+  rejected, so two unrelated artifacts named `report` cannot silently share a
+  series. `provider_id`/`repo_id`/`issue` were added to the record input and the
+  `record` CLI.
+- **MEDIUM — "read-only" endpoints could mutate.** `GET /api/artifacts/versions`
+  and `GET /api/artifacts/diff` now resolve refs through a new non-mutating
+  `resolveArtifactRefReadonly` (version/series refs + already-registered
+  artifact/alias lookups only). They never call the materializing
+  `resolveArtifactRef`, so a GET with an unregistered hash/URI ref creates no
+  rows and returns a clean not-found/empty.
+- **MEDIUM — migration could mask a divergent table.** The v88 DDL stays
+  `CREATE TABLE IF NOT EXISTS` (idempotent for fresh DBs and the schema-rewind
+  re-runs some migration tests perform — plain `CREATE TABLE` would throw
+  "table already exists" on those re-runs). To close the masking risk, a
+  post-migration `verifyArtifactVersioningSchema` runs whenever v88 is freshly
+  applied and fails loudly if either table lacks its expected columns, its UNIQUE
+  index, or (for `artifact_versions`) its FKs to `artifact_series` and
+  `artifacts`.
+- **LOW — selector parsing.** Series version selectors now require
+  `^[1-9][0-9]*$`; `@2abc`, `@2.5`, `@0`, `@01` are rejected (status
+  `unsupported`, `invalid_series_version_selector`) instead of truncating to 2.
+- **LOW — `latest_version_id` has no FK.** It is intentionally a denormalized
+  cache (an FK to `artifact_versions(id)` would create a series↔version cycle
+  that complicates the foreign_keys=OFF restore). It is maintained atomically by
+  `appendArtifactVersion` and covered by a test asserting it equals the actual
+  latest version and survives a backup round-trip.

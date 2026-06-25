@@ -53,8 +53,8 @@ Usage:
   mandible artifact check <ref...> [--json]
   mandible artifact versions <ref> [--json]
   mandible artifact diff <refA> <refB> [--json]
-  mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key <key>] [--logical-name <name>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
-  mandible artifact record --ref <artifact-ref> --kind managed [--series-key <key>] [--logical-name <name>] [--json]
+  mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key <key>] [--logical-name <name>] [--provider <id>] [--repo <id>] [--issue <id>] [--label <label>] [--note <note>] [--role <role>] [--title <title>] [--json]
+  mandible artifact record --ref <artifact-ref> --kind managed [--series-key <key>] [--logical-name <name>] [--provider <id>|--repo <id>|--issue <id>] [--json]
   mandible artifact snapshot <path...> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact snapshot <artifact-ref> --from <path> [--issue <id>] [--role <role>] [--upload] [--json]
   mandible artifact scan-repos [--repo <repo>] [--max-depth N] [--register] [--dry-run] [--json]
@@ -895,7 +895,7 @@ cmd_diff() {
 # history; ordinary ingest/preview/check never mutate it. For local-only files
 # this is the explicit observation command.
 cmd_record() {
-  local kind="" path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" json=0
+  local kind="" path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
   while (( $# > 0 )); do
     case "$1" in
       --kind) kind="$2"; shift 2 ;;
@@ -907,12 +907,15 @@ cmd_record() {
       --role) role="$2"; shift 2 ;;
       --title) title="$2"; shift 2 ;;
       --custody) custody="$2"; shift 2 ;;
+      --provider) provider="$2"; shift 2 ;;
+      --repo) repo="$2"; shift 2 ;;
+      --issue) issue="$2"; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$path" ]] || die "Unexpected argument: $1" 2; path="$1"; shift ;;
     esac
   done
-  [[ -n "$kind" ]] || die "Usage: mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key K] [--logical-name N] [--label L] [--note T] [--role R] [--json]" 2
+  [[ -n "$kind" ]] || die "Usage: mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key K] [--logical-name N] [--provider P] [--repo R] [--issue I] [--label L] [--note T] [--role R] [--json]" 2
   case "$kind" in tracked_repo|local_only|managed) ;; *) die "Unknown --kind: $kind (expected tracked_repo, local_only, or managed)" 2 ;; esac
   if [[ -z "$path" && -z "$ref" ]]; then
     die "record requires a <path> (or --ref for managed)" 2
@@ -935,6 +938,9 @@ cmd_record() {
     --arg role "$role" \
     --arg title "$title" \
     --arg custody_mode "$custody" \
+    --arg provider_id "$provider" \
+    --arg repo_id "$repo" \
+    --arg issue "$issue" \
     '{source_kind:$source_kind}
       + (if $path != "" then {path:$path} else {} end)
       + (if $ref != "" then {ref:$ref} else {} end)
@@ -944,7 +950,10 @@ cmd_record() {
       + (if $note != "" then {note:$note} else {} end)
       + (if $role != "" then {role:$role} else {} end)
       + (if $title != "" then {title:$title} else {} end)
-      + (if $custody_mode != "" then {custody_mode:$custody_mode} else {} end)')"
+      + (if $custody_mode != "" then {custody_mode:$custody_mode} else {} end)
+      + (if $provider_id != "" then {provider_id:$provider_id} else {} end)
+      + (if $repo_id != "" then {repo_id:$repo_id} else {} end)
+      + (if $issue != "" then {issue:$issue} else {} end)')"
   local response
   response="$(api_post "/api/artifacts/versions" "$payload")" \
     || die "${RED}Failed to record artifact version.${RESET}" 1

@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
-import { getArtifact, resolveArtifactRef } from "./provider-artifacts.js";
+import { artifactCasPath, getArtifact, resolveArtifactRefReadonly } from "./provider-artifacts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverability } from "./types.js";
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
@@ -251,7 +251,10 @@ function resolveRegisteredArtifactPath(
   if (isMutableLocalFileLink(artifact) && linkPath.ok) return linkPath;
   if (isMutableLocalFileLink(artifact)) {
     const aliasPath = resolveLocalFileAliasArtifact(db, artifact);
-    return aliasPath.ok ? aliasPath : linkPath;
+    if (aliasPath.ok) return aliasPath;
+    const cas = resolveCasArtifact(db, artifact);
+    if (cas.ok) return cas;
+    return linkPath;
   }
 
   const repoPath = resolveRepoArtifact(db, artifact);
@@ -259,7 +262,29 @@ function resolveRegisteredArtifactPath(
 
   if (linkPath.ok) return linkPath;
 
+  // Durable CAS fallback: if Mandible ever snapshotted these exact bytes (e.g. an
+  // explicit managed record of a ref that deduped to a link/repo row), the
+  // hash-addressed CAS copy still materializes them after the registered
+  // location is gone.
+  const cas = resolveCasArtifact(db, artifact);
+  if (cas.ok) return cas;
+
   return { ok: false, reason: artifact.uri.startsWith("file://") ? managedPath.reason : repoPath.reason };
+}
+
+function resolveCasArtifact(
+  db: Db,
+  artifact: ArtifactRecord,
+): { ok: true; path: string; source: ArtifactContentResult["source"] } | { ok: false; reason: string } {
+  if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
+    return { ok: false, reason: "artifact has no verifiable sha256 for CAS lookup" };
+  }
+  const casPath = artifactCasPath(db, artifact.content_hash.toLowerCase());
+  const real = safeRealpath(casPath);
+  if (!real) {
+    return { ok: false, reason: "no CAS copy on disk" };
+  }
+  return { ok: true, path: real, source: { kind: "managed_file", locator: "artifact-storage-cas" } };
 }
 
 function resolveManagedFileArtifact(
@@ -699,7 +724,7 @@ export interface ArtifactDiffResult {
   reason?: string;
 }
 
-function readArtifactBytesFull(
+export function readArtifactBytesFull(
   db: Db,
   id: string,
   maxBytes = MAX_DIFF_BYTES,
@@ -750,10 +775,12 @@ function diffSideMeta(artifact: ArtifactRecord | null, ref: string): ArtifactDif
   };
 }
 
-// Resolve a diff ref to its immutable artifact, accepting version/series refs,
-// registerable hash refs, and the canonical `artifact:sha256:<hash>` id form.
+// Resolve a diff ref to its immutable artifact WITHOUT mutating the registry
+// (these GET endpoints must not materialize artifact rows/aliases/graph
+// entities). Accepts version/series refs, already-registered hash/URI refs, and
+// the canonical `artifact:sha256:<hash>` id form.
 function resolveDiffArtifact(db: Db, ref: string): ArtifactRecord | null {
-  return resolveArtifactRef(db, ref).artifact ?? getArtifact(db, ref);
+  return resolveArtifactRefReadonly(db, ref);
 }
 
 export function diffArtifacts(db: Db, refA: string, refB: string): ArtifactDiffResult {

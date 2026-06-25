@@ -2019,12 +2019,14 @@ describe("artifact version series", () => {
   it("records managed v1/v2 under one series with sequential version numbers", () => {
     const r1 = recordArtifactVersion(db, {
       source_kind: "managed",
+      provider_id: "rlrmp",
       content: "v1\n",
       media_type: "text/plain",
       logical_name: "report",
     }, 1000, tempDir);
     const r2 = recordArtifactVersion(db, {
       source_kind: "managed",
+      provider_id: "rlrmp",
       content: "v2\n",
       media_type: "text/plain",
       logical_name: "report",
@@ -2040,6 +2042,7 @@ describe("artifact version series", () => {
     // Re-recording identical bytes is an idempotent no-op observation.
     const dup = recordArtifactVersion(db, {
       source_kind: "managed",
+      provider_id: "rlrmp",
       content: "v2\n",
       media_type: "text/plain",
       logical_name: "report",
