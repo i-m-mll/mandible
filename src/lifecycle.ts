@@ -13,6 +13,28 @@ export function getPidFilePath(): string {
   return process.env.MANDIBLE_PID_FILE ?? DEFAULT_PID_FILE;
 }
 
+// Bug: 645f8a8 — lifecycle-owned daemon readiness. A process is "ready" only
+// once it has completed the critical synchronous startup work (server
+// listening, routes registered, DB open, pid written, session manager init,
+// startup commit read). It deliberately does NOT wait on deferred background
+// scans (issue scan, session discovery) — those are not required for auth or
+// dashboard mutations to be safe. The health endpoint reports this so the UI
+// can distinguish "listener alive" from "ready for normal mutations".
+//
+// This is a per-process flag, matching the existing daemon singleton pattern
+// (one daemon per process). It starts false; startDaemon flips it true once
+// critical init finishes, and resets it false at the top of startDaemon so a
+// re-entrant start in the same process re-arms the gate.
+let daemonReady = false;
+
+export function isDaemonReady(): boolean {
+  return daemonReady;
+}
+
+export function setDaemonReady(ready: boolean): void {
+  daemonReady = ready;
+}
+
 export function writePidFile(pid: number = process.pid, pidFilePath: string = getPidFilePath()): void {
   ensureDir(path.dirname(pidFilePath));
   fs.writeFileSync(pidFilePath, String(pid));

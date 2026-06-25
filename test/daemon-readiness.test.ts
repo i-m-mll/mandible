@@ -1,0 +1,141 @@
+// Bug: 645f8a8 — daemon readiness gate for self-merge rebuilds (backend).
+//
+// Verifies the lifecycle-owned readiness flag and that the /api/health endpoint
+// reports `ready` from the injected readiness source (not merely "listener
+// alive"), independently of the rebuilding flag.
+import http from "node:http";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { createServer, Router } from "../src/server.js";
+import { SseManager } from "../src/sse.js";
+import { isDaemonReady, setDaemonReady } from "../src/lifecycle.js";
+import type { Db } from "../src/db.js";
+import type { HealthResponse } from "../src/types.js";
+
+interface TestServer {
+  port: number;
+  server: http.Server;
+}
+
+let testServer: TestServer | null = null;
+
+function startServer(opts: { isReady?: () => boolean; isRebuilding?: () => boolean }): Promise<TestServer> {
+  const router = new Router();
+  const server = createServer({
+    db: {} as Db,
+    sse: new SseManager(),
+    logger: () => undefined,
+    version: "test",
+    router,
+    getStartupInfo: () => null,
+    isReady: opts.isReady,
+    isRebuilding: opts.isRebuilding,
+  });
+  return listen(server).then((port) => {
+    testServer = { port, server };
+    return testServer;
+  });
+}
+
+afterEach(async () => {
+  if (testServer) {
+    await close(testServer.server);
+    testServer = null;
+  }
+});
+
+describe("lifecycle readiness flag", () => {
+  beforeEach(() => setDaemonReady(false));
+
+  it("round-trips set/get and starts armed-off after a reset", () => {
+    setDaemonReady(false);
+    expect(isDaemonReady()).toBe(false);
+    setDaemonReady(true);
+    expect(isDaemonReady()).toBe(true);
+    setDaemonReady(false);
+    expect(isDaemonReady()).toBe(false);
+  });
+});
+
+describe("/api/health readiness", () => {
+  it("reports ready:false while the daemon is still starting", async () => {
+    let ready = false;
+    await startServer({ isReady: () => ready });
+
+    const first = await getHealth();
+    expect(first.status).toBe("ok");
+    expect(first.ready).toBe(false);
+    // A starting daemon is not rebuilding — readiness is a distinct signal.
+    expect(first.rebuilding).toBeUndefined();
+
+    // Once critical startup work completes, the same listener reports ready.
+    ready = true;
+    const second = await getHealth();
+    expect(second.ready).toBe(true);
+  });
+
+  it("reports both ready and rebuilding independently (old daemon mid self-merge)", async () => {
+    // The OLD daemon during a self-merge is ready (it served fine) but
+    // rebuilding — the UI must keep the splash up on rebuilding regardless.
+    await startServer({ isReady: () => true, isRebuilding: () => true });
+    const health = await getHealth();
+    expect(health.ready).toBe(true);
+    expect(health.rebuilding).toBe(true);
+  });
+
+  it("defaults to ready:true when no readiness source is wired (back-compat)", async () => {
+    await startServer({});
+    const health = await getHealth();
+    expect(health.ready).toBe(true);
+  });
+});
+
+function getHealth(): Promise<HealthResponse> {
+  const { port } = requireServer();
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: "127.0.0.1", port, path: "/api/health", method: "GET" },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(data) as HealthResponse);
+          } catch (error) {
+            reject(error);
+          }
+        });
+      },
+    );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+function requireServer(): TestServer {
+  if (!testServer) {
+    throw new Error("test server is not running");
+  }
+  return testServer;
+}
+
+function listen(server: http.Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      const address = server.address();
+      if (typeof address !== "object" || !address) {
+        reject(new Error("test server did not expose a port"));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+function close(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+}

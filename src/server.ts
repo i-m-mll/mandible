@@ -292,10 +292,15 @@ export interface ServerOptions {
   // Bug: 4db692a — health endpoint includes rebuilding flag so the UI
   // doesn't reload while the daemon is still alive but about to restart.
   isRebuilding?: () => boolean;
+  // Bug: 645f8a8 — lifecycle-owned readiness source. When omitted the daemon
+  // is reported ready (back-compat for servers created without a lifecycle,
+  // e.g. unit tests). The real daemon wires this to the lifecycle readiness
+  // flag so health reports false until critical startup work completes.
+  isReady?: () => boolean;
 }
 
 export function createServer(options: ServerOptions): http.Server {
-  const { sse, logger, version, router, getStartupInfo, isRebuilding } = options;
+  const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady } = options;
 
   router.get("/api/health", (_req, res) => {
     const startupCommit =
@@ -305,11 +310,16 @@ export function createServer(options: ServerOptions): http.Server {
     // with new code". Only included when true to keep the common-case
     // response small.
     const rebuilding = isRebuilding?.() ?? false;
+    // Bug: 645f8a8 — readiness is always present so the UI can treat
+    // "ready !== true" as "keep the splash up / block mutations". A server
+    // created without a readiness source (tests) reports ready by default.
+    const ready = isReady?.() ?? true;
     const payload: HealthResponse = {
       status: "ok",
       uptime: process.uptime(),
       version,
       startup_commit: startupCommit,
+      ready,
       ...(rebuilding ? { rebuilding: true } : {})
     };
     res.json(payload);
