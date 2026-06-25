@@ -103,6 +103,15 @@ interface ArtifactInput {
   pinned?: boolean;
   content?: string;
   content_base64?: string;
+  // Daemon-visible filesystem path to read bytes from. Lets large artifacts be
+  // ingested without routing base64 through shell argv / JSON request bodies
+  // (issue 833e972). Over the file transport this is set only by the transport
+  // from a validated spool attachment, never honored from client request bodies.
+  content_path?: string;
+  // In-process Buffer handoff (e.g. snapshotArtifactBytes -> ingestArtifact)
+  // that avoids the base64 encode/decode amplification round-trip. Not
+  // JSON-serializable; only used within the same process.
+  content_buffer?: Buffer;
   json?: unknown;
 }
 
@@ -160,6 +169,10 @@ export interface ArtifactSnapshotInput {
   path?: string;
   content?: string;
   content_base64?: string;
+  // Daemon-visible path (e.g. a validated file-RPC spool attachment) read in
+  // place of inline base64 so multi-MiB snapshots never travel through argv
+  // (issue 833e972).
+  content_path?: string;
   json?: unknown;
   custody_mode?: "copy" | "managed" | string;
   media_type?: string;
@@ -450,6 +463,12 @@ function artifactPathForHash(hash: string, root = getArtifactRoot()): string {
 }
 
 function contentBuffer(input: ArtifactInput): Buffer {
+  if (Buffer.isBuffer(input.content_buffer)) {
+    return input.content_buffer;
+  }
+  if (typeof input.content_path === "string" && input.content_path.trim()) {
+    return fs.readFileSync(path.resolve(expandHomePath(input.content_path)));
+  }
   if (typeof input.content_base64 === "string") {
     return Buffer.from(input.content_base64, "base64");
   }
@@ -459,11 +478,17 @@ function contentBuffer(input: ArtifactInput): Buffer {
   if ("json" in input) {
     return Buffer.from(stableJsonStringify(input.json), "utf8");
   }
-  throw new Error("artifact content, content_base64, or json is required");
+  throw new Error("artifact content, content_base64, content_path, or json is required");
 }
 
 function hasInlineArtifactContent(input: ArtifactInput): boolean {
-  return typeof input.content_base64 === "string" || typeof input.content === "string" || "json" in input;
+  return (
+    Buffer.isBuffer(input.content_buffer) ||
+    (typeof input.content_path === "string" && Boolean(input.content_path.trim())) ||
+    typeof input.content_base64 === "string" ||
+    typeof input.content === "string" ||
+    "json" in input
+  );
 }
 
 function hashFromArtifactRef(input: ArtifactInput): string | undefined {
@@ -1586,7 +1611,9 @@ export function registerLocalArtifactPath(
     warnings.push("local_only_link_requires_override_for_issue_evidence");
   }
 
-  const hash = hashBuffer(fs.readFileSync(absolutePath));
+  const needsBytes = requestedCustody === "copy" || requestedCustody === "managed";
+  const fileBuffer = fs.readFileSync(absolutePath);
+  const hash = hashBuffer(fileBuffer);
   const repoLocator = gitState.inside_worktree && gitState.repo_id && gitState.relative_path
     ? {
         repo_id: gitState.repo_id,
@@ -1631,9 +1658,7 @@ export function registerLocalArtifactPath(
     reference,
     metadata,
     pinned: input.pinned,
-    ...(requestedCustody === "copy" || requestedCustody === "managed"
-      ? { content_base64: fs.readFileSync(absolutePath).toString("base64") }
-      : {}),
+    ...(needsBytes ? { content_buffer: fileBuffer } : {}),
   }, now, artifactRoot);
 
   if (input.issue) {
@@ -1721,10 +1746,13 @@ function bufferFromSnapshotInput(input: ArtifactSnapshotInput): Buffer {
   if (typeof input.path === "string" && input.path.trim()) {
     return fs.readFileSync(path.resolve(expandHomePath(input.path)));
   }
+  if (typeof input.content_path === "string" && input.content_path.trim()) {
+    return fs.readFileSync(path.resolve(expandHomePath(input.content_path)));
+  }
   if (typeof input.content_base64 === "string") return Buffer.from(input.content_base64, "base64");
   if (typeof input.content === "string") return Buffer.from(input.content, "utf8");
   if ("json" in input) return Buffer.from(stableJsonStringify(input.json), "utf8");
-  throw new Error("snapshot path, content, content_base64, or json is required");
+  throw new Error("snapshot path, content, content_base64, content_path, or json is required");
 }
 
 export function snapshotArtifactBytes(
@@ -1754,7 +1782,11 @@ export function snapshotArtifactBytes(
   }
   const artifact = ingestArtifact(db, {
     sha256: hash,
-    content_base64: bytes.toString("base64"),
+    // Hand the already-read Buffer straight through instead of re-encoding to
+    // base64 and decoding again in ingestArtifact (issue 833e972: cut the
+    // snapshot -> ingest memory amplification). The CAS file is already written
+    // above, so ingestArtifact's existsSync short-circuit avoids a second write.
+    content_buffer: bytes,
     custody_mode: custodyMode,
     availability: "present",
     media_type: input.media_type,

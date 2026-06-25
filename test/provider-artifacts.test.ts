@@ -935,6 +935,107 @@ describe("provider/artifact substrate", () => {
     });
   });
 
+  it("ingests multi-MiB bytes from a daemon-visible content_path without inline base64 (issue 833e972)", () => {
+    const big = crypto.randomBytes(3 * 1024 * 1024); // 3 MiB, well over OS ARG_MAX
+    const srcPath = path.join(tempDir, "big-ingest.bin");
+    fs.writeFileSync(srcPath, big);
+
+    const artifact = ingestArtifact(db, {
+      content_path: srcPath,
+      sha256: sha256(big),
+      filename: "big-ingest.bin",
+      media_type: "application/octet-stream",
+      custody_mode: "copy",
+      availability: "present",
+    }, 1000, tempDir);
+
+    expect(artifact).toMatchObject({
+      id: `artifact:sha256:${sha256(big)}`,
+      custody_mode: "copy",
+      availability: "present",
+      size_bytes: big.length,
+    });
+    const stored = getArtifactContent(db, artifact.id);
+    expect(stored).toMatchObject({ status: "available", download: { available: true } });
+  });
+
+  it("rejects a content_path ingest whose declared sha256 disagrees with the bytes (issue 833e972)", () => {
+    const big = crypto.randomBytes(2 * 1024 * 1024);
+    const srcPath = path.join(tempDir, "mismatch.bin");
+    fs.writeFileSync(srcPath, big);
+
+    expect(() =>
+      ingestArtifact(db, {
+        content_path: srcPath,
+        sha256: sha256("a different declared value"),
+        custody_mode: "copy",
+        availability: "present",
+      }, 1000, tempDir),
+    ).toThrow(/sha256 does not match supplied content/);
+  });
+
+  it("snapshots a multi-MiB content_path and still rejects declared-hash mismatch (issue 833e972)", () => {
+    const big = crypto.randomBytes(4 * 1024 * 1024); // 4 MiB
+    const srcPath = path.join(tempDir, "big-snapshot.bin");
+    fs.writeFileSync(srcPath, big);
+
+    const snapshotted = snapshotArtifactBytes(db, {
+      content_path: srcPath,
+      media_type: "application/octet-stream",
+      filename: "big-snapshot.bin",
+      custody_mode: "copy",
+    }, 1000, tempDir);
+
+    expect(snapshotted).toMatchObject({
+      id: `artifact:sha256:${sha256(big)}`,
+      custody_mode: "copy",
+      availability: "present",
+      size_bytes: big.length,
+      uri: expect.stringMatching(/^file:\/\//),
+    });
+    expect(getArtifactContent(db, snapshotted.id)).toMatchObject({
+      status: "available",
+      download: { available: true },
+    });
+
+    // Declared-hash integrity must survive the path/buffer transport: a snapshot
+    // onto a ref whose registered sha differs from the bytes is rejected.
+    const otherHash = sha256("registered-as-something-else");
+    resolveArtifactRef(db, `artifact:${otherHash}`, 1500); // mint a hash-only record
+    const conflictPath = path.join(tempDir, "conflict.bin");
+    fs.writeFileSync(conflictPath, crypto.randomBytes(1024 * 1024));
+    expect(() =>
+      snapshotArtifactBytes(db, {
+        ref: `artifact:${otherHash}`,
+        content_path: conflictPath,
+        custody_mode: "copy",
+      }, 2000, tempDir),
+    ).toThrow(/do not match registered sha256/);
+  });
+
+  it("copies a multi-MiB local path into custody via a single buffered read (issue 833e972)", () => {
+    const big = crypto.randomBytes(3 * 1024 * 1024);
+    const srcPath = path.join(tempDir, "local-copy.bin");
+    fs.writeFileSync(srcPath, big);
+
+    const registration = registerLocalArtifactPath(db, {
+      path: srcPath,
+      custody_mode: "copy",
+      filename: "local-copy.bin",
+    }, 1000, tempDir);
+
+    expect(registration.artifact).toMatchObject({
+      id: `artifact:sha256:${sha256(big)}`,
+      custody_mode: "copy",
+      availability: "present",
+      size_bytes: big.length,
+    });
+    expect(getArtifactContent(db, registration.artifact.id)).toMatchObject({
+      status: "available",
+      download: { available: true },
+    });
+  });
+
   it("preserves member refs and recoverability in mixed tracked/local bundle manifests", () => {
     const commit = "abcdefabcdefabcdefabcdefabcdefabcdefabcd";
     const runJson = '{"status":"complete"}\n';
