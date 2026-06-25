@@ -748,7 +748,25 @@ export function readArtifactBytesFull(
     const stat = safeStat(resolved.path);
     if (stat?.isFile()) {
       if (stat.size > maxBytes) return { ok: false, reason: "artifact exceeds diff size limit" };
-      return { ok: true, bytes: fs.readFileSync(resolved.path), source: resolved.source?.kind ?? "file" };
+      const bytes = fs.readFileSync(resolved.path);
+      // If these bytes came from the content-addressed store (resolved directly,
+      // via a file alias to the CAS blob, or via the CAS fallback), they MUST
+      // hash to content_hash. Verify so a corrupted/tampered CAS blob can never
+      // silently feed wrong bytes into a diff or a managed re-snapshot — this is
+      // the durability-critical path (e.g. the registered location is gone).
+      if (artifact.algorithm === "sha256" && /^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
+        const expected = artifact.content_hash.toLowerCase();
+        const casReal = safeRealpath(artifactCasPath(db, expected));
+        const fromCas = resolved.source?.locator === "artifact-storage-cas"
+          || (casReal !== null && resolved.path === casReal);
+        if (fromCas) {
+          const actual = crypto.createHash("sha256").update(bytes).digest("hex");
+          if (actual !== expected) {
+            return { ok: false, reason: `cas blob hash mismatch (expected ${expected}, got ${actual})` };
+          }
+        }
+      }
+      return { ok: true, bytes, source: resolved.source?.kind ?? "file" };
     }
   }
 

@@ -239,3 +239,29 @@ version model is unchanged; these are corrections.
   that complicates the foreign_keys=OFF restore). It is maintained atomically by
   `appendArtifactVersion` and covered by a test asserting it equals the actual
   latest version and survives a backup round-trip.
+
+### Focused re-review hardening (round 2)
+
+A second Codex pass confirmed the three HIGH fixes and flagged four smaller
+items on the durability path; all are corrected.
+
+- **MEDIUM — CAS read integrity.** `readArtifactBytesFull` now hash-verifies the
+  bytes whenever the resolved path is the content-addressed CAS blob — reached
+  directly, via a file-scheme alias to the CAS path, or via the CAS fallback
+  (the path is matched by realpath, not just the fallback locator). A tampered/
+  corrupt CAS blob returns a loud `cas blob hash mismatch` failure instead of
+  feeding wrong bytes into a diff or a managed re-snapshot (which then refuses).
+- **MEDIUM — schema verifier missed the CHECK.** `verifyArtifactVersioningSchema`
+  now also reads each table's stored DDL from `sqlite_master` and requires the
+  `CHECK(source_kind IN ...)` clause, so a divergent pre-existing v88 table
+  without the CHECK fails verification.
+- **LOW — managed series-key escaping.** Default managed-key components
+  (namespace, role, logical_name) are percent-escaped (`%`→`%25`, `:`→`%3A`)
+  before being joined with `:`, so `namespace "a:b" + name "c"`
+  (`managed:a%3Ab:c`) cannot collide with `namespace "a" + role "b" + name "c"`
+  (`managed:a:b:c`).
+- **LOW — dirty-file provenance.** When a dirty/staged tracked file is routed to
+  a `local_only` CAS snapshot, the version (and artifact) metadata records the
+  current HEAD commit as `head_commit`/`dirty_at_commit` provenance. The
+  commit-pinned `commit_sha` column stays null (these bytes are NOT the committed
+  bytes at that commit).

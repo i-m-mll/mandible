@@ -3487,6 +3487,13 @@ function versionIdFor(seriesId: string, sourceKind: string, naturalKey: string):
   return artifactRegistryId("artifact-version", [seriesId, sourceKind, naturalKey]);
 }
 
+// Percent-escape `:` (and the escape char itself) within a single series-key
+// component so a `:`-joined default key is unambiguous: namespace "a:b" + name
+// "c" must not collide with namespace "a" + role "b" + name "c".
+function escapeSeriesKeyComponent(value: string): string {
+  return value.replace(/%/g, "%25").replace(/:/g, "%3A");
+}
+
 function seriesFromRow(row: Record<string, unknown>): ArtifactSeriesRecord {
   return {
     id: String(row.id),
@@ -3770,18 +3777,24 @@ export function recordArtifactVersion(
       // the ACTUAL bytes into CAS and record a content-hash-keyed local_only
       // observation under the same repo-derived series (no commit-pinned read).
       warnings.push("tracked_repo_dirty_recorded_as_local_only", ...plan.warnings);
+      // Preserve provenance: the HEAD commit the dirty file was observed against
+      // (metadata only — commit_sha stays null since these bytes are NOT the
+      // committed bytes at that commit).
+      const dirtyProvenance = {
+        recoverability: "local_only" as const,
+        observed_path: plan.resolved_path,
+        repo_id: git.repo_id,
+        repo_path: git.relative_path,
+        dirty_at_commit: git.commit ?? null,
+        head_commit: git.commit ?? null,
+      };
       artifact = snapshotArtifactBytes(db, {
         path: input.path,
         role: input.role,
         media_type: input.media_type,
         logical_name: input.logical_name ?? git.relative_path,
         custody_mode: "copy",
-        metadata: mergeJsonRecords(input.metadata, {
-          recoverability: "local_only",
-          observed_path: plan.resolved_path,
-          repo_id: git.repo_id,
-          repo_path: git.relative_path,
-        }),
+        metadata: mergeJsonRecords(input.metadata, dirtyProvenance),
       }, now, artifactRoot);
       seriesInput = {
         series_key: seriesKey,
@@ -3800,7 +3813,10 @@ export function recordArtifactVersion(
         custody_mode: artifact.custody_mode,
         label: input.label,
         note: input.note,
-        metadata: input.metadata,
+        metadata: mergeJsonRecords(input.metadata, {
+          dirty_at_commit: git.commit ?? null,
+          head_commit: git.commit ?? null,
+        }),
       };
     } else {
       const reg = registerLocalArtifactPath(db, {
@@ -3910,7 +3926,8 @@ export function recordArtifactVersion(
           `managed version requires an explicit series_key (or a provider_id/repo_id/issue namespace) so unrelated artifacts named '${logicalName}' do not share a series`,
         );
       }
-      seriesKey = `managed:${namespace}:${input.role ? `${input.role}:` : ""}${logicalName}`;
+      const components = [namespace, ...(input.role ? [input.role] : []), logicalName];
+      seriesKey = `managed:${components.map(escapeSeriesKeyComponent).join(":")}`;
     }
     seriesInput = {
       series_key: seriesKey,

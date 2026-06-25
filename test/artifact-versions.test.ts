@@ -17,7 +17,7 @@ import {
   resolveArtifactRef,
   resolveArtifactVersionHistory,
 } from "../src/provider-artifacts.js";
-import { diffArtifacts, getArtifactContent } from "../src/artifact-content.js";
+import { diffArtifacts, getArtifactContent, readArtifactBytesFull } from "../src/artifact-content.js";
 import { METADATA_BACKUP_TABLES, buildMetadataBackupSql } from "../src/ledger/backup.js";
 
 let tempDir = "";
@@ -498,5 +498,80 @@ describe("codex review fixes", () => {
     setup.prepare("UPDATE meta SET value = '87' WHERE key = 'schema_version'").run();
     expect(() => migrate(setup)).toThrow(/migration 88 verification/i);
     setup.close();
+  });
+});
+
+describe("codex re-review hardening", () => {
+  it("RR-1: CAS-fallback reads verify bytes hash and fail loudly on a tampered blob", () => {
+    const src = path.join(tempDir, "cas-src.txt");
+    fs.writeFileSync(src, "cas-int\n", "utf8");
+    const link = registerLocalArtifactPath(db, { path: src, custody_mode: "link", allow_local_only: true }, 1000);
+    const rec = recordArtifactVersion(db, {
+      source_kind: "managed",
+      ref: link.artifact.id,
+      logical_name: "src",
+      provider_id: "test",
+      media_type: "text/plain",
+    }, 2000);
+
+    // Remove the link source so materialization must use the CAS fallback, then
+    // corrupt the CAS blob in place (same filename, wrong bytes).
+    fs.rmSync(src);
+    const hash = link.artifact.content_hash;
+    const casPath = path.join(tempDir, "artifacts", "sha256", hash.slice(0, 2), hash);
+    expect(fs.existsSync(casPath)).toBe(true);
+    fs.writeFileSync(casPath, "TAMPERED\n", "utf8");
+
+    const read = readArtifactBytesFull(db, rec.version.artifact_id);
+    expect(read.ok).toBe(false);
+    if (!read.ok) expect(read.reason).toMatch(/hash mismatch/i);
+
+    // A managed re-snapshot of the same (now-corrupt) ref must refuse, not
+    // silently re-snapshot wrong bytes.
+    expect(() =>
+      recordArtifactVersion(db, { source_kind: "managed", ref: rec.version.artifact_id, logical_name: "src", provider_id: "test" }, 3000),
+    ).toThrow(/not materializable|hash mismatch/i);
+  });
+
+  it("RR-2: schema verifier rejects a table missing the source_kind CHECK", () => {
+    const divergentPath = path.join(tempDir, "no-check.db");
+    const setup = openDb(divergentPath);
+    setup.exec("DROP TABLE artifact_versions");
+    // Full columns, UNIQUE, and FKs — but NO CHECK(source_kind ...).
+    setup.exec(`CREATE TABLE artifact_versions (
+      id TEXT PRIMARY KEY,
+      series_id TEXT NOT NULL REFERENCES artifact_series(id),
+      artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+      version_no INTEGER NOT NULL,
+      source_kind TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      commit_sha TEXT, repo_path TEXT, observed_path TEXT, custody_mode TEXT,
+      label TEXT, note TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER,
+      UNIQUE(series_id, version_no)
+    )`);
+    setup.prepare("UPDATE meta SET value = '87' WHERE key = 'schema_version'").run();
+    expect(() => migrate(setup)).toThrow(/CHECK\(source_kind/i);
+    setup.close();
+  });
+
+  it("RR-3: managed default series key escapes components so they cannot collide", () => {
+    const a = recordArtifactVersion(db, { source_kind: "managed", provider_id: "a:b", content: "x\n", media_type: "text/plain", logical_name: "c" }, 1000);
+    const b = recordArtifactVersion(db, { source_kind: "managed", provider_id: "a", role: "b", content: "y\n", media_type: "text/plain", logical_name: "c" }, 2000);
+    expect(a.series.id).not.toBe(b.series.id);
+    expect(getArtifactSeries(db, a.series.id)?.series_key).toBe("managed:a%3Ab:c");
+    expect(getArtifactSeries(db, b.series.id)?.series_key).toBe("managed:a:b:c");
+  });
+
+  it("RR-4: a dirty-file version records the HEAD commit in metadata (commit_sha stays null)", () => {
+    const { root, filePath } = makeTrackedRepo("dirty-prov", "clean\n");
+    createLedgerCheckout("mandible", fs.realpathSync(root));
+    const head = git(root, ["rev-parse", "HEAD"]);
+
+    fs.writeFileSync(filePath, "dirty-bytes\n", "utf8");
+    const rec = recordArtifactVersion(db, { source_kind: "tracked_repo", path: filePath }, 2000);
+    expect(rec.version.source_kind).toBe("local_only");
+    expect(rec.version.commit_sha).toBeNull();
+    expect(rec.version.metadata.head_commit).toBe(head);
+    expect(rec.version.metadata.dirty_at_commit).toBe(head);
   });
 });

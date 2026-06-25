@@ -3815,10 +3815,10 @@ function verifyArtifactVersioningSchema(db: Db): void {
     });
   };
   const requireTable = (table: string, columns: string[]): void => {
-    const exists = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(table);
-    if (!exists) {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table) as { sql: string | null } | undefined;
+    if (!row) {
       throw new Error(`migration 88 verification: table ${table} is missing after migration`);
     }
     const present = new Set(
@@ -3828,6 +3828,11 @@ function verifyArtifactVersioningSchema(db: Db): void {
       if (!present.has(column)) {
         throw new Error(`migration 88 verification: table ${table} is missing expected column '${column}' (divergent pre-existing table?)`);
       }
+    }
+    // The source_kind CHECK is the only constraint not reflected by PRAGMA
+    // table_info/index_list/foreign_key_list, so assert it from the stored DDL.
+    if (!/CHECK\s*\(\s*source_kind\s+IN/i.test(row.sql ?? "")) {
+      throw new Error(`migration 88 verification: table ${table} is missing its CHECK(source_kind IN ...) constraint (divergent pre-existing table?)`);
     }
   };
 
