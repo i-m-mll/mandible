@@ -231,6 +231,7 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/branches$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/ledger\/issues\/[^/]+\/labels$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/ledger\/comments\/[^/]+\/revisions$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/ledger\/comments\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && /^\/api\/ledger\/body-revisions\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/auth/queue") return true;
   if (normalizedMethod === "GET" && /^\/api\/auth\/request\/[^/]+$/.test(pathname)) return true;
