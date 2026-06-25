@@ -99,6 +99,111 @@ describe("file RPC transport", () => {
     });
   });
 
+  it("injects a spool attachment as a daemon-visible content_path and cleans it up (issue 833e972)", async () => {
+    const router = new Router();
+    let seenBody: Record<string, unknown> | undefined;
+    let attachmentBytes = "";
+    router.post("/api/artifacts/ingest", (req, res) => {
+      seenBody = req.body as Record<string, unknown>;
+      const contentPath = (req.body as Record<string, unknown>).content_path as string;
+      attachmentBytes = fs.readFileSync(contentPath, "utf8");
+      res.json({ artifact: { id: "artifact:sha256:abc", availability: "present", custody_mode: "copy" } });
+    });
+    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+
+    fs.writeFileSync(path.join(tempDir, "req-art.attach-content_path"), "PK big zip bytes", "utf8");
+    fs.writeFileSync(
+      path.join(tempDir, "req-art.request.json"),
+      JSON.stringify({
+        id: "req-art",
+        method: "POST",
+        path: "/api/artifacts/ingest",
+        body: { custody_mode: "copy", filename: "packet.zip" },
+        attachments: { content_path: "req-art.attach-content_path" },
+      }),
+      "utf8",
+    );
+
+    await transport.processOnce();
+
+    // The route saw an absolute content_path inside the spool dir, not inline bytes.
+    expect(seenBody).toMatchObject({ custody_mode: "copy", filename: "packet.zip" });
+    expect(typeof seenBody?.content_path).toBe("string");
+    expect(path.dirname(seenBody?.content_path as string)).toBe(path.resolve(tempDir));
+    expect(attachmentBytes).toBe("PK big zip bytes");
+    const response = JSON.parse(fs.readFileSync(path.join(tempDir, "req-art.response.json"), "utf8"));
+    expect(response.status).toBe(200);
+    // Attachment is removed after dispatch; the request file is consumed.
+    expect(fs.existsSync(path.join(tempDir, "req-art.attach-content_path"))).toBe(false);
+    expect(fs.existsSync(path.join(tempDir, "req-art.request.json"))).toBe(false);
+  });
+
+  it("strips a client-supplied content_path so the daemon never reads an arbitrary host path (issue 833e972)", async () => {
+    const router = new Router();
+    let seenBody: Record<string, unknown> | undefined;
+    router.post("/api/artifacts/ingest", (req, res) => {
+      seenBody = req.body as Record<string, unknown>;
+      res.json({ ok: true });
+    });
+    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+
+    fs.writeFileSync(
+      path.join(tempDir, "req-evil.request.json"),
+      JSON.stringify({
+        id: "req-evil",
+        method: "POST",
+        path: "/api/artifacts/ingest",
+        body: { custody_mode: "copy", content_path: "/etc/passwd", content_buffer: "x" },
+      }),
+      "utf8",
+    );
+
+    await transport.processOnce();
+
+    expect(seenBody).toEqual({ custody_mode: "copy" });
+    expect(seenBody).not.toHaveProperty("content_path");
+    expect(seenBody).not.toHaveProperty("content_buffer");
+  });
+
+  it("rejects attachment names that escape the spool dir or target non-allowlisted fields (issue 833e972)", async () => {
+    const router = new Router();
+    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }));
+    const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+
+    fs.writeFileSync(
+      path.join(tempDir, "req-trav.request.json"),
+      JSON.stringify({
+        id: "req-trav",
+        method: "POST",
+        path: "/api/artifacts/ingest",
+        body: { custody_mode: "copy" },
+        attachments: { content_path: "../../../etc/passwd" },
+      }),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(tempDir, "req-field.request.json"),
+      JSON.stringify({
+        id: "req-field",
+        method: "POST",
+        path: "/api/artifacts/ingest",
+        body: { custody_mode: "copy" },
+        attachments: { repo_locator: "req-field.attach" },
+      }),
+      "utf8",
+    );
+
+    await transport.processOnce();
+
+    const traversal = JSON.parse(fs.readFileSync(path.join(tempDir, "req-trav.response.json"), "utf8"));
+    expect(traversal.status).toBe(400);
+    expect(traversal.body).toMatchObject({ error: "bad_file_rpc_request" });
+    expect(traversal.body.detail).toMatch(/attachment_name_invalid/);
+    const field = JSON.parse(fs.readFileSync(path.join(tempDir, "req-field.response.json"), "utf8"));
+    expect(field.status).toBe(400);
+    expect(field.body.detail).toMatch(/attachment_field_not_allowed/);
+  });
+
   it("denies routes outside the file transport allowlist", async () => {
     const router = new Router();
     router.post("/api/auth/request/:id/approve", (_req, res) => {

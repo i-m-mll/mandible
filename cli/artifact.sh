@@ -23,6 +23,23 @@ die() {
   exit "${2:-1}"
 }
 
+# Map a non-2xx artifact byte-transport response to an explicit, actionable
+# error code instead of leaking a raw transport failure (issue 833e972).
+explain_transport_failure() {
+  local body_file="$1" fallback="${2:-api_ingest_failed}" detail=""
+  [[ -f "$body_file" ]] && detail="$(jq -r '.error // .detail // .message // empty' "$body_file" 2>/dev/null || true)"
+  case "$detail" in
+    *content_base64*content_path*|*"content_path, or json is required"*|*"content_base64, json, sha256"*)
+      printf 'daemon_missing_path_ingest_support: this Mandible daemon does not accept path-based artifact bytes (content_path); upgrade the daemon' ;;
+    *file_rpc_attachment*)
+      printf 'file_rpc_attachment_rejected: the daemon could not resolve the spool attachment for large bytes; upgrade the daemon' ;;
+    file_rpc_timeout)
+      printf 'file_rpc_timeout: no daemon response (raise MANDIBLE_FILE_RPC_TIMEOUT or check the daemon)' ;;
+    "") printf '%s' "$fallback" ;;
+    *) printf '%s: %s' "$fallback" "$detail" ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -289,7 +306,7 @@ classify_path() {
 
 payload_for_path() {
   local input="$1" mode="$2" role_override="$3" allow_local="$4" allow_dirty="$5" relation="$6"
-  local classified ok recoverability tracked dirty staged untracked ignored repo_id uri content_b64 links
+  local classified ok recoverability tracked dirty staged untracked ignored repo_id uri links
   classified="$(classify_path "$input" "$role_override")"
   ok="$(printf '%s' "$classified" | jq -r '.ok')"
   if [[ "$ok" != "true" ]]; then
@@ -320,16 +337,16 @@ payload_for_path() {
 
   links="$(issue_link_json "$relation" "$(printf '%s' "$classified" | jq -r '.role')")"
   if [[ "$mode" == "managed" || "$mode" == "copy" ]]; then
-    content_b64="$(base64 < "$(python_path abs "$input")" | tr -d '\n')"
+    # Bytes are NOT embedded here. They are delivered to the daemon out-of-band:
+    # a daemon-visible content_path over local HTTP, or a spool attachment over
+    # file-RPC (issue 833e972). This keeps large files off argv/JSON entirely.
     classified="$(printf '%s' "$classified" | jq \
       --arg custody "$mode" \
       '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact:" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
     printf '%s' "$classified" | jq \
-      --arg content_base64 "$content_b64" \
       --argjson links "$links" \
       '{
         canonical_ref:.canonical_ref,
-        content_base64:$content_base64,
         sha256,
         filename,
         logical_name,
@@ -411,11 +428,40 @@ cmd_ingest_like() {
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
   local registered='[]' failed='[]' planned='[]' payload response result
+  local needs_bytes=0
+  [[ "$mode" == "copy" || "$mode" == "managed" ]] && needs_bytes=1
   for path_arg in "${paths[@]}"; do
     if payload="$(payload_for_path "$path_arg" "$mode" "$role" "$allow_local" "$allow_dirty" "$relation")"; then
       planned="$(printf '%s' "$planned" | jq --argjson payload "$payload" '. + [$payload]')"
       if (( dry_run )); then
-        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" '. + [{input:($payload.metadata.git.relative_path // $payload.filename), planned_payload:($payload | if has("content_base64") then .content_base64="<base64 omitted in dry-run>" else . end)}]')"
+        # No bytes are generated in dry-run; annotate how bytes would travel so
+        # --json stays informative without ever building base64 (issue 833e972).
+        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" --argjson needs_bytes "$needs_bytes" \
+          '. + [{input:($payload.metadata.git.relative_path // $payload.filename),
+                 planned_payload:(if $needs_bytes == 1
+                   then ($payload + {content_transport:"daemon-visible path or file-RPC attachment (bytes omitted in dry-run)"})
+                   else $payload end)}]')"
+      elif (( needs_bytes )); then
+        local abs resp_tmp resp_status err availability
+        abs="$(python_path abs "$path_arg")"
+        resp_tmp="$(mktemp)"
+        resp_status="$(api_send_content POST "/api/artifacts/ingest" "$payload" "content_path" "$abs" "$resp_tmp")"
+        if [[ "$resp_status" =~ ^2 ]]; then
+          availability="$(jq -r '.artifact.availability // empty' "$resp_tmp" 2>/dev/null || true)"
+          if [[ "$availability" != "present" ]]; then
+            failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" \
+              '. + [{input:$input, error:"daemon_did_not_store_bytes: snapshot/copy bytes were not stored (daemon may predate path-based ingest); upgrade the daemon"}]')"
+            rm -f "$resp_tmp"
+            continue
+          fi
+          registered="$(printf '%s' "$registered" | jq --argjson artifact "$(jq '.artifact' "$resp_tmp")" '. + [{artifact:$artifact}]')"
+        else
+          err="$(explain_transport_failure "$resp_tmp" "api_ingest_failed")"
+          failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" --arg error "$err" '. + [{input:$input, error:$error}]')"
+          rm -f "$resp_tmp"
+          continue
+        fi
+        rm -f "$resp_tmp"
       else
         response="$(api_post "/api/artifacts/ingest" "$payload")" || {
           failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" '. + [{input:$input, error:"api_ingest_failed"}]')"
@@ -705,37 +751,46 @@ cmd_snapshot() {
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
-  local ref="${args[1]}" payload response artifact link_response result
-  if (( upload )) || api_is_file_rpc; then
-    local content_b64 sha media filename
-    content_b64="$(base64 < "$from_path" | tr -d '\n')"
-    sha="$(stable_hash "$from_path")"
+  local ref="${args[1]}" payload response artifact link_response result abs_from
+  abs_from="$(python_path abs "$from_path")"
+  if api_is_file_rpc; then
+    # Sandbox transport: bytes ride as a spool attachment, never inline base64
+    # through argv/JSON (issue 833e972). The daemon injects content_path.
+    local media filename resp_tmp resp_status
     media="$(media_type_for "$from_path")"
     filename="$(basename "$from_path")"
     payload="$(jq -n \
       --arg ref "$ref" \
-      --arg content_base64 "$content_b64" \
-      --arg sha256 "$sha" \
       --arg filename "$filename" \
       --arg media_type "$media" \
       --arg role "$role" \
-      --arg source_path "$from_path" \
+      --arg source_path "$abs_from" \
       '{
         ref:$ref,
-        content_base64:$content_base64,
-        sha256:$sha256,
         filename:$filename,
         logical_name:$filename,
         media_type:$media_type,
         custody_mode:"copy",
-        metadata:{source:"artifact_cli", upload_mode:true, snapshot_source_path:$source_path},
-        reference:{owner_system:"artifact_cli", upload_mode:true}
+        metadata:{source:"artifact_cli", snapshot_source_path:$source_path},
+        reference:{owner_system:"artifact_cli"}
       } + (if $role == "" then {} else {role:$role} end)')"
+    resp_tmp="$(mktemp)"
+    resp_status="$(api_send_content POST "/api/artifacts/snapshot" "$payload" "content_path" "$abs_from" "$resp_tmp")"
+    [[ "$resp_status" =~ ^2 ]] || {
+      local snap_err
+      snap_err="$(explain_transport_failure "$resp_tmp" "api_snapshot_failed")"
+      rm -f "$resp_tmp"
+      die "${RED}Failed to snapshot artifact bytes: ${snap_err}.${RESET}" 1
+    }
+    response="$(cat "$resp_tmp")"
+    rm -f "$resp_tmp"
   else
-    payload="$(jq -n --arg ref "$ref" --arg path "$from_path" --arg role "$role" \
+    # Local HTTP: the daemon shares the filesystem, so send the daemon-visible
+    # absolute path and let it read the bytes (no base64 anywhere).
+    payload="$(jq -n --arg ref "$ref" --arg path "$abs_from" --arg role "$role" \
       '{ref:$ref, path:$path, custody_mode:"copy"} + (if $role == "" then {} else {role:$role} end)')"
+    response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
   fi
-  response="$(api_post "/api/artifacts/snapshot" "$payload")" || die "${RED}Failed to snapshot artifact bytes.${RESET}" 1
   artifact="$(printf '%s' "$response" | jq '.artifact')"
   if [[ -n "$issue_id" ]]; then
     link_response="$(api_post "/api/artifacts/link" "$(jq -n --arg ref "$(printf '%s' "$artifact" | jq -r '.id')" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg role "$role" \
