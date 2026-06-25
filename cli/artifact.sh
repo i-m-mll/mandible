@@ -96,8 +96,131 @@ import sys
 cmd = sys.argv[1]
 if cmd == "abs":
     print(os.path.abspath(os.path.expanduser(sys.argv[2])))
+elif cmd == "real":
+    print(os.path.realpath(os.path.expanduser(sys.argv[2])))
 elif cmd == "rel":
     print(os.path.relpath(sys.argv[2], sys.argv[3]).replace(os.sep, "/"))
+PY
+}
+
+# Classify how a user-supplied path relates to its realpath so the CLI stores a
+# durable (non-disposable) file:// URI and records why (issue 2f9c3c3). This
+# mirrors the backend classifyLocalSymlink() so CLI dry-run plans match what
+# POST /api/artifacts/plan and registerLocalArtifactPath would store. Prints a
+# JSON LocalPathDecision (minus stored_uri, which the caller fills in).
+#   artifact_symlink_plan LEXICAL_ABS RESOLVED_REAL REAL_REPO_ROOT
+artifact_symlink_plan() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import os
+import subprocess
+import sys
+import json
+
+lexical = sys.argv[1]
+real = sys.argv[2]
+real_root = sys.argv[3] or ""
+
+
+def git(directory, args):
+    try:
+        proc = subprocess.run(
+            ["git", "-C", directory, *args],
+            capture_output=True,
+            text=True,
+        )
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    out = proc.stdout.strip()
+    return out or None
+
+
+def toplevel(directory):
+    out = git(directory, ["rev-parse", "--show-toplevel"])
+    return os.path.abspath(out) if out else None
+
+
+def common_dir(directory):
+    out = git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"])
+    return os.path.abspath(out) if out else None
+
+
+def lexical_worktree_dir(lex):
+    # First ancestor that is not itself a symlink: walking up past the leaf
+    # `_artifacts`-style directory symlink lands on the worktree the user wrote
+    # through (git still reports it as a linked worktree even when nested under
+    # the main repo), while stopping at the first real directory ignores benign
+    # prefix symlinks such as macOS /tmp -> /private/tmp.
+    directory = os.path.dirname(os.path.abspath(lex))
+    for _ in range(64):
+        try:
+            if not os.path.islink(directory):
+                return directory
+        except OSError:
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+    return None
+
+
+symlink_resolved = lexical != real
+inside_worktree = bool(real_root)
+decision = {
+    "input_path": lexical,
+    "resolved_path": real,
+    "symlink_resolved": symlink_resolved,
+}
+
+if not symlink_resolved:
+    decision.update(
+        symlink_class="none",
+        worktree_substitution=False,
+        decision_warnings=[],
+        reason="input path is already a realpath; stored as-is",
+    )
+elif not inside_worktree:
+    decision.update(
+        symlink_class="outside_repo",
+        worktree_substitution=False,
+        decision_warnings=["outside_repo_symlink"],
+        reason="input traverses a symlink whose target is outside any git repo; "
+        "link custody is non-durable, use --copy/--managed",
+    )
+else:
+    root_abs = os.path.abspath(real_root)
+    real_common = common_dir(os.path.dirname(real))
+    lex_dir = lexical_worktree_dir(lexical)
+    lex_root = toplevel(lex_dir) if lex_dir else None
+    lex_common = common_dir(lex_dir) if lex_dir else None
+    if lex_common and real_common and lex_common != real_common:
+        decision.update(
+            symlink_class="cross_repo",
+            worktree_substitution=True,
+            decision_warnings=["cross_repo_symlink"],
+            reason="input traverses a symlink crossing into a different git "
+            "repository; stored the cross-repo realpath",
+        )
+    elif lex_root and root_abs and lex_root != root_abs:
+        decision.update(
+            symlink_class="same_repo_durable",
+            worktree_substitution=True,
+            decision_warnings=["symlink_resolved_to_durable_target"],
+            reason="input traverses a same-repo worktree symlink; stored the "
+            "persistent realpath so it survives feature-worktree deletion",
+        )
+    else:
+        decision.update(
+            symlink_class="prefix_only",
+            worktree_substitution=False,
+            decision_warnings=[],
+            reason="input differs from its realpath only by a path-prefix "
+            "symlink; stored the realpath",
+        )
+
+print(json.dumps(decision))
 PY
 }
 
@@ -193,8 +316,9 @@ issue_link_json() {
 classify_path() {
   local input="$1"
   local role_override="${2:-}"
-  local abs dir root rel repo_id branch commit git_status tracked ignored index_status worktree_status staged dirty untracked
+  local abs real dir root rel repo_id branch commit git_status tracked ignored index_status worktree_status staged dirty untracked
   local sha size media filename role warnings repo_locator uri canonical_ref recoverability availability git_json
+  local symlink_json decision_codes path_decision
 
   abs="$(python_path abs "$input")"
   if [[ ! -e "$abs" ]]; then
@@ -206,18 +330,22 @@ classify_path() {
     return
   fi
 
-  dir="$(dirname "$abs")"
+  # Classify against the realpath (symlinks resolved) so a feature worktree's
+  # disposable `_artifacts` symlink resolves to its persistent repo-root target
+  # and the stored file:// URI survives worktree deletion (issue 2f9c3c3).
+  real="$(python_path real "$input")"
+  dir="$(dirname "$real")"
   root="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null || true)"
-  sha="$(stable_hash "$abs")"
-  size="$(wc -c < "$abs" | tr -d ' ')"
-  media="$(media_type_for "$abs")"
-  filename="$(basename "$abs")"
+  sha="$(stable_hash "$real")"
+  size="$(wc -c < "$real" | tr -d ' ')"
+  media="$(media_type_for "$real")"
+  filename="$(basename "$real")"
   role="${role_override:-$(infer_role "$input")}"
   availability="present"
   warnings='[]'
 
   if [[ -n "$root" ]]; then
-    rel="$(python_path rel "$abs" "$root")"
+    rel="$(python_path rel "$real" "$root")"
     repo_id="$(repo_id_for_root "$root")"
     branch="$(git -C "$root" symbolic-ref --quiet --short HEAD 2>/dev/null || git -C "$root" rev-parse --short HEAD 2>/dev/null || true)"
     commit="$(git -C "$root" rev-parse HEAD 2>/dev/null || true)"
@@ -245,7 +373,8 @@ classify_path() {
       warnings="$(printf '%s' "$warnings" | jq '. + [{code:"mutable_ref", message:"repo locator uses a mutable worktree ref"}]')"
     else
       recoverability="local_only"
-      uri="file://${abs}"
+      # Durable realpath, not the possibly-disposable input path.
+      uri="file://${real}"
       canonical_ref="artifact:${sha}"
       repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$branch" --arg path "$rel" \
         '{repo_id:$repo_id, ref:$ref, path:$path, local_only:true}')"
@@ -263,13 +392,22 @@ classify_path() {
   else
     rel="$filename"
     repo_id=""
-    uri=""
+    uri="file://${real}"
     canonical_ref="artifact:${sha}"
     repo_locator='{}'
     recoverability="local_only"
     warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --copy or --managed for durable registration"}]')"
     git_json="$(jq -n '{repo_id:null, relative_path:null, tracked:false, ignored:false, staged:false, dirty:false, untracked:false}')"
   fi
+
+  # Record the symlink decision (input path, realpath, stored URI, why) so the
+  # stored artifact explains durable-path selection, and surface any symlink
+  # warning codes alongside the recoverability warnings.
+  symlink_json="$(artifact_symlink_plan "$abs" "$real" "$root")"
+  decision_codes="$(printf '%s' "$symlink_json" | jq -c '.decision_warnings')"
+  warnings="$(printf '%s' "$warnings" | jq --argjson codes "$decision_codes" \
+    '. + ($codes | map({code:., message:"symlink path decision"}))')"
+  path_decision="$(printf '%s' "$symlink_json" | jq --arg uri "$uri" '. + {stored_uri:$uri}')"
 
   jq -n \
     --arg input "$input" \
@@ -284,6 +422,7 @@ classify_path() {
     --argjson warnings "$warnings" \
     --argjson repo_locator "$repo_locator" \
     --argjson git "$git_json" \
+    --argjson path_decision "$path_decision" \
     '{
       input:$input,
       ok:true,
@@ -294,12 +433,14 @@ classify_path() {
       role:$role,
       size_bytes:$size_bytes,
       uri:$uri,
+      input_path:$path_decision.input_path,
       canonical_ref:(if $recoverability == "local_only" then "artifact:" + $sha256 else $uri end),
       recoverability:$recoverability,
       availability:$availability,
       custody_mode:"link",
       repo_locator:$repo_locator,
       git:$git,
+      path_decision:$path_decision,
       warnings:$warnings
     }'
 }
@@ -357,8 +498,8 @@ payload_for_path() {
         availability,
         home_repo_id:(.git.repo_id // null),
         repo_locator,
-        reference:{owner_system:"artifact_cli", recoverability:.recoverability, git:.git, source_uri:.uri, preferred_ref:.canonical_ref},
-        metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref},
+        reference:{owner_system:"artifact_cli", recoverability:.recoverability, git:.git, source_uri:.uri, preferred_ref:.canonical_ref, path_decision:.path_decision},
+        metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref, source_path:.path_decision.resolved_path, input_path:.path_decision.input_path, path_decision:.path_decision},
         links:$links
       }'
     return 0
@@ -380,8 +521,8 @@ payload_for_path() {
       availability,
       home_repo_id:(.git.repo_id // null),
       repo_locator,
-      reference:{owner_system:"repo", recoverability:.recoverability, git:.git, preferred_ref:.canonical_ref, content_identity:{algorithm:"sha256", hash:.sha256}},
-      metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref},
+      reference:{owner_system:"repo", recoverability:.recoverability, git:.git, preferred_ref:.canonical_ref, content_identity:{algorithm:"sha256", hash:.sha256}, path_decision:.path_decision},
+      metadata:{filename, logical_name, recoverability:.recoverability, git:.git, warnings:.warnings, source:"artifact_cli", preferred_ref:.canonical_ref, source_path:.path_decision.resolved_path, input_path:.path_decision.input_path, path_decision:.path_decision},
       links:$links
     }'
 }
