@@ -52,3 +52,32 @@ export function daemonNeedsSplash(health: DaemonHealthSnapshot | null | undefine
 export function daemonIsReady(health: DaemonHealthSnapshot | null | undefined): boolean {
   return !daemonNeedsSplash(health);
 }
+
+/**
+ * Whether a cold-mount `/api/health` probe should ENTER the splash. This is
+ * deliberately stricter than {@link daemonNeedsSplash}: it requires an EXPLICIT
+ * POSITIVE not-ready signal from a well-formed health response — `rebuilding ===
+ * true` OR `ready === false`.
+ *
+ * It intentionally does NOT enter on absence of information:
+ *  - a failed / indeterminate cold-mount fetch (`null`) — a daemon that cannot
+ *    serve health did not serve this page either;
+ *  - a 200 response that simply omits `ready` (an older daemon predating this
+ *    feature, or any non-health body) — `ready === false` is required, not
+ *    merely "not exactly true".
+ *
+ * This avoids hijacking the UI / flashing the splash on normal cold loads. It
+ * still satisfies the "page loaded mid-startup" case because a reachable
+ * still-starting daemon answers health 200 with an explicit `ready: false`.
+ *
+ * Contrast {@link daemonNeedsSplash} (the STAY predicate), which treats `null`
+ * and missing readiness as "keep the splash up" once it is ALREADY active, so
+ * the splash survives the daemon exit/restart gap during a self-merge. Entering
+ * vs. staying are different questions; this predicate answers "enter".
+ */
+export function shouldEnterSplashOnProbe(health: DaemonHealthSnapshot | null | undefined): boolean {
+  if (!health) {
+    return false;
+  }
+  return health.rebuilding === true || health.ready === false;
+}
