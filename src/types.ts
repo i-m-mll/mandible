@@ -29,6 +29,13 @@ export interface HealthResponse {
   // The UI health poll uses this to avoid reloading prematurely while the
   // daemon is still alive but in the process of shutting down.
   rebuilding?: boolean;
+  // Bug: 645f8a8 — lifecycle-owned readiness. true only once the daemon has
+  // finished the critical startup work that makes normal dashboard mutations
+  // (auth approve/reject, etc.) safe — NOT merely "the HTTP listener is alive".
+  // The UI keeps the rebuild/start splash up and gates mutations while this is
+  // not strictly true, so a freshly-listening-but-still-starting process does
+  // not let users fire actions into a half-initialized daemon.
+  ready?: boolean;
 }
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
