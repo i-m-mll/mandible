@@ -28,7 +28,7 @@ import {
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
-import { daemonIsReady, daemonNeedsSplash, type DaemonHealthSnapshot } from './daemon-readiness';
+import { daemonIsReady, shouldEnterSplashOnProbe, type DaemonHealthSnapshot } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
   hashWithViewSidebarHidden,
@@ -723,10 +723,13 @@ function App(): JSX.Element {
 
   // Bug: 645f8a8 — initial mount probe. A page (re)loaded mid-rebuild or
   // mid-startup will not have seen the mandible:rebuilding SSE event. Probe
-  // /api/health once on mount; if the daemon is not ready for normal mutations,
-  // enter the splash/starting state so it behaves like a page that did see the
-  // event. A rebuilding daemon shows the rebuild copy; any other not-ready
-  // (or unreachable) daemon shows the generic starting copy.
+  // /api/health once on mount; enter the splash ONLY on a POSITIVE not-ready
+  // signal — a successful health response that reports rebuilding or ready
+  // !== true (see shouldEnterSplashOnProbe). A failed / indeterminate cold-mount
+  // probe (health === null) must NOT hijack the UI: a daemon that cannot serve
+  // health did not serve this page either, and we must not flash the splash on
+  // every normal load. (The POLL predicate keeps the splash up through the
+  // exit/restart gap once it is already active — that is a different question.)
   useEffect(() => {
     let cancelled = false;
     void (async () => {
@@ -738,7 +741,7 @@ function App(): JSX.Element {
         health = null;
       }
       if (cancelled) return;
-      if (!daemonNeedsSplash(health)) return; // ready — nothing to do
+      if (!shouldEnterSplashOnProbe(health)) return; // ready, or unreachable cold mount — render normally
       if (health?.rebuilding) {
         setRebuilding(true);
       } else {
