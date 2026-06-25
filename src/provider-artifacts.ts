@@ -538,7 +538,7 @@ const MIN_ARTIFACT_HASH_PREFIX_LENGTH = 7;
 
 function artifactHashRefFromRef(ref: string): ArtifactHashRefParse | null {
   const trimmed = ref.trim();
-  const match = /^(?:artifact:)?([a-f0-9]+)$/i.exec(trimmed);
+  const match = /^(?:artifact:(?:sha256:)?)?([a-f0-9]+)$/i.exec(trimmed);
   if (!match) {
     if (/^artifact:/i.test(trimmed)) {
       return { kind: "invalid", prefix: "" };

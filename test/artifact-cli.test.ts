@@ -295,6 +295,80 @@ describe("artifact CLI", () => {
     }
   });
 
+  it("links snapshot-from-ref results using canonical artifact ids", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
+    tempRoots.push(spoolDir);
+    const sourceRef = `artifact:sha256:${"a".repeat(64)}`;
+    const newRef = `artifact:sha256:${"b".repeat(64)}`;
+    const seen: Array<Record<string, unknown>> = [];
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      seen.push(request);
+      if (request.method === "GET" && request.path === "/api/ledger/issues/abc") {
+        return {
+          status: 200,
+          body: { id: "issue-1", display_id: "abc", project: { repo_id: "mandible" } },
+        };
+      }
+      if (request.method === "POST" && request.path === "/api/artifacts/snapshot") {
+        return {
+          status: 200,
+          body: {
+            artifact: {
+              id: newRef,
+              custody_mode: "copy",
+              availability: "present",
+            },
+          },
+        };
+      }
+      if (request.method === "POST" && request.path === "/api/artifacts/link") {
+        return {
+          status: 200,
+          body: {
+            link: {
+              id: "artifact-link-1",
+              artifact_id: newRef,
+              entity_type: "issue",
+              entity_id: "issue-1",
+              link_type: "references",
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", path: request.path } };
+    });
+
+    try {
+      const result = await runAsync(
+        ["artifact", "snapshot", sourceRef, "--from", "report.md", "--issue", "abc", "--json"],
+        tempDir,
+        {
+          MANDIBLE_BASE: `file://${spoolDir}`,
+          MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        },
+      );
+
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.artifact.id).toBe(newRef);
+      expect(payload.link.artifact_id).toBe(newRef);
+      expect(seen.map((request) => request.path)).toEqual([
+        "/api/ledger/issues/abc",
+        "/api/artifacts/snapshot",
+        "/api/artifacts/link",
+      ]);
+      expect(seen[1].body).toMatchObject({ ref: sourceRef, custody_mode: "copy" });
+      expect(seen[2].body).toMatchObject({
+        ref: newRef,
+        entity_type: "issue",
+        entity_id: "issue-1",
+        link_type: "references",
+      });
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
   it("carries a multi-MiB file RPC snapshot through an attachment, never argv (issue 833e972)", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
