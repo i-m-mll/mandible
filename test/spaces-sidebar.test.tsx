@@ -37,14 +37,16 @@ function makeSpace(id: string, title: string, projectId: string | null): Space {
 
 function sampleGroups(): SpaceGroup[] {
   return [
-    { project_id: null, project_name: null, spaces: [makeSpace('t1', 'Global notes', null)] },
+    { project_id: null, project_key: null, project_name: null, spaces: [makeSpace('t1', 'Global notes', null)] },
     {
       project_id: 'proj-a',
+      project_key: 'alpha',
       project_name: 'Alpha',
       spaces: [makeSpace('a1', 'Roadmap', 'proj-a'), makeSpace('a2', 'Backlog', 'proj-a')],
     },
     {
       project_id: 'proj-b',
+      project_key: 'beta',
       project_name: 'Beta',
       spaces: [makeSpace('b1', 'Beta board', 'proj-b')],
     },
@@ -278,12 +280,14 @@ describe('SpacesSidebar empty projects (compact, Stage 3)', () => {
     return [
       {
         project_id: 'proj-a',
+        project_key: 'alpha',
         project_name: 'Alpha',
         spaces: [makeSpace('a1', 'Roadmap', 'proj-a')],
       },
-      // Empty project: listSpacesGrouped emits ALL projects so users can create
-      // under any. It must render as a compact header row, NOT "No spaces yet".
-      { project_id: 'proj-empty', project_name: 'Empty', spaces: [] },
+      // Empty project group: the backend now suppresses these (issue 6fdd924), but
+      // the UI still renders them gracefully when a caller (e.g. an older cached
+      // response) provides one — as a compact header with no "No spaces yet" filler.
+      { project_id: 'proj-empty', project_key: 'empty', project_name: 'Empty', spaces: [] },
     ];
   }
 

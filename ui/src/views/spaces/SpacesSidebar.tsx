@@ -27,9 +27,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import {
   listSpacesGrouped,
+  listProjectsForPicker,
   createSpace,
   type Space,
   type SpaceGroup,
+  type ProjectPickerItem,
 } from '../../api';
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
@@ -60,6 +62,11 @@ export type SpacesSidebarProps = {
   loadGroups?: () => Promise<SpaceGroup[]>;
   /** Injected create helper (defaults to the real `createSpace`). */
   createSpaceFn?: typeof createSpace;
+  /**
+   * Injected project-list loader for the space-creation project picker (issue
+   * 6fdd924). Defaults to the real registry read; tests can supply a stub.
+   */
+  loadProjectsFn?: () => Promise<ProjectPickerItem[]>;
   /** Refresh nonce: bump to force a re-read after an external mutation. */
   refreshToken?: number;
 };
@@ -175,6 +182,7 @@ export function SpacesSidebar({
   onSelectSpace,
   loadGroups = listSpacesGrouped,
   createSpaceFn = createSpace,
+  loadProjectsFn = listProjectsForPicker,
   refreshToken,
 }: SpacesSidebarProps): JSX.Element | null {
   const [groups, setGroups] = useState<SpaceGroup[]>([]);
@@ -192,6 +200,11 @@ export function SpacesSidebar({
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [internalRefresh, setInternalRefresh] = useState(0);
+  // Project picker for the "top-level" create chooser (issue 6fdd924). Loaded
+  // lazily from the registry when the chooser opens so projects with zero spaces
+  // are still enumerable. `chooserProjectId === null` means "top-level (no project)".
+  const [chooserProjects, setChooserProjects] = useState<ProjectPickerItem[]>([]);
+  const [chooserProjectId, setChooserProjectId] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLElement>(null);
 
@@ -322,15 +335,23 @@ export function SpacesSidebar({
   );
 
   // --- create affordance ---
-  const openChooser = useCallback((target: CreateTarget) => {
-    setBlankTitle('');
-    setCreateError(null);
-    setPopover({ target, mode: 'chooser' });
-  }, []);
-
-  const targetProjectId = useCallback((target: CreateTarget): string | null => {
-    return target.kind === 'project' ? target.projectId : null;
-  }, []);
+  const openChooser = useCallback(
+    (target: CreateTarget) => {
+      setBlankTitle('');
+      setCreateError(null);
+      setChooserProjectId(null);
+      setPopover({ target, mode: 'chooser' });
+      // For the top-level kind, eagerly load projects from the registry so the
+      // user can pick a project for their first space in that project (issue
+      // 6fdd924). Project-scoped buttons don't need the picker.
+      if (target.kind === 'top-level') {
+        loadProjectsFn()
+          .then(setChooserProjects)
+          .catch(() => setChooserProjects([]));
+      }
+    },
+    [loadProjectsFn],
+  );
 
   const doCreate = useCallback(
     async (target: CreateTarget, title: string, then: 'select' | 'seed') => {
@@ -339,7 +360,10 @@ export function SpacesSidebar({
       setCreating(true);
       setCreateError(null);
       try {
-        const projectId = targetProjectId(target);
+        // For the top-level chooser, respect the user's project selection from the
+        // registry picker. A null chooserProjectId means "create as top-level".
+        const projectId =
+          target.kind === 'project' ? target.projectId : chooserProjectId;
         const space = await createSpaceFn({ project_id: projectId, title: trimmed });
         if (then === 'seed') {
           setPopover({
@@ -363,7 +387,7 @@ export function SpacesSidebar({
         setCreating(false);
       }
     },
-    [creating, createSpaceFn, targetProjectId, refresh, onSelectSpace],
+    [creating, createSpaceFn, chooserProjectId, refresh, onSelectSpace],
   );
 
   const handleSeeded = useCallback(
@@ -428,10 +452,10 @@ export function SpacesSidebar({
 
   const renderChooser = (): JSX.Element | null => {
     if (!popover || popover.mode !== 'chooser') return null;
-    const label =
-      popover.target.kind === 'top-level'
-        ? 'New top-level space'
-        : `New space in ${popover.target.projectName}`;
+    const isTopLevel = popover.target.kind === 'top-level';
+    const label = isTopLevel
+      ? 'New space'
+      : `New space in ${popover.target.projectName}`;
     return (
       <div className="spaces-tree__chooser" role="menu" data-testid="space-create-chooser">
         <div className="spaces-tree__chooser-title">{label}</div>
@@ -451,6 +475,30 @@ export function SpacesSidebar({
             }}
           />
         </label>
+        {/* Project picker: only shown for the top-level create button (issue 6fdd924).
+            Lets the user place the new space in any project from the registry, including
+            projects that own zero existing spaces. Default (empty value) = top-level. */}
+        {isTopLevel ? (
+          <label className="spaces-tree__chooser-field">
+            <span>Project</span>
+            <select
+              className="spaces-tree__chooser-select"
+              data-testid="space-create-project"
+              value={chooserProjectId ?? ''}
+              onChange={(event) => {
+                const val = (event.currentTarget as HTMLSelectElement).value;
+                setChooserProjectId(val || null);
+              }}
+            >
+              <option value="">Top level (no project)</option>
+              {chooserProjects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.display_name || p.project_key || p.id}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {createError ? (
           <p className="spaces-tree__chooser-error" role="alert" data-testid="space-create-error">
             {createError}

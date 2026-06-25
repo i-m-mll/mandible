@@ -597,11 +597,17 @@ export type SeedSpaceRequest = {
 export type SpaceListResponse = { spaces: Space[] };
 
 /**
- * One group in the grouped Spaces list (issue 812df41): a project (with id and
- * name) or the top-level / global bucket (`project_id: null`, `project_name: null`).
+ * One group in the grouped Spaces list (issue 812df41): a project (with id,
+ * stable key, and name) or the top-level / global bucket (`project_id: null`,
+ * `project_name: null`). `project_key` is the stable registry slug from
+ * `ledger_projects.project_key` (null for the top-level group and for unresolvable
+ * project rows). `project_name` is already disambiguated by the backend when
+ * two project rows share the same `display_name` (issue 6fdd924).
  */
 export type SpaceGroup = {
   project_id: string | null;
+  /** Stable registry slug from `ledger_projects.project_key`, or null. */
+  project_key: string | null;
   project_name: string | null;
   spaces: Space[];
 };

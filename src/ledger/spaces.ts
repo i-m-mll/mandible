@@ -309,29 +309,38 @@ export function listAllSpaces(db: Db): SpaceRecord[] {
 export interface SpaceGroup {
   /** Owning project id, or `null` for the top-level / global group. */
   project_id: string | null;
-  /** Project display name, or `null` for the top-level group (and for an unresolvable project). */
+  /**
+   * Stable registry slug from `ledger_projects.project_key`, or `null` for the
+   * top-level group and for project rows whose key is empty/unresolvable.
+   */
+  project_key: string | null;
+  /** Project display name (already disambiguated when colliding), or `null` for the top-level group. */
   project_name: string | null;
   spaces: SpaceRecord[];
 }
 
 /**
- * Grouped Spaces list for the home view (issue 812df41): every Space across all
- * projects, partitioned into one group per owning project plus a single top-level
- * group (`project_id: null`). The top-level group sorts FIRST (when non-empty);
- * project groups follow for EVERY row in `ledger_projects`, ordered by project
- * display name (then id), with `spaces: []` for projects that have no spaces yet.
- * Within each group, Spaces keep the canonical updated_at DESC, id ASC order.
+ * Grouped Spaces list for the home view (issue 812df41, 6fdd924): every Space
+ * across all projects, partitioned into one group per owning project plus a
+ * single top-level group (`project_id: null`). The top-level group sorts FIRST
+ * (when non-empty); project groups follow for ONLY projects that own at least
+ * one Space (empty projects are suppressed — issue 6fdd924). Within each group,
+ * Spaces keep the canonical updated_at DESC, id ASC order.
+ *
+ * Each group carries the canonical `project_key` from `ledger_projects`. When
+ * two distinct project rows share the same `display_name`, their `project_name`
+ * is disambiguated by appending `(project_key)` so headings stay distinguishable.
  */
 export function listSpacesGrouped(db: Db): SpaceGroup[] {
   const all = listAllSpaces(db);
   const projectRows = db
-    .prepare("SELECT id, display_name FROM ledger_projects")
-    .all() as Array<{ id: string; display_name: string | null }>;
+    .prepare("SELECT id, project_key, display_name FROM ledger_projects")
+    .all() as Array<{ id: string; project_key: string; display_name: string | null }>;
 
   const topLevel: SpaceRecord[] = [];
   const byProject = new Map<string, SpaceRecord[]>();
-  // Pre-populate every known project so empty projects still get a group.
-  for (const row of projectRows) byProject.set(row.id, []);
+  // Do NOT pre-populate every project — only emit groups that own at least one Space.
+  // (Empty-project headers caused duplicate/empty headings in the sidebar, issue 6fdd924.)
   for (const space of all) {
     if (space.project_id === null) {
       topLevel.push(space);
@@ -342,18 +351,45 @@ export function listSpacesGrouped(db: Db): SpaceGroup[] {
     }
   }
 
-  const projectNameById = new Map<string, string | null>();
-  for (const row of projectRows) projectNameById.set(row.id, row.display_name);
+  // Build a lookup for project metadata keyed by project id.
+  const projectById = new Map<
+    string,
+    { project_key: string; display_name: string | null }
+  >();
+  for (const row of projectRows) {
+    projectById.set(row.id, { project_key: row.project_key, display_name: row.display_name });
+  }
+
+  // Count how many distinct project rows share the same display_name so we can
+  // append the project_key as a disambiguation suffix for colliding names.
+  const displayNameCount = new Map<string, number>();
+  for (const row of projectRows) {
+    const name = row.display_name ?? "";
+    displayNameCount.set(name, (displayNameCount.get(name) ?? 0) + 1);
+  }
 
   const groups: SpaceGroup[] = [];
   if (topLevel.length > 0) {
-    groups.push({ project_id: null, project_name: null, spaces: topLevel });
+    groups.push({ project_id: null, project_key: null, project_name: null, spaces: topLevel });
   }
-  const projectGroups = Array.from(byProject.entries()).map(([projectId, spaces]) => ({
-    project_id: projectId,
-    project_name: projectNameById.get(projectId) ?? null,
-    spaces,
-  }));
+  const projectGroups = Array.from(byProject.entries()).map(([projectId, spaces]) => {
+    const info = projectById.get(projectId);
+    const displayName = info?.display_name ?? null;
+    // Treat empty string project_key (unbackfilled rows) as null.
+    const projectKey: string | null = info?.project_key || null;
+    // Disambiguate: when multiple rows share the same display_name, append the
+    // project_key (or a short id suffix when key is absent) to tell them apart.
+    const nameCollides =
+      displayName !== null && (displayNameCount.get(displayName) ?? 0) > 1;
+    const disambigSuffix = projectKey ?? projectId.slice(0, 8);
+    const project_name = nameCollides ? `${displayName} (${disambigSuffix})` : displayName;
+    return {
+      project_id: projectId,
+      project_key: projectKey,
+      project_name,
+      spaces,
+    };
+  });
   projectGroups.sort((a, b) => {
     const an = a.project_name ?? "";
     const bn = b.project_name ?? "";
