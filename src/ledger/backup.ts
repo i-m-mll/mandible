@@ -210,6 +210,28 @@ export function buildMetadataBackupSql(db: Db): string {
         lines.push(`INSERT INTO ${quoteIdentifier(table)} (${quotedColumns}) VALUES (${values});`);
       }
     }
+
+    // Secondary indexes. A table's CREATE statement only carries the implicit
+    // indexes for inline PRIMARY KEY / UNIQUE constraints; explicitly named
+    // CREATE INDEX statements (e.g. idx_artifact_links_kind /
+    // idx_artifact_links_series from migration 89) are separate sqlite_master
+    // rows that a column-driven dump would otherwise drop, so a restore into a
+    // fresh DB would silently lose them (codex LOW). Emit each one here. The
+    // migration DDL uses CREATE INDEX IF NOT EXISTS, so re-applying the dump over
+    // an already-migrated DB stays idempotent. sql IS NULL for auto-created
+    // constraint indexes, which the CREATE TABLE above already recreates.
+    const indexes = db
+      .prepare(
+        `SELECT sql FROM sqlite_master
+         WHERE type = 'index' AND tbl_name = ? AND sql IS NOT NULL
+         ORDER BY name`,
+      )
+      .all(table) as Array<{ sql: string | null }>;
+    for (const index of indexes) {
+      if (index.sql) {
+        lines.push(`${index.sql};`);
+      }
+    }
     lines.push("");
   }
 

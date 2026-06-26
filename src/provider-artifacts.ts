@@ -3705,6 +3705,57 @@ export function appendArtifactVersion(
   return db.transaction(body).immediate();
 }
 
+// Migration-89 backfill (issue c154a27), invoked from db.ts migrate() like
+// backfillProjectKeys. Wraps every series-less `artifacts` content row into a
+// deterministic 1-version series so the "series IS the artifact" identity holds
+// for every pre-existing row. The series source_kind is derived from the
+// artifact's custody_mode (managed/copy -> managed, link/external -> local_only)
+// while the version row preserves the TRUE custody_mode. series_key = the artifact
+// id, so the series id (seriesIdFromKey) and version id (versionIdFor) are
+// deterministic: re-runs are no-ops (ensureArtifactSeries ON CONFLICT(series_key)
+// DO UPDATE + appendArtifactVersion ON CONFLICT(id) DO NOTHING, and a re-run also
+// finds zero orphans). Runs as ONE immediate transaction (the nested
+// appendArtifactVersion runs inline because db.inTransaction is true) so it is not
+// one transaction per artifact. Returns the number of artifacts wrapped.
+export function backfillOrphanArtifactSeries(db: Db, now = Date.now()): number {
+  if (!artifactVersioningTablesExist(db)) return 0;
+  if (!tableExists(db, "artifacts")) return 0;
+  const orphans = db
+    .prepare(
+      `SELECT id, custody_mode, content_hash FROM artifacts
+        WHERE id NOT IN (SELECT artifact_id FROM artifact_versions)
+        ORDER BY created_at, id`,
+    )
+    .all() as Array<{ id: string; custody_mode: string | null; content_hash: string | null }>;
+  if (orphans.length === 0) return 0;
+
+  const wrap = (orphan: { id: string; custody_mode: string | null; content_hash: string | null }): void => {
+    const custody = orphan.custody_mode ?? "managed";
+    const sourceKind: ArtifactVersionSourceKind =
+      custody === "managed" || custody === "copy" ? "managed" : "local_only";
+    const series = ensureArtifactSeries(db, { series_key: orphan.id, source_kind: sourceKind }, now);
+    appendArtifactVersion(
+      db,
+      {
+        series_id: series.id,
+        artifact_id: orphan.id,
+        source_kind: sourceKind,
+        content_hash: orphan.content_hash ?? "",
+        natural_key: orphan.id,
+        custody_mode: custody,
+      },
+      now,
+    );
+  };
+
+  const run = (): void => {
+    for (const orphan of orphans) wrap(orphan);
+  };
+  if (db.inTransaction) run();
+  else db.transaction(run).immediate();
+  return orphans.length;
+}
+
 export interface RecordArtifactVersionInput {
   source_kind: ArtifactVersionSourceKind;
   path?: string;
