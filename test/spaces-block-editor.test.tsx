@@ -2,8 +2,9 @@
 //
 // Covers the acceptance criteria:
 //   - The editor reads/writes `space_blocks` via the C11 routes and renders the
-//     live tree through the C14b renderer (create / edit prose / reorder /
-//     delete / embed all hit the right routes).
+//     live tree through the C14b renderer. Authoring controls must stay
+//     transparent: typed document commands and transient overlays, not persistent
+//     block chrome.
 //   - Custody-aware gating (C13d): a repo-authoritative + drifted document is
 //     read-only/stale with re-import / fork affordances; Mandible-custody and
 //     clean repo documents are freely editable.
@@ -19,7 +20,6 @@ import { h } from 'preact';
 
 import {
   DocumentBlockEditor,
-  type EmbeddableItem,
   type EmbedDeleteDecision,
 } from '../ui/src/views/spaces/DocumentBlockEditor';
 import {
@@ -443,7 +443,8 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(screen.getByText('Body prose.')).toBeTruthy();
     expect(screen.getAllByTestId('spaces-block-editor-row')).toHaveLength(2);
     expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
-    expect(screen.getAllByTestId('spaces-block-editor-command-trigger').length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('spaces-block-editor-command-trigger')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-picker-overlay')).toBeNull();
     expect(screen.queryByTestId('spaces-block-editor-add-items')).toBeNull();
     expect(screen.queryByTestId('spaces-block-editor-up')).toBeNull();
     expect(screen.queryByTestId('spaces-block-editor-down')).toBeNull();
@@ -453,18 +454,26 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(editor.getAttribute('data-stale')).toBe('false');
   });
 
-  it('creates a prose block via POST /api/spaces/:id/blocks', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
-    await renderEditor({ backend });
+  it('creates the first prose block via POST /api/spaces/:id/blocks', async () => {
+    const backend = makeBackend([]);
+    vi.stubGlobal('fetch', backend.fetchImpl);
+    render(
+      <DocumentBlockEditor
+        projectId="prj1"
+        spaceId="sp1"
+        renderer="document"
+        fetchImpl={backend.fetchImpl}
+      />,
+    );
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-command-trigger'));
-    fireEvent.click(screen.getByTestId('spaces-block-editor-add-paragraph'));
+    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-empty-author')).toBeTruthy());
+    fireEvent.click(screen.getByText('Start writing'));
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'POST' && /\/blocks$/.test(c.url))).toBe(true),
     );
     const post = backend.calls.find((c) => c.method === 'POST');
     expect((post!.body as { block_type: string }).block_type).toBe('paragraph');
-    expect((post!.body as { sort_key: string }).sort_key > 'a').toBe(true);
+    expect(typeof (post!.body as { sort_key: string }).sort_key).toBe('string');
   });
 
   it('edits a prose block and autosaves via PATCH on blur', async () => {
@@ -503,41 +512,43 @@ describe('DocumentBlockEditor (editable)', () => {
     }
   });
 
-  it('embeds an item via POST with item_id + item_snapshot placeholder', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
-    const items: EmbeddableItem[] = [
-      { id: 'it1', ref_type: 'issue', ref_id: 'mandible://repo/issue/abc', title: 'An issue' },
-    ];
-    await renderEditor({ backend, embeddableItems: items });
+  it('shows a transient selected-text formatting menu and wraps the selected Markdown', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Body text' })]);
+    await renderEditor({ backend });
 
     fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    fireEvent.click(screen.getByTestId('spaces-block-editor-embed-it1'));
-    await waitFor(() =>
-      expect(backend.calls.some((c) => c.method === 'POST' && (c.body as { item_id?: string }).item_id === 'it1')).toBe(true),
-    );
-    const post = backend.calls.find((c) => c.method === 'POST' && (c.body as { item_id?: string }).item_id === 'it1')!;
-    expect((post.body as { block_type: string }).block_type).toBe('issue_embed');
-    expect((post.body as { item_snapshot: { item_id: string } }).item_snapshot.item_id).toBe('it1');
+    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    textarea.setSelectionRange(0, 4);
+    fireEvent.select(textarea);
+
+    expect(screen.getByTestId('spaces-block-editor-selection-menu')).toBeTruthy();
+    fireEvent.mouseDown(screen.getByLabelText('Bold'));
+    await waitFor(() => expect(textarea.value).toBe('**Body** text'));
   });
 
-  it('inserts a picked Space item as an inline bracket ref in the active block', async () => {
+  it('opens the item picker from typed /item and replaces that command range with a bracket ref', async () => {
     const backend = makeBackend(
-      [makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See' })],
+      [
+        makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See /item' }),
+        makeBlock({ id: 'b2', sort_key: 'b', markdown: 'Other block' }),
+      ],
       [],
       [makeItem({ id: 'it1', ref_type: 'issue', ref_id: 'abc123', title: 'Issue abc123' })],
     );
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+    fireEvent.click(screen.getAllByTestId('spaces-block-editor-edit')[0]);
     const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    textarea.setSelectionRange(3, 3);
-    fireEvent.click(screen.getByTestId('spaces-block-editor-command-trigger'));
-    fireEvent.click(screen.getByTestId('spaces-block-editor-add-items'));
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-picker-overlay')).toBeTruthy());
+    fireEvent.mouseEnter(screen.getAllByTestId('spaces-block-editor-row')[1]);
     await waitFor(() => expect(screen.getByTestId('space-item-picker')).toBeTruthy());
     fireEvent.click(screen.getByText('Issue abc123'));
     fireEvent.click(screen.getByTestId('space-item-picker-add'));
 
     await waitFor(() => expect(textarea.value).toBe('See [issue:abc123]'));
+    expect(backend.blocks.get('b2')?.markdown).toBe('Other block');
     await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
     expect((backend.calls.find((c) => c.method === 'PATCH')!.body as { markdown: string }).markdown)
       .toBe('See [issue:abc123]');

@@ -51,7 +51,6 @@ import {
   detachItemFromBlocks,
   listSpaceBlocks,
   updateSpaceBlock,
-  type BlockItemSnapshot,
   type CreateBlockBody,
 } from './spaceBlocksClient';
 import {
@@ -66,16 +65,7 @@ import './DocumentBlockEditor.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
 
-/** Prose block types the editor offers as "add prose" affordances. */
-const PROSE_BLOCK_TYPES: SpaceBlockType[] = ['paragraph', 'heading', 'todo'];
 const AUTOSAVE_DELAY_MS = 650;
-
-/** Embed block types and the ref kind each one binds. */
-const EMBED_KIND: Record<string, SpaceBlockType> = {
-  issue: 'issue_embed',
-  artifact: 'artifact_embed',
-  comment: 'comment_embed',
-};
 
 /**
  * An item the editor can embed. The caller (the C8 collection / a future picker)
@@ -116,6 +106,15 @@ type SaveState =
   | { status: 'error'; blockId: string; message: string };
 
 type CaretTarget = { blockId: string; start: number; end: number };
+type ItemCommandRange = { blockId: string; start: number; end: number };
+type SelectionMenuState = {
+  blockId: string;
+  start: number;
+  end: number;
+  top: number;
+  left: number;
+};
+type OverlayPosition = { top: number; left: number };
 
 type RefInspector =
   | { status: 'resolving'; ref: string }
@@ -125,8 +124,6 @@ type RefInspector =
 export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
   /** Test seam: inject a fetch implementation for block reads/writes. */
   fetchImpl?: typeof fetch;
-  /** Items the editor may embed (issue / artifact / comment). */
-  embeddableItems?: EmbeddableItem[];
   /**
    * Explicit re-import affordance: pull the repo's current version into Mandible
    * working state. Surfaced only when custody is repo-authoritative + stale. The
@@ -144,17 +141,6 @@ export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
    * nothing (the safe non-destructive default).
    */
   onEmbedDeleteDecision?: (decision: EmbedDeleteDecision) => void;
-}
-
-/** Build the C11 snapshot placeholder for an embedded item. */
-function snapshotFor(item: EmbeddableItem): BlockItemSnapshot {
-  return {
-    item_id: item.id,
-    ref_type: item.ref_type,
-    ref_id: item.ref_id,
-    ref_uri: item.ref_uri ?? null,
-    title: item.title ?? null,
-  };
 }
 
 function blockCanEditMarkdown(block: SpaceBlock): boolean {
@@ -177,6 +163,38 @@ function insertAtCaret(value: string, insertion: string, start: number, end: num
   const prefix = before && !/\s$/.test(before) ? ' ' : '';
   const suffix = after && !/^\s/.test(after) ? ' ' : '';
   return `${before}${prefix}${insertion}${suffix}${after}`;
+}
+
+function findItemCommandRange(
+  value: string,
+  selectionStart: number,
+  selectionEnd: number,
+): { start: number; end: number } | null {
+  const commandEnd = Math.max(0, Math.min(selectionStart, selectionEnd, value.length));
+  const beforeSelection = value.slice(0, commandEnd);
+  const match = /(?:^|\s)(\/item)$/.exec(beforeSelection);
+  if (!match) return null;
+  const start = commandEnd - match[1].length;
+  return { start, end: commandEnd };
+}
+
+function replaceRange(value: string, insertion: string, start: number, end: number): string {
+  return `${value.slice(0, Math.max(0, start))}${insertion}${value.slice(Math.max(0, end))}`;
+}
+
+function wrappedSelection(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  after: string,
+): { next: string; caret: number } {
+  const selection = value.slice(start, end);
+  const replacement = `${before}${selection}${after}`;
+  return {
+    next: replaceRange(value, replacement, start, end),
+    caret: start + replacement.length,
+  };
 }
 
 function refFromHref(href: string): string | null {
@@ -202,7 +220,6 @@ export function DocumentBlockEditor({
   projectId,
   spaceId,
   fetchImpl,
-  embeddableItems = [],
   onReimport,
   onFork,
   onEmbedDeleteDecision,
@@ -213,7 +230,9 @@ export function DocumentBlockEditor({
   );
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [commandBlockId, setCommandBlockId] = useState<string | null>(null);
+  const [itemCommandRange, setItemCommandRange] = useState<ItemCommandRange | null>(null);
+  const [pickerPosition, setPickerPosition] = useState<OverlayPosition | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
@@ -379,6 +398,13 @@ export function DocumentBlockEditor({
     [saveMarkdownNow],
   );
 
+  const cancelPendingAutosave = useCallback((blockId: string) => {
+    const prior = saveTimers.current.get(blockId);
+    if (!prior) return;
+    window.clearTimeout(prior);
+    saveTimers.current.delete(blockId);
+  }, []);
+
   const setEditing = useCallback((blockId: string | null) => {
     setActiveBlockId(blockId);
     setViewState((prior) => ({ ...prior, editingId: blockId }));
@@ -416,29 +442,6 @@ export function DocumentBlockEditor({
     [spaceId, blocks, runMutation, fetcher, setEditing],
   );
 
-  const isItemEmbedded = useCallback(
-    (item: Pick<EmbeddableItem, 'id'>) => blocks.some((block) => block.item_id === item.id),
-    [blocks],
-  );
-
-  const embedItem = useCallback(
-    async (item: EmbeddableItem) => {
-      if (!spaceId) return;
-      if (isItemEmbedded(item)) return;
-      const blockType = EMBED_KIND[item.ref_type] ?? 'reference';
-      const body: CreateBlockBody = {
-        block_type: blockType,
-        parent_id: null,
-        item_id: item.id,
-        item_snapshot: snapshotFor(item),
-        sort_key: appendSortKey(blocks, null),
-        markdown: '',
-      };
-      await runMutation(() => createSpaceBlock(spaceId, body, fetcher()));
-    },
-    [spaceId, blocks, isItemEmbedded, runMutation, fetcher],
-  );
-
   const embedSpaceItem = useCallback(
     async (item: SpaceItem) => {
       const embeddable = {
@@ -450,10 +453,19 @@ export function DocumentBlockEditor({
       };
       const refText = formatInlineRef(embeddable);
       const editableBlocks = blocks.filter(blockCanEditMarkdown);
-      const targetId =
+      const commandTargetId =
+        itemCommandRange && editableBlocks.some((b) => b.id === itemCommandRange.blockId)
+          ? itemCommandRange.blockId
+          : null;
+      const activeTargetId =
         activeBlockId && editableBlocks.some((b) => b.id === activeBlockId)
           ? activeBlockId
-          : editableBlocks[editableBlocks.length - 1]?.id ?? null;
+          : null;
+      const targetId =
+        commandTargetId ??
+        activeTargetId ??
+        editableBlocks[editableBlocks.length - 1]?.id ??
+        null;
       if (!targetId) {
         await addProseBlock('paragraph', null, refText);
         return;
@@ -461,25 +473,47 @@ export function DocumentBlockEditor({
       const block = blocks.find((b) => b.id === targetId);
       if (!block) return;
       const draft = viewState.drafts[targetId] ?? block.markdown ?? '';
+      const commandRange =
+        itemCommandRange?.blockId === targetId ? itemCommandRange : null;
       const caret =
-        caretRef.current?.blockId === targetId
+        commandRange ??
+        (caretRef.current?.blockId === targetId
           ? caretRef.current
-          : { blockId: targetId, start: draft.length, end: draft.length };
-      const next = insertAtCaret(draft, refText, caret.start, caret.end);
+          : { blockId: targetId, start: draft.length, end: draft.length });
+      const next = commandRange
+        ? replaceRange(draft, refText, commandRange.start, commandRange.end)
+        : insertAtCaret(draft, refText, caret.start, caret.end);
+      const beforeCaret = draft.slice(0, caret.start);
+      const fallbackPrefixLength = !commandRange && beforeCaret && !/\s$/.test(beforeCaret) ? 1 : 0;
+      const nextPos = commandRange
+        ? commandRange.start + refText.length
+        : Math.min(next.length, caret.start + fallbackPrefixLength + refText.length);
       setActiveBlockId(targetId);
       setEditing(targetId);
+      setItemCommandRange(null);
+      setPickerPosition(null);
+      setPickerOpen(false);
+      setSelectionMenu(null);
       setDraft(targetId, next);
       queueAutosave(targetId, next);
       window.setTimeout(() => {
         const textarea = textareaRefs.current.get(targetId);
         if (!textarea) return;
-        const nextPos = Math.min(next.length, caret.start + refText.length + 1);
         textarea.focus();
         textarea.setSelectionRange(nextPos, nextPos);
         caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
       }, 0);
     },
-    [activeBlockId, addProseBlock, blocks, queueAutosave, setDraft, setEditing, viewState.drafts],
+    [
+      activeBlockId,
+      addProseBlock,
+      blocks,
+      itemCommandRange,
+      queueAutosave,
+      setDraft,
+      setEditing,
+      viewState.drafts,
+    ],
   );
 
   const saveProse = useCallback(
@@ -528,47 +562,102 @@ export function DocumentBlockEditor({
     };
   }, []);
 
+  const updateSelectionMenu = useCallback((blockId: string, textarea: HTMLTextAreaElement) => {
+    const start = textarea.selectionStart ?? textarea.value.length;
+    const end = textarea.selectionEnd ?? textarea.value.length;
+    if (start === end) {
+      setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
+      return;
+    }
+    const rect = textarea.getBoundingClientRect();
+    setSelectionMenu({
+      blockId,
+      start,
+      end,
+      top: Math.max(8, rect.top - 44),
+      left: Math.max(8, Math.min(rect.left + rect.width - 180, rect.left + 24)),
+    });
+  }, []);
+
   const handleDraftInput = useCallback(
     (blockId: string, textarea: HTMLTextAreaElement) => {
       const value = textarea.value;
       updateCaret(blockId, textarea);
+      updateSelectionMenu(blockId, textarea);
       setDraft(blockId, value);
       queueAutosave(blockId, value);
     },
-    [queueAutosave, setDraft, updateCaret],
+    [queueAutosave, setDraft, updateCaret, updateSelectionMenu],
   );
 
-  const snapshotCaretForBlock = useCallback(
-    (blockId: string) => {
-      const textarea = textareaRefs.current.get(blockId);
-      if (textarea) updateCaret(blockId, textarea);
-      else {
-        const block = blocks.find((b) => b.id === blockId);
-        const draft = viewState.drafts[blockId] ?? block?.markdown ?? '';
-        caretRef.current = { blockId, start: draft.length, end: draft.length };
+  const handleTextareaKeyDown = useCallback(
+    (blockId: string, event: KeyboardEvent) => {
+      const textarea = event.currentTarget as HTMLTextAreaElement | null;
+      if (!textarea || event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
       }
+      const range = findItemCommandRange(
+        textarea.value,
+        textarea.selectionStart ?? textarea.value.length,
+        textarea.selectionEnd ?? textarea.value.length,
+      );
+      if (!range) return;
+      event.preventDefault();
+      updateCaret(blockId, textarea);
+      cancelPendingAutosave(blockId);
       setActiveBlockId(blockId);
       setEditing(blockId);
-    },
-    [blocks, setEditing, updateCaret, viewState.drafts],
-  );
-
-  const openReferencePicker = useCallback(
-    (blockId: string) => {
-      snapshotCaretForBlock(blockId);
-      setCommandBlockId(null);
+      setSelectionMenu(null);
+      const rect = textarea.getBoundingClientRect();
+      setPickerPosition({
+        top: Math.max(8, rect.bottom + 8),
+        left: Math.max(8, Math.min(rect.left + 24, window.innerWidth - 360)),
+      });
+      setItemCommandRange({ blockId, ...range });
       setPickerOpen(true);
     },
-    [snapshotCaretForBlock],
+    [cancelPendingAutosave, setEditing, updateCaret],
   );
 
-  const runContextCommand = useCallback(
-    (blockId: string, command: () => void) => {
-      snapshotCaretForBlock(blockId);
-      setCommandBlockId(null);
-      command();
+  const applySelectionFormat = useCallback(
+    (before: string, after: string) => {
+      if (!selectionMenu) return;
+      const block = blocks.find((b) => b.id === selectionMenu.blockId);
+      if (!block) return;
+      const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
+      const { next, caret } = wrappedSelection(
+        draft,
+        selectionMenu.start,
+        selectionMenu.end,
+        before,
+        after,
+      );
+      setDraft(block.id, next);
+      queueAutosave(block.id, next);
+      setSelectionMenu(null);
+      window.setTimeout(() => {
+        const textarea = textareaRefs.current.get(block.id);
+        if (!textarea) return;
+        textarea.focus();
+        textarea.setSelectionRange(caret, caret);
+        caretRef.current = { blockId: block.id, start: caret, end: caret };
+      }, 0);
     },
-    [snapshotCaretForBlock],
+    [blocks, queueAutosave, selectionMenu, setDraft, viewState.drafts],
+  );
+
+  const handleTextareaBlur = useCallback(
+    (blockId: string, textarea: HTMLTextAreaElement) => {
+      window.setTimeout(() => {
+        setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
+      }, 0);
+      if (itemCommandRange?.blockId === blockId && pickerOpen) {
+        cancelPendingAutosave(blockId);
+        return;
+      }
+      saveProse(blockId, textarea.value);
+    },
+    [cancelPendingAutosave, itemCommandRange, pickerOpen, saveProse],
   );
 
   const openReferenceInspector = useCallback(
@@ -597,6 +686,8 @@ export function DocumentBlockEditor({
     },
     [openReferenceInspector],
   );
+
+  const pickerBlockId = itemCommandRange?.blockId ?? activeBlockId;
 
   // --- render ----------------------------------------------------------------
 
@@ -715,13 +806,27 @@ export function DocumentBlockEditor({
                       }}
                       className="spaces-block-editor__textarea"
                       value={draft}
+                      rows={1}
                       data-testid="spaces-block-editor-textarea"
                       aria-label={`Edit ${block.block_type} block`}
                       onInput={(e) => handleDraftInput(block.id, e.currentTarget as HTMLTextAreaElement)}
-                      onSelect={(e) => updateCaret(block.id, e.currentTarget as HTMLTextAreaElement)}
-                      onClick={(e) => updateCaret(block.id, e.currentTarget as HTMLTextAreaElement)}
-                      onKeyUp={(e) => updateCaret(block.id, e.currentTarget as HTMLTextAreaElement)}
-                      onBlur={(e) => saveProse(block.id, (e.currentTarget as HTMLTextAreaElement).value)}
+                      onSelect={(e) => {
+                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        updateCaret(block.id, textarea);
+                        updateSelectionMenu(block.id, textarea);
+                      }}
+                      onClick={(e) => {
+                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        updateCaret(block.id, textarea);
+                        updateSelectionMenu(block.id, textarea);
+                      }}
+                      onKeyDown={(e) => handleTextareaKeyDown(block.id, e as unknown as KeyboardEvent)}
+                      onKeyUp={(e) => {
+                        const textarea = e.currentTarget as HTMLTextAreaElement;
+                        updateCaret(block.id, textarea);
+                        updateSelectionMenu(block.id, textarea);
+                      }}
+                      onBlur={(e) => handleTextareaBlur(block.id, e.currentTarget as HTMLTextAreaElement)}
                     />
                   </div>
                 )}
@@ -753,94 +858,6 @@ export function DocumentBlockEditor({
                     />
                   </div>
                 )}
-                {!isEmbed && (
-                  <span className="spaces-block-editor__command-slot">
-                    <button
-                      type="button"
-                      className="spaces-block-editor__command-trigger"
-                      disabled={busy}
-                      onMouseDown={(event) => event.preventDefault()}
-                      onClick={() => {
-                        snapshotCaretForBlock(block.id);
-                        setCommandBlockId((open) => (open === block.id ? null : block.id));
-                      }}
-                      aria-haspopup="menu"
-                      aria-expanded={commandBlockId === block.id}
-                      aria-label="Open document commands"
-                      title="Document commands"
-                      data-testid="spaces-block-editor-command-trigger"
-                    >
-                      /
-                    </button>
-                    {commandBlockId === block.id ? (
-                      <span className="spaces-block-editor__command-menu" role="menu" aria-label="Document commands">
-                        <button
-                          type="button"
-                          className="spaces-block-editor__command"
-                          disabled={busy}
-                          role="menuitem"
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => runContextCommand(block.id, () => void addProseBlock('paragraph', block.id))}
-                          data-testid="spaces-block-editor-add-paragraph"
-                        >
-                          Add paragraph
-                        </button>
-                        <button
-                          type="button"
-                          className="spaces-block-editor__command"
-                          disabled={busy}
-                          role="menuitem"
-                          aria-haspopup="dialog"
-                          aria-expanded={pickerOpen && activeBlockId === block.id}
-                          onMouseDown={(event) => event.preventDefault()}
-                          onClick={() => {
-                            if (pickerOpen && activeBlockId === block.id) {
-                              setPickerOpen(false);
-                              return;
-                            }
-                            openReferencePicker(block.id);
-                          }}
-                          data-testid="spaces-block-editor-add-items"
-                        >
-                          Insert reference
-                        </button>
-                        {PROSE_BLOCK_TYPES.filter((bt) => bt !== 'paragraph').map((bt) => (
-                          <button
-                            key={bt}
-                            type="button"
-                            className="spaces-block-editor__command"
-                            disabled={busy}
-                            role="menuitem"
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => runContextCommand(block.id, () => void addProseBlock(bt, block.id))}
-                            data-testid={`spaces-block-editor-add-${bt}`}
-                          >
-                            {bt === 'heading' ? 'Add heading' : 'Add todo'}
-                          </button>
-                        ))}
-                      </span>
-                    ) : null}
-                    {pickerOpen && activeBlockId === block.id ? (
-                      <span className="spaces-block-editor__picker-anchor">
-                        <SpaceItemPicker
-                          spaceId={spaceId}
-                          projectId={projectId}
-                          existingItems={spaceItems}
-                          isItemInView={() => false}
-                          afterAdd={embedSpaceItem}
-                          onAdded={() => {
-                            void loadAll(true);
-                          }}
-                          onClose={() => {
-                            setPickerOpen(false);
-                            const textarea = textareaRefs.current.get(block.id);
-                            if (textarea) window.setTimeout(() => textarea.focus(), 0);
-                          }}
-                        />
-                      </span>
-                    ) : null}
-                  </span>
-                )}
                 {isEmbed && block.item_id && (
                   <span className="spaces-block-editor__commands" aria-label="Embedded item commands">
                     <button
@@ -855,26 +872,94 @@ export function DocumentBlockEditor({
                     </button>
                   </span>
                 )}
-                {embeddableItems.length > 0 && activeBlockId === block.id && (
-                  <span className="spaces-block-editor__embeds" data-testid="spaces-block-editor-embeds">
-                    {embeddableItems.map((item) => (
-                      <button
-                        key={item.id}
-                        type="button"
-                        className="spaces-block-editor__embed"
-                        disabled={busy}
-                        onClick={() => void embedItem(item)}
-                        data-testid={`spaces-block-editor-embed-${item.id}`}
-                      >
-                        embed {item.ref_type}: {item.title || item.ref_id}
-                      </button>
-                    ))}
-                  </span>
-                )}
               </li>
             );
           })}
         </ul>
+      )}
+
+      {editable && pickerOpen && pickerBlockId && (
+        <div
+          className="spaces-block-editor__picker-overlay"
+          data-testid="spaces-block-editor-picker-overlay"
+          style={{
+            position: 'fixed',
+            top: `${pickerPosition?.top ?? 72}px`,
+            left: `${pickerPosition?.left ?? 24}px`,
+            zIndex: 42,
+          }}
+        >
+          <SpaceItemPicker
+            spaceId={spaceId}
+            projectId={projectId}
+            existingItems={spaceItems}
+            isItemInView={() => false}
+            afterAdd={embedSpaceItem}
+            onAdded={() => {
+              void loadAll(true);
+            }}
+            onClose={() => {
+              const focusBlockId = pickerBlockId;
+              setPickerOpen(false);
+              setItemCommandRange(null);
+              setPickerPosition(null);
+              const textarea = textareaRefs.current.get(focusBlockId);
+              if (textarea) window.setTimeout(() => textarea.focus(), 0);
+            }}
+          />
+        </div>
+      )}
+
+      {selectionMenu && (
+        <div
+          className="spaces-block-editor__selection-menu"
+          data-testid="spaces-block-editor-selection-menu"
+          style={{
+            position: 'fixed',
+            top: `${selectionMenu.top}px`,
+            left: `${selectionMenu.left}px`,
+            zIndex: 45,
+          }}
+          role="toolbar"
+          aria-label="Text formatting"
+        >
+          <button
+            type="button"
+            className="spaces-block-editor__selection-command"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              applySelectionFormat('**', '**');
+            }}
+            aria-label="Bold"
+            title="Bold"
+          >
+            B
+          </button>
+          <button
+            type="button"
+            className="spaces-block-editor__selection-command"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              applySelectionFormat('*', '*');
+            }}
+            aria-label="Italic"
+            title="Italic"
+          >
+            I
+          </button>
+          <button
+            type="button"
+            className="spaces-block-editor__selection-command"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              applySelectionFormat('[', '](url)');
+            }}
+            aria-label="Link"
+            title="Link"
+          >
+            Link
+          </button>
+        </div>
       )}
 
       {inspector && (
