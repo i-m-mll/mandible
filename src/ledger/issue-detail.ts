@@ -1,5 +1,5 @@
 import type { Db } from "../db.js";
-import { resolveArtifactRef } from "../provider-artifacts.js";
+import { resolveArtifactRef, resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
 import type { ArtifactRecord, WorkUnit } from "../types.js";
 import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "./store.js";
@@ -225,6 +225,10 @@ export interface LedgerIssueDetailArtifactLink {
   provider_id: string | null;
   source: string;
   metadata: Record<string, unknown>;
+  link_kind: "pinned" | "living";
+  series_id: string | null;
+  series_ref: string | null;
+  resolved_version_no: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -241,6 +245,11 @@ export interface LedgerIssueDetailAssociatedArtifact {
   custody_mode: ArtifactRecord["custody_mode"];
   availability: ArtifactRecord["availability"];
   created_at: number;
+  pin_state: "pinned" | "living";
+  is_latest: boolean | null;
+  resolved_version_no: number | null;
+  series_id: string | null;
+  warnings: string[];
   refs: string[];
   links: LedgerIssueDetailArtifactLink[];
 }
@@ -588,10 +597,16 @@ function listAssociatedArtifacts(
   const artifacts = new Map<string, LedgerIssueDetailAssociatedArtifact>();
 
   for (const row of listExplicitArtifactRows(db, issueId, comments.map((comment) => comment.id))) {
-    const artifact = artifactFromIssueDetailRow(row);
-    if (!artifact) continue;
-    upsertAssociatedArtifact(artifacts, artifact, {
-      link: artifactLinkFromIssueDetailRow(row),
+    const link = artifactLinkFromIssueDetailRow(row);
+    const resolved = resolveIssueDetailLinkArtifact(db, row, link);
+    if (!resolved.artifact) continue;
+    upsertAssociatedArtifact(artifacts, resolved.artifact, {
+      link: resolved.link,
+      pinState: resolved.pinState,
+      isLatest: resolved.isLatest,
+      resolvedVersionNo: resolved.resolvedVersionNo,
+      seriesId: resolved.seriesId,
+      warnings: resolved.warnings,
     });
   }
 
@@ -638,10 +653,10 @@ function listExplicitArtifactRows(
         l.id AS link_id, l.entity_type, l.entity_id, l.link_type,
         l.role AS link_role, l.repo_id AS link_repo_id,
         l.provider_id AS link_provider_id, l.source AS link_source,
-        l.metadata_json AS link_metadata_json,
+        l.metadata_json AS link_metadata_json, l.link_kind, l.series_id, l.series_ref,
         l.created_at AS link_created_at, l.updated_at AS link_updated_at
        FROM artifact_links l
-       JOIN artifacts a ON a.id = l.artifact_id
+       LEFT JOIN artifacts a ON a.id = l.artifact_id
       WHERE ${groups.join(" OR ")}
       ORDER BY l.created_at DESC, a.created_at DESC`,
   ).all(...params) as Array<Record<string, unknown>>;
@@ -654,7 +669,15 @@ function upsertAssociatedArtifact(
     "id" | "algorithm" | "content_hash" | "uri" | "media_type" | "role" | "provider_id" |
     "manifest_id" | "custody_mode" | "availability" | "created_at"
   >,
-  source: { ref?: string; link?: LedgerIssueDetailArtifactLink },
+  source: {
+    ref?: string;
+    link?: LedgerIssueDetailArtifactLink;
+    pinState?: "pinned" | "living";
+    isLatest?: boolean | null;
+    resolvedVersionNo?: number | null;
+    seriesId?: string | null;
+    warnings?: string[];
+  },
 ): void {
   let entry = artifacts.get(artifact.id);
   if (!entry) {
@@ -670,15 +693,112 @@ function upsertAssociatedArtifact(
       custody_mode: artifact.custody_mode,
       availability: artifact.availability,
       created_at: artifact.created_at,
+      pin_state: source.pinState ?? "pinned",
+      is_latest: source.isLatest ?? null,
+      resolved_version_no: source.resolvedVersionNo ?? null,
+      series_id: source.seriesId ?? null,
+      warnings: [...(source.warnings ?? [])],
       refs: [],
       links: [],
     };
     artifacts.set(artifact.id, entry);
+  } else {
+    if (source.pinState === "living") entry.pin_state = "living";
+    if (source.pinState === "living") {
+      if (source.isLatest !== undefined) entry.is_latest = source.isLatest;
+      if (source.resolvedVersionNo !== undefined) entry.resolved_version_no = source.resolvedVersionNo;
+      if (source.seriesId !== undefined) entry.series_id = source.seriesId;
+    }
+    for (const warning of source.warnings ?? []) {
+      if (!entry.warnings.includes(warning)) entry.warnings.push(warning);
+    }
   }
   if (source.ref && !entry.refs.includes(source.ref)) entry.refs.push(source.ref);
   if (source.link && !entry.links.some((link) => link.id === source.link?.id)) {
     entry.links.push(source.link);
   }
+}
+
+type IssueDetailLinkedArtifact = Pick<
+  ArtifactRecord,
+  "id" | "algorithm" | "content_hash" | "uri" | "media_type" | "role" | "provider_id" |
+  "manifest_id" | "custody_mode" | "availability" | "created_at"
+>;
+
+type ResolvedIssueDetailLink = {
+  artifact: IssueDetailLinkedArtifact | null;
+  link: LedgerIssueDetailArtifactLink;
+  pinState: "pinned" | "living";
+  isLatest: boolean | null;
+  resolvedVersionNo: number | null;
+  seriesId: string | null;
+  warnings: string[];
+};
+
+function resolveIssueDetailLinkArtifact(
+  db: Db,
+  row: Record<string, unknown>,
+  link: LedgerIssueDetailArtifactLink,
+): ResolvedIssueDetailLink {
+  const fallback = artifactFromIssueDetailRow(row);
+  if (link.link_kind !== "living") {
+    return {
+      artifact: fallback,
+      link,
+      pinState: "pinned",
+      isLatest: null,
+      resolvedVersionNo: null,
+      seriesId: link.series_id,
+      warnings: [],
+    };
+  }
+
+  const ref = link.series_ref ?? link.series_id;
+  if (!ref) {
+    return livingFallback(fallback, link, ["living_series_unresolved"]);
+  }
+
+  try {
+    const resolution = resolveArtifactRefReadonlyFull(db, ref);
+    if (resolution.artifact) {
+      const resolvedSeriesId = resolution.series?.id ?? link.series_id;
+      const resolvedVersionNo = resolution.version?.version_no ?? null;
+      return {
+        artifact: resolution.artifact,
+        link: { ...link, series_id: resolvedSeriesId, resolved_version_no: resolvedVersionNo },
+        pinState: "living",
+        isLatest: resolution.version && resolution.series
+          ? resolution.series.latest_version_id === resolution.version.id
+          : null,
+        resolvedVersionNo,
+        seriesId: resolvedSeriesId,
+        warnings: [...(resolution.warnings ?? [])],
+      };
+    }
+    return livingFallback(fallback, link, [
+      ...(resolution.warnings ?? []),
+      "living_series_unresolved",
+    ]);
+  } catch {
+    return livingFallback(fallback, link, ["living_series_unresolved"]);
+  }
+}
+
+function livingFallback(
+  artifact: ReturnType<typeof artifactFromIssueDetailRow>,
+  link: LedgerIssueDetailArtifactLink,
+  warnings: string[],
+): ResolvedIssueDetailLink {
+  const uniqueWarnings = Array.from(new Set(warnings));
+  return {
+    artifact,
+    link: { ...link, resolved_version_no: null },
+    pinState: "living",
+    isLatest: null,
+    resolvedVersionNo: null,
+    seriesId: link.series_id,
+    warnings: uniqueWarnings,
+  };
 }
 
 function artifactFromIssueDetailRow(
@@ -716,6 +836,10 @@ function artifactLinkFromIssueDetailRow(row: Record<string, unknown>): LedgerIss
     provider_id: nullableString(row.link_provider_id),
     source: stringOr(row.link_source, "artifact_registry"),
     metadata: parseJsonObject(stringOr(row.link_metadata_json, "{}")),
+    link_kind: row.link_kind === "living" ? "living" : "pinned",
+    series_id: nullableString(row.series_id),
+    series_ref: nullableString(row.series_ref),
+    resolved_version_no: null,
     created_at: Number(row.link_created_at ?? 0),
     updated_at: Number(row.link_updated_at ?? 0),
   };
@@ -1354,7 +1478,7 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
   };
 }
 
-const ARTIFACT_REF_PATTERN = /\[artifact:([^\]\s]+)\]/gi;
+const ARTIFACT_REF_PATTERN = /\[(?:artifact:([^\]\s]+)|(artifact-(?:series|version):[^\]\s]+))\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
 const BARE_SHA_ARTIFACT_REF = /^[0-9a-f]{7,64}$/i;
 
@@ -1365,7 +1489,7 @@ function extractArtifactRefs(sources: string[]): string[] {
     ARTIFACT_REF_PATTERN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = ARTIFACT_REF_PATTERN.exec(source))) {
-      const ref = trimTrailingPunctuation(match[1] ?? match[0]);
+      const ref = trimTrailingPunctuation(match[1] ?? match[2] ?? match[0]);
       if (!isArtifactLikeRef(ref) || seen.has(ref)) continue;
       seen.add(ref);
       refs.push(ref);
@@ -1380,6 +1504,7 @@ function isArtifactLikeRef(ref: string): boolean {
   if (scheme === "artifact") {
     return /^artifact:[0-9a-f]{7,64}$/i.test(ref);
   }
+  if (scheme === "artifact-series" || scheme === "artifact-version") return true;
   return Boolean(scheme && ref.includes("://") && !DIRECT_NAV_SCHEMES.has(scheme));
 }
 

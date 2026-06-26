@@ -921,6 +921,24 @@ export interface ArtifactRecord {
   links?: ArtifactLinkRecord[];
 }
 
+export interface ArtifactSeriesSummary {
+  id: string;
+  ref: string;
+  series_key: string;
+  source_kind: ArtifactSeriesSourceKind;
+  title: string | null;
+  repo_id: string | null;
+  logical_name: string | null;
+  latest_version_id: string | null;
+  version_count: number;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  latest_version: ArtifactVersionRecord | null;
+  latest_artifact: ArtifactRecord | null;
+  links: ArtifactLinkRecord[];
+}
+
 export type ArtifactRecoverability =
   | "repo_commit"
   | "repo_worktree"
@@ -995,6 +1013,13 @@ export interface ArtifactLinkRecord {
   provider_id: string | null;
   source: string;
   metadata: Record<string, unknown>;
+  // Typed-link columns (migration v89, issue 10960ea). `pinned` (default) names
+  // one immutable artifact version; `living` tracks a series head. `series_id`
+  // is a SOFT reference to artifact_series.id (no FK) and `series_ref` carries
+  // the human-resolvable author ref. Both are null for pinned links.
+  link_kind: "pinned" | "living";
+  series_id: string | null;
+  series_ref: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -1058,6 +1083,7 @@ export interface ArtifactVersionRecord {
 export interface ArtifactVersionHistory {
   series: ArtifactSeriesRecord;
   versions: ArtifactVersionRecord[];
+  links: ArtifactLinkRecord[];
 }
 
 export interface ArtifactVersionRecordResult {

@@ -9,6 +9,9 @@ import type {
   ArtifactLinkRecord as ContractArtifactLinkRecord,
   ArtifactRecord as ContractArtifactRecord,
   ArtifactResolveResult as ContractArtifactResolveResult,
+  ArtifactSeriesRecord as ContractArtifactSeriesRecord,
+  ArtifactSeriesSummary as ContractArtifactSeriesSummary,
+  ArtifactVersionRecord as ContractArtifactVersionRecord,
   AuthRequestAction as ContractAuthRequestAction,
   BlockType as ContractBlockType,
   Conversation as ContractConversation,
@@ -838,6 +841,10 @@ export type LedgerIssueDetailArtifactLink = {
   provider_id: string | null;
   source: string;
   metadata: Record<string, unknown>;
+  link_kind: 'pinned' | 'living';
+  series_id: string | null;
+  series_ref: string | null;
+  resolved_version_no: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -1774,11 +1781,33 @@ export type ArtifactAliasResolutionStatus = ContractArtifactAliasResolutionStatu
 
 export type ArtifactAliasRecord = ContractArtifactAliasRecord;
 
-export type ArtifactLinkRecord = ContractArtifactLinkRecord;
+export type ArtifactLinkRecord = Omit<
+  ContractArtifactLinkRecord,
+  'link_kind' | 'series_id' | 'series_ref' | 'resolved_version_no'
+> & {
+  link_kind: 'pinned' | 'living';
+  series_id: string | null;
+  series_ref: string | null;
+  resolved_version_no?: number | null;
+};
 
-export type ArtifactRecord = ContractArtifactRecord;
+export type ArtifactRecord = Omit<ContractArtifactRecord, 'links'> & {
+  links?: ArtifactLinkRecord[];
+};
 
 export type ArtifactResolveResult = ContractArtifactResolveResult;
+
+export type ArtifactSeriesRecord = ContractArtifactSeriesRecord;
+
+export type ArtifactSeriesSummary = ContractArtifactSeriesSummary;
+
+export type ArtifactVersionRecord = ContractArtifactVersionRecord;
+
+export type ArtifactVersionHistory = {
+  series: ArtifactSeriesRecord;
+  versions: ArtifactVersionRecord[];
+  links: ArtifactLinkRecord[];
+};
 
 export type ArtifactContentResult = {
   artifact_id: string;
@@ -1840,6 +1869,20 @@ export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<Ar
   const response = await apiGet(`/api/artifacts${query}`);
   const payload = (await parseMaybeJson(response)) as { artifacts?: ArtifactRecord[] };
   return payload.artifacts ?? [];
+}
+
+export async function getArtifactSeriesList(params: ArtifactQueryParams = {}): Promise<ArtifactSeriesSummary[]> {
+  const query = buildQuery(params);
+  const response = await apiGet(`/api/artifacts/series${query}`);
+  const payload = (await parseMaybeJson(response)) as { series?: ArtifactSeriesSummary[] };
+  return payload.series ?? [];
+}
+
+export async function getArtifactVersions(ref: string): Promise<ArtifactVersionHistory> {
+  const query = buildQuery({ ref });
+  const response = await apiGet(`/api/artifacts/versions${query}`);
+  const payload = (await parseMaybeJson(response)) as { history: ArtifactVersionHistory };
+  return payload.history;
 }
 
 export async function getArtifact(id: string): Promise<ArtifactRecord> {

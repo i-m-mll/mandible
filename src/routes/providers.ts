@@ -17,6 +17,7 @@ import {
   ingestArtifact,
   ingestProviderManifest,
   ingestProviderManifestFile,
+  listArtifactSeries,
   listArtifacts,
   listProviders,
   planLocalArtifactPath,
@@ -245,9 +246,46 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   });
 
+  app.get("/api/artifacts/series", (req, res) => {
+    const linked = linkedEntityQuery(req);
+    const series = listArtifactSeries(getDb(), {
+      q: queryString(req, "q"),
+      hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
+      repo: queryString(req, "repo"),
+      provider: queryString(req, "provider"),
+      role: queryString(req, "role"),
+      custody: queryString(req, "custody"),
+      availability: queryString(req, "availability"),
+      scheme: queryString(req, "scheme"),
+      location: queryString(req, "location"),
+      linkedEntityType: linked.type,
+      linkedEntityId: linked.id,
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { series });
+  });
+
   app.post("/api/artifacts/link", (req, res) => {
     try {
-      const result = resolveAndLinkArtifact(getDb(), bodyRecord(req));
+      const body = bodyRecord(req);
+      // Evidence links on issues must pin a concrete artifact version. Reject a
+      // living evidence link at the route boundary (issue 10960ea) so the
+      // contract is enforced at the HTTP edge, not only later in the CLI; the
+      // backend (resolveAndLinkArtifact) enforces the same rule as defense in
+      // depth for every other caller.
+      const linkKind = typeof body.link_kind === "string" ? body.link_kind.trim() : undefined;
+      const linkType = typeof body.link_type === "string" && body.link_type.trim()
+        ? body.link_type.trim()
+        : "references";
+      const entityType = typeof body.entity_type === "string" && body.entity_type.trim()
+        ? body.entity_type.trim()
+        : (typeof body.issue === "string" && body.issue.trim() ? "issue" : undefined);
+      if (linkKind === "living" && entityType === "issue" && linkType === "evidence") {
+        sendJson(res, 400, { error: "evidence_links_must_be_pinned" });
+        return;
+      }
+      const result = resolveAndLinkArtifact(getDb(), body);
       sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);

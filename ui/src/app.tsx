@@ -34,6 +34,7 @@ import {
   hashWithViewSidebarHidden,
   hashWithViewSidebarVisible,
   isViewSidebarHidden,
+  parseArtifactVersionParam,
   parseRouteFromHash,
   type Route,
 } from './routing';
@@ -1429,6 +1430,8 @@ function App(): JSX.Element {
           <ArtifactsView
             initialArtifactId={route.params.artifact}
             initialRef={route.params.ref}
+            initialSeriesRef={route.params.series}
+            initialVersionNo={parseArtifactVersionParam(route.params.version)}
             initialRepo={route.params.repo}
             sidebarHidden={viewSidebarHidden}
           />

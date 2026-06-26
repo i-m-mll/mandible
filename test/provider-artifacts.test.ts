@@ -104,6 +104,9 @@ function createSchema(database: Database.Database): void {
       provider_id TEXT,
       source TEXT NOT NULL DEFAULT 'artifact_registry',
       metadata_json TEXT NOT NULL DEFAULT '{}',
+      link_kind TEXT NOT NULL DEFAULT 'pinned' CHECK(link_kind IN ('pinned','living')),
+      series_id TEXT,
+      series_ref TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -120,6 +123,11 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX idx_artifact_links_role
       ON artifact_links(role)
       WHERE role IS NOT NULL;
+    CREATE INDEX idx_artifact_links_kind
+      ON artifact_links(link_kind);
+    CREATE INDEX idx_artifact_links_series
+      ON artifact_links(series_id)
+      WHERE series_id IS NOT NULL;
     CREATE TABLE artifact_series (
       id TEXT PRIMARY KEY,
       series_key TEXT NOT NULL,
