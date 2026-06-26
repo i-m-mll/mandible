@@ -144,6 +144,39 @@ describe("project timeline projection", () => {
     expect(authClosed).toBeUndefined();
   });
 
+  it("preloads comments and operational ledger events once for multi-row projections", () => {
+    const originalPrepare = fixture.db.prepare.bind(fixture.db);
+    let projectCommentLoadCount = 0;
+    let operationalEventLoadCount = 0;
+    fixture.db.prepare = ((sql: string) => {
+      if (sql.includes("FROM ledger_comments c")) projectCommentLoadCount += 1;
+      if (sql.includes("entity_type != 'issue'")) operationalEventLoadCount += 1;
+      return originalPrepare(sql);
+    }) as Db["prepare"];
+
+    try {
+      const projection = buildProjectTimelineProjection(fixture.db, {
+        project_id: fixture.project.id,
+        root_policy: "explicit",
+        explicit_root_issue_ids: [
+          fixture.issues.rootA.id,
+          fixture.issues.rootB.id,
+          fixture.issues.authDone.id,
+        ],
+        include_closed: true,
+      });
+
+      expect(projectCommentLoadCount).toBe(1);
+      expect(operationalEventLoadCount).toBe(1);
+      expect(projection.events.some((event) => (
+        event.issue.id === fixture.issues.authDone.id
+        && event.state?.event_type === "auth_request.completed"
+      ))).toBe(true);
+    } finally {
+      fixture.db.prepare = originalPrepare as Db["prepare"];
+    }
+  });
+
   it("filters timeline event kinds and leaves noisy operational links default-off", () => {
     fixture.db.prepare(
       `INSERT INTO ledger_events (
