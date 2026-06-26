@@ -3,15 +3,20 @@ import {
   getArtifact,
   getArtifactContent,
   getArtifactKnowledgeBackrefs,
-  getArtifacts,
+  getArtifactSeriesList,
+  getArtifactVersions,
   getLedgerIssueDetail,
   resolveArtifact,
   type ArtifactContentResult,
   type ArtifactRecord,
   type ArtifactResolveResult,
+  type ArtifactSeriesRecord,
+  type ArtifactSeriesSummary,
+  type ArtifactVersionHistory,
+  type ArtifactVersionRecord,
   type KnowledgeBackrefRecord,
 } from '../api';
-import { artifactDetailHref, compactArtifactRef, displayResourceRef } from '../resource-refs';
+import { artifactDetailHref, compactArtifactRef, displayResourceRef, seriesDetailHref, versionDetailHref } from '../resource-refs';
 import { renderDocumentText } from './spaces/DocumentRenderer';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
@@ -19,6 +24,8 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 type ArtifactsViewProps = {
   initialArtifactId?: string;
   initialRef?: string;
+  initialSeriesRef?: string;
+  initialVersionNo?: number | null;
   initialRepo?: string;
   sidebarHidden?: boolean;
 };
@@ -57,7 +64,18 @@ type ArtifactPreview =
   | { kind: 'binary'; value: string }
   | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
 
-export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, sidebarHidden = false }: ArtifactsViewProps): JSX.Element {
+type LastWrittenHashRef = {
+  current: { seriesRef: string; versionNo: number | null } | null;
+};
+
+export function ArtifactsView({
+  initialArtifactId,
+  initialRef,
+  initialSeriesRef,
+  initialVersionNo = null,
+  initialRepo,
+  sidebarHidden = false,
+}: ArtifactsViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
     defaultWidth: 320,
     minWidth: 240,
@@ -67,9 +85,14 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     ...EMPTY_FILTERS,
     repo: initialRepo ?? '',
   }));
-  const [artifacts, setArtifacts] = useState<ArtifactRecord[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(initialArtifactId ?? null);
+  const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
+  const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
+    initialSeriesRef ? normalizeSeriesRef(initialSeriesRef) : null,
+  );
+  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(initialVersionNo);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(initialArtifactId ?? null);
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
+  const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
   const [artifactContent, setArtifactContent] = useState<ArtifactContentResult | null>(null);
   const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
   const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
@@ -81,10 +104,13 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [facetArtifacts, setFacetArtifacts] = useState<ArtifactRecord[]>([]);
-  const initialRefRef = useRef(initialRef);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [facetSeries, setFacetSeries] = useState<ArtifactSeriesSummary[]>([]);
+  const deepLinkActiveRef = useRef(Boolean(initialArtifactId || initialRef || initialSeriesRef));
   const listRequestIdRef = useRef(0);
   const facetRequestIdRef = useRef(0);
+  const versionsRequestIdRef = useRef(0);
+  const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
 
   useEffect(() => {
     setFilters((current) => {
@@ -94,16 +120,47 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   }, [initialRepo]);
 
   useEffect(() => {
-    initialRefRef.current = initialRef;
-  }, [initialRef]);
+    deepLinkActiveRef.current = Boolean(initialArtifactId || initialRef || initialSeriesRef);
+  }, [initialArtifactId, initialRef, initialSeriesRef]);
 
-  const loadArtifacts = useCallback(async () => {
+  const applyResolutionSelection = useCallback((next: ArtifactResolveResult, options?: { forcePinned?: boolean }) => {
+    setResolution(next);
+    const nextSeriesRef = next.series ? seriesRecordRef(next.series) : null;
+    const latestTracking = next.warnings?.includes('series_latest_not_pinned') && !options?.forcePinned;
+    setSelectedSeriesRef(nextSeriesRef);
+    setSelectedVersionNo(next.version && !latestTracking ? next.version.version_no : null);
+    setSelectedArtifactId(next.artifact?.id ?? next.version?.artifact_id ?? null);
+    setSelectedArtifact(next.artifact);
+  }, []);
+
+  const applyArtifactDeepLinkSelection = useCallback(async (
+    next: ArtifactResolveResult,
+    isCancelled: () => boolean,
+  ) => {
+    if (next.artifact && !next.series && !next.version) {
+      const history = sortedVersionHistory(await getArtifactVersions(next.artifact.id));
+      if (isCancelled()) return;
+      const pinnedVersion = history.versions.find((version) => version.artifact_id === next.artifact?.id) ?? null;
+      if (pinnedVersion) {
+        setResolution(next);
+        setVersionHistory(history);
+        setSelectedSeriesRef(seriesRecordRef(history.series));
+        setSelectedVersionNo(pinnedVersion.version_no);
+        setSelectedArtifactId(next.artifact.id);
+        setSelectedArtifact(next.artifact);
+        return;
+      }
+    }
+    if (!isCancelled()) applyResolutionSelection(next, { forcePinned: true });
+  }, [applyResolutionSelection]);
+
+  const loadSeries = useCallback(async () => {
     const requestId = listRequestIdRef.current + 1;
     listRequestIdRef.current = requestId;
     setLoading(true);
     setError(null);
     try {
-      const next = await getArtifacts({
+      const next = await getArtifactSeriesList({
         q: filters.q || undefined,
         repo: filters.repo || undefined,
         provider: filters.provider || undefined,
@@ -116,13 +173,19 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
         summary: true,
       });
       if (listRequestIdRef.current !== requestId) return;
-      setArtifacts(next);
-      setSelectedId((current) => (
-        current || initialRefRef.current || !next[0] ? current : next[0].id
-      ));
-      setSelectedArtifact((current) => (
-        current || initialRefRef.current || !next[0] ? current : next[0]
-      ));
+      setSeries(next);
+      setSelectedSeriesRef((current) => {
+        if (current || deepLinkActiveRef.current || !next[0]) return current;
+        return seriesRef(next[0]);
+      });
+      setSelectedArtifactId((current) => {
+        if (current || deepLinkActiveRef.current || !next[0]?.latest_version) return current;
+        return next[0].latest_version.artifact_id;
+      });
+      setSelectedArtifact((current) => {
+        if (current || deepLinkActiveRef.current || !next[0]?.latest_artifact) return current;
+        return next[0].latest_artifact;
+      });
     } catch (err) {
       if (listRequestIdRef.current === requestId) {
         setError(err instanceof Error ? err.message : String(err));
@@ -135,36 +198,56 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
   }, [filters]);
 
   useEffect(() => {
-    void loadArtifacts();
-  }, [loadArtifacts]);
+    void loadSeries();
+  }, [loadSeries]);
 
-  const loadFacetArtifacts = useCallback(async () => {
+  const loadFacetSeries = useCallback(async () => {
     const requestId = facetRequestIdRef.current + 1;
     facetRequestIdRef.current = requestId;
     try {
-      const next = await getArtifacts({
+      const next = await getArtifactSeriesList({
         q: filters.q || undefined,
         location: filters.location || undefined,
         limit: 500,
         summary: true,
       });
       if (facetRequestIdRef.current !== requestId) return;
-      setFacetArtifacts(next);
+      setFacetSeries(next);
     } catch {
       // Keep the last successful option corpus so transient reload failures do not collapse selects.
     }
   }, [filters.q, filters.location]);
 
   useEffect(() => {
-    void loadFacetArtifacts();
-  }, [loadFacetArtifacts]);
+    void loadFacetSeries();
+  }, [loadFacetSeries]);
 
   useEffect(() => {
     if (!initialArtifactId) return;
-    setSelectedId(initialArtifactId);
-    setSelectedArtifact((current) => (current?.id === initialArtifactId ? current : null));
+    let cancelled = false;
+    setDetailLoading(true);
+    setError(null);
     setResolution(null);
-  }, [initialArtifactId]);
+    resolveArtifact(initialArtifactId)
+      .then((next) => {
+        if (cancelled) return;
+        return applyArtifactDeepLinkSelection(next, () => cancelled);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setSelectedSeriesRef(null);
+        setSelectedVersionNo(null);
+        setSelectedArtifactId(initialArtifactId);
+        setSelectedArtifact(null);
+        setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDetailLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyArtifactDeepLinkSelection, initialArtifactId]);
 
   useEffect(() => {
     if (!initialRef) return;
@@ -176,9 +259,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     resolveArtifact(initialRef)
       .then((next) => {
         if (cancelled) return;
-        setResolution(next);
-        setSelectedArtifact(next.artifact);
-        setSelectedId(next.artifact?.id ?? null);
+        applyResolutionSelection(next);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -189,18 +270,63 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     return () => {
       cancelled = true;
     };
-  }, [initialRef]);
+  }, [applyResolutionSelection, initialRef]);
 
   useEffect(() => {
-    if (!selectedId || initialRef) return;
+    if (!initialSeriesRef) return;
+    const nextSeriesRef = normalizeSeriesRef(initialSeriesRef);
+    const nextVersionNo = initialVersionNo;
+    const lastWritten = lastWrittenHashRef.current;
+    if (lastWritten?.seriesRef === nextSeriesRef && lastWritten.versionNo === nextVersionNo) {
+      lastWrittenHashRef.current = null;
+      return;
+    }
+    if (selectedSeriesRef === nextSeriesRef && selectedVersionNo === nextVersionNo) return;
+    setSelectedSeriesRef(nextSeriesRef);
+    setSelectedVersionNo(nextVersionNo);
+    setResolution(null);
+  }, [initialSeriesRef, initialVersionNo, selectedSeriesRef, selectedVersionNo]);
+
+  useEffect(() => {
+    if (!selectedSeriesRef) {
+      setVersionHistory(null);
+      return;
+    }
+    const requestId = versionsRequestIdRef.current + 1;
+    versionsRequestIdRef.current = requestId;
+    setDetailLoading(true);
+    setError(null);
+    getArtifactVersions(selectedSeriesRef)
+      .then((history) => {
+        if (versionsRequestIdRef.current !== requestId) return;
+        const newestFirst = sortedVersionHistory(history);
+        setVersionHistory(newestFirst);
+        const selectedVersion = selectedVersionNo === null
+          ? newestFirst.versions[0] ?? null
+          : newestFirst.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
+        setSelectedArtifactId(selectedVersion?.artifact_id ?? null);
+      })
+      .catch((err) => {
+        if (versionsRequestIdRef.current === requestId) {
+          setVersionHistory(null);
+          setError(err instanceof Error ? err.message : String(err));
+        }
+      })
+      .finally(() => {
+        if (versionsRequestIdRef.current === requestId) setDetailLoading(false);
+      });
+  }, [selectedSeriesRef, selectedVersionNo]);
+
+  useEffect(() => {
+    if (!selectedArtifactId) return;
+    if (selectedArtifact?.id === selectedArtifactId && resolution?.artifact?.id === selectedArtifactId) return;
     let cancelled = false;
     setDetailLoading(true);
     setError(null);
-    getArtifact(selectedId)
+    getArtifact(selectedArtifactId)
       .then((artifact) => {
         if (cancelled) return;
         setSelectedArtifact(artifact);
-        setResolution(null);
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err));
@@ -211,7 +337,7 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     return () => {
       cancelled = true;
     };
-  }, [selectedId, initialRef]);
+  }, [resolution?.artifact?.id, selectedArtifact?.id, selectedArtifactId]);
 
   useEffect(() => {
     if (!selectedArtifact) {
@@ -268,16 +394,33 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
     };
   }, [selectedArtifact?.id]);
 
-  const facetOptions = useMemo(() => buildFacetOptions(facetArtifacts), [facetArtifacts]);
+  const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
+  const selectedVersion = useMemo(() => (
+    versionHistory?.versions.find((version) => version.artifact_id === selectedArtifactId) ?? null
+  ), [selectedArtifactId, versionHistory]);
+  const selectedSeries = useMemo(() => (
+    series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
+  ), [selectedSeriesRef, series]);
 
-  const selectArtifact = (artifact: ArtifactRecord) => {
-    setSelectedId(artifact.id);
-    setSelectedArtifact(artifact);
+  const selectSeries = (entry: ArtifactSeriesSummary) => {
+    const ref = seriesRef(entry);
+    setSelectedSeriesRef(ref);
+    setSelectedVersionNo(null);
+    setSelectedArtifactId(entry.latest_version?.artifact_id ?? null);
+    setSelectedArtifact(entry.latest_artifact);
     setResolution(null);
-    const nextHash = artifactDetailHref(artifact.id);
-    if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
-      window.location.hash = nextHash;
-    }
+    writeArtifactHash(ref, null, lastWrittenHashRef);
+  };
+
+  const selectVersion = (versionNo: number | null) => {
+    setSelectedVersionNo(versionNo);
+    const version = versionNo === null
+      ? versionHistory?.versions[0] ?? null
+      : versionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
+    setSelectedArtifactId(version?.artifact_id ?? null);
+    setSelectedArtifact(null);
+    if (!selectedSeriesRef) return;
+    writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
 
   const updateFilter = (key: keyof ArtifactFilters, value: string) => {
@@ -337,19 +480,22 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
               </div>
             )}
             <div className="artifacts-sidebar__list">
-              {loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
-              {!loading && artifacts.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
-              {artifacts.map((artifact) => (
+              {loading && series.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
+              {!loading && series.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
+              {series.map((entry) => (
                 <button
-                  key={artifact.id}
+                  key={seriesRef(entry)}
                   type="button"
-                  className={`artifacts-sidebar__item${artifact.id === selectedId ? ' artifacts-sidebar__item--active' : ''}`}
-                  onClick={() => selectArtifact(artifact)}
+                  className={`artifacts-sidebar__item${seriesRef(entry) === selectedSeriesRef ? ' artifacts-sidebar__item--active' : ''}`}
+                  onClick={() => selectSeries(entry)}
                 >
-                  <span className="artifacts-sidebar__name">{artifactTitle(artifact)}</span>
+                  <span className="artifacts-sidebar__name">{seriesTitle(entry)}</span>
                   <span className="artifacts-sidebar__meta">
-                    <span>{artifactSidebarLocation(artifact)}</span>
-                    <em>{artifact.role || artifact.media_type || 'artifact'}</em>
+                    <span>{seriesSidebarLocation(entry)}</span>
+                    <em>
+                      {entry.latest_version ? `v${entry.latest_version.version_no}` : 'no versions'}
+                      {entry.version_count > 1 ? ` · ${entry.version_count} versions` : ''}
+                    </em>
                   </span>
                 </button>
               ))}
@@ -371,6 +517,13 @@ export function ArtifactsView({ initialArtifactId, initialRef, initialRepo, side
           <ArtifactDetail
             artifact={selectedArtifact}
             resolution={resolution}
+            series={versionHistory?.series ?? selectedSeries ?? null}
+            versions={versionHistory?.versions ?? []}
+            selectedVersion={selectedVersion}
+            selectedVersionNo={selectedVersionNo}
+            versionHistoryOpen={versionHistoryOpen}
+            onVersionChange={selectVersion}
+            onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
             content={artifactContent}
             contentLoading={contentLoading}
             contentError={contentError}
@@ -415,6 +568,13 @@ function FacetSelect({ label, value, options, onChange }: {
 function ArtifactDetail({
   artifact,
   resolution,
+  series,
+  versions,
+  selectedVersion,
+  selectedVersionNo,
+  versionHistoryOpen,
+  onVersionChange,
+  onToggleVersionHistory,
   content,
   contentLoading,
   contentError,
@@ -424,6 +584,13 @@ function ArtifactDetail({
 }: {
   artifact: ArtifactRecord;
   resolution: ArtifactResolveResult | null;
+  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null;
+  versions: ArtifactVersionRecord[];
+  selectedVersion: ArtifactVersionRecord | null;
+  selectedVersionNo: number | null;
+  versionHistoryOpen: boolean;
+  onVersionChange: (versionNo: number | null) => void;
+  onToggleVersionHistory: () => void;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
   contentError: string | null;
@@ -446,6 +613,8 @@ function ArtifactDetail({
     },
   ];
   const locatorRows = [
+    ['Series', series ? seriesRecordRef(series) : ''],
+    ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
     ['URI', artifact.uri],
     ['Content hash', artifact.content_hash],
     ['Home repo', artifact.home_repo_id],
@@ -462,6 +631,25 @@ function ArtifactDetail({
           <h2>{artifactTitle(artifact)}</h2>
         </div>
         <div className="artifact-detail__status">
+          <label className="artifact-detail__version-picker">
+            <span>Version</span>
+            <select
+              value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
+              onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
+            >
+              <option value="">Latest</option>
+              {versions.map((version) => (
+                <option key={version.id} value={String(version.version_no)}>
+                  v{version.version_no}{version.label ? ` · ${version.label}` : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {selectedVersionNo === null ? <span className="artifact-detail__badge">latest</span> : (
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => onVersionChange(null)}>
+              Jump to latest
+            </button>
+          )}
           <AddToSpace
             projectId={spaceProjectId}
             targets={spaceTargets}
@@ -469,6 +657,35 @@ function ArtifactDetail({
           />
         </div>
       </header>
+      {resolution?.warnings?.includes('series_latest_not_pinned') && (
+        <div className="artifact-detail__warning">series_latest_not_pinned</div>
+      )}
+      <section className="artifact-detail__section">
+        <button
+          type="button"
+          className="btn btn--ghost btn--sm"
+          onClick={onToggleVersionHistory}
+          aria-expanded={versionHistoryOpen}
+        >
+          Version history
+        </button>
+        {versionHistoryOpen && (
+          <div className="artifact-detail__list">
+            {versions.map((version) => (
+              <button
+                key={version.id}
+                type="button"
+                className={`artifact-detail__list-item${version.artifact_id === artifact.id ? ' artifact-detail__list-item--active' : ''}`}
+                onClick={() => onVersionChange(version.version_no)}
+              >
+                <code>v{version.version_no}</code>
+                <span>{version.label || version.note || version.source_kind}</span>
+                <span>{formatTime(version.created_at)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </section>
       <section className="artifact-detail__section">
         <h3>Identity</h3>
         <KeyValue rows={locatorRows} />
@@ -510,7 +727,7 @@ function ArtifactDetail({
             {artifact.links.map((link) => (
               <a key={link.id} className="artifact-detail__list-item" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
                 <code>{link.entity_type}:{link.entity_id}</code>
-                <span>{link.link_type}</span>
+                <span>{link.link_type} · {link.link_kind}</span>
                 <span>{link.role || link.source}</span>
               </a>
             ))}
@@ -687,7 +904,7 @@ function KeyValue({ rows }: { rows: Array<[string, string]> }): JSX.Element {
   );
 }
 
-function buildFacetOptions(artifacts: ArtifactRecord[]): {
+function buildFacetOptions(series: ArtifactSeriesSummary[]): {
   schemes: string[];
   custodies: string[];
   availabilities: string[];
@@ -701,7 +918,12 @@ function buildFacetOptions(artifacts: ArtifactRecord[]): {
   const repos = new Set<string>();
   const providers = new Set<string>();
   const roles = new Set<string>();
-  for (const artifact of artifacts) {
+  for (const entry of series) {
+    const artifact = entry.latest_artifact;
+    if (!artifact) {
+      if (entry.repo_id) repos.add(entry.repo_id);
+      continue;
+    }
     custodies.add(artifact.custody_mode);
     availabilities.add(artifact.availability);
     if (artifact.home_repo_id) repos.add(artifact.home_repo_id);
@@ -724,6 +946,54 @@ function buildFacetOptions(artifacts: ArtifactRecord[]): {
     providers: [...providers].sort(),
     roles: [...roles].sort(),
   };
+}
+
+function seriesRef(series: ArtifactSeriesSummary): string {
+  return series.ref || (series.id.startsWith('artifact-series:') ? series.id : `artifact-series:${series.id}`);
+}
+
+function seriesRecordRef(series: ArtifactSeriesRecord | ArtifactSeriesSummary): string {
+  if ('ref' in series && series.ref) return series.ref;
+  return series.id.startsWith('artifact-series:') ? series.id : `artifact-series:${series.id}`;
+}
+
+function normalizeSeriesRef(ref: string): string {
+  const trimmed = ref.trim();
+  return trimmed.startsWith('artifact-series:') ? trimmed : `artifact-series:${trimmed}`;
+}
+
+function sortedVersionHistory(history: ArtifactVersionHistory): ArtifactVersionHistory {
+  return {
+    ...history,
+    versions: [...history.versions].sort((a, b) => b.version_no - a.version_no),
+  };
+}
+
+function writeArtifactHash(
+  seriesRefValue: string,
+  versionNo: number | null,
+  lastWrittenHashRef: LastWrittenHashRef,
+): void {
+  const nextHash = versionNo === null
+    ? seriesDetailHref(seriesRefValue)
+    : versionDetailHref(seriesRefValue, versionNo);
+  if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
+    lastWrittenHashRef.current = { seriesRef: seriesRefValue, versionNo };
+    window.location.hash = nextHash;
+  }
+}
+
+function seriesTitle(series: ArtifactSeriesSummary): string {
+  return artifactTitleCandidate(series.title ?? '')
+    || artifactTitleCandidate(series.logical_name ?? '')
+    || (series.latest_artifact ? artifactTitle(series.latest_artifact) : '')
+    || series.series_key
+    || seriesRef(series);
+}
+
+function seriesSidebarLocation(series: ArtifactSeriesSummary): string {
+  if (series.latest_artifact) return artifactSidebarLocation(series.latest_artifact);
+  return series.repo_id || series.source_kind;
 }
 
 function artifactTitle(artifact: ArtifactRecord): string {

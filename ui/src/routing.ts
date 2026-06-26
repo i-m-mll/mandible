@@ -5,6 +5,14 @@ export type Route = {
 
 export const VIEW_SIDEBAR_QUERY_PARAM = 'sidebar';
 export const VIEW_SIDEBAR_HIDDEN_VALUE = 'hidden';
+export const ARTIFACT_SERIES_QUERY_PARAM = 'series';
+export const ARTIFACT_VERSION_QUERY_PARAM = 'version';
+
+export function parseArtifactVersionParam(value: string | undefined): number | null {
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+}
 
 export function isViewSidebarHidden(route: Route): boolean {
   return route.params[VIEW_SIDEBAR_QUERY_PARAM] === VIEW_SIDEBAR_HIDDEN_VALUE;

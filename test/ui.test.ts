@@ -1964,6 +1964,105 @@ describe('LedgerIssueDetail', () => {
   });
 });
 
+function makeArtifactVersion(artifact: any, seriesId: string, versionNo: number): any {
+  return {
+    id: `artifact-version:${seriesId}:${versionNo}`,
+    series_id: seriesId,
+    artifact_id: artifact.id,
+    version_no: versionNo,
+    source_kind: 'managed',
+    content_hash: artifact.content_hash,
+    commit_sha: null,
+    repo_path: typeof artifact.repo_locator?.path === 'string' ? artifact.repo_locator.path : null,
+    observed_path: null,
+    custody_mode: artifact.custody_mode,
+    label: null,
+    note: null,
+    metadata: {},
+    created_at: artifact.created_at + versionNo,
+  };
+}
+
+function makeArtifactFixture(hashChar: string, title: string, overrides: Record<string, unknown> = {}): any {
+  return {
+    id: `artifact:sha256:${hashChar.repeat(64)}`,
+    algorithm: 'sha256',
+    content_hash: hashChar.repeat(64),
+    uri: `artifact:${hashChar.repeat(64)}`,
+    media_type: 'text/markdown',
+    role: 'report',
+    size_bytes: 42,
+    provider_id: 'feedbax',
+    manifest_id: null,
+    metadata: {
+      title,
+      filename: title,
+    },
+    pinned: false,
+    custody_mode: 'managed',
+    home_repo_id: 'mandible',
+    repo_locator: { repo_id: 'mandible', path: `reports/${title}` },
+    availability: 'present',
+    retention: {},
+    reference: {},
+    created_at: Date.now(),
+    aliases: [],
+    links: [],
+    ...overrides,
+  };
+}
+
+function makeArtifactSeries(seriesId: string, artifacts: any[], title?: string): { summary: any; history: any } {
+  const normalizedSeriesId = seriesId.startsWith('artifact-series:') ? seriesId : `artifact-series:${seriesId}`;
+  const seriesKey = normalizedSeriesId.replace(/^artifact-series:/, '');
+  const versions = artifacts.map((artifact, index) => makeArtifactVersion(artifact, normalizedSeriesId, index + 1));
+  const latestArtifact = artifacts[artifacts.length - 1];
+  const latestVersion = versions[versions.length - 1];
+  const series = {
+    id: normalizedSeriesId,
+    ref: normalizedSeriesId,
+    series_key: seriesKey,
+    source_kind: 'managed',
+    title: title ?? latestArtifact?.metadata?.title ?? null,
+    repo_id: latestArtifact?.home_repo_id ?? null,
+    logical_name: title ?? latestArtifact?.metadata?.logical_name ?? null,
+    latest_version_id: latestVersion?.id ?? null,
+    version_count: versions.length,
+    metadata: {},
+    created_at: latestArtifact?.created_at ?? Date.now(),
+    updated_at: latestArtifact?.created_at ?? Date.now(),
+    latest_version: latestVersion ?? null,
+    latest_artifact: latestArtifact ?? null,
+    links: [],
+  };
+  return {
+    summary: series,
+    history: {
+      series: {
+        id: series.id,
+        series_key: series.series_key,
+        source_kind: series.source_kind,
+        title: series.title,
+        repo_id: series.repo_id,
+        logical_name: series.logical_name,
+        latest_version_id: series.latest_version_id,
+        version_count: series.version_count,
+        metadata: series.metadata,
+        created_at: series.created_at,
+        updated_at: series.updated_at,
+      },
+      versions,
+      links: [],
+    },
+  };
+}
+
+function jsonResponse(body: unknown): Promise<Response> {
+  return Promise.resolve(new Response(JSON.stringify(body), {
+    headers: { 'content-type': 'application/json' },
+  }));
+}
+
 describe('ArtifactsView', () => {
   it('renders HumbleB knowledge backrefs in artifact detail', async () => {
     const artifact = {
@@ -1991,14 +2090,29 @@ describe('ArtifactsView', () => {
       aliases: [],
       links: [],
     };
+    const artifactSeries = makeArtifactSeries('demo-report', [artifact], 'demo-report.md');
     const mockFetch = vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ artifacts: [artifact] }), {
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [artifactSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: artifact.id,
+            scheme: 'artifact',
+            normalized_ref: artifact.id,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
       }
       if (url.endsWith('/content')) {
         return Promise.resolve(
@@ -2106,13 +2220,30 @@ describe('ArtifactsView', () => {
       aliases: [],
       links: [],
     };
+    const artifactSeries = makeArtifactSeries('plot-html', [artifact], 'plot.html');
     const html = '<!doctype html><html><body><h1>Plot</h1><script>window.plotReady = true;</script></body></html>';
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
-        return Promise.resolve(new Response(JSON.stringify({ artifacts: [artifact] }), {
-          headers: { 'content-type': 'application/json' },
-        }));
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [artifactSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: artifact.id,
+            scheme: 'artifact',
+            normalized_ref: artifact.id,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
       }
       if (url.endsWith('/content')) {
         return Promise.resolve(new Response(JSON.stringify({
@@ -2177,19 +2308,39 @@ describe('ArtifactsView', () => {
     });
     const firstArtifact = makeArtifact('1', 'one.md');
     const secondArtifact = makeArtifact('2', 'two.md');
+    const firstSeries = makeArtifactSeries('one-series', [firstArtifact], 'one.md');
+    const secondSeries = makeArtifactSeries('two-series', [secondArtifact], 'two.md');
     let listCalls = 0;
     const contentCalls: string[] = [];
     const mockFetch = vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
+      if (url.startsWith('/api/artifacts/series?')) {
         const params = new URLSearchParams(url.split('?')[1] ?? '');
         if (params.get('limit') === '200') listCalls += 1;
         if (params.get('limit') === '200' && listCalls > 1) {
           return new Promise<Response>(() => undefined);
         }
-        return Promise.resolve(new Response(JSON.stringify({ artifacts: [firstArtifact, secondArtifact] }), {
-          headers: { 'content-type': 'application/json' },
-        }));
+        return jsonResponse({ series: [firstSeries.summary, secondSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({
+          history: url.includes('two-series') ? secondSeries.history : firstSeries.history,
+        });
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: firstArtifact.id,
+            scheme: 'artifact',
+            normalized_ref: firstArtifact.id,
+            artifact: firstArtifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
       }
       if (url.endsWith('/content')) {
         contentCalls.push(url);
@@ -2272,6 +2423,7 @@ describe('ArtifactsView', () => {
       created_at: Date.now(),
       alias_schemes: ['artifact', 'repo'],
     };
+    const artifactSeries = makeArtifactSeries('fast-summary', [summaryArtifact], 'fast-summary.md');
     const fullArtifact = {
       ...summaryArtifact,
       metadata: {
@@ -2303,11 +2455,12 @@ describe('ArtifactsView', () => {
     const contentPromise = new Promise<Response>(() => undefined);
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
+      if (url.startsWith('/api/artifacts/series?')) {
         listUrl = url;
-        return Promise.resolve(new Response(JSON.stringify({ artifacts: [summaryArtifact] }), {
-          headers: { 'content-type': 'application/json' },
-        }));
+        return jsonResponse({ series: [artifactSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
       }
       if (url.endsWith('/content')) {
         return contentPromise;
@@ -2375,20 +2528,27 @@ describe('ArtifactsView', () => {
     const inputArtifact = makeArtifact('6', 'input.md', 'input', 'repo-a', 'provider-a', 'linked', 'present');
     const outputArtifact = makeArtifact('7', 'output.md', 'output', 'repo-b', 'provider-b', 'managed', 'remote_only');
     const artifacts = [inputArtifact, outputArtifact];
+    const seriesRows = [
+      makeArtifactSeries('input-series', [inputArtifact], 'input.md').summary,
+      makeArtifactSeries('output-series', [outputArtifact], 'output.md').summary,
+    ];
     const listUrls: string[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
+      if (url.startsWith('/api/artifacts/series?')) {
         listUrls.push(url);
         const params = new URLSearchParams(url.split('?')[1] ?? '');
-        let rows = artifacts;
+        let rows = seriesRows;
         const role = params.get('role');
         const repo = params.get('repo');
-        if (role) rows = rows.filter((artifact) => artifact.role === role);
-        if (repo) rows = rows.filter((artifact) => artifact.home_repo_id === repo);
-        return Promise.resolve(new Response(JSON.stringify({ artifacts: rows }), {
-          headers: { 'content-type': 'application/json' },
-        }));
+        if (role) rows = rows.filter((series) => series.latest_artifact?.role === role);
+        if (repo) rows = rows.filter((series) => series.latest_artifact?.home_repo_id === repo);
+        return jsonResponse({ series: rows });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        const artifact = url.includes('output-series') ? outputArtifact : inputArtifact;
+        const seriesId = url.includes('output-series') ? 'output-series' : 'input-series';
+        return jsonResponse({ history: makeArtifactSeries(seriesId, [artifact]).history });
       }
       if (url.endsWith('/content')) {
         return new Promise<Response>(() => undefined);
@@ -2472,12 +2632,15 @@ describe('ArtifactsView', () => {
       },
     };
     const ref = 'repo://mandible@main/results/deep-link.md';
+    const listSeries = makeArtifactSeries('sidebar-series', [listArtifact], 'sidebar-first.md');
+    const linkedSeries = makeArtifactSeries('deep-link-series', [linkedArtifact], 'deep-link.md');
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
-        return Promise.resolve(new Response(JSON.stringify({ artifacts: [listArtifact] }), {
-          headers: { 'content-type': 'application/json' },
-        }));
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [listSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: linkedSeries.history });
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return Promise.resolve(new Response(JSON.stringify({
@@ -2488,6 +2651,9 @@ describe('ArtifactsView', () => {
             normalized_ref: ref,
             artifact: linkedArtifact,
             alias: null,
+            series: linkedSeries.history.series,
+            version: linkedSeries.history.versions[0],
+            warnings: [],
           },
         }), { headers: { 'content-type': 'application/json' } }));
       }
@@ -2526,6 +2692,239 @@ describe('ArtifactsView', () => {
     expect(screen.getByText(ref)).toBeTruthy();
   });
 
+  it('pins legacy artifact deep links to the exact resolved version', async () => {
+    const v1 = makeArtifactFixture('8', 'report-v1.md');
+    const v2 = makeArtifactFixture('9', 'report-v2.md');
+    const artifactSeries = makeArtifactSeries('report-series', [v1, v2], 'report.md');
+    const versionRefs: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        const ref = new URLSearchParams(url.split('?')[1] ?? '').get('ref') ?? '';
+        versionRefs.push(ref);
+        if (ref === v1.id || ref === artifactSeries.summary.ref) return jsonResponse({ history: artifactSeries.history });
+        return Promise.reject(new Error(`unexpected versions ref ${ref}`));
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: v1.id,
+            scheme: 'artifact',
+            normalized_ref: v1.id,
+            artifact: v1,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
+      }
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: v1.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(v1.id))) return jsonResponse({ artifact: v1 });
+      if (url.includes(encodeURIComponent(v2.id))) return jsonResponse({ artifact: v2 });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: v1.id }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('report-v1.md'));
+    const versionSelect = screen.getByLabelText('Version') as HTMLSelectElement;
+    await waitFor(() => expect(versionSelect.value).toBe('1'));
+    expect(screen.getByText('Jump to latest')).toBeTruthy();
+    expect(screen.queryByText('series_latest_not_pinned')).toBeNull();
+    expect(versionRefs).toContain(v1.id);
+    await waitFor(() => expect(versionRefs).toContain(artifactSeries.summary.ref));
+    expect(versionRefs).not.toContain(`artifact-series:${artifactSeries.summary.ref}`);
+    expect(screen.getByText(artifactSeries.summary.ref)).toBeTruthy();
+  });
+
+  it('keeps artifact-series @latest refs latest-tracking and shows the resolver warning badge', async () => {
+    const v1 = makeArtifactFixture('a', 'latest-v1.md');
+    const v2 = makeArtifactFixture('b', 'latest-v2.md');
+    const artifactSeries = makeArtifactSeries('latest-series', [v1, v2], 'latest-report.md');
+    const ref = 'artifact-series:latest-series@latest';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref,
+            scheme: 'artifact-series',
+            normalized_ref: ref,
+            artifact: v2,
+            alias: null,
+            series: artifactSeries.history.series,
+            version: artifactSeries.history.versions[1],
+            warnings: ['series_latest_not_pinned'],
+          },
+        });
+      }
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: v2.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(v2.id))) return jsonResponse({ artifact: v2 });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialRef: ref }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('latest-v2.md'));
+    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('');
+    expect(screen.getByText('latest')).toBeTruthy();
+    expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
+  });
+
+  it('keeps pinned version and open history stable when the series sidebar refetches with a newer latest', async () => {
+    const v1 = makeArtifactFixture('c', 'pinned-v1.md');
+    const v2 = makeArtifactFixture('d', 'pinned-v2.md');
+    const v3 = makeArtifactFixture('e', 'pinned-v3.md');
+    const initialSeries = makeArtifactSeries('pinned-series', [v1, v2], 'pinned-report.md');
+    const refreshedSeries = makeArtifactSeries('pinned-series', [v1, v2, v3], 'pinned-report.md');
+    let seriesCalls = 0;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        seriesCalls += 1;
+        return jsonResponse({ series: [seriesCalls > 2 ? refreshedSeries.summary : initialSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: initialSeries.history });
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: v1.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(v1.id))) return jsonResponse({ artifact: v1 });
+      if (url.includes(encodeURIComponent(v2.id))) return jsonResponse({ artifact: v2 });
+      if (url.includes(encodeURIComponent(v3.id))) return jsonResponse({ artifact: v3 });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:pinned-series', initialVersionNo: 1 }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md'));
+    fireEvent.click(screen.getByRole('button', { name: 'Version history' }));
+    expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
+
+    fireEvent.input(screen.getByPlaceholderText('Search artifacts'), { target: { value: 'pinned' } });
+
+    await waitFor(() => expect(seriesCalls).toBeGreaterThan(2));
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
+    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('1');
+    expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /pinned-report\.md/ }).textContent).toContain('v3');
+    });
+  });
+
+  it('ignores self-written series hash updates but reconciles external series changes', async () => {
+    const firstArtifact = makeArtifactFixture('f', 'hash-self-v1.md');
+    const secondArtifact = makeArtifactFixture('0', 'hash-self-v2.md', {
+      id: `artifact:sha256:${'10'.repeat(32)}`,
+      content_hash: '10'.repeat(32),
+      uri: `artifact:${'10'.repeat(32)}`,
+    });
+    const firstSeries = makeArtifactSeries('hash-self-first', [firstArtifact], 'hash-self-v1.md');
+    const secondSeries = makeArtifactSeries('hash-self-second', [secondArtifact], 'hash-self-v2.md');
+    const artifactById = new Map([
+      [firstArtifact.id, firstArtifact],
+      [secondArtifact.id, secondArtifact],
+    ]);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [firstSeries.summary, secondSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        const ref = new URLSearchParams(url.split('?')[1] ?? '').get('ref');
+        if (ref === firstSeries.summary.ref) return jsonResponse({ history: firstSeries.history });
+        if (ref === secondSeries.summary.ref) return jsonResponse({ history: secondSeries.history });
+        return Promise.reject(new Error(`unexpected versions ref ${ref}`));
+      }
+      if (url.endsWith('/content')) {
+        const artifact = [...artifactById.values()].find((candidate) => url.includes(encodeURIComponent(candidate.id))) ?? firstArtifact;
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      for (const [id, artifact] of artifactById) {
+        if (url.includes(encodeURIComponent(id))) return jsonResponse({ artifact });
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    const { rerender } = render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
+    fireEvent.click(screen.getByRole('button', { name: /hash-self-v2\.md/ }));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v2.md'));
+
+    rerender(h(ArtifactsView, { initialSeriesRef: secondSeries.summary.ref }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v2.md');
+    expect(screen.queryByText('Select an artifact or open an artifact URI.')).toBeNull();
+
+    rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
+    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('1');
+  });
+
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {
     const bundleId = 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
     const memberId = 'artifact:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
@@ -2554,6 +2953,7 @@ describe('ArtifactsView', () => {
       aliases: [],
       links: [],
     };
+    const artifactSeries = makeArtifactSeries('bundle-series', [artifact], 'run packet');
     const manifest = JSON.stringify({
       schema_version: 'mandible.artifact_bundle.v1',
       name: 'run packet',
@@ -2563,10 +2963,26 @@ describe('ArtifactsView', () => {
     }, null, 2);
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
       const url = String(input);
-      if (url.startsWith('/api/artifacts?')) {
-        return Promise.resolve(new Response(JSON.stringify({ artifacts: [artifact] }), {
-          headers: { 'content-type': 'application/json' },
-        }));
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [artifactSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: artifact.id,
+            scheme: 'artifact',
+            normalized_ref: artifact.id,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
       }
       if (url.endsWith('/content')) {
         return Promise.resolve(new Response(JSON.stringify({
