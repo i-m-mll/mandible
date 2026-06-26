@@ -329,6 +329,13 @@ export type ArtifactLinkRecord = {
   provider_id: string | null;
   source: string;
   metadata: Record<string, unknown>;
+  // Typed-link columns (migration v89, issue 10960ea). Canonical name is
+  // `link_kind` (not `link_mode`). `pinned` (default) names one immutable
+  // artifact version; `living` tracks a series head via `series_id`/`series_ref`
+  // (both null for pinned links).
+  link_kind: "pinned" | "living";
+  series_id: string | null;
+  series_ref: string | null;
   created_at: number;
   updated_at: number;
 };

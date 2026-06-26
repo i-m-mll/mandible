@@ -995,6 +995,13 @@ export interface ArtifactLinkRecord {
   provider_id: string | null;
   source: string;
   metadata: Record<string, unknown>;
+  // Typed-link columns (migration v89, issue 10960ea). `pinned` (default) names
+  // one immutable artifact version; `living` tracks a series head. `series_id`
+  // is a SOFT reference to artifact_series.id (no FK) and `series_ref` carries
+  // the human-resolvable author ref. Both are null for pinned links.
+  link_kind: "pinned" | "living";
+  series_id: string | null;
+  series_ref: string | null;
   created_at: number;
   updated_at: number;
 }
