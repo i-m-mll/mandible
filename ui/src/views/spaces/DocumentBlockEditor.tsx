@@ -31,6 +31,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { getSpaceExports, getSpaceFactPacket } from '../../api';
+import { resolveResourceRef, type ResolverResult } from '../../resource-refs';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -68,6 +69,7 @@ const SPACE_EVENT_PREFIX = 'space:';
 
 /** Prose block types the editor offers as "add prose" affordances. */
 const PROSE_BLOCK_TYPES: SpaceBlockType[] = ['paragraph', 'heading', 'todo'];
+const AUTOSAVE_DELAY_MS = 650;
 
 /** Embed block types and the ref kind each one binds. */
 const EMBED_KIND: Record<string, SpaceBlockType> = {
@@ -108,6 +110,19 @@ type LoadState =
   | { status: 'ready'; blocks: SpaceBlock[]; exports: SpaceExport[]; items: SpaceItem[] }
   | { status: 'error'; message: string };
 
+type SaveState =
+  | { status: 'idle' }
+  | { status: 'saving'; blockId: string }
+  | { status: 'saved'; blockId: string }
+  | { status: 'error'; blockId: string; message: string };
+
+type CaretTarget = { blockId: string; start: number; end: number };
+
+type RefInspector =
+  | { status: 'resolving'; ref: string }
+  | { status: 'ready'; ref: string; result: ResolverResult }
+  | { status: 'error'; ref: string; message: string };
+
 export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
   /** Test seam: inject a fetch implementation for block reads/writes. */
   fetchImpl?: typeof fetch;
@@ -143,6 +158,39 @@ function snapshotFor(item: EmbeddableItem): BlockItemSnapshot {
   };
 }
 
+function blockCanEditMarkdown(block: SpaceBlock): boolean {
+  return block.item_id == null && block.item_snapshot == null;
+}
+
+function formatInlineRef(item: Pick<EmbeddableItem, 'ref_type' | 'ref_id' | 'ref_uri'>): string {
+  const raw = (item.ref_uri || item.ref_id || '').trim();
+  if (!raw) return `[${item.ref_type}:unknown]`;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return `[${raw}]`;
+  if (item.ref_type === 'artifact') return `[artifact:${raw}]`;
+  if (item.ref_type === 'issue') return `[issue:${raw}]`;
+  if (item.ref_type === 'comment') return `[comment:${raw}]`;
+  return `[${item.ref_type}:${raw}]`;
+}
+
+function insertAtCaret(value: string, insertion: string, start: number, end: number): string {
+  const before = value.slice(0, Math.max(0, start));
+  const after = value.slice(Math.max(0, end));
+  const prefix = before && !/\s$/.test(before) ? ' ' : '';
+  const suffix = after && !/^\s/.test(after) ? ' ' : '';
+  return `${before}${prefix}${insertion}${suffix}${after}`;
+}
+
+function refFromHref(href: string): string | null {
+  try {
+    const url = new URL(href, window.location.href);
+    return url.hash.includes('?')
+      ? new URLSearchParams(url.hash.slice(url.hash.indexOf('?') + 1)).get('ref')
+      : url.searchParams.get('ref');
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Spaces document block editor mount. Registered for the `document` renderer in
  * the C10 shell (it is the editable document surface; the read-only renderer is
@@ -167,8 +215,14 @@ export function DocumentBlockEditor({
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+  const [inspector, setInspector] = useState<RefInspector | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
+  const saveTimers = useRef<Map<string, number>>(new Map());
+  const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
+  const caretRef = useRef<CaretTarget | null>(null);
   fetchRef.current = fetchImpl;
 
   // Re-hydrate per-space edit state whenever the open Space changes.
@@ -180,6 +234,13 @@ export function DocumentBlockEditor({
   useEffect(() => {
     if (spaceId) writeBlockEditorViewState(projectId, spaceId, viewState);
   }, [projectId, spaceId, viewState]);
+
+  useEffect(() => {
+    return () => {
+      for (const timer of saveTimers.current.values()) window.clearTimeout(timer);
+      saveTimers.current.clear();
+    };
+  }, []);
 
   const fetcher = useCallback(() => fetchRef.current ?? fetch, []);
 
@@ -230,7 +291,13 @@ export function DocumentBlockEditor({
     };
   }, [spaceId, loadAll]);
 
-  const blocks = load.status === 'ready' ? load.blocks : [];
+  const blocks = useMemo(() => {
+    const live = load.status === 'ready' ? load.blocks : [];
+    return live.map((block) => {
+      const draft = viewState.drafts[block.id];
+      return draft === undefined ? block : { ...block, markdown: draft };
+    });
+  }, [load, viewState.drafts]);
   const exports = load.status === 'ready' ? load.exports : [];
   const spaceItems = load.status === 'ready' ? load.items : [];
 
@@ -269,18 +336,84 @@ export function DocumentBlockEditor({
     [editable, spaceId, loadAll],
   );
 
+  const saveMarkdownNow = useCallback(
+    async (blockId: string, markdown: string) => {
+      if (!editable || !spaceId) return;
+      const prior = saveTimers.current.get(blockId);
+      if (prior) {
+        window.clearTimeout(prior);
+        saveTimers.current.delete(blockId);
+      }
+      setSaveState({ status: 'saving', blockId });
+      try {
+        await updateSpaceBlock(spaceId, blockId, { markdown }, fetcher());
+        setSaveState({ status: 'saved', blockId });
+        setViewState((state) => {
+          if (state.drafts[blockId] !== markdown) return state;
+          const drafts = { ...state.drafts };
+          delete drafts[blockId];
+          return { ...state, drafts };
+        });
+        await loadAll(true);
+      } catch (err) {
+        setSaveState({
+          status: 'error',
+          blockId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [editable, spaceId, fetcher, loadAll],
+  );
+
+  const queueAutosave = useCallback(
+    (blockId: string, markdown: string) => {
+      const prior = saveTimers.current.get(blockId);
+      if (prior) window.clearTimeout(prior);
+      const timer = window.setTimeout(() => {
+        saveTimers.current.delete(blockId);
+        void saveMarkdownNow(blockId, markdown);
+      }, AUTOSAVE_DELAY_MS);
+      saveTimers.current.set(blockId, timer);
+    },
+    [saveMarkdownNow],
+  );
+
+  const setEditing = useCallback((blockId: string | null) => {
+    setActiveBlockId(blockId);
+    setViewState((prior) => ({ ...prior, editingId: blockId }));
+  }, []);
+
+  const setDraft = useCallback((blockId: string, value: string) => {
+    setViewState((prior) => ({
+      ...prior,
+      drafts: { ...prior.drafts, [blockId]: value },
+    }));
+  }, []);
+
   const addProseBlock = useCallback(
-    (blockType: SpaceBlockType) => {
+    async (blockType: SpaceBlockType, afterBlockId?: string | null, markdown = '') => {
       if (!spaceId) return;
+      const anchor = afterBlockId ? blocks.find((b) => b.id === afterBlockId) : null;
+      const parentId = anchor?.parent_id ?? null;
+      const anchorIndex = anchor ? siblingIndexOf(blocks, anchor.id) + 1 : blocks.length;
+      const placement = afterBlockId
+        ? placementForIndex(blocks, parentId, anchorIndex, null)
+        : { sort_key: appendSortKey(blocks, null) };
       const body: CreateBlockBody = {
         block_type: blockType,
-        parent_id: null,
-        sort_key: appendSortKey(blocks, null),
-        markdown: blockType === 'heading' ? 'New heading' : '',
+        parent_id: parentId,
+        sort_key: placement.sort_key,
+        markdown: markdown || (blockType === 'heading' ? 'New heading' : ''),
       };
-      void runMutation(() => createSpaceBlock(spaceId, body, fetcher()));
+      await runMutation(async () => {
+        const created = await createSpaceBlock(spaceId, body, fetcher());
+        setActiveBlockId(created.id);
+        setEditing(created.id);
+        return created;
+      });
     },
-    [spaceId, blocks, runMutation, fetcher],
+    [spaceId, blocks, runMutation, fetcher, setEditing],
   );
 
   const isItemEmbedded = useCallback(
@@ -308,28 +441,54 @@ export function DocumentBlockEditor({
 
   const embedSpaceItem = useCallback(
     async (item: SpaceItem) => {
-      await embedItem({
+      const embeddable = {
         id: item.id,
         ref_type: item.ref_type,
         ref_id: item.ref_id,
         ref_uri: item.ref_uri,
         title: item.title,
-      });
+      };
+      const refText = formatInlineRef(embeddable);
+      const editableBlocks = blocks.filter(blockCanEditMarkdown);
+      const targetId =
+        activeBlockId && editableBlocks.some((b) => b.id === activeBlockId)
+          ? activeBlockId
+          : editableBlocks[editableBlocks.length - 1]?.id ?? null;
+      if (!targetId) {
+        await addProseBlock('paragraph', null, refText);
+        return;
+      }
+      const block = blocks.find((b) => b.id === targetId);
+      if (!block) return;
+      const draft = viewState.drafts[targetId] ?? block.markdown ?? '';
+      const caret =
+        caretRef.current?.blockId === targetId
+          ? caretRef.current
+          : { blockId: targetId, start: draft.length, end: draft.length };
+      const next = insertAtCaret(draft, refText, caret.start, caret.end);
+      setActiveBlockId(targetId);
+      setEditing(targetId);
+      setDraft(targetId, next);
+      queueAutosave(targetId, next);
+      window.setTimeout(() => {
+        const textarea = textareaRefs.current.get(targetId);
+        if (!textarea) return;
+        const nextPos = Math.min(next.length, caret.start + refText.length + 1);
+        textarea.focus();
+        textarea.setSelectionRange(nextPos, nextPos);
+        caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
+      }, 0);
     },
-    [embedItem],
+    [activeBlockId, addProseBlock, blocks, queueAutosave, setDraft, setEditing, viewState.drafts],
   );
 
   const saveProse = useCallback(
     (blockId: string, markdown: string) => {
       if (!spaceId) return;
-      void runMutation(() => updateSpaceBlock(spaceId, blockId, { markdown }, fetcher()));
-      setViewState((prior) => {
-        const drafts = { ...prior.drafts };
-        delete drafts[blockId];
-        return { editingId: null, drafts };
-      });
+      void saveMarkdownNow(blockId, markdown);
+      setViewState((prior) => ({ ...prior, editingId: null }));
     },
-    [spaceId, runMutation, fetcher],
+    [spaceId, saveMarkdownNow],
   );
 
   const moveBlock = useCallback(
@@ -389,16 +548,50 @@ export function DocumentBlockEditor({
     [spaceId, editable, blocks, runMutation, fetcher, onEmbedDeleteDecision],
   );
 
-  const setEditing = useCallback((blockId: string | null) => {
-    setViewState((prior) => ({ ...prior, editingId: blockId }));
+  const updateCaret = useCallback((blockId: string, textarea: HTMLTextAreaElement) => {
+    caretRef.current = {
+      blockId,
+      start: textarea.selectionStart ?? textarea.value.length,
+      end: textarea.selectionEnd ?? textarea.value.length,
+    };
   }, []);
 
-  const setDraft = useCallback((blockId: string, value: string) => {
-    setViewState((prior) => ({
-      ...prior,
-      drafts: { ...prior.drafts, [blockId]: value },
-    }));
-  }, []);
+  const handleDraftInput = useCallback(
+    (blockId: string, textarea: HTMLTextAreaElement) => {
+      const value = textarea.value;
+      updateCaret(blockId, textarea);
+      setDraft(blockId, value);
+      queueAutosave(blockId, value);
+    },
+    [queueAutosave, setDraft, updateCaret],
+  );
+
+  const openReferenceInspector = useCallback(
+    (ref: string) => {
+      if (!ref.trim()) return;
+      setInspector({ status: 'resolving', ref });
+      resolveResourceRef(ref, fetcher())
+        .then((result) => setInspector({ status: 'ready', ref, result }))
+        .catch((err) =>
+          setInspector({ status: 'error', ref, message: err instanceof Error ? err.message : String(err) }),
+        );
+    },
+    [fetcher],
+  );
+
+  const handleDocumentClick = useCallback(
+    (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest?.('a.resource-ref__link, a.spaces-doc-ref__link') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const wrapper = anchor.closest('[data-resource-ref]') as HTMLElement | null;
+      const ref = wrapper?.getAttribute('data-resource-ref') || refFromHref(anchor.href);
+      if (!ref) return;
+      event.preventDefault();
+      openReferenceInspector(ref);
+    },
+    [openReferenceInspector],
+  );
 
   // --- render ----------------------------------------------------------------
 
@@ -421,7 +614,13 @@ export function DocumentBlockEditor({
       data-stale={String(custody.stale)}
     >
       {load.status === 'loading' && (
-        <div className="spaces-block-editor__status">Loading document…</div>
+        <div className="spaces-block-editor__status">
+          <span>Loading document…</span>
+          <div className="spaces-block-editor__doc-shell" aria-hidden="true">
+            <div className="spaces-block-editor__ghost-line spaces-block-editor__ghost-line--wide" />
+            <div className="spaces-block-editor__ghost-line" />
+          </div>
+        </div>
       )}
       {load.status === 'error' && (
         <div className="spaces-block-editor__error" data-testid="spaces-block-editor-error">
@@ -437,68 +636,6 @@ export function DocumentBlockEditor({
         />
       )}
 
-      {editable && load.status === 'ready' && (
-        <div className="spaces-block-editor__toolbar" data-testid="spaces-block-editor-toolbar">
-          {PROSE_BLOCK_TYPES.map((bt) => (
-            <button
-              key={bt}
-              type="button"
-              className="spaces-block-editor__add"
-              disabled={busy}
-              onClick={() => addProseBlock(bt)}
-              data-testid={`spaces-block-editor-add-${bt}`}
-            >
-              + {bt}
-            </button>
-          ))}
-          <span className="spaces-block-editor__add-items">
-            <button
-              type="button"
-              className="spaces-block-editor__add spaces-block-editor__add--primary"
-              disabled={busy}
-              aria-haspopup="dialog"
-              aria-expanded={pickerOpen}
-              data-testid="spaces-block-editor-add-items"
-              onClick={() => setPickerOpen((open) => !open)}
-            >
-              Add items
-            </button>
-            {pickerOpen ? (
-              <span className="spaces-block-editor__picker-anchor">
-                <SpaceItemPicker
-                  spaceId={spaceId}
-                  projectId={projectId}
-                  existingItems={spaceItems}
-                  isItemInView={(item) => isItemEmbedded(item)}
-                  alreadyInViewLabel="Already in document"
-                  afterAdd={embedSpaceItem}
-                  onAdded={() => {
-                    void loadAll(true);
-                  }}
-                  onClose={() => setPickerOpen(false)}
-                />
-              </span>
-            ) : null}
-          </span>
-          {embeddableItems.length > 0 && (
-            <span className="spaces-block-editor__embeds" data-testid="spaces-block-editor-embeds">
-              {embeddableItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="spaces-block-editor__embed"
-                  disabled={busy}
-                  onClick={() => void embedItem(item)}
-                  data-testid={`spaces-block-editor-embed-${item.id}`}
-                >
-                  embed {item.ref_type}: {item.title || item.ref_id}
-                </button>
-              ))}
-            </span>
-          )}
-        </div>
-      )}
-
       {actionError && (
         <div className="spaces-block-editor__error" data-testid="spaces-block-editor-action-error">
           {actionError}
@@ -506,8 +643,22 @@ export function DocumentBlockEditor({
       )}
 
       {/* The live document, rendered through the C14b renderer (read path). */}
-      {rendered && (
-        <div className="spaces-block-editor__doc">
+      {saveState.status !== 'idle' && (
+        <div
+          className="spaces-block-editor__save-state"
+          data-state={saveState.status}
+          data-testid="spaces-block-editor-save-state"
+        >
+          {saveState.status === 'saving'
+            ? 'Autosaving…'
+            : saveState.status === 'saved'
+              ? 'Saved'
+              : `Autosave failed: ${saveState.message}`}
+        </div>
+      )}
+
+      {!editable && rendered && (
+        <div className="spaces-block-editor__doc" onClick={handleDocumentClick}>
           <DocumentBody
             document={rendered}
             sources={sources}
@@ -516,28 +667,148 @@ export function DocumentBlockEditor({
         </div>
       )}
 
-      {/* Per-block edit controls (only when editable). */}
+      {editable && load.status === 'ready' && blocks.length === 0 && (
+        <div className="spaces-block-editor__empty-author" data-testid="spaces-block-editor-empty-author">
+          <button
+            type="button"
+            className="spaces-block-editor__empty-start"
+            disabled={busy}
+            onClick={() => void addProseBlock('paragraph')}
+          >
+            Start writing
+          </button>
+        </div>
+      )}
+
       {editable && load.status === 'ready' && blocks.length > 0 && (
-        <ul className="spaces-block-editor__list" data-testid="spaces-block-editor-list">
+        <ul
+          className="spaces-block-editor__list"
+          data-testid="spaces-block-editor-list"
+          onClick={handleDocumentClick}
+        >
           {blocks.map((block) => {
             const isEditing = viewState.editingId === block.id;
             const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
-            const isEmbed = block.item_id != null || block.item_snapshot != null;
+            const isEmbed = !blockCanEditMarkdown(block);
+            const renderedBlock = rendered?.blocks.find((b) => b.id === block.id);
             return (
               <li
                 key={block.id}
-                className="spaces-block-editor__row"
+                className={`spaces-block-editor__row${activeBlockId === block.id ? ' spaces-block-editor__row--active' : ''}`}
                 data-block-id={block.id}
                 data-block-type={block.block_type}
                 data-testid="spaces-block-editor-row"
+                onFocusIn={() => setActiveBlockId(block.id)}
               >
-                <span className="spaces-block-editor__rowtype">{block.block_type}</span>
-                <span className="spaces-block-editor__rowctl">
+                {isEditing && !isEmbed && (
+                  <div className="spaces-block-editor__editbox">
+                    <textarea
+                      ref={(node) => {
+                        if (node) textareaRefs.current.set(block.id, node);
+                        else textareaRefs.current.delete(block.id);
+                      }}
+                      className="spaces-block-editor__textarea"
+                      value={draft}
+                      data-testid="spaces-block-editor-textarea"
+                      aria-label={`Edit ${block.block_type} block`}
+                      onInput={(e) => handleDraftInput(block.id, e.currentTarget as HTMLTextAreaElement)}
+                      onSelect={(e) => updateCaret(block.id, e.currentTarget as HTMLTextAreaElement)}
+                      onClick={(e) => updateCaret(block.id, e.currentTarget as HTMLTextAreaElement)}
+                      onKeyUp={(e) => updateCaret(block.id, e.currentTarget as HTMLTextAreaElement)}
+                      onBlur={(e) => saveProse(block.id, (e.currentTarget as HTMLTextAreaElement).value)}
+                    />
+                  </div>
+                )}
+                {!isEditing && !isEmbed && (
+                  <button
+                    type="button"
+                    className="spaces-block-editor__rendered-block"
+                    data-testid="spaces-block-editor-edit"
+                    onClick={() => setEditing(block.id)}
+                    onFocus={() => setActiveBlockId(block.id)}
+                  >
+                    {renderedBlock?.html ? (
+                      <span
+                        className="spaces-block-editor__rendered-html"
+                        // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML from DocumentRenderer.
+                        dangerouslySetInnerHTML={{ __html: renderedBlock.html }}
+                      />
+                    ) : (
+                      <span className="spaces-block-editor__placeholder">Write here…</span>
+                    )}
+                  </button>
+                )}
+                {!isEditing && isEmbed && renderedBlock && (
+                  <div className="spaces-block-editor__embed-preview">
+                    <DocumentBody
+                      document={{ format: rendered?.format ?? null, html: '', refs: [], isSpacesDoc: true, blocks: [renderedBlock] }}
+                      sources={sources}
+                      collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
+                    />
+                  </div>
+                )}
+                <span className="spaces-block-editor__rowctl" aria-label="Block actions">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void addProseBlock('paragraph', block.id)}
+                    aria-label="Add paragraph after block"
+                    title="Add paragraph"
+                    data-testid="spaces-block-editor-add-paragraph"
+                  >
+                    +
+                  </button>
+                  <span className="spaces-block-editor__add-items">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      aria-haspopup="dialog"
+                      aria-expanded={pickerOpen && activeBlockId === block.id}
+                      aria-label="Insert reference"
+                      title="Insert reference"
+                      data-testid="spaces-block-editor-add-items"
+                      onClick={() => {
+                        setActiveBlockId(block.id);
+                        setPickerOpen((open) => !(open && activeBlockId === block.id));
+                      }}
+                    >
+                      @
+                    </button>
+                    {pickerOpen && activeBlockId === block.id ? (
+                      <span className="spaces-block-editor__picker-anchor">
+                        <SpaceItemPicker
+                          spaceId={spaceId}
+                          projectId={projectId}
+                          existingItems={spaceItems}
+                          isItemInView={() => false}
+                          afterAdd={embedSpaceItem}
+                          onAdded={() => {
+                            void loadAll(true);
+                          }}
+                          onClose={() => setPickerOpen(false)}
+                        />
+                      </span>
+                    ) : null}
+                  </span>
+                  {PROSE_BLOCK_TYPES.filter((bt) => bt !== 'paragraph').map((bt) => (
+                    <button
+                      key={bt}
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void addProseBlock(bt, block.id)}
+                      aria-label={`Add ${bt} after block`}
+                      title={`Add ${bt}`}
+                      data-testid={`spaces-block-editor-add-${bt}`}
+                    >
+                      {bt === 'heading' ? 'H' : '☐'}
+                    </button>
+                  ))}
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => moveBlock(block.id, -1)}
                     aria-label="Move block up"
+                    title="Move up"
                     data-testid="spaces-block-editor-up"
                   >
                     ↑
@@ -547,27 +818,20 @@ export function DocumentBlockEditor({
                     disabled={busy}
                     onClick={() => moveBlock(block.id, 1)}
                     aria-label="Move block down"
+                    title="Move down"
                     data-testid="spaces-block-editor-down"
                   >
                     ↓
                   </button>
-                  {!isEmbed && !isEditing && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setEditing(block.id)}
-                      data-testid="spaces-block-editor-edit"
-                    >
-                      edit
-                    </button>
-                  )}
                   <button
                     type="button"
                     disabled={busy}
                     onClick={() => removeBlock(block.id)}
+                    aria-label="Delete block"
+                    title="Delete"
                     data-testid="spaces-block-editor-delete"
                   >
-                    delete
+                    ×
                   </button>
                   {isEmbed && block.item_id && (
                     <button
@@ -577,34 +841,24 @@ export function DocumentBlockEditor({
                       data-testid="spaces-block-editor-delete-item"
                       title="Delete the embedded item (prompts an embed-on-delete decision)"
                     >
-                      delete item
+                      item
                     </button>
                   )}
                 </span>
-                {isEditing && !isEmbed && (
-                  <span className="spaces-block-editor__editbox">
-                    <textarea
-                      className="spaces-block-editor__textarea"
-                      value={draft}
-                      data-testid="spaces-block-editor-textarea"
-                      onInput={(e) => setDraft(block.id, (e.target as HTMLTextAreaElement).value)}
-                    />
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => saveProse(block.id, draft)}
-                      data-testid="spaces-block-editor-save"
-                    >
-                      save
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setEditing(null)}
-                      data-testid="spaces-block-editor-cancel"
-                    >
-                      cancel
-                    </button>
+                {embeddableItems.length > 0 && activeBlockId === block.id && (
+                  <span className="spaces-block-editor__embeds" data-testid="spaces-block-editor-embeds">
+                    {embeddableItems.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className="spaces-block-editor__embed"
+                        disabled={busy}
+                        onClick={() => void embedItem(item)}
+                        data-testid={`spaces-block-editor-embed-${item.id}`}
+                      >
+                        embed {item.ref_type}: {item.title || item.ref_id}
+                      </button>
+                    ))}
                   </span>
                 )}
               </li>
@@ -613,11 +867,59 @@ export function DocumentBlockEditor({
         </ul>
       )}
 
+      {inspector && (
+        <ReferenceInspector inspector={inspector} onClose={() => setInspector(null)} />
+      )}
+
       {/* DEFERRED embed-on-delete decision surfaced inline when no host handler. */}
       {pendingEmbedDelete && (
         <EmbedDeletePrompt decision={pendingEmbedDelete} busy={busy} />
       )}
     </div>
+  );
+}
+
+function ReferenceInspector({
+  inspector,
+  onClose,
+}: {
+  inspector: RefInspector;
+  onClose: () => void;
+}): JSX.Element {
+  const result = inspector.status === 'ready' ? inspector.result : null;
+  const entity = result?.entity ?? null;
+  const title =
+    (entity && typeof entity.title === 'string' && entity.title) ||
+    (entity && typeof entity.display_id === 'string' && entity.display_id) ||
+    inspector.ref;
+  return (
+    <aside className="spaces-block-editor__inspector" data-testid="spaces-block-editor-inspector">
+      <header className="spaces-block-editor__inspector-head">
+        <strong>{title}</strong>
+        <button type="button" onClick={onClose} aria-label="Close reference inspector">
+          ×
+        </button>
+      </header>
+      <div className="spaces-block-editor__inspector-meta">
+        <code>{inspector.ref}</code>
+      </div>
+      {inspector.status === 'resolving' && (
+        <div className="spaces-block-editor__inspector-status">Resolving…</div>
+      )}
+      {inspector.status === 'error' && (
+        <div className="spaces-block-editor__inspector-error">{inspector.message}</div>
+      )}
+      {result && (
+        <div className="spaces-block-editor__inspector-body" data-resolved={String(result.resolved)}>
+          <span className="spaces-block-editor__inspector-kind">{result.kind}</span>
+          {result.resolved ? (
+            <pre>{JSON.stringify(result.entity ?? result.detail ?? {}, null, 2)}</pre>
+          ) : (
+            <p>{result.error ?? 'Reference did not resolve.'}</p>
+          )}
+        </div>
+      )}
+    </aside>
   );
 }
 

@@ -26,6 +26,7 @@ import {
   getSpaceFactPacket,
   updateSpace,
   updateSpaceOccurrence,
+  type Space,
   type SpaceItem,
 } from '../../api';
 import {
@@ -75,6 +76,7 @@ import { SpaceItemPicker } from './SpaceItemPicker';
 import './space-board.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
+const EMPTY_BOARD_METADATA: BoardMetadata = { version: 1, columns: [] };
 
 type LoadState =
   | { status: 'idle' }
@@ -87,6 +89,20 @@ function matchesFilter(label: string, ref: string, filter: string): boolean {
   if (!filter.trim()) return true;
   const needle = filter.trim().toLowerCase();
   return label.toLowerCase().includes(needle) || ref.toLowerCase().includes(needle);
+}
+
+function createBoardShellModel(projectId: string, spaceId: string): SpaceViewModel {
+  const space: Space = {
+    id: spaceId,
+    project_id: projectId,
+    title: 'Board',
+    description: null,
+    default_renderer: 'board',
+    metadata: {},
+    created_at: 0,
+    updated_at: 0,
+  };
+  return { space, itemsById: {}, occurrences: [], edges: [] };
 }
 
 /**
@@ -467,7 +483,7 @@ function AddColumnMenu({
 export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
   const [viewState, setViewState] = useState<BoardViewState>(EMPTY_BOARD_VIEW_STATE);
-  const [boardMeta, setBoardMeta] = useState<BoardMetadata>({ version: 1, columns: [] });
+  const [boardMeta, setBoardMeta] = useState<BoardMetadata>(EMPTY_BOARD_METADATA);
   const [factsByItemId, setFactsByItemId] = useState<IssueFactsByItemId>({});
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -485,9 +501,11 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   useEffect(() => {
     if (!spaceId) {
       setViewState(EMPTY_BOARD_VIEW_STATE);
+      setBoardMeta(EMPTY_BOARD_METADATA);
       return;
     }
     setViewState(readBoardViewState(projectId, spaceId));
+    setBoardMeta(EMPTY_BOARD_METADATA);
     resolvedItemsRef.current = new Set();
     setFactsByItemId({});
   }, [projectId, spaceId]);
@@ -546,7 +564,12 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   // Resolve issue worker_status for board items (drives default columns). Each
   // issue item is resolved once; results feed the by-item facts map. Non-issue
   // items are skipped (they fall into the `none` default column).
+  const shellModel = useMemo(
+    () => (spaceId ? createBoardShellModel(projectId, spaceId) : null),
+    [projectId, spaceId],
+  );
   const model = load.status === 'ready' ? load.model : null;
+  const projectionModel = model ?? shellModel;
   useEffect(() => {
     if (!model) return;
     const pending: SpaceItem[] = [];
@@ -582,16 +605,16 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   }, [model]);
 
   const projection = useMemo(
-    () => (model ? projectBoard(model, boardMeta, factsByItemId) : null),
-    [model, boardMeta, factsByItemId],
+    () => (projectionModel ? projectBoard(projectionModel, boardMeta, factsByItemId) : null),
+    [projectionModel, boardMeta, factsByItemId],
   );
 
   // Reconcile view-state against live ids + column keys (never a reset).
   useEffect(() => {
-    if (!projection) return;
+    if (!projection || !model) return;
     const liveColumnKeys = new Set(projection.columns.map((c) => c.key));
     setViewState((prior) => reconcileBoardViewState(prior, liveIdsRef.current, liveColumnKeys));
-  }, [projection]);
+  }, [model, projection]);
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
 
@@ -825,7 +848,7 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
             data-testid="space-board-add-items"
             onClick={() => openItemPicker(null)}
           >
-            Add items
+            + Add items
           </button>
           <AddColumnMenu busy={busy} onAddManual={onAddManual} onAddFilter={onAddFilter} />
           {pickerOpen ? (
@@ -848,13 +871,17 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
       </div>
 
       <div className="space-board__body" data-testid="space-board-body">
-        {load.status === 'loading' ? (
-          <div className="space-board__loading">Loading board…</div>
-        ) : load.status === 'error' ? (
+        {load.status === 'loading' || load.status === 'idle' ? (
+          <div className="space-board__loading" role="status">
+            Loading cards…
+          </div>
+        ) : null}
+        {load.status === 'error' ? (
           <div className="space-board__error" role="alert">
             Failed to load board: {load.message}
           </div>
-        ) : projection ? (
+        ) : null}
+        {projection ? (
           <div className="space-board__columns" role="list" aria-label="Board columns">
             {projection.columns.map((column, index) => (
               <BoardColumnView

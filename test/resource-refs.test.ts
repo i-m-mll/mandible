@@ -69,6 +69,18 @@ describe('parseResourceRef recognizes all four ref forms', () => {
     expect(parsed?.canonical).toBe('mandible://mandible/issue/252e125');
   });
 
+  it('issue: inline refs', () => {
+    const parsed = parseResourceRef('issue:abc123');
+    expect(parsed?.kind).toBe('issue');
+    expect(parsed?.canonical).toBe('issue:abc123');
+  });
+
+  it('comment: inline refs', () => {
+    const parsed = parseResourceRef('comment:mandible/abc#com_1');
+    expect(parsed?.kind).toBe('comment');
+    expect(parsed?.canonical).toBe('comment:mandible/abc#com_1');
+  });
+
   it('rejects plain http(s)/mailto navigation links', () => {
     expect(isResourceRef('https://example.com/x')).toBe(false);
     expect(isResourceRef('mailto:a@b.com')).toBe(false);
@@ -82,6 +94,8 @@ describe('round-trip: text and markdown-link hrefs', () => {
     ['compact artifact', 'artifact:abcdef0'],
     ['repo', 'repo://mandible@main/src/db.ts'],
     ['mandible', 'mandible://mandible/issue/252e125'],
+    ['issue', 'issue:abc123'],
+    ['comment', 'comment:mandible/abc#com_1'],
   ];
 
   for (const [name, ref] of cases) {

@@ -8,6 +8,8 @@
 //   - artifact:<7-64hex>            (compact artifact ref form)
 //   - <7-64hex> / sha256:<64hex>    (bare hash forms)
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
+//   - issue:<id>                    (Mandible issue refs)
+//   - comment:<issue>#<comment>     (Mandible comment refs)
 //   - mandible://<repo>/issue/<id>  (app-route entity refs)
 //
 // It drives an unresolved-reference UI: every recognized ref is linkified with a
@@ -46,6 +48,8 @@ const ARTIFACT_SHA256_REF = /^artifact:sha256:([0-9a-f]{64})$/i;
 const COMPACT_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
 const BARE_SHA_REF = /^[0-9a-f]{7,64}$/i;
 const BARE_SHA256_REF = /^sha256:([0-9a-f]{64})$/i;
+const ISSUE_REF = /^issue:([^\s\]]+)$/i;
+const COMMENT_REF = /^comment:([^\s\]]+)$/i;
 
 /**
  * A recognizer turns a candidate ref string into a ParsedResourceRef, or null
@@ -111,6 +115,15 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   // repo://<repo>@<ref>/<path>
   if (raw.startsWith('repo://')) {
     return { raw, canonical: raw, kind: 'repo', display: raw };
+  }
+
+  // issue:<id> and comment:<issue>#<comment> inline refs. Keep the authority
+  // opaque here; the resolver owns validation and entity lookup.
+  if (ISSUE_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'issue', display: raw };
+  }
+  if (COMMENT_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'comment', display: raw };
   }
 
   // mandible://<repo>/issue/<id> and other mandible app-route refs.
@@ -227,7 +240,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|repo|mandible):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');

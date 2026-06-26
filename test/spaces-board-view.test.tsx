@@ -16,6 +16,7 @@ import {
   defaultColumnKey,
   BOARD_METADATA_KEY,
 } from '../ui/src/views/spaces/boardModel';
+import { boardStorageKey } from '../ui/src/views/spaces/boardViewState';
 
 const NOW = 1_700_000_000_000;
 
@@ -252,6 +253,20 @@ function stubLocalStorage(): void {
   });
 }
 
+function createDeferred<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (error: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 beforeEach(() => {
   stubLocalStorage();
   MockEventSource.instances = [];
@@ -282,6 +297,101 @@ describe('SpaceBoardRenderer', () => {
     for (const status of ['none', 'in_progress', 'blocked', 'pivot-needed', 'done']) {
       expect(screen.getByTestId(`board-column-${defaultColumnKey(status as never)}`)).toBeTruthy();
     }
+  });
+
+  it('renders the default column shell before the initial packet resolves', async () => {
+    const packet = createDeferred<Response>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (method === 'GET' && /\/api\/spaces\/sp1(\?|$)/.test(url)) return packet.promise;
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }),
+    );
+    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
+
+    for (const status of ['none', 'in_progress', 'blocked', 'pivot-needed', 'done']) {
+      expect(screen.getByTestId(`board-column-${defaultColumnKey(status as never)}`)).toBeTruthy();
+    }
+    expect(screen.getByRole('status').textContent).toContain('Loading cards');
+
+    packet.resolve(new Response(JSON.stringify(fullPacket()), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
+  });
+
+  it('uses the shared Add items affordance and compact filter-column editor hook', async () => {
+    stubFetch({ packet: fullPacket(), mutations: [] });
+    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
+
+    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
+    expect(screen.getByTestId('space-board-add-items').textContent).toBe('+ Add items');
+
+    fireEvent.click(screen.getByLabelText('Board column actions'));
+    expect(screen.getByLabelText('Add filter column').className).toBe('space-board-filter');
+  });
+
+  it('does not prune restored custom-column state while the shell waits for data', async () => {
+    const metadata = {
+      [BOARD_METADATA_KEY]: {
+        version: 1,
+        columns: [{ key: 'manual:triage', title: 'Triage', kind: 'manual', order: 0 }],
+      },
+    };
+    const response = createDeferred<Response>();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const method = (init?.method ?? 'GET').toUpperCase();
+        if (method === 'GET' && /\/api\/spaces\/sp1(\?|$)/.test(url)) return response.promise;
+        if (url.includes('/api/spaces/resolve') || url.includes('/api/refs/resolve')) {
+          return Promise.resolve(new Response(
+            JSON.stringify({
+              resolution: {
+                ref: 'mandible://issue/iss1',
+                kind: 'issue',
+                resolved: true,
+                entity: { id: 'iss1', worker_status: 'none', kind: 'feature' },
+              },
+            }),
+            { headers: { 'content-type': 'application/json' } },
+          ));
+        }
+        return Promise.resolve(new Response(JSON.stringify({ ok: true }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }),
+    );
+    window.localStorage.setItem(
+      boardStorageKey('prj1', 'sp1'),
+      JSON.stringify({
+        cardFilter: '',
+        selection: { kind: 'occurrence', ids: ['o1'] },
+        collapsedColumns: { 'manual:triage': true },
+      }),
+    );
+
+    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
+    expect(screen.getByTestId(`board-column-${defaultColumnKey('none')}`)).toBeTruthy();
+
+    response.resolve(new Response(JSON.stringify(fullPacket({
+      space: makeSpace(metadata),
+      items: [makeItem('iss1', { title: 'Preserved card' })],
+      occurrences: [makeOcc('o1', { item_id: 'iss1', section_id: 'manual:triage' })],
+    })), {
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await waitFor(() => expect(screen.getByLabelText('Expand Triage')).toBeTruthy());
+    fireEvent.click(screen.getByLabelText('Expand Triage'));
+    const card = (await screen.findByText('Preserved card')).closest('.space-board__card') as HTMLElement;
+    await waitFor(() => expect(card.getAttribute('data-selected')).toBe('true'));
   });
 
   it('places an issue card in its resolved worker_status column', async () => {
@@ -329,6 +439,7 @@ describe('SpaceBoardRenderer', () => {
     stubFetch(state);
     render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
     await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
+    await waitFor(() => expect(screen.queryByRole('status')).toBeNull());
     fireEvent.click(screen.getByText('Add manual column'));
     await waitFor(() => {
       const patch = state.mutations.find(
