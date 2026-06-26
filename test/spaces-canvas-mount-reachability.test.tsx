@@ -55,7 +55,8 @@ it('mounts the integrated canvas inspector without the old permanent edge panel'
   render(h(Canvas, { projectId: 'p1', spaceId: 'sp1', renderer: 'canvas' }));
 
   await waitFor(() => expect(screen.getByTestId('space-canvas')).toBeTruthy());
-  expect(screen.getByTestId('space-canvas-inspector')).toBeTruthy();
+  expect(screen.getByTestId('space-canvas-inspector').getAttribute('data-placement')).toBe('bottom');
+  expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
   expect(screen.queryByTestId('space-edge-layer')).toBeNull();
   expect(screen.queryByTestId('space-edge-create-form')).toBeNull();
 });

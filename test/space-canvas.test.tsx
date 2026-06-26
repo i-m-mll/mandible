@@ -3,7 +3,7 @@
 // Covers the load-bearing acceptance criteria:
 //   - occurrences render from the model; drag persists via the batch client
 //     (optimistic + autosave indicator);
-//   - unplaced occurrences (x/y NULL) render in the shelf, NOT at the origin;
+//   - legacy unplaced occurrences (x/y NULL) are auto-placed, not shelved;
 //   - layoutGraph() runs only on explicit arrange/seed, never per render after a
 //     user move (asserted via a layout-call spy);
 //   - SSE `space:occurrence:moved` reconciles WITHOUT resetting selection.
@@ -28,8 +28,15 @@ let lastOnEdgesChange: ((changes: unknown[]) => void) | null = null;
 
 vi.mock('@xyflow/react', () => {
   const ReactFlow = (props: {
-    nodes: Array<{ id: string; position: { x: number; y: number }; selected?: boolean }>;
+    nodes: Array<{
+      id: string;
+      position: { x: number; y: number };
+      selected?: boolean;
+      data?: { label: string; kind: string };
+      type?: string;
+    }>;
     edges?: Array<{ id: string; source: string; target: string; label?: string; selected?: boolean }>;
+    nodeTypes?: Record<string, (props: { data: { label: string; kind: string }; selected?: boolean }) => unknown>;
     onNodesChange?: (changes: unknown[]) => void;
     onEdgesChange?: (changes: unknown[]) => void;
     onConnect?: (connection: unknown) => void;
@@ -50,7 +57,9 @@ vi.mock('@xyflow/react', () => {
             'data-y': String(node.position.y),
             'data-selected': node.selected ? 'true' : 'false',
           },
-          node.id,
+          props.nodeTypes?.[node.type ?? ''] && node.data
+            ? h(props.nodeTypes[node.type ?? '']!, { data: node.data, selected: node.selected })
+            : node.id,
         ),
       ),
       ...(props.edges ?? []).map((edge) =>
@@ -71,8 +80,13 @@ vi.mock('@xyflow/react', () => {
   };
   const Background = () => h('div', { 'data-testid': 'rf-bg' });
   const Controls = () => h('div', { 'data-testid': 'rf-controls' });
-  const Handle = (props: { type?: string }) =>
-    h('div', { 'data-testid': 'rf-handle', 'data-handle-type': props.type ?? '' });
+  const Handle = (props: { type?: string; className?: string; position?: string }) =>
+    h('div', {
+      'data-testid': 'rf-handle',
+      'data-handle-type': props.type ?? '',
+      'data-position': props.position ?? '',
+      className: props.className ?? '',
+    });
   const Position = { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' };
   const MarkerType = { ArrowClosed: 'arrowclosed', Arrow: 'arrow' };
   return { ReactFlow, Background, Controls, Handle, Position, MarkerType };
@@ -284,19 +298,45 @@ describe('nextAddedItemPosition', () => {
 const baseProps = { projectId: 'p1', renderer: 'canvas' as const };
 
 describe('SpaceCanvas rendering', () => {
-  it('renders placed occurrences as canvas nodes and unplaced in the shelf', () => {
+  it('renders placed occurrences as canvas nodes without a shelf', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
-      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: null, y: null })],
+      occurrences: [occ('a', { x: 10, y: 20 })],
     };
     render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
     const nodes = screen.getAllByTestId('rf-node');
     expect(nodes.map((n) => n.getAttribute('data-node-id'))).toEqual(['a']);
-    const shelfItems = screen.getAllByTestId('space-canvas-shelf-item');
-    expect(shelfItems).toHaveLength(1);
-    expect(shelfItems[0].getAttribute('data-occurrence-id')).toBe('b');
+    expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
     // No layout on plain render.
     expect(layoutCalls.count).toBe(0);
+  });
+
+  it('uses simple Saved copy for the idle autosave status', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saved');
+  });
+
+  it('renders stable left target and right source handles on nodes', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    const handles = screen.getAllByTestId('rf-handle');
+    expect(handles.map((handle) => handle.getAttribute('data-handle-type'))).toEqual([
+      'target',
+      'source',
+    ]);
+    expect(handles.map((handle) => handle.getAttribute('data-position'))).toEqual([
+      'left',
+      'right',
+    ]);
+    expect(handles[0].className).toContain('space-canvas__handle--target');
+    expect(handles[1].className).toContain('space-canvas__handle--source');
   });
 
   it('does NOT run layoutGraph on render, only on explicit arrange', () => {
@@ -493,8 +533,8 @@ describe('SpaceCanvas SSE reconciliation', () => {
   });
 });
 
-describe('SpaceCanvas shelf placement', () => {
-  it('places a shelf occurrence onto the canvas via a layout seed and queues a write', async () => {
+describe('SpaceCanvas legacy unplaced placement', () => {
+  it('auto-places an unplaced occurrence without rendering a shelf and queues a write', async () => {
     vi.useFakeTimers();
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
@@ -511,14 +551,15 @@ describe('SpaceCanvas shelf placement', () => {
       }),
     );
 
-    // 'b' starts in the shelf.
-    expect(screen.getAllByTestId('space-canvas-shelf-item')).toHaveLength(1);
-
-    act(() => {
-      fireEvent.click(screen.getByTestId('space-canvas-shelf-item'));
-    });
+    expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
     // Placement seeds via layoutGraph.
-    expect(layoutCalls.count).toBeGreaterThanOrEqual(1);
+    await waitFor(() => expect(layoutCalls.count).toBeGreaterThanOrEqual(1));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('rf-node').map((node) => node.getAttribute('data-node-id'))).toEqual([
+        'a',
+        'b',
+      ]),
+    );
 
     await act(async () => {
       vi.advanceTimersByTime(50);

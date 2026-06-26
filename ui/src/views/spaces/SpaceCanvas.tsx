@@ -96,8 +96,7 @@ export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 /**
  * A canvas node: a placed occurrence joined to its backing item. `x`/`y` are
- * the persisted (canonical) coordinates — guaranteed non-null because unplaced
- * occurrences live in the shelf, not on the canvas.
+ * the persisted (canonical) coordinates.
  */
 export type CanvasNode = {
   occurrence: SpaceOccurrence;
@@ -106,7 +105,7 @@ export type CanvasNode = {
   y: number;
 };
 
-/** A shelf entry: an occurrence with no persisted position (x or y NULL). */
+/** A legacy unplaced occurrence entry. New Canvas adds place immediately. */
 export type ShelfEntry = {
   occurrence: SpaceOccurrence;
   item: SpaceItem | null;
@@ -118,9 +117,9 @@ export type CanvasPartition = {
 };
 
 /**
- * Split occurrences into placed (canvas) vs unplaced (shelf). An occurrence is
- * placed iff BOTH x and y are non-null finite numbers; otherwise it belongs in
- * the shelf and must NOT be drawn at the origin (acceptance criterion).
+ * Split occurrences into placed vs legacy unplaced. An occurrence is placed iff
+ * BOTH x and y are non-null finite numbers; otherwise it needs immediate
+ * placement before it is drawn.
  */
 export function partitionOccurrences(
   occurrences: SpaceOccurrence[],
@@ -173,7 +172,8 @@ function occurrenceKind(occurrence: SpaceOccurrence, item: SpaceItem | null): st
  * two placed nodes. `space_edge.source`/`.target` are OCCURRENCE ids, which are
  * exactly the React Flow node ids (`flowNodes` uses `occurrence.id`), so the
  * mapping is direct — no ref translation. Edges whose endpoints are not both
- * currently placed on the canvas are skipped (an endpoint may be on the shelf).
+ * currently placed on the canvas are skipped until legacy unplaced endpoints
+ * have been seeded onto the canvas.
  */
 export function edgesToFlowEdges(
   edges: SpaceEdge[],
@@ -375,8 +375,8 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
   ) => ReturnType<typeof promoteEdgeToLedger>;
   /**
    * Single-occurrence create client (injected for tests); defaults to the real
-   * C2 client. Used by the "Add items" picker to materialize an unplaced
-   * `canvas` occurrence so a freshly-added item lands in the shelf.
+   * C2 client. Used by the "Add items" picker to materialize a placed
+   * `canvas` occurrence so a freshly-added item lands directly on the canvas.
    */
   createOccurrence?: typeof createSpaceOccurrence;
   /** SSE client factory (injected for tests); defaults to the shared client. */
@@ -504,6 +504,37 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       void flushPending();
     }, debounceMs);
   }, [flushPending, debounceMs]);
+
+  // Legacy/unplaced occurrences are no longer exposed as a shelf. Seed them
+  // onto the canvas and persist those positions through the normal batch path.
+  useEffect(() => {
+    if (shelf.length === 0) return;
+    const positions = seedLayoutPositions(occurrencesRef.current, itemsById);
+    const nextPositions: Record<string, { x: number; y: number }> = {};
+    const fallbackBase = nextAddedItemPosition(placed);
+    shelf.forEach((entry, index) => {
+      nextPositions[entry.occurrence.id] = positions[entry.occurrence.id] ?? {
+        x: fallbackBase.x + index * 260,
+        y: fallbackBase.y,
+      };
+    });
+    if (Object.keys(nextPositions).length === 0) {
+      return;
+    }
+    setOccurrences((prev) =>
+      prev.map((occurrence) => {
+        const pos = nextPositions[occurrence.id];
+        return pos ? { ...occurrence, x: pos.x, y: pos.y } : occurrence;
+      }),
+    );
+    setLocalPositions((prev) => {
+      const next = { ...prev };
+      for (const id of Object.keys(nextPositions)) delete next[id];
+      return next;
+    });
+    pendingPositions.current = { ...pendingPositions.current, ...nextPositions };
+    scheduleFlush();
+  }, [shelf, itemsById, placed, scheduleFlush]);
 
   // --- SSE reconciliation: refetch + reconcile WITHOUT touching viewport/sel ---
   // Subscribes to both occurrence moves AND edge events so drag-created or
@@ -749,33 +780,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     [selection, items, scheduleFlush],
   );
 
-  // --- shelf placement: clicking a shelf entry places it via layout seed ---
-  const handlePlaceFromShelf = useCallback(
-    (occurrenceId: string) => {
-      const occurrence = occurrencesRef.current.find((o) => o.id === occurrenceId);
-      if (!occurrence) return;
-      // Seed a single position from the placed set's layout so it lands in the
-      // arranged region rather than the origin.
-      const positions = seedLayoutPositions(occurrencesRef.current, indexItems(items));
-      const pos = positions[occurrenceId] ?? { x: 0, y: 0 };
-      setOccurrences((prev) =>
-        applyOptimisticPosition(prev, occurrenceId, pos.x, pos.y),
-      );
-      setLocalPositions((prev) => {
-        const next = { ...prev };
-        delete next[occurrenceId];
-        return next;
-      });
-      pendingPositions.current[occurrenceId] = pos;
-      scheduleFlush();
-    },
-    [items, scheduleFlush],
-  );
-
   // --- refetch (after an add) WITHOUT touching viewport/selection ---
-  // The shelf is derived from occurrences, so a freshly created unplaced
-  // occurrence must be read back. This mirrors the SSE reconciliation path: it
-  // reconciles occurrences (preserving in-flight drags) and never resets the
+  // This mirrors the SSE reconciliation path: it reconciles occurrences
+  // (preserving in-flight drags) and never resets the
   // ephemeral selection/viewport (Dataful-UX contract).
   const reload = useCallback(async () => {
     if (!spaceId || !loadModel) return;
@@ -888,38 +895,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         <span className="space-canvas__toolbar-spacer" />
       </div>
       <div className="space-canvas__body">
-        <aside
-          className="space-canvas__shelf"
-          aria-label="Unplaced occurrences"
-          data-testid="space-canvas-shelf"
-        >
-          <div className="space-canvas__shelf-header">Shelf ({shelf.length})</div>
-          {shelf.length === 0 ? (
-            <div className="space-canvas__shelf-empty" data-testid="space-canvas-shelf-empty">
-              All occurrences are placed.
-            </div>
-          ) : (
-            <ul className="space-canvas__shelf-list" data-testid="space-canvas-shelf-list">
-              {shelf.map((entry) => (
-                <li key={entry.occurrence.id}>
-                  <button
-                    type="button"
-                    className="space-canvas__shelf-item"
-                    data-testid="space-canvas-shelf-item"
-                    data-occurrence-id={entry.occurrence.id}
-                    onClick={() => handlePlaceFromShelf(entry.occurrence.id)}
-                  >
-                    {occurrenceLabel(entry.occurrence, entry.item)}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </aside>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
           {placed.length === 0 ? (
             <div className="space-canvas__empty" data-testid="space-canvas-empty">
-              No placed occurrences yet.
+              No canvas items yet.
             </div>
           ) : (
             <ReactFlow
@@ -996,7 +975,12 @@ function CanvasSelectionInspector({
 }: CanvasSelectionInspectorProps): JSX.Element {
   const selectedNodes = placed.filter((node) => selectedNodeIds.has(node.occurrence.id));
   return (
-    <aside className="space-canvas__inspector" data-testid="space-canvas-inspector" aria-label="Selection inspector">
+    <aside
+      className="space-canvas__inspector"
+      data-testid="space-canvas-inspector"
+      data-placement="bottom"
+      aria-label="Selection inspector"
+    >
       {selectedEdge ? (
         <CanvasEdgeInspector
           resolved={selectedEdge}
@@ -1134,7 +1118,6 @@ function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
     <div className="space-canvas__inspector-section" data-testid="space-canvas-node-inspector">
       <header className="space-canvas__inspector-header">
         <span>{item?.ref_type ?? 'occurrence'}</span>
-        <code>{node.occurrence.id.slice(0, 8)}</code>
       </header>
       {!item ? (
         <OccurrenceSummary node={node} />
@@ -1348,9 +1331,9 @@ function autosaveLabel(status: AutosaveStatus): string {
     case 'saved':
       return 'Saved';
     case 'error':
-      return 'Save failed — will retry';
+      return 'Save failed - will retry';
     default:
-      return 'All changes saved';
+      return 'Saved';
   }
 }
 
