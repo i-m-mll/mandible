@@ -2670,19 +2670,23 @@ export function migrate(db: Db): void {
   }
   // Issue c154a27 (migration 89): wrap every series-less artifact into a
   // deterministic 1-version series so "the series IS the artifact" holds for
-  // every pre-existing content row. backfillOrphanArtifactSeries opens ONE
-  // immediate transaction OUTSIDE apply() (the nested appendArtifactVersion runs
-  // inline because db.inTransaction is true). Idempotent: gated on
-  // hasOrphanArtifacts and on deterministic series/version ids, so fresh DBs and
-  // re-runs are no-ops. verifyEveryArtifactHasSeries asserts the backfill was
-  // additive (artifacts count unchanged) and complete (orphans = 0).
+  // every pre-existing content row. The backfill AND its post-condition verifier
+  // run inside ONE immediate transaction OUTSIDE apply() (the nested
+  // appendArtifactVersion runs inline because db.inTransaction is true), so a
+  // verify failure ROLLS BACK every backfill write — no committed half-state.
+  // The gate is marked complete only by runPostMigration AFTER that transaction
+  // commits, so a rolled-back run re-runs on the next startup. Idempotent: gated
+  // on hasOrphanArtifacts and on deterministic series/version ids, so fresh DBs
+  // and re-runs are no-ops.
   if (shouldRunPostMigration(db, "v89_backfill_orphan_artifact_series", pending, 89, () =>
     hasOrphanArtifacts(db)
   )) {
     runPostMigration(db, "v89_backfill_orphan_artifact_series", () => {
       const before = artifactRowCount(db);
-      backfillOrphanArtifactSeries(db);
-      verifyEveryArtifactHasSeries(db, before);
+      db.transaction(() => {
+        backfillOrphanArtifactSeries(db);
+        verifyEveryArtifactHasSeries(db, before);
+      }).immediate();
     });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
@@ -4019,10 +4023,24 @@ function verifyArtifactLinkSeriesSchema(db: Db): void {
   if (byName.get("series_ref")!.notnull) {
     throw new Error("migration 89 verification: artifact_links.series_ref must be nullable");
   }
-  // The link_kind CHECK is not reflected by PRAGMA table_info; assert from DDL.
-  if (!/CHECK\s*\(\s*link_kind\s+IN/i.test(row.sql ?? "")) {
+  // The link_kind CHECK is not reflected by PRAGMA table_info; assert the FULL
+  // contract from the DDL: the IN-list must be exactly {'pinned','living'} so
+  // both are accepted and any unknown value is rejected. A bare "CHECK exists"
+  // test would pass a divergent constraint that, e.g., dropped 'living'.
+  const checkMatch = /CHECK\s*\(\s*link_kind\s+IN\s*\(([^)]*)\)\s*\)/i.exec(row.sql ?? "");
+  if (!checkMatch) {
     throw new Error(
-      "migration 89 verification: artifact_links is missing its CHECK(link_kind IN ...) constraint (divergent pre-existing table?)",
+      "migration 89 verification: artifact_links is missing its CHECK(link_kind IN (...)) constraint (divergent pre-existing table?)",
+    );
+  }
+  const allowedLinkKinds = new Set(
+    [...checkMatch[1].matchAll(/'([^']*)'/g)].map((literal) => literal[1]),
+  );
+  if (allowedLinkKinds.size !== 2 || !allowedLinkKinds.has("pinned") || !allowedLinkKinds.has("living")) {
+    throw new Error(
+      `migration 89 verification: artifact_links.link_kind CHECK must allow exactly {'pinned','living'} (got {${[...allowedLinkKinds]
+        .map((value) => `'${value}'`)
+        .join(",")}})`,
     );
   }
   // series_id is a SOFT reference: there must be NO foreign key from
@@ -4036,19 +4054,41 @@ function verifyArtifactLinkSeriesSchema(db: Db): void {
       "migration 89 verification: artifact_links.series_id must be a soft reference with NO foreign key",
     );
   }
-  if (!indexExists(db, "idx_artifact_links_kind")) {
-    throw new Error("migration 89 verification: idx_artifact_links_kind is missing");
+  // Index verification asserts the indexed COLUMN and partiality from the stored
+  // DDL, not just the index name: CREATE INDEX IF NOT EXISTS would silently keep
+  // a wrong same-named pre-existing index.
+  const indexSql = (name: string): string => {
+    const indexRow = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get(name) as { sql: string | null } | undefined;
+    if (!indexRow?.sql) {
+      throw new Error(`migration 89 verification: index ${name} is missing`);
+    }
+    return indexRow.sql;
+  };
+  if (!/\(\s*link_kind\s*\)/i.test(indexSql("idx_artifact_links_kind"))) {
+    throw new Error("migration 89 verification: idx_artifact_links_kind must index link_kind");
   }
-  if (!indexExists(db, "idx_artifact_links_series")) {
-    throw new Error("migration 89 verification: idx_artifact_links_series is missing");
+  const seriesIndexSql = indexSql("idx_artifact_links_series");
+  if (!/\(\s*series_id\s*\)/i.test(seriesIndexSql)) {
+    throw new Error("migration 89 verification: idx_artifact_links_series must index series_id");
+  }
+  if (!/WHERE\s+series_id\s+IS\s+NOT\s+NULL/i.test(seriesIndexSql)) {
+    throw new Error(
+      "migration 89 verification: idx_artifact_links_series must be the partial index WHERE series_id IS NOT NULL",
+    );
   }
 }
 
-// Migration-89 data verifier: after the orphan backfill, assert it was additive
-// and complete. orphans = 0 (every artifact has a version row), the artifacts row
-// count is unchanged (the backfill never inserts/deletes content rows), and each
-// backfilled series (series_key = an artifact id) wraps exactly one version with
-// a non-null latest_version_id.
+// Migration-89 data verifier: after the orphan backfill, assert the REAL
+// post-condition based on artifact_versions MEMBERSHIP — every artifacts.id
+// appears in artifact_versions.artifact_id (orphans = 0) and the artifacts row
+// count is unchanged (the backfill never inserts/deletes content rows). It must
+// NOT assert anything about series whose series_key happens to equal an artifact
+// id: v88 allows an explicit series_key input, so a legitimate pre-existing
+// multi-version series can carry such a key, and a `version_count == 1`
+// assumption there would false-fail. Runs inside the backfill's immediate
+// transaction, so a throw rolls every backfill write back.
 function verifyEveryArtifactHasSeries(db: Db, expectedArtifactCount: number): void {
   if (!tableExists(db, "artifacts")) return;
   const orphans = (db
@@ -4066,18 +4106,6 @@ function verifyEveryArtifactHasSeries(db: Db, expectedArtifactCount: number): vo
   if (after !== expectedArtifactCount) {
     throw new Error(
       `migration 89 verification: artifacts row count changed during backfill (${expectedArtifactCount} -> ${after}); the backfill must not touch artifacts rows`,
-    );
-  }
-  const bad = db
-    .prepare(
-      `SELECT s.id AS id FROM artifact_series s
-         JOIN artifacts a ON a.id = s.series_key
-        WHERE s.version_count != 1 OR s.latest_version_id IS NULL`,
-    )
-    .all() as Array<{ id: string }>;
-  if (bad.length > 0) {
-    throw new Error(
-      `migration 89 verification: ${bad.length} backfilled series have version_count != 1 or a null latest_version_id`,
     );
   }
 }

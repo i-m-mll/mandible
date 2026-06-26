@@ -147,16 +147,20 @@ describe("migration v89: artifact_links typed-series columns", () => {
     expect(fks.some((fk) => fk.table === "artifact_series")).toBe(false);
   });
 
-  it("rejects link_kind that lacks 'living' (CHECK is enforced)", () => {
+  it("CHECK contract: accepts link_kind 'pinned' and 'living', rejects unknown values", () => {
     insertArtifact(db, "art_chk", "managed", "hash_chk");
-    expect(() =>
+    const probe = (linkId: string, kind: string) =>
       db
         .prepare(
           `INSERT INTO artifact_links (id, artifact_id, entity_type, entity_id, link_kind, created_at, updated_at)
-           VALUES ('lnk_chk', 'art_chk', 'issue', 'iss', 'bogus', 1, 1)`,
+           VALUES (?, 'art_chk', 'issue', 'iss', ?, 1, 1)`,
         )
-        .run(),
-    ).toThrow(/CHECK|constraint/i);
+        .run(linkId, kind);
+    // Both declared link kinds are accepted.
+    expect(() => probe("lnk_pinned", "pinned")).not.toThrow();
+    expect(() => probe("lnk_living", "living")).not.toThrow();
+    // Anything else is rejected by the CHECK.
+    expect(() => probe("lnk_bogus", "bogus")).toThrow(/CHECK|constraint/i);
   });
 
   it("v88 -> v89 backfills link_kind='pinned' on every pre-existing row without retargeting artifact_id", () => {
@@ -224,6 +228,15 @@ describe("migration v89: artifact_links typed-series columns", () => {
     )`);
     db.prepare("UPDATE meta SET value = '88' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).toThrow(/migration 89 verification/i);
+  });
+
+  it("fails loudly when a wrong same-named idx_artifact_links_series pre-exists (name-only check is not enough)", () => {
+    // Recreate artifact_links at its pre-v89 shape, then plant a same-named index
+    // on the WRONG column with no partial WHERE. CREATE INDEX IF NOT EXISTS will
+    // keep this divergent index, so the verifier must reject it on column/WHERE.
+    rewindArtifactLinksToV67(db);
+    db.exec("CREATE INDEX idx_artifact_links_series ON artifact_links(repo_id)");
+    expect(() => migrate(db)).toThrow(/migration 89 verification: idx_artifact_links_series/i);
   });
 
   it("re-running migrate() on a current DB is a no-op", () => {
