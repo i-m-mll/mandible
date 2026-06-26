@@ -60,8 +60,9 @@
 }
 
 .space-board__add-column-mode[aria-selected='true'] {
-  background: var(--accent-subtle, var(--bg-emphasis, #2a2a3a));
-  border-color: var(--accent, #6a6aff);
+  background: var(--status-info-bg);
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
 }
 
 .space-board__add-column-manual {

@@ -15,8 +15,8 @@
   min-height: 0;
   width: 100%;
   border-left: 1px solid var(--border, #2a2a2a);
-  background: var(--surface, #161616);
-  color: var(--text, #e6e6e6);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
 }
 
 .space-edge-layer__header {
@@ -80,8 +80,8 @@
 .space-edge-layer__input {
   appearance: none;
   border: 1px solid var(--border, #2a2a2a);
-  background: var(--surface-raised, #1f1f1f);
-  color: var(--text, #e6e6e6);
+  background: var(--bg-card);
+  color: var(--text-primary);
   border-radius: 6px;
   padding: 5px 8px;
   font-size: 12px;
@@ -105,8 +105,8 @@
 .space-edge-layer__btn {
   appearance: none;
   border: 1px solid var(--border, #2a2a2a);
-  background: var(--surface-raised, #1f1f1f);
-  color: var(--text, #e6e6e6);
+  background: var(--bg-card);
+  color: var(--text-primary);
   border-radius: 6px;
   padding: 5px 10px;
   font-size: 12px;
@@ -153,7 +153,7 @@
 .space-edge-layer__item {
   border: 1px solid var(--border, #2a2a2a);
   border-radius: 8px;
-  background: var(--surface-raised, #1f1f1f);
+  background: var(--bg-card);
   padding: 8px;
   display: flex;
   flex-direction: column;
@@ -169,7 +169,7 @@
   appearance: none;
   border: none;
   background: transparent;
-  color: var(--text, #e6e6e6);
+  color: var(--text-primary);
   display: flex;
   align-items: center;
   gap: 6px;
