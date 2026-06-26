@@ -8,6 +8,7 @@ import {
   getLedgerIssueDetail,
   resolveArtifact,
   type ArtifactContentResult,
+  type ArtifactLinkRecord,
   type ArtifactRecord,
   type ArtifactResolveResult,
   type ArtifactSeriesRecord,
@@ -725,11 +726,21 @@ function ArtifactDetail({
           <h3>Links</h3>
           <div className="artifact-detail__list">
             {artifact.links.map((link) => (
-              <a key={link.id} className="artifact-detail__list-item" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
-                <code>{link.entity_type}:{link.entity_id}</code>
-                <span>{link.link_type} · {link.link_kind}</span>
+              <div key={link.id} className="artifact-detail__list-item artifact-detail__list-item--artifact-link">
+                <a className="artifact-detail__entity-link" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
+                  <code>{link.entity_type}:{link.entity_id}</code>
+                </a>
+                <span className="artifact-detail__link-meta">
+                  <span>{link.link_type}</span>
+                  <a
+                    className={`type-badge type-badge--sm artifact-link-badge artifact-link-badge--${artifactLinkKind(link)}`}
+                    href={artifactLinkBadgeHref(link)}
+                  >
+                    {artifactLinkBadgeLabel(link)}
+                  </a>
+                </span>
                 <span>{link.role || link.source}</span>
-              </a>
+              </div>
             ))}
           </div>
         </section>
@@ -955,6 +966,26 @@ function seriesRef(series: ArtifactSeriesSummary): string {
 function seriesRecordRef(series: ArtifactSeriesRecord | ArtifactSeriesSummary): string {
   if ('ref' in series && series.ref) return series.ref;
   return series.id.startsWith('artifact-series:') ? series.id : `artifact-series:${series.id}`;
+}
+
+function artifactLinkKind(link: ArtifactLinkRecord): 'pinned' | 'living' {
+  return link.link_kind === 'living' ? 'living' : 'pinned';
+}
+
+function artifactLinkBadgeLabel(link: ArtifactLinkRecord): string {
+  const version = typeof link.resolved_version_no === 'number' ? `v${link.resolved_version_no}` : null;
+  if (link.link_kind === 'living') return version ? `latest -> ${version}` : 'latest';
+  return version ? `${version} pinned` : 'pinned';
+}
+
+function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {
+  const seriesRef = link.series_ref ?? link.series_id;
+  if (link.link_kind === 'living') {
+    return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(link.artifact_id);
+  }
+  return seriesRef && typeof link.resolved_version_no === 'number'
+    ? versionDetailHref(seriesRef, link.resolved_version_no)
+    : artifactDetailHref(link.artifact_id);
 }
 
 function normalizeSeriesRef(ref: string): string {

@@ -7,9 +7,12 @@ import {
   compactArtifactRef,
   displayResourceRef,
   linkifyResourceRefs,
+  seriesDetailHref,
+  versionDetailHref,
 } from '../../resource-refs';
 import type {
   LedgerIssueDetailAssociatedArtifact,
+  LedgerIssueDetailArtifactLink,
   LedgerIssueDetailAuthRequest,
   LedgerIssueDetailConflict,
   LedgerIssueDetailProjection,
@@ -285,20 +288,57 @@ function AssociatedArtifactList({
 }): JSX.Element {
   return (
     <div className="ledger-evidence-list">
-      {artifacts.map((artifact) => (
-        <a
-          key={artifact.id}
-          className="ledger-evidence-row"
-          href={artifactDetailHref(artifact.id)}
-          title={artifact.uri}
-        >
-          <span>{artifactSourceLabel(artifact)}</span>
-          <strong>{artifactTitle(artifact)}</strong>
-          <code>{artifactMetaLabel(artifact)}</code>
-        </a>
-      ))}
+      {artifacts.flatMap((artifact) => {
+        const links = artifact.links.length > 0 ? artifact.links : [null];
+        return links.map((link) => (
+          <a
+            key={`${artifact.id}:${link?.id ?? 'artifact'}`}
+            className="ledger-evidence-row"
+            href={artifactLinkHref(artifact, link)}
+            title={artifact.uri}
+          >
+            <span>{artifactSourceLabel(artifact)}</span>
+            <strong>{artifactTitle(artifact)}</strong>
+            <span className="ledger-evidence-row__meta">
+              {link && <ArtifactLinkBadge link={link} />}
+              <code>{artifactMetaLabel(artifact)}</code>
+            </span>
+          </a>
+        ));
+      })}
     </div>
   );
+}
+
+function ArtifactLinkBadge({ link }: { link: LedgerIssueDetailArtifactLink }): JSX.Element {
+  const kind = link.link_kind === 'living' ? 'living' : 'pinned';
+  return (
+    <span className={`type-badge type-badge--sm artifact-link-badge artifact-link-badge--${kind}`}>
+      {artifactLinkBadgeLabel(link)}
+    </span>
+  );
+}
+
+function artifactLinkHref(
+  artifact: LedgerIssueDetailAssociatedArtifact,
+  link: LedgerIssueDetailArtifactLink | null,
+): string {
+  if (!link) return artifactDetailHref(artifact.id);
+
+  const seriesRef = link.series_ref ?? link.series_id;
+  if (link.link_kind === 'living') {
+    return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(artifact.id);
+  }
+
+  return seriesRef && typeof link.resolved_version_no === 'number'
+    ? versionDetailHref(seriesRef, link.resolved_version_no)
+    : artifactDetailHref(artifact.id);
+}
+
+function artifactLinkBadgeLabel(link: LedgerIssueDetailArtifactLink): string {
+  const version = typeof link.resolved_version_no === 'number' ? `v${link.resolved_version_no}` : null;
+  if (link.link_kind === 'living') return version ? `latest -> ${version}` : 'latest';
+  return version ? `${version} pinned` : 'pinned';
 }
 
 function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
