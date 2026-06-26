@@ -929,7 +929,7 @@ cmd_diff() {
 # history; ordinary ingest/preview/check never mutate it. For local-only files
 # this is the explicit observation command.
 cmd_record() {
-  local kind="" path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
+  local kind="" input_path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
   while (( $# > 0 )); do
     case "$1" in
       --kind) kind="$2"; shift 2 ;;
@@ -946,18 +946,18 @@ cmd_record() {
       --issue) issue="$2"; shift 2 ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
-      *) [[ -z "$path" ]] || die "Unexpected argument: $1" 2; path="$1"; shift ;;
+      *) [[ -z "$input_path" ]] || die "Unexpected argument: $1" 2; input_path="$1"; shift ;;
     esac
   done
   [[ -n "$kind" ]] || die "Usage: mandible artifact record <path> --kind tracked_repo|local_only|managed [--series-key K] [--logical-name N] [--provider P] [--repo R] [--issue I] [--label L] [--note T] [--role R] [--json]" 2
   case "$kind" in tracked_repo|local_only|managed) ;; *) die "Unknown --kind: $kind (expected tracked_repo, local_only, or managed)" 2 ;; esac
-  if [[ -z "$path" && -z "$ref" ]]; then
+  if [[ -z "$input_path" && -z "$ref" ]]; then
     die "record requires a <path> (or --ref for managed)" 2
   fi
   require_tools
   local abs=""
-  if [[ -n "$path" ]]; then
-    abs="$(python_path abs "$path")"
+  if [[ -n "$input_path" ]]; then
+    abs="$(python_path abs "$input_path")"
     [[ -f "$abs" ]] || die "${RED}Not a regular file: ${abs}${RESET}" 1
   fi
   local payload
