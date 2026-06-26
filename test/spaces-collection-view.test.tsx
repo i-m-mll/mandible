@@ -2,8 +2,8 @@
 //
 // Drives the rendered view with a mocked fetch (the `GET /api/spaces/:id` fact
 // packet + mutation routes) and a mocked EventSource (SSE reconciliation). It
-// asserts the acceptance criteria: tree render, unplaced shelf, add/remove,
-// unresolved-ref placeholders, filter, and view-state persistence + SSE-without-
+// asserts the acceptance criteria: tree render, flat Items section, add/remove,
+// quiet unresolved-ref placeholders, filter, and view-state persistence + SSE-without-
 // reset of selection.
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -202,7 +202,7 @@ describe('SpaceCollectionRenderer', () => {
     expect(within(tree).getByText('Beta')).toBeTruthy();
   });
 
-  it('surfaces item-only membership on the unplaced shelf (never lost)', async () => {
+  it('surfaces item-only membership in the Items section (never lost)', async () => {
     stubFetch({
       getPacket: () =>
         fullPacket({
@@ -212,12 +212,13 @@ describe('SpaceCollectionRenderer', () => {
     });
     render(<SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />);
     const shelf = await screen.findByTestId('space-collection-shelf');
+    expect(within(shelf).getByText('Items (1)')).toBeTruthy();
     expect(within(shelf).getByText('Lonely')).toBeTruthy();
     // 'Placed' is in the tree, not the shelf.
     expect(within(shelf).queryByText('Placed')).toBeNull();
   });
 
-  it('renders missing/unresolved refs through the C6 unresolved-ref UI, never dropping them', async () => {
+  it('renders missing/unresolved refs through quiet C6 unresolved-ref UI, never dropping them', async () => {
     stubFetch({
       getPacket: () =>
         fullPacket({
@@ -232,11 +233,11 @@ describe('SpaceCollectionRenderer', () => {
     const ref = container.querySelector('.resource-ref');
     expect(ref).toBeTruthy();
     expect(ref?.getAttribute('data-ref-state')).toBe('unresolved');
-    // The resolve affordance exists (unresolved → resolvable, not silently dropped).
-    expect(container.querySelector('.resource-ref__resolve')).toBeTruthy();
+    expect(container.querySelector('.resource-ref__resolve')).toBeNull();
+    expect(ref?.querySelector('.resource-ref__link')).toBeTruthy();
   });
 
-  it('resolves a ref through the C6 resolver on click', async () => {
+  it('does not render always-visible resolve buttons for normal item refs', async () => {
     stubFetch({
       getPacket: () =>
         fullPacket({ items: [makeItem('i1', { ref_uri: 'mandible://issue/i1' })], occurrences: [] }),
@@ -245,12 +246,8 @@ describe('SpaceCollectionRenderer', () => {
       <SpaceCollectionRenderer projectId="prj1" spaceId="sp1" renderer="collection" />,
     );
     await screen.findByTestId('space-collection-shelf');
-    const button = container.querySelector('.resource-ref__resolve') as HTMLButtonElement;
-    fireEvent.click(button);
-    await waitFor(() => {
-      const ref = container.querySelector('.resource-ref');
-      expect(ref?.getAttribute('data-ref-state')).toBe('error'); // resolver stub returns resolved:false
-    });
+    expect(container.querySelector('.resource-ref__resolve')).toBeNull();
+    expect(container.querySelector('.resource-ref')?.getAttribute('data-ref-state')).toBe('unresolved');
   });
 
   it('filters the tree + shelf by item text', async () => {

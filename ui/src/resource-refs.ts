@@ -266,23 +266,10 @@ export function linkifyResourceRefs(html: string): string {
   return container.innerHTML;
 }
 
-function styleResolveButton(button: HTMLButtonElement): void {
-  button.style.marginLeft = '0.3em';
-  button.style.font = 'inherit';
-  button.style.fontSize = '0.85em';
-  button.style.cursor = 'pointer';
-  button.style.padding = '0 0.35em';
-  button.style.border = '1px solid currentColor';
-  button.style.borderRadius = '3px';
-  button.style.background = 'transparent';
-  button.style.color = 'inherit';
-  button.style.opacity = '0.75';
-}
-
 /**
- * Build a resource-ref anchor in the unresolved state plus its resolve
- * affordance, wrapped in a single inline `<span>` so callers can attach
- * resolution handlers via {@link attachResourceRefResolution}.
+ * Build a quiet resource-ref anchor in the unresolved state, wrapped in a single
+ * inline `<span>`. Retry/repair controls are reserved for actual failed lookup
+ * surfaces rather than every normal ref.
  */
 function buildRefElement(parsed: ParsedResourceRef, labelOverride?: string): HTMLSpanElement {
   const wrapper = document.createElement('span');
@@ -299,15 +286,6 @@ function buildRefElement(parsed: ParsedResourceRef, labelOverride?: string): HTM
   anchor.textContent = labelOverride && labelOverride.trim() ? labelOverride : parsed.display;
   anchor.title = `Resource reference ${parsed.canonical} (unresolved)`;
   wrapper.appendChild(anchor);
-
-  const resolveBtn = document.createElement('button');
-  resolveBtn.type = 'button';
-  resolveBtn.className = 'resource-ref__resolve';
-  resolveBtn.setAttribute('data-resolve-ref', parsed.canonical);
-  resolveBtn.title = `Resolve ${parsed.canonical}`;
-  resolveBtn.textContent = 'resolve';
-  styleResolveButton(resolveBtn);
-  wrapper.appendChild(resolveBtn);
 
   return wrapper;
 }

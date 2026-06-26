@@ -135,12 +135,12 @@ describe('artifact series nav hrefs', () => {
 });
 
 describe('unresolved-reference UI + C2 resolver', () => {
-  it('renders an unresolved placeholder with a resolve affordance', () => {
+  it('renders an unresolved placeholder as a quiet link without resolve clutter', () => {
     const html = linkifyResourceRefs(`<p>[artifact:sha256:${HASH64}]</p>`);
     expect(html).toContain('resource-ref--unresolved');
     expect(html).toContain('data-ref-state="unresolved"');
-    expect(html).toContain('data-resolve-ref="artifact:sha256:' + HASH64 + '"');
-    expect(html).toContain('>resolve</button>');
+    expect(html).toContain('#/artifacts?ref=artifact%3Asha256%3A' + HASH64);
+    expect(html).not.toContain('resource-ref__resolve');
   });
 
   it('resolveResourceRef calls the C2 endpoint and unwraps {resolution}', async () => {
@@ -157,7 +157,7 @@ describe('unresolved-reference UI + C2 resolver', () => {
     expect(result.resolved).toBe(true);
   });
 
-  it('resolve affordance resolves a ref and updates the placeholder to resolved', async () => {
+  it('attachResourceRefResolution is inert when normal refs have no retry button', async () => {
     const container = document.createElement('div');
     container.innerHTML = linkifyResourceRefs(`<p>[artifact:sha256:${HASH64}]</p>`);
     const resolve = vi.fn(
@@ -166,29 +166,23 @@ describe('unresolved-reference UI + C2 resolver', () => {
     attachResourceRefResolution(container, { resolve });
 
     const button = container.querySelector('button.resource-ref__resolve') as HTMLButtonElement;
-    expect(button).toBeTruthy();
-    button.click();
-    await vi.waitFor(() => {
-      const wrapper = container.querySelector('.resource-ref') as HTMLElement;
-      expect(wrapper.getAttribute('data-ref-state')).toBe('resolved');
-    });
-    expect(resolve).toHaveBeenCalledWith(`artifact:sha256:${HASH64}`);
-    // affordance removed once resolved; ref never silently dropped
+    expect(button).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    const wrapper = container.querySelector('.resource-ref') as HTMLElement;
+    expect(wrapper.getAttribute('data-ref-state')).toBe('unresolved');
+    expect(wrapper.querySelector('.resource-ref__link')).toBeTruthy();
     expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
-    expect(container.querySelector('.resource-ref--resolved')).toBeTruthy();
   });
 
-  it('an unresolvable ref surfaces an error state, not a dropped ref', async () => {
+  it('an unresolvable-looking ref still renders as a quiet unresolved placeholder', async () => {
     const container = document.createElement('div');
     container.innerHTML = linkifyResourceRefs(`<p>[artifact:abcdef0]</p>`);
     const resolve = vi.fn(
       async (ref: string): Promise<ResolverResult> => ({ ref, kind: 'artifact', resolved: false, entity: null, error: 'not found' }),
     );
     attachResourceRefResolution(container, { resolve });
-    (container.querySelector('button.resource-ref__resolve') as HTMLButtonElement).click();
-    await vi.waitFor(() => {
-      expect(container.querySelector('.resource-ref--error')).toBeTruthy();
-    });
+    expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
     expect(container.querySelector('[data-resource-ref="artifact:abcdef0"]')).toBeTruthy();
   });
 });

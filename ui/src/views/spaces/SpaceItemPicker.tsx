@@ -1,29 +1,5 @@
-// SpaceItemPicker — search-and-add picker that adds issues/artifacts to the
-// CURRENT space from inside the space view (umbrella de56ffa, child e670176).
-//
-// The reverse of `AddToSpace` (which picks a space for a known item): this picks
-// items for a known space. It is the discoverable "Add items" affordance the
-// Canvas (and Collection) renderers open. It:
-//   - reads candidate ISSUES from the backend graph adapter
-//     (`getGraph({ status: 'all' })`, the same cross-project ledger-backed read
-//     the seed dialog uses) and candidate ARTIFACTS from `getArtifacts`,
-//   - filters them client-side by title/ref as the user types,
-//   - lets the user multi-select and adds each via the C2 `addSpaceItem` route,
-//   - runs an injected `afterAdd(item)` hook per created item so the host can
-//     materialize whatever placement makes the item VISIBLE in its renderer
-//     (the Canvas host creates an unplaced `canvas` occurrence so the item lands
-//     in the shelf; the Collection host relies on item-only membership which its
-//     own unplaced shelf already surfaces).
-//
-// Cross-project membership is allowed (issue 812df41 / universal item-level
-// membership): the candidate lists are not scoped to the space's project.
-//
-// Per the project Dataful UX State rule this component owns ONLY transient
-// browser-local view state (open candidate list, the search text, the pending
-// selection, the in-flight add). The canonical mutation (adding items) is driven
-// exclusively by an explicit user click; membership is read back from the C2 API
-// by the host's refetch — never promoted from this component's local state. The
-// host must NOT reset its viewport/selection when this picker reports an add.
+// SpaceItemPicker - shared in-Space picker for adding refs or existing members
+// to a Space renderer.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
@@ -38,7 +14,7 @@ import {
 } from '../../api';
 import './SpaceItemPicker.css';
 
-/** One searchable candidate row: a ledger issue or a registered artifact. */
+/** One searchable candidate row: a ledger issue, artifact, or existing Space member. */
 export type PickerCandidate = {
   /** Stable key for selection (the ref_type:ref_id pair is unique enough). */
   key: string;
@@ -48,6 +24,8 @@ export type PickerCandidate = {
   title: string;
   /** Human project label for the row (or '' for cross/top-level). */
   projectLabel: string;
+  /** Existing membership row, when this candidate is already in the Space. */
+  item?: SpaceItem;
 };
 
 export type SpaceItemPickerProps = {
@@ -56,10 +34,9 @@ export type SpaceItemPickerProps = {
   /** Project scope of the open space (used only for row ordering, not filtering). */
   projectId: string;
   /**
-   * Per-created-item hook, run AFTER `addSpaceItem` succeeds with `created`
-   * true. Lets the host make the new item visible in its renderer (e.g. the
-   * Canvas creates an unplaced shelf occurrence). May be async; failures are
-   * surfaced as feedback but do not roll back the membership.
+   * Per-selected-item hook, run after Space membership is available. Hosts use
+   * this to materialize renderer placement: Canvas shelf occurrences, Board
+   * cards, or Document embeds. It is not called for rows already in this view.
    */
   afterAdd?: (item: SpaceItem) => void | Promise<void>;
   /** Notified once after a batch add completes so the host can refetch. */
@@ -74,6 +51,18 @@ export type SpaceItemPickerProps = {
   loadArtifacts?: () => Promise<PickerCandidate[]>;
   /** addSpaceItem client (tests); defaults to the real C2 client. */
   addItem?: typeof addSpaceItem;
+  /** Current Space membership rows; existing members are also picker candidates. */
+  existingItems?: SpaceItem[];
+  /** Whether a Space item is already represented in the host renderer view. */
+  isItemInView?: (item: SpaceItem) => boolean;
+  /** Row status label for existing items already represented in the host view. */
+  alreadyInViewLabel?: string;
+};
+
+type PickerRow = PickerCandidate & {
+  item?: SpaceItem;
+  inSpace: boolean;
+  inView: boolean;
 };
 
 type LoadState =
@@ -83,13 +72,15 @@ type LoadState =
 
 const ARTIFACT_FETCH_LIMIT = 200;
 
+function candidateKey(refType: SpaceItemRefType, refId: string): string {
+  return `${refType}:${refId}`;
+}
+
 /** Project the cross-project graph issue nodes into picker candidates. */
 export function issuesFromGraph(nodes: GraphNode[]): PickerCandidate[] {
   const out: PickerCandidate[] = [];
   for (const node of nodes) {
     if (node.type !== 'issue') continue;
-    // Prefer the canonical ledger id; fall back to the display id the backend
-    // predicate resolver also accepts (mirrors SpaceSeedDialog.issueIdFromNode).
     const ledgerId = node.detail?.ledger_issue_id;
     const displayId = node.summary?.issue_id;
     const refId =
@@ -99,7 +90,7 @@ export function issuesFromGraph(nodes: GraphNode[]): PickerCandidate[] {
     if (!refId) continue;
     const projectName = node.detail?.project_name;
     out.push({
-      key: `issue:${refId}`,
+      key: candidateKey('issue', refId),
       ref_type: 'issue',
       ref_id: refId,
       title: node.label || (typeof displayId === 'string' ? displayId : refId),
@@ -117,13 +108,26 @@ export function artifactsToCandidates(records: ArtifactRecord[]): PickerCandidat
     const metaName = typeof meta.filename === 'string' ? meta.filename : '';
     const title = metaTitle || metaName || record.uri || record.id;
     return {
-      key: `artifact:${record.id}`,
+      key: candidateKey('artifact', record.id),
       ref_type: 'artifact' as const,
       ref_id: record.id,
       title,
       projectLabel: record.role ?? record.home_repo_id ?? '',
     };
   });
+}
+
+/** Project current Space memberships into picker candidates. */
+export function itemsToCandidates(items: SpaceItem[]): PickerCandidate[] {
+  return items.map((item) => ({
+    key: candidateKey(item.ref_type, item.ref_id),
+    ref_type: item.ref_type,
+    ref_id: item.ref_id,
+    ref_uri: item.ref_uri,
+    title: item.title || item.ref_uri || `${item.ref_type}:${item.ref_id}`,
+    projectLabel: 'In this Space',
+    item,
+  }));
 }
 
 /** Default issue loader: cross-project ledger-backed graph read. */
@@ -138,13 +142,14 @@ async function defaultLoadArtifacts(): Promise<PickerCandidate[]> {
   return artifactsToCandidates(records);
 }
 
-/** Case-insensitive title/ref filter. */
+/** Case-insensitive title/ref/type filter. */
 export function matchesQuery(candidate: PickerCandidate, query: string): boolean {
   const needle = query.trim().toLowerCase();
   if (!needle) return true;
   return (
     candidate.title.toLowerCase().includes(needle) ||
     candidate.ref_id.toLowerCase().includes(needle) ||
+    candidate.ref_type.toLowerCase().includes(needle) ||
     candidate.projectLabel.toLowerCase().includes(needle)
   );
 }
@@ -158,6 +163,9 @@ export function SpaceItemPicker({
   loadIssues = defaultLoadIssues,
   loadArtifacts = defaultLoadArtifacts,
   addItem = addSpaceItem,
+  existingItems = [],
+  isItemInView,
+  alreadyInViewLabel = 'Already in this view',
 }: SpaceItemPickerProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'loading' });
   const [query, setQuery] = useState('');
@@ -166,8 +174,6 @@ export function SpaceItemPicker({
   const [feedback, setFeedback] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Load candidates once on mount. Issue and artifact loads are independent;
-  // a failure in one still surfaces the other so the picker stays usable.
   useEffect(() => {
     let active = true;
     setLoad({ status: 'loading' });
@@ -191,7 +197,6 @@ export function SpaceItemPicker({
     };
   }, [loadIssues, loadArtifacts]);
 
-  // Close on outside pointer / Escape (matching the AddToSpace popover behavior).
   useEffect(() => {
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const node = containerRef.current;
@@ -209,25 +214,71 @@ export function SpaceItemPicker({
     };
   }, [onClose]);
 
-  const candidates = load.status === 'ready' ? load.candidates : [];
-  const filtered = useMemo(
-    () => candidates.filter((candidate) => matchesQuery(candidate, query)),
-    [candidates, query],
-  );
-  const byKey = useMemo(() => {
-    const map = new Map<string, PickerCandidate>();
-    for (const candidate of candidates) map.set(candidate.key, candidate);
-    return map;
-  }, [candidates]);
+  const rows = useMemo<PickerRow[]>(() => {
+    const map = new Map<string, PickerRow>();
+    for (const itemCandidate of itemsToCandidates(existingItems)) {
+      const item = itemCandidate.item;
+      map.set(itemCandidate.key, {
+        ...itemCandidate,
+        inSpace: true,
+        inView: item ? Boolean(isItemInView?.(item)) : false,
+      });
+    }
+    if (load.status === 'ready') {
+      for (const candidate of load.candidates) {
+        const existing = map.get(candidate.key);
+        if (existing) {
+          map.set(candidate.key, {
+            ...candidate,
+            item: existing.item,
+            title: existing.title || candidate.title,
+            projectLabel: candidate.projectLabel || existing.projectLabel,
+            inSpace: true,
+            inView: existing.inView,
+          });
+        } else {
+          map.set(candidate.key, { ...candidate, inSpace: false, inView: false });
+        }
+      }
+    }
+    return [...map.values()];
+  }, [load, existingItems, isItemInView]);
 
-  const toggle = useCallback((key: string) => {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
+  const filtered = useMemo(
+    () => rows.filter((candidate) => matchesQuery(candidate, query)),
+    [rows, query],
+  );
+
+  const byKey = useMemo(() => {
+    const map = new Map<string, PickerRow>();
+    for (const candidate of rows) map.set(candidate.key, candidate);
+    return map;
+  }, [rows]);
+
+  useEffect(() => {
+    setSelected((prior) => {
+      const next = new Set<string>();
+      for (const key of prior) {
+        const candidate = byKey.get(key);
+        if (candidate && !candidate.inView) next.add(key);
+      }
+      return next.size === prior.size ? prior : next;
     });
-  }, []);
+  }, [byKey]);
+
+  const toggle = useCallback(
+    (key: string) => {
+      const candidate = byKey.get(key);
+      if (candidate?.inView) return;
+      setSelected((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+    },
+    [byKey],
+  );
 
   const handleAdd = useCallback(async () => {
     if (busy || selected.size === 0) return;
@@ -235,36 +286,56 @@ export function SpaceItemPicker({
     setFeedback(null);
     let added = 0;
     let alreadyPresent = 0;
-    try {
-      for (const key of selected) {
-        const candidate = byKey.get(key);
-        if (!candidate) continue;
-        const response = await addItem(spaceId, {
-          ref_type: candidate.ref_type,
-          ref_id: candidate.ref_id,
-          ref_uri: candidate.ref_uri ?? null,
-          title: candidate.title,
-        });
-        if (response.already_present) {
+    const failed: string[] = [];
+    const remaining = new Set<string>();
+    for (const key of selected) {
+      const candidate = byKey.get(key);
+      if (!candidate || candidate.inView) continue;
+      try {
+        let item = candidate.item;
+        if (item) {
           alreadyPresent += 1;
         } else {
-          added += 1;
+          const response = await addItem(spaceId, {
+            ref_type: candidate.ref_type,
+            ref_id: candidate.ref_id,
+            ref_uri: candidate.ref_uri ?? null,
+            title: candidate.title,
+          });
+          item = response.item;
+          if (response.already_present) alreadyPresent += 1;
+          else added += 1;
         }
-        // Run the host placement hook only for freshly created memberships so a
-        // re-add does not spawn duplicate shelf occurrences.
-        if (response.created && afterAdd) {
-          await afterAdd(response.item);
-        }
+        if (item && afterAdd) await afterAdd(item);
+      } catch (error) {
+        failed.push(`${candidate.title}: ${error instanceof Error ? error.message : String(error)}`);
+        remaining.add(key);
       }
-      setSelected(new Set());
-      setFeedback(summarize(added, alreadyPresent));
-      onAdded?.({ added, alreadyPresent });
-    } catch (error) {
-      setFeedback(`Failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setBusy(false);
     }
-  }, [busy, selected, byKey, addItem, spaceId, afterAdd, onAdded]);
+    setSelected(remaining);
+    if (failed.length > 0) {
+      setFeedback(`${summarize(added, alreadyPresent)}; failed ${failed.length}: ${failed[0]}`);
+    } else {
+      setFeedback(summarize(added, alreadyPresent));
+      onClose?.();
+    }
+    onAdded?.({ added, alreadyPresent });
+    setBusy(false);
+  }, [busy, selected, byKey, addItem, spaceId, afterAdd, onAdded, onClose]);
+
+  const selectableCount = useMemo(
+    () => filtered.filter((candidate) => !candidate.inView).length,
+    [filtered],
+  );
+
+  const statusFor = useCallback(
+    (candidate: PickerRow): string => {
+      if (candidate.inView) return alreadyInViewLabel;
+      if (candidate.inSpace) return 'In Space';
+      return 'Not in Space';
+    },
+    [alreadyInViewLabel],
+  );
 
   return (
     <div className="space-item-picker" ref={containerRef} role="dialog" aria-modal="true" aria-label="Add items to this Space" data-testid="space-item-picker">
@@ -278,7 +349,7 @@ export function SpaceItemPicker({
             data-testid="space-item-picker-close"
             onClick={() => onClose()}
           >
-            ×
+            x
           </button>
         ) : null}
       </header>
@@ -287,7 +358,7 @@ export function SpaceItemPicker({
         className="space-item-picker__search"
         type="search"
         autoFocus
-        placeholder="Search issues and artifacts by title…"
+        placeholder="Search issues and artifacts by title..."
         aria-label="Search items to add"
         data-testid="space-item-picker-search"
         value={query}
@@ -295,9 +366,9 @@ export function SpaceItemPicker({
       />
 
       <div className="space-item-picker__results" data-testid="space-item-picker-results">
-        {load.status === 'loading' ? (
-          <div className="space-item-picker__status">Loading items…</div>
-        ) : load.status === 'error' ? (
+        {load.status === 'loading' && existingItems.length === 0 ? (
+          <div className="space-item-picker__status">Loading items...</div>
+        ) : load.status === 'error' && rows.length === 0 ? (
           <div className="space-item-picker__status space-item-picker__status--error" role="alert">
             {load.message}
           </div>
@@ -305,23 +376,30 @@ export function SpaceItemPicker({
           <div className="space-item-picker__status" data-testid="space-item-picker-empty">
             {query.trim() ? 'No items match your search.' : 'No items available.'}
           </div>
+        ) : selectableCount === 0 ? (
+          <div className="space-item-picker__status" data-testid="space-item-picker-empty">
+            Everything here is already in this view.
+          </div>
         ) : (
           <ul className="space-item-picker__list" role="listbox" aria-multiselectable="true">
             {filtered.map((candidate) => {
               const isSelected = selected.has(candidate.key);
               return (
-                <li key={candidate.key} role="option" aria-selected={isSelected}>
+                <li key={candidate.key} role="option" aria-selected={isSelected} aria-disabled={candidate.inView}>
                   <button
                     type="button"
                     className="space-item-picker__option"
                     data-selected={isSelected ? 'true' : 'false'}
                     data-ref-type={candidate.ref_type}
                     data-ref-id={candidate.ref_id}
+                    data-in-space={candidate.inSpace ? 'true' : 'false'}
+                    data-in-view={candidate.inView ? 'true' : 'false'}
                     data-testid="space-item-picker-option"
+                    disabled={candidate.inView}
                     onClick={() => toggle(candidate.key)}
                   >
                     <span className="space-item-picker__check" aria-hidden="true">
-                      {isSelected ? '✓' : ''}
+                      {candidate.inView ? '-' : isSelected ? '*' : ''}
                     </span>
                     <span className="space-item-picker__option-main">
                       <span className="space-item-picker__option-title">{candidate.title}</span>
@@ -329,6 +407,7 @@ export function SpaceItemPicker({
                         <span className="space-item-picker__badge" data-kind={candidate.ref_type}>
                           {candidate.ref_type}
                         </span>
+                        <span className="space-item-picker__state">{statusFor(candidate)}</span>
                         {candidate.projectLabel ? (
                           <span className="space-item-picker__project">{candidate.projectLabel}</span>
                         ) : null}
@@ -358,7 +437,7 @@ export function SpaceItemPicker({
           disabled={busy || selected.size === 0}
           onClick={() => void handleAdd()}
         >
-          {busy ? 'Adding…' : `Add${selected.size > 0 ? ` (${selected.size})` : ''}`}
+          {busy ? 'Adding...' : `Add${selected.size > 0 ? ` (${selected.size})` : ''}`}
         </button>
       </footer>
     </div>

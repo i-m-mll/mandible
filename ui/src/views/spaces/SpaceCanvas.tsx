@@ -600,9 +600,18 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const afterAddItem = useCallback(
     async (item: SpaceItem) => {
       if (!spaceId) return;
+      if (occurrencesRef.current.some((o) => o.renderer === 'canvas' && o.item_id === item.id)) {
+        return;
+      }
       await createOccurrence(spaceId, { item_id: item.id, renderer: 'canvas' });
     },
     [spaceId, createOccurrence],
+  );
+
+  const isItemOnCanvas = useCallback(
+    (item: SpaceItem) =>
+      occurrencesRef.current.some((occurrence) => occurrence.renderer === 'canvas' && occurrence.item_id === item.id),
+    [],
   );
 
   return (
@@ -624,6 +633,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
               <SpaceItemPicker
                 spaceId={spaceId}
                 projectId={projectId}
+                existingItems={items}
+                isItemInView={isItemOnCanvas}
+                alreadyInViewLabel="Already on canvas"
                 afterAdd={afterAddItem}
                 onAdded={() => {
                   void reload();

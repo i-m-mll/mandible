@@ -119,16 +119,45 @@ describe('SpaceItemPicker component', () => {
     expect(onAdded).toHaveBeenCalledWith({ added: 2, alreadyPresent: 0 });
   });
 
-  it('does not run afterAdd for an already-present item and reports it', async () => {
+  it('runs the placement hook for an already-present Space member that is not in this view', async () => {
     const addItem = vi.fn().mockResolvedValue({ item: { id: 'm1' }, created: false, already_present: true });
-    const afterAdd = vi.fn();
+    const afterAdd = vi.fn().mockResolvedValue(undefined);
     render(h(SpaceItemPicker, { spaceId: 'sp1', projectId: 'prj1', loadIssues, loadArtifacts, addItem, afterAdd }));
     fireEvent.click(await screen.findByText('Auth flow'));
     fireEvent.click(screen.getByTestId('space-item-picker-add'));
 
     await waitFor(() => expect(addItem).toHaveBeenCalledTimes(1));
-    expect(afterAdd).not.toHaveBeenCalled();
+    await waitFor(() => expect(afterAdd).toHaveBeenCalledWith({ id: 'm1' }));
     expect((await screen.findByTestId('space-item-picker-feedback')).textContent).toContain('Already present');
+  });
+
+  it('lists existing Space members and disables rows already in the current view', async () => {
+    const addItem = vi.fn();
+    const afterAdd = vi.fn();
+    render(
+      h(SpaceItemPicker, {
+        spaceId: 'sp1',
+        projectId: 'prj1',
+        loadIssues: async () => [],
+        loadArtifacts: async () => [],
+        addItem,
+        afterAdd,
+        existingItems: [
+          { id: 'm1', space_id: 'sp1', ref_type: 'issue', ref_id: 'i1', ref_uri: null, title: 'Already visible' },
+          { id: 'm2', space_id: 'sp1', ref_type: 'issue', ref_id: 'i2', ref_uri: null, title: 'Needs placement' },
+        ] as never,
+        isItemInView: (item) => item.id === 'm1',
+        alreadyInViewLabel: 'Already on board',
+      }),
+    );
+
+    const visible = await screen.findByText('Already visible');
+    expect(visible.closest('button')?.getAttribute('disabled')).toBe('');
+    expect(screen.getByText('Already on board')).toBeTruthy();
+    fireEvent.click(screen.getByText('Needs placement'));
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
+    await waitFor(() => expect(afterAdd).toHaveBeenCalledWith(expect.objectContaining({ id: 'm2' })));
+    expect(addItem).not.toHaveBeenCalled();
   });
 
   it('surfaces an add failure without crashing', async () => {

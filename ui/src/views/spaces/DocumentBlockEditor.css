@@ -84,10 +84,28 @@
   cursor: pointer;
 }
 
+.spaces-block-editor__add--primary {
+  border-color: var(--accent-blue);
+  background: var(--accent-blue);
+  color: #fff;
+}
+
 .spaces-block-editor__add:disabled,
 .spaces-block-editor__embed:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+.spaces-block-editor__add-items {
+  position: relative;
+  display: inline-flex;
+}
+
+.spaces-block-editor__picker-anchor {
+  position: absolute;
+  top: calc(100% + 0.35rem);
+  left: 0;
+  z-index: 30;
 }
 
 .spaces-block-editor__embeds {

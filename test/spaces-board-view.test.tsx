@@ -123,11 +123,25 @@ function stubFetch(state: {
   packet: Packet;
   workerStatus?: Record<string, string>;
   mutations: Mutation[];
+  graphNodes?: Record<string, unknown>[];
+  artifacts?: Record<string, unknown>[];
 }): ReturnType<typeof vi.fn> {
   const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     const body = init?.body ? JSON.parse(String(init.body)) : undefined;
+
+    if (method === 'GET' && url.includes('/api/graph')) {
+      return new Response(JSON.stringify({ nodes: state.graphNodes ?? [], edges: [] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    if (method === 'GET' && url.includes('/api/artifacts')) {
+      return new Response(JSON.stringify({ artifacts: state.artifacts ?? [] }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
 
     // Resolver: report a worker_status for the requested issue ref.
     if (url.includes('/api/spaces/resolve') || url.includes('/api/refs/resolve')) {
@@ -167,6 +181,41 @@ function stubFetch(state: {
       const target = state.packet.occurrences.find((o) => o.id === occId);
       if (target && body && typeof body === 'object') Object.assign(target, body);
       return new Response(JSON.stringify({ occurrence: target ?? {} }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    // Item POST (shared Add items picker membership creation).
+    if (method === 'POST' && /\/api\/spaces\/sp1\/items$/.test(url.split('?')[0])) {
+      state.mutations.push({ method, url, body });
+      const input = body as { ref_type: string; ref_id: string; ref_uri?: string | null; title?: string | null };
+      const existing = state.packet.items.find(
+        (item) => item.ref_type === input.ref_type && item.ref_id === input.ref_id,
+      );
+      if (existing) {
+        return new Response(JSON.stringify({ item: existing, created: false, already_present: true }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      const item = makeItem(input.ref_id, {
+        id: input.ref_id,
+        ref_type: input.ref_type,
+        ref_id: input.ref_id,
+        ref_uri: input.ref_uri ?? null,
+        title: input.title ?? null,
+      });
+      state.packet.items.push(item);
+      return new Response(JSON.stringify({ item, created: true, already_present: false }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+
+    // Occurrence POST (Board Add items card creation).
+    if (method === 'POST' && /\/api\/spaces\/sp1\/occurrences$/.test(url.split('?')[0])) {
+      state.mutations.push({ method, url, body });
+      const occurrence = makeOcc(`occ-${state.packet.occurrences.length + 1}`, body as Record<string, unknown>);
+      state.packet.occurrences.push(occurrence);
+      return new Response(JSON.stringify({ occurrence }), {
         headers: { 'content-type': 'application/json' },
       });
     }
@@ -275,14 +324,12 @@ describe('SpaceBoardRenderer', () => {
     });
   });
 
-  it('adds a manual custom column persisted to spaces.metadata', async () => {
+  it('adds an Untitled manual custom column persisted to spaces.metadata', async () => {
     const state = { packet: fullPacket(), mutations: [] as Mutation[] };
     stubFetch(state);
     render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
     await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
-    const titleInput = screen.getByLabelText('Custom column title') as HTMLInputElement;
-    fireEvent.input(titleInput, { target: { value: 'Triage' } });
-    fireEvent.click(screen.getByText('Add column'));
+    fireEvent.click(screen.getByText('Add manual column'));
     await waitFor(() => {
       const patch = state.mutations.find(
         (m) => m.method === 'PATCH' && /\/api\/spaces\/sp1$/.test(m.url.split('?')[0]),
@@ -290,11 +337,94 @@ describe('SpaceBoardRenderer', () => {
       expect(patch).toBeTruthy();
       const meta = (patch!.body as { metadata: Record<string, unknown> }).metadata;
       const board = meta[BOARD_METADATA_KEY] as { columns: { title: string; kind: string }[] };
-      expect(board.columns[0].title).toBe('Triage');
+      expect(board.columns[0].title).toBe('Untitled');
       expect(board.columns[0].kind).toBe('manual');
     });
     // The new column renders after the metadata round-trips.
-    await waitFor(() => expect(screen.getByText('Triage')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText('Untitled')).toBeTruthy());
+  });
+
+  it('adds an item from the toolbar as a board card and skips duplicate board cards', async () => {
+    const state = {
+      packet: fullPacket(),
+      mutations: [] as Mutation[],
+      graphNodes: [
+        { id: 'n1', type: 'issue', label: 'Issue 99', detail: { ledger_issue_id: 'issue-99', project_name: 'prj1' } },
+      ],
+    };
+    stubFetch(state);
+    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
+    await screen.findByTestId(`board-column-${defaultColumnKey('none')}`);
+    fireEvent.click(screen.getByTestId('space-board-add-items'));
+    fireEvent.click(await screen.findByText('Issue 99'));
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
+
+    await waitFor(() => {
+      const post = state.mutations.find(
+        (m) => m.method === 'POST' && /\/api\/spaces\/sp1\/occurrences$/.test(m.url.split('?')[0]),
+      );
+      expect(post).toBeTruthy();
+      expect(post!.body).toMatchObject({
+        item_id: 'issue-99',
+        renderer: 'board',
+        section_id: defaultColumnKey('none'),
+      });
+    });
+
+    fireEvent.click(screen.getByTestId('space-board-add-items'));
+    await waitFor(() =>
+      expect(screen.getByTestId('space-item-picker-empty').textContent).toContain(
+        'Everything here is already in this view',
+      ),
+    );
+  });
+
+  it('renames and confirms deletion of custom columns without deleting cards', async () => {
+    const metadata = {
+      [BOARD_METADATA_KEY]: {
+        version: 1,
+        columns: [{ key: 'manual:triage', title: 'Triage', kind: 'manual', order: 0 }],
+      },
+    };
+    const state = {
+      packet: fullPacket({
+        space: makeSpace(metadata),
+        items: [makeItem('iss1', { title: 'Kept card' })],
+        occurrences: [makeOcc('o1', { item_id: 'iss1', section_id: 'manual:triage' })],
+      }),
+      workerStatus: { iss1: 'none' },
+      mutations: [] as Mutation[],
+    };
+    stubFetch(state);
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    render(<SpaceBoardRenderer projectId="prj1" spaceId="sp1" renderer="board" />);
+    await screen.findByText('Triage');
+
+    fireEvent.dblClick(screen.getByText('Triage'));
+    const rename = screen.getByLabelText('Rename column Triage') as HTMLInputElement;
+    fireEvent.input(rename, { target: { value: 'Review' } });
+    fireEvent.keyDown(rename, { key: 'Enter' });
+
+    await waitFor(() => {
+      const lastPatch = state.mutations
+        .filter((m) => m.method === 'PATCH' && /\/api\/spaces\/sp1$/.test(m.url.split('?')[0]))
+        .at(-1);
+      const meta = (lastPatch!.body as { metadata: Record<string, unknown> }).metadata;
+      const board = meta[BOARD_METADATA_KEY] as { columns: { title: string }[] };
+      expect(board.columns[0].title).toBe('Review');
+    });
+
+    fireEvent.click(await screen.findByLabelText('Delete column Review'));
+    await waitFor(() => {
+      const lastPatch = state.mutations
+        .filter((m) => m.method === 'PATCH' && /\/api\/spaces\/sp1$/.test(m.url.split('?')[0]))
+        .at(-1);
+      const meta = (lastPatch!.body as { metadata: Record<string, unknown> }).metadata;
+      const board = meta[BOARD_METADATA_KEY] as { columns: unknown[] };
+      expect(board.columns).toHaveLength(0);
+    });
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('Cards in this column will stay in the Space'));
+    expect(state.packet.occurrences).toHaveLength(1);
   });
 
   it('SSE space:* event refetches without resetting the selected card', async () => {

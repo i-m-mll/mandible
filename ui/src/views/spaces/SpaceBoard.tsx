@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
+  createSpaceOccurrence,
   getSpaceFactPacket,
   updateSpace,
   updateSpaceOccurrence,
@@ -32,7 +33,6 @@ import {
   resolveResourceRef,
   resourceRefHref,
   displayResourceRef,
-  type ResolverResult,
 } from '../../resource-refs';
 import { createSSEClient } from '../../sse-client';
 import {
@@ -53,6 +53,7 @@ import {
   readBoardMetadata,
   writeBoardMetadata,
   sortKeyBetween,
+  defaultColumnKey,
   isValidCustomColumnKey,
   cardLabel,
   cardRefString,
@@ -70,6 +71,7 @@ import {
   EMPTY_BOARD_VIEW_STATE,
   type BoardViewState,
 } from './boardViewState';
+import { SpaceItemPicker } from './SpaceItemPicker';
 import './space-board.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
@@ -89,42 +91,23 @@ function matchesFilter(label: string, ref: string, filter: string): boolean {
 
 /**
  * Inline unresolved-ref affordance for one card's item ref (shared C6 UI). The
- * ref starts UNRESOLVED with a resolve button; no raw ref text is injected as
- * HTML.
+ * ref starts as a quiet unresolved link/label; no raw ref text is injected as
+ * HTML and no always-visible resolve button clutters normal cards.
  */
 function CardRef({ item }: { item: SpaceItem }): JSX.Element {
   const ref = cardRefString(item);
   const parsed = useMemo(() => parseResourceRef(ref), [ref]);
-  const [state, setState] = useState<'unresolved' | 'resolving' | 'resolved' | 'error'>('unresolved');
-  const [detail, setDetail] = useState<string>('');
-
-  const onResolve = useCallback(async () => {
-    setState('resolving');
-    try {
-      const result: ResolverResult = await resolveResourceRef(ref);
-      if (result.resolved) {
-        setState('resolved');
-        setDetail(`Resolved ${ref} (${result.kind})`);
-      } else {
-        setState('error');
-        setDetail(result.error ? `Unresolved: ${result.error}` : `Unresolved: ${ref}`);
-      }
-    } catch (error) {
-      setState('error');
-      setDetail(`Resolve failed: ${String(error)}`);
-    }
-  }, [ref]);
 
   const label = cardLabel(item, parsed ? parsed.display : displayResourceRef(ref));
   const href = parsed ? resourceRefHref(parsed.canonical) : undefined;
 
   return (
     <span
-      className={`space-board__ref resource-ref resource-ref--${state === 'unresolved' || state === 'resolving' ? 'unresolved' : state}`}
+      className="space-board__ref resource-ref resource-ref--unresolved"
       data-resource-ref={parsed ? parsed.canonical : ref}
       data-resource-kind={parsed ? parsed.kind : 'unknown'}
-      data-ref-state={state}
-      title={detail || `Resource reference ${ref} (${state})`}
+      data-ref-state="unresolved"
+      title={`Resource reference ${ref}`}
     >
       {href ? (
         <a className="artifact-xref resource-ref__link" href={href}>
@@ -133,17 +116,6 @@ function CardRef({ item }: { item: SpaceItem }): JSX.Element {
       ) : (
         <span className="resource-ref__link">{label}</span>
       )}
-      {state === 'unresolved' || state === 'error' ? (
-        <button
-          type="button"
-          className="resource-ref__resolve"
-          data-resolve-ref={parsed ? parsed.canonical : ref}
-          onClick={onResolve}
-          title={`Resolve ${ref}`}
-        >
-          resolve
-        </button>
-      ) : null}
     </span>
   );
 }
@@ -258,6 +230,8 @@ type ColumnProps = {
   onDragOverColumn: (columnKey: string | null) => void;
   onMove: (occurrenceId: string, direction: -1 | 1) => void;
   onRemoveColumn: (key: string) => void;
+  onRenameColumn: (key: string, title: string) => void;
+  onAddItemsToColumn: (key: string) => void;
 };
 
 function BoardColumnView({
@@ -275,13 +249,30 @@ function BoardColumnView({
   onDragOverColumn,
   onMove,
   onRemoveColumn,
+  onRenameColumn,
+  onAddItemsToColumn,
 }: ColumnProps): JSX.Element {
+  const [renaming, setRenaming] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(column.title);
   const visibleCards = column.cards.filter((card) => {
     const item = card.occurrence.item;
     const label = item ? cardLabel(item, '') : card.occurrence.occurrence.note ?? '';
     const ref = item ? cardRefString(item) : '';
     return matchesFilter(label, ref, filter);
   });
+
+  useEffect(() => {
+    setDraftTitle(column.title);
+  }, [column.title]);
+
+  const custom = column.kind !== 'default';
+  const saveRename = useCallback(() => {
+    if (!custom) return;
+    const next = draftTitle.trim() || 'Untitled';
+    setDraftTitle(next);
+    setRenaming(false);
+    if (next !== column.title) onRenameColumn(column.key, next);
+  }, [column.key, column.title, custom, draftTitle, onRenameColumn]);
 
   return (
     <section
@@ -312,16 +303,57 @@ function BoardColumnView({
         >
           {collapsed ? '▶' : '▼'}
         </button>
-        <span className="space-board__column-title">{column.title}</span>
+        {custom && renaming ? (
+          <input
+            className="space-board__column-title-input"
+            aria-label={`Rename column ${column.title}`}
+            value={draftTitle}
+            autoFocus
+            onInput={(event) => setDraftTitle((event.target as HTMLInputElement).value)}
+            onBlur={saveRename}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') saveRename();
+              if (event.key === 'Escape') {
+                setDraftTitle(column.title);
+                setRenaming(false);
+              }
+            }}
+          />
+        ) : (
+          <button
+            type="button"
+            className="space-board__column-title"
+            disabled={!custom}
+            onDoubleClick={() => custom && setRenaming(true)}
+            onClick={(event) => {
+              if (custom && event.detail >= 2) setRenaming(true);
+            }}
+            onKeyDown={(event) => {
+              if (custom && event.key === 'Enter') setRenaming(true);
+            }}
+            title={custom ? 'Rename column' : column.title}
+          >
+            {column.title}
+          </button>
+        )}
         <span className="space-board__column-count" aria-label={`${visibleCards.length} cards`}>
           {visibleCards.length}
         </span>
-        {column.kind !== 'default' ? (
+        <button
+          type="button"
+          className="space-board__column-add"
+          aria-label={`Add items to ${column.title}`}
+          title="Add items"
+          onClick={() => onAddItemsToColumn(column.key)}
+        >
+          +
+        </button>
+        {custom ? (
           <button
             type="button"
             className="space-board__column-remove"
-            aria-label={`Remove column ${column.title}`}
-            title="Remove custom column"
+            aria-label={`Delete column ${column.title}`}
+            title="Delete custom column"
             onClick={() => onRemoveColumn(column.key)}
           >
             {'×'}
@@ -331,8 +363,18 @@ function BoardColumnView({
       {!collapsed ? (
         <ul className="space-board__cards" role="list" data-testid={`board-column-${column.key}`}>
           {visibleCards.length === 0 ? (
-            <li className="space-board__column-empty" aria-hidden="true">
-              {filter.trim() ? 'No matching cards' : 'Empty'}
+            <li className="space-board__column-empty">
+              {filter.trim() ? (
+                'No matching cards'
+              ) : (
+                <button
+                  type="button"
+                  className="space-board__column-empty-add"
+                  onClick={() => onAddItemsToColumn(column.key)}
+                >
+                  Add items
+                </button>
+              )}
             </li>
           ) : (
             visibleCards.map((card) => (
@@ -355,18 +397,16 @@ function BoardColumnView({
   );
 }
 
-/** Form to add a custom column: manual (membership by drag) or filter (C7b predicate). */
-function AddColumnForm({
+/** Compact menu to add custom columns: manual (membership by drag) or filter (C7b predicate). */
+function AddColumnMenu({
   busy,
   onAddManual,
   onAddFilter,
 }: {
   busy: boolean;
-  onAddManual: (title: string) => void;
+  onAddManual: () => void;
   onAddFilter: (chips: TimelineFilterChip[]) => void;
 }): JSX.Element {
-  const [mode, setMode] = useState<'manual' | 'filter'>('manual');
-  const [title, setTitle] = useState('');
   const [chips, setChips] = useState<TimelineFilterChip[]>([]);
 
   const normalizedChips = useMemo(() => normalizeFilterChips(chips), [chips]);
@@ -385,56 +425,21 @@ function AddColumnForm({
   }, []);
 
   return (
-    <div className="space-board__add-column" data-testid="board-add-column">
-      <div className="space-board__add-column-modes" role="tablist" aria-label="Column kind">
+    <details className="space-board__add-column" data-testid="board-add-column">
+      <summary className="space-board__toolbar-btn" aria-label="Board column actions">
+        Columns
+      </summary>
+      <div className="space-board__add-column-menu">
         <button
           type="button"
-          role="tab"
-          aria-selected={mode === 'manual'}
-          className="space-board__add-column-mode"
-          onClick={() => setMode('manual')}
+          className="space-board__add-column-btn"
+          disabled={busy}
+          onClick={() => onAddManual()}
         >
-          Manual
+          Add manual column
         </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === 'filter'}
-          className="space-board__add-column-mode"
-          onClick={() => setMode('filter')}
-        >
-          Filter
-        </button>
-      </div>
-      {mode === 'manual' ? (
-        <div className="space-board__add-column-manual">
-          <input
-            className="space-board__add-column-title"
-            type="text"
-            placeholder="Column title"
-            aria-label="Custom column title"
-            value={title}
-            onInput={(event) => setTitle((event.target as HTMLInputElement).value)}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && title.trim()) {
-                onAddManual(title.trim());
-                setTitle('');
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="space-board__add-column-btn"
-            disabled={busy || !title.trim()}
-            onClick={() => {
-              onAddManual(title.trim());
-              setTitle('');
-            }}
-          >
-            Add column
-          </button>
-        </div>
-      ) : (
+        <div className="space-board__add-filter-column">
+          <div className="space-board__add-filter-title">Add filter column</div>
         <IssuePredicateFilter
           chips={normalizedChips}
           projecting={projecting}
@@ -453,8 +458,9 @@ function AddColumnForm({
           ariaLabel="Add filter column"
           classPrefix="space-board-filter"
         />
-      )}
-    </div>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -464,10 +470,13 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   const [boardMeta, setBoardMeta] = useState<BoardMetadata>({ version: 1, columns: [] });
   const [factsByItemId, setFactsByItemId] = useState<IssueFactsByItemId>({});
   const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerColumnKey, setPickerColumnKey] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
 
   const dragRef = useRef<{ occurrenceId: string; fromColumn: string } | null>(null);
   const liveIdsRef = useRef<Set<string>>(new Set());
+  const addSortKeysRef = useRef<Record<string, string | null>>({});
   // Items whose worker_status we've already resolved (or attempted), so we don't
   // re-resolve the same issue on every reconciliation pass.
   const resolvedItemsRef = useRef<Set<string>>(new Set());
@@ -586,6 +595,47 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
 
+  const items = model ? Object.values(model.itemsById) : [];
+
+  const isItemOnBoard = useCallback(
+    (item: SpaceItem) =>
+      Boolean(model?.occurrences.some((occurrence) => occurrence.renderer === 'board' && occurrence.item?.id === item.id)),
+    [model],
+  );
+
+  const openItemPicker = useCallback(
+    (columnKey: string | null) => {
+      setPickerColumnKey(columnKey);
+      const keys: Record<string, string | null> = {};
+      if (projection) {
+        for (const column of projection.columns) {
+          const last = column.cards[column.cards.length - 1]?.occurrence.occurrence.sort_key ?? null;
+          keys[column.key] = last;
+        }
+      }
+      addSortKeysRef.current = keys;
+      setPickerOpen((open) => (open && pickerColumnKey === columnKey ? false : true));
+    },
+    [pickerColumnKey, projection],
+  );
+
+  const addBoardItem = useCallback(
+    async (item: SpaceItem) => {
+      if (!spaceId || isItemOnBoard(item)) return;
+      const columnKey = pickerColumnKey ?? defaultColumnKey('none');
+      const lastKey = addSortKeysRef.current[columnKey] ?? null;
+      const sortKey = sortKeyBetween(lastKey, null);
+      addSortKeysRef.current[columnKey] = sortKey;
+      await createSpaceOccurrence(spaceId, {
+        item_id: item.id,
+        renderer: 'board',
+        section_id: columnKey,
+        sort_key: sortKey,
+      });
+    },
+    [spaceId, pickerColumnKey, isItemOnBoard],
+  );
+
   const onSelect = useCallback((occurrenceId: string) => {
     setViewState((prior) => ({ ...prior, selection: { kind: 'occurrence', ids: [occurrenceId] } }));
   }, []);
@@ -693,10 +743,10 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
       .slice(0, 48) || 'column';
 
   const onAddManual = useCallback(
-    (title: string) => {
-      const key = nextColumnKey(`col-${slugify(title)}`);
+    () => {
+      const key = nextColumnKey(`manual:${Date.now().toString(36)}`);
       const order = boardMeta.columns.length;
-      const def: CustomColumnDef = { key, title, kind: 'manual', order };
+      const def: CustomColumnDef = { key, title: 'Untitled', kind: 'manual', order };
       void persistBoardMeta({ ...boardMeta, columns: [...boardMeta.columns, def] });
     },
     [boardMeta, nextColumnKey, persistBoardMeta],
@@ -717,9 +767,26 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
 
   const onRemoveColumn = useCallback(
     (key: string) => {
+      const column = boardMeta.columns.find((c) => c.key === key);
+      if (!column) return;
+      const message = `Delete column "${column.title}"? Cards in this column will stay in the Space and move back to their default board grouping.`;
+      if (typeof window !== 'undefined' && !window.confirm(message)) return;
       void persistBoardMeta({
         ...boardMeta,
         columns: boardMeta.columns.filter((c) => c.key !== key),
+      });
+    },
+    [boardMeta, persistBoardMeta],
+  );
+
+  const onRenameColumn = useCallback(
+    (key: string, title: string) => {
+      const normalized = title.trim() || 'Untitled';
+      void persistBoardMeta({
+        ...boardMeta,
+        columns: boardMeta.columns.map((column) =>
+          column.key === key ? { ...column, title: normalized } : column,
+        ),
       });
     },
     [boardMeta, persistBoardMeta],
@@ -748,7 +815,36 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
             setViewState((prior) => ({ ...prior, cardFilter: (event.target as HTMLInputElement).value }))
           }
         />
-        <AddColumnForm busy={busy} onAddManual={onAddManual} onAddFilter={onAddFilter} />
+        <div className="space-board__toolbar-actions">
+          <button
+            type="button"
+            className="space-board__toolbar-btn space-board__toolbar-btn--primary"
+            aria-haspopup="dialog"
+            aria-expanded={pickerOpen}
+            disabled={busy}
+            data-testid="space-board-add-items"
+            onClick={() => openItemPicker(null)}
+          >
+            Add items
+          </button>
+          <AddColumnMenu busy={busy} onAddManual={onAddManual} onAddFilter={onAddFilter} />
+          {pickerOpen ? (
+            <div className="space-board__picker-anchor">
+              <SpaceItemPicker
+                spaceId={spaceId}
+                projectId={projectId}
+                existingItems={items}
+                isItemInView={isItemOnBoard}
+                alreadyInViewLabel="Already on board"
+                afterAdd={addBoardItem}
+                onAdded={() => {
+                  void loadPacket(true);
+                }}
+                onClose={() => setPickerOpen(false)}
+              />
+            </div>
+          ) : null}
+        </div>
       </div>
 
       <div className="space-board__body" data-testid="space-board-body">
@@ -777,6 +873,8 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
                 onDragOverColumn={setDragOverColumn}
                 onMove={onMove}
                 onRemoveColumn={onRemoveColumn}
+                onRenameColumn={onRenameColumn}
+                onAddItemsToColumn={openItemPicker}
               />
             ))}
           </div>

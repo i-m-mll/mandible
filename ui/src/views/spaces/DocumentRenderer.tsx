@@ -16,8 +16,8 @@
 //     pipeline so block identity + directive refs stay authoritative.
 //   - C6 `ui/src/resource-refs.ts`          -> the shared resource-ref parser +
 //     `linkifyResourceRefs` unresolved-ref UI. Markdown-link refs in prose AND
-//     `:ref`/`:::embed` directive refs are rendered as resolve-affordance
-//     placeholders; unresolved refs are never silently dropped.
+//     `:ref`/`:::embed` directive refs are rendered as quiet placeholders;
+//     unresolved refs are never silently dropped.
 //   - C11 `GET /api/spaces/:id/blocks`      -> the read-only block source.
 //   - C10 `SpacesViewShell` mount contract   -> the `document` renderer mount.
 //
@@ -31,12 +31,10 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 
 import {
   parseResourceRef,
-  resolveResourceRef,
   resourceRefHref,
   displayResourceRef,
   linkifyResourceRefs,
   type ParsedResourceRef,
-  type ResolverResult,
 } from '../../resource-refs';
 import { installSpacesDocRefRecognizer } from '../../spaces-doc-refs';
 import {
@@ -211,8 +209,7 @@ export function renderSpaceBlocks(
 
 /**
  * One directive-ref placeholder rendered with the shared C6 unresolved-ref UI:
- * starts UNRESOLVED with a resolve affordance, resolves against the read-only C2
- * resolver, and updates in place. No raw ref text is injected as HTML.
+ * starts as a quiet unresolved link/label. No raw ref text is injected as HTML.
  */
 function DirectiveRef({ docRef }: { docRef: ParsedDocRef }): JSX.Element {
   const canonical = docRef.canonical;
@@ -220,28 +217,6 @@ function DirectiveRef({ docRef }: { docRef: ParsedDocRef }): JSX.Element {
     () => docRef.resource ?? parseResourceRef(canonical),
     [docRef.resource, canonical],
   );
-  const [state, setState] = useState<'unresolved' | 'resolving' | 'resolved' | 'error'>(
-    'unresolved',
-  );
-  const [detail, setDetail] = useState<string>('');
-
-  const onResolve = useCallback(async () => {
-    setState('resolving');
-    try {
-      const result: ResolverResult = await resolveResourceRef(canonical);
-      if (result.resolved) {
-        setState('resolved');
-        setDetail(result.kind);
-      } else {
-        setState('error');
-        setDetail(result.error || 'unresolved');
-      }
-    } catch (err) {
-      setState('error');
-      setDetail(err instanceof Error ? err.message : String(err));
-    }
-  }, [canonical]);
-
   const label = docRef.label || (parsed ? parsed.display : displayResourceRef(canonical));
   // Unknown refs (no resolver authority) stay as inert placeholders.
   const href = parsed && parsed.kind !== 'unknown' ? resourceRefHref(canonical) : undefined;
@@ -251,7 +226,7 @@ function DirectiveRef({ docRef }: { docRef: ParsedDocRef }): JSX.Element {
       className="spaces-doc-ref"
       data-kind={docRef.kind}
       data-directive={docRef.directive}
-      data-state={state}
+      data-state="unresolved"
       data-testid="spaces-doc-ref"
     >
       {href ? (
@@ -260,22 +235,6 @@ function DirectiveRef({ docRef }: { docRef: ParsedDocRef }): JSX.Element {
         </a>
       ) : (
         <code className="spaces-doc-ref__label">{label}</code>
-      )}
-      {state === 'unresolved' && (
-        <button
-          type="button"
-          className="spaces-doc-ref__resolve"
-          onClick={() => void onResolve()}
-        >
-          resolve
-        </button>
-      )}
-      {state === 'resolving' && <span className="spaces-doc-ref__status">resolving…</span>}
-      {state === 'resolved' && (
-        <span className="spaces-doc-ref__status spaces-doc-ref__status--ok">{detail || 'resolved'}</span>
-      )}
-      {state === 'error' && (
-        <span className="spaces-doc-ref__status spaces-doc-ref__status--err">{detail || 'unresolved'}</span>
       )}
     </span>
   );
