@@ -130,13 +130,28 @@ function makeExport(over: Partial<SpaceExport>): SpaceExport {
   };
 }
 
+function makeItem(over: Partial<SpaceItem> & Pick<SpaceItem, 'id'>): SpaceItem {
+  return {
+    id: over.id,
+    space_id: 'sp1',
+    ref_type: 'issue',
+    ref_id: 'abc123',
+    ref_uri: null,
+    title: 'Issue abc123',
+    metadata: {},
+    created_at: NOW,
+    updated_at: NOW,
+    ...over,
+  };
+}
+
 /**
  * A mutable in-memory backend stub over the C11 block routes + the C13a exports
  * read. Records every write so the tests can assert the editor hit the right
  * route with the right body. Shared as both the editor `fetchImpl` and the
  * global `fetch` (the editor reads exports through the C3 `getSpaceExports`).
  */
-function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = []) {
+function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: SpaceItem[] = []) {
   const blocks = new Map(initial.map((b) => [b.id, { ...b }]));
   const calls: { method: string; url: string; body: unknown }[] = [];
   let idSeq = 0;
@@ -154,9 +169,27 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = []) {
     const blockItem = url.match(/\/api\/spaces\/sp1\/blocks\/([^/?]+)$/);
     const detach = url.match(/\/api\/spaces\/sp1\/items\/([^/?]+)\/detach-blocks$/);
     const exportsRead = url.match(/\/api\/spaces\/sp1\/exports(?:\?.*)?$/);
+    const spaceRead = url.match(/\/api\/spaces\/sp1(?:\?.*)?$/);
 
     if (exportsRead && method === 'GET') {
       return json({ exports, repo_id: 'repo1', settings: { path: 'doc.md', branch: 'docs' } });
+    }
+    if (spaceRead && method === 'GET') {
+      return json({
+        space: {
+          id: 'sp1',
+          project_id: 'prj1',
+          title: 'Space',
+          default_renderer: 'document',
+          description: null,
+          metadata: {},
+          created_at: NOW,
+          updated_at: NOW,
+        },
+        items,
+        occurrences: [],
+        edges: [],
+      });
     }
     if (blockColl && method === 'GET') {
       return json({ blocks: list() });
@@ -399,18 +432,18 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
 }
 
 describe('DocumentBlockEditor (editable)', () => {
-  it('renders the live tree through the C14b renderer and shows add/edit controls', async () => {
+  it('renders the live tree as document-like editable rows', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
       makeBlock({ id: 'b2', sort_key: 'b', markdown: 'Body prose.' }),
     ]);
     await renderEditor({ backend });
 
-    // C14b renderer body is present (read path), with the prose rendered.
-    expect(screen.getByTestId('spaces-document')).toBeTruthy();
+    // The editable surface uses the same rendered prose path for blurred rows.
     expect(screen.getByText('Body prose.')).toBeTruthy();
-    // Editable: toolbar + per-block controls visible.
-    expect(screen.getByTestId('spaces-block-editor-toolbar')).toBeTruthy();
+    expect(screen.getAllByTestId('spaces-block-editor-row')).toHaveLength(2);
+    expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
+    expect(screen.getAllByTestId('spaces-block-editor-add-items').length).toBeGreaterThan(0);
     const editor = screen.getByTestId('spaces-block-editor');
     expect(editor.getAttribute('data-editable')).toBe('true');
     expect(editor.getAttribute('data-stale')).toBe('false');
@@ -429,20 +462,39 @@ describe('DocumentBlockEditor (editable)', () => {
     expect((post!.body as { sort_key: string }).sort_key > 'a').toBe(true);
   });
 
-  it('edits a prose block and saves via PATCH', async () => {
+  it('edits a prose block and autosaves via PATCH on blur', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
 
     fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
     const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
     fireEvent.input(textarea, { target: { value: 'new text' } });
-    fireEvent.click(screen.getByTestId('spaces-block-editor-save'));
+    fireEvent.blur(textarea);
 
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true),
     );
     const patch = backend.calls.find((c) => c.method === 'PATCH');
     expect((patch!.body as { markdown: string }).markdown).toBe('new text');
+  });
+
+  it('debounces autosave while a prose block is being edited', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
+    await renderEditor({ backend });
+    vi.useFakeTimers();
+    try {
+      fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+      const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+      fireEvent.input(textarea, { target: { value: 'draft autosave' } });
+      expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(700);
+      await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
+      expect((backend.calls.find((c) => c.method === 'PATCH')!.body as { markdown: string }).markdown)
+        .toBe('draft autosave');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('reorders a block down via a PATCH that changes sort_key', async () => {
@@ -479,6 +531,7 @@ describe('DocumentBlockEditor (editable)', () => {
     ];
     await renderEditor({ backend, embeddableItems: items });
 
+    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
     fireEvent.click(screen.getByTestId('spaces-block-editor-embed-it1'));
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'POST' && (c.body as { item_id?: string }).item_id === 'it1')).toBe(true),
@@ -486,6 +539,28 @@ describe('DocumentBlockEditor (editable)', () => {
     const post = backend.calls.find((c) => c.method === 'POST' && (c.body as { item_id?: string }).item_id === 'it1')!;
     expect((post.body as { block_type: string }).block_type).toBe('issue_embed');
     expect((post.body as { item_snapshot: { item_id: string } }).item_snapshot.item_id).toBe('it1');
+  });
+
+  it('inserts a picked Space item as an inline bracket ref in the active block', async () => {
+    const backend = makeBackend(
+      [makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See' })],
+      [],
+      [makeItem({ id: 'it1', ref_type: 'issue', ref_id: 'abc123', title: 'Issue abc123' })],
+    );
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    textarea.setSelectionRange(3, 3);
+    fireEvent.click(screen.getByTestId('spaces-block-editor-add-items'));
+    await waitFor(() => expect(screen.getByTestId('space-item-picker')).toBeTruthy());
+    fireEvent.click(screen.getByText('Issue abc123'));
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
+
+    await waitFor(() => expect(textarea.value).toBe('See [issue:abc123]'));
+    await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
+    expect((backend.calls.find((c) => c.method === 'PATCH')!.body as { markdown: string }).markdown)
+      .toBe('See [issue:abc123]');
   });
 });
 
@@ -536,7 +611,8 @@ describe('DocumentBlockEditor (custody gating)', () => {
     );
     await renderEditor({ backend });
     expect(screen.getByTestId('spaces-block-editor').getAttribute('data-editable')).toBe('true');
-    expect(screen.getByTestId('spaces-block-editor-toolbar')).toBeTruthy();
+    expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy();
+    expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
   });
 });
 
