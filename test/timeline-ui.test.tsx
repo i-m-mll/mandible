@@ -1662,6 +1662,34 @@ describe('TimelineView', () => {
     expect(screen.queryByText('No selection')).toBeNull();
   });
 
+  it('renders selected event bodies with ledger links and header actions', async () => {
+    const base = projection();
+    stubTimelineFetch(projection({
+      events: [{
+        ...base.events[0],
+        body: 'Full body text references [issue:96b5bff].',
+      }],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.click(screen.getByText('Build shared axis'));
+
+    const body = document.querySelector<HTMLElement>('.timeline-event-body');
+    const actionRow = document.querySelector<HTMLElement>('.timeline-action-row--event');
+    expect(body).toBeTruthy();
+    expect(actionRow).toBeTruthy();
+    expect(actionRow?.nextElementSibling).toBe(body);
+    expect(within(body!).getByRole('link', { name: '96b5bff' }).getAttribute('href')).toBe(
+      '#/issues?repo=mandible&issue=96b5bff',
+    );
+    expect(screen.getByText('Expand refs')).toBeTruthy();
+  });
+
   it('expands issue refs from a selected transient event', async () => {
     const base = projection();
     const transient = projection({
