@@ -17,7 +17,6 @@ import { SpaceCollectionRenderer } from './space-collection';
 import { SpaceBoardRenderer } from './SpaceBoard';
 import { DocumentBlockEditor } from './DocumentBlockEditor';
 import { SpaceCanvas, type SpaceCanvasModel } from './SpaceCanvas';
-import { SpaceEdgeLayer, type SpaceEdgeModel } from './SpaceEdgeLayer';
 import './renderers.css';
 
 /**
@@ -34,25 +33,10 @@ async function loadCanvasModel(spaceId: string): Promise<SpaceCanvasModel> {
   return { occurrences: packet.occurrences, items: packet.items, edges: packet.edges };
 }
 
-/**
- * Edge-layer loader: the same `GET /api/spaces/:id` fact packet, projected to the
- * edge layer's `{ edges, occurrences, items }` model. SpaceCanvas (nodes/drag/
- * shelf) and SpaceEdgeLayer (C9b edge CRUD + promote-to-ledger) are SIBLINGS by
- * design — the canvas owns nodes, the edge layer owns `space_edges`. The shell
- * mounts ONE component per renderer, so the canvas mount point composes both:
- * without this the entire authored-edge + promote-to-ledger surface is built but
- * unreachable (no app path mounts SpaceEdgeLayer otherwise).
- */
-async function loadEdgeModel(spaceId: string): Promise<SpaceEdgeModel> {
-  const packet = await getSpaceFactPacket(spaceId);
-  return { edges: packet.edges, occurrences: packet.occurrences, items: packet.items };
-}
-
 function CanvasMountPoint(props: SpaceRendererMountProps): JSX.Element {
   return (
     <div className="space-canvas-mount" data-testid="space-canvas-mount">
       <SpaceCanvas {...props} loadModel={loadCanvasModel} />
-      <SpaceEdgeLayer spaceId={props.spaceId} loadModel={loadEdgeModel} />
     </div>
   );
 }

@@ -24,17 +24,20 @@ import type { SpaceItem, SpaceOccurrence } from '../ui/src/api';
 
 let lastOnNodesChange: ((changes: unknown[]) => void) | null = null;
 let lastOnConnect: ((connection: unknown) => void) | null = null;
+let lastOnEdgesChange: ((changes: unknown[]) => void) | null = null;
 
 vi.mock('@xyflow/react', () => {
   const ReactFlow = (props: {
     nodes: Array<{ id: string; position: { x: number; y: number }; selected?: boolean }>;
-    edges?: Array<{ id: string; source: string; target: string; label?: string }>;
+    edges?: Array<{ id: string; source: string; target: string; label?: string; selected?: boolean }>;
     onNodesChange?: (changes: unknown[]) => void;
+    onEdgesChange?: (changes: unknown[]) => void;
     onConnect?: (connection: unknown) => void;
     children?: unknown;
   }) => {
     lastOnNodesChange = props.onNodesChange ?? null;
     lastOnConnect = props.onConnect ?? null;
+    lastOnEdgesChange = props.onEdgesChange ?? null;
     return h('div', { 'data-testid': 'rf-mock' }, [
       ...props.nodes.map((node) =>
         h(
@@ -60,6 +63,7 @@ vi.mock('@xyflow/react', () => {
             'data-source': edge.source,
             'data-target': edge.target,
             'data-label': edge.label ?? '',
+            'data-selected': edge.selected ? 'true' : 'false',
           },
         ),
       ),
@@ -100,6 +104,7 @@ import {
   buildBatchEntries,
   reconcileOccurrences,
   applyOptimisticPosition,
+  nextAddedItemPosition,
   occurrencesToGraph,
   edgesToFlowEdges,
   connectionToEdgeRequest,
@@ -112,6 +117,7 @@ afterEach(() => {
   cleanup();
   lastOnNodesChange = null;
   lastOnConnect = null;
+  lastOnEdgesChange = null;
   layoutCalls.count = 0;
   vi.useRealTimers();
 });
@@ -260,6 +266,17 @@ describe('applyOptimisticPosition', () => {
   });
 });
 
+describe('nextAddedItemPosition', () => {
+  it('places the first added item immediately and subsequent items to the right', () => {
+    expect(nextAddedItemPosition([])).toEqual({ x: 0, y: 0 });
+    const placed = partitionOccurrences(
+      [occ('a', { x: 10, y: 40 }), occ('b', { x: 120, y: 20 })],
+      {},
+    ).placed;
+    expect(nextAddedItemPosition(placed)).toEqual({ x: 380, y: 20 });
+  });
+});
+
 // ============================================================================
 // Component behavior
 // ============================================================================
@@ -292,12 +309,50 @@ describe('SpaceCanvas rendering', () => {
       h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model, batchWrite }),
     );
     expect(layoutCalls.count).toBe(0);
+    fireEvent.click(screen.getByTestId('space-canvas-actions-menu'));
     fireEvent.click(screen.getByTestId('space-canvas-arrange-all'));
     expect(layoutCalls.count).toBe(1);
   });
 });
 
 describe('SpaceCanvas drag persistence + autosave', () => {
+  it('keeps pointer-frame drag updates local until drag stop', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({ occurrences: [], created: 0, updated: 1 });
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        debounceMs: 100,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+    });
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+    expect(batchWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(batchWrite).not.toHaveBeenCalled();
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+    });
+    expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+  });
+
   it('optimistically moves a node and debounce-writes the batch with the id', async () => {
     vi.useFakeTimers();
     const model: SpaceCanvasModel = {
@@ -496,6 +551,12 @@ describe('edgesToFlowEdges (pure)', () => {
     const flow = edgesToFlowEdges([edge('e1', 'a', 'b')], placed);
     expect(flow).toHaveLength(0);
   });
+
+  it('marks the selected edge for React Flow styling', () => {
+    const flow = edgesToFlowEdges([edge('e1', 'a', 'b')], new Set(['a', 'b']), 'e1');
+    expect(flow[0].selected).toBe(true);
+    expect(flow[0].markerEnd).toMatchObject({ color: 'var(--accent-blue)' });
+  });
 });
 
 describe('connectionToEdgeRequest (pure)', () => {
@@ -527,6 +588,69 @@ describe('SpaceCanvas renders authored edges as lines', () => {
     expect(rendered[0].getAttribute('data-edge-id')).toBe('e1');
     expect(rendered[0].getAttribute('data-source')).toBe('a');
     expect(rendered[0].getAttribute('data-target')).toBe('b');
+  });
+
+  it('selects an edge and edits its label through the Canvas inspector', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [edge('e1', 'a', 'b', 'relates')],
+    };
+    const updateEdge = vi.fn().mockResolvedValue(edge('e1', 'a', 'b', 'blocks'));
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model, updateEdge }));
+
+    act(() => {
+      lastOnEdgesChange?.([{ type: 'select', id: 'e1', selected: true }]);
+    });
+    expect(screen.getByTestId('rf-edge').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('space-canvas-edge-inspector')).toBeTruthy();
+
+    const input = screen.getByTestId('space-canvas-edge-label-input') as HTMLInputElement;
+    input.focus();
+    fireEvent.input(input, { target: { value: 'blocks' } });
+    await act(async () => {
+      input.blur();
+    });
+    expect(updateEdge).toHaveBeenCalledWith('sp1', 'e1', { label: 'blocks' });
+  });
+
+  it('promotes and deletes a selected edge through the Canvas inspector', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [edge('e1', 'a', 'b', 'blocks')],
+    };
+    const promote = vi.fn().mockResolvedValue({ action_id: 'act-1' });
+    const removeEdge = vi.fn().mockResolvedValue(undefined);
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        promote,
+        removeEdge,
+      }),
+    );
+
+    act(() => {
+      lastOnEdgesChange?.([{ type: 'select', id: 'e1', selected: true }]);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('space-canvas-edge-promote-btn'));
+    });
+    expect(promote).toHaveBeenCalledWith({
+      sourceRef: 'a',
+      targetRef: 'b',
+      linkType: 'blocks',
+      note: 'blocks',
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('space-canvas-edge-delete-btn'));
+    });
+    expect(removeEdge).toHaveBeenCalledWith('sp1', 'e1');
+    expect(screen.queryByTestId('rf-edge')).toBeNull();
   });
 });
 

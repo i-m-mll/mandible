@@ -17,10 +17,10 @@
 // reconciliation updates node positions WITHOUT resetting the viewport or the
 // current selection.
 //
-// Ownership: this component owns the canvas node surface and its own
-// `SpaceCanvas.css`. It reads `../../graph/layout` (`layoutGraph`) for the seed
-// path only and must NOT modify `graph.tsx`. The `space_edges` UI is C9b's; this
-// lane renders nodes + shelf + drag only.
+// Ownership: this component owns the canvas node surface, authored edge
+// selection/actions, and its own `SpaceCanvas.css`. It reads
+// `../../graph/layout` (`layoutGraph`) for the seed path only and must NOT
+// modify `graph.tsx`.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
@@ -31,6 +31,7 @@ import {
   Position,
   ReactFlow,
   type Connection,
+  type EdgeChange,
   type Edge as FlowEdge,
   type NodeChange,
 } from '@xyflow/react';
@@ -42,13 +43,46 @@ import type {
   SpaceEdge,
   BatchSpaceOccurrenceEntry,
   CreateSpaceEdgeRequest,
+  UpdateSpaceEdgeRequest,
+  LedgerIssueDetailProjection,
+  ArtifactContentResult,
+  ArtifactRecord,
+  ArtifactResolveResult,
+  ArtifactVersionHistory,
+  ArtifactVersionRecord,
+  KnowledgeBackrefRecord,
 } from '../../api';
-import { batchWriteSpaceOccurrences, createSpaceEdge, createSpaceOccurrence } from '../../api';
+import {
+  batchWriteSpaceOccurrences,
+  createSpaceEdge,
+  createSpaceOccurrence,
+  deleteSpaceEdge,
+  getArtifact,
+  getArtifactContent,
+  getArtifactKnowledgeBackrefs,
+  getArtifactVersions,
+  getLedgerIssueDetailByIssueId,
+  resolveArtifact,
+  updateSpaceEdge,
+} from '../../api';
 import { layoutGraph } from '../../graph/layout';
 import type { GraphEdge, GraphNode } from '../../types/graph';
 import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
+import { LedgerIssueDetail } from '../../components/ledger/IssueDetail';
+import { ArtifactDetail } from '../artifacts';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
+import {
+  LEDGER_LINK_TYPES,
+  evaluatePromotion,
+  indexItemsById,
+  indexOccurrences,
+  reconcileEdges,
+  resolveEdge,
+  type LedgerLinkType,
+  type ResolvedSpaceEdge,
+} from './edgeModel';
+import { promoteEdgeToLedger, type PromoteEdgeDeps } from './edgePromote';
 import './SpaceCanvas.css';
 
 // ---------------------------------------------------------------------------
@@ -135,7 +169,7 @@ function occurrenceKind(occurrence: SpaceOccurrence, item: SpaceItem | null): st
 
 /**
  * Map authored `space_edges` to React Flow edges so a connection the user draws
- * (or one created via the SpaceEdgeLayer dropdown) renders as a line between the
+ * or an SSE-refetched edge renders as a line between the
  * two placed nodes. `space_edge.source`/`.target` are OCCURRENCE ids, which are
  * exactly the React Flow node ids (`flowNodes` uses `occurrence.id`), so the
  * mapping is direct — no ref translation. Edges whose endpoints are not both
@@ -144,16 +178,22 @@ function occurrenceKind(occurrence: SpaceOccurrence, item: SpaceItem | null): st
 export function edgesToFlowEdges(
   edges: SpaceEdge[],
   placedIds: ReadonlySet<string>,
+  selectedEdgeId: string | null = null,
 ): FlowEdge[] {
   const flow: FlowEdge[] = [];
   for (const edge of edges) {
     if (!placedIds.has(edge.source) || !placedIds.has(edge.target)) continue;
+    const selected = edge.id === selectedEdgeId;
     flow.push({
       id: edge.id,
       source: edge.source,
       target: edge.target,
       label: edge.label ?? undefined,
-      markerEnd: { type: MarkerType.ArrowClosed },
+      selected,
+      markerEnd: {
+        type: MarkerType.ArrowClosed,
+        color: selected ? 'var(--accent-blue)' : 'var(--text-muted, #8a8f98)',
+      },
       // React Flow's default edge styling is theme-agnostic; the concrete stroke
       // colors come from `SpaceCanvas.css` (real theme tokens), not inline hex.
       className: 'space-canvas__edge',
@@ -166,7 +206,7 @@ export function edgesToFlowEdges(
  * Validate a React Flow connection into a `CreateSpaceEdgeRequest`, or null when
  * the connection is not a valid authored edge (missing endpoints or a self-loop).
  * Drag-created edges default to an EMPTY label; the user edits it afterward in
- * the SpaceEdgeLayer panel (no blocking label prompt).
+ * the Canvas selection inspector (no blocking label prompt).
  */
 export function connectionToEdgeRequest(
   connection: Connection,
@@ -179,8 +219,7 @@ export function connectionToEdgeRequest(
 /**
  * Map occurrences to `GraphNode`s so `layoutGraph()` (the existing structured
  * layout) can seed positions. Edges are mapped from `parent_id` links only so
- * the structural hierarchy layout has something to arrange; this lane renders
- * no edges UI (C9b owns that).
+ * the structural hierarchy layout has something to arrange.
  */
 export function occurrencesToGraph(
   occurrences: SpaceOccurrence[],
@@ -275,6 +314,14 @@ export function applyOptimisticPosition(
   return occurrences.map((o) => (o.id === id ? { ...o, x, y } : o));
 }
 
+/** Pick an immediate placement for newly added Canvas items instead of shelving them. */
+export function nextAddedItemPosition(placed: CanvasNode[]): { x: number; y: number } {
+  if (placed.length === 0) return { x: 0, y: 0 };
+  const rightMost = placed.reduce((max, node) => Math.max(max, node.x), placed[0].x);
+  const topMost = placed.reduce((min, node) => Math.min(min, node.y), placed[0].y);
+  return { x: rightMost + 260, y: topMost };
+}
+
 // ---------------------------------------------------------------------------
 // Data source: this lane consumes the FROZEN C2/C3 surfaces. The C2 routes do
 // not (yet) expose a GET fact-packet route — `loadSpaceFactPacket` is exported
@@ -317,6 +364,15 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
    * Called by `onConnect` when the user drags a connection between two nodes.
    */
   createEdge?: typeof createSpaceEdge;
+  /** Edge update client (injected for tests); defaults to the real C2 client. */
+  updateEdge?: typeof updateSpaceEdge;
+  /** Edge delete client (injected for tests); defaults to the real C2 client. */
+  removeEdge?: typeof deleteSpaceEdge;
+  /** Promote client (injected for tests); defaults to the real ledger call. */
+  promote?: (
+    request: Parameters<typeof promoteEdgeToLedger>[0],
+    deps?: PromoteEdgeDeps,
+  ) => ReturnType<typeof promoteEdgeToLedger>;
   /**
    * Single-occurrence create client (injected for tests); defaults to the real
    * C2 client. Used by the "Add items" picker to materialize an unplaced
@@ -345,6 +401,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     loadModel,
     batchWrite = batchWriteSpaceOccurrences,
     createEdge = createSpaceEdge,
+    updateEdge = updateSpaceEdge,
+    removeEdge = deleteSpaceEdge,
+    promote = promoteEdgeToLedger,
     createOccurrence = createSpaceOccurrence,
     createSse = createSSEClient,
     debounceMs = DEFAULT_DEBOUNCE_MS,
@@ -354,13 +413,19 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     () => initialModel?.occurrences ?? [],
   );
   const [items, setItems] = useState<SpaceItem[]>(() => initialModel?.items ?? []);
-  // Authored `space_edges` rendered as lines on the canvas. Kept in sync with the
-  // SpaceEdgeLayer panel through the shared fact-packet loader + SSE edge events.
+  // Authored `space_edges` rendered as lines on the canvas and edited through the
+  // Canvas selection inspector.
   const [edges, setEdges] = useState<SpaceEdge[]>(() => initialModel?.edges ?? []);
   const [autosave, setAutosave] = useState<AutosaveStatus>('idle');
+  const [edgeStatus, setEdgeStatus] = useState<AutosaveStatus>('idle');
+  const [edgeStatusMessage, setEdgeStatusMessage] = useState('');
   // UI selection is ephemeral browser-local view state — never persisted, never
   // reset by SSE reconciliation.
   const [selection, setSelection] = useState<Set<string>>(() => new Set());
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [localPositions, setLocalPositions] = useState<Record<string, { x: number; y: number }>>({});
+  const [promoteLinkType, setPromoteLinkType] = useState<Record<string, LedgerLinkType>>({});
+  const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   // Whether the "Add items" picker popover is open (transient browser-local).
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -369,6 +434,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const pendingPositions = useRef<Record<string, { x: number; y: number }>>({});
   const debounceTimer = useRef<number | null>(null);
   const occurrencesRef = useRef<SpaceOccurrence[]>(occurrences);
+  const editingEdgeIds = useRef<Set<string>>(new Set());
   occurrencesRef.current = occurrences;
 
   const itemsById = useMemo(() => indexItems(items), [items]);
@@ -401,6 +467,21 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     setAutosave('saving');
     try {
       await batchWrite(spaceId, entries);
+      setOccurrences((prev) =>
+        prev.map((occurrence) => {
+          const entry = entries.find((candidate) => candidate.id === occurrence.id);
+          return entry && typeof entry.x === 'number' && typeof entry.y === 'number'
+            ? { ...occurrence, x: entry.x, y: entry.y }
+            : occurrence;
+        }),
+      );
+      setLocalPositions((prev) => {
+        const next = { ...prev };
+        for (const entry of entries) {
+          if (entry.id) delete next[entry.id];
+        }
+        return next;
+      });
       // Clear the dragging marks once their writes have landed.
       for (const entry of entries) {
         if (entry.id) draggingIds.current.delete(entry.id);
@@ -425,10 +506,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   }, [flushPending, debounceMs]);
 
   // --- SSE reconciliation: refetch + reconcile WITHOUT touching viewport/sel ---
-  // Subscribes to both occurrence moves AND edge events so a drag-created or
-  // dropdown-created edge reconciles onto the canvas consistently with the
-  // SpaceEdgeLayer panel. Reconciliation only updates occurrence/edge data; it
-  // never resets selection or viewport (Dataful-UX contract).
+  // Subscribes to both occurrence moves AND edge events so drag-created or
+  // external edge mutations reconcile onto the canvas. Reconciliation only
+  // updates occurrence/edge data; it never resets selection or viewport
+  // (Dataful-UX contract).
   useEffect(() => {
     if (!spaceId || !loadModel) return;
     const client = createSse();
@@ -440,7 +521,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         setOccurrences((prev) =>
           reconcileOccurrences(model.occurrences, draggingIds.current, prev),
         );
-        setEdges(model.edges ?? []);
+        setEdges((prev) => reconcileEdges(model.edges ?? [], editingEdgeIds.current, prev));
         // NOTE: selection and viewport state are intentionally untouched here.
       });
     };
@@ -459,7 +540,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     () =>
       placed.map((node) => ({
         id: node.occurrence.id,
-        position: { x: node.x, y: node.y },
+        position: localPositions[node.occurrence.id] ?? { x: node.x, y: node.y },
         data: {
           label: occurrenceLabel(node.occurrence, node.item),
           kind: occurrenceKind(node.occurrence, node.item),
@@ -467,7 +548,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         selected: selection.has(node.occurrence.id),
         type: 'spaceOccurrence',
       })),
-    [placed, selection],
+    [placed, localPositions, selection],
   );
 
   const nodeTypes = useMemo(() => ({ spaceOccurrence: OccurrenceNode }), []);
@@ -475,7 +556,16 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // React Flow edges from the authored `space_edges`, drawn only between nodes
   // that are both currently placed on the canvas.
   const placedIds = useMemo(() => new Set(placed.map((n) => n.occurrence.id)), [placed]);
-  const flowEdges = useMemo(() => edgesToFlowEdges(edges, placedIds), [edges, placedIds]);
+  const flowEdges = useMemo(
+    () => edgesToFlowEdges(edges, placedIds, selectedEdgeId),
+    [edges, placedIds, selectedEdgeId],
+  );
+  const occurrencesById = useMemo(() => indexOccurrences(occurrences), [occurrences]);
+  const edgeItemsById = useMemo(() => indexItemsById(items), [items]);
+  const resolvedSelectedEdge = useMemo<ResolvedSpaceEdge | null>(() => {
+    const edge = selectedEdgeId ? edges.find((candidate) => candidate.id === selectedEdgeId) : null;
+    return edge ? resolveEdge(edge, occurrencesById, edgeItemsById) : null;
+  }, [selectedEdgeId, edges, occurrencesById, edgeItemsById]);
 
   const onNodesChange = useCallback(
     (changes: NodeChange[]) => {
@@ -484,10 +574,13 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         if (change.type === 'position' && change.position) {
           const id = change.id;
           draggingIds.current.add(id);
-          // Optimistic local update — persisted x/y becomes the live preview.
-          setOccurrences((prev) =>
-            applyOptimisticPosition(prev, id, change.position!.x, change.position!.y),
-          );
+          // Pointer movement stays in a local overlay so the canonical
+          // occurrence list, shelf partition, and edge projection do not churn
+          // on every drag frame.
+          setLocalPositions((prev) => ({
+            ...prev,
+            [id]: { x: change.position!.x, y: change.position!.y },
+          }));
           if (change.dragging === false) {
             // Drag ended: queue the final position and debounce the write.
             pendingPositions.current[id] = {
@@ -504,6 +597,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             else next.delete(change.id);
             return next;
           });
+          if (change.selected) setSelectedEdgeId(null);
         }
       }
       if (positionChanged) scheduleFlush();
@@ -511,10 +605,22 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     [scheduleFlush],
   );
 
+  const onEdgesChange = useCallback((changes: EdgeChange[]) => {
+    for (const change of changes) {
+      if (change.type !== 'select') continue;
+      if (change.selected) {
+        setSelectedEdgeId(change.id);
+        setSelection(new Set());
+      } else {
+        setSelectedEdgeId((current) => (current === change.id ? null : current));
+      }
+    }
+  }, []);
+
   // --- onConnect: dragging from one node to another creates an authored edge ---
   // React Flow node ids ARE occurrence ids, and `space_edge.source`/`.target`
   // are occurrence ids too, so the connection maps directly. The edge is created
-  // with an empty label (editable later in the SpaceEdgeLayer panel); we add it
+  // with an empty label (editable later in the Canvas inspector); we add it
   // optimistically so the line appears immediately, then let SSE/reload reconcile
   // the canonical edge (which carries the server id) without duplicating it.
   const onConnect = useCallback(
@@ -532,11 +638,88 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
           });
         })
         .catch(() => {
-          // Swallow: the SpaceEdgeLayer panel surfaces edge errors; a failed
-          // drag simply leaves the canvas unchanged.
+          // Swallow: a failed drag simply leaves the canvas unchanged.
         });
     },
     [spaceId, createEdge],
+  );
+
+  const reportEdgeError = useCallback((message: string) => {
+    setEdgeStatus('error');
+    setEdgeStatusMessage(message);
+  }, []);
+
+  const handleEdgeLabelEdit = useCallback(
+    async (edgeId: string, label: string) => {
+      if (!spaceId) return;
+      const trimmed = label.trim();
+      const nextLabel = trimmed ? trimmed : null;
+      const previous = edges;
+      editingEdgeIds.current.add(edgeId);
+      setEdges((prev) => prev.map((edge) => (edge.id === edgeId ? { ...edge, label: nextLabel } : edge)));
+      setEdgeStatus('saving');
+      setEdgeStatusMessage('');
+      const body: UpdateSpaceEdgeRequest = { label: nextLabel };
+      try {
+        const edge = await updateEdge(spaceId, edgeId, body);
+        setEdges((prev) => prev.map((candidate) => (candidate.id === edgeId ? edge : candidate)));
+        setEdgeStatus('saved');
+        setEdgeStatusMessage('Edge label saved');
+      } catch (error) {
+        setEdges(previous);
+        reportEdgeError(error instanceof Error ? error.message : 'Failed to update edge label');
+      } finally {
+        editingEdgeIds.current.delete(edgeId);
+      }
+    },
+    [spaceId, edges, updateEdge, reportEdgeError],
+  );
+
+  const handleEdgeDelete = useCallback(
+    async (edgeId: string) => {
+      if (!spaceId) return;
+      const previous = edges;
+      setEdges((prev) => prev.filter((edge) => edge.id !== edgeId));
+      setSelectedEdgeId((current) => (current === edgeId ? null : current));
+      setEdgeStatus('saving');
+      setEdgeStatusMessage('');
+      try {
+        await removeEdge(spaceId, edgeId);
+        setEdgeStatus('saved');
+        setEdgeStatusMessage('Edge deleted');
+      } catch (error) {
+        setEdges(previous);
+        setSelectedEdgeId(edgeId);
+        reportEdgeError(error instanceof Error ? error.message : 'Failed to delete edge');
+      }
+    },
+    [spaceId, edges, removeEdge, reportEdgeError],
+  );
+
+  const handlePromoteEdge = useCallback(
+    async (resolved: ResolvedSpaceEdge) => {
+      const verdict = evaluatePromotion(resolved);
+      if (!verdict.promotable) {
+        reportEdgeError(verdict.reason);
+        return;
+      }
+      const linkType = promoteLinkType[resolved.edge.id] ?? verdict.suggestedLinkType;
+      setEdgeStatus('saving');
+      setEdgeStatusMessage('');
+      try {
+        await promote({
+          sourceRef: verdict.sourceRef,
+          targetRef: verdict.targetRef,
+          linkType,
+          note: resolved.edge.label ?? null,
+        });
+        setEdgeStatus('saved');
+        setEdgeStatusMessage(`Promoted as ${linkType}`);
+      } catch (error) {
+        reportEdgeError(error instanceof Error ? error.message : 'Failed to promote edge');
+      }
+    },
+    [promoteLinkType, promote, reportEdgeError],
   );
 
   // --- explicit user re-layout (seed/initial-arrange/re-layout-selected) ---
@@ -552,6 +735,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       setOccurrences((prev) =>
         prev.map((o) => (positions[o.id] ? { ...o, x: positions[o.id].x, y: positions[o.id].y } : o)),
       );
+      setLocalPositions((prev) => {
+        const next = { ...prev };
+        for (const id of Object.keys(positions)) delete next[id];
+        return next;
+      });
       // ...and persist them through the same debounced batch path.
       for (const [id, pos] of Object.entries(positions)) {
         pendingPositions.current[id] = pos;
@@ -573,6 +761,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       setOccurrences((prev) =>
         applyOptimisticPosition(prev, occurrenceId, pos.x, pos.y),
       );
+      setLocalPositions((prev) => {
+        const next = { ...prev };
+        delete next[occurrenceId];
+        return next;
+      });
       pendingPositions.current[occurrenceId] = pos;
       scheduleFlush();
     },
@@ -589,23 +782,27 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const model = await loadModel(spaceId);
     setItems(model.items);
     setOccurrences((prev) => reconcileOccurrences(model.occurrences, draggingIds.current, prev));
-    setEdges(model.edges ?? []);
+    setEdges((prev) => reconcileEdges(model.edges ?? [], editingEdgeIds.current, prev));
   }, [spaceId, loadModel]);
 
-  // --- "Add items" picker: create an unplaced canvas occurrence per new item ---
-  // The canvas shelf renders OCCURRENCES with no x/y, not bare items, so a
-  // newly-added `space_item` only appears once it has an unplaced `canvas`
-  // occurrence. The picker creates the item; this hook materializes its shelf
-  // occurrence so the round-trip surfaces it ready to drag onto the canvas.
+  // --- "Add items" picker: immediately place a canvas occurrence per new item ---
   const afterAddItem = useCallback(
     async (item: SpaceItem) => {
       if (!spaceId) return;
       if (occurrencesRef.current.some((o) => o.renderer === 'canvas' && o.item_id === item.id)) {
         return;
       }
-      await createOccurrence(spaceId, { item_id: item.id, renderer: 'canvas' });
+      const position = nextAddedItemPosition(partitionOccurrences(occurrencesRef.current, indexItems(items)).placed);
+      const created = await createOccurrence(spaceId, {
+        item_id: item.id,
+        renderer: 'canvas',
+        x: position.x,
+        y: position.y,
+      });
+      setItems((prev) => (prev.some((candidate) => candidate.id === item.id) ? prev : [...prev, item]));
+      setOccurrences((prev) => [...prev, created]);
     },
-    [spaceId, createOccurrence],
+    [spaceId, createOccurrence, items],
   );
 
   const isItemOnCanvas = useCallback(
@@ -645,34 +842,50 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             </div>
           ) : null}
         </div>
-        <button
-          type="button"
-          className="space-canvas__btn"
-          onClick={() => handleArrange('all')}
-          data-testid="space-canvas-arrange-all"
-        >
-          Arrange all
-        </button>
-        <button
-          type="button"
-          className="space-canvas__btn"
-          onClick={() => handleArrange('selected')}
-          disabled={selection.size === 0}
-          data-testid="space-canvas-arrange-selected"
-        >
-          Re-layout selected
-        </button>
+        <div className="space-canvas__overflow">
+          <button
+            type="button"
+            className="space-canvas__icon-btn"
+            aria-label="Canvas actions"
+            aria-haspopup="menu"
+            aria-expanded={actionsMenuOpen}
+            title="Canvas actions"
+            onClick={() => setActionsMenuOpen((open) => !open)}
+            data-testid="space-canvas-actions-menu"
+          >
+            ...
+          </button>
+          {actionsMenuOpen && (
+            <div className="space-canvas__overflow-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="space-canvas__overflow-item"
+                onClick={() => {
+                  handleArrange('all');
+                  setActionsMenuOpen(false);
+                }}
+                data-testid="space-canvas-arrange-all"
+              >
+                Arrange all
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="space-canvas__overflow-item"
+                onClick={() => {
+                  handleArrange('selected');
+                  setActionsMenuOpen(false);
+                }}
+                disabled={selection.size === 0}
+                data-testid="space-canvas-arrange-selected"
+              >
+                Re-layout selected
+              </button>
+            </div>
+          )}
+        </div>
         <span className="space-canvas__toolbar-spacer" />
-        <span
-          className="space-canvas__autosave"
-          data-status={autosave}
-          data-testid="space-canvas-autosave"
-          role="status"
-          aria-live="polite"
-        >
-          <span className="space-canvas__autosave-dot" aria-hidden="true" />
-          {autosaveLabel(autosave)}
-        </span>
       </div>
       <div className="space-canvas__body">
         <aside
@@ -721,14 +934,409 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
               nodesConnectable
               elementsSelectable
               onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
               onConnect={onConnect}
             >
               <Background gap={18} />
               <Controls showInteractive={false} />
             </ReactFlow>
           )}
+          <span
+            className="space-canvas__autosave"
+            data-status={autosave}
+            data-testid="space-canvas-autosave"
+            role="status"
+            aria-live="polite"
+          >
+            <span className="space-canvas__autosave-dot" aria-hidden="true" />
+            {autosaveLabel(autosave)}
+          </span>
         </div>
+        <CanvasSelectionInspector
+          selectedNodeIds={selection}
+          selectedEdge={resolvedSelectedEdge}
+          placed={placed}
+          edgeStatus={edgeStatus}
+          edgeStatusMessage={edgeStatusMessage}
+          promoteLinkType={promoteLinkType}
+          onPromoteLinkTypeChange={setPromoteLinkType}
+          onEdgeLabelEdit={handleEdgeLabelEdit}
+          onEdgeDelete={handleEdgeDelete}
+          onPromoteEdge={handlePromoteEdge}
+        />
       </div>
+    </div>
+  );
+}
+
+type CanvasSelectionInspectorProps = {
+  selectedNodeIds: ReadonlySet<string>;
+  selectedEdge: ResolvedSpaceEdge | null;
+  placed: CanvasNode[];
+  edgeStatus: AutosaveStatus;
+  edgeStatusMessage: string;
+  promoteLinkType: Record<string, LedgerLinkType>;
+  onPromoteLinkTypeChange: (next: Record<string, LedgerLinkType>) => void;
+  onEdgeLabelEdit: (edgeId: string, label: string) => Promise<void>;
+  onEdgeDelete: (edgeId: string) => Promise<void>;
+  onPromoteEdge: (edge: ResolvedSpaceEdge) => Promise<void>;
+};
+
+function CanvasSelectionInspector({
+  selectedNodeIds,
+  selectedEdge,
+  placed,
+  edgeStatus,
+  edgeStatusMessage,
+  promoteLinkType,
+  onPromoteLinkTypeChange,
+  onEdgeLabelEdit,
+  onEdgeDelete,
+  onPromoteEdge,
+}: CanvasSelectionInspectorProps): JSX.Element {
+  const selectedNodes = placed.filter((node) => selectedNodeIds.has(node.occurrence.id));
+  return (
+    <aside className="space-canvas__inspector" data-testid="space-canvas-inspector" aria-label="Selection inspector">
+      {selectedEdge ? (
+        <CanvasEdgeInspector
+          resolved={selectedEdge}
+          status={edgeStatus}
+          statusMessage={edgeStatusMessage}
+          promoteLinkType={promoteLinkType}
+          onPromoteLinkTypeChange={onPromoteLinkTypeChange}
+          onLabelEdit={onEdgeLabelEdit}
+          onDelete={onEdgeDelete}
+          onPromote={onPromoteEdge}
+        />
+      ) : selectedNodes.length === 1 ? (
+        <CanvasNodeInspector node={selectedNodes[0]} />
+      ) : selectedNodes.length > 1 ? (
+        <div className="space-canvas__inspector-empty">
+          <strong>{selectedNodes.length} selected</strong>
+          <span>Use the actions menu to re-layout this selection.</span>
+        </div>
+      ) : (
+        <div className="space-canvas__inspector-empty">
+          <strong>Selection</strong>
+          <span>Select a node or edge to inspect it.</span>
+        </div>
+      )}
+    </aside>
+  );
+}
+
+function CanvasEdgeInspector({
+  resolved,
+  status,
+  statusMessage,
+  promoteLinkType,
+  onPromoteLinkTypeChange,
+  onLabelEdit,
+  onDelete,
+  onPromote,
+}: {
+  resolved: ResolvedSpaceEdge;
+  status: AutosaveStatus;
+  statusMessage: string;
+  promoteLinkType: Record<string, LedgerLinkType>;
+  onPromoteLinkTypeChange: (next: Record<string, LedgerLinkType>) => void;
+  onLabelEdit: (edgeId: string, label: string) => Promise<void>;
+  onDelete: (edgeId: string) => Promise<void>;
+  onPromote: (edge: ResolvedSpaceEdge) => Promise<void>;
+}): JSX.Element {
+  const verdict = evaluatePromotion(resolved);
+  const linkType = promoteLinkType[resolved.edge.id] ?? (verdict.promotable ? verdict.suggestedLinkType : DEFAULT_PROMOTE_LINK_TYPE);
+  return (
+    <div className="space-canvas__inspector-section" data-testid="space-canvas-edge-inspector">
+      <header className="space-canvas__inspector-header">
+        <span>Edge</span>
+        <span className="space-canvas__inspector-status" data-status={status}>
+          {statusMessage || edgeStatusLabel(status)}
+        </span>
+      </header>
+      <div className="space-canvas__edge-endpoints">
+        <strong>{resolved.source.label}</strong>
+        <span aria-hidden="true">-&gt;</span>
+        <strong>{resolved.target.label}</strong>
+      </div>
+      <label className="space-canvas__field">
+        <span>Label</span>
+        <input
+          className="space-canvas__input"
+          data-testid="space-canvas-edge-label-input"
+          type="text"
+          defaultValue={resolved.edge.label ?? ''}
+          placeholder="Add a label..."
+          onBlur={(event) => void onLabelEdit(resolved.edge.id, (event.target as HTMLInputElement).value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') {
+              event.preventDefault();
+              (event.target as HTMLInputElement).blur();
+            }
+          }}
+        />
+      </label>
+      <div className="space-canvas__edge-actions">
+        {verdict.promotable ? (
+          <>
+            <label className="space-canvas__field">
+              <span>Ledger link</span>
+              <select
+                className="space-canvas__input"
+                data-testid="space-canvas-edge-link-type"
+                value={linkType}
+                onChange={(event) =>
+                  onPromoteLinkTypeChange({
+                    ...promoteLinkType,
+                    [resolved.edge.id]: (event.target as HTMLSelectElement).value as LedgerLinkType,
+                  })
+                }
+              >
+                {LEDGER_LINK_TYPES.map((type) => (
+                  <option key={type} value={type}>
+                    {type}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="space-canvas__btn"
+              data-testid="space-canvas-edge-promote-btn"
+              onClick={() => void onPromote(resolved)}
+            >
+              Promote to ledger
+            </button>
+          </>
+        ) : (
+          <span className="space-canvas__not-promotable" data-testid="space-canvas-edge-not-promotable">
+            {verdict.reason}
+          </span>
+        )}
+        <button
+          type="button"
+          className="space-canvas__btn space-canvas__btn--danger"
+          data-testid="space-canvas-edge-delete-btn"
+          onClick={() => void onDelete(resolved.edge.id)}
+        >
+          Delete edge
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const DEFAULT_PROMOTE_LINK_TYPE: LedgerLinkType = 'references';
+
+function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
+  const item = node.item;
+  return (
+    <div className="space-canvas__inspector-section" data-testid="space-canvas-node-inspector">
+      <header className="space-canvas__inspector-header">
+        <span>{item?.ref_type ?? 'occurrence'}</span>
+        <code>{node.occurrence.id.slice(0, 8)}</code>
+      </header>
+      {!item ? (
+        <OccurrenceSummary node={node} />
+      ) : item.ref_type === 'issue' ? (
+        <IssueNodeDetail issueRef={item.ref_id} />
+      ) : item.ref_type === 'artifact' ? (
+        <ArtifactNodeDetail artifactRef={item.ref_uri ?? item.ref_id} />
+      ) : (
+        <OccurrenceSummary node={node} />
+      )}
+    </div>
+  );
+}
+
+function IssueNodeDetail({ issueRef }: { issueRef: string }): JSX.Element {
+  const [detail, setDetail] = useState<LedgerIssueDetailProjection | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setDetail(null);
+    getLedgerIssueDetailByIssueId(issueRef)
+      .then((next) => {
+        if (!cancelled) setDetail(next);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [issueRef]);
+
+  if (error) return <div className="space-canvas__inspector-error">Failed to load issue: {error}</div>;
+  if (!detail) return <div className="space-canvas__inspector-empty">{loading ? 'Loading issue...' : 'No issue detail.'}</div>;
+
+  return (
+    <LedgerIssueDetail
+      detail={detail}
+      compact
+      hydrating={loading}
+      onOpenEntity={(type, id, repoId) => {
+        if (type === 'issue') {
+          const params = new URLSearchParams({ issue: id });
+          if (repoId) params.set('repo', repoId);
+          window.location.hash = `#/issues?${params.toString()}`;
+        } else if (type === 'auth_request') {
+          window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
+        } else if (type === 'session') {
+          window.location.hash = `#/console?session=${encodeURIComponent(id)}`;
+        }
+      }}
+    />
+  );
+}
+
+function ArtifactNodeDetail({ artifactRef }: { artifactRef: string }): JSX.Element {
+  const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
+  const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
+  const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
+  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(null);
+  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [content, setContent] = useState<ArtifactContentResult | null>(null);
+  const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [contentLoading, setContentLoading] = useState(false);
+  const [contentError, setContentError] = useState<string | null>(null);
+  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
+  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadArtifactPayload = useCallback(async (nextArtifact: ArtifactRecord) => {
+    setArtifact(nextArtifact);
+    setContentLoading(true);
+    setKnowledgeLoading(true);
+    setContentError(null);
+    setKnowledgeError(null);
+    try {
+      setContent(await getArtifactContent(nextArtifact.id));
+    } catch (err) {
+      setContent(null);
+      setContentError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setContentLoading(false);
+    }
+    try {
+      setKnowledgeBackrefs(await getArtifactKnowledgeBackrefs(nextArtifact.id));
+    } catch (err) {
+      setKnowledgeBackrefs([]);
+      setKnowledgeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setKnowledgeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setResolution(null);
+    setArtifact(null);
+    setVersionHistory(null);
+    setContent(null);
+    setKnowledgeBackrefs([]);
+    resolveArtifact(artifactRef)
+      .then(async (nextResolution) => {
+        if (cancelled) return;
+        const nextArtifact =
+          nextResolution.artifact ??
+          (nextResolution.version ? await getArtifact(nextResolution.version.artifact_id) : await getArtifact(artifactRef));
+        if (cancelled) return;
+        setResolution(nextResolution);
+        setSelectedVersionNo(nextResolution.version?.version_no ?? null);
+        const historyRef = nextResolution.series?.id ?? nextArtifact.id;
+        try {
+          const history = await getArtifactVersions(historyRef);
+          if (!cancelled) {
+            setVersionHistory({
+              ...history,
+              versions: [...history.versions].sort((a, b) => b.version_no - a.version_no),
+            });
+          }
+        } catch {
+          if (!cancelled) setVersionHistory(null);
+        }
+        if (!cancelled) await loadArtifactPayload(nextArtifact);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [artifactRef, loadArtifactPayload]);
+
+  const versions = versionHistory?.versions ?? [];
+  const selectedVersion = selectedVersionNo === null
+    ? versions[0] ?? null
+    : versions.find((version) => version.version_no === selectedVersionNo) ?? null;
+
+  const handleVersionChange = useCallback(
+    (versionNo: number | null) => {
+      setSelectedVersionNo(versionNo);
+      const nextVersion = versionNo === null
+        ? versions[0] ?? null
+        : versions.find((version) => version.version_no === versionNo) ?? null;
+      if (!nextVersion) return;
+      void getArtifact(nextVersion.artifact_id)
+        .then(loadArtifactPayload)
+        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
+    },
+    [versions, loadArtifactPayload],
+  );
+
+  if (error) return <div className="space-canvas__inspector-error">Failed to load artifact: {error}</div>;
+  if (!artifact) return <div className="space-canvas__inspector-empty">{loading ? 'Loading artifact...' : 'No artifact detail.'}</div>;
+
+  return (
+    <ArtifactDetail
+      artifact={artifact}
+      resolution={resolution}
+      series={versionHistory?.series ?? null}
+      versions={versions}
+      selectedVersion={selectedVersion}
+      selectedVersionNo={selectedVersionNo}
+      versionHistoryOpen={versionHistoryOpen}
+      onVersionChange={handleVersionChange}
+      onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
+      onCloseVersionHistory={() => setVersionHistoryOpen(false)}
+      content={content}
+      contentLoading={contentLoading}
+      contentError={contentError}
+      knowledgeBackrefs={knowledgeBackrefs}
+      knowledgeLoading={knowledgeLoading}
+      knowledgeError={knowledgeError}
+    />
+  );
+}
+
+function OccurrenceSummary({ node }: { node: CanvasNode }): JSX.Element {
+  return (
+    <div className="space-canvas__occurrence-summary">
+      <strong>{occurrenceLabel(node.occurrence, node.item)}</strong>
+      <dl>
+        <div>
+          <dt>Ref</dt>
+          <dd>{node.item?.ref_id ?? node.occurrence.item_id ?? 'Unbound'}</dd>
+        </div>
+        <div>
+          <dt>Position</dt>
+          <dd>{Math.round(node.x)}, {Math.round(node.y)}</dd>
+        </div>
+      </dl>
     </div>
   );
 }
@@ -743,6 +1351,19 @@ function autosaveLabel(status: AutosaveStatus): string {
       return 'Save failed — will retry';
     default:
       return 'All changes saved';
+  }
+}
+
+function edgeStatusLabel(status: AutosaveStatus): string {
+  switch (status) {
+    case 'saving':
+      return 'Saving...';
+    case 'saved':
+      return 'Saved';
+    case 'error':
+      return 'Error';
+    default:
+      return 'Ready';
   }
 }
 

@@ -567,24 +567,7 @@ function FacetSelect({ label, value, options, onChange }: {
   );
 }
 
-function ArtifactDetail({
-  artifact,
-  resolution,
-  series,
-  versions,
-  selectedVersion,
-  selectedVersionNo,
-  versionHistoryOpen,
-  onVersionChange,
-  onToggleVersionHistory,
-  onCloseVersionHistory,
-  content,
-  contentLoading,
-  contentError,
-  knowledgeBackrefs,
-  knowledgeLoading,
-  knowledgeError,
-}: {
+export type ArtifactDetailProps = {
   artifact: ArtifactRecord;
   resolution: ArtifactResolveResult | null;
   series: ArtifactSeriesRecord | ArtifactSeriesSummary | null;
@@ -601,7 +584,26 @@ function ArtifactDetail({
   knowledgeBackrefs: KnowledgeBackrefRecord[];
   knowledgeLoading: boolean;
   knowledgeError: string | null;
-}): JSX.Element {
+};
+
+export function ArtifactDetail({
+  artifact,
+  resolution,
+  series,
+  versions,
+  selectedVersion,
+  selectedVersionNo,
+  versionHistoryOpen,
+  onVersionChange,
+  onToggleVersionHistory,
+  onCloseVersionHistory,
+  content,
+  contentLoading,
+  contentError,
+  knowledgeBackrefs,
+  knowledgeLoading,
+  knowledgeError,
+}: ArtifactDetailProps): JSX.Element {
   const preview = content ? artifactPreview(content) : null;
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);

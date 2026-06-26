@@ -66,6 +66,74 @@
   background: color-mix(in srgb, var(--accent, #4f8cff) 22%, var(--bg-secondary));
 }
 
+.space-canvas__btn--danger {
+  border-color: var(--danger, #f85149);
+  color: var(--danger, #f85149);
+}
+
+.space-canvas__overflow {
+  position: relative;
+}
+
+.space-canvas__icon-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.space-canvas__icon-btn:hover,
+.space-canvas__icon-btn:focus-visible {
+  background: var(--bg-card);
+  outline: 1px solid var(--border, #2a2a2a);
+}
+
+.space-canvas__overflow-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 25;
+  min-width: 170px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  background: var(--bg-card);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.24);
+  padding: 4px;
+}
+
+.space-canvas__overflow-item {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.space-canvas__overflow-item:hover:not(:disabled),
+.space-canvas__overflow-item:focus-visible {
+  background: var(--bg-secondary);
+  outline: none;
+}
+
+.space-canvas__overflow-item:disabled {
+  color: var(--text-muted, #9a9a9a);
+  cursor: default;
+}
+
 .space-canvas__add-items {
   position: relative;
   display: inline-flex;
@@ -96,11 +164,20 @@
 }
 
 .space-canvas__autosave {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 6;
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-secondary) 92%, transparent);
+  padding: 4px 8px;
   font-size: 12px;
   color: var(--text-muted, #9a9a9a);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
 }
 
 .space-canvas__autosave-dot {
@@ -265,7 +342,8 @@
   background: var(--accent-blue);
   border: 1px solid var(--bg-secondary);
   opacity: 0.55;
-  transition: opacity 0.12s ease, transform 0.12s ease;
+  transition: opacity 0.12s ease, box-shadow 0.12s ease;
+  position: relative;
 }
 
 .space-canvas__node:hover .space-canvas__handle {
@@ -274,14 +352,19 @@
 
 .space-canvas__handle:hover {
   opacity: 1;
-  transform: scale(1.25);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 26%, transparent);
 }
 
 /* Authored edge lines + arrowheads. The marker fill is set inline by React Flow
  * from currentColor, so coloring the path also colors the arrow. */
 .react-flow__edge.space-canvas__edge .react-flow__edge-path {
-  stroke: var(--accent-blue);
+  stroke: var(--text-muted, #8a8f98);
   stroke-width: 1.5px;
+}
+
+.react-flow__edge.space-canvas__edge.selected .react-flow__edge-path {
+  stroke: var(--accent-blue);
+  stroke-width: 2.25px;
 }
 
 .react-flow__edge.space-canvas__edge .react-flow__edge-text {
@@ -294,5 +377,143 @@
 }
 
 .react-flow__edge.space-canvas__edge .react-flow__arrowhead {
+  fill: var(--text-muted, #8a8f98);
+}
+
+.react-flow__edge.space-canvas__edge.selected .react-flow__arrowhead {
   fill: var(--accent-blue);
+}
+
+/* --- unified selection inspector --- */
+
+.space-canvas__inspector {
+  flex: 0 0 360px;
+  min-width: 280px;
+  max-width: 42vw;
+  border-left: 1px solid var(--border, #2a2a2a);
+  background: var(--bg-secondary);
+  overflow-y: auto;
+  padding: 10px;
+}
+
+.space-canvas__inspector-section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.space-canvas__inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-muted, #9a9a9a);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.space-canvas__inspector-status[data-status='saving'] {
+  color: var(--accent, #4f8cff);
+}
+
+.space-canvas__inspector-status[data-status='saved'] {
+  color: var(--success, #3fb950);
+}
+
+.space-canvas__inspector-status[data-status='error'],
+.space-canvas__inspector-error {
+  color: var(--danger, #f85149);
+}
+
+.space-canvas__inspector-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text-muted, #9a9a9a);
+  font-size: 13px;
+}
+
+.space-canvas__inspector-empty strong {
+  color: var(--text-primary);
+}
+
+.space-canvas__edge-endpoints {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+}
+
+.space-canvas__edge-endpoints strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.space-canvas__field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-muted, #9a9a9a);
+}
+
+.space-canvas__input {
+  width: 100%;
+  border: 1px solid var(--border, #2a2a2a);
+  border-radius: 6px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.space-canvas__edge-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.space-canvas__not-promotable {
+  color: var(--text-muted, #9a9a9a);
+  font-size: 12px;
+}
+
+.space-canvas__occurrence-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.space-canvas__occurrence-summary dl {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.space-canvas__occurrence-summary div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 8px;
+}
+
+.space-canvas__occurrence-summary dt {
+  color: var(--text-muted, #9a9a9a);
+}
+
+.space-canvas__occurrence-summary dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.space-canvas__inspector .ledger-issue-detail,
+.space-canvas__inspector .artifact-detail {
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
