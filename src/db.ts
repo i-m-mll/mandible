@@ -6,6 +6,7 @@ import path from "node:path";
 import { compressContent } from "./compression.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 import { backfillProjectKeys } from "./ledger/project-registry.js";
+import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
 
 export type Db = Database.Database;
 
@@ -2396,6 +2397,34 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_artifact_versions_hash
         ON artifact_versions(content_hash)`
     ]
+  },
+  {
+    version: 89,
+    name: "artifact_link_typed_series",
+    // Issue: c154a27 (umbrella 639a848) — lane 1 of "series IS the artifact +
+    // dual-typed links". ADDITIVE ONLY: three new columns on `artifact_links`
+    // plus a deterministic 1-version series for every series-less artifact. No FK
+    // column is touched, no `artifact_links` row is retargeted (every pre-existing
+    // row inherits link_kind = 'pinned' via the column DEFAULT and keeps its exact
+    // artifact_id), and the `artifacts` UNIQUE(algorithm, content_hash)
+    // immutability is intact. `link_kind` distinguishes a PINNED link (to one
+    // immutable artifact version — the default) from a LIVING link (tracking a
+    // series head); `series_id` is a SOFT reference to artifact_series.id with NO
+    // foreign key (a link may name a series that is minted by a later lane, which
+    // owns the resolver/link-write lifecycle); `series_ref` carries the
+    // human-resolvable series ref. The columns are added by the idempotent
+    // `ensureArtifactLinkSeriesColumns` helper gated on this version (ALTER TABLE
+    // ADD COLUMN cannot be IF NOT EXISTS, so a schema-rewind re-run — as some
+    // migration tests do — must be a no-op), which also creates
+    // idx_artifact_links_kind and the partial idx_artifact_links_series.
+    // `verifyArtifactLinkSeriesSchema` asserts the live DDL on the real apply path
+    // and fails loudly on a divergent pre-existing column set. The orphan-artifact
+    // backfill (`backfillOrphanArtifactSeries`) runs as ONE immediate transaction
+    // OUTSIDE apply() in the post-migration step below, gated by
+    // `hasOrphanArtifacts` so fresh DBs and re-runs are no-ops. `artifact_links`
+    // already joins METADATA_BACKUP_TABLES; backup.ts now also emits each backed-up
+    // table's secondary indexes so the two new indexes survive a backup restore.
+    statements: []
   }
 ];
 
@@ -2486,6 +2515,9 @@ export function migrate(db: Db): void {
         if (migration.version === 87) {
           ensureLedgerProjectKeyColumn(db);
         }
+        if (migration.version === 89) {
+          ensureArtifactLinkSeriesColumns(db);
+        }
         for (const statement of migration.statements) {
           db.exec(statement);
         }
@@ -2505,6 +2537,14 @@ export function migrate(db: Db): void {
   // table exists without its expected columns, UNIQUE indexes, and FKs.
   if (pending.some((migration) => migration.version === 88)) {
     verifyArtifactVersioningSchema(db);
+  }
+
+  // Issue c154a27 (migration 89): the typed-link columns are added via guarded
+  // ALTER TABLE ADD COLUMN, which silently accepts a divergent pre-existing
+  // column (e.g. a link_kind added without its CHECK/DEFAULT). Verify the live
+  // DDL on the real apply path and fail loudly on drift.
+  if (pending.some((migration) => migration.version === 89)) {
+    verifyArtifactLinkSeriesSchema(db);
   }
 
   // Run post-DDL data migrations that require Node.js logic.
@@ -2626,6 +2666,27 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v87_backfill_project_keys", () => {
       backfillProjectKeys(db);
+    });
+  }
+  // Issue c154a27 (migration 89): wrap every series-less artifact into a
+  // deterministic 1-version series so "the series IS the artifact" holds for
+  // every pre-existing content row. The backfill AND its post-condition verifier
+  // run inside ONE immediate transaction OUTSIDE apply() (the nested
+  // appendArtifactVersion runs inline because db.inTransaction is true), so a
+  // verify failure ROLLS BACK every backfill write — no committed half-state.
+  // The gate is marked complete only by runPostMigration AFTER that transaction
+  // commits, so a rolled-back run re-runs on the next startup. Idempotent: gated
+  // on hasOrphanArtifacts and on deterministic series/version ids, so fresh DBs
+  // and re-runs are no-ops.
+  if (shouldRunPostMigration(db, "v89_backfill_orphan_artifact_series", pending, 89, () =>
+    hasOrphanArtifacts(db)
+  )) {
+    runPostMigration(db, "v89_backfill_orphan_artifact_series", () => {
+      const before = artifactRowCount(db);
+      db.transaction(() => {
+        backfillOrphanArtifactSeries(db);
+        verifyEveryArtifactHasSeries(db, before);
+      }).immediate();
     });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
@@ -3863,6 +3924,192 @@ function verifyArtifactVersioningSchema(db: Db): void {
   }
 }
 
+// Migration 89 (issue c154a27): add the typed-link columns to artifact_links.
+// ALTER TABLE ADD COLUMN cannot be IF NOT EXISTS, so each add is guarded on the
+// live column set (mirrors ensureArtifactCustodyColumns) — a schema-rewind
+// re-run is a no-op. Also (re)creates the two new indexes (CREATE INDEX IF NOT
+// EXISTS is idempotent). Short-circuits when artifact_links does not exist (a
+// partial legacy DB that starts above the v67 migration never creates it), so no
+// DDL references a missing table.
+function ensureArtifactLinkSeriesColumns(db: Db): void {
+  if (!tableExists(db, "artifact_links")) return;
+  const names = tableColumnNames(db, "artifact_links");
+  if (!names.has("link_kind")) {
+    db.exec(
+      `ALTER TABLE artifact_links ADD COLUMN link_kind TEXT NOT NULL DEFAULT 'pinned'
+        CHECK(link_kind IN ('pinned','living'))`,
+    );
+  }
+  if (!names.has("series_id")) {
+    db.exec("ALTER TABLE artifact_links ADD COLUMN series_id TEXT");
+  }
+  if (!names.has("series_ref")) {
+    db.exec("ALTER TABLE artifact_links ADD COLUMN series_ref TEXT");
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifact_links_kind
+      ON artifact_links(link_kind)`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifact_links_series
+      ON artifact_links(series_id)
+      WHERE series_id IS NOT NULL`,
+  );
+}
+
+// Gate for the migration-89 orphan-series backfill. An orphan is an `artifacts`
+// content row with no `artifact_versions` row pinning it under a series.
+function hasOrphanArtifacts(db: Db): boolean {
+  if (!tableExists(db, "artifacts")) return false;
+  if (!tableExists(db, "artifact_series") || !tableExists(db, "artifact_versions")) return false;
+  const row = db
+    .prepare(
+      `SELECT 1 FROM artifacts
+        WHERE id NOT IN (SELECT artifact_id FROM artifact_versions)
+        LIMIT 1`,
+    )
+    .get();
+  return Boolean(row);
+}
+
+function artifactRowCount(db: Db): number {
+  if (!tableExists(db, "artifacts")) return 0;
+  return (db.prepare("SELECT COUNT(*) AS n FROM artifacts").get() as { n: number }).n;
+}
+
+// Validate the migration-89 typed-link columns + indexes on the real apply path.
+// Mirrors verifyArtifactVersioningSchema: because the columns are added via a
+// guarded ALTER ADD COLUMN, a divergent pre-existing column (e.g. a link_kind
+// added without its CHECK/DEFAULT) would be silently accepted; assert the live
+// DDL and fail loudly on drift.
+function verifyArtifactLinkSeriesSchema(db: Db): void {
+  // Partial legacy DBs that start above the v67 migration never create
+  // artifact_links; ensureArtifactLinkSeriesColumns short-circuits the same way,
+  // so there is nothing to verify (no divergence is possible without the table).
+  if (!tableExists(db, "artifact_links")) return;
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact_links'")
+    .get() as { sql: string | null } | undefined;
+  if (!row) {
+    throw new Error("migration 89 verification: table artifact_links is missing after migration");
+  }
+  const columns = db.prepare("PRAGMA table_info(artifact_links)").all() as Array<{
+    name: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  const byName = new Map(columns.map((column) => [column.name, column]));
+  for (const column of ["link_kind", "series_id", "series_ref"]) {
+    if (!byName.has(column)) {
+      throw new Error(
+        `migration 89 verification: artifact_links is missing expected column '${column}' (divergent pre-existing table?)`,
+      );
+    }
+  }
+  const linkKind = byName.get("link_kind")!;
+  if (!linkKind.notnull) {
+    throw new Error("migration 89 verification: artifact_links.link_kind must be NOT NULL");
+  }
+  if (!/'pinned'/.test(linkKind.dflt_value ?? "")) {
+    throw new Error(
+      `migration 89 verification: artifact_links.link_kind must DEFAULT 'pinned' (got ${String(linkKind.dflt_value)})`,
+    );
+  }
+  if (byName.get("series_id")!.notnull) {
+    throw new Error(
+      "migration 89 verification: artifact_links.series_id must be nullable (soft reference)",
+    );
+  }
+  if (byName.get("series_ref")!.notnull) {
+    throw new Error("migration 89 verification: artifact_links.series_ref must be nullable");
+  }
+  // The link_kind CHECK is not reflected by PRAGMA table_info; assert the FULL
+  // contract from the DDL: the IN-list must be exactly {'pinned','living'} so
+  // both are accepted and any unknown value is rejected. A bare "CHECK exists"
+  // test would pass a divergent constraint that, e.g., dropped 'living'.
+  const checkMatch = /CHECK\s*\(\s*link_kind\s+IN\s*\(([^)]*)\)\s*\)/i.exec(row.sql ?? "");
+  if (!checkMatch) {
+    throw new Error(
+      "migration 89 verification: artifact_links is missing its CHECK(link_kind IN (...)) constraint (divergent pre-existing table?)",
+    );
+  }
+  const allowedLinkKinds = new Set(
+    [...checkMatch[1].matchAll(/'([^']*)'/g)].map((literal) => literal[1]),
+  );
+  if (allowedLinkKinds.size !== 2 || !allowedLinkKinds.has("pinned") || !allowedLinkKinds.has("living")) {
+    throw new Error(
+      `migration 89 verification: artifact_links.link_kind CHECK must allow exactly {'pinned','living'} (got {${[...allowedLinkKinds]
+        .map((value) => `'${value}'`)
+        .join(",")}})`,
+    );
+  }
+  // series_id is a SOFT reference: there must be NO foreign key from
+  // artifact_links into artifact_series.
+  const fks = db.prepare("PRAGMA foreign_key_list(artifact_links)").all() as Array<{
+    table: string;
+    from: string;
+  }>;
+  if (fks.some((fk) => fk.from === "series_id" || fk.table === "artifact_series")) {
+    throw new Error(
+      "migration 89 verification: artifact_links.series_id must be a soft reference with NO foreign key",
+    );
+  }
+  // Index verification asserts the indexed COLUMN and partiality from the stored
+  // DDL, not just the index name: CREATE INDEX IF NOT EXISTS would silently keep
+  // a wrong same-named pre-existing index.
+  const indexSql = (name: string): string => {
+    const indexRow = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = ?")
+      .get(name) as { sql: string | null } | undefined;
+    if (!indexRow?.sql) {
+      throw new Error(`migration 89 verification: index ${name} is missing`);
+    }
+    return indexRow.sql;
+  };
+  if (!/\(\s*link_kind\s*\)/i.test(indexSql("idx_artifact_links_kind"))) {
+    throw new Error("migration 89 verification: idx_artifact_links_kind must index link_kind");
+  }
+  const seriesIndexSql = indexSql("idx_artifact_links_series");
+  if (!/\(\s*series_id\s*\)/i.test(seriesIndexSql)) {
+    throw new Error("migration 89 verification: idx_artifact_links_series must index series_id");
+  }
+  if (!/WHERE\s+series_id\s+IS\s+NOT\s+NULL/i.test(seriesIndexSql)) {
+    throw new Error(
+      "migration 89 verification: idx_artifact_links_series must be the partial index WHERE series_id IS NOT NULL",
+    );
+  }
+}
+
+// Migration-89 data verifier: after the orphan backfill, assert the REAL
+// post-condition based on artifact_versions MEMBERSHIP — every artifacts.id
+// appears in artifact_versions.artifact_id (orphans = 0) and the artifacts row
+// count is unchanged (the backfill never inserts/deletes content rows). It must
+// NOT assert anything about series whose series_key happens to equal an artifact
+// id: v88 allows an explicit series_key input, so a legitimate pre-existing
+// multi-version series can carry such a key, and a `version_count == 1`
+// assumption there would false-fail. Runs inside the backfill's immediate
+// transaction, so a throw rolls every backfill write back.
+function verifyEveryArtifactHasSeries(db: Db, expectedArtifactCount: number): void {
+  if (!tableExists(db, "artifacts")) return;
+  const orphans = (db
+    .prepare(
+      `SELECT COUNT(*) AS n FROM artifacts
+        WHERE id NOT IN (SELECT artifact_id FROM artifact_versions)`,
+    )
+    .get() as { n: number }).n;
+  if (orphans !== 0) {
+    throw new Error(
+      `migration 89 verification: ${orphans} artifact(s) still have no version row after the orphan backfill`,
+    );
+  }
+  const after = artifactRowCount(db);
+  if (after !== expectedArtifactCount) {
+    throw new Error(
+      `migration 89 verification: artifacts row count changed during backfill (${expectedArtifactCount} -> ${after}); the backfill must not touch artifacts rows`,
+    );
+  }
+}
+
 function ensureLedgerProjectKeyColumn(db: Db): void {
   const hasTable = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_projects'")
@@ -4018,6 +4265,7 @@ function tableExists(db: Db, table: string): boolean {
 function tableColumnNames(db: Db, table: string): Set<string> {
   const allowed = new Set([
     "artifacts",
+    "artifact_links",
     "auth_requests",
     "conversation_blocks",
     "conversations",
