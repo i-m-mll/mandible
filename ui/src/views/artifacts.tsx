@@ -525,6 +525,7 @@ export function ArtifactsView({
             versionHistoryOpen={versionHistoryOpen}
             onVersionChange={selectVersion}
             onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
+            onCloseVersionHistory={() => setVersionHistoryOpen(false)}
             content={artifactContent}
             contentLoading={contentLoading}
             contentError={contentError}
@@ -576,6 +577,7 @@ function ArtifactDetail({
   versionHistoryOpen,
   onVersionChange,
   onToggleVersionHistory,
+  onCloseVersionHistory,
   content,
   contentLoading,
   contentError,
@@ -592,6 +594,7 @@ function ArtifactDetail({
   versionHistoryOpen: boolean;
   onVersionChange: (versionNo: number | null) => void;
   onToggleVersionHistory: () => void;
+  onCloseVersionHistory: () => void;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
   contentError: string | null;
@@ -600,6 +603,10 @@ function ArtifactDetail({
   knowledgeError: string | null;
 }): JSX.Element {
   const preview = content ? artifactPreview(content) : null;
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const [spacePickerOpen, setSpacePickerOpen] = useState(false);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const historyPanelRef = useRef<HTMLDivElement>(null);
   // Resolve a project scope for the Add-to-Space picker. Artifacts are not
   // project-scoped in the data model, but an issue-linked artifact (the common
   // case) lets us derive the owning project from that issue. When no issue link
@@ -613,6 +620,7 @@ function ArtifactDetail({
       title: artifactTitle(artifact),
     },
   ];
+  const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const locatorRows = [
     ['Series', series ? seriesRecordRef(series) : ''],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
@@ -624,6 +632,47 @@ function ArtifactDetail({
     ['Resolved from', resolution?.ref ?? ''],
   ].filter(([, value]) => Boolean(value)) as Array<[string, string]>;
 
+  useEffect(() => {
+    if (!actionsOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = actionsRef.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setActionsOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setActionsOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [actionsOpen]);
+
+  useEffect(() => {
+    if (!versionHistoryOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = historyPanelRef.current;
+      if (!node || node.contains(event.target as Node)) return;
+      onCloseVersionHistory();
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseVersionHistory();
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [versionHistoryOpen, onCloseVersionHistory]);
+
+  const closeActionsAfter = (callback: () => void) => {
+    callback();
+    setActionsOpen(false);
+  };
+
   return (
     <article className="artifact-detail">
       <header className="artifact-detail__header">
@@ -632,9 +681,9 @@ function ArtifactDetail({
           <h2>{artifactTitle(artifact)}</h2>
         </div>
         <div className="artifact-detail__status">
-          <label className="artifact-detail__version-picker">
-            <span>Version</span>
+          <label className="artifact-detail__version-control">
             <select
+              aria-label="Artifact version"
               value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
               onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
             >
@@ -646,47 +695,98 @@ function ArtifactDetail({
               ))}
             </select>
           </label>
-          {selectedVersionNo === null ? <span className="artifact-detail__badge">latest</span> : (
-            <button type="button" className="btn btn--ghost btn--sm" onClick={() => onVersionChange(null)}>
-              Jump to latest
+          <div className="artifact-detail__actions" ref={actionsRef}>
+            <button
+              type="button"
+              className={`artifact-detail__actions-trigger${actionsOpen ? ' artifact-detail__actions-trigger--active' : ''}`}
+              aria-label="Artifact actions"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+              title="Artifact actions"
+              onClick={() => setActionsOpen((open) => !open)}
+            >
+              <HorizontalDotsIcon />
             </button>
-          )}
-          <AddToSpace
-            projectId={spaceProjectId}
-            targets={spaceTargets}
-            label="Add to Space"
-          />
+            {actionsOpen && (
+              <div className="artifact-detail__actions-menu" role="menu">
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
+                  disabled={spaceActionDisabled}
+                  title={!spaceProjectId ? 'No project context for Spaces' : 'Add to Space'}
+                  onClick={() => closeActionsAfter(() => setSpacePickerOpen(true))}
+                >
+                  Add to Space
+                </button>
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
+                  onClick={() => closeActionsAfter(onToggleVersionHistory)}
+                >
+                  Version history
+                </button>
+                {selectedVersionNo !== null && (
+                  <button
+                    type="button"
+                    className="artifact-detail__actions-item"
+                    role="menuitem"
+                    onClick={() => closeActionsAfter(() => onVersionChange(null))}
+                  >
+                    Jump to latest
+                  </button>
+                )}
+              </div>
+            )}
+            <AddToSpace
+              projectId={spaceProjectId}
+              targets={spaceTargets}
+              label="Add to Space"
+              hideTrigger
+              open={spacePickerOpen}
+              onOpenChange={setSpacePickerOpen}
+            />
+          </div>
         </div>
       </header>
       {resolution?.warnings?.includes('series_latest_not_pinned') && (
         <div className="artifact-detail__warning">series_latest_not_pinned</div>
       )}
-      <section className="artifact-detail__section">
-        <button
-          type="button"
-          className="btn btn--ghost btn--sm"
-          onClick={onToggleVersionHistory}
-          aria-expanded={versionHistoryOpen}
-        >
-          Version history
-        </button>
-        {versionHistoryOpen && (
-          <div className="artifact-detail__list">
-            {versions.map((version) => (
+      {versionHistoryOpen && (
+        <div className="artifact-detail__modal" role="dialog" aria-modal="true" aria-labelledby="artifact-version-history-title">
+          <div className="artifact-detail__modal-panel" ref={historyPanelRef}>
+            <div className="artifact-detail__modal-header">
+              <h3 id="artifact-version-history-title">Version history</h3>
               <button
-                key={version.id}
                 type="button"
-                className={`artifact-detail__list-item${version.artifact_id === artifact.id ? ' artifact-detail__list-item--active' : ''}`}
-                onClick={() => onVersionChange(version.version_no)}
+                className="artifact-detail__modal-close"
+                aria-label="Close version history"
+                onClick={onCloseVersionHistory}
               >
-                <code>v{version.version_no}</code>
-                <span>{version.label || version.note || version.source_kind}</span>
-                <span>{formatTime(version.created_at)}</span>
+                <CloseIcon />
               </button>
-            ))}
+            </div>
+            <div className="artifact-detail__list">
+              {versions.map((version) => (
+                <button
+                  key={version.id}
+                  type="button"
+                  className={`artifact-detail__list-item${version.artifact_id === artifact.id ? ' artifact-detail__list-item--active' : ''}`}
+                  onClick={() => {
+                    onVersionChange(version.version_no);
+                    onCloseVersionHistory();
+                  }}
+                >
+                  <code>v{version.version_no}</code>
+                  <span>{version.label || version.note || version.source_kind}</span>
+                  <span>{formatTime(version.created_at)}</span>
+                </button>
+              ))}
+            </div>
           </div>
-        )}
-      </section>
+        </div>
+      )}
       <section className="artifact-detail__section">
         <h3>Identity</h3>
         <KeyValue rows={locatorRows} />
@@ -1128,6 +1228,25 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function HorizontalDotsIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
+function CloseIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="m18 6-12 12" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
 }
 
 function formatBytes(value: number): string {
