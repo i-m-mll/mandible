@@ -17,16 +17,19 @@ function cssRuleBody(stylesheet: string, selector: string): string {
 }
 
 describe("Spaces light theme surfaces", () => {
-  it("keeps the canvas shelf on real app theme tokens", () => {
-    const shelf = cssRuleBody(stylesheets.canvas, ".space-canvas__shelf");
-    const shelfItem = cssRuleBody(stylesheets.canvas, ".space-canvas__shelf-item");
+  it("keeps the canvas flow and bottom inspector on real app theme tokens", () => {
+    const flow = cssRuleBody(stylesheets.canvas, ".space-canvas__flow");
+    const inspector = cssRuleBody(stylesheets.canvas, ".space-canvas__inspector");
+    const node = cssRuleBody(stylesheets.canvas, ".space-canvas__node");
 
-    expect(shelf).toContain("background: var(--bg-secondary)");
-    expect(shelf).not.toContain("var(--surface");
-    expect(shelfItem).toContain("background: var(--bg-card)");
-    expect(shelfItem).toContain("color: var(--text-primary)");
-    expect(shelfItem).not.toContain("var(--surface-raised");
-    expect(shelfItem).not.toContain("var(--text,");
+    expect(flow).toContain("position: relative");
+    expect(inspector).toContain("background: var(--bg-secondary)");
+    expect(inspector).toContain("border-top: 1px solid var(--border");
+    expect(node).toContain("background: var(--bg-card)");
+    expect(node).toContain("color: var(--text-primary)");
+    expect(inspector).not.toContain("var(--surface");
+    expect(node).not.toContain("var(--surface-raised");
+    expect(node).not.toContain("var(--text,");
   });
 
   it("keeps the edge panel and controls on real app theme tokens", () => {

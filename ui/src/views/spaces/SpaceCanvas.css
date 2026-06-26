@@ -210,10 +210,11 @@
   }
 }
 
-/* --- main body: shelf + flow surface --- */
+/* --- main body: flow surface + bottom inspector --- */
 
 .space-canvas__body {
   display: flex;
+  flex-direction: column;
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -221,70 +222,8 @@
 .space-canvas__flow {
   flex: 1 1 auto;
   min-width: 0;
-  position: relative;
-}
-
-/* --- shelf / tray for unplaced occurrences --- */
-
-.space-canvas__shelf {
-  flex: 0 0 auto;
-  width: 220px;
-  border-right: 1px solid var(--border, #2a2a2a);
-  background: var(--bg-secondary);
-  display: flex;
-  flex-direction: column;
   min-height: 0;
-}
-
-.space-canvas__shelf-header {
-  padding: 8px 10px;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted, #9a9a9a);
-  border-bottom: 1px solid var(--border, #2a2a2a);
-}
-
-.space-canvas__shelf-list {
-  list-style: none;
-  margin: 0;
-  padding: 8px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.space-canvas__shelf-empty {
-  padding: 12px 10px;
-  font-size: 12px;
-  color: var(--text-muted, #9a9a9a);
-}
-
-.space-canvas__shelf-item {
-  display: block;
-  width: 100%;
-  text-align: left;
-  border: 1px solid var(--border, #2a2a2a);
-  border-radius: 6px;
-  background: var(--bg-card);
-  color: var(--text-primary);
-  padding: 6px 8px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.space-canvas__shelf-item:hover {
-  border-color: var(--accent, #4f8cff);
-}
-
-.space-canvas__shelf-item:focus-visible {
-  outline: 2px solid var(--accent, #4f8cff);
-  outline-offset: 1px;
-}
-
-.space-canvas__shelf-item[aria-pressed='true'] {
-  border-color: var(--accent, #4f8cff);
+  position: relative;
 }
 
 /* --- node rendering --- */
@@ -343,7 +282,14 @@
   border: 1px solid var(--bg-secondary);
   opacity: 0.55;
   transition: opacity 0.12s ease, box-shadow 0.12s ease;
-  position: relative;
+}
+
+.space-canvas__handle--target {
+  left: -5px;
+}
+
+.space-canvas__handle--source {
+  right: -5px;
 }
 
 .space-canvas__node:hover .space-canvas__handle {
@@ -387,10 +333,9 @@
 /* --- unified selection inspector --- */
 
 .space-canvas__inspector {
-  flex: 0 0 360px;
-  min-width: 280px;
-  max-width: 42vw;
-  border-left: 1px solid var(--border, #2a2a2a);
+  flex: 0 0 clamp(180px, 28%, 320px);
+  min-height: 160px;
+  border-top: 1px solid var(--border, #2a2a2a);
   background: var(--bg-secondary);
   overflow-y: auto;
   padding: 10px;
