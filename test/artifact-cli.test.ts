@@ -169,6 +169,42 @@ describe("artifact CLI", () => {
     expect(result.stderr).toContain("Unknown --kind");
   });
 
+  it("preserves zsh PATH while recording a local artifact version", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
+        return {
+          status: 200,
+          body: {
+            result: {
+              created: true,
+              artifact: { id: "artifact:sha256:abc123" },
+              series: { id: "artifact-series:series-1", source_kind: "local_only", version_count: 1 },
+              version: { id: "artifact-version:version-1", version_no: 1 },
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "record", "report.md", "--kind", "local_only", "--json"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("curl not found");
+      const record = recorder.requests.find((entry) => entry.url === "/api/artifacts/versions");
+      expect(record).toBeDefined();
+      expect(record!.body).toMatchObject({ source_kind: "local_only" });
+      expect(fs.realpathSync(record!.body!.path as string)).toBe(
+        fs.realpathSync(path.join(tempDir, "report.md")),
+      );
+    } finally {
+      await recorder.close();
+    }
+  });
+
   it("classifies clean tracked files as commit-pinned repo links in dry-run JSON", () => {
     const result = run(["artifact", "ingest", "report.md", "--dry-run", "--json"]);
 
