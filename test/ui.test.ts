@@ -2013,13 +2013,15 @@ function makeArtifactFixture(hashChar: string, title: string, overrides: Record<
 }
 
 function makeArtifactSeries(seriesId: string, artifacts: any[], title?: string): { summary: any; history: any } {
-  const versions = artifacts.map((artifact, index) => makeArtifactVersion(artifact, seriesId, index + 1));
+  const normalizedSeriesId = seriesId.startsWith('artifact-series:') ? seriesId : `artifact-series:${seriesId}`;
+  const seriesKey = normalizedSeriesId.replace(/^artifact-series:/, '');
+  const versions = artifacts.map((artifact, index) => makeArtifactVersion(artifact, normalizedSeriesId, index + 1));
   const latestArtifact = artifacts[artifacts.length - 1];
   const latestVersion = versions[versions.length - 1];
   const series = {
-    id: seriesId,
-    ref: `artifact-series:${seriesId}`,
-    series_key: seriesId,
+    id: normalizedSeriesId,
+    ref: normalizedSeriesId,
+    series_key: seriesKey,
     source_kind: 'managed',
     title: title ?? latestArtifact?.metadata?.title ?? null,
     repo_id: latestArtifact?.home_repo_id ?? null,
@@ -2106,8 +2108,8 @@ describe('ArtifactsView', () => {
             normalized_ref: artifact.id,
             artifact,
             alias: null,
-            series: artifactSeries.history.series,
-            version: artifactSeries.history.versions[0],
+            series: undefined,
+            version: undefined,
             warnings: [],
           },
         });
@@ -2237,8 +2239,8 @@ describe('ArtifactsView', () => {
             normalized_ref: artifact.id,
             artifact,
             alias: null,
-            series: artifactSeries.history.series,
-            version: artifactSeries.history.versions[0],
+            series: undefined,
+            version: undefined,
             warnings: [],
           },
         });
@@ -2334,8 +2336,8 @@ describe('ArtifactsView', () => {
             normalized_ref: firstArtifact.id,
             artifact: firstArtifact,
             alias: null,
-            series: firstSeries.history.series,
-            version: firstSeries.history.versions[0],
+            series: undefined,
+            version: undefined,
             warnings: [],
           },
         });
@@ -2694,10 +2696,16 @@ describe('ArtifactsView', () => {
     const v1 = makeArtifactFixture('8', 'report-v1.md');
     const v2 = makeArtifactFixture('9', 'report-v2.md');
     const artifactSeries = makeArtifactSeries('report-series', [v1, v2], 'report.md');
+    const versionRefs: string[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
       const url = String(input);
       if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
-      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        const ref = new URLSearchParams(url.split('?')[1] ?? '').get('ref') ?? '';
+        versionRefs.push(ref);
+        if (ref === v1.id || ref === artifactSeries.summary.ref) return jsonResponse({ history: artifactSeries.history });
+        return Promise.reject(new Error(`unexpected versions ref ${ref}`));
+      }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
           resolution: {
@@ -2707,8 +2715,8 @@ describe('ArtifactsView', () => {
             normalized_ref: v1.id,
             artifact: v1,
             alias: null,
-            series: artifactSeries.history.series,
-            version: artifactSeries.history.versions[0],
+            series: undefined,
+            version: undefined,
             warnings: [],
           },
         });
@@ -2741,6 +2749,10 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(versionSelect.value).toBe('1'));
     expect(screen.getByText('Jump to latest')).toBeTruthy();
     expect(screen.queryByText('series_latest_not_pinned')).toBeNull();
+    expect(versionRefs).toContain(v1.id);
+    await waitFor(() => expect(versionRefs).toContain(artifactSeries.summary.ref));
+    expect(versionRefs).not.toContain(`artifact-series:${artifactSeries.summary.ref}`);
+    expect(screen.getByText(artifactSeries.summary.ref)).toBeTruthy();
   });
 
   it('keeps artifact-series @latest refs latest-tracking and shows the resolver warning badge', async () => {
@@ -2848,6 +2860,71 @@ describe('ArtifactsView', () => {
     });
   });
 
+  it('ignores self-written series hash updates but reconciles external series changes', async () => {
+    const firstArtifact = makeArtifactFixture('f', 'hash-self-v1.md');
+    const secondArtifact = makeArtifactFixture('0', 'hash-self-v2.md', {
+      id: `artifact:sha256:${'10'.repeat(32)}`,
+      content_hash: '10'.repeat(32),
+      uri: `artifact:${'10'.repeat(32)}`,
+    });
+    const firstSeries = makeArtifactSeries('hash-self-first', [firstArtifact], 'hash-self-v1.md');
+    const secondSeries = makeArtifactSeries('hash-self-second', [secondArtifact], 'hash-self-v2.md');
+    const artifactById = new Map([
+      [firstArtifact.id, firstArtifact],
+      [secondArtifact.id, secondArtifact],
+    ]);
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [firstSeries.summary, secondSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        const ref = new URLSearchParams(url.split('?')[1] ?? '').get('ref');
+        if (ref === firstSeries.summary.ref) return jsonResponse({ history: firstSeries.history });
+        if (ref === secondSeries.summary.ref) return jsonResponse({ history: secondSeries.history });
+        return Promise.reject(new Error(`unexpected versions ref ${ref}`));
+      }
+      if (url.endsWith('/content')) {
+        const artifact = [...artifactById.values()].find((candidate) => url.includes(encodeURIComponent(candidate.id))) ?? firstArtifact;
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: 'text/markdown',
+            size_bytes: 0,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: 'text/markdown', size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      for (const [id, artifact] of artifactById) {
+        if (url.includes(encodeURIComponent(id))) return jsonResponse({ artifact });
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    const { rerender } = render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
+    fireEvent.click(screen.getByRole('button', { name: /hash-self-v2\.md/ }));
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v2.md'));
+
+    rerender(h(ArtifactsView, { initialSeriesRef: secondSeries.summary.ref }));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v2.md');
+    expect(screen.queryByText('Select an artifact or open an artifact URI.')).toBeNull();
+
+    rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
+    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('1');
+  });
+
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {
     const bundleId = 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
     const memberId = 'artifact:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd';
@@ -2901,8 +2978,8 @@ describe('ArtifactsView', () => {
             normalized_ref: artifact.id,
             artifact,
             alias: null,
-            series: artifactSeries.history.series,
-            version: artifactSeries.history.versions[0],
+            series: undefined,
+            version: undefined,
             warnings: [],
           },
         });
