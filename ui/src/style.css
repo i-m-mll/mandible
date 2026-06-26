@@ -2133,14 +2133,14 @@ a {
 }
 
 .timeline-event-body {
-  min-height: min(48vh, 420px);
+  min-height: 0;
   max-height: none;
   overflow: auto;
   margin: 0;
   border: 1px solid var(--neutral-alpha-08);
   border-radius: 8px;
   padding: 10px;
-  background: rgba(0, 0, 0, 0.22);
+  background: var(--surface-content);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 13px;

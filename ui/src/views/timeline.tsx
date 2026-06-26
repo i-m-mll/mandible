@@ -1,11 +1,10 @@
 import { Fragment } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 
 import { getProjectTimeline } from '../api';
 import { useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
-import { sanitizeMarkdown } from '../sanitize';
+import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import type { WorkRepo } from './work';
 import {
   TIMELINE_DAY_MS,
@@ -469,19 +468,6 @@ function shortIssueId(displayId: string): string {
 
 function eventEyebrow(event: TimelineEvent): string {
   return `${eventKindLabel(event.kind)} ${shortIssueId(event.issue.display_id)} #${event.ordinal}`;
-}
-
-function normalizeMarkdownSource(source: string): string {
-  if (!source.includes('\\n')) return source;
-  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
-  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
-  if (literalNewlineCount < 2 || actualNewlineCount > 0) return source;
-  return source.replace(/\\n/g, '\n');
-}
-
-function renderTimelineMarkdown(source: string): string {
-  const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
-  return sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
 }
 
 type TimelineClusterMark = TimelineSameTimeCluster | TimelineRangeCluster;
@@ -1544,6 +1530,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     : 'No timeline rows match the current controls.';
   const inspectorContent = useMemo(() => (
     <TimelineInspector
+      project={projection?.project ?? null}
       selectedEvent={selectedEvent}
       selectedCluster={selectedCluster}
       selectedClusterEvents={selectedClusterEvents}
@@ -1569,6 +1556,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     linkById,
     links,
     promoteRow,
+    projection?.project,
     removePromotedRow,
     removeTransientRow,
     selectEvent,
@@ -2102,6 +2090,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
 }
 
 type InspectorProps = {
+  project: ProjectTimelineProjection['project'] | null;
   selectedEvent: TimelineEvent | null;
   selectedCluster: TimelineClusterMark | null;
   selectedClusterEvents: TimelineEvent[];
@@ -2123,6 +2112,7 @@ type InspectorProps = {
 };
 
 function TimelineInspector({
+  project,
   selectedEvent,
   selectedCluster,
   selectedClusterEvents,
@@ -2150,11 +2140,17 @@ function TimelineInspector({
   const otherRefs = eventLinks.filter((link) => (
     link.ref_kind !== 'issue' || !link.target_issue || link.target_issue.deleted
   ));
-  const selectedEventBodyHtml = useMemo(() => (
-    selectedEvent
-      ? renderTimelineMarkdown(selectedEvent.body || selectedEvent.display_headline)
-      : ''
-  ), [selectedEvent?.body, selectedEvent?.display_headline]);
+  const selectedEventDetail = selectedEvent
+    ? {
+        id: selectedEvent.issue.id,
+        display_id: selectedEvent.issue.display_id,
+        project: {
+          repo_id: project?.repo_id ?? project?.repo_name ?? project?.display_name ?? selectedEvent.issue.project_id,
+          display_name: project?.display_name ?? project?.repo_name ?? selectedEvent.issue.project_id,
+        },
+        auth_requests: [],
+      }
+    : null;
   return (
     <div className="timeline-inspector__content">
       {missingEventId || missingClusterId || missingRowId ? (
@@ -2206,8 +2202,7 @@ function TimelineInspector({
               {selectedEvent.state.event_type}: {selectedEvent.state.status ?? 'none'}
             </div>
           ) : null}
-          <div className="timeline-event-body" dangerouslySetInnerHTML={{ __html: selectedEventBodyHtml }} />
-          <div className="timeline-action-row">
+          <div className="timeline-action-row timeline-action-row--event">
             {expandedEventIds.includes(selectedEvent.id) ? (
               <button type="button" onClick={() => onCollapseEvent(selectedEvent.id)}>Fold refs</button>
             ) : expandableLinks.length > 0 ? (
@@ -2215,6 +2210,14 @@ function TimelineInspector({
             ) : null}
             <a href={`#/issues?issue=${encodeURIComponent(selectedEvent.issue.display_id)}`}>Open issue</a>
           </div>
+          {selectedEventDetail ? (
+            <LedgerRenderedBody
+              className="timeline-event-body"
+              source={selectedEvent.body || selectedEvent.display_headline}
+              empty=""
+              detail={selectedEventDetail}
+            />
+          ) : null}
           {expandableLinks.length > 0 ? (
             <div className="timeline-ref-list">
               <h3>Issue refs</h3>

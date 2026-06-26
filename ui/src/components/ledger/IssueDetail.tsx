@@ -1,12 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
-import { sanitizeHtml, sanitizeMarkdown } from '../../sanitize';
+import { sanitizeHtml } from '../../sanitize';
 import {
   artifactDetailHref,
-  attachResourceRefResolution,
   compactArtifactRef,
   displayResourceRef,
-  linkifyResourceRefs,
   seriesDetailHref,
   versionDetailHref,
 } from '../../resource-refs';
@@ -21,6 +19,7 @@ import type {
   LedgerIssueDetailWorkUnit,
   LedgerIssueTimelineEntry,
 } from '../../api';
+import { LedgerRenderedBody } from './LedgerRenderedBody';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
 type RenderTimelineEntry =
@@ -453,7 +452,7 @@ function IssueActionsMenu({
             </button>
           )}
           {/* Add-to-Space region (child 08c312a) — disjoint from and after C6's
-              linkify call-site region (which lives in MarkdownBlock, below). */}
+              linkify call-site region (which lives in LedgerRenderedBody). */}
           {onAddToSpace && (
             <button
               type="button"
@@ -729,7 +728,7 @@ function TimelineEntryCard({
           <MetadataRows rows={isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry)} />
         </MetadataDisclosure>
       </div>
-      <MarkdownBlock className="ledger-comment-card__body spec-panel" source={entry.body} empty={isBody ? 'No description.' : ''} detail={detail} />
+      <LedgerRenderedBody className="ledger-comment-card__body spec-panel" source={entry.body} empty={isBody ? 'No description.' : ''} detail={detail} />
     </div>
   );
 }
@@ -1016,159 +1015,6 @@ function SectionTitle({ title, count }: { title: string; count?: number }): JSX.
   );
 }
 
-function MarkdownBlock({
-  source,
-  className,
-  empty,
-  detail,
-}: {
-  source: string;
-  className: string;
-  empty: string;
-  detail: LedgerIssueDetailProjection;
-}): JSX.Element {
-  const html = useMemo(() => {
-    if (!source) return '';
-    const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
-    const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-    return linkifyResourceRefs(linkifyLedgerRefs(sanitized, detail));
-  }, [source, detail.id, detail.display_id, detail.project.repo_id]);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const node = containerRef.current;
-    if (!node || !html) return undefined;
-    return attachResourceRefResolution(node);
-  }, [html]);
-  if (!html) {
-    return <div className={`${className} spec-panel--empty`}>{empty}</div>;
-  }
-  return <div ref={containerRef} className={className} dangerouslySetInnerHTML={{ __html: html }} />;
-}
-
-function normalizeMarkdownSource(source: string): string {
-  if (!source.includes('\\n')) return source;
-  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
-  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
-  if (literalNewlineCount < 2 || actualNewlineCount > 0) return source;
-  return source.replace(/\\n/g, '\n');
-}
-
-const REF_PATTERN = /\[#(\d+)\]|\[(issue|comment):([^\]\s]+)\]/g;
-
-function linkifyLedgerRefs(html: string, detail: LedgerIssueDetailProjection): string {
-  if (typeof document === 'undefined' || !html) return html;
-  const container = document.createElement('div');
-  container.innerHTML = html;
-  linkifyInlineCodeRefs(container, detail);
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
-    acceptNode(node) {
-      const parent = node.parentElement;
-      if (!parent) return NodeFilter.FILTER_REJECT;
-      if (parent.closest('a, code, pre')) return NodeFilter.FILTER_REJECT;
-      REF_PATTERN.lastIndex = 0;
-      return REF_PATTERN.test(node.nodeValue ?? '') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-    },
-  });
-  const nodes: Text[] = [];
-  let node = walker.nextNode();
-  while (node) {
-    nodes.push(node as Text);
-    node = walker.nextNode();
-  }
-  for (const textNode of nodes) {
-    const fragment = document.createDocumentFragment();
-    const text = textNode.nodeValue ?? '';
-    REF_PATTERN.lastIndex = 0;
-    let lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = REF_PATTERN.exec(text))) {
-      if (match.index > lastIndex) {
-        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
-      }
-      const link = refLink(match, detail, text);
-      fragment.appendChild(link ?? document.createTextNode(match[0]));
-      lastIndex = match.index + match[0].length;
-    }
-    if (lastIndex < text.length) {
-      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
-    }
-    textNode.replaceWith(fragment);
-  }
-  return container.innerHTML;
-}
-
-function linkifyInlineCodeRefs(container: HTMLElement, detail: LedgerIssueDetailProjection): void {
-  const codeRefs = Array.from(container.querySelectorAll('code')).filter((code) => (
-    !code.closest('a, pre') && Boolean(code.textContent?.trim())
-  ));
-  for (const code of codeRefs) {
-    const text = code.textContent?.trim() ?? '';
-    REF_PATTERN.lastIndex = 0;
-    const match = REF_PATTERN.exec(text);
-    if (!match || match.index !== 0 || match[0].length !== text.length) continue;
-    const isExplicitRef = Boolean(match[2]);
-    if (!isExplicitRef) continue;
-    const context = code.parentElement?.textContent ?? text;
-    const contextIndex = Math.max(0, context.indexOf(text));
-    match.index = contextIndex;
-    const link = refLink(match, detail, context, contextIndex);
-    if (!link) continue;
-    link.classList.add('ledger-xref--inline-code');
-    code.replaceWith(link);
-  }
-}
-
-function refLink(match: RegExpExecArray, detail: LedgerIssueDetailProjection, text: string): HTMLAnchorElement | null {
-  const ordinalCommentRef = match[1];
-  const explicitType = match[2];
-  const explicitRef = match[3];
-  if (ordinalCommentRef) {
-    const anchor = document.createElement('a');
-    anchor.className = 'ledger-xref';
-    anchor.textContent = `#${ordinalCommentRef}`;
-    anchor.href = issueHref(detail.project.repo_id ?? detail.project.display_name, detail.display_id, ordinalCommentRef);
-    anchor.title = `Open comment #${ordinalCommentRef}`;
-    return anchor;
-  }
-  const ref = explicitRef;
-  if (!ref) return null;
-
-  const anchor = document.createElement('a');
-  anchor.className = 'ledger-xref';
-  if (explicitType === 'comment') {
-    const parsed = parseCommentRef(ref, detail);
-    if (!parsed) return null;
-    anchor.textContent = commentRefLabel(parsed, detail);
-    anchor.href = issueHref(parsed.repo, parsed.issue, parsed.comment);
-    anchor.title = `Open comment ${parsed.comment}`;
-    return anchor;
-  }
-
-  const auth = detail.auth_requests.find((request) => request.id.startsWith(ref));
-  if (auth) {
-    anchor.textContent = auth.id.slice(0, 8);
-    anchor.href = `#/auth?request=${encodeURIComponent(auth.id)}`;
-    anchor.title = `Open auth request ${auth.id.slice(0, 8)}`;
-    return anchor;
-  }
-  const parsedIssue = parseIssueRef(ref, detail);
-  if (!parsedIssue) return null;
-  anchor.textContent = issueRefLabel(parsedIssue, detail);
-  anchor.href = issueHref(parsedIssue.repo, parsedIssue.issue);
-  anchor.title = `Open issue ${parsedIssue.issue}`;
-  return anchor;
-}
-
-function issueRefLabel(parsed: { repo: string; issue: string }, detail: LedgerIssueDetailProjection): string {
-  const currentRepo = detail.project.repo_id ?? detail.project.display_name;
-  return parsed.repo === currentRepo ? parsed.issue : `${parsed.repo}/${parsed.issue}`;
-}
-
-function commentRefLabel(parsed: { repo: string; issue: string; comment: string }, detail: LedgerIssueDetailProjection): string {
-  const issueLabel = issueRefLabel(parsed, detail);
-  return `${issueLabel}#${parsed.comment}`;
-}
-
 function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, string]> {
   const rows: Array<[string, string]> = [
     ['Reference', detail.display_id],
@@ -1269,31 +1115,6 @@ function formatJsonValue(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function parseIssueRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string } | null {
-  const scoped = ref.match(/^([^/#]+)\/([^/#]+)$/);
-  if (scoped) return { repo: scoped[1], issue: scoped[2] };
-  return { repo: detail.project.repo_id ?? detail.project.display_name, issue: ref.replace(/^#/, '') };
-}
-
-function parseCommentRef(ref: string, detail: LedgerIssueDetailProjection): { repo: string; issue: string; comment: string } | null {
-  if (ref.startsWith('#')) {
-    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: detail.display_id, comment: ref.slice(1) };
-  }
-  const scoped = ref.match(/^([^/#]+)\/([^/#]+)#([^#]+)$/);
-  if (scoped) return { repo: scoped[1], issue: scoped[2], comment: scoped[3] };
-  const currentProject = ref.match(/^([^/#]+)#([^#]+)$/);
-  if (currentProject) {
-    return { repo: detail.project.repo_id ?? detail.project.display_name, issue: currentProject[1], comment: currentProject[2] };
-  }
-  return null;
-}
-
-function issueHref(repo: string, issue: string, comment?: string): string {
-  const params = new URLSearchParams({ repo, issue });
-  if (comment) params.set('comment', comment);
-  return `#/issues?${params.toString()}`;
 }
 
 function inlineMarkdown(source: string): string {
