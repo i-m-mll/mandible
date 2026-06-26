@@ -81,13 +81,19 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
   };
 }
 
-function postLink(body: Record<string, unknown>): { statusCode: number; payload: any } {
+function postRoute(routePath: string, body: Record<string, unknown>): { statusCode: number; payload: any } {
   const routes = new TestRoutes();
   registerProviderRoutes(routes);
-  const req = { method: "POST", url: "/api/artifacts/link", params: {}, query: {}, body } as RequestLike;
+  const req = { method: "POST", url: routePath, params: {}, query: {}, body } as RequestLike;
   const res = createResponse();
-  routes.handler("POST", "/api/artifacts/link")(req, res);
+  routes.handler("POST", routePath)(req, res);
   return { statusCode: res.statusCode, payload: res.payload };
+}
+function postLink(body: Record<string, unknown>): { statusCode: number; payload: any } {
+  return postRoute("/api/artifacts/link", body);
+}
+function postIngest(body: Record<string, unknown>): { statusCode: number; payload: any } {
+  return postRoute("/api/artifacts/ingest", body);
 }
 
 // --- ledger fixtures ----------------------------------------------------------
@@ -458,5 +464,92 @@ describe("evidence links must be pinned", () => {
     expect(res.payload.link.link_kind).toBe("living");
     expect(res.payload.link.series_id).toBe(seriesId);
     expect(res.payload.link.artifact_id).toBe(head.id);
+  });
+});
+
+// The authoritative invariant lives in registerArtifactLink so /api/artifacts/
+// ingest (which forwards caller-supplied link/links straight to the upsert)
+// cannot bypass the route + resolveAndLinkArtifact guards.
+describe("chokepoint enforcement in registerArtifactLink", () => {
+  it("rejects a living issue+evidence link forwarded through POST /api/artifacts/ingest", () => {
+    const issueId = createLedgerIssue("issueingestev");
+    const { seriesId } = makeSeriesWithHead("series-ingest-ev", "v1\n");
+    const res = postIngest({
+      media_type: "application/json",
+      json: { payload: "evidence" },
+      link: {
+        entity_type: "issue",
+        entity_id: issueId,
+        link_type: "evidence",
+        link_kind: "living",
+        series_id: seriesId,
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.payload).toEqual({ error: "evidence_links_must_be_pinned" });
+  });
+
+  it("rejects a living link whose series_id does not contain the artifact (non-member)", () => {
+    const issueId = createLedgerIssue("issuenonmember");
+    const { seriesId } = makeSeriesWithHead("series-member", "v1\n");
+    const stranger = makeArtifact("not-a-member\n"); // never appended to seriesId
+    expect(() =>
+      registerArtifactLink(db, stranger.id, {
+        entity_type: "issue",
+        entity_id: issueId,
+        link_type: "references",
+        link_kind: "living",
+        series_id: seriesId,
+      }),
+    ).toThrow(/living_link_series_mismatch/);
+  });
+
+  it("rejects a living link naming a series that does not exist (bogus series_id)", () => {
+    const issueId = createLedgerIssue("issuebogus");
+    const art = makeArtifact("bogus\n");
+    expect(() =>
+      registerArtifactLink(db, art.id, {
+        entity_type: "issue",
+        entity_id: issueId,
+        link_type: "references",
+        link_kind: "living",
+        series_id: "artifact-series:does-not-exist",
+      }),
+    ).toThrow(/living_link_series_mismatch/);
+  });
+
+  it("still accepts a valid living link via resolveAndLinkArtifact (no regression)", () => {
+    const issueId = createLedgerIssue("issuenoreg");
+    const { seriesId, head } = makeSeriesWithHead("series-noreg", "v1\n");
+    expect(() =>
+      resolveAndLinkArtifact(db, {
+        ref: seriesId,
+        entity_type: "issue",
+        entity_id: issueId,
+        link_kind: "living",
+      }, 1000),
+    ).not.toThrow();
+    const row = db
+      .prepare("SELECT link_kind, series_id, artifact_id FROM artifact_links WHERE entity_id = ?")
+      .get(issueId) as { link_kind: string; series_id: string; artifact_id: string };
+    expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: head.id });
+  });
+
+  it("leaves the pinned ingest path unaffected (default link_kind, no series required)", () => {
+    const issueId = createLedgerIssue("issuepinnedingest");
+    const res = postIngest({
+      media_type: "application/json",
+      json: { payload: "pinned" },
+      link: {
+        entity_type: "issue",
+        entity_id: issueId,
+        link_type: "evidence", // pinned evidence is allowed
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const row = db
+      .prepare("SELECT link_kind, series_id FROM artifact_links WHERE entity_id = ? AND link_type = 'evidence'")
+      .get(issueId) as { link_kind: string; series_id: string | null };
+    expect(row).toEqual({ link_kind: "pinned", series_id: null });
   });
 });

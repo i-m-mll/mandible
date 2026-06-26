@@ -1412,6 +1412,15 @@ export function registerArtifactAlias(db: Db, args: {
   return getArtifactAlias(db, normalized.scheme, normalized.normalizedRef) as ArtifactAliasRecord;
 }
 
+// Whether `artifactId` is a genuine member of `seriesId` (has a version row).
+function seriesContainsArtifact(db: Db, seriesId: string, artifactId: string): boolean {
+  if (!artifactVersioningTablesExist(db)) return false;
+  const row = db.prepare(
+    "SELECT 1 FROM artifact_versions WHERE series_id = ? AND artifact_id = ? LIMIT 1",
+  ).get(seriesId, artifactId);
+  return Boolean(row);
+}
+
 export function registerArtifactLink(
   db: Db,
   artifactId: string,
@@ -1429,11 +1438,26 @@ export function registerArtifactLink(
   const linkKind: "pinned" | "living" = input.link_kind === "living" ? "living" : "pinned";
   const seriesId = asString(input.series_id) ?? null;
   const seriesRef = asString(input.series_ref) ?? null;
-  if (linkKind === "living" && !seriesId) {
-    // The living-link identity is keyed by the series, so a series id is
-    // mandatory; resolveAndLinkArtifact rejects ambiguous/absent series before
-    // reaching here, but guard the direct caller path too.
-    throw new Error("living_link_requires_series");
+  // AUTHORITATIVE typed-link invariants, enforced at this low-level chokepoint so
+  // EVERY write path is covered — including /api/artifacts/ingest, which forwards
+  // caller-supplied `link`/`links` straight here and would otherwise bypass the
+  // route and resolveAndLinkArtifact guards (which remain as defense in depth).
+  if (linkKind === "living") {
+    // Evidence on an issue must pin one immutable version, never track a head.
+    if (entityType === "issue" && linkType === "evidence") {
+      throw new Error("evidence_links_must_be_pinned");
+    }
+    // A living link must name a real series, and its stored artifact_id (the
+    // latest-at-creation fallback anchor) must be a genuine member of that
+    // series; a bogus/non-member series_id could otherwise freeze a wrong or
+    // dangling fallback. resolveAndLinkArtifact supplies a resolved series id and
+    // a member artifact, so it passes unchanged.
+    if (!seriesId) {
+      throw new Error("living_link_requires_series");
+    }
+    if (!getArtifactSeries(db, seriesId) || !seriesContainsArtifact(db, seriesId, artifactId)) {
+      throw new Error("living_link_series_mismatch");
+    }
   }
   // PINNED keeps the byte-identical legacy identity: [artifactId, entityType,
   // entityId, linkType, role??""]. LIVING is keyed by the SERIES (not the
