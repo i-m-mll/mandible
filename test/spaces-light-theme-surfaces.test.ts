@@ -51,17 +51,27 @@ describe("Spaces light theme surfaces", () => {
     }
   });
 
-  it("keeps the selected board manual mode tab off dark fallback chrome", () => {
-    const selectedMode = cssRuleBody(
-      stylesheets.board,
-      ".space-board__add-column-mode[aria-selected='true']",
-    );
+  it("keeps the board column menu and filter editor on real app theme tokens", () => {
+    const menu = cssRuleBody(stylesheets.board, ".space-board__add-column-menu");
+    const filter = cssRuleBody(stylesheets.board, ".space-board-filter");
+    const filterInput = cssRuleBody(stylesheets.board, ".space-board-filter__input input");
+    const filterActions = cssRuleBody(stylesheets.board, ".space-board-filter__actions");
+    const filterButton = cssRuleBody(stylesheets.board, ".space-board-filter__actions button");
 
-    expect(selectedMode).toContain("background: var(--status-info-bg)");
-    expect(selectedMode).toContain("border-color: var(--accent-blue)");
-    expect(selectedMode).toContain("color: var(--text-primary)");
-    expect(selectedMode).not.toContain("#2a2a3a");
-    expect(selectedMode).not.toContain("var(--accent-subtle");
-    expect(selectedMode).not.toContain("var(--bg-emphasis");
+    expect(menu).toContain("background: var(--bg-secondary)");
+    expect(menu).toContain("color: var(--text-primary");
+    expect(menu).toContain("width: min(24rem");
+    expect(filter).toContain("gap: 0.45rem");
+    expect(filterInput).toContain("background: var(--bg-secondary)");
+    expect(filterInput).toContain("color: var(--text-primary");
+    expect(filterActions).toContain("flex-wrap: nowrap");
+    expect(filterButton).toContain("color: var(--text-primary");
+
+    for (const body of [menu, filterInput, filterButton]) {
+      expect(body).not.toContain("#2a2a3a");
+      expect(body).not.toContain("var(--surface");
+      expect(body).not.toContain("var(--text,");
+      expect(body).not.toContain("var(--bg-emphasis");
+    }
   });
 });
