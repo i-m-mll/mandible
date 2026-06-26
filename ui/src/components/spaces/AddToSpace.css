@@ -15,9 +15,9 @@
 .add-to-space__trigger {
   cursor: pointer;
   font: inherit;
-  color: var(--text, inherit);
+  color: var(--text-primary, inherit);
   background: transparent;
-  border: 1px solid var(--border, #d0d0d0);
+  border: 1px solid var(--neutral-alpha-10, #d0d0d0);
   border-radius: 6px;
   padding: 4px 10px;
   white-space: nowrap;
@@ -39,11 +39,11 @@
 }
 
 .add-to-space__trigger--menuitem:hover:not(:disabled) {
-  background: var(--surface-hover, rgba(127, 127, 127, 0.12));
+  background: var(--neutral-alpha-06, rgba(127, 127, 127, 0.12));
 }
 
 .add-to-space__trigger--button:hover:not(:disabled) {
-  border-color: var(--accent, #4c7ef3);
+  border-color: var(--accent-blue, #4c7ef3);
 }
 
 .add-to-space__popover {
@@ -54,8 +54,8 @@
   min-width: 200px;
   max-height: 280px;
   overflow-y: auto;
-  background: var(--surface, #1c1c1c);
-  border: 1px solid var(--border, #d0d0d0);
+  background: var(--bg-card, #ffffff);
+  border: 1px solid var(--neutral-alpha-10, #d0d0d0);
   border-radius: 8px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
   padding: 4px;
@@ -80,7 +80,7 @@
   text-align: left;
   cursor: pointer;
   font: inherit;
-  color: var(--text, inherit);
+  color: var(--text-primary, inherit);
   background: transparent;
   border: none;
   border-radius: 6px;
@@ -88,7 +88,7 @@
 }
 
 .add-to-space__option:hover:not(:disabled) {
-  background: var(--surface-hover, rgba(127, 127, 127, 0.12));
+  background: var(--neutral-alpha-06, rgba(127, 127, 127, 0.12));
 }
 
 .add-to-space__option:disabled {
@@ -118,7 +118,7 @@
    child 6a4a69a). The own-project section renders first; subsequent sections get
    a muted heading so the user can tell which project a Space belongs to. */
 .add-to-space__section + .add-to-space__section {
-  border-top: 1px solid var(--border, #2a2a2a);
+  border-top: 1px solid var(--neutral-alpha-08, #d0d0d0);
   margin-top: 2px;
   padding-top: 2px;
 }

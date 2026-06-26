@@ -50,6 +50,11 @@ export type AddToSpaceProps = {
   variant?: 'button' | 'menuitem';
   /** Optional label override; defaults to "Add to Space". */
   label?: string;
+  /** Hide the trigger when another control owns opening this picker. */
+  hideTrigger?: boolean;
+  /** Controlled open state for externally triggered pickers. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   /** Disable the trigger (e.g. busy parent). The trigger also self-disables when there are no targets. */
   disabled?: boolean;
   /** Optional className passthrough for the trigger (so each surface can style it). */
@@ -113,12 +118,15 @@ export function AddToSpace({
   targets,
   variant = 'button',
   label = 'Add to Space',
+  hideTrigger = false,
+  open,
+  onOpenChange,
   disabled = false,
   className,
   includeCrossProject = true,
   onAdded,
 }: AddToSpaceProps): JSX.Element {
-  const [open, setOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
   const [pendingSpaceId, setPendingSpaceId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
@@ -126,6 +134,12 @@ export function AddToSpace({
 
   const hasTargets = targets.length > 0;
   const triggerDisabled = disabled || !projectId || !hasTargets;
+  const pickerOpen = open ?? internalOpen;
+  const setPickerOpen = (next: boolean) => {
+    if (next && triggerDisabled) return;
+    setInternalOpen(next);
+    onOpenChange?.(next);
+  };
 
   // Lazily load Spaces the first time the popover opens (and re-load if the
   // project changes between opens). Backend refreshes are reconciliation inputs;
@@ -133,7 +147,7 @@ export function AddToSpace({
   // read the grouped list (own project + top-level + other projects); otherwise
   // we keep the strict single-project read.
   useEffect(() => {
-    if (!open || !projectId) return undefined;
+    if (!pickerOpen || !projectId) return undefined;
     let active = true;
     setLoad({ status: 'loading' });
     const loader = includeCrossProject
@@ -153,18 +167,18 @@ export function AddToSpace({
     return () => {
       active = false;
     };
-  }, [open, projectId, includeCrossProject]);
+  }, [pickerOpen, projectId, includeCrossProject]);
 
   // Close on outside pointer / Escape, matching the issue-actions menu behavior.
   useEffect(() => {
-    if (!open) return undefined;
+    if (!pickerOpen) return undefined;
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const node = containerRef.current;
       if (!node || node.contains(event.target as Node)) return;
-      setOpen(false);
+      setPickerOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false);
+      if (event.key === 'Escape') setPickerOpen(false);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     document.addEventListener('keydown', closeOnEscape, true);
@@ -172,12 +186,12 @@ export function AddToSpace({
       document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
       document.removeEventListener('keydown', closeOnEscape, true);
     };
-  }, [open]);
+  }, [pickerOpen, triggerDisabled, onOpenChange]);
 
   const toggle = () => {
     if (triggerDisabled) return;
     setFeedback(null);
-    setOpen((prev) => !prev);
+    setPickerOpen(!pickerOpen);
   };
 
   const addToSpace = async (space: Space) => {
@@ -203,7 +217,7 @@ export function AddToSpace({
       const present = results.filter((result) => result.alreadyPresent).length;
       setFeedback(summarizeOutcome(space.title, added, present));
       onAdded?.(space, results);
-      setOpen(false);
+      setPickerOpen(false);
     } catch (error: unknown) {
       setFeedback(`Failed: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -225,20 +239,22 @@ export function AddToSpace({
 
   return (
     <div className="add-to-space" ref={containerRef} data-testid="add-to-space">
-      <button
-        type="button"
-        className={`add-to-space__trigger ${triggerClass}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        disabled={triggerDisabled}
-        title={!projectId ? 'No project context for Spaces' : !hasTargets ? 'Nothing to add' : label}
-        role={variant === 'menuitem' ? 'menuitem' : undefined}
-        onClick={toggle}
-      >
-        {label}
-        {targets.length > 1 ? ` (${targets.length})` : ''}
-      </button>
-      {open && (
+      {!hideTrigger && (
+        <button
+          type="button"
+          className={`add-to-space__trigger ${triggerClass}`}
+          aria-haspopup="menu"
+          aria-expanded={pickerOpen}
+          disabled={triggerDisabled}
+          title={!projectId ? 'No project context for Spaces' : !hasTargets ? 'Nothing to add' : label}
+          role={variant === 'menuitem' ? 'menuitem' : undefined}
+          onClick={toggle}
+        >
+          {label}
+          {targets.length > 1 ? ` (${targets.length})` : ''}
+        </button>
+      )}
+      {pickerOpen && (
         <div className="add-to-space__popover" role="menu" data-testid="add-to-space-popover">
           {load.status === 'loading' && (
             <div className="add-to-space__status">Loading Spaces…</div>
