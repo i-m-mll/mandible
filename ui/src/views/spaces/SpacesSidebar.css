@@ -65,6 +65,24 @@
   background: var(--neutral-alpha-06);
 }
 
+.spaces-tree__create:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
+}
+
+.spaces-tree__group-header .spaces-tree__create {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 120ms ease;
+}
+
+.spaces-tree__group-header:hover .spaces-tree__create,
+.spaces-tree__group-header:focus-within .spaces-tree__create {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* The single scroll owner is `.view-sidebar__body`; this wrapper must NOT also
    scroll (no double scrollbar). It only carries the content padding. */
 .spaces-tree__scroll {
@@ -108,6 +126,10 @@
 }
 
 .spaces-tree__group-header:hover {
+  background: var(--neutral-alpha-06);
+}
+
+.spaces-tree__group-header:focus-within {
   background: var(--neutral-alpha-06);
 }
 
