@@ -10,6 +10,8 @@ import {
   registerResourceRefRecognizer,
   resolveResourceRef,
   resourceRefHref,
+  seriesDetailHref,
+  versionDetailHref,
   type ResolverResult,
 } from '../ui/src/resource-refs';
 
@@ -122,6 +124,13 @@ describe('display helpers', () => {
 
   it('displayResourceRef passes through unrecognized text', () => {
     expect(displayResourceRef('hello world')).toBe('hello world');
+  });
+});
+
+describe('artifact series nav hrefs', () => {
+  it('builds shareable series and pinned-version artifact routes', () => {
+    expect(seriesDetailHref('artifact-series:demo')).toBe('#/artifacts?series=artifact-series%3Ademo');
+    expect(versionDetailHref('artifact-series:demo', 2)).toBe('#/artifacts?series=artifact-series%3Ademo&version=2');
   });
 });
 

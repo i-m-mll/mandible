@@ -178,6 +178,18 @@ export function artifactDetailHref(id: string): string {
   return `#/artifacts?artifact=${encodeURIComponent(id)}`;
 }
 
+export function seriesDetailHref(ref: string): string {
+  return `#/artifacts?series=${encodeURIComponent(ref)}`;
+}
+
+export function versionDetailHref(ref: string, versionNo: number): string {
+  const params = new URLSearchParams({
+    series: ref,
+    version: String(versionNo),
+  });
+  return `#/artifacts?${params.toString()}`;
+}
+
 // --- C2 resolver -------------------------------------------------------------
 
 export type ResolverRefKind = 'issue' | 'comment' | 'artifact' | 'mandible' | 'repo' | 'unknown';
