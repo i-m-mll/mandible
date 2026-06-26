@@ -1800,7 +1800,7 @@ describe('LedgerIssueDetail', () => {
               link_kind: 'pinned',
               series_id: 'artifact-series:report',
               series_ref: 'artifact-series:report',
-              resolved_version_no: 1,
+              resolved_version_no: null,
               created_at: Date.now(),
               updated_at: Date.now(),
             },
@@ -1864,9 +1864,10 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('Associated Artifacts')).toBeTruthy();
     const link = screen.getByText('repo://mandible@main/results/report.md').closest('a') as HTMLAnchorElement | null;
     expect(link?.getAttribute('href')).toBe(
-      '#/artifacts?series=artifact-series%3Areport&version=1',
+      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
-    expect(link?.textContent).toContain('v1 pinned');
+    expect(link?.textContent).toContain('pinned');
+    expect(link?.textContent).not.toContain('v1');
     expect(link?.textContent).not.toContain('latest');
     const compactLink = screen.getByText('artifact:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
     expect(compactLink?.getAttribute('href')).toBe(
@@ -1874,7 +1875,7 @@ describe('LedgerIssueDetail', () => {
     );
     const livingLink = screen.getByText('artifact-series:live-report').closest('a') as HTMLAnchorElement | null;
     expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
-    expect(livingLink?.textContent).toContain('latest -> v2');
+    expect(livingLink?.textContent).toContain('latest → v2');
     expect(screen.getAllByText('linked + referenced')).toHaveLength(2);
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
   });
@@ -2145,7 +2146,6 @@ describe('ArtifactsView', () => {
           link_kind: 'pinned',
           series_id: 'artifact-series:demo-report',
           series_ref: 'artifact-series:demo-report',
-          resolved_version_no: 1,
           created_at: Date.now(),
           updated_at: Date.now(),
         },
@@ -2163,7 +2163,6 @@ describe('ArtifactsView', () => {
           link_kind: 'living',
           series_id: 'artifact-series:demo-report',
           series_ref: 'artifact-series:demo-report',
-          resolved_version_no: 2,
           created_at: Date.now(),
           updated_at: Date.now(),
         },
@@ -2271,9 +2270,14 @@ describe('ArtifactsView', () => {
     const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
     expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
     expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
-    const pinnedBadge = screen.getByText('v1 pinned').closest('a') as HTMLAnchorElement | null;
-    expect(pinnedBadge?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Ademo-report&version=1');
-    const livingBadge = screen.getByText('latest -> v2').closest('a') as HTMLAnchorElement | null;
+    const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
+    expect(pinnedBadge?.textContent).toBe('pinned');
+    expect(pinnedBadge?.textContent).not.toContain('latest');
+    expect(pinnedBadge?.getAttribute('href')).toBe(
+      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    const livingBadge = document.querySelector('a.artifact-link-badge--living') as HTMLAnchorElement | null;
+    expect(livingBadge?.textContent).toBe('latest');
     expect(livingBadge?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Ademo-report');
     const entityLink = screen.getByText('issue:abc123').closest('a') as HTMLAnchorElement | null;
     expect(entityLink?.getAttribute('href')).toBe('#/issues?issue=abc123&repo=mandible');

@@ -1783,12 +1783,12 @@ export type ArtifactAliasRecord = ContractArtifactAliasRecord;
 
 export type ArtifactLinkRecord = Omit<
   ContractArtifactLinkRecord,
-  'link_kind' | 'series_id' | 'series_ref'
+  'link_kind' | 'series_id' | 'series_ref' | 'resolved_version_no'
 > & {
   link_kind: 'pinned' | 'living';
   series_id: string | null;
   series_ref: string | null;
-  resolved_version_no: number | null;
+  resolved_version_no?: number | null;
 };
 
 export type ArtifactRecord = Omit<ContractArtifactRecord, 'links'> & {

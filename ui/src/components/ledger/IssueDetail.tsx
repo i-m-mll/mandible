@@ -337,7 +337,7 @@ function artifactLinkHref(
 
 function artifactLinkBadgeLabel(link: LedgerIssueDetailArtifactLink): string {
   const version = typeof link.resolved_version_no === 'number' ? `v${link.resolved_version_no}` : null;
-  if (link.link_kind === 'living') return version ? `latest -> ${version}` : 'latest';
+  if (link.link_kind === 'living') return version ? `latest → ${version}` : 'latest';
   return version ? `${version} pinned` : 'pinned';
 }
 
