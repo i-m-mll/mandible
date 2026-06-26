@@ -17,6 +17,7 @@ import {
   ingestArtifact,
   ingestProviderManifest,
   ingestProviderManifestFile,
+  listArtifactSeries,
   listArtifacts,
   listProviders,
   planLocalArtifactPath,
@@ -243,6 +244,27 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
+  });
+
+  app.get("/api/artifacts/series", (req, res) => {
+    const linked = linkedEntityQuery(req);
+    const series = listArtifactSeries(getDb(), {
+      q: queryString(req, "q"),
+      hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
+      repo: queryString(req, "repo"),
+      provider: queryString(req, "provider"),
+      role: queryString(req, "role"),
+      custody: queryString(req, "custody"),
+      availability: queryString(req, "availability"),
+      scheme: queryString(req, "scheme"),
+      location: queryString(req, "location"),
+      linkedEntityType: linked.type,
+      linkedEntityId: linked.id,
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+      summary: queryBoolean(req, "summary"),
+    });
+    sendJson(res, 200, { series });
   });
 
   app.post("/api/artifacts/link", (req, res) => {

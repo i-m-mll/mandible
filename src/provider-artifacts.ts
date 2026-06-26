@@ -18,6 +18,7 @@ import type {
   ArtifactRecord,
   ArtifactRecoverability,
   ArtifactResolveResult,
+  ArtifactSeriesSummary,
   ArtifactSeriesRecord,
   ArtifactSeriesSourceKind,
   ArtifactVersionHistory,
@@ -3562,6 +3563,153 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
   });
 }
 
+export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): ArtifactSeriesSummary[] {
+  if (!artifactVersioningTablesExist(db)) return [];
+  const where: string[] = [];
+  const bindings: Record<string, unknown> = {};
+  const hasAliases = tableExists(db, "artifact_aliases");
+  const hasLinks = tableExists(db, "artifact_links");
+
+  const q = asString(options.q);
+  const hashPrefix = asString(options.hashPrefix);
+  if (q) {
+    const like = `%${escapeLike(q)}%`;
+    bindings.q = like;
+    where.push(`(
+      s.id LIKE @q ESCAPE '\\'
+      OR s.series_key LIKE @q ESCAPE '\\'
+      OR s.title LIKE @q ESCAPE '\\'
+      OR s.repo_id LIKE @q ESCAPE '\\'
+      OR s.logical_name LIKE @q ESCAPE '\\'
+      OR a.id LIKE @q ESCAPE '\\'
+      OR a.content_hash LIKE @q ESCAPE '\\'
+      OR a.uri LIKE @q ESCAPE '\\'
+      OR a.provider_id LIKE @q ESCAPE '\\'
+      OR a.home_repo_id LIKE @q ESCAPE '\\'
+      OR a.role LIKE @q ESCAPE '\\'
+      ${hasAliases ? `OR EXISTS (
+        SELECT 1 FROM artifact_aliases aa
+         WHERE aa.artifact_id = a.id
+           AND (aa.alias LIKE @q ESCAPE '\\' OR aa.normalized_ref LIKE @q ESCAPE '\\')
+      )` : ""}
+    )`);
+  }
+  if (hashPrefix) {
+    bindings.hashPrefix = `${escapeLike(hashPrefix.toLowerCase())}%`;
+    where.push("lower(a.content_hash) LIKE @hashPrefix ESCAPE '\\'");
+  }
+  if (asString(options.repo)) {
+    bindings.repo = options.repo;
+    where.push(`(s.repo_id = @repo OR a.home_repo_id = @repo${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.series_id = s.id AND al.repo_id = @repo)" : ""})`);
+  }
+  if (asString(options.provider)) {
+    bindings.provider = options.provider;
+    where.push(`(a.provider_id = @provider${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.series_id = s.id AND al.provider_id = @provider)" : ""})`);
+  }
+  if (asString(options.role)) {
+    bindings.role = options.role;
+    where.push(`(a.role = @role${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.series_id = s.id AND al.role = @role)" : ""})`);
+  }
+  if (asString(options.custody)) {
+    bindings.custody = options.custody;
+    where.push("a.custody_mode = @custody");
+  }
+  if (asString(options.availability)) {
+    bindings.availability = options.availability;
+    where.push("a.availability = @availability");
+  }
+  if (asString(options.scheme) && hasAliases) {
+    bindings.scheme = options.scheme?.toLowerCase();
+    where.push("EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.artifact_id = a.id AND aa.scheme = @scheme)");
+  }
+  if (asString(options.location)) {
+    const like = `%${escapeLike(options.location!.trim())}%`;
+    bindings.location = like;
+    where.push(`(
+      a.uri LIKE @location ESCAPE '\\'
+      OR a.repo_locator_json LIKE @location ESCAPE '\\'
+      OR a.reference_json LIKE @location ESCAPE '\\'
+      ${hasAliases ? `OR EXISTS (
+        SELECT 1 FROM artifact_aliases aa
+         WHERE aa.artifact_id = a.id
+           AND (aa.alias LIKE @location ESCAPE '\\' OR aa.normalized_ref LIKE @location ESCAPE '\\')
+      )` : ""}
+    )`);
+  }
+  if ((asString(options.linkedEntityType) || asString(options.linkedEntityId)) && hasLinks) {
+    const linkedPredicate = `(al.series_id = s.id OR (a.id IS NOT NULL AND al.artifact_id = a.id))`;
+    if (asString(options.linkedEntityType) && asString(options.linkedEntityId)) {
+      bindings.linkedEntityType = options.linkedEntityType;
+      bindings.linkedEntityId = options.linkedEntityId;
+      where.push(`EXISTS (
+        SELECT 1 FROM artifact_links al
+         WHERE ${linkedPredicate}
+           AND al.entity_type = @linkedEntityType
+           AND al.entity_id = @linkedEntityId
+      )`);
+    } else if (asString(options.linkedEntityType)) {
+      bindings.linkedEntityType = options.linkedEntityType;
+      where.push(`EXISTS (
+        SELECT 1 FROM artifact_links al
+         WHERE ${linkedPredicate}
+           AND al.entity_type = @linkedEntityType
+      )`);
+    } else if (asString(options.linkedEntityId)) {
+      bindings.linkedEntityId = options.linkedEntityId;
+      where.push(`EXISTS (
+        SELECT 1 FROM artifact_links al
+         WHERE ${linkedPredicate}
+           AND al.entity_id = @linkedEntityId
+      )`);
+    }
+  }
+
+  const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  const offset = Math.max(options.offset ?? 0, 0);
+  bindings.limit = limit;
+  bindings.offset = offset;
+  const rows = db.prepare(
+    `SELECT
+        s.id AS series_id, s.series_key, s.source_kind AS series_source_kind,
+        s.title AS series_title, s.repo_id AS series_repo_id,
+        s.logical_name AS series_logical_name, s.latest_version_id,
+        s.version_count, s.metadata_json AS series_metadata_json,
+        s.created_at AS series_created_at, s.updated_at AS series_updated_at,
+        v.id AS version_id, v.artifact_id AS version_artifact_id,
+        v.version_no, v.source_kind AS version_source_kind,
+        v.content_hash AS version_content_hash, v.commit_sha, v.repo_path,
+        v.observed_path, v.custody_mode AS version_custody_mode,
+        v.label, v.note, v.metadata_json AS version_metadata_json,
+        v.created_at AS version_created_at,
+        a.id AS artifact_id, a.algorithm, a.content_hash, a.uri, a.media_type,
+        a.role, a.size_bytes, a.provider_id, a.manifest_id,
+        a.metadata_json AS artifact_metadata_json, a.pinned,
+        a.custody_mode AS artifact_custody_mode, a.home_repo_id,
+        a.repo_locator_json, a.availability, a.retention_json,
+        a.reference_json, a.created_at AS artifact_created_at
+       FROM artifact_series s
+       LEFT JOIN artifact_versions v ON v.id = s.latest_version_id
+       LEFT JOIN artifacts a ON a.id = v.artifact_id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY s.updated_at DESC, s.id
+      LIMIT @limit OFFSET @offset`,
+  ).all(bindings) as Array<Record<string, unknown>>;
+  return rows.map((row) => artifactSeriesSummaryFromRow(db, row));
+}
+
+export function primarySeriesForArtifact(db: Db, artifactId: string): ArtifactSeriesRecord | null {
+  if (!artifactVersioningTablesExist(db)) return null;
+  const row = db
+    .prepare(
+      `SELECT s.* FROM artifact_series s
+         JOIN artifact_versions v ON v.series_id = s.id
+        WHERE v.artifact_id = ?
+        ORDER BY v.version_no DESC LIMIT 1`,
+    )
+    .get(artifactId) as Record<string, unknown> | undefined;
+  return row ? seriesFromRow(row) : null;
+}
+
 // ---------------------------------------------------------------------------
 // Artifact version identity (series) and custody history (issue f7a994e).
 //
@@ -3616,6 +3764,71 @@ function seriesFromRow(row: Record<string, unknown>): ArtifactSeriesRecord {
     metadata: parseJsonRecord(row.metadata_json as string | null),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
+  };
+}
+
+function artifactSeriesSummaryFromRow(db: Db, row: Record<string, unknown>): ArtifactSeriesSummary {
+  const latestArtifact = row.artifact_id === null || row.artifact_id === undefined
+    ? null
+    : summaryArtifactFromRow({
+        id: row.artifact_id,
+        algorithm: row.algorithm,
+        content_hash: row.content_hash,
+        uri: row.uri,
+        media_type: row.media_type,
+        role: row.role,
+        size_bytes: row.size_bytes,
+        provider_id: row.provider_id,
+        manifest_id: row.manifest_id,
+        metadata_json: row.artifact_metadata_json,
+        pinned: row.pinned,
+        custody_mode: row.artifact_custody_mode,
+        home_repo_id: row.home_repo_id,
+        repo_locator_json: row.repo_locator_json,
+        availability: row.availability,
+        retention_json: row.retention_json,
+        reference_json: row.reference_json,
+        created_at: row.artifact_created_at,
+      });
+  const latestVersion = row.version_id === null || row.version_id === undefined
+    ? null
+    : versionFromRow({
+        id: row.version_id,
+        series_id: row.series_id,
+        artifact_id: row.version_artifact_id,
+        version_no: row.version_no,
+        source_kind: row.version_source_kind,
+        content_hash: row.version_content_hash,
+        commit_sha: row.commit_sha,
+        repo_path: row.repo_path,
+        observed_path: row.observed_path,
+        custody_mode: row.version_custody_mode,
+        label: row.label,
+        note: row.note,
+        metadata_json: row.version_metadata_json,
+        created_at: row.version_created_at,
+      });
+  const id = String(row.series_id);
+  return {
+    id,
+    ref: id,
+    series_key: String(row.series_key),
+    source_kind: String(row.series_source_kind) as ArtifactSeriesSourceKind,
+    title: row.series_title === null || row.series_title === undefined ? null : String(row.series_title),
+    repo_id: row.series_repo_id === null || row.series_repo_id === undefined ? null : String(row.series_repo_id),
+    logical_name: row.series_logical_name === null || row.series_logical_name === undefined
+      ? null
+      : String(row.series_logical_name),
+    latest_version_id: row.latest_version_id === null || row.latest_version_id === undefined
+      ? null
+      : String(row.latest_version_id),
+    version_count: Number(row.version_count ?? 0),
+    metadata: parseJsonRecord(row.series_metadata_json as string | null),
+    created_at: Number(row.series_created_at),
+    updated_at: Number(row.series_updated_at),
+    latest_version: latestVersion,
+    latest_artifact: latestArtifact,
+    links: listArtifactSeriesLinks(db, id),
   };
 }
 
@@ -4146,19 +4359,11 @@ export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVers
     // id form. Read-only: this GET endpoint must not materialize registry rows.
     const resolved = resolveArtifactRefReadonly(db, trimmed);
     if (resolved) {
-      const row = db
-        .prepare(
-          `SELECT s.* FROM artifact_series s
-             JOIN artifact_versions v ON v.series_id = s.id
-            WHERE v.artifact_id = ?
-            ORDER BY v.version_no DESC LIMIT 1`,
-        )
-        .get(resolved.id) as Record<string, unknown> | undefined;
-      if (row) series = seriesFromRow(row);
+      series = primarySeriesForArtifact(db, resolved.id);
     }
   }
   if (!series) return null;
-  return { series, versions: listArtifactVersions(db, series.id) };
+  return { series, versions: listArtifactVersions(db, series.id), links: listArtifactSeriesLinks(db, series.id) };
 }
 
 // Non-mutating ref resolution for read-only surfaces (history/diff GETs). Unlike
@@ -4166,18 +4371,80 @@ export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVers
 // entities: it resolves version/series refs and looks up already-registered
 // artifacts/aliases only. Returns null for an unregistered ref.
 export function resolveArtifactRefReadonly(db: Db, ref: string): ArtifactRecord | null {
+  return resolveArtifactRefReadonlyFull(db, ref).artifact;
+}
+
+export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
   const trimmed = ref.trim();
   if (/^artifact-version:/i.test(trimmed) || /^artifact-series:/i.test(trimmed)) {
-    return resolveArtifactVersionRef(db, trimmed, Date.now()).artifact;
+    const fast = resolveLatestSeriesRefReadonly(db, trimmed);
+    if (fast) return fast;
+    return resolveArtifactVersionRef(db, trimmed, Date.now());
   }
+  const normalized = normalizeRef(trimmed);
   const direct = getArtifact(db, trimmed);
-  if (direct) return direct;
-  if (tableExists(db, "artifact_aliases")) {
-    const normalized = normalizeRef(trimmed);
-    const alias = getArtifactAlias(db, normalized.scheme, normalized.normalizedRef);
-    if (alias?.artifact_id) return getArtifact(db, alias.artifact_id);
+  if (direct) {
+    return {
+      status: "resolved",
+      ref,
+      scheme: normalized.scheme,
+      normalized_ref: direct.id,
+      artifact: direct,
+      alias: null,
+      series: null,
+      version: null,
+      warnings: [],
+    };
   }
-  return null;
+  if (tableExists(db, "artifact_aliases")) {
+    const alias = getArtifactAlias(db, normalized.scheme, normalized.normalizedRef);
+    if (alias?.artifact_id) {
+      const artifact = getArtifact(db, alias.artifact_id);
+      return {
+        status: artifact ? "resolved" : "unresolved",
+        ref,
+        scheme: normalized.scheme,
+        normalized_ref: alias.normalized_ref,
+        artifact,
+        alias,
+        series: null,
+        version: null,
+        warnings: [],
+      };
+    }
+  }
+  return {
+    status: "unresolved",
+    ref,
+    scheme: normalized.scheme,
+    normalized_ref: normalized.normalizedRef,
+    artifact: null,
+    alias: null,
+    series: null,
+    version: null,
+    warnings: [],
+  };
+}
+
+function resolveLatestSeriesRefReadonly(db: Db, ref: string): ArtifactResolveResult | null {
+  const match = /^(artifact-series:[^@#\s]+)$/i.exec(ref);
+  if (!match || !artifactVersioningTablesExist(db)) return null;
+  const series = getArtifactSeries(db, match[1]);
+  if (!series?.latest_version_id) return null;
+  const version = getArtifactVersion(db, series.latest_version_id);
+  if (!version) return null;
+  const artifact = getArtifact(db, version.artifact_id);
+  return {
+    status: artifact ? "resolved" : "unresolved",
+    ref,
+    scheme: schemeFromRef(ref),
+    normalized_ref: version.id,
+    artifact,
+    alias: null,
+    series,
+    version,
+    warnings: ["series_latest_not_pinned"],
+  };
 }
 
 // Resolve artifact-version:/artifact-series: refs to their pinned immutable
@@ -4595,6 +4862,19 @@ function listArtifactLinks(db: Db, artifactId: string): ArtifactLinkRecord[] {
       WHERE artifact_id = ?
       ORDER BY entity_type, entity_id, link_type, role`
   ).all(artifactId) as Array<Record<string, unknown>>;
+  return rows.map(artifactLinkFromRow);
+}
+
+function listArtifactSeriesLinks(db: Db, seriesId: string): ArtifactLinkRecord[] {
+  if (!tableExists(db, "artifact_links")) return [];
+  const rows = db.prepare(
+    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+            provider_id, source, metadata_json, link_kind, series_id, series_ref,
+            created_at, updated_at
+       FROM artifact_links
+      WHERE series_id = ?
+      ORDER BY entity_type, entity_id, link_type, role`
+  ).all(seriesId) as Array<Record<string, unknown>>;
   return rows.map(artifactLinkFromRow);
 }
 
