@@ -167,6 +167,10 @@ export interface ArtifactResolveAndLinkInput {
   provider_id?: string;
   source?: string;
   metadata?: JsonRecord;
+  // `pinned` (default) stores the concrete resolved artifact id; `living`
+  // requires a single resolvable series and tracks its head (migration v89,
+  // issue 10960ea).
+  link_kind?: "pinned" | "living";
 }
 
 export interface ArtifactResolveAndLinkResult {
@@ -227,6 +231,13 @@ interface ArtifactLinkInput {
   provider_id?: string;
   source?: string;
   metadata?: JsonRecord;
+  // Typed-link write inputs (migration v89, issue 10960ea). For `living` links
+  // the caller must supply `series_id` (the link id is keyed by it) and should
+  // supply `series_ref` (the author-facing ref). Omitted/`pinned` keeps the
+  // byte-identical legacy id formula and leaves both series fields null.
+  link_kind?: "pinned" | "living";
+  series_id?: string;
+  series_ref?: string;
 }
 
 export interface ArtifactListOptions {
@@ -1401,6 +1412,15 @@ export function registerArtifactAlias(db: Db, args: {
   return getArtifactAlias(db, normalized.scheme, normalized.normalizedRef) as ArtifactAliasRecord;
 }
 
+// Whether `artifactId` is a genuine member of `seriesId` (has a version row).
+function seriesContainsArtifact(db: Db, seriesId: string, artifactId: string): boolean {
+  if (!artifactVersioningTablesExist(db)) return false;
+  const row = db.prepare(
+    "SELECT 1 FROM artifact_versions WHERE series_id = ? AND artifact_id = ? LIMIT 1",
+  ).get(seriesId, artifactId);
+  return Boolean(row);
+}
+
 export function registerArtifactLink(
   db: Db,
   artifactId: string,
@@ -1415,14 +1435,51 @@ export function registerArtifactLink(
   if (!entityType || !entityId) return null;
   const linkType = asString(input.link_type) ?? "references";
   const role = asString(input.role) ?? null;
-  const id = artifactRegistryId("artifact_link", [artifactId, entityType, entityId, linkType, role ?? ""]);
+  const linkKind: "pinned" | "living" = input.link_kind === "living" ? "living" : "pinned";
+  const seriesId = asString(input.series_id) ?? null;
+  const seriesRef = asString(input.series_ref) ?? null;
+  // AUTHORITATIVE typed-link invariants, enforced at this low-level chokepoint so
+  // EVERY write path is covered — including /api/artifacts/ingest, which forwards
+  // caller-supplied `link`/`links` straight here and would otherwise bypass the
+  // route and resolveAndLinkArtifact guards (which remain as defense in depth).
+  if (linkKind === "living") {
+    // Evidence on an issue must pin one immutable version, never track a head.
+    if (entityType === "issue" && linkType === "evidence") {
+      throw new Error("evidence_links_must_be_pinned");
+    }
+    // A living link must name a real series, and its stored artifact_id (the
+    // latest-at-creation fallback anchor) must be a genuine member of that
+    // series; a bogus/non-member series_id could otherwise freeze a wrong or
+    // dangling fallback. resolveAndLinkArtifact supplies a resolved series id and
+    // a member artifact, so it passes unchanged.
+    if (!seriesId) {
+      throw new Error("living_link_requires_series");
+    }
+    if (!getArtifactSeries(db, seriesId) || !seriesContainsArtifact(db, seriesId, artifactId)) {
+      throw new Error("living_link_series_mismatch");
+    }
+  }
+  // PINNED keeps the byte-identical legacy identity: [artifactId, entityType,
+  // entityId, linkType, role??""]. LIVING is keyed by the SERIES (not the
+  // resolved artifact, which is only a latest-at-creation fallback) plus a
+  // trailing "living" discriminator, so a pinned and a living link to the same
+  // (entity, relation, role) coexist as distinct rows.
+  const id = linkKind === "living"
+    ? artifactRegistryId("artifact_link", [seriesId, entityType, entityId, linkType, role ?? "", "living"])
+    : artifactRegistryId("artifact_link", [artifactId, entityType, entityId, linkType, role ?? ""]);
   db.prepare(
+    // NOTE: artifact_id is intentionally NOT in the ON CONFLICT DO UPDATE SET.
+    // A re-submission MUST NOT silently retarget an existing link's stored
+    // artifact id (no silent retarget) — for living links the stored
+    // latest-at-creation fallback stays pinned to its first write.
     `INSERT INTO artifact_links (
       id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
-      provider_id, source, metadata_json, created_at, updated_at
+      provider_id, source, metadata_json, link_kind, series_id, series_ref,
+      created_at, updated_at
     ) VALUES (
       @id, @artifact_id, @entity_type, @entity_id, @link_type, @role, @repo_id,
-      @provider_id, @source, @metadata_json, @created_at, @updated_at
+      @provider_id, @source, @metadata_json, @link_kind, @series_id, @series_ref,
+      @created_at, @updated_at
     )
     ON CONFLICT(id) DO UPDATE SET
       role = excluded.role,
@@ -1430,6 +1487,9 @@ export function registerArtifactLink(
       provider_id = COALESCE(excluded.provider_id, artifact_links.provider_id),
       source = excluded.source,
       metadata_json = excluded.metadata_json,
+      link_kind = excluded.link_kind,
+      series_id = excluded.series_id,
+      series_ref = excluded.series_ref,
       updated_at = excluded.updated_at`
   ).run({
     id,
@@ -1442,6 +1502,9 @@ export function registerArtifactLink(
     provider_id: asString(input.provider_id) ?? null,
     source: asString(input.source) ?? "artifact_registry",
     metadata_json: jsonStringify(input.metadata ?? {}),
+    link_kind: linkKind,
+    series_id: seriesId,
+    series_ref: seriesRef,
     created_at: now,
     updated_at: now,
   });
@@ -1978,6 +2041,25 @@ function resolveIssueEntity(
   };
 }
 
+// Series candidates for a LIVING link. A series/version ref resolves to exactly
+// one series (`resolution.series`). For a content/hash ref the resolver carries
+// no series, so fall back to the series that contain the resolved artifact
+// version: a unique hit is usable, while 0 or >1 is ambiguous. This never
+// touches the resolver core — it is a link-write-time lookup only.
+function livingSeriesCandidates(db: Db, resolution: ArtifactResolveResult): ArtifactSeriesRecord[] {
+  if (resolution.series) return [resolution.series];
+  if (!resolution.artifact || !artifactVersioningTablesExist(db)) return [];
+  const rows = db.prepare(
+    `SELECT DISTINCT series_id FROM artifact_versions WHERE artifact_id = ?`,
+  ).all(resolution.artifact.id) as Array<{ series_id: unknown }>;
+  const series: ArtifactSeriesRecord[] = [];
+  for (const row of rows) {
+    const found = getArtifactSeries(db, String(row.series_id));
+    if (found) series.push(found);
+  }
+  return series;
+}
+
 export function resolveAndLinkArtifact(
   db: Db,
   input: ArtifactResolveAndLinkInput,
@@ -1998,17 +2080,42 @@ export function resolveAndLinkArtifact(
   if (!entityType || !rawEntityId) {
     throw new Error("entity_type and entity_id are required");
   }
+  const linkType = asString(input.link_type) ?? "references";
+  const linkKind: "pinned" | "living" = asString(input.link_kind) === "living" ? "living" : "pinned";
+
+  // LIVING link gating. Resolve the target series and enforce the evidence rule
+  // in the BACKEND so every write path (route, CLI, in-process) rejects the same
+  // way — the route also pre-validates this for a clean HTTP-edge contract.
+  let seriesId: string | undefined;
+  let seriesRef: string | undefined;
+  if (linkKind === "living") {
+    if (entityType === "issue" && linkType === "evidence") {
+      throw new Error("evidence_links_must_be_pinned");
+    }
+    const candidates = livingSeriesCandidates(db, resolution);
+    if (candidates.length !== 1) {
+      throw new Error("living_link_requires_series");
+    }
+    seriesId = candidates[0].id;
+    // `series_ref` records the author-facing ref exactly as supplied; the stored
+    // artifact_id is the latest-at-creation fallback (resolution.artifact.id).
+    seriesRef = ref;
+  }
+
   const issueResolution = entityType === "issue"
     ? resolveIssueEntity(db, rawEntityId, asString(input.issue_project) ?? asString(input.repo_id))
     : null;
   const link = registerArtifactLink(db, resolution.artifact.id, {
     entity_type: entityType,
     entity_id: issueResolution?.entity_id ?? rawEntityId,
-    link_type: asString(input.link_type) ?? "references",
+    link_type: linkType,
     role: asString(input.role),
     repo_id: asString(input.repo_id),
     provider_id: asString(input.provider_id),
     source: asString(input.source) ?? "artifact_link",
+    link_kind: linkKind,
+    series_id: seriesId,
+    series_ref: seriesRef,
     metadata: mergeJsonRecords(input.metadata, issueResolution?.metadata, {
       artifact_ref: ref,
       normalized_ref: resolution.normalized_ref,
@@ -2255,7 +2362,8 @@ export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBun
   if (!tableExists(db, "artifact_links")) return [];
   const rows = db.prepare(
     `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
-            provider_id, source, metadata_json, created_at, updated_at
+            provider_id, source, metadata_json, link_kind, series_id, series_ref,
+            created_at, updated_at
        FROM artifact_links
       WHERE entity_type = 'artifact_bundle'
         AND entity_id = ?
@@ -2292,7 +2400,8 @@ function getArtifactAlias(db: Db, scheme: string, normalizedRef: string): Artifa
 function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
   const row = db.prepare(
     `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
-            provider_id, source, metadata_json, created_at, updated_at
+            provider_id, source, metadata_json, link_kind, series_id, series_ref,
+            created_at, updated_at
        FROM artifact_links
       WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
@@ -4432,6 +4541,9 @@ function artifactLinkFromRow(row: Record<string, unknown>): ArtifactLinkRecord {
     provider_id: row.provider_id === null || row.provider_id === undefined ? null : String(row.provider_id),
     source: String(row.source),
     metadata: parseJsonRecord(row.metadata_json as string),
+    link_kind: row.link_kind === "living" ? "living" : "pinned",
+    series_id: row.series_id === null || row.series_id === undefined ? null : String(row.series_id),
+    series_ref: row.series_ref === null || row.series_ref === undefined ? null : String(row.series_ref),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   };
@@ -4477,7 +4589,8 @@ function listArtifactAliases(db: Db, artifactId: string): ArtifactAliasRecord[] 
 function listArtifactLinks(db: Db, artifactId: string): ArtifactLinkRecord[] {
   const rows = db.prepare(
     `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
-            provider_id, source, metadata_json, created_at, updated_at
+            provider_id, source, metadata_json, link_kind, series_id, series_ref,
+            created_at, updated_at
        FROM artifact_links
       WHERE artifact_id = ?
       ORDER BY entity_type, entity_id, link_type, role`
