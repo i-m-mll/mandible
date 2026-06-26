@@ -1,0 +1,430 @@
+import http from "node:http";
+import os from "node:os";
+import path from "node:path";
+import fs from "node:fs";
+import type { AddressInfo } from "node:net";
+import { spawn, spawnSync } from "node:child_process";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+const CLI = path.join(process.cwd(), "bin", "mandible");
+
+let tempDir = "";
+
+interface RecordedRequest {
+  method: string;
+  url: string;
+  body: Record<string, unknown> | undefined;
+}
+
+function run(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(CLI, args, {
+    cwd: tempDir,
+    encoding: "utf8",
+    env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
+  });
+  return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+function runAsync(
+  args: string[],
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(CLI, args, {
+      cwd: tempDir,
+      env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => {
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
+function startHttpRecorder(
+  handler: (req: RecordedRequest) => { status: number; body: unknown },
+): Promise<{ port: number; requests: RecordedRequest[]; close: () => Promise<void> }> {
+  const requests: RecordedRequest[] = [];
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk) => chunks.push(chunk as Buffer));
+    req.on("end", () => {
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let body: Record<string, unknown> | undefined;
+      try {
+        body = raw ? (JSON.parse(raw) as Record<string, unknown>) : undefined;
+      } catch {
+        body = undefined;
+      }
+      const recorded: RecordedRequest = { method: req.method ?? "GET", url: req.url ?? "/", body };
+      requests.push(recorded);
+      const result = handler(recorded);
+      res.writeHead(result.status, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(result.body));
+    });
+  });
+  return new Promise((resolve) => {
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        port: (server.address() as AddressInfo).port,
+        requests,
+        close: () => new Promise<void>((done) => server.close(() => done())),
+      });
+    });
+  });
+}
+
+function issueResponse() {
+  return {
+    id: "issue-1234567890",
+    display_id: "abc",
+    project: { repo_id: "mandible" },
+  };
+}
+
+function linkResponse(body: Record<string, unknown>, versionNo = 3) {
+  const linkKind = body.link_kind === "living" ? "living" : "pinned";
+  return {
+    resolution: {
+      artifact: { id: "artifact:sha256:abc123" },
+      version: { version_no: versionNo },
+    },
+    link: {
+      id: "artifact-link-1",
+      artifact_id: "artifact:sha256:abc123",
+      entity_type: "issue",
+      entity_id: "issue-1234567890",
+      link_type: body.link_type,
+      link_kind: linkKind,
+      series_id: linkKind === "living" ? "artifact-series:series-1" : null,
+      series_ref: linkKind === "living" ? body.ref : null,
+    },
+  };
+}
+
+beforeEach(() => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-cli-artifact-link-"));
+});
+
+afterEach(() => {
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+describe("artifact link CLI", () => {
+  it("documents typed link flags and series-as-artifact refs", () => {
+    const result = run(["artifact", "--help"]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("[--pinned|--living]");
+    expect(result.stdout).toContain("artifact-series:<id>      logical artifact");
+    expect(result.stdout).toContain("links pin latest by default");
+    expect(result.stdout).toContain("artifact-version:<id>     specific artifact version");
+    expect(result.stdout).toContain("artifact:sha256:<hash>    immutable artifact version");
+  });
+
+  it("omits link_kind when no typed-link flag is supplied and prints a pinned badge", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url === "/api/ledger/issues/abc") {
+        return { status: 200, body: issueResponse() };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/link") {
+        return { status: 200, body: linkResponse(req.body!) };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "link", "artifact-series:series-1", "--issue", "abc"], {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe(
+        "linked artifact:sha256:abc123 references issue:issue-12 [pinned v3]",
+      );
+      const linkRequest = recorder.requests.find((request) => request.url === "/api/artifacts/link")!;
+      expect(linkRequest.body).toMatchObject({
+        ref: "artifact-series:series-1",
+        entity_type: "issue",
+        entity_id: "issue-1234567890",
+        link_type: "references",
+        repo_id: "mandible",
+        source: "artifact_cli",
+      });
+      expect(linkRequest.body).not.toHaveProperty("link_kind");
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("sends explicit living and pinned link_kind flags", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url === "/api/ledger/issues/abc") {
+        return { status: 200, body: issueResponse() };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/link") {
+        return { status: 200, body: linkResponse(req.body!) };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const env = { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` };
+      const living = await runAsync(
+        ["artifact", "link", "artifact-series:series-1", "--issue", "abc", "--living"],
+        env,
+      );
+      const pinned = await runAsync(
+        ["artifact", "link", "artifact-series:series-1", "--issue", "abc", "--pinned"],
+        env,
+      );
+
+      expect(living.status).toBe(0);
+      expect(living.stdout.trim()).toBe(
+        "linked artifact:sha256:abc123 references issue:issue-12 [living · latest v3]",
+      );
+      expect(pinned.status).toBe(0);
+      expect(pinned.stdout.trim()).toBe(
+        "linked artifact:sha256:abc123 references issue:issue-12 [pinned v3]",
+      );
+      const linkBodies = recorder.requests
+        .filter((request) => request.url === "/api/artifacts/link")
+        .map((request) => request.body);
+      expect(linkBodies[0]).toMatchObject({ link_kind: "living" });
+      expect(linkBodies[1]).toMatchObject({ link_kind: "pinned" });
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("rejects mutually exclusive link-kind flags before contacting the daemon", () => {
+    const result = run([
+      "artifact",
+      "link",
+      "artifact-series:series-1",
+      "--issue",
+      "abc",
+      "--pinned",
+      "--living",
+    ]);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("--pinned and --living are mutually exclusive");
+  });
+
+  it("surfaces backend evidence_links_must_be_pinned errors clearly", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url === "/api/ledger/issues/abc") {
+        return { status: 200, body: issueResponse() };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/link") {
+        return { status: 400, body: { error: "evidence_links_must_be_pinned" } };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(
+        [
+          "artifact",
+          "link",
+          "artifact-series:series-1",
+          "--issue",
+          "abc",
+          "--relation",
+          "evidence",
+          "--living",
+        ],
+        { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("Failed to link artifact ref");
+      expect(result.stderr).toContain("evidence_links_must_be_pinned");
+      const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
+      expect(body).toMatchObject({ link_type: "evidence", link_kind: "living" });
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("keeps artifact ref link bodies pinned-default without link_kind", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url === "/api/ledger/issues/abc") {
+        return { status: 200, body: issueResponse() };
+      }
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              artifact: { id: "artifact:sha256:resolved" },
+            },
+          },
+        };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/link") {
+        return { status: 200, body: linkResponse(req.body!) };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "ref", "artifact:sha256:resolved", "--issue", "abc", "--json"], {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
+      expect(body).toMatchObject({
+        ref: "artifact:sha256:resolved",
+        entity_type: "issue",
+        entity_id: "issue-1234567890",
+        link_type: "references",
+      });
+      expect(body).not.toHaveProperty("link_kind");
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("keeps artifact snapshot link bodies pinned-default without link_kind", async () => {
+    fs.writeFileSync(path.join(tempDir, "report.md"), "# Report\n", "utf8");
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url === "/api/ledger/issues/abc") {
+        return { status: 200, body: issueResponse() };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/snapshot") {
+        return {
+          status: 200,
+          body: {
+            artifact: {
+              id: "artifact:sha256:snapshot",
+              custody_mode: "copy",
+              availability: "present",
+            },
+          },
+        };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/link") {
+        return { status: 200, body: linkResponse(req.body!) };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(
+        ["artifact", "snapshot", "artifact:sha256:old", "--from", "report.md", "--issue", "abc", "--json"],
+        { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
+      );
+
+      expect(result.status).toBe(0);
+      const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
+      expect(body).toMatchObject({
+        ref: "artifact:sha256:snapshot",
+        entity_type: "issue",
+        entity_id: "issue-1234567890",
+        link_type: "references",
+      });
+      expect(body).not.toHaveProperty("link_kind");
+    } finally {
+      await recorder.close();
+    }
+  });
+});
+
+describe("artifact versions CLI display", () => {
+  it("relabels the human series heading as artifact", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/versions?")) {
+        return {
+          status: 200,
+          body: {
+            history: {
+              series: {
+                id: "artifact-series:series-1",
+                source_kind: "managed",
+                version_count: 2,
+                title: "Report",
+              },
+              versions: [
+                {
+                  version_no: 1,
+                  source_kind: "managed",
+                  artifact_id: "artifact:sha256:one",
+                  label: "draft",
+                },
+                {
+                  version_no: 2,
+                  source_kind: "managed",
+                  artifact_id: "artifact:sha256:two",
+                  label: null,
+                },
+              ],
+              links: [],
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "versions", "artifact-series:series-1"], {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("artifact artifact-series:series-1 [managed] 2 version(s)");
+      expect(result.stdout).not.toContain("series artifact-series:series-1");
+      expect(result.stdout).toContain("v1 managed artifact:sha256:one (draft)");
+      expect(result.stdout).toContain("v2 managed artifact:sha256:two");
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("keeps the versions JSON envelope keys frozen", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/versions?")) {
+        return {
+          status: 200,
+          body: {
+            history: {
+              series: { id: "artifact-series:series-1", source_kind: "managed", version_count: 0 },
+              versions: [],
+              links: [],
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "versions", "artifact-series:series-1", "--json"], {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload).toHaveProperty("history.series");
+      expect(payload).toHaveProperty("history.versions");
+      expect(payload.history.series.id).toBe("artifact-series:series-1");
+    } finally {
+      await recorder.close();
+    }
+  });
+});

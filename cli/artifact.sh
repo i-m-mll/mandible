@@ -45,7 +45,7 @@ usage() {
 Usage:
   mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
-  mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--json]
+  mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
   mandible artifact list [--repo <repo>] [--issue <id>] [--role <role>] [--custody <mode>] [--json]
   mandible artifact show <ref> [--json]
@@ -74,6 +74,11 @@ Recoverability:
   repo_worktree bytes are observed in a worktree but not proven committed.
   local_only    bytes are observed locally only.
   mandible_cas  bytes are stored in Mandible artifact storage.
+
+Artifact refs:
+  artifact-series:<id>      logical artifact; links pin latest by default, or use --living to follow latest.
+  artifact-version:<id>     specific artifact version.
+  artifact:sha256:<hash>    immutable artifact version.
 EOF
 }
 
@@ -681,29 +686,58 @@ cmd_ref() {
 }
 
 cmd_link() {
-  local ref="" issue="" role="" relation="references" json=0
+  local ref="" issue="" role="" relation="references" link_kind="" json=0
   while (( $# > 0 )); do
     case "$1" in
       --issue) issue="$2"; shift 2 ;;
       --role) role="$2"; shift 2 ;;
       --relation) relation="$2"; shift 2 ;;
+      --pinned)
+        [[ "$link_kind" != "living" ]] || die "--pinned and --living are mutually exclusive." 2
+        link_kind="pinned"; shift ;;
+      --living)
+        [[ "$link_kind" != "pinned" ]] || die "--pinned and --living are mutually exclusive." 2
+        link_kind="living"; shift ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" && -n "$issue" ]] || die "Usage: mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff]" 2
+  [[ -n "$ref" && -n "$issue" ]] || die "Usage: mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living]" 2
   case "$relation" in references|output|evidence|handoff) ;; *) die "Unknown relation: $relation" 2 ;; esac
   require_tools
   resolve_issue "$issue"
-  local payload response
-  payload="$(jq -n --arg ref "$ref" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg link_type "$relation" --arg role "$role" \
-    '{ref:$ref, entity_type:"issue", entity_id:$entity_id, link_type:$link_type, role:(if $role == "" then null else $role end), repo_id:(if $repo_id == "" then null else $repo_id end), source:"artifact_cli"}')"
-  response="$(api_post "/api/artifacts/link" "$payload")" || die "${RED}Failed to link artifact ref.${RESET}" 1
+  local payload response tmp_response http_status detail
+  payload="$(jq -n \
+    --arg ref "$ref" \
+    --arg entity_id "$issue_id" \
+    --arg repo_id "$issue_repo" \
+    --arg link_type "$relation" \
+    --arg role "$role" \
+    --arg link_kind "$link_kind" \
+    '{ref:$ref, entity_type:"issue", entity_id:$entity_id, link_type:$link_type, role:(if $role == "" then null else $role end), repo_id:(if $repo_id == "" then null else $repo_id end), source:"artifact_cli"}
+     + (if $link_kind == "" then {} else {link_kind:$link_kind} end)')"
+  tmp_response="$(mktemp)"
+  http_status="$(api_capture POST "/api/artifacts/link" "$payload" "$tmp_response")"
+  if [[ ! "$http_status" =~ ^2 ]]; then
+    detail="$(jq -r '.error // .detail // .message // empty' "$tmp_response" 2>/dev/null || true)"
+    rm -f "$tmp_response"
+    [[ -n "$detail" ]] || detail="api_link_failed"
+    die "${RED}Failed to link artifact ref: ${detail}.${RESET}" 1
+  fi
+  response="$(cat "$tmp_response")"
+  rm -f "$tmp_response"
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '"linked \(.resolution.artifact.id) \(.link.link_type) issue:\(.link.entity_id[0:8])"'
+    printf '%s\n' "$response" | jq -r '
+      .link as $l
+      | .resolution as $r
+      | ($l.link_kind // "pinned") as $kind
+      | ($l.resolved_version_no // $r.resolved_version_no // $r.version.version_no // null) as $version
+      | (if $version == null then "" else " v\($version)" end) as $version_suffix
+      | (if $kind == "living" then "[living · latest\($version_suffix)]" else "[pinned\($version_suffix)]" end) as $badge
+      | "linked \($r.artifact.id) \($l.link_type) issue:\($l.entity_id[0:8]) \($badge)"'
   fi
 }
 
@@ -857,7 +891,7 @@ cmd_versions() {
   else
     printf '%s\n' "$response" | jq -r '
       .history.series as $s
-      | "series \($s.id) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
+      | "artifact \($s.id) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
       (.history.versions[]
         | "  v\(.version_no) \(.source_kind) \(.artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
   fi
