@@ -921,6 +921,24 @@ export interface ArtifactRecord {
   links?: ArtifactLinkRecord[];
 }
 
+export interface ArtifactSeriesSummary {
+  id: string;
+  ref: string;
+  series_key: string;
+  source_kind: ArtifactSeriesSourceKind;
+  title: string | null;
+  repo_id: string | null;
+  logical_name: string | null;
+  latest_version_id: string | null;
+  version_count: number;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  latest_version: ArtifactVersionRecord | null;
+  latest_artifact: ArtifactRecord | null;
+  links: ArtifactLinkRecord[];
+}
+
 export type ArtifactRecoverability =
   | "repo_commit"
   | "repo_worktree"
@@ -1065,6 +1083,7 @@ export interface ArtifactVersionRecord {
 export interface ArtifactVersionHistory {
   series: ArtifactSeriesRecord;
   versions: ArtifactVersionRecord[];
+  links: ArtifactLinkRecord[];
 }
 
 export interface ArtifactVersionRecordResult {

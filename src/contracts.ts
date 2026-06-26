@@ -364,6 +364,40 @@ export type ArtifactRecord = {
   links?: ArtifactLinkRecord[];
 };
 
+export type ArtifactVersionSourceKind = "tracked_repo" | "local_only" | "managed";
+export type ArtifactSeriesSourceKind = ArtifactVersionSourceKind | "mixed";
+
+export type ArtifactSeriesRecord = {
+  id: string;
+  series_key: string;
+  source_kind: ArtifactSeriesSourceKind;
+  title: string | null;
+  repo_id: string | null;
+  logical_name: string | null;
+  latest_version_id: string | null;
+  version_count: number;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ArtifactVersionRecord = {
+  id: string;
+  series_id: string;
+  artifact_id: string;
+  version_no: number;
+  source_kind: ArtifactVersionSourceKind;
+  content_hash: string;
+  commit_sha: string | null;
+  repo_path: string | null;
+  observed_path: string | null;
+  custody_mode: string | null;
+  label: string | null;
+  note: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+};
+
 export type ArtifactResolveResult = {
   status: ArtifactAliasResolutionStatus;
   ref: string;
@@ -371,6 +405,27 @@ export type ArtifactResolveResult = {
   normalized_ref: string;
   artifact: ArtifactRecord | null;
   alias: ArtifactAliasRecord | null;
+  series?: ArtifactSeriesRecord | null;
+  version?: ArtifactVersionRecord | null;
+  warnings?: string[];
+};
+
+export type ArtifactSeriesSummary = {
+  id: string;
+  ref: string;
+  series_key: string;
+  source_kind: ArtifactSeriesSourceKind;
+  title: string | null;
+  repo_id: string | null;
+  logical_name: string | null;
+  latest_version_id: string | null;
+  version_count: number;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+  latest_version: ArtifactVersionRecord | null;
+  latest_artifact: ArtifactRecord | null;
+  links: ArtifactLinkRecord[];
 };
 
 // ---------------------------------------------------------------------------
