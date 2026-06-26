@@ -3569,6 +3569,8 @@ export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): A
   const bindings: Record<string, unknown> = {};
   const hasAliases = tableExists(db, "artifact_aliases");
   const hasLinks = tableExists(db, "artifact_links");
+  // Series filters match both series-scoped links and links on the latest artifact.
+  const linkScopePredicate = `(al.series_id = s.id OR (a.id IS NOT NULL AND al.artifact_id = a.id))`;
 
   const q = asString(options.q);
   const hashPrefix = asString(options.hashPrefix);
@@ -3600,15 +3602,15 @@ export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): A
   }
   if (asString(options.repo)) {
     bindings.repo = options.repo;
-    where.push(`(s.repo_id = @repo OR a.home_repo_id = @repo${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.series_id = s.id AND al.repo_id = @repo)" : ""})`);
+    where.push(`(s.repo_id = @repo OR a.home_repo_id = @repo${hasLinks ? ` OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScopePredicate} AND al.repo_id = @repo)` : ""})`);
   }
   if (asString(options.provider)) {
     bindings.provider = options.provider;
-    where.push(`(a.provider_id = @provider${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.series_id = s.id AND al.provider_id = @provider)" : ""})`);
+    where.push(`(a.provider_id = @provider${hasLinks ? ` OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScopePredicate} AND al.provider_id = @provider)` : ""})`);
   }
   if (asString(options.role)) {
     bindings.role = options.role;
-    where.push(`(a.role = @role${hasLinks ? " OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.series_id = s.id AND al.role = @role)" : ""})`);
+    where.push(`(a.role = @role${hasLinks ? ` OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScopePredicate} AND al.role = @role)` : ""})`);
   }
   if (asString(options.custody)) {
     bindings.custody = options.custody;
@@ -3637,13 +3639,12 @@ export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): A
     )`);
   }
   if ((asString(options.linkedEntityType) || asString(options.linkedEntityId)) && hasLinks) {
-    const linkedPredicate = `(al.series_id = s.id OR (a.id IS NOT NULL AND al.artifact_id = a.id))`;
     if (asString(options.linkedEntityType) && asString(options.linkedEntityId)) {
       bindings.linkedEntityType = options.linkedEntityType;
       bindings.linkedEntityId = options.linkedEntityId;
       where.push(`EXISTS (
         SELECT 1 FROM artifact_links al
-         WHERE ${linkedPredicate}
+         WHERE ${linkScopePredicate}
            AND al.entity_type = @linkedEntityType
            AND al.entity_id = @linkedEntityId
       )`);
@@ -3651,14 +3652,14 @@ export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): A
       bindings.linkedEntityType = options.linkedEntityType;
       where.push(`EXISTS (
         SELECT 1 FROM artifact_links al
-         WHERE ${linkedPredicate}
+         WHERE ${linkScopePredicate}
            AND al.entity_type = @linkedEntityType
       )`);
     } else if (asString(options.linkedEntityId)) {
       bindings.linkedEntityId = options.linkedEntityId;
       where.push(`EXISTS (
         SELECT 1 FROM artifact_links al
-         WHERE ${linkedPredicate}
+         WHERE ${linkScopePredicate}
            AND al.entity_id = @linkedEntityId
       )`);
     }
@@ -3694,7 +3695,11 @@ export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): A
       ORDER BY s.updated_at DESC, s.id
       LIMIT @limit OFFSET @offset`,
   ).all(bindings) as Array<Record<string, unknown>>;
-  return rows.map((row) => artifactSeriesSummaryFromRow(db, row));
+  const linksBySeriesId = listArtifactSeriesLinksForSeries(
+    db,
+    rows.map((row) => String(row.series_id)),
+  );
+  return rows.map((row) => artifactSeriesSummaryFromRow(row, linksBySeriesId.get(String(row.series_id)) ?? []));
 }
 
 export function primarySeriesForArtifact(db: Db, artifactId: string): ArtifactSeriesRecord | null {
@@ -3767,7 +3772,10 @@ function seriesFromRow(row: Record<string, unknown>): ArtifactSeriesRecord {
   };
 }
 
-function artifactSeriesSummaryFromRow(db: Db, row: Record<string, unknown>): ArtifactSeriesSummary {
+function artifactSeriesSummaryFromRow(
+  row: Record<string, unknown>,
+  links: ArtifactLinkRecord[],
+): ArtifactSeriesSummary {
   const latestArtifact = row.artifact_id === null || row.artifact_id === undefined
     ? null
     : summaryArtifactFromRow({
@@ -3828,7 +3836,7 @@ function artifactSeriesSummaryFromRow(db: Db, row: Record<string, unknown>): Art
     updated_at: Number(row.series_updated_at),
     latest_version: latestVersion,
     latest_artifact: latestArtifact,
-    links: listArtifactSeriesLinks(db, id),
+    links,
   };
 }
 
@@ -4876,6 +4884,29 @@ function listArtifactSeriesLinks(db: Db, seriesId: string): ArtifactLinkRecord[]
       ORDER BY entity_type, entity_id, link_type, role`
   ).all(seriesId) as Array<Record<string, unknown>>;
   return rows.map(artifactLinkFromRow);
+}
+
+function listArtifactSeriesLinksForSeries(db: Db, seriesIds: string[]): Map<string, ArtifactLinkRecord[]> {
+  const linksBySeriesId = new Map<string, ArtifactLinkRecord[]>();
+  if (seriesIds.length === 0 || !tableExists(db, "artifact_links")) return linksBySeriesId;
+  const uniqueSeriesIds = [...new Set(seriesIds)];
+  const placeholders = uniqueSeriesIds.map(() => "?").join(",");
+  const rows = db.prepare(
+    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+            provider_id, source, metadata_json, link_kind, series_id, series_ref,
+            created_at, updated_at
+       FROM artifact_links
+      WHERE series_id IN (${placeholders})
+      ORDER BY series_id, entity_type, entity_id, link_type, role`
+  ).all(...uniqueSeriesIds) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const seriesId = row.series_id === null || row.series_id === undefined ? null : String(row.series_id);
+    if (!seriesId) continue;
+    const links = linksBySeriesId.get(seriesId) ?? [];
+    links.push(artifactLinkFromRow(row));
+    linksBySeriesId.set(seriesId, links);
+  }
+  return linksBySeriesId;
 }
 
 function manifestFromRow(row: Record<string, unknown>): ProviderManifestRecord {

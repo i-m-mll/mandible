@@ -262,7 +262,6 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       linkedEntityId: linked.id,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
-      summary: queryBoolean(req, "summary"),
     });
     sendJson(res, 200, { series });
   });

@@ -704,9 +704,11 @@ function upsertAssociatedArtifact(
     artifacts.set(artifact.id, entry);
   } else {
     if (source.pinState === "living") entry.pin_state = "living";
-    if (source.isLatest !== undefined) entry.is_latest = source.isLatest;
-    if (source.resolvedVersionNo !== undefined) entry.resolved_version_no = source.resolvedVersionNo;
-    if (source.seriesId !== undefined) entry.series_id = source.seriesId;
+    if (source.pinState === "living") {
+      if (source.isLatest !== undefined) entry.is_latest = source.isLatest;
+      if (source.resolvedVersionNo !== undefined) entry.resolved_version_no = source.resolvedVersionNo;
+      if (source.seriesId !== undefined) entry.series_id = source.seriesId;
+    }
     for (const warning of source.warnings ?? []) {
       if (!entry.warnings.includes(warning)) entry.warnings.push(warning);
     }

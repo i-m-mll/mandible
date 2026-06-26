@@ -123,6 +123,52 @@ describe("issue detail living artifact links", () => {
     });
   });
 
+  it.each([
+    { label: "living link newer", livingAt: 1200, pinnedAt: 1100 },
+    { label: "pinned link newer", livingAt: 1100, pinnedAt: 1200 },
+  ])("keeps living badge metadata when pinned and living links merge to the same artifact ($label)", (
+    { livingAt, pinnedAt },
+  ) => {
+    const issueId = createIssue();
+    const version = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "test",
+      logical_name: "same-artifact",
+      content: "only version\n",
+      media_type: "text/plain",
+      role: "report",
+    }, 1000);
+    const livingLink = resolveAndLinkArtifact(db, {
+      ref: version.series.id,
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "references",
+      role: "living",
+      link_kind: "living",
+    }, livingAt).link;
+    const pinnedLink = resolveAndLinkArtifact(db, {
+      ref: version.version.id,
+      entity_type: "issue",
+      entity_id: issueId,
+      link_type: "references",
+      role: "pinned",
+    }, pinnedAt).link;
+
+    const artifacts = buildLedgerIssueDetailProjection(db, issueId).associated_artifacts;
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      id: version.artifact.id,
+      pin_state: "living",
+      series_id: version.series.id,
+      resolved_version_no: 1,
+      is_latest: true,
+    });
+    expect(artifacts[0].links.map((link) => link.id).sort()).toEqual(
+      [livingLink?.id, pinnedLink?.id].sort(),
+    );
+  });
+
   it("falls back to the stored artifact when a living series is unresolved", () => {
     const issueId = createIssue();
     const v1 = recordArtifactVersion(db, {

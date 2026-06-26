@@ -119,6 +119,32 @@ describe("artifact series list", () => {
     expect(listArtifactSeries(db, { role: "old-role" })).toEqual([]);
   });
 
+  it("filters against artifact-scoped links on the latest version", () => {
+    const series = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "latest-provider",
+      logical_name: "linked-latest",
+      content: "linked latest\n",
+      media_type: "text/plain",
+      role: "latest-role",
+    }, 1000);
+    resolveAndLinkArtifact(db, {
+      ref: series.artifact.id,
+      entity_type: "external",
+      entity_id: "external-link",
+      link_type: "references",
+      repo_id: "repo-from-link",
+      provider_id: "provider-from-link",
+      role: "role-from-link",
+    }, 1100);
+
+    expect(listArtifactSeries(db, { repo: "repo-from-link" }).map((item) => item.id)).toEqual([series.series.id]);
+    expect(listArtifactSeries(db, { provider: "provider-from-link" }).map((item) => item.id)).toEqual([
+      series.series.id,
+    ]);
+    expect(listArtifactSeries(db, { role: "role-from-link" }).map((item) => item.id)).toEqual([series.series.id]);
+  });
+
   it("exposes series-scoped links separately from latest immutable links", () => {
     const issueId = createIssue("issue-series-link");
     const first = recordArtifactVersion(db, {
