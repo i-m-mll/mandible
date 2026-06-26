@@ -2,12 +2,12 @@
 //
 // Pure, side-effect-free helpers that turn a Space fact packet
 // (space + items/occurrences/edges) into the in-memory model a collection
-// renderer draws. Kept separate from the `.tsx` so the tree/shelf logic — the
-// part with the interesting invariants — is unit-testable without a DOM.
+// renderer draws. Kept separate from the `.tsx` so the tree/list logic - the
+// part with the interesting invariants - is unit-testable without a DOM.
 //
 // review2 C7 [Warning]: ordering/tree state lives on OCCURRENCES, never on
 // items. A `space_item` with NO collection occurrence is therefore not "lost":
-// it surfaces on the UNPLACED SHELF. The shelf is derived membership, not a
+// it surfaces in the flat Items section. The section is derived membership, not a
 // stored flag.
 
 import type { SpaceItem, SpaceOccurrence, SpaceEdge, Space } from '../../api';
@@ -24,7 +24,7 @@ export type CollectionTreeNode = {
   depth: number;
 };
 
-/** What a collection renderer actually draws: the placed tree + the unplaced shelf. */
+/** What a collection renderer actually draws: the placed tree + flat item membership. */
 export type CollectionProjection = {
   /** Roots of the collection occurrence tree (occurrences with renderer='collection'). */
   roots: CollectionTreeNode[];

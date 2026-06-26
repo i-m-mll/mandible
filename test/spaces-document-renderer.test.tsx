@@ -171,7 +171,7 @@ describe('DocumentBody render', () => {
     expect(within(embed).getByText('My Artifact')).toBeTruthy();
   });
 
-  it('renders a directive ref as an unresolved placeholder with a resolve affordance', () => {
+  it('renders a directive ref as a quiet unresolved placeholder link', () => {
     const blocks: SpaceBlock[] = [
       makeBlock({
         id: 'b1',
@@ -184,7 +184,7 @@ describe('DocumentBody render', () => {
     render(<DocumentBody document={doc} sources={new Map(blocks.map((b) => [b.id, b]))} />);
     const ref = screen.getAllByTestId('spaces-doc-ref')[0];
     expect(ref.getAttribute('data-state')).toBe('unresolved');
-    expect(within(ref).getByText('resolve')).toBeTruthy();
+    expect(within(ref).queryByText('resolve')).toBeNull();
     expect(within(ref).getByText('the spec')).toBeTruthy();
   });
 });

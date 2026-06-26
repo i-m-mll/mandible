@@ -3,7 +3,7 @@
 // The first usable Spaces renderer: a list/tree view over collection
 // OCCURRENCES (`space_occurrences` with renderer='collection'), ordered by
 // `parent_id`/`sort_key`/`section_id`. Item-only membership (a `space_item`
-// with no collection occurrence) surfaces on an UNPLACED SHELF — never lost
+// with no collection occurrence) surfaces in the flat Items section — never lost
 // (review2 C7 [Warning]: ordering/tree state lives on occurrences, not items).
 //
 // Data: assembled from the single `GET /api/spaces/:id` fact packet
@@ -13,7 +13,7 @@
 //
 // Missing/unresolved refs render through the shared C6 unresolved-ref UI
 // (ui/src/resource-refs.ts): every item ref is linkified into a `.resource-ref`
-// placeholder with a resolve affordance, never silently dropped.
+// placeholder, never silently dropped.
 //
 // View-state (filter, selection, collapse) is browser-local (./collectionViewState)
 // and follows the Timeline localStorage pattern; canonical state stays in SQLite.
@@ -29,13 +29,7 @@ import {
   type SpaceItem,
 } from '../../api';
 import { SpaceItemPicker } from './SpaceItemPicker';
-import {
-  parseResourceRef,
-  resolveResourceRef,
-  resourceRefHref,
-  displayResourceRef,
-  type ResolverResult,
-} from '../../resource-refs';
+import { parseResourceRef, resourceRefHref, displayResourceRef } from '../../resource-refs';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import type { SpaceViewModel } from './types';
@@ -72,34 +66,12 @@ function matchesFilter(label: string, ref: string, filter: string): boolean {
 
 /**
  * Inline unresolved-ref affordance for one item ref, using the shared C6 UI.
- * The ref starts UNRESOLVED with a `resolve` button; clicking resolves it
- * against the read-only C2 resolver and updates the placeholder state. No raw
- * ref text is ever injected as HTML.
+ * The ref starts as a quiet unresolved link/label. No raw ref text is ever
+ * injected as HTML and no always-visible resolve button clutters normal rows.
  */
 function ItemRef({ item }: { item: SpaceItem }): JSX.Element {
   const ref = itemRefString(item);
   const parsed = useMemo(() => parseResourceRef(ref), [ref]);
-  const [state, setState] = useState<'unresolved' | 'resolving' | 'resolved' | 'error'>(
-    'unresolved',
-  );
-  const [detail, setDetail] = useState<string>('');
-
-  const onResolve = useCallback(async () => {
-    setState('resolving');
-    try {
-      const result: ResolverResult = await resolveResourceRef(ref);
-      if (result.resolved) {
-        setState('resolved');
-        setDetail(`Resolved ${ref} (${result.kind})`);
-      } else {
-        setState('error');
-        setDetail(result.error ? `Unresolved: ${result.error}` : `Unresolved: ${ref}`);
-      }
-    } catch (error) {
-      setState('error');
-      setDetail(`Resolve failed: ${String(error)}`);
-    }
-  }, [ref]);
 
   // Prefer the item's human label (title) as the visible text; the ref remains
   // the resolve authority. A ref the C6 grammar does not recognize still renders
@@ -109,11 +81,11 @@ function ItemRef({ item }: { item: SpaceItem }): JSX.Element {
 
   return (
     <span
-      className={`space-collection__ref resource-ref resource-ref--${state === 'unresolved' || state === 'resolving' ? 'unresolved' : state}`}
+      className="space-collection__ref resource-ref resource-ref--unresolved"
       data-resource-ref={parsed ? parsed.canonical : ref}
       data-resource-kind={parsed ? parsed.kind : 'unknown'}
-      data-ref-state={state}
-      title={detail || `Resource reference ${ref} (${state})`}
+      data-ref-state="unresolved"
+      title={`Resource reference ${ref}`}
     >
       {href ? (
         <a className="artifact-xref resource-ref__link" href={href}>
@@ -122,17 +94,6 @@ function ItemRef({ item }: { item: SpaceItem }): JSX.Element {
       ) : (
         <span className="resource-ref__link">{label}</span>
       )}
-      {state === 'unresolved' || state === 'error' ? (
-        <button
-          type="button"
-          className="resource-ref__resolve"
-          data-resolve-ref={parsed ? parsed.canonical : ref}
-          onClick={onResolve}
-          title={`Resolve ${ref}`}
-        >
-          resolve
-        </button>
-      ) : null}
     </span>
   );
 }
@@ -322,6 +283,7 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
     () => (load.status === 'ready' ? projectCollection(load.model) : null),
     [load],
   );
+  const items = load.status === 'ready' ? load.model.items : [];
 
   const selectedIds = useMemo(() => new Set(viewState.selection.ids), [viewState.selection.ids]);
 
@@ -423,6 +385,9 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
               <SpaceItemPicker
                 spaceId={spaceId}
                 projectId={projectId}
+                existingItems={items}
+                isItemInView={() => true}
+                alreadyInViewLabel="In collection"
                 onAdded={onItemsAdded}
                 onClose={() => setPickerOpen(false)}
               />
@@ -514,7 +479,7 @@ function CollectionBody({
 
       {visibleUnplaced.length > 0 ? (
         <div className="space-collection__shelf" data-testid="space-collection-shelf">
-          <div className="space-collection__section-title">Unplaced ({visibleUnplaced.length})</div>
+          <div className="space-collection__section-title">Items ({visibleUnplaced.length})</div>
           <ul className="space-collection__shelf-list" role="list">
             {visibleUnplaced.map((item) => {
               const selected = selectedIds.has(item.id);

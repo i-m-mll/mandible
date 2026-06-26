@@ -28,9 +28,9 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
-import type { SpaceBlock, SpaceExport } from '../../api';
+import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
-import { getSpaceExports } from '../../api';
+import { getSpaceExports, getSpaceFactPacket } from '../../api';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -61,6 +61,7 @@ import {
   type BlockEditorViewState,
 } from './blockEditorViewState';
 import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
+import { SpaceItemPicker } from './SpaceItemPicker';
 import './DocumentBlockEditor.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
@@ -104,7 +105,7 @@ export type EmbedDeleteDecision = {
 type LoadState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; blocks: SpaceBlock[]; exports: SpaceExport[] }
+  | { status: 'ready'; blocks: SpaceBlock[]; exports: SpaceExport[]; items: SpaceItem[] }
   | { status: 'error'; message: string };
 
 export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
@@ -164,6 +165,7 @@ export function DocumentBlockEditor({
     readBlockEditorViewState(projectId, spaceId ?? ''),
   );
   const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
@@ -189,11 +191,12 @@ export function DocumentBlockEditor({
       }
       if (!isReconcile) setLoad({ status: 'loading' });
       try {
-        const [blocks, exportsResult] = await Promise.all([
+        const [blocks, exportsResult, packet] = await Promise.all([
           listSpaceBlocks(spaceId, fetcher()),
           getSpaceExports(spaceId).catch(() => ({ exports: [] as SpaceExport[] })),
+          getSpaceFactPacket(spaceId).catch(() => ({ items: [] as SpaceItem[] })),
         ]);
-        setLoad({ status: 'ready', blocks, exports: exportsResult.exports });
+        setLoad({ status: 'ready', blocks, exports: exportsResult.exports, items: packet.items });
         // Reconcile edit state against live block ids without resetting the
         // user's in-progress drafts (Dataful-UX: refetch is reconciliation).
         setViewState((prior) =>
@@ -229,6 +232,7 @@ export function DocumentBlockEditor({
 
   const blocks = load.status === 'ready' ? load.blocks : [];
   const exports = load.status === 'ready' ? load.exports : [];
+  const spaceItems = load.status === 'ready' ? load.items : [];
 
   const custody: CustodyEditorUx = useMemo(
     () => resolveCustodyEditorUx(deriveDocumentCustody(exports)),
@@ -279,9 +283,15 @@ export function DocumentBlockEditor({
     [spaceId, blocks, runMutation, fetcher],
   );
 
+  const isItemEmbedded = useCallback(
+    (item: Pick<EmbeddableItem, 'id'>) => blocks.some((block) => block.item_id === item.id),
+    [blocks],
+  );
+
   const embedItem = useCallback(
-    (item: EmbeddableItem) => {
+    async (item: EmbeddableItem) => {
       if (!spaceId) return;
+      if (isItemEmbedded(item)) return;
       const blockType = EMBED_KIND[item.ref_type] ?? 'reference';
       const body: CreateBlockBody = {
         block_type: blockType,
@@ -291,9 +301,22 @@ export function DocumentBlockEditor({
         sort_key: appendSortKey(blocks, null),
         markdown: '',
       };
-      void runMutation(() => createSpaceBlock(spaceId, body, fetcher()));
+      await runMutation(() => createSpaceBlock(spaceId, body, fetcher()));
     },
-    [spaceId, blocks, runMutation, fetcher],
+    [spaceId, blocks, isItemEmbedded, runMutation, fetcher],
+  );
+
+  const embedSpaceItem = useCallback(
+    async (item: SpaceItem) => {
+      await embedItem({
+        id: item.id,
+        ref_type: item.ref_type,
+        ref_id: item.ref_id,
+        ref_uri: item.ref_uri,
+        title: item.title,
+      });
+    },
+    [embedItem],
   );
 
   const saveProse = useCallback(
@@ -428,6 +451,35 @@ export function DocumentBlockEditor({
               + {bt}
             </button>
           ))}
+          <span className="spaces-block-editor__add-items">
+            <button
+              type="button"
+              className="spaces-block-editor__add spaces-block-editor__add--primary"
+              disabled={busy}
+              aria-haspopup="dialog"
+              aria-expanded={pickerOpen}
+              data-testid="spaces-block-editor-add-items"
+              onClick={() => setPickerOpen((open) => !open)}
+            >
+              Add items
+            </button>
+            {pickerOpen ? (
+              <span className="spaces-block-editor__picker-anchor">
+                <SpaceItemPicker
+                  spaceId={spaceId}
+                  projectId={projectId}
+                  existingItems={spaceItems}
+                  isItemInView={(item) => isItemEmbedded(item)}
+                  alreadyInViewLabel="Already in document"
+                  afterAdd={embedSpaceItem}
+                  onAdded={() => {
+                    void loadAll(true);
+                  }}
+                  onClose={() => setPickerOpen(false)}
+                />
+              </span>
+            ) : null}
+          </span>
           {embeddableItems.length > 0 && (
             <span className="spaces-block-editor__embeds" data-testid="spaces-block-editor-embeds">
               {embeddableItems.map((item) => (
@@ -436,7 +488,7 @@ export function DocumentBlockEditor({
                   type="button"
                   className="spaces-block-editor__embed"
                   disabled={busy}
-                  onClick={() => embedItem(item)}
+                  onClick={() => void embedItem(item)}
                   data-testid={`spaces-block-editor-embed-${item.id}`}
                 >
                   embed {item.ref_type}: {item.title || item.ref_id}
