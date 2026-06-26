@@ -96,6 +96,7 @@ export type ProjectTimelineInput = {
   expanded_event_ids?: string[];
   expanded_paths?: string[];
   include_closed?: boolean;
+  event_kinds?: TimelineEventKind[];
   depth?: number;
   from?: number;
   to?: number;
@@ -111,6 +112,7 @@ export type ProjectTimelineNormalizedInput = {
   expanded_paths: string[];
   include_closed: boolean;
   statuses: string[];
+  event_kinds: TimelineEventKind[];
   depth: number;
   from: number | null;
   to: number | null;

@@ -815,6 +815,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       expanded_event_ids: viewState.expandedEventIds,
       expanded_paths: viewState.expandedPaths.filter((path) => !isLocalFilterPath(path)),
       include_closed: viewState.includeClosed,
+      event_kinds: viewState.visibleEventTypes,
       depth: projectionDepth,
       root_specs: rootSpecs,
     }, controller.signal)
@@ -839,6 +840,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     viewState.expandedEventIds.join(','),
     viewState.expandedPaths.join(','),
     viewState.includeClosed,
+    viewState.visibleEventTypes.join(','),
     rootSpecs,
     projectionDepth,
   ]);
@@ -992,6 +994,36 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const aggregateMarkById = useMemo(() => (
     new Map(timelineLayout.aggregateMarks.map((mark) => [mark.aggregateId, mark]))
   ), [timelineLayout.aggregateMarks]);
+  const sameTimeClustersByRow = useMemo(() => {
+    const result = new Map<string, TimelineSameTimeCluster[]>();
+    for (const cluster of timelineLayout.sameTimeClusters) {
+      if (cluster.expanded) continue;
+      const clusters = result.get(cluster.rowId) ?? [];
+      clusters.push(cluster);
+      result.set(cluster.rowId, clusters);
+    }
+    return result;
+  }, [timelineLayout.sameTimeClusters]);
+  const rangeClustersByRow = useMemo(() => {
+    const result = new Map<string, TimelineRangeCluster[]>();
+    for (const cluster of timelineLayout.rangeClusters) {
+      const clusters = result.get(cluster.rowId) ?? [];
+      clusters.push(cluster);
+      result.set(cluster.rowId, clusters);
+    }
+    return result;
+  }, [timelineLayout.rangeClusters]);
+  const aggregateMarksByRow = useMemo(() => {
+    const result = new Map<string, Array<{ interval: TimelineAggregateInterval; mark: TimelineAggregateMark }>>();
+    for (const interval of aggregateIntervals) {
+      const mark = aggregateMarkById.get(interval.id);
+      if (!mark) continue;
+      const entries = result.get(mark.rowId) ?? [];
+      entries.push({ interval, mark });
+      result.set(mark.rowId, entries);
+    }
+    return result;
+  }, [aggregateIntervals, aggregateMarkById]);
   const clusterById = useMemo(() => (
     new Map<TimelineClusterMark['id'], TimelineClusterMark>([
       ...timelineLayout.sameTimeClusters.map((cluster) => [cluster.id, cluster] as const),
@@ -1911,15 +1943,9 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                 const rowEventMarks = rowEvents
                   .map((event) => ({ event, mark: eventMarkById.get(event.id) }))
                   .filter((entry): entry is { event: TimelineEvent; mark: TimelineEventMark } => Boolean(entry.mark));
-                const rowSameTimeClusters = timelineLayout.sameTimeClusters.filter(
-                  (cluster) => cluster.rowId === row.id && !cluster.expanded,
-                );
-                const rowRangeClusters = timelineLayout.rangeClusters.filter((cluster) => cluster.rowId === row.id);
-                const rowAggregateMarks = aggregateIntervals
-                  .map((interval) => ({ interval, mark: aggregateMarkById.get(interval.id) }))
-                  .filter((entry): entry is { interval: TimelineAggregateInterval; mark: TimelineAggregateMark } => (
-                    Boolean(entry.mark) && entry.mark.rowId === row.id
-                  ));
+                const rowSameTimeClusters = sameTimeClustersByRow.get(row.id) ?? [];
+                const rowRangeClusters = rangeClustersByRow.get(row.id) ?? [];
+                const rowAggregateMarks = aggregateMarksByRow.get(row.id) ?? [];
                 const earlier = rowEvents.filter((event) => event.timestamp < start).length;
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
