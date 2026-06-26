@@ -443,7 +443,11 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(screen.getByText('Body prose.')).toBeTruthy();
     expect(screen.getAllByTestId('spaces-block-editor-row')).toHaveLength(2);
     expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
-    expect(screen.getAllByTestId('spaces-block-editor-add-items').length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId('spaces-block-editor-command-trigger').length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('spaces-block-editor-add-items')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-up')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-down')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-delete')).toBeNull();
     const editor = screen.getByTestId('spaces-block-editor');
     expect(editor.getAttribute('data-editable')).toBe('true');
     expect(editor.getAttribute('data-stale')).toBe('false');
@@ -453,6 +457,7 @@ describe('DocumentBlockEditor (editable)', () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
     await renderEditor({ backend });
 
+    fireEvent.click(screen.getByTestId('spaces-block-editor-command-trigger'));
     fireEvent.click(screen.getByTestId('spaces-block-editor-add-paragraph'));
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'POST' && /\/blocks$/.test(c.url))).toBe(true),
@@ -476,6 +481,7 @@ describe('DocumentBlockEditor (editable)', () => {
     );
     const patch = backend.calls.find((c) => c.method === 'PATCH');
     expect((patch!.body as { markdown: string }).markdown).toBe('new text');
+    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-save-state')).toBeTruthy());
   });
 
   it('debounces autosave while a prose block is being edited', async () => {
@@ -495,33 +501,6 @@ describe('DocumentBlockEditor (editable)', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('reorders a block down via a PATCH that changes sort_key', async () => {
-    const backend = makeBackend([
-      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'first' }),
-      makeBlock({ id: 'b2', sort_key: 'm', markdown: 'second' }),
-    ]);
-    await renderEditor({ backend });
-
-    // The first row is b1; move it down past b2.
-    const rows = screen.getAllByTestId('spaces-block-editor-row');
-    const downBtn = rows[0].querySelector('[data-testid="spaces-block-editor-down"]')!;
-    fireEvent.click(downBtn);
-
-    await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
-    const patch = backend.calls.find((c) => c.method === 'PATCH')!;
-    expect(patch.url).toContain('/blocks/b1');
-    expect((patch.body as { sort_key: string }).sort_key > 'm').toBe(true);
-  });
-
-  it('deletes a block via DELETE', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
-    await renderEditor({ backend });
-
-    fireEvent.click(screen.getByTestId('spaces-block-editor-delete'));
-    await waitFor(() => expect(backend.calls.some((c) => c.method === 'DELETE')).toBe(true));
-    expect(backend.calls.find((c) => c.method === 'DELETE')!.url).toContain('/blocks/b1');
   });
 
   it('embeds an item via POST with item_id + item_snapshot placeholder', async () => {
@@ -552,6 +531,7 @@ describe('DocumentBlockEditor (editable)', () => {
     fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
     const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
     textarea.setSelectionRange(3, 3);
+    fireEvent.click(screen.getByTestId('spaces-block-editor-command-trigger'));
     fireEvent.click(screen.getByTestId('spaces-block-editor-add-items'));
     await waitFor(() => expect(screen.getByTestId('space-item-picker')).toBeTruthy());
     fireEvent.click(screen.getByText('Issue abc123'));

@@ -48,7 +48,6 @@ import {
 } from './blockEditorModel';
 import {
   createSpaceBlock,
-  deleteSpaceBlock,
   detachItemFromBlocks,
   listSpaceBlocks,
   updateSpaceBlock,
@@ -214,6 +213,7 @@ export function DocumentBlockEditor({
   );
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [commandBlockId, setCommandBlockId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
@@ -491,34 +491,6 @@ export function DocumentBlockEditor({
     [spaceId, saveMarkdownNow],
   );
 
-  const moveBlock = useCallback(
-    (blockId: string, direction: -1 | 1) => {
-      if (!spaceId) return;
-      const block = blocks.find((b) => b.id === blockId);
-      if (!block) return;
-      const current = siblingIndexOf(blocks, blockId);
-      if (current < 0) return;
-      const target = current + direction;
-      try {
-        const placement = placementForIndex(blocks, block.parent_id ?? null, target, blockId);
-        void runMutation(() =>
-          updateSpaceBlock(spaceId, blockId, { sort_key: placement.sort_key }, fetcher()),
-        );
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [spaceId, blocks, runMutation, fetcher],
-  );
-
-  const removeBlock = useCallback(
-    (blockId: string) => {
-      if (!spaceId) return;
-      void runMutation(() => deleteSpaceBlock(spaceId, blockId, fetcher()));
-    },
-    [spaceId, runMutation, fetcher],
-  );
-
   /**
    * Try to remove an embedded ITEM (not the block). Because the item is
    * `ON DELETE RESTRICT`, this is the DEFERRED embed-on-delete decision point:
@@ -564,6 +536,39 @@ export function DocumentBlockEditor({
       queueAutosave(blockId, value);
     },
     [queueAutosave, setDraft, updateCaret],
+  );
+
+  const snapshotCaretForBlock = useCallback(
+    (blockId: string) => {
+      const textarea = textareaRefs.current.get(blockId);
+      if (textarea) updateCaret(blockId, textarea);
+      else {
+        const block = blocks.find((b) => b.id === blockId);
+        const draft = viewState.drafts[blockId] ?? block?.markdown ?? '';
+        caretRef.current = { blockId, start: draft.length, end: draft.length };
+      }
+      setActiveBlockId(blockId);
+      setEditing(blockId);
+    },
+    [blocks, setEditing, updateCaret, viewState.drafts],
+  );
+
+  const openReferencePicker = useCallback(
+    (blockId: string) => {
+      snapshotCaretForBlock(blockId);
+      setCommandBlockId(null);
+      setPickerOpen(true);
+    },
+    [snapshotCaretForBlock],
+  );
+
+  const runContextCommand = useCallback(
+    (blockId: string, command: () => void) => {
+      snapshotCaretForBlock(blockId);
+      setCommandBlockId(null);
+      command();
+    },
+    [snapshotCaretForBlock],
   );
 
   const openReferenceInspector = useCallback(
@@ -699,6 +704,7 @@ export function DocumentBlockEditor({
                 data-block-type={block.block_type}
                 data-testid="spaces-block-editor-row"
                 onFocusIn={() => setActiveBlockId(block.id)}
+                onMouseEnter={() => setActiveBlockId(block.id)}
               >
                 {isEditing && !isEmbed && (
                   <div className="spaces-block-editor__editbox">
@@ -747,33 +753,73 @@ export function DocumentBlockEditor({
                     />
                   </div>
                 )}
-                <span className="spaces-block-editor__rowctl" aria-label="Block actions">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => void addProseBlock('paragraph', block.id)}
-                    aria-label="Add paragraph after block"
-                    title="Add paragraph"
-                    data-testid="spaces-block-editor-add-paragraph"
-                  >
-                    +
-                  </button>
-                  <span className="spaces-block-editor__add-items">
+                {!isEmbed && (
+                  <span className="spaces-block-editor__command-slot">
                     <button
                       type="button"
+                      className="spaces-block-editor__command-trigger"
                       disabled={busy}
-                      aria-haspopup="dialog"
-                      aria-expanded={pickerOpen && activeBlockId === block.id}
-                      aria-label="Insert reference"
-                      title="Insert reference"
-                      data-testid="spaces-block-editor-add-items"
+                      onMouseDown={(event) => event.preventDefault()}
                       onClick={() => {
-                        setActiveBlockId(block.id);
-                        setPickerOpen((open) => !(open && activeBlockId === block.id));
+                        snapshotCaretForBlock(block.id);
+                        setCommandBlockId((open) => (open === block.id ? null : block.id));
                       }}
+                      aria-haspopup="menu"
+                      aria-expanded={commandBlockId === block.id}
+                      aria-label="Open document commands"
+                      title="Document commands"
+                      data-testid="spaces-block-editor-command-trigger"
                     >
-                      @
+                      /
                     </button>
+                    {commandBlockId === block.id ? (
+                      <span className="spaces-block-editor__command-menu" role="menu" aria-label="Document commands">
+                        <button
+                          type="button"
+                          className="spaces-block-editor__command"
+                          disabled={busy}
+                          role="menuitem"
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => runContextCommand(block.id, () => void addProseBlock('paragraph', block.id))}
+                          data-testid="spaces-block-editor-add-paragraph"
+                        >
+                          Add paragraph
+                        </button>
+                        <button
+                          type="button"
+                          className="spaces-block-editor__command"
+                          disabled={busy}
+                          role="menuitem"
+                          aria-haspopup="dialog"
+                          aria-expanded={pickerOpen && activeBlockId === block.id}
+                          onMouseDown={(event) => event.preventDefault()}
+                          onClick={() => {
+                            if (pickerOpen && activeBlockId === block.id) {
+                              setPickerOpen(false);
+                              return;
+                            }
+                            openReferencePicker(block.id);
+                          }}
+                          data-testid="spaces-block-editor-add-items"
+                        >
+                          Insert reference
+                        </button>
+                        {PROSE_BLOCK_TYPES.filter((bt) => bt !== 'paragraph').map((bt) => (
+                          <button
+                            key={bt}
+                            type="button"
+                            className="spaces-block-editor__command"
+                            disabled={busy}
+                            role="menuitem"
+                            onMouseDown={(event) => event.preventDefault()}
+                            onClick={() => runContextCommand(block.id, () => void addProseBlock(bt, block.id))}
+                            data-testid={`spaces-block-editor-add-${bt}`}
+                          >
+                            {bt === 'heading' ? 'Add heading' : 'Add todo'}
+                          </button>
+                        ))}
+                      </span>
+                    ) : null}
                     {pickerOpen && activeBlockId === block.id ? (
                       <span className="spaces-block-editor__picker-anchor">
                         <SpaceItemPicker
@@ -785,66 +831,30 @@ export function DocumentBlockEditor({
                           onAdded={() => {
                             void loadAll(true);
                           }}
-                          onClose={() => setPickerOpen(false)}
+                          onClose={() => {
+                            setPickerOpen(false);
+                            const textarea = textareaRefs.current.get(block.id);
+                            if (textarea) window.setTimeout(() => textarea.focus(), 0);
+                          }}
                         />
                       </span>
                     ) : null}
                   </span>
-                  {PROSE_BLOCK_TYPES.filter((bt) => bt !== 'paragraph').map((bt) => (
-                    <button
-                      key={bt}
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void addProseBlock(bt, block.id)}
-                      aria-label={`Add ${bt} after block`}
-                      title={`Add ${bt}`}
-                      data-testid={`spaces-block-editor-add-${bt}`}
-                    >
-                      {bt === 'heading' ? 'H' : '☐'}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => moveBlock(block.id, -1)}
-                    aria-label="Move block up"
-                    title="Move up"
-                    data-testid="spaces-block-editor-up"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => moveBlock(block.id, 1)}
-                    aria-label="Move block down"
-                    title="Move down"
-                    data-testid="spaces-block-editor-down"
-                  >
-                    ↓
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => removeBlock(block.id)}
-                    aria-label="Delete block"
-                    title="Delete"
-                    data-testid="spaces-block-editor-delete"
-                  >
-                    ×
-                  </button>
-                  {isEmbed && block.item_id && (
+                )}
+                {isEmbed && block.item_id && (
+                  <span className="spaces-block-editor__commands" aria-label="Embedded item commands">
                     <button
                       type="button"
+                      className="spaces-block-editor__command spaces-block-editor__command--text"
                       disabled={busy}
                       onClick={() => requestItemDelete(block.item_id!)}
                       data-testid="spaces-block-editor-delete-item"
                       title="Delete the embedded item (prompts an embed-on-delete decision)"
                     >
-                      item
+                      Remove item
                     </button>
-                  )}
-                </span>
+                  </span>
+                )}
                 {embeddableItems.length > 0 && activeBlockId === block.id && (
                   <span className="spaces-block-editor__embeds" data-testid="spaces-block-editor-embeds">
                     {embeddableItems.map((item) => (
