@@ -841,6 +841,10 @@ export type LedgerIssueDetailArtifactLink = {
   provider_id: string | null;
   source: string;
   metadata: Record<string, unknown>;
+  link_kind: 'pinned' | 'living';
+  series_id: string | null;
+  series_ref: string | null;
+  resolved_version_no: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -1777,9 +1781,19 @@ export type ArtifactAliasResolutionStatus = ContractArtifactAliasResolutionStatu
 
 export type ArtifactAliasRecord = ContractArtifactAliasRecord;
 
-export type ArtifactLinkRecord = ContractArtifactLinkRecord;
+export type ArtifactLinkRecord = Omit<
+  ContractArtifactLinkRecord,
+  'link_kind' | 'series_id' | 'series_ref' | 'resolved_version_no'
+> & {
+  link_kind: 'pinned' | 'living';
+  series_id: string | null;
+  series_ref: string | null;
+  resolved_version_no?: number | null;
+};
 
-export type ArtifactRecord = ContractArtifactRecord;
+export type ArtifactRecord = Omit<ContractArtifactRecord, 'links'> & {
+  links?: ArtifactLinkRecord[];
+};
 
 export type ArtifactResolveResult = ContractArtifactResolveResult;
 

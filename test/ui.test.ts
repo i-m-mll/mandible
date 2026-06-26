@@ -1797,6 +1797,10 @@ describe('LedgerIssueDetail', () => {
               provider_id: 'provider_1',
               source: 'artifact_registry',
               metadata: {},
+              link_kind: 'pinned',
+              series_id: 'artifact-series:report',
+              series_ref: 'artifact-series:report',
+              resolved_version_no: null,
               created_at: Date.now(),
               updated_at: Date.now(),
             },
@@ -1817,6 +1821,39 @@ describe('LedgerIssueDetail', () => {
           refs: [],
           links: [],
         },
+        {
+          id: 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          algorithm: 'sha256',
+          content_hash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          uri: 'artifact:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          media_type: 'application/json',
+          role: 'dataset',
+          provider_id: 'provider_1',
+          manifest_id: null,
+          custody_mode: 'managed',
+          availability: 'present',
+          created_at: Date.now(),
+          refs: ['artifact-series:live-report'],
+          links: [
+            {
+              id: 'link_2',
+              entity_type: 'issue',
+              entity_id: 'issue_1',
+              link_type: 'evidence',
+              role: null,
+              repo_id: 'mandible',
+              provider_id: 'provider_1',
+              source: 'artifact_registry',
+              metadata: {},
+              link_kind: 'living',
+              series_id: 'artifact-series:live-report',
+              series_ref: 'artifact-series:live-report',
+              resolved_version_no: 2,
+              created_at: Date.now(),
+              updated_at: Date.now(),
+            },
+          ],
+        },
       ],
       conflicts: [],
       sync: { state: 'clean', outbox: {}, open_conflicts: 0, latest_jobs: [] },
@@ -1829,11 +1866,17 @@ describe('LedgerIssueDetail', () => {
     expect(link?.getAttribute('href')).toBe(
       '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
+    expect(link?.textContent).toContain('pinned');
+    expect(link?.textContent).not.toContain('v1');
+    expect(link?.textContent).not.toContain('latest');
     const compactLink = screen.getByText('artifact:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
     expect(compactLink?.getAttribute('href')).toBe(
       '#/artifacts?artifact=artifact%3Asha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     );
-    expect(screen.getByText('linked + referenced')).toBeTruthy();
+    const livingLink = screen.getByText('artifact-series:live-report').closest('a') as HTMLAnchorElement | null;
+    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
+    expect(livingLink?.textContent).toContain('latest → v2');
+    expect(screen.getAllByText('linked + referenced')).toHaveLength(2);
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
   });
 
@@ -2088,7 +2131,42 @@ describe('ArtifactsView', () => {
       reference: {},
       created_at: Date.now(),
       aliases: [],
-      links: [],
+      links: [
+        {
+          id: 'link-pinned',
+          artifact_id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          entity_type: 'issue',
+          entity_id: 'abc123',
+          link_type: 'evidence',
+          role: null,
+          repo_id: 'mandible',
+          provider_id: null,
+          source: 'artifact_registry',
+          metadata: {},
+          link_kind: 'pinned',
+          series_id: 'artifact-series:demo-report',
+          series_ref: 'artifact-series:demo-report',
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+        {
+          id: 'link-living',
+          artifact_id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          entity_type: 'issue',
+          entity_id: 'def456',
+          link_type: 'evidence',
+          role: 'latest-evidence',
+          repo_id: 'mandible',
+          provider_id: null,
+          source: 'artifact_registry',
+          metadata: {},
+          link_kind: 'living',
+          series_id: 'artifact-series:demo-report',
+          series_ref: 'artifact-series:demo-report',
+          created_at: Date.now(),
+          updated_at: Date.now(),
+        },
+      ],
     };
     const artifactSeries = makeArtifactSeries('demo-report', [artifact], 'demo-report.md');
     const mockFetch = vi.fn((input: RequestInfo) => {
@@ -2192,6 +2270,17 @@ describe('ArtifactsView', () => {
     const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
     expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
     expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
+    const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
+    expect(pinnedBadge?.textContent).toBe('pinned');
+    expect(pinnedBadge?.textContent).not.toContain('latest');
+    expect(pinnedBadge?.getAttribute('href')).toBe(
+      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    const livingBadge = document.querySelector('a.artifact-link-badge--living') as HTMLAnchorElement | null;
+    expect(livingBadge?.textContent).toBe('latest');
+    expect(livingBadge?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Ademo-report');
+    const entityLink = screen.getByText('issue:abc123').closest('a') as HTMLAnchorElement | null;
+    expect(entityLink?.getAttribute('href')).toBe('#/issues?issue=abc123&repo=mandible');
   });
 
   it('renders HTML artifact previews in a sandboxed iframe', async () => {
