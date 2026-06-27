@@ -691,6 +691,19 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(textarea.selectionStart).toBe(2);
   });
 
+  it('enters edit mode for heading blocks whose markdown has no hash prefix', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: 'New heading' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByText('New heading'));
+
+    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('New heading');
+  });
+
   it('does not enter heading edit mode from adjacent rendered-block whitespace', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),

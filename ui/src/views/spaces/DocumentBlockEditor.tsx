@@ -72,7 +72,8 @@ const SPACE_EVENT_PREFIX = 'space:';
 const AUTOSAVE_DELAY_MS = 650;
 const MIN_INSPECTOR_HEIGHT = 160;
 const MAX_INSPECTOR_VIEWPORT_FRACTION = 0.7;
-const RENDERED_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
+const RENDERED_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6,p';
+const RENDERED_HEADING_HIT_AREA_SELECTOR = '[data-heading-hit-area="true"]';
 
 function clampInspectorHeight(height: number, viewportHeight: number): number {
   const maxHeight = Math.max(
@@ -286,11 +287,14 @@ function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number |
 
 function renderedHeadingClickRoot(root: HTMLElement, event: MouseEvent): HTMLElement | null {
   const target = eventTargetElement(event);
-  const targetHeading = target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null;
+  const targetHeading =
+    (target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null) ??
+    (target?.closest?.(RENDERED_HEADING_HIT_AREA_SELECTOR) as HTMLElement | null);
   const heading =
     targetHeading && root.contains(targetHeading)
       ? targetHeading
-      : (root.querySelector(RENDERED_HEADING_SELECTOR) as HTMLElement | null);
+      : ((root.querySelector(RENDERED_HEADING_SELECTOR) ??
+          root.querySelector(RENDERED_HEADING_HIT_AREA_SELECTOR)) as HTMLElement | null);
   if (!heading || !root.contains(heading)) return null;
   const rects = Array.from(heading.getClientRects()).filter(
     (rect) => rect.width > 0 && rect.height > 0,
