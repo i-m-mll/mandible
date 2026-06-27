@@ -18,6 +18,8 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/pr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { act } from 'preact/test-utils';
+import { EditorSelection } from '@codemirror/state';
+import type { EditorView } from '@codemirror/view';
 
 import {
   DocumentBlockEditor,
@@ -297,6 +299,32 @@ beforeEach(() => {
   stubLocalStorage();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
+  if (!Range.prototype.getClientRects) {
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => ({
+        length: 0,
+        item: () => null,
+        [Symbol.iterator]: function* () {},
+      }),
+    });
+  }
+  if (!Range.prototype.getBoundingClientRect) {
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        toJSON: () => ({}),
+      }),
+    });
+  }
 });
 
 afterEach(() => {
@@ -472,6 +500,47 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
   await waitFor(() => expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy());
 }
 
+type SourceHost = HTMLElement & { __spacesEditorView?: EditorView };
+
+function sourceHost(index = 0): SourceHost {
+  return screen.getAllByTestId('spaces-block-editor-source')[index] as SourceHost;
+}
+
+function sourceView(index = 0): EditorView {
+  const view = sourceHost(index).__spacesEditorView;
+  if (!view) throw new Error(`missing source editor view ${index}`);
+  return view;
+}
+
+function sourceText(index = 0): string {
+  return sourceView(index).state.doc.toString();
+}
+
+function setSourceText(index: number, value: string, cursor = value.length): EditorView {
+  const view = sourceView(index);
+  act(() => {
+    view.focus();
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: value },
+      selection: EditorSelection.cursor(Math.max(0, Math.min(cursor, value.length))),
+    });
+  });
+  return view;
+}
+
+function setSourceSelection(index: number, start: number, end: number): EditorView {
+  const view = sourceView(index);
+  act(() => {
+    view.focus();
+    view.dispatch({ selection: EditorSelection.range(start, end) });
+  });
+  return view;
+}
+
+function blurSource(index = 0): void {
+  fireEvent.blur(sourceView(index).contentDOM);
+}
+
 describe('DocumentBlockEditor (editable)', () => {
   it('renders the live tree as document-like editable rows', async () => {
     const backend = makeBackend([
@@ -480,8 +549,10 @@ describe('DocumentBlockEditor (editable)', () => {
     ]);
     await renderEditor({ backend });
 
-    // The editable surface uses the same rendered prose path for blurred rows.
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
     expect(screen.getByText('Body prose.')).toBeTruthy();
+    expect(sourceText(0)).toBe('# Title');
+    expect(sourceText(1)).toBe('Body prose.');
     expect(screen.getAllByTestId('spaces-block-editor-row')).toHaveLength(2);
     expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
     expect(screen.queryByTestId('spaces-block-editor-command-trigger')).toBeNull();
@@ -589,7 +660,7 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(screen.getByText('Fresh document.')).toBeTruthy();
   });
 
-  it('uses a selectable rendered document surface and preserves text selection', async () => {
+  it('uses one source editor per editable Markdown block without textarea islands', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Selectable prose.' }),
     ]);
@@ -599,34 +670,23 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(surface.tagName).toBe('DIV');
     expect(surface.getAttribute('role')).toBeNull();
     expect(surface.getAttribute('tabindex')).toBeNull();
-
-    const prose = screen.getByText('Selectable prose.');
-    const range = document.createRange();
-    range.selectNodeContents(prose);
-    const selection = document.getSelection();
-    selection?.removeAllRanges();
-    selection?.addRange(range);
-    fireEvent.click(prose);
-
+    expect(sourceText()).toBe('Selectable prose.');
+    expect(sourceView().contentDOM.getAttribute('role')).toBe('textbox');
     expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
-    expect(document.getSelection()?.toString()).toBe('Selectable prose.');
-    selection?.removeAllRanges();
   });
 
-  it('still enters paragraph edit mode from ordinary rendered prose clicks', async () => {
+  it('keeps paragraph prose directly editable in the source editor', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Editable prose.' }),
     ]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByText('Editable prose.'));
-
-    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('Editable prose.');
+    sourceView().focus();
+    await waitFor(() => expect(document.activeElement).toBe(sourceView().contentDOM));
+    expect(sourceText()).toBe('Editable prose.');
   });
 
-  it('renders headings as headings before the first edit and focuses on first click', async () => {
+  it('renders headings as headings until the caret enters that source line', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
     ]);
@@ -635,126 +695,34 @@ describe('DocumentBlockEditor (editable)', () => {
     const heading = screen.getByRole('heading', { name: 'Title' });
     expect(heading).toBeTruthy();
     expect(heading.closest('[data-heading-hit-area="true"]')).toBeTruthy();
-    fireEvent.click(heading);
+    fireEvent.mouseDown(heading);
 
-    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('# Title');
-    expect(textarea.className).toBe('spaces-block-editor__textarea');
-    expect(textarea.className).not.toContain('rendered');
-    expect(textarea.selectionStart).toBe(2);
+    const view = sourceView();
+    await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+    expect(sourceText()).toBe('# Title');
+    expect(view.state.selection.main.from).toBe(2);
+    expect(screen.queryByRole('heading', { name: 'Title' })).toBeNull();
   });
 
-  it('does not enter heading edit mode when only the rendered wrapper receives a click', async () => {
+  it('keeps rendered headings visible while focus is outside their source line', async () => {
     const backend = makeBackend([
-      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: 'intro\n# Title' }),
     ]);
     await renderEditor({ backend });
 
-    const surface = screen.getByTestId('spaces-block-editor-edit');
-    const heading = screen.getByRole('heading', { name: 'Title' }) as HTMLElement;
-    heading.getClientRects = () =>
-      ({
-        length: 1,
-        item: (index: number) =>
-          index === 0
-            ? ({
-                x: 0,
-                y: 0,
-                width: 120,
-                height: 24,
-                top: 0,
-                right: 120,
-                bottom: 24,
-                left: 0,
-                toJSON: () => ({}),
-              } as DOMRect)
-            : null,
-        0: {
-          x: 0,
-          y: 0,
-          width: 120,
-          height: 24,
-          top: 0,
-          right: 120,
-          bottom: 24,
-          left: 0,
-          toJSON: () => ({}),
-        } as DOMRect,
-      }) as DOMRectList;
-
-    fireEvent.click(surface, { clientX: 16, clientY: 12 });
-
+    setSourceSelection(0, 2, 2);
     expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
   });
 
-  it('enters edit mode for heading blocks whose markdown has no hash prefix', async () => {
+  it('shows plain source for heading blocks whose markdown has no hash prefix', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: 'New heading' }),
     ]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByText('New heading'));
-
-    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('New heading');
-  });
-
-  it('does not enter heading edit mode from adjacent rendered-block whitespace', async () => {
-    const backend = makeBackend([
-      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
-    ]);
-    await renderEditor({ backend });
-
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'), { clientX: 120, clientY: 12 });
-
-    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
-  });
-
-  it('does not enter heading edit mode outside the rendered heading line box', async () => {
-    const backend = makeBackend([
-      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
-    ]);
-    await renderEditor({ backend });
-
-    const heading = screen.getByRole('heading', { name: 'Title' }) as HTMLElement;
-    heading.getClientRects = () =>
-      ({
-        length: 1,
-        item: (index: number) =>
-          index === 0
-            ? ({
-                x: 0,
-                y: 0,
-                width: 80,
-                height: 24,
-                top: 0,
-                right: 80,
-                bottom: 24,
-                left: 0,
-                toJSON: () => ({}),
-              } as DOMRect)
-            : null,
-        0: {
-          x: 0,
-          y: 0,
-          width: 80,
-          height: 24,
-          top: 0,
-          right: 80,
-          bottom: 24,
-          left: 0,
-          toJSON: () => ({}),
-        } as DOMRect,
-      }) as DOMRectList;
-
-    fireEvent.click(heading, { clientX: 12, clientY: 40 });
-
-    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
-    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
+    expect(sourceText()).toBe('New heading');
+    expect(screen.getByText('New heading')).toBeTruthy();
   });
 
   it('places the caret inside a clicked rendered heading instead of selecting the end', async () => {
@@ -777,12 +745,12 @@ describe('DocumentBlockEditor (editable)', () => {
       value: () => range,
     });
     try {
-      fireEvent.click(heading, { clientX: 48, clientY: 12 });
-      const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      await waitFor(() => expect(document.activeElement).toBe(textarea));
-      expect(textarea.value).toBe('## Some heading');
-      expect(textarea.selectionStart).toBe(8);
-      expect(textarea.selectionStart).not.toBe(textarea.value.length);
+      fireEvent.mouseDown(heading, { clientX: 48, clientY: 12 });
+      const view = sourceView();
+      await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+      expect(sourceText()).toBe('## Some heading');
+      expect(view.state.selection.main.from).toBe(8);
+      expect(view.state.selection.main.from).not.toBe(sourceText().length);
     } finally {
       Object.defineProperty(document, 'caretRangeFromPoint', {
         configurable: true,
@@ -791,7 +759,7 @@ describe('DocumentBlockEditor (editable)', () => {
     }
   });
 
-  it('edits paragraph lines around a mixed Markdown heading as independent line regions', async () => {
+  it('keeps lines before and after a mixed Markdown heading in one editable source buffer', async () => {
     const backend = makeBackend([
       makeBlock({
         id: 'b1',
@@ -803,21 +771,14 @@ describe('DocumentBlockEditor (editable)', () => {
     await renderEditor({ backend });
 
     expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
-
-    fireEvent.click(screen.getByText('intro'));
-    let textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('intro');
-    fireEvent.blur(textarea);
-
-    fireEvent.click(screen.getByText('body'));
-    textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('body');
+    expect(sourceText()).toBe('intro\n## Heading\nbody');
+    setSourceSelection(0, 0, 0);
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
+    setSourceSelection(0, sourceText().length, sourceText().length);
     expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
   });
 
-  it('maps a clicked rendered heading in a mixed block to the matching markdown line region', async () => {
+  it('maps a clicked rendered heading in a mixed block to the matching markdown source line', async () => {
     const backend = makeBackend([
       makeBlock({
         id: 'b1',
@@ -842,11 +803,11 @@ describe('DocumentBlockEditor (editable)', () => {
       value: () => range,
     });
     try {
-      fireEvent.click(heading, { clientX: 48, clientY: 12 });
-      const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      await waitFor(() => expect(document.activeElement).toBe(textarea));
-      expect(textarea.value).toBe('## Heading');
-      expect(textarea.selectionStart).toBe('## He'.length);
+      fireEvent.mouseDown(heading, { clientX: 48, clientY: 12 });
+      const view = sourceView();
+      await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+      expect(sourceText()).toBe('intro\n## Heading\nbody');
+      expect(view.state.selection.main.from).toBe('intro\n## He'.length);
     } finally {
       Object.defineProperty(document, 'caretRangeFromPoint', {
         configurable: true,
@@ -861,25 +822,16 @@ describe('DocumentBlockEditor (editable)', () => {
     ]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    let textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: '## Something' } });
-    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    setSourceText(0, '## Something\n', '## Something\n'.length);
 
     expect(await screen.findByRole('heading', { name: 'Something' })).toBeTruthy();
-    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('');
+    expect(sourceView().state.selection.main.from).toBe('## Something\n'.length);
 
     for (const value of ['b', 'bo', 'bod', 'body']) {
-      fireEvent.input(textarea, { target: { value } });
-      textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      await waitFor(() => expect(document.activeElement).toBe(textarea));
-      expect(textarea.value).toBe(value);
+      setSourceText(0, `## Something\n${value}`, `## Something\n${value}`.length);
+      expect(sourceText()).toBe(`## Something\n${value}`);
     }
-    fireEvent.blur(textarea);
+    blurSource();
 
     await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));
   });
@@ -890,26 +842,44 @@ describe('DocumentBlockEditor (editable)', () => {
     ]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    let textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'first' } });
-    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
-
-    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    await waitFor(() => expect(document.activeElement).toBe(textarea));
-    expect(textarea.value).toBe('');
+    setSourceText(0, 'first\n', 'first\n'.length);
+    expect(document.activeElement).toBe(sourceView().contentDOM);
+    expect(sourceText()).toBe('first\n');
 
     for (const value of ['s', 'se', 'sec', 'seco', 'secon', 'second']) {
-      fireEvent.input(textarea, { target: { value } });
-      textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      await waitFor(() => expect(document.activeElement).toBe(textarea));
-      expect(textarea.value).toBe(value);
+      setSourceText(0, `first\n${value}`, `first\n${value}`.length);
+      expect(document.activeElement).toBe(sourceView().contentDOM);
     }
-    fireEvent.blur(textarea);
+    blurSource();
 
     await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('first\nsecond'));
+  });
+
+  it('Backspace at an empty line or line start removes the newline normally', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: 'first\nsecond' }),
+    ]);
+    await renderEditor({ backend });
+
+    const emptyLine = 'first\n\nsecond';
+    setSourceText(0, emptyLine, 'first\n\n'.length);
+    act(() => {
+      const view = sourceView();
+      view.dispatch({
+        changes: { from: 'first\n'.length, to: 'first\n\n'.length, insert: '' },
+        selection: EditorSelection.cursor('first\n'.length),
+      });
+    });
+    expect(sourceText()).toBe('first\nsecond');
+
+    act(() => {
+      const view = sourceView();
+      view.dispatch({
+        changes: { from: 'first'.length, to: 'first\n'.length, insert: '' },
+        selection: EditorSelection.cursor('first'.length),
+      });
+    });
+    expect(sourceText()).toBe('firstsecond');
   });
 
   it('renders blank paragraph blocks as blank document content', async () => {
@@ -917,7 +887,7 @@ describe('DocumentBlockEditor (editable)', () => {
     await renderEditor({ backend });
 
     expect(screen.queryByText('Write here…')).toBeNull();
-    expect(screen.getByTestId('spaces-block-editor-edit').textContent).toBe('');
+    expect(sourceText()).toBe('');
   });
 
   it('opens the shared bottom detail panel for inline issue references', async () => {
@@ -1013,10 +983,8 @@ describe('DocumentBlockEditor (editable)', () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'new text' } });
-    fireEvent.blur(textarea);
+    setSourceText(0, 'new text');
+    blurSource();
 
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true),
@@ -1035,9 +1003,7 @@ describe('DocumentBlockEditor (editable)', () => {
     await renderEditor({ backend });
     vi.useFakeTimers();
     try {
-      fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-      const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      fireEvent.input(textarea, { target: { value: 'draft autosave' } });
+      setSourceText(0, 'draft autosave');
       expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(false);
 
       await vi.advanceTimersByTimeAsync(700);
@@ -1053,14 +1019,11 @@ describe('DocumentBlockEditor (editable)', () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Body text' })]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    textarea.setSelectionRange(0, 4);
-    fireEvent.select(textarea);
+    setSourceSelection(0, 0, 4);
 
     expect(screen.getByTestId('spaces-block-editor-selection-menu')).toBeTruthy();
     fireEvent.mouseDown(screen.getByLabelText('Bold'));
-    await waitFor(() => expect(textarea.value).toBe('**Body** text'));
+    await waitFor(() => expect(sourceText()).toBe('**Body** text'));
   });
 
   it('opens the item picker from typed /item and replaces that command range with a bracket ref', async () => {
@@ -1074,17 +1037,19 @@ describe('DocumentBlockEditor (editable)', () => {
     );
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getAllByTestId('spaces-block-editor-edit')[0]);
-    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+    const view = sourceView(0);
+    act(() => {
+      view.focus();
+      view.dispatch({ selection: EditorSelection.cursor(sourceText(0).length) });
+    });
+    fireEvent.keyDown(view.contentDOM, { key: 'Enter', code: 'Enter' });
     await waitFor(() => expect(screen.getByTestId('spaces-block-editor-picker-overlay')).toBeTruthy());
     fireEvent.mouseEnter(screen.getAllByTestId('spaces-block-editor-row')[1]);
     await waitFor(() => expect(screen.getByTestId('space-item-picker')).toBeTruthy());
     fireEvent.click(screen.getByText('Issue abc123'));
     fireEvent.click(screen.getByTestId('space-item-picker-add'));
 
-    await waitFor(() => expect(textarea.value).toBe('See [issue:abc123]'));
+    await waitFor(() => expect(sourceText(0)).toBe('See [issue:abc123]'));
     expect(backend.blocks.get('b2')?.markdown).toBe('Other block');
     await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
     expect((backend.calls.find((c) => c.method === 'PATCH')!.body as { markdown: string }).markdown)
@@ -1205,9 +1170,7 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'work in progress' } });
+    setSourceText(0, 'work in progress');
 
     // Persisted browser-local for this space.
     const stored = readBlockEditorViewState('prj1', 'sp1');
@@ -1220,8 +1183,7 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
 
     // The draft survives the refetch (Dataful-UX: reconcile never resets intent).
     await waitFor(() => {
-      const ta = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      expect(ta.value).toBe('work in progress');
+      expect(sourceText()).toBe('work in progress');
     });
     expect(blockEditorStorageKey('prj1', 'sp1')).toContain('sp1');
   });

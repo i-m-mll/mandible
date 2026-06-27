@@ -27,13 +27,15 @@
 // the conflict and stop.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { EditorSelection } from '@codemirror/state';
+import type { EditorView } from '@codemirror/view';
 
 import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { getSpaceExports, getSpaceFactPacket } from '../../api';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
-import { DocumentBody, renderDocumentText, renderSpaceBlocks } from './DocumentRenderer';
+import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
 import {
   resolveCustodyEditorUx,
   type CustodyAffordance,
@@ -65,6 +67,11 @@ import {
   detailTargetFromResourceRef,
   type SpaceReferenceDetailTarget,
 } from './SpaceReferenceDetailPanel';
+import {
+  MarkdownSourceEditor,
+  type MarkdownSourceItemCommand,
+  type MarkdownSourceSelection,
+} from './MarkdownSourceEditor';
 import './DocumentBlockEditor.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
@@ -72,9 +79,6 @@ const SPACE_EVENT_PREFIX = 'space:';
 const AUTOSAVE_DELAY_MS = 650;
 const MIN_INSPECTOR_HEIGHT = 160;
 const MAX_INSPECTOR_VIEWPORT_FRACTION = 0.7;
-const RENDERED_MARKDOWN_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
-const RENDERED_HEADING_SELECTOR = `${RENDERED_MARKDOWN_HEADING_SELECTOR},p`;
-
 function clampInspectorHeight(height: number, viewportHeight: number): number {
   const maxHeight = Math.max(
     MIN_INSPECTOR_HEIGHT,
@@ -122,16 +126,7 @@ type SaveState =
   | { status: 'error'; blockId: string; message: string };
 
 type CaretTarget = { blockId: string; start: number; end: number };
-type FocusEditTarget = CaretTarget & { selectEnd: boolean };
 type ItemCommandRange = { blockId: string; start: number; end: number };
-type MarkdownLineRegion = {
-  start: number;
-  end: number;
-  text: string;
-  prefixLength: number;
-  isHeading: boolean;
-};
-type LineEditRegion = { blockId: string; start: number; end: number };
 type SelectionMenuState = {
   blockId: string;
   start: number;
@@ -185,19 +180,6 @@ function insertAtCaret(value: string, insertion: string, start: number, end: num
   return `${before}${prefix}${insertion}${suffix}${after}`;
 }
 
-function findItemCommandRange(
-  value: string,
-  selectionStart: number,
-  selectionEnd: number,
-): { start: number; end: number } | null {
-  const commandEnd = Math.max(0, Math.min(selectionStart, selectionEnd, value.length));
-  const beforeSelection = value.slice(0, commandEnd);
-  const match = /(?:^|\s)(\/item)$/.exec(beforeSelection);
-  if (!match) return null;
-  const start = commandEnd - match[1].length;
-  return { start, end: commandEnd };
-}
-
 function replaceRange(value: string, insertion: string, start: number, end: number): string {
   return `${value.slice(0, Math.max(0, start))}${insertion}${value.slice(Math.max(0, end))}`;
 }
@@ -228,192 +210,6 @@ function refFromHref(href: string): string | null {
   }
 }
 
-function headingMarkdownPrefixLength(markdown: string): number {
-  const match = /^(\s{0,3}#{1,6}\s+)/.exec(markdown);
-  return match ? match[1].length : 0;
-}
-
-function markdownLineRegions(markdown: string): MarkdownLineRegion[] {
-  const regions: MarkdownLineRegion[] = [];
-  let start = 0;
-  for (const line of markdown.split('\n')) {
-    const match = /^(\s{0,3}#{1,6}\s+)(.*)$/.exec(line);
-    regions.push({
-      start,
-      end: start + line.length,
-      text: line,
-      prefixLength: match ? match[1].length : 0,
-      isHeading: Boolean(match),
-    });
-    start += line.length + 1;
-  }
-  return regions;
-}
-
-function shouldRenderLineRegions(markdown: string): boolean {
-  const regions = markdownLineRegions(markdown);
-  return regions.length > 1 && regions.some((line) => line.isHeading);
-}
-
-function renderedLineHtml(line: MarkdownLineRegion): string {
-  return line.text ? renderDocumentText(line.text).html : '';
-}
-
-function markdownHeadingLines(markdown: string): Array<{ start: number; prefixLength: number; text: string }> {
-  const lines: Array<{ start: number; prefixLength: number; text: string }> = [];
-  let start = 0;
-  for (const line of markdown.split('\n')) {
-    const match = /^(\s{0,3}#{1,6}\s+)(.*)$/.exec(line);
-    if (match) {
-      lines.push({ start, prefixLength: match[1].length, text: match[2].trim() });
-    }
-    start += line.length + 1;
-  }
-  return lines;
-}
-
-function markdownHeadingSourceLine(
-  markdown: string,
-  root: HTMLElement,
-  heading: HTMLElement,
-): { start: number; prefixLength: number } | null {
-  const headings = Array.from(
-    root.querySelectorAll(RENDERED_MARKDOWN_HEADING_SELECTOR),
-  ) as HTMLElement[];
-  const headingIndex = headings.indexOf(heading);
-  const lines = markdownHeadingLines(markdown);
-  if (headingIndex >= 0 && lines[headingIndex]) {
-    return { start: lines[headingIndex].start, prefixLength: lines[headingIndex].prefixLength };
-  }
-
-  const headingText = heading.textContent?.trim() ?? '';
-  const matchingLine = lines.find((line) => line.text === headingText);
-  return matchingLine
-    ? { start: matchingLine.start, prefixLength: matchingLine.prefixLength }
-    : null;
-}
-
-function textOffsetFromNode(root: HTMLElement, node: Node, offset: number): number | null {
-  if (!root.contains(node)) return null;
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let total = 0;
-  let current = walker.nextNode();
-  while (current) {
-    if (current === node) {
-      return total + Math.max(0, Math.min(offset, current.textContent?.length ?? 0));
-    }
-    total += current.textContent?.length ?? 0;
-    current = walker.nextNode();
-  }
-  return null;
-}
-
-function eventTargetElement(event: MouseEvent): Element | null {
-  const target = event.target;
-  if (target instanceof Element) return target;
-  if (target instanceof Node) return target.parentElement;
-  return null;
-}
-
-function hasSelectionInside(root: HTMLElement): boolean {
-  const selection = root.ownerDocument.getSelection();
-  if (!selection || selection.isCollapsed) return false;
-  const { anchorNode, focusNode } = selection;
-  return Boolean(anchorNode && focusNode && root.contains(anchorNode) && root.contains(focusNode));
-}
-
-function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number | null {
-  const doc = root.ownerDocument;
-  const caretPositionFromPoint = (
-    doc as Document & {
-      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
-    }
-  ).caretPositionFromPoint;
-  const position = caretPositionFromPoint?.call(doc, event.clientX, event.clientY);
-  if (position) {
-    const offset = textOffsetFromNode(root, position.offsetNode, position.offset);
-    if (offset !== null) return offset;
-  }
-
-  const caretRangeFromPoint = (
-    doc as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
-  ).caretRangeFromPoint;
-  const range = caretRangeFromPoint?.call(doc, event.clientX, event.clientY);
-  if (range) {
-    const offset = textOffsetFromNode(root, range.startContainer, range.startOffset);
-    if (offset !== null) return offset;
-  }
-
-  const rect = root.getBoundingClientRect();
-  const textLength = root.textContent?.length ?? 0;
-  if (rect.width > 0 && textLength > 0) {
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
-    return Math.round(ratio * textLength);
-  }
-  return null;
-}
-
-function eventPointIsInsideElement(element: HTMLElement, event: MouseEvent): boolean {
-  const rects = Array.from(element.getClientRects()).filter(
-    (rect) => rect.width > 0 && rect.height > 0,
-  );
-  if (rects.length === 0) return true;
-  return rects.some(
-    (rect) =>
-      event.clientX >= rect.left &&
-      event.clientX <= rect.right &&
-      event.clientY >= rect.top &&
-      event.clientY <= rect.bottom,
-  );
-}
-
-function renderedHeadingClickRoot(root: HTMLElement, event: MouseEvent): HTMLElement | null {
-  const target = eventTargetElement(event);
-  const targetHeading =
-    (target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null) ?? null;
-  if (!targetHeading || !root.contains(targetHeading)) return null;
-
-  const realHeadings = root.querySelectorAll(RENDERED_MARKDOWN_HEADING_SELECTOR);
-  const isActualMarkdownHeading = targetHeading.matches(RENDERED_MARKDOWN_HEADING_SELECTOR);
-  if (!isActualMarkdownHeading && realHeadings.length > 0) {
-    return null;
-  }
-  if (!eventPointIsInsideElement(targetHeading, event)) return null;
-  return targetHeading;
-}
-
-function caretForRenderedHeadingClick(
-  block: SpaceBlock,
-  root: HTMLElement,
-  event: MouseEvent,
-): number | null {
-  const markdown = block.markdown ?? '';
-  const renderedRoot = renderedHeadingClickRoot(root, event);
-  if (!renderedRoot) return null;
-
-  const renderedOffset = renderedClickTextOffset(renderedRoot, event) ?? 0;
-  const sourceLine = renderedRoot.matches(RENDERED_MARKDOWN_HEADING_SELECTOR)
-    ? markdownHeadingSourceLine(markdown, root, renderedRoot)
-    : null;
-  const sourceStart = sourceLine?.start ?? 0;
-  const prefix = sourceLine?.prefixLength ?? headingMarkdownPrefixLength(markdown);
-  return Math.max(0, Math.min(markdown.length, sourceStart + prefix + renderedOffset));
-}
-
-function caretForRenderedClick(block: SpaceBlock, root: HTMLElement, event: MouseEvent): number | null {
-  const markdown = block.markdown ?? '';
-  if (block.block_type === 'heading') {
-    return caretForRenderedHeadingClick(block, root, event);
-  }
-  const renderedOffset = renderedClickTextOffset(root, event);
-  return Math.max(0, Math.min(markdown.length, renderedOffset ?? markdown.length));
-}
-
-function isResourceRefClick(event: MouseEvent): boolean {
-  const target = eventTargetElement(event);
-  return Boolean(target?.closest?.('a.resource-ref__link, a.spaces-doc-ref__link'));
-}
-
 /**
  * Spaces document block editor mount. Registered for the `document` renderer in
  * the C10 shell (it is the editable document surface; the read-only renderer is
@@ -442,15 +238,13 @@ export function DocumentBlockEditor({
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
-  const [lineEditRegion, setLineEditRegion] = useState<LineEditRegion | null>(null);
   const [inspector, setInspector] = useState<SpaceReferenceDetailTarget | null>(null);
   const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
   const saveTimers = useRef<Map<string, number>>(new Map());
-  const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
+  const editorViews = useRef<Map<string, EditorView>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
-  const focusEditRef = useRef<FocusEditTarget | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -639,88 +433,12 @@ export function DocumentBlockEditor({
 
   const setEditing = useCallback((blockId: string | null) => {
     setActiveBlockId(blockId);
-    if (blockId === null) setLineEditRegion(null);
     setViewState((prior) => ({ ...prior, editingId: blockId }));
   }, []);
 
-  const beginEditing = useCallback(
-    (blockId: string, selectEnd = true, selection?: { start: number; end: number }) => {
-      setLineEditRegion(null);
-      focusEditRef.current = {
-        blockId,
-        selectEnd,
-        start: selection?.start ?? 0,
-        end: selection?.end ?? 0,
-      };
-      setEditing(blockId);
-    },
-    [setEditing],
-  );
-
-  const beginEditingLine = useCallback(
-    (blockId: string, line: MarkdownLineRegion, selection?: { start: number; end: number }) => {
-      setLineEditRegion({ blockId, start: line.start, end: line.end });
-      focusEditRef.current = {
-        blockId,
-        selectEnd: false,
-        start: selection?.start ?? line.start,
-        end: selection?.end ?? selection?.start ?? line.start,
-      };
-      setEditing(blockId);
-    },
-    [setEditing],
-  );
-
-  const beginEditingFromRenderedClick = useCallback(
-    (block: SpaceBlock, event: MouseEvent) => {
-      if (isResourceRefClick(event)) return;
-      const root = event.currentTarget as HTMLElement | null;
-      if (root && hasSelectionInside(root)) return;
-      const caret = root ? caretForRenderedClick(block, root, event) : (block.markdown ?? '').length;
-      if (caret === null) return;
-      beginEditing(block.id, false, { start: caret, end: caret });
-    },
-    [beginEditing],
-  );
-
-  const beginEditingLineFromRenderedClick = useCallback(
-    (block: SpaceBlock, line: MarkdownLineRegion, event: MouseEvent) => {
-      if (isResourceRefClick(event)) return;
-      const root = event.currentTarget as HTMLElement | null;
-      if (!root || hasSelectionInside(root)) return;
-      const target = eventTargetElement(event);
-      const textRoot = target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null;
-      if (line.text && (!textRoot || !root.contains(textRoot) || !eventPointIsInsideElement(textRoot, event))) {
-        return;
-      }
-      const renderedOffset = textRoot ? (renderedClickTextOffset(textRoot, event) ?? 0) : 0;
-      const lineOffset = Math.min(line.text.length, line.prefixLength + renderedOffset);
-      const caret = Math.max(line.start, Math.min(line.end, line.start + lineOffset));
-      beginEditingLine(block.id, line, { start: caret, end: caret });
-    },
-    [beginEditingLine],
-  );
-
-  useEffect(() => {
-    const target = focusEditRef.current;
-    if (!target || viewState.editingId !== target.blockId) return;
-    const textarea = textareaRefs.current.get(target.blockId);
-    if (!textarea) return;
-    focusEditRef.current = null;
-    textarea.focus();
-    if (target.selectEnd) {
-      const end = textarea.value.length;
-      textarea.setSelectionRange(end, end);
-      caretRef.current = { blockId: target.blockId, start: end, end };
-    } else {
-      const lineStart =
-        lineEditRegion?.blockId === target.blockId ? lineEditRegion.start : 0;
-      const start = Math.max(0, Math.min(target.start - lineStart, textarea.value.length));
-      const end = Math.max(start, Math.min(target.end - lineStart, textarea.value.length));
-      textarea.setSelectionRange(start, end);
-      caretRef.current = { blockId: target.blockId, start: lineStart + start, end: lineStart + end };
-    }
-  }, [lineEditRegion, viewState.editingId]);
+  const beginEditing = useCallback((blockId: string) => {
+    setEditing(blockId);
+  }, [setEditing]);
 
   const setDraft = useCallback((blockId: string, value: string) => {
     setViewState((prior) => ({
@@ -784,7 +502,8 @@ export function DocumentBlockEditor({
       }
       const block = blocks.find((b) => b.id === targetId);
       if (!block) return;
-      const draft = viewState.drafts[targetId] ?? block.markdown ?? '';
+      const editorView = editorViews.current.get(targetId);
+      const draft = editorView?.state.doc.toString() ?? viewState.drafts[targetId] ?? block.markdown ?? '';
       const commandRange =
         itemCommandRange?.blockId === targetId ? itemCommandRange : null;
       const caret =
@@ -800,38 +519,31 @@ export function DocumentBlockEditor({
       const nextPos = commandRange
         ? commandRange.start + refText.length
         : Math.min(next.length, caret.start + fallbackPrefixLength + refText.length);
-      const activeLineRegion = lineEditRegion?.blockId === targetId ? lineEditRegion : null;
       setActiveBlockId(targetId);
       setEditing(targetId);
       setItemCommandRange(null);
       setPickerPosition(null);
       setPickerOpen(false);
       setSelectionMenu(null);
-      setDraft(targetId, next);
-      if (activeLineRegion) {
-        setLineEditRegion({
-          ...activeLineRegion,
-          end: activeLineRegion.end + next.length - draft.length,
+      if (editorView) {
+        editorView.dispatch({
+          changes: { from: 0, to: editorView.state.doc.length, insert: next },
+          selection: EditorSelection.cursor(nextPos),
+          scrollIntoView: true,
         });
-      }
-      queueAutosave(targetId, next);
-      window.setTimeout(() => {
-        const textarea = textareaRefs.current.get(targetId);
-        if (!textarea) return;
-        textarea.focus();
-        const relativeNextPos = activeLineRegion
-          ? Math.max(0, Math.min(nextPos - activeLineRegion.start, textarea.value.length))
-          : nextPos;
-        textarea.setSelectionRange(relativeNextPos, relativeNextPos);
+        editorView.focus();
         caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
-      }, 0);
+        return;
+      }
+      setDraft(targetId, next);
+      queueAutosave(targetId, next);
+      caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
     },
     [
       activeBlockId,
       addProseBlock,
       blocks,
       itemCommandRange,
-      lineEditRegion,
       queueAutosave,
       setDraft,
       setEditing,
@@ -843,7 +555,6 @@ export function DocumentBlockEditor({
     (blockId: string, markdown: string) => {
       if (!spaceId) return;
       void saveMarkdownNow(blockId, markdown);
-      setLineEditRegion(null);
       setViewState((prior) => ({ ...prior, editingId: null }));
     },
     [spaceId, saveMarkdownNow],
@@ -878,195 +589,24 @@ export function DocumentBlockEditor({
     [spaceId, editable, blocks, runMutation, fetcher, onEmbedDeleteDecision],
   );
 
-  const updateCaret = useCallback((blockId: string, textarea: HTMLTextAreaElement) => {
-    const lineStart = lineEditRegion?.blockId === blockId ? lineEditRegion.start : 0;
-    caretRef.current = {
-      blockId,
-      start: lineStart + (textarea.selectionStart ?? textarea.value.length),
-      end: lineStart + (textarea.selectionEnd ?? textarea.value.length),
-    };
-  }, [lineEditRegion]);
+  const handleSourceView = useCallback((blockId: string, view: EditorView | null) => {
+    if (view) editorViews.current.set(blockId, view);
+    else editorViews.current.delete(blockId);
+  }, []);
 
-  const updateSelectionMenu = useCallback((blockId: string, textarea: HTMLTextAreaElement) => {
-    const lineStart = lineEditRegion?.blockId === blockId ? lineEditRegion.start : 0;
-    const start = lineStart + (textarea.selectionStart ?? textarea.value.length);
-    const end = lineStart + (textarea.selectionEnd ?? textarea.value.length);
-    if (start === end) {
-      setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
-      return;
-    }
-    const rect = textarea.getBoundingClientRect();
-    setSelectionMenu({
-      blockId,
-      start,
-      end,
-      top: Math.max(8, rect.top - 44),
-      left: Math.max(8, Math.min(rect.left + rect.width - 180, rect.left + 24)),
-    });
-  }, [lineEditRegion]);
-
-  const handleDraftInput = useCallback(
-    (blockId: string, textarea: HTMLTextAreaElement) => {
-      const value = textarea.value;
-      if (lineEditRegion?.blockId === blockId) {
-        const block = blocks.find((b) => b.id === blockId);
-        const draft = viewState.drafts[blockId] ?? block?.markdown ?? '';
-        const next = replaceRange(draft, value, lineEditRegion.start, lineEditRegion.end);
-        const nextRegion = {
-          ...lineEditRegion,
-          end: lineEditRegion.start + value.length,
-        };
-        setLineEditRegion(nextRegion);
-        caretRef.current = {
-          blockId,
-          start: nextRegion.start + (textarea.selectionStart ?? value.length),
-          end: nextRegion.start + (textarea.selectionEnd ?? value.length),
-        };
-        updateSelectionMenu(blockId, textarea);
-        setDraft(blockId, next);
-        queueAutosave(blockId, next);
-        return;
-      }
-      updateCaret(blockId, textarea);
-      updateSelectionMenu(blockId, textarea);
+  const handleSourceChange = useCallback(
+    (blockId: string, value: string, selection: { start: number; end: number }) => {
+      setActiveBlockId(blockId);
+      setEditing(blockId);
+      caretRef.current = { blockId, start: selection.start, end: selection.end };
       setDraft(blockId, value);
       queueAutosave(blockId, value);
     },
-    [blocks, lineEditRegion, queueAutosave, setDraft, updateCaret, updateSelectionMenu, viewState.drafts],
+    [queueAutosave, setDraft, setEditing],
   );
 
-  const handleTextareaKeyDown = useCallback(
-    (blockId: string, event: KeyboardEvent) => {
-      const textarea = event.currentTarget as HTMLTextAreaElement | null;
-      if (!textarea || event.key !== 'Enter' || event.shiftKey || event.metaKey || event.ctrlKey || event.altKey) {
-        return;
-      }
-      const lineStart = lineEditRegion?.blockId === blockId ? lineEditRegion.start : 0;
-      const range = findItemCommandRange(
-        textarea.value,
-        textarea.selectionStart ?? textarea.value.length,
-        textarea.selectionEnd ?? textarea.value.length,
-      );
-      if (range) {
-        event.preventDefault();
-        updateCaret(blockId, textarea);
-        cancelPendingAutosave(blockId);
-        setActiveBlockId(blockId);
-        setEditing(blockId);
-        setSelectionMenu(null);
-        const rect = textarea.getBoundingClientRect();
-        setPickerPosition({
-          top: Math.max(8, rect.bottom + 8),
-          left: Math.max(8, Math.min(rect.left + 24, window.innerWidth - 360)),
-        });
-        setItemCommandRange({
-          blockId,
-          start: lineStart + range.start,
-          end: lineStart + range.end,
-        });
-        setPickerOpen(true);
-        return;
-      }
-
-      const selectionStart = textarea.selectionStart ?? textarea.value.length;
-      const selectionEnd = textarea.selectionEnd ?? selectionStart;
-      if (lineEditRegion?.blockId === blockId) {
-        event.preventDefault();
-        const block = blocks.find((b) => b.id === blockId);
-        const draft = viewState.drafts[blockId] ?? block?.markdown ?? '';
-        const before = textarea.value.slice(0, Math.min(selectionStart, selectionEnd));
-        const after = textarea.value.slice(Math.max(selectionStart, selectionEnd));
-        const replacement = `${before}\n${after}`;
-        const next = replaceRange(draft, replacement, lineEditRegion.start, lineEditRegion.end);
-        const nextLineStart = lineEditRegion.start + before.length + 1;
-        const afterLineBreak = after.indexOf('\n');
-        const nextRegion = {
-          blockId,
-          start: nextLineStart,
-          end: nextLineStart + (afterLineBreak === -1 ? after.length : afterLineBreak),
-        };
-        setLineEditRegion(nextRegion);
-        focusEditRef.current = {
-          blockId,
-          selectEnd: false,
-          start: nextLineStart,
-          end: nextLineStart,
-        };
-        caretRef.current = { blockId, start: nextLineStart, end: nextLineStart };
-        setActiveBlockId(blockId);
-        setEditing(blockId);
-        setSelectionMenu(null);
-        setDraft(blockId, next);
-        queueAutosave(blockId, next);
-        return;
-      }
-
-      event.preventDefault();
-      const before = textarea.value.slice(0, Math.min(selectionStart, selectionEnd));
-      const after = textarea.value.slice(Math.max(selectionStart, selectionEnd));
-      const next = `${before}\n${after}`;
-      const nextLineStart = before.length + 1;
-      const afterLineBreak = after.indexOf('\n');
-      const nextRegion = {
-        blockId,
-        start: nextLineStart,
-        end: nextLineStart + (afterLineBreak === -1 ? after.length : afterLineBreak),
-      };
-      setLineEditRegion(nextRegion);
-      focusEditRef.current = {
-        blockId,
-        selectEnd: false,
-        start: nextLineStart,
-        end: nextLineStart,
-      };
-      caretRef.current = { blockId, start: nextLineStart, end: nextLineStart };
-      setActiveBlockId(blockId);
-      setEditing(blockId);
-      setSelectionMenu(null);
-      setDraft(blockId, next);
-      queueAutosave(blockId, next);
-    },
-    [
-      blocks,
-      cancelPendingAutosave,
-      lineEditRegion,
-      queueAutosave,
-      setDraft,
-      setEditing,
-      updateCaret,
-      viewState.drafts,
-    ],
-  );
-
-  const applySelectionFormat = useCallback(
-    (before: string, after: string) => {
-      if (!selectionMenu) return;
-      const block = blocks.find((b) => b.id === selectionMenu.blockId);
-      if (!block) return;
-      const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
-      const { next, caret } = wrappedSelection(
-        draft,
-        selectionMenu.start,
-        selectionMenu.end,
-        before,
-        after,
-      );
-      setDraft(block.id, next);
-      queueAutosave(block.id, next);
-      setSelectionMenu(null);
-      window.setTimeout(() => {
-        const textarea = textareaRefs.current.get(block.id);
-        if (!textarea) return;
-        textarea.focus();
-        textarea.setSelectionRange(caret, caret);
-        caretRef.current = { blockId: block.id, start: caret, end: caret };
-      }, 0);
-    },
-    [blocks, queueAutosave, selectionMenu, setDraft, viewState.drafts],
-  );
-
-  const handleTextareaBlur = useCallback(
-    (blockId: string, textarea: HTMLTextAreaElement) => {
+  const handleSourceBlur = useCallback(
+    (blockId: string, value: string) => {
       window.setTimeout(() => {
         setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
       }, 0);
@@ -1074,15 +614,78 @@ export function DocumentBlockEditor({
         cancelPendingAutosave(blockId);
         return;
       }
-      if (lineEditRegion?.blockId === blockId) {
-        const block = blocks.find((b) => b.id === blockId);
-        const draft = viewState.drafts[blockId] ?? block?.markdown ?? '';
-        saveProse(blockId, replaceRange(draft, textarea.value, lineEditRegion.start, lineEditRegion.end));
+      saveProse(blockId, value);
+    },
+    [cancelPendingAutosave, itemCommandRange, pickerOpen, saveProse],
+  );
+
+  const handleSourceCaretChange = useCallback((blockId: string, selection: { start: number; end: number }) => {
+    caretRef.current = { blockId, start: selection.start, end: selection.end };
+    setActiveBlockId(blockId);
+  }, []);
+
+  const handleSourceSelectionChange = useCallback(
+    (blockId: string, selection: MarkdownSourceSelection | null) => {
+      if (!selection) {
+        setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
         return;
       }
-      saveProse(blockId, textarea.value);
+      setActiveBlockId(blockId);
+      setSelectionMenu({
+        blockId,
+        start: selection.start,
+        end: selection.end,
+        top: selection.top,
+        left: selection.left,
+      });
     },
-    [blocks, cancelPendingAutosave, itemCommandRange, lineEditRegion, pickerOpen, saveProse, viewState.drafts],
+    [],
+  );
+
+  const handleSourceItemCommand = useCallback(
+    (blockId: string, command: MarkdownSourceItemCommand) => {
+      cancelPendingAutosave(blockId);
+      setActiveBlockId(blockId);
+      setEditing(blockId);
+      setSelectionMenu(null);
+      setPickerPosition({ top: command.top, left: command.left });
+      setItemCommandRange({ blockId, start: command.start, end: command.end });
+      setPickerOpen(true);
+    },
+    [cancelPendingAutosave, setEditing],
+  );
+
+  const applySelectionFormat = useCallback(
+    (before: string, after: string) => {
+      if (!selectionMenu) return;
+      const block = blocks.find((b) => b.id === selectionMenu.blockId);
+      if (!block) return;
+      const editorView = editorViews.current.get(block.id);
+      const draft = editorView?.state.doc.toString() ?? viewState.drafts[block.id] ?? block.markdown ?? '';
+      const { next, caret } = wrappedSelection(
+        draft,
+        selectionMenu.start,
+        selectionMenu.end,
+        before,
+        after,
+      );
+      if (editorView) {
+        editorView.dispatch({
+          changes: { from: 0, to: editorView.state.doc.length, insert: next },
+          selection: EditorSelection.cursor(caret),
+          scrollIntoView: true,
+        });
+        editorView.focus();
+        setSelectionMenu(null);
+        caretRef.current = { blockId: block.id, start: caret, end: caret };
+        return;
+      }
+      setDraft(block.id, next);
+      queueAutosave(block.id, next);
+      setSelectionMenu(null);
+      caretRef.current = { blockId: block.id, start: caret, end: caret };
+    },
+    [blocks, queueAutosave, selectionMenu, setDraft, viewState.drafts],
   );
 
   const openReferenceInspector = useCallback(
@@ -1247,15 +850,9 @@ export function DocumentBlockEditor({
               onClick={handleDocumentClick}
             >
               {blocks.map((block) => {
-                const isEditing = viewState.editingId === block.id;
                 const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
                 const isEmbed = !blockCanEditMarkdown(block);
                 const renderedBlock = rendered?.blocks.find((b) => b.id === block.id);
-                const activeLineRegion =
-                  lineEditRegion?.blockId === block.id ? lineEditRegion : null;
-                const useLineRegions =
-                  !isEmbed && (shouldRenderLineRegions(draft) || activeLineRegion !== null);
-                const lineRegions = useLineRegions ? markdownLineRegions(draft) : [];
                 return (
                   <li
                     key={block.id}
@@ -1266,136 +863,23 @@ export function DocumentBlockEditor({
                     onFocusIn={() => setActiveBlockId(block.id)}
                     onMouseEnter={() => setActiveBlockId(block.id)}
                   >
-                    {isEditing && !isEmbed && !activeLineRegion && (
-                      <div className="spaces-block-editor__editbox">
-                        <textarea
-                          ref={(node) => {
-                            if (node) textareaRefs.current.set(block.id, node);
-                            else textareaRefs.current.delete(block.id);
-                          }}
-                          className="spaces-block-editor__textarea"
+                    {!isEmbed && (
+                      <div className="spaces-block-editor__source-block" data-testid="spaces-block-editor-edit">
+                        <MarkdownSourceEditor
+                          blockId={block.id}
                           value={draft}
-                          rows={1}
-                          data-testid="spaces-block-editor-textarea"
-                          aria-label={`Edit ${block.block_type} block`}
-                          onInput={(e) => handleDraftInput(block.id, e.currentTarget as HTMLTextAreaElement)}
-                          onSelect={(e) => {
-                            const textarea = e.currentTarget as HTMLTextAreaElement;
-                            updateCaret(block.id, textarea);
-                            updateSelectionMenu(block.id, textarea);
-                          }}
-                          onClick={(e) => {
-                            const textarea = e.currentTarget as HTMLTextAreaElement;
-                            updateCaret(block.id, textarea);
-                            updateSelectionMenu(block.id, textarea);
-                          }}
-                          onKeyDown={(e) => handleTextareaKeyDown(block.id, e as unknown as KeyboardEvent)}
-                          onKeyUp={(e) => {
-                            const textarea = e.currentTarget as HTMLTextAreaElement;
-                            updateCaret(block.id, textarea);
-                            updateSelectionMenu(block.id, textarea);
-                          }}
-                          onBlur={(e) => handleTextareaBlur(block.id, e.currentTarget as HTMLTextAreaElement)}
+                          ariaLabel={`Edit ${block.block_type} Markdown`}
+                          onView={handleSourceView}
+                          onChange={(value, selection) => handleSourceChange(block.id, value, selection)}
+                          onBlur={(value) => handleSourceBlur(block.id, value)}
+                          onCaretChange={(selection) => handleSourceCaretChange(block.id, selection)}
+                          onSelectionChange={(selection) => handleSourceSelectionChange(block.id, selection)}
+                          onItemCommand={(command) => handleSourceItemCommand(block.id, command)}
+                          onOpenReference={openReferenceInspector}
                         />
                       </div>
                     )}
-                    {useLineRegions && (!isEditing || activeLineRegion) && (
-                      <div className="spaces-block-editor__rendered-block">
-                        {lineRegions.map((line, index) => {
-                          const isActiveLine =
-                            activeLineRegion !== null &&
-                            line.start === activeLineRegion.start;
-                          const html = renderedLineHtml(line);
-                          return (
-                            <div
-                              key={`${line.start}:${index}`}
-                              className="spaces-block-editor__line-region"
-                              data-markdown-heading={line.isHeading ? 'true' : undefined}
-                              data-testid="spaces-block-editor-line-region"
-                              onClick={(event) =>
-                                !isActiveLine &&
-                                beginEditingLineFromRenderedClick(
-                                  block,
-                                  line,
-                                  event as unknown as MouseEvent,
-                                )
-                              }
-                            >
-                              {isActiveLine ? (
-                                <div className="spaces-block-editor__editbox">
-                                  <textarea
-                                    ref={(node) => {
-                                      if (node) textareaRefs.current.set(block.id, node);
-                                      else textareaRefs.current.delete(block.id);
-                                    }}
-                                    className="spaces-block-editor__textarea"
-                                    value={line.text}
-                                    rows={1}
-                                    data-testid="spaces-block-editor-textarea"
-                                    aria-label={`Edit ${block.block_type} line`}
-                                    onInput={(e) =>
-                                      handleDraftInput(block.id, e.currentTarget as HTMLTextAreaElement)
-                                    }
-                                    onSelect={(e) => {
-                                      const textarea = e.currentTarget as HTMLTextAreaElement;
-                                      updateCaret(block.id, textarea);
-                                      updateSelectionMenu(block.id, textarea);
-                                    }}
-                                    onClick={(e) => {
-                                      const textarea = e.currentTarget as HTMLTextAreaElement;
-                                      updateCaret(block.id, textarea);
-                                      updateSelectionMenu(block.id, textarea);
-                                    }}
-                                    onKeyDown={(e) => handleTextareaKeyDown(block.id, e as unknown as KeyboardEvent)}
-                                    onKeyUp={(e) => {
-                                      const textarea = e.currentTarget as HTMLTextAreaElement;
-                                      updateCaret(block.id, textarea);
-                                      updateSelectionMenu(block.id, textarea);
-                                    }}
-                                    onBlur={(e) => handleTextareaBlur(block.id, e.currentTarget as HTMLTextAreaElement)}
-                                  />
-                                </div>
-                              ) : html ? (
-                                <span
-                                  className="spaces-block-editor__rendered-html spaces-block-editor__rendered-html--line"
-                                  data-heading-hit-area={line.isHeading ? 'true' : undefined}
-                                  // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML from DocumentRenderer.
-                                  dangerouslySetInnerHTML={{ __html: html }}
-                                />
-                              ) : (
-                                <span className="spaces-block-editor__blank" aria-hidden="true" />
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    {!isEditing && !isEmbed && !useLineRegions && (
-                      <div
-                        className="spaces-block-editor__rendered-block"
-                        data-testid="spaces-block-editor-edit"
-                        onClick={(event) =>
-                          beginEditingFromRenderedClick(block, event as unknown as MouseEvent)
-                        }
-                        onFocus={() => setActiveBlockId(block.id)}
-                      >
-                        {renderedBlock?.html ? (
-                          <span
-                            className={
-                              block.block_type === 'heading'
-                                ? 'spaces-block-editor__rendered-html spaces-block-editor__rendered-html--heading-hit-area'
-                                : 'spaces-block-editor__rendered-html'
-                            }
-                            data-heading-hit-area={block.block_type === 'heading' ? 'true' : undefined}
-                            // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML from DocumentRenderer.
-                            dangerouslySetInnerHTML={{ __html: renderedBlock.html }}
-                          />
-                        ) : (
-                          <span className="spaces-block-editor__blank" aria-hidden="true" />
-                        )}
-                      </div>
-                    )}
-                    {!isEditing && isEmbed && renderedBlock && (
+                    {isEmbed && renderedBlock && (
                       <div className="spaces-block-editor__embed-preview">
                         <DocumentBody
                           document={{ format: rendered?.format ?? null, html: '', refs: [], isSpacesDoc: true, blocks: [renderedBlock] }}
@@ -1456,8 +940,8 @@ export function DocumentBlockEditor({
               setPickerOpen(false);
               setItemCommandRange(null);
               setPickerPosition(null);
-              const textarea = textareaRefs.current.get(focusBlockId);
-              if (textarea) window.setTimeout(() => textarea.focus(), 0);
+              const editorView = editorViews.current.get(focusBlockId);
+              if (editorView) window.setTimeout(() => editorView.focus(), 0);
             }}
           />
         </div>
