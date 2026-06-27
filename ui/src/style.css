@@ -991,6 +991,10 @@ a {
   box-shadow: var(--shadow-content-top);
 }
 
+.app-content--spaces::before {
+  box-shadow: none;
+}
+
 .app-content > * {
   position: relative;
   min-height: 0;
@@ -1075,6 +1079,10 @@ a {
   position: relative;
   z-index: 2;
   box-shadow: var(--shadow-rail);
+}
+
+.app-layout--view-sidebar-open .view-sidebar.spaces-tree {
+  box-shadow: none;
 }
 
 /* Project Timeline workspace */

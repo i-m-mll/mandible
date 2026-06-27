@@ -320,6 +320,49 @@ describe('SpaceCanvas rendering', () => {
     expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saved');
   });
 
+  it('resizes the bottom inspector from the invisible top-border handle', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    const inspector = screen.getByTestId('space-canvas-inspector') as HTMLElement;
+    const handle = screen.getByTestId('space-canvas-inspector-resize') as HTMLElement;
+
+    inspector.getBoundingClientRect = () => ({
+      x: 0,
+      y: 440,
+      width: 800,
+      height: 220,
+      top: 440,
+      right: 800,
+      bottom: 660,
+      left: 0,
+      toJSON: () => ({}),
+    });
+    (inspector.parentElement as HTMLElement).getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      left: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.mouseDown(handle, { clientY: 440 });
+    act(() => {
+      window.dispatchEvent(new MouseEvent('pointermove', { clientY: 380 }));
+      window.dispatchEvent(new MouseEvent('pointerup'));
+    });
+
+    await waitFor(() => expect(inspector.style.flexBasis).toBe('280px'));
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
+  });
+
   it('renders stable left target and right source handles on nodes', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha')],
