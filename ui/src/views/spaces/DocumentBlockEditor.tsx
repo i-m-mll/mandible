@@ -70,6 +70,16 @@ import './DocumentBlockEditor.css';
 const SPACE_EVENT_PREFIX = 'space:';
 
 const AUTOSAVE_DELAY_MS = 650;
+const MIN_INSPECTOR_HEIGHT = 160;
+const MAX_INSPECTOR_VIEWPORT_FRACTION = 0.7;
+
+function clampInspectorHeight(height: number, viewportHeight: number): number {
+  const maxHeight = Math.max(
+    MIN_INSPECTOR_HEIGHT,
+    Math.floor(viewportHeight * MAX_INSPECTOR_VIEWPORT_FRACTION),
+  );
+  return Math.min(Math.max(Math.round(height), MIN_INSPECTOR_HEIGHT), maxHeight);
+}
 
 /**
  * An item the editor can embed. The caller (the C8 collection / a future picker)
@@ -236,12 +246,15 @@ export function DocumentBlockEditor({
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
   const [inspector, setInspector] = useState<SpaceReferenceDetailTarget | null>(null);
+  const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
   const saveTimers = useRef<Map<string, number>>(new Map());
   const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
   const focusEditRef = useRef<{ blockId: string; selectEnd: boolean } | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   fetchRef.current = fetchImpl;
 
   // Re-hydrate per-space edit state whenever the open Space changes.
@@ -704,6 +717,47 @@ export function DocumentBlockEditor({
     [openReferenceInspector],
   );
 
+  const beginInspectorResize = useCallback(
+    (event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      if (inspectorResizeRef.current) return;
+      const inspectorElement = event.currentTarget.parentElement as HTMLElement | null;
+      if (!inspectorElement) return;
+      inspectorResizeRef.current = {
+        startY: event.clientY,
+        startHeight: inspectorElement.getBoundingClientRect().height,
+      };
+      const previousCursor = document.documentElement.style.cursor;
+      const previousUserSelect = document.documentElement.style.userSelect;
+      document.documentElement.style.cursor = 'row-resize';
+      document.documentElement.style.userSelect = 'none';
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const origin = inspectorResizeRef.current;
+        if (!origin) return;
+        const viewportHeight =
+          viewportRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+        setInspectorHeight(
+          clampInspectorHeight(
+            origin.startHeight + origin.startY - moveEvent.clientY,
+            viewportHeight,
+          ),
+        );
+      };
+      const stopResize = () => {
+        inspectorResizeRef.current = null;
+        document.documentElement.style.cursor = previousCursor;
+        document.documentElement.style.userSelect = previousUserSelect;
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', stopResize);
+        window.removeEventListener('pointercancel', stopResize);
+      };
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', stopResize);
+      window.addEventListener('pointercancel', stopResize);
+    },
+    [],
+  );
+
   const pickerBlockId = itemCommandRange?.blockId ?? activeBlockId;
 
   // --- render ----------------------------------------------------------------
@@ -726,174 +780,183 @@ export function DocumentBlockEditor({
       data-editable={String(editable)}
       data-stale={String(custody.stale)}
     >
-      {load.status === 'loading' && (
-        <div className="spaces-block-editor__status">
-          <span>Loading document…</span>
-          <div className="spaces-block-editor__doc-shell" aria-hidden="true">
-            <div className="spaces-block-editor__ghost-line spaces-block-editor__ghost-line--wide" />
-            <div className="spaces-block-editor__ghost-line" />
-          </div>
-        </div>
-      )}
-      {load.status === 'error' && (
-        <div className="spaces-block-editor__error" data-testid="spaces-block-editor-error">
-          Failed to load document: {load.message}
-        </div>
-      )}
-
-      {!editable && custody.stale && (
-        <CustodyStaleBanner
-          custody={custody}
-          onReimport={onReimport}
-          onFork={onFork}
-        />
-      )}
-
-      {actionError && (
-        <div className="spaces-block-editor__error" data-testid="spaces-block-editor-action-error">
-          {actionError}
-        </div>
-      )}
-
-      {/* The live document, rendered through the C14b renderer (read path). */}
-      {saveState.status !== 'idle' && (
-        <div
-          className="spaces-block-editor__save-state"
-          data-state={saveState.status}
-          data-testid="spaces-block-editor-save-state"
-        >
-          {saveState.status === 'saving'
-            ? 'Autosaving…'
-            : saveState.status === 'saved'
-              ? 'Saved'
-              : `Autosave failed: ${saveState.message}`}
-        </div>
-      )}
-
-      {!editable && rendered && (
-        <div className="spaces-block-editor__doc" onClick={handleDocumentClick}>
-          <DocumentBody
-            document={rendered}
-            sources={sources}
-            collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
-          />
-        </div>
-      )}
-
-      {editable && load.status === 'ready' && blocks.length === 0 && (
-        <div className="spaces-block-editor__empty-author" data-testid="spaces-block-editor-empty-author">
-          <button
-            type="button"
-            className="spaces-block-editor__empty-start"
-            disabled={busy}
-            onClick={() => void addProseBlock('paragraph')}
+      <div className="spaces-block-editor__viewport" ref={viewportRef}>
+        {saveState.status !== 'idle' && (
+          <div
+            className="spaces-block-editor__save-state"
+            data-state={saveState.status}
+            data-testid="spaces-block-editor-save-state"
           >
-            Start writing
-          </button>
-        </div>
-      )}
+            {saveState.status === 'saving'
+              ? 'Autosaving…'
+              : saveState.status === 'saved'
+                ? 'Saved'
+                : `Autosave failed: ${saveState.message}`}
+          </div>
+        )}
+        <div className="spaces-block-editor__scroller">
+          {load.status === 'loading' && (
+            <div className="spaces-block-editor__status">
+              <span>Loading document…</span>
+              <div className="spaces-block-editor__doc-shell" aria-hidden="true">
+                <div className="spaces-block-editor__ghost-line spaces-block-editor__ghost-line--wide" />
+                <div className="spaces-block-editor__ghost-line" />
+              </div>
+            </div>
+          )}
+          {load.status === 'error' && (
+            <div className="spaces-block-editor__error" data-testid="spaces-block-editor-error">
+              Failed to load document: {load.message}
+            </div>
+          )}
 
-      {editable && load.status === 'ready' && blocks.length > 0 && (
-        <ul
-          className="spaces-block-editor__list"
-          data-testid="spaces-block-editor-list"
-          onClick={handleDocumentClick}
-        >
-          {blocks.map((block) => {
-            const isEditing = viewState.editingId === block.id;
-            const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
-            const isEmbed = !blockCanEditMarkdown(block);
-            const renderedBlock = rendered?.blocks.find((b) => b.id === block.id);
-            return (
-              <li
-                key={block.id}
-                className={`spaces-block-editor__row${activeBlockId === block.id ? ' spaces-block-editor__row--active' : ''}`}
-                data-block-id={block.id}
-                data-block-type={block.block_type}
-                data-testid="spaces-block-editor-row"
-                onFocusIn={() => setActiveBlockId(block.id)}
-                onMouseEnter={() => setActiveBlockId(block.id)}
+          {!editable && custody.stale && (
+            <CustodyStaleBanner
+              custody={custody}
+              onReimport={onReimport}
+              onFork={onFork}
+            />
+          )}
+
+          {actionError && (
+            <div className="spaces-block-editor__error" data-testid="spaces-block-editor-action-error">
+              {actionError}
+            </div>
+          )}
+
+          {/* The live document, rendered through the C14b renderer (read path). */}
+
+          {!editable && rendered && (
+            <div className="spaces-block-editor__doc" onClick={handleDocumentClick}>
+              <DocumentBody
+                document={rendered}
+                sources={sources}
+                collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
+              />
+            </div>
+          )}
+
+          {editable && load.status === 'ready' && blocks.length === 0 && (
+            <div className="spaces-block-editor__empty-author" data-testid="spaces-block-editor-empty-author">
+              <button
+                type="button"
+                className="spaces-block-editor__empty-start"
+                disabled={busy}
+                onClick={() => void addProseBlock('paragraph')}
               >
-                {isEditing && !isEmbed && (
-                  <div className="spaces-block-editor__editbox">
-                    <textarea
-                      ref={(node) => {
-                        if (node) textareaRefs.current.set(block.id, node);
-                        else textareaRefs.current.delete(block.id);
-                      }}
-                      className="spaces-block-editor__textarea"
-                      value={draft}
-                      rows={1}
-                      data-testid="spaces-block-editor-textarea"
-                      aria-label={`Edit ${block.block_type} block`}
-                      onInput={(e) => handleDraftInput(block.id, e.currentTarget as HTMLTextAreaElement)}
-                      onSelect={(e) => {
-                        const textarea = e.currentTarget as HTMLTextAreaElement;
-                        updateCaret(block.id, textarea);
-                        updateSelectionMenu(block.id, textarea);
-                      }}
-                      onClick={(e) => {
-                        const textarea = e.currentTarget as HTMLTextAreaElement;
-                        updateCaret(block.id, textarea);
-                        updateSelectionMenu(block.id, textarea);
-                      }}
-                      onKeyDown={(e) => handleTextareaKeyDown(block.id, e as unknown as KeyboardEvent)}
-                      onKeyUp={(e) => {
-                        const textarea = e.currentTarget as HTMLTextAreaElement;
-                        updateCaret(block.id, textarea);
-                        updateSelectionMenu(block.id, textarea);
-                      }}
-                      onBlur={(e) => handleTextareaBlur(block.id, e.currentTarget as HTMLTextAreaElement)}
-                    />
-                  </div>
-                )}
-                {!isEditing && !isEmbed && (
-                  <button
-                    type="button"
-                    className="spaces-block-editor__rendered-block"
-                    data-testid="spaces-block-editor-edit"
-                    onClick={() => beginEditing(block.id)}
-                    onFocus={() => setActiveBlockId(block.id)}
+                Start writing
+              </button>
+            </div>
+          )}
+
+          {editable && load.status === 'ready' && blocks.length > 0 && (
+            <ul
+              className="spaces-block-editor__list"
+              data-testid="spaces-block-editor-list"
+              onClick={handleDocumentClick}
+            >
+              {blocks.map((block) => {
+                const isEditing = viewState.editingId === block.id;
+                const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
+                const isEmbed = !blockCanEditMarkdown(block);
+                const renderedBlock = rendered?.blocks.find((b) => b.id === block.id);
+                return (
+                  <li
+                    key={block.id}
+                    className={`spaces-block-editor__row${activeBlockId === block.id ? ' spaces-block-editor__row--active' : ''}`}
+                    data-block-id={block.id}
+                    data-block-type={block.block_type}
+                    data-testid="spaces-block-editor-row"
+                    onFocusIn={() => setActiveBlockId(block.id)}
+                    onMouseEnter={() => setActiveBlockId(block.id)}
                   >
-                    {renderedBlock?.html ? (
-                      <span
-                        className="spaces-block-editor__rendered-html"
-                        // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML from DocumentRenderer.
-                        dangerouslySetInnerHTML={{ __html: renderedBlock.html }}
-                      />
-                    ) : (
-                      <span className="spaces-block-editor__blank" aria-hidden="true" />
+                    {isEditing && !isEmbed && (
+                      <div className="spaces-block-editor__editbox">
+                        <textarea
+                          ref={(node) => {
+                            if (node) textareaRefs.current.set(block.id, node);
+                            else textareaRefs.current.delete(block.id);
+                          }}
+                          className="spaces-block-editor__textarea"
+                          value={draft}
+                          rows={1}
+                          data-testid="spaces-block-editor-textarea"
+                          aria-label={`Edit ${block.block_type} block`}
+                          onInput={(e) => handleDraftInput(block.id, e.currentTarget as HTMLTextAreaElement)}
+                          onSelect={(e) => {
+                            const textarea = e.currentTarget as HTMLTextAreaElement;
+                            updateCaret(block.id, textarea);
+                            updateSelectionMenu(block.id, textarea);
+                          }}
+                          onClick={(e) => {
+                            const textarea = e.currentTarget as HTMLTextAreaElement;
+                            updateCaret(block.id, textarea);
+                            updateSelectionMenu(block.id, textarea);
+                          }}
+                          onKeyDown={(e) => handleTextareaKeyDown(block.id, e as unknown as KeyboardEvent)}
+                          onKeyUp={(e) => {
+                            const textarea = e.currentTarget as HTMLTextAreaElement;
+                            updateCaret(block.id, textarea);
+                            updateSelectionMenu(block.id, textarea);
+                          }}
+                          onBlur={(e) => handleTextareaBlur(block.id, e.currentTarget as HTMLTextAreaElement)}
+                        />
+                      </div>
                     )}
-                  </button>
-                )}
-                {!isEditing && isEmbed && renderedBlock && (
-                  <div className="spaces-block-editor__embed-preview">
-                    <DocumentBody
-                      document={{ format: rendered?.format ?? null, html: '', refs: [], isSpacesDoc: true, blocks: [renderedBlock] }}
-                      sources={sources}
-                      collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
-                    />
-                  </div>
-                )}
-                {isEmbed && block.item_id && (
-                  <span className="spaces-block-editor__commands" aria-label="Embedded item commands">
-                    <button
-                      type="button"
-                      className="spaces-block-editor__command spaces-block-editor__command--text"
-                      disabled={busy}
-                      onClick={() => requestItemDelete(block.item_id!)}
-                      data-testid="spaces-block-editor-delete-item"
-                      title="Delete the embedded item (prompts an embed-on-delete decision)"
-                    >
-                      Remove item
-                    </button>
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      )}
+                    {!isEditing && !isEmbed && (
+                      <button
+                        type="button"
+                        className="spaces-block-editor__rendered-block"
+                        data-testid="spaces-block-editor-edit"
+                        onClick={() => beginEditing(block.id)}
+                        onFocus={() => setActiveBlockId(block.id)}
+                      >
+                        {renderedBlock?.html ? (
+                          <span
+                            className="spaces-block-editor__rendered-html"
+                            // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML from DocumentRenderer.
+                            dangerouslySetInnerHTML={{ __html: renderedBlock.html }}
+                          />
+                        ) : (
+                          <span className="spaces-block-editor__blank" aria-hidden="true" />
+                        )}
+                      </button>
+                    )}
+                    {!isEditing && isEmbed && renderedBlock && (
+                      <div className="spaces-block-editor__embed-preview">
+                        <DocumentBody
+                          document={{ format: rendered?.format ?? null, html: '', refs: [], isSpacesDoc: true, blocks: [renderedBlock] }}
+                          sources={sources}
+                          collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
+                        />
+                      </div>
+                    )}
+                    {isEmbed && block.item_id && (
+                      <span className="spaces-block-editor__commands" aria-label="Embedded item commands">
+                        <button
+                          type="button"
+                          className="spaces-block-editor__command spaces-block-editor__command--text"
+                          disabled={busy}
+                          onClick={() => requestItemDelete(block.item_id!)}
+                          data-testid="spaces-block-editor-delete-item"
+                          title="Delete the embedded item (prompts an embed-on-delete decision)"
+                        >
+                          Remove item
+                        </button>
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {/* DEFERRED embed-on-delete decision surfaced inline when no host handler. */}
+          {pendingEmbedDelete && (
+            <EmbedDeletePrompt decision={pendingEmbedDelete} busy={busy} />
+          )}
+        </div>
+      </div>
 
       {editable && pickerOpen && pickerBlockId && (
         <div
@@ -980,12 +1043,12 @@ export function DocumentBlockEditor({
       )}
 
       {inspector && (
-        <ReferenceInspector target={inspector} onClose={() => setInspector(null)} />
-      )}
-
-      {/* DEFERRED embed-on-delete decision surfaced inline when no host handler. */}
-      {pendingEmbedDelete && (
-        <EmbedDeletePrompt decision={pendingEmbedDelete} busy={busy} />
+        <ReferenceInspector
+          target={inspector}
+          height={inspectorHeight}
+          onResizeStart={beginInspectorResize}
+          onClose={() => setInspector(null)}
+        />
       )}
     </div>
   );
@@ -993,13 +1056,35 @@ export function DocumentBlockEditor({
 
 function ReferenceInspector({
   target,
+  height,
+  onResizeStart,
   onClose,
 }: {
   target: SpaceReferenceDetailTarget;
+  height: number | null;
+  onResizeStart: (
+    event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
+  ) => void;
   onClose: () => void;
 }): JSX.Element {
+  const style = height !== null ? ({ flexBasis: `${height}px` } as JSX.CSSProperties) : undefined;
   return (
-    <aside className="spaces-block-editor__inspector" data-testid="spaces-block-editor-inspector">
+    <aside
+      className="spaces-block-editor__inspector"
+      data-testid="spaces-block-editor-inspector"
+      data-placement="bottom"
+      aria-label="Reference inspector"
+      style={style}
+    >
+      <div
+        className="spaces-block-editor__inspector-resize"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize reference inspector"
+        onMouseDown={onResizeStart}
+        onPointerDown={onResizeStart}
+        data-testid="spaces-block-editor-inspector-resize"
+      />
       <header className="spaces-block-editor__inspector-head">
         <strong>{target.kind === 'unsupported' ? 'Reference' : target.kind}</strong>
         <button type="button" onClick={onClose} aria-label="Close reference inspector">
