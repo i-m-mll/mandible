@@ -31,7 +31,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { getSpaceExports, getSpaceFactPacket } from '../../api';
-import { resolveResourceRef, type ResolverResult } from '../../resource-refs';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -61,6 +60,11 @@ import {
 } from './blockEditorViewState';
 import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
 import { SpaceItemPicker } from './SpaceItemPicker';
+import {
+  SpaceReferenceDetailContent,
+  detailTargetFromResourceRef,
+  type SpaceReferenceDetailTarget,
+} from './SpaceReferenceDetailPanel';
 import './DocumentBlockEditor.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
@@ -115,11 +119,6 @@ type SelectionMenuState = {
   left: number;
 };
 type OverlayPosition = { top: number; left: number };
-
-type RefInspector =
-  | { status: 'resolving'; ref: string }
-  | { status: 'ready'; ref: string; result: ResolverResult }
-  | { status: 'error'; ref: string; message: string };
 
 export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
   /** Test seam: inject a fetch implementation for block reads/writes. */
@@ -236,12 +235,13 @@ export function DocumentBlockEditor({
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
   const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
-  const [inspector, setInspector] = useState<RefInspector | null>(null);
+  const [inspector, setInspector] = useState<SpaceReferenceDetailTarget | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
   const saveTimers = useRef<Map<string, number>>(new Map());
   const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
+  const focusEditRef = useRef<{ blockId: string; selectEnd: boolean } | null>(null);
   fetchRef.current = fetchImpl;
 
   // Re-hydrate per-space edit state whenever the open Space changes.
@@ -410,6 +410,28 @@ export function DocumentBlockEditor({
     setViewState((prior) => ({ ...prior, editingId: blockId }));
   }, []);
 
+  const beginEditing = useCallback(
+    (blockId: string, selectEnd = true) => {
+      focusEditRef.current = { blockId, selectEnd };
+      setEditing(blockId);
+    },
+    [setEditing],
+  );
+
+  useEffect(() => {
+    const target = focusEditRef.current;
+    if (!target || viewState.editingId !== target.blockId) return;
+    const textarea = textareaRefs.current.get(target.blockId);
+    if (!textarea) return;
+    focusEditRef.current = null;
+    textarea.focus();
+    if (target.selectEnd) {
+      const end = textarea.value.length;
+      textarea.setSelectionRange(end, end);
+      caretRef.current = { blockId: target.blockId, start: end, end };
+    }
+  }, [viewState.editingId]);
+
   const setDraft = useCallback((blockId: string, value: string) => {
     setViewState((prior) => ({
       ...prior,
@@ -435,11 +457,11 @@ export function DocumentBlockEditor({
       await runMutation(async () => {
         const created = await createSpaceBlock(spaceId, body, fetcher());
         setActiveBlockId(created.id);
-        setEditing(created.id);
+        beginEditing(created.id);
         return created;
       });
     },
-    [spaceId, blocks, runMutation, fetcher, setEditing],
+    [spaceId, blocks, runMutation, fetcher, beginEditing],
   );
 
   const embedSpaceItem = useCallback(
@@ -663,14 +685,9 @@ export function DocumentBlockEditor({
   const openReferenceInspector = useCallback(
     (ref: string) => {
       if (!ref.trim()) return;
-      setInspector({ status: 'resolving', ref });
-      resolveResourceRef(ref, fetcher())
-        .then((result) => setInspector({ status: 'ready', ref, result }))
-        .catch((err) =>
-          setInspector({ status: 'error', ref, message: err instanceof Error ? err.message : String(err) }),
-        );
+      setInspector(detailTargetFromResourceRef(ref));
     },
-    [fetcher],
+    [],
   );
 
   const handleDocumentClick = useCallback(
@@ -835,7 +852,7 @@ export function DocumentBlockEditor({
                     type="button"
                     className="spaces-block-editor__rendered-block"
                     data-testid="spaces-block-editor-edit"
-                    onClick={() => setEditing(block.id)}
+                    onClick={() => beginEditing(block.id)}
                     onFocus={() => setActiveBlockId(block.id)}
                   >
                     {renderedBlock?.html ? (
@@ -845,7 +862,7 @@ export function DocumentBlockEditor({
                         dangerouslySetInnerHTML={{ __html: renderedBlock.html }}
                       />
                     ) : (
-                      <span className="spaces-block-editor__placeholder">Write here…</span>
+                      <span className="spaces-block-editor__blank" aria-hidden="true" />
                     )}
                   </button>
                 )}
@@ -963,7 +980,7 @@ export function DocumentBlockEditor({
       )}
 
       {inspector && (
-        <ReferenceInspector inspector={inspector} onClose={() => setInspector(null)} />
+        <ReferenceInspector target={inspector} onClose={() => setInspector(null)} />
       )}
 
       {/* DEFERRED embed-on-delete decision surfaced inline when no host handler. */}
@@ -975,45 +992,26 @@ export function DocumentBlockEditor({
 }
 
 function ReferenceInspector({
-  inspector,
+  target,
   onClose,
 }: {
-  inspector: RefInspector;
+  target: SpaceReferenceDetailTarget;
   onClose: () => void;
 }): JSX.Element {
-  const result = inspector.status === 'ready' ? inspector.result : null;
-  const entity = result?.entity ?? null;
-  const title =
-    (entity && typeof entity.title === 'string' && entity.title) ||
-    (entity && typeof entity.display_id === 'string' && entity.display_id) ||
-    inspector.ref;
   return (
     <aside className="spaces-block-editor__inspector" data-testid="spaces-block-editor-inspector">
       <header className="spaces-block-editor__inspector-head">
-        <strong>{title}</strong>
+        <strong>{target.kind === 'unsupported' ? 'Reference' : target.kind}</strong>
         <button type="button" onClick={onClose} aria-label="Close reference inspector">
           ×
         </button>
       </header>
       <div className="spaces-block-editor__inspector-meta">
-        <code>{inspector.ref}</code>
+        <code>{target.ref}</code>
       </div>
-      {inspector.status === 'resolving' && (
-        <div className="spaces-block-editor__inspector-status">Resolving…</div>
-      )}
-      {inspector.status === 'error' && (
-        <div className="spaces-block-editor__inspector-error">{inspector.message}</div>
-      )}
-      {result && (
-        <div className="spaces-block-editor__inspector-body" data-resolved={String(result.resolved)}>
-          <span className="spaces-block-editor__inspector-kind">{result.kind}</span>
-          {result.resolved ? (
-            <pre>{JSON.stringify(result.entity ?? result.detail ?? {}, null, 2)}</pre>
-          ) : (
-            <p>{result.error ?? 'Reference did not resolve.'}</p>
-          )}
-        </div>
-      )}
+      <div className="spaces-block-editor__inspector-body">
+        <SpaceReferenceDetailContent target={target} />
+      </div>
     </aside>
   );
 }

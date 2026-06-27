@@ -44,34 +44,20 @@ import type {
   BatchSpaceOccurrenceEntry,
   CreateSpaceEdgeRequest,
   UpdateSpaceEdgeRequest,
-  LedgerIssueDetailProjection,
-  ArtifactContentResult,
-  ArtifactRecord,
-  ArtifactResolveResult,
-  ArtifactVersionHistory,
-  ArtifactVersionRecord,
-  KnowledgeBackrefRecord,
 } from '../../api';
 import {
   batchWriteSpaceOccurrences,
   createSpaceEdge,
   createSpaceOccurrence,
   deleteSpaceEdge,
-  getArtifact,
-  getArtifactContent,
-  getArtifactKnowledgeBackrefs,
-  getArtifactVersions,
-  getLedgerIssueDetailByIssueId,
-  resolveArtifact,
   updateSpaceEdge,
 } from '../../api';
 import { layoutGraph } from '../../graph/layout';
 import type { GraphEdge, GraphNode } from '../../types/graph';
 import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
-import { LedgerIssueDetail } from '../../components/ledger/IssueDetail';
-import { ArtifactDetail } from '../artifacts';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
+import { ArtifactReferenceDetail, IssueReferenceDetail } from './SpaceReferenceDetailPanel';
 import {
   LEDGER_LINK_TYPES,
   evaluatePromotion,
@@ -1192,187 +1178,13 @@ function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
       {!item ? (
         <OccurrenceSummary node={node} />
       ) : item.ref_type === 'issue' ? (
-        <IssueNodeDetail issueRef={item.ref_id} />
+        <IssueReferenceDetail issueRef={item.ref_id} />
       ) : item.ref_type === 'artifact' ? (
-        <ArtifactNodeDetail artifactRef={item.ref_uri ?? item.ref_id} />
+        <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} />
       ) : (
         <OccurrenceSummary node={node} />
       )}
     </div>
-  );
-}
-
-function IssueNodeDetail({ issueRef }: { issueRef: string }): JSX.Element {
-  const [detail, setDetail] = useState<LedgerIssueDetailProjection | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setDetail(null);
-    getLedgerIssueDetailByIssueId(issueRef)
-      .then((next) => {
-        if (!cancelled) setDetail(next);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [issueRef]);
-
-  if (error) return <div className="space-canvas__inspector-error">Failed to load issue: {error}</div>;
-  if (!detail) return <div className="space-canvas__inspector-empty">{loading ? 'Loading issue...' : 'No issue detail.'}</div>;
-
-  return (
-    <LedgerIssueDetail
-      detail={detail}
-      compact
-      hydrating={loading}
-      onOpenEntity={(type, id, repoId) => {
-        if (type === 'issue') {
-          const params = new URLSearchParams({ issue: id });
-          if (repoId) params.set('repo', repoId);
-          window.location.hash = `#/issues?${params.toString()}`;
-        } else if (type === 'auth_request') {
-          window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
-        } else if (type === 'session') {
-          window.location.hash = `#/console?session=${encodeURIComponent(id)}`;
-        }
-      }}
-    />
-  );
-}
-
-function ArtifactNodeDetail({ artifactRef }: { artifactRef: string }): JSX.Element {
-  const [resolution, setResolution] = useState<ArtifactResolveResult | null>(null);
-  const [artifact, setArtifact] = useState<ArtifactRecord | null>(null);
-  const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
-  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(null);
-  const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
-  const [content, setContent] = useState<ArtifactContentResult | null>(null);
-  const [knowledgeBackrefs, setKnowledgeBackrefs] = useState<KnowledgeBackrefRecord[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [contentLoading, setContentLoading] = useState(false);
-  const [contentError, setContentError] = useState<string | null>(null);
-  const [knowledgeLoading, setKnowledgeLoading] = useState(false);
-  const [knowledgeError, setKnowledgeError] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  const loadArtifactPayload = useCallback(async (nextArtifact: ArtifactRecord) => {
-    setArtifact(nextArtifact);
-    setContentLoading(true);
-    setKnowledgeLoading(true);
-    setContentError(null);
-    setKnowledgeError(null);
-    try {
-      setContent(await getArtifactContent(nextArtifact.id));
-    } catch (err) {
-      setContent(null);
-      setContentError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setContentLoading(false);
-    }
-    try {
-      setKnowledgeBackrefs(await getArtifactKnowledgeBackrefs(nextArtifact.id));
-    } catch (err) {
-      setKnowledgeBackrefs([]);
-      setKnowledgeError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setKnowledgeLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setResolution(null);
-    setArtifact(null);
-    setVersionHistory(null);
-    setContent(null);
-    setKnowledgeBackrefs([]);
-    resolveArtifact(artifactRef)
-      .then(async (nextResolution) => {
-        if (cancelled) return;
-        const nextArtifact =
-          nextResolution.artifact ??
-          (nextResolution.version ? await getArtifact(nextResolution.version.artifact_id) : await getArtifact(artifactRef));
-        if (cancelled) return;
-        setResolution(nextResolution);
-        setSelectedVersionNo(nextResolution.version?.version_no ?? null);
-        const historyRef = nextResolution.series?.id ?? nextArtifact.id;
-        try {
-          const history = await getArtifactVersions(historyRef);
-          if (!cancelled) {
-            setVersionHistory({
-              ...history,
-              versions: [...history.versions].sort((a, b) => b.version_no - a.version_no),
-            });
-          }
-        } catch {
-          if (!cancelled) setVersionHistory(null);
-        }
-        if (!cancelled) await loadArtifactPayload(nextArtifact);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [artifactRef, loadArtifactPayload]);
-
-  const versions = versionHistory?.versions ?? [];
-  const selectedVersion = selectedVersionNo === null
-    ? versions[0] ?? null
-    : versions.find((version) => version.version_no === selectedVersionNo) ?? null;
-
-  const handleVersionChange = useCallback(
-    (versionNo: number | null) => {
-      setSelectedVersionNo(versionNo);
-      const nextVersion = versionNo === null
-        ? versions[0] ?? null
-        : versions.find((version) => version.version_no === versionNo) ?? null;
-      if (!nextVersion) return;
-      void getArtifact(nextVersion.artifact_id)
-        .then(loadArtifactPayload)
-        .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-    },
-    [versions, loadArtifactPayload],
-  );
-
-  if (error) return <div className="space-canvas__inspector-error">Failed to load artifact: {error}</div>;
-  if (!artifact) return <div className="space-canvas__inspector-empty">{loading ? 'Loading artifact...' : 'No artifact detail.'}</div>;
-
-  return (
-    <ArtifactDetail
-      artifact={artifact}
-      resolution={resolution}
-      series={versionHistory?.series ?? null}
-      versions={versions}
-      selectedVersion={selectedVersion}
-      selectedVersionNo={selectedVersionNo}
-      versionHistoryOpen={versionHistoryOpen}
-      onVersionChange={handleVersionChange}
-      onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
-      onCloseVersionHistory={() => setVersionHistoryOpen(false)}
-      content={content}
-      contentLoading={contentLoading}
-      contentError={contentError}
-      knowledgeBackrefs={knowledgeBackrefs}
-      knowledgeLoading={knowledgeLoading}
-      knowledgeError={knowledgeError}
-    />
   );
 }
 

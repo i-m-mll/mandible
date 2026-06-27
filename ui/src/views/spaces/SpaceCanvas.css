@@ -388,11 +388,14 @@
 }
 
 .space-canvas__inspector-status[data-status='error'],
-.space-canvas__inspector-error {
+.space-canvas__inspector-error,
+.space-canvas__inspector .space-reference-detail__error {
   color: var(--danger, #f85149);
 }
 
-.space-canvas__inspector-empty {
+.space-canvas__inspector-empty,
+.space-canvas__inspector .space-reference-detail__empty,
+.space-canvas__inspector .space-reference-detail__unsupported {
   display: flex;
   flex-direction: column;
   gap: 6px;

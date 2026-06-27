@@ -120,10 +120,10 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   // issue:<id> and comment:<issue>#<comment> inline refs. Keep the authority
   // opaque here; the resolver owns validation and entity lookup.
   if (ISSUE_REF.test(raw)) {
-    return { raw, canonical: raw, kind: 'issue', display: raw };
+    return { raw, canonical: raw, kind: 'issue', display: compactIssueRef(raw) };
   }
   if (COMMENT_REF.test(raw)) {
-    return { raw, canonical: raw, kind: 'comment', display: raw };
+    return { raw, canonical: raw, kind: 'comment', display: compactCommentRef(raw) };
   }
 
   // mandible://<repo>/issue/<id> and other mandible app-route refs.
@@ -167,6 +167,26 @@ export function compactArtifactRef(hash: string, length = 12): string {
   const bare = hash.trim().replace(/^artifact:/i, '').replace(/^sha256:/i, '');
   const clipped = bare.slice(0, Math.max(7, Math.min(length, bare.length))).toLowerCase();
   return `artifact:${clipped}`;
+}
+
+function compactLongIdSegments(value: string, length = 7): string {
+  return value.replace(/[0-9a-f]{12,64}/gi, (segment) =>
+    segment.slice(0, Math.max(7, Math.min(length, segment.length))).toLowerCase(),
+  );
+}
+
+export function compactIssueRef(ref: string): string {
+  return ref.replace(
+    /^issue:(.+)$/i,
+    (_match, id: string) => `issue:${compactLongIdSegments(id)}`,
+  );
+}
+
+export function compactCommentRef(ref: string): string {
+  return ref.replace(
+    /^comment:(.+)$/i,
+    (_match, id: string) => `comment:${compactLongIdSegments(id)}`,
+  );
 }
 
 /** Compact human-friendly label for a ref; passthrough for unrecognized text. */

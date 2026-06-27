@@ -19,6 +19,8 @@ import {
 const OLD_COMPACT_SHA_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
 
 const HASH64 = 'a'.repeat(64);
+const ISSUE_ID64 = 'ceb5963936d47c70315242651c792dd1840ad49d6c3ce79a942f7e0ef3257053';
+const COMMENT_ID64 = 'c8819b4725e341cc7e035a578a2f5c0e2fcfaff736fb75b04c4cf2954a746238';
 
 afterEach(() => {
   __resetResourceRefRecognizers();
@@ -70,15 +72,17 @@ describe('parseResourceRef recognizes all four ref forms', () => {
   });
 
   it('issue: inline refs', () => {
-    const parsed = parseResourceRef('issue:abc123');
+    const parsed = parseResourceRef(`issue:${ISSUE_ID64}`);
     expect(parsed?.kind).toBe('issue');
-    expect(parsed?.canonical).toBe('issue:abc123');
+    expect(parsed?.canonical).toBe(`issue:${ISSUE_ID64}`);
+    expect(parsed?.display).toBe('issue:ceb5963');
   });
 
   it('comment: inline refs', () => {
-    const parsed = parseResourceRef('comment:mandible/abc#com_1');
+    const parsed = parseResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`);
     expect(parsed?.kind).toBe('comment');
-    expect(parsed?.canonical).toBe('comment:mandible/abc#com_1');
+    expect(parsed?.canonical).toBe(`comment:${ISSUE_ID64}#${COMMENT_ID64}`);
+    expect(parsed?.display).toBe('comment:ceb5963#c8819b4');
   });
 
   it('rejects plain http(s)/mailto navigation links', () => {
@@ -139,6 +143,17 @@ describe('display helpers', () => {
   it('displayResourceRef passes through unrecognized text', () => {
     expect(displayResourceRef('hello world')).toBe('hello world');
   });
+
+  it('displayResourceRef compacts long issue and comment ids without changing canonical refs', () => {
+    expect(displayResourceRef(`issue:${ISSUE_ID64}`)).toBe('issue:ceb5963');
+    expect(displayResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`)).toBe(
+      'comment:ceb5963#c8819b4',
+    );
+    expect(parseResourceRef(`issue:${ISSUE_ID64}`)?.canonical).toBe(`issue:${ISSUE_ID64}`);
+    expect(parseResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`)?.canonical).toBe(
+      `comment:${ISSUE_ID64}#${COMMENT_ID64}`,
+    );
+  });
 });
 
 describe('artifact series nav hrefs', () => {
@@ -198,6 +213,26 @@ describe('unresolved-reference UI + C2 resolver', () => {
     expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
     expect(container.querySelector('[data-resource-ref="artifact:abcdef0"]')).toBeTruthy();
+  });
+
+  it('linkifies long issue and comment refs with compact labels but canonical authority', () => {
+    const issueRef = `issue:${ISSUE_ID64}`;
+    const commentRef = `comment:${ISSUE_ID64}#${COMMENT_ID64}`;
+    const html = linkifyResourceRefs(`<p>See [${issueRef}] and [${commentRef}]</p>`);
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    const issueLink = container.querySelector(
+      `[data-resource-ref="${issueRef}"] a.resource-ref__link`,
+    ) as HTMLAnchorElement | null;
+    const commentLink = container.querySelector(
+      `[data-resource-ref="${commentRef}"] a.resource-ref__link`,
+    ) as HTMLAnchorElement | null;
+
+    expect(issueLink?.textContent).toBe('issue:ceb5963');
+    expect(commentLink?.textContent).toBe('comment:ceb5963#c8819b4');
+    expect(issueLink?.getAttribute('href')).toContain(encodeURIComponent(issueRef));
+    expect(commentLink?.getAttribute('href')).toContain(encodeURIComponent(commentRef));
   });
 });
 

@@ -45,7 +45,7 @@ import {
   deleteSpaceBlock,
   detachItemFromBlocks,
 } from '../ui/src/views/spaces/spaceBlocksClient';
-import type { SpaceBlock, SpaceExport } from '../ui/src/api';
+import type { LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../ui/src/api';
 import { __resetResourceRefRecognizers } from '../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
@@ -170,6 +170,7 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
     const detach = url.match(/\/api\/spaces\/sp1\/items\/([^/?]+)\/detach-blocks$/);
     const exportsRead = url.match(/\/api\/spaces\/sp1\/exports(?:\?.*)?$/);
     const spaceRead = url.match(/\/api\/spaces\/sp1(?:\?.*)?$/);
+    const issueDetail = url.match(/\/api\/ledger\/issues\/([^/?]+)$/);
 
     if (exportsRead && method === 'GET') {
       return json({ exports, repo_id: 'repo1', settings: { path: 'doc.md', branch: 'docs' } });
@@ -239,10 +240,49 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: 
     if (url.includes('/api/spaces/resolve')) {
       return json({ resolution: { ref: 'x', kind: 'artifact', resolved: false, entity: null } });
     }
+    if (issueDetail && method === 'GET') {
+      return json(makeIssueDetail(issueDetail[1]));
+    }
     return json({});
   });
 
   return { fetchImpl, calls, list, blocks };
+}
+
+function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
+  return {
+    id: issueId,
+    display_id: issueId,
+    title: `Issue ${issueId}`,
+    body: '',
+    status: 'open',
+    labels: [],
+    aliases: [],
+    created_at: NOW,
+    updated_at: NOW,
+    closed_at: null,
+    author: { id: null, type: 'mandible_user', display: 'Mandible' },
+    project: {
+      id: 'prj1',
+      project_key: 'mandible',
+      display_name: 'mandible',
+      remote_identity: '',
+      upstream_identity: '',
+      repo_id: 'mandible',
+      work_repo_id: 'mandible',
+      repo_name: 'mandible',
+      repo_root: '',
+      default_branch: 'main',
+    },
+    relationships: [],
+    sessions: [],
+    auth_requests: [],
+    work_units: [],
+    timeline: [],
+    associated_artifacts: [],
+    conflicts: [],
+    sync: { state: 'clean', last_synced_at: null, message: null },
+  } as unknown as LedgerIssueDetailProjection;
 }
 
 function json(payload: unknown, status = 200): Response {
@@ -452,6 +492,43 @@ describe('DocumentBlockEditor (editable)', () => {
     const editor = screen.getByTestId('spaces-block-editor');
     expect(editor.getAttribute('data-editable')).toBe('true');
     expect(editor.getAttribute('data-stale')).toBe('false');
+  });
+
+  it('renders headings as headings before the first edit and focuses on first click', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
+    ]);
+    await renderEditor({ backend });
+
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
+    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+
+    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.selectionStart).toBe(textarea.value.length);
+  });
+
+  it('renders blank paragraph blocks as blank document content', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: '' })]);
+    await renderEditor({ backend });
+
+    expect(screen.queryByText('Write here…')).toBeNull();
+    expect(screen.getByTestId('spaces-block-editor-edit').textContent).toBe('');
+  });
+
+  it('opens the shared bottom detail panel for inline issue references', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See [issue:abc123].' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByText('issue:abc123'));
+
+    expect(screen.getByTestId('spaces-block-editor-inspector')).toBeTruthy();
+    await waitFor(() =>
+      expect(backend.calls.some((c) => c.method === 'GET' && /\/api\/ledger\/issues\/abc123$/.test(c.url))).toBe(true),
+    );
+    expect(screen.queryByTestId('spaces-block-editor-embed-delete')).toBeNull();
   });
 
   it('creates the first prose block via POST /api/spaces/:id/blocks', async () => {
