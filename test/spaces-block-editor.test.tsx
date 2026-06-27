@@ -501,8 +501,10 @@ describe('DocumentBlockEditor (editable)', () => {
     ]);
     await renderEditor({ backend });
 
-    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+    const heading = screen.getByRole('heading', { name: 'Title' });
+    expect(heading).toBeTruthy();
+    expect(heading.closest('[data-heading-hit-area="true"]')).toBeTruthy();
+    fireEvent.click(heading);
 
     const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
     await waitFor(() => expect(document.activeElement).toBe(textarea));
@@ -510,6 +512,61 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(textarea.className).toBe('spaces-block-editor__textarea');
     expect(textarea.className).not.toContain('rendered');
     expect(textarea.selectionStart).toBe(2);
+  });
+
+  it('does not enter heading edit mode from adjacent rendered-block whitespace', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'), { clientX: 120, clientY: 12 });
+
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
+  });
+
+  it('does not enter heading edit mode outside the rendered heading line box', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
+    ]);
+    await renderEditor({ backend });
+
+    const heading = screen.getByRole('heading', { name: 'Title' }) as HTMLElement;
+    heading.getClientRects = () =>
+      ({
+        length: 1,
+        item: (index: number) =>
+          index === 0
+            ? ({
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 24,
+                top: 0,
+                right: 80,
+                bottom: 24,
+                left: 0,
+                toJSON: () => ({}),
+              } as DOMRect)
+            : null,
+        0: {
+          x: 0,
+          y: 0,
+          width: 80,
+          height: 24,
+          top: 0,
+          right: 80,
+          bottom: 24,
+          left: 0,
+          toJSON: () => ({}),
+        } as DOMRect,
+      }) as DOMRectList;
+
+    fireEvent.click(heading, { clientX: 12, clientY: 40 });
+
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
   });
 
   it('places the caret inside a clicked rendered heading instead of selecting the end', async () => {

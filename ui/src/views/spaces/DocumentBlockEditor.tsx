@@ -72,6 +72,7 @@ const SPACE_EVENT_PREFIX = 'space:';
 const AUTOSAVE_DELAY_MS = 650;
 const MIN_INSPECTOR_HEIGHT = 160;
 const MAX_INSPECTOR_VIEWPORT_FRACTION = 0.7;
+const RENDERED_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
 
 function clampInspectorHeight(height: number, viewportHeight: number): number {
   const maxHeight = Math.max(
@@ -269,10 +270,35 @@ function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number |
   return null;
 }
 
-function caretForRenderedClick(block: SpaceBlock, root: HTMLElement, event: MouseEvent): number {
+function renderedHeadingClickRoot(root: HTMLElement, event: MouseEvent): HTMLElement | null {
+  const target = event.target as Element | null;
+  const heading = target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null;
+  if (!heading || !root.contains(heading)) return null;
+  const rects = Array.from(heading.getClientRects()).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  if (
+    rects.length > 0 &&
+    !rects.some(
+      (rect) =>
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom,
+    )
+  ) {
+    return null;
+  }
+  return heading;
+}
+
+function caretForRenderedClick(block: SpaceBlock, root: HTMLElement, event: MouseEvent): number | null {
   const markdown = block.markdown ?? '';
-  const renderedOffset = renderedClickTextOffset(root, event);
   const prefix = block.block_type === 'heading' ? headingMarkdownPrefixLength(markdown) : 0;
+  const renderedRoot =
+    block.block_type === 'heading' ? renderedHeadingClickRoot(root, event) : root;
+  if (!renderedRoot) return null;
+  const renderedOffset = renderedClickTextOffset(renderedRoot, event);
   const fallbackOffset = block.block_type === 'heading' ? 0 : markdown.length;
   return Math.max(0, Math.min(markdown.length, prefix + (renderedOffset ?? fallbackOffset)));
 }
@@ -507,6 +533,7 @@ export function DocumentBlockEditor({
       if (isResourceRefClick(event)) return;
       const root = event.currentTarget as HTMLElement | null;
       const caret = root ? caretForRenderedClick(block, root, event) : (block.markdown ?? '').length;
+      if (caret === null) return;
       beginEditing(block.id, false, { start: caret, end: caret });
     },
     [beginEditing],
@@ -1002,7 +1029,12 @@ export function DocumentBlockEditor({
                       >
                         {renderedBlock?.html ? (
                           <span
-                            className="spaces-block-editor__rendered-html"
+                            className={
+                              block.block_type === 'heading'
+                                ? 'spaces-block-editor__rendered-html spaces-block-editor__rendered-html--heading-hit-area'
+                                : 'spaces-block-editor__rendered-html'
+                            }
+                            data-heading-hit-area={block.block_type === 'heading' ? 'true' : undefined}
                             // eslint-disable-next-line react/no-danger -- pipeline-sanitized HTML from DocumentRenderer.
                             dangerouslySetInnerHTML={{ __html: renderedBlock.html }}
                           />

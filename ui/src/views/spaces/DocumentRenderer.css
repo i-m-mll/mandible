@@ -96,8 +96,10 @@
   font-size: 0.92em;
 }
 
-.spaces-doc :where(.resource-ref__link),
-.spaces-doc-ref__link {
+.spaces-doc a.resource-ref__link,
+.spaces-doc a.artifact-xref.resource-ref__link,
+.spaces-doc a.spaces-doc-ref__link,
+.spaces-doc-ref a.spaces-doc-ref__link {
   color: var(--accent, #2d7ff9);
   text-decoration-line: underline;
   text-decoration-style: dotted;
@@ -106,8 +108,10 @@
   text-decoration-color: currentColor;
 }
 
-.spaces-doc :where(.resource-ref__link:hover),
-.spaces-doc-ref__link:hover {
+.spaces-doc a.resource-ref__link:hover,
+.spaces-doc a.artifact-xref.resource-ref__link:hover,
+.spaces-doc a.spaces-doc-ref__link:hover,
+.spaces-doc-ref a.spaces-doc-ref__link:hover {
   text-decoration-style: solid;
 }
 
