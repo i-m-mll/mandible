@@ -509,7 +509,41 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(textarea.value).toBe('# Title');
     expect(textarea.className).toBe('spaces-block-editor__textarea');
     expect(textarea.className).not.toContain('rendered');
-    expect(textarea.selectionStart).toBe(textarea.value.length);
+    expect(textarea.selectionStart).toBe(2);
+  });
+
+  it('places the caret inside a clicked rendered heading instead of selecting the end', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '## Some heading' }),
+    ]);
+    await renderEditor({ backend });
+
+    const heading = screen.getByRole('heading', { name: 'Some heading' });
+    const textNode = heading.firstChild;
+    expect(textNode).toBeTruthy();
+    const range = document.createRange();
+    range.setStart(textNode!, 5);
+    range.setEnd(textNode!, 5);
+    const priorCaretRangeFromPoint = (
+      document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
+    ).caretRangeFromPoint;
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: () => range,
+    });
+    try {
+      fireEvent.click(heading, { clientX: 48, clientY: 12 });
+      const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+      await waitFor(() => expect(document.activeElement).toBe(textarea));
+      expect(textarea.value).toBe('## Some heading');
+      expect(textarea.selectionStart).toBe(8);
+      expect(textarea.selectionStart).not.toBe(textarea.value.length);
+    } finally {
+      Object.defineProperty(document, 'caretRangeFromPoint', {
+        configurable: true,
+        value: priorCaretRangeFromPoint,
+      });
+    }
   });
 
   it('renders blank paragraph blocks as blank document content', async () => {
@@ -533,6 +567,9 @@ describe('DocumentBlockEditor (editable)', () => {
 
     expect(screen.getByTestId('spaces-block-editor-inspector')).toBeTruthy();
     expect(screen.getByTestId('spaces-block-editor-inspector-resize')).toBeTruthy();
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    expect(document.querySelector('.spaces-block-editor__inspector-meta')).toBeNull();
+    expect(screen.queryByText('issue:abc123', { selector: '.spaces-block-editor__inspector-meta code' })).toBeNull();
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'GET' && /\/api\/ledger\/issues\/abc123$/.test(c.url))).toBe(true),
     );
@@ -548,7 +585,7 @@ describe('DocumentBlockEditor (editable)', () => {
     fireEvent.click(screen.getByText('issue:abc123'));
     const inspector = screen.getByTestId('spaces-block-editor-inspector') as HTMLElement;
     const handle = screen.getByTestId('spaces-block-editor-inspector-resize') as HTMLElement;
-    const viewport = document.querySelector('.spaces-block-editor__viewport') as HTMLElement;
+    const editor = screen.getByTestId('spaces-block-editor') as HTMLElement;
 
     inspector.getBoundingClientRect = () => ({
       x: 0,
@@ -561,7 +598,7 @@ describe('DocumentBlockEditor (editable)', () => {
       left: 0,
       toJSON: () => ({}),
     });
-    viewport.getBoundingClientRect = () => ({
+    editor.getBoundingClientRect = () => ({
       x: 0,
       y: 0,
       width: 800,

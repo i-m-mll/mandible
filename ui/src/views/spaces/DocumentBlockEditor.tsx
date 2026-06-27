@@ -120,6 +120,7 @@ type SaveState =
   | { status: 'error'; blockId: string; message: string };
 
 type CaretTarget = { blockId: string; start: number; end: number };
+type FocusEditTarget = CaretTarget & { selectEnd: boolean };
 type ItemCommandRange = { blockId: string; start: number; end: number };
 type SelectionMenuState = {
   blockId: string;
@@ -217,6 +218,70 @@ function refFromHref(href: string): string | null {
   }
 }
 
+function headingMarkdownPrefixLength(markdown: string): number {
+  const match = /^(\s{0,3}#{1,6}\s+)/.exec(markdown);
+  return match ? match[1].length : 0;
+}
+
+function textOffsetFromNode(root: HTMLElement, node: Node, offset: number): number | null {
+  if (!root.contains(node)) return null;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let total = 0;
+  let current = walker.nextNode();
+  while (current) {
+    if (current === node) {
+      return total + Math.max(0, Math.min(offset, current.textContent?.length ?? 0));
+    }
+    total += current.textContent?.length ?? 0;
+    current = walker.nextNode();
+  }
+  return null;
+}
+
+function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number | null {
+  const doc = root.ownerDocument;
+  const caretPositionFromPoint = (
+    doc as Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+    }
+  ).caretPositionFromPoint;
+  const position = caretPositionFromPoint?.call(doc, event.clientX, event.clientY);
+  if (position) {
+    const offset = textOffsetFromNode(root, position.offsetNode, position.offset);
+    if (offset !== null) return offset;
+  }
+
+  const caretRangeFromPoint = (
+    doc as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
+  ).caretRangeFromPoint;
+  const range = caretRangeFromPoint?.call(doc, event.clientX, event.clientY);
+  if (range) {
+    const offset = textOffsetFromNode(root, range.startContainer, range.startOffset);
+    if (offset !== null) return offset;
+  }
+
+  const rect = root.getBoundingClientRect();
+  const textLength = root.textContent?.length ?? 0;
+  if (rect.width > 0 && textLength > 0) {
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    return Math.round(ratio * textLength);
+  }
+  return null;
+}
+
+function caretForRenderedClick(block: SpaceBlock, root: HTMLElement, event: MouseEvent): number {
+  const markdown = block.markdown ?? '';
+  const renderedOffset = renderedClickTextOffset(root, event);
+  const prefix = block.block_type === 'heading' ? headingMarkdownPrefixLength(markdown) : 0;
+  const fallbackOffset = block.block_type === 'heading' ? 0 : markdown.length;
+  return Math.max(0, Math.min(markdown.length, prefix + (renderedOffset ?? fallbackOffset)));
+}
+
+function isResourceRefClick(event: MouseEvent): boolean {
+  const target = event.target as HTMLElement | null;
+  return Boolean(target?.closest?.('a.resource-ref__link, a.spaces-doc-ref__link'));
+}
+
 /**
  * Spaces document block editor mount. Registered for the `document` renderer in
  * the C10 shell (it is the editable document surface; the read-only renderer is
@@ -252,8 +317,9 @@ export function DocumentBlockEditor({
   const saveTimers = useRef<Map<string, number>>(new Map());
   const textareaRefs = useRef<Map<string, HTMLTextAreaElement>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
-  const focusEditRef = useRef<{ blockId: string; selectEnd: boolean } | null>(null);
+  const focusEditRef = useRef<FocusEditTarget | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   fetchRef.current = fetchImpl;
 
@@ -424,11 +490,26 @@ export function DocumentBlockEditor({
   }, []);
 
   const beginEditing = useCallback(
-    (blockId: string, selectEnd = true) => {
-      focusEditRef.current = { blockId, selectEnd };
+    (blockId: string, selectEnd = true, selection?: { start: number; end: number }) => {
+      focusEditRef.current = {
+        blockId,
+        selectEnd,
+        start: selection?.start ?? 0,
+        end: selection?.end ?? 0,
+      };
       setEditing(blockId);
     },
     [setEditing],
+  );
+
+  const beginEditingFromRenderedClick = useCallback(
+    (block: SpaceBlock, event: MouseEvent) => {
+      if (isResourceRefClick(event)) return;
+      const root = event.currentTarget as HTMLElement | null;
+      const caret = root ? caretForRenderedClick(block, root, event) : (block.markdown ?? '').length;
+      beginEditing(block.id, false, { start: caret, end: caret });
+    },
+    [beginEditing],
   );
 
   useEffect(() => {
@@ -442,6 +523,11 @@ export function DocumentBlockEditor({
       const end = textarea.value.length;
       textarea.setSelectionRange(end, end);
       caretRef.current = { blockId: target.blockId, start: end, end };
+    } else {
+      const start = Math.max(0, Math.min(target.start, textarea.value.length));
+      const end = Math.max(start, Math.min(target.end, textarea.value.length));
+      textarea.setSelectionRange(start, end);
+      caretRef.current = { blockId: target.blockId, start, end };
     }
   }, [viewState.editingId]);
 
@@ -734,12 +820,12 @@ export function DocumentBlockEditor({
       const handlePointerMove = (moveEvent: PointerEvent) => {
         const origin = inspectorResizeRef.current;
         if (!origin) return;
-        const viewportHeight =
-          viewportRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+        const bodyHeight =
+          bodyRef.current?.getBoundingClientRect().height ?? window.innerHeight;
         setInspectorHeight(
           clampInspectorHeight(
             origin.startHeight + origin.startY - moveEvent.clientY,
-            viewportHeight,
+            bodyHeight,
           ),
         );
       };
@@ -779,6 +865,7 @@ export function DocumentBlockEditor({
       data-testid="spaces-block-editor"
       data-editable={String(editable)}
       data-stale={String(custody.stale)}
+      ref={bodyRef}
     >
       <div className="spaces-block-editor__viewport" ref={viewportRef}>
         {saveState.status !== 'idle' && (
@@ -908,7 +995,9 @@ export function DocumentBlockEditor({
                         type="button"
                         className="spaces-block-editor__rendered-block"
                         data-testid="spaces-block-editor-edit"
-                        onClick={() => beginEditing(block.id)}
+                        onClick={(event) =>
+                          beginEditingFromRenderedClick(block, event as unknown as MouseEvent)
+                        }
                         onFocus={() => setActiveBlockId(block.id)}
                       >
                         {renderedBlock?.html ? (
@@ -1091,9 +1180,6 @@ function ReferenceInspector({
           ×
         </button>
       </header>
-      <div className="spaces-block-editor__inspector-meta">
-        <code>{target.ref}</code>
-      </div>
       <div className="spaces-block-editor__inspector-body">
         <SpaceReferenceDetailContent target={target} />
       </div>
