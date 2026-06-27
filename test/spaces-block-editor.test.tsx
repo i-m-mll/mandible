@@ -17,6 +17,7 @@
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
+import { act } from 'preact/test-utils';
 
 import {
   DocumentBlockEditor,
@@ -505,6 +506,9 @@ describe('DocumentBlockEditor (editable)', () => {
 
     const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
     await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('# Title');
+    expect(textarea.className).toBe('spaces-block-editor__textarea');
+    expect(textarea.className).not.toContain('rendered');
     expect(textarea.selectionStart).toBe(textarea.value.length);
   });
 
@@ -522,13 +526,62 @@ describe('DocumentBlockEditor (editable)', () => {
     ]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByText('issue:abc123'));
+    const refLink = screen.getByText('issue:abc123');
+    expect(refLink.classList.contains('resource-ref__link')).toBe(true);
+
+    fireEvent.click(refLink);
 
     expect(screen.getByTestId('spaces-block-editor-inspector')).toBeTruthy();
+    expect(screen.getByTestId('spaces-block-editor-inspector-resize')).toBeTruthy();
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'GET' && /\/api\/ledger\/issues\/abc123$/.test(c.url))).toBe(true),
     );
     expect(screen.queryByTestId('spaces-block-editor-embed-delete')).toBeNull();
+  });
+
+  it('resizes the bottom reference inspector from its top-edge separator', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See [issue:abc123].' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByText('issue:abc123'));
+    const inspector = screen.getByTestId('spaces-block-editor-inspector') as HTMLElement;
+    const handle = screen.getByTestId('spaces-block-editor-inspector-resize') as HTMLElement;
+    const viewport = document.querySelector('.spaces-block-editor__viewport') as HTMLElement;
+
+    inspector.getBoundingClientRect = () => ({
+      x: 0,
+      y: 440,
+      width: 800,
+      height: 220,
+      top: 440,
+      right: 800,
+      bottom: 660,
+      left: 0,
+      toJSON: () => ({}),
+    });
+    viewport.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      left: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.mouseDown(handle, { clientY: 440 });
+    act(() => {
+      window.dispatchEvent(new MouseEvent('pointermove', { clientY: 380 }));
+      window.dispatchEvent(new MouseEvent('pointerup'));
+    });
+
+    await waitFor(() => expect(inspector.style.flexBasis).toBe('280px'));
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
   });
 
   it('creates the first prose block via POST /api/spaces/:id/blocks', async () => {
@@ -568,6 +621,10 @@ describe('DocumentBlockEditor (editable)', () => {
     const patch = backend.calls.find((c) => c.method === 'PATCH');
     expect((patch!.body as { markdown: string }).markdown).toBe('new text');
     await waitFor(() => expect(screen.getByTestId('spaces-block-editor-save-state')).toBeTruthy());
+    const saveState = screen.getByTestId('spaces-block-editor-save-state');
+    expect(saveState.parentElement?.classList.contains('spaces-block-editor__viewport')).toBe(true);
+    expect(saveState.closest('.spaces-block-editor__scroller')).toBeNull();
+    expect(saveState.closest('.spaces-block-editor__list')).toBeNull();
   });
 
   it('debounces autosave while a prose block is being edited', async () => {
