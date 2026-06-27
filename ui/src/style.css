@@ -313,9 +313,7 @@
 }
 
 :root[data-theme='light'] .app-header__logo {
-  filter:
-    brightness(0) saturate(100%) invert(41%) sepia(10%) saturate(689%)
-    hue-rotate(175deg) brightness(94%) contrast(88%);
+  filter: brightness(0) saturate(100%);
 }
 
 :root[data-theme='light'] .app-rail__tooltip {
