@@ -873,7 +873,12 @@ describe('DocumentBlockEditor (editable)', () => {
     await waitFor(() => expect(document.activeElement).toBe(textarea));
     expect(textarea.value).toBe('');
 
-    fireEvent.input(textarea, { target: { value: 'body' } });
+    for (const value of ['b', 'bo', 'bod', 'body']) {
+      fireEvent.input(textarea, { target: { value } });
+      textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+      await waitFor(() => expect(document.activeElement).toBe(textarea));
+      expect(textarea.value).toBe(value);
+    }
     fireEvent.blur(textarea);
 
     await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));

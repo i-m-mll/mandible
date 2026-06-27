@@ -1323,12 +1323,11 @@ export function DocumentBlockEditor({
                         {lineRegions.map((line, index) => {
                           const isActiveLine =
                             activeLineRegion !== null &&
-                            line.start === activeLineRegion.start &&
-                            line.end === activeLineRegion.end;
+                            line.start === activeLineRegion.start;
                           const html = renderedLineHtml(line);
                           return (
                             <div
-                              key={`${line.start}:${line.end}:${index}`}
+                              key={`${line.start}:${index}`}
                               className="spaces-block-editor__line-region"
                               data-markdown-heading={line.isHeading ? 'true' : undefined}
                               data-testid="spaces-block-editor-line-region"
