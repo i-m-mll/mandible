@@ -884,6 +884,34 @@ describe('DocumentBlockEditor (editable)', () => {
     await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));
   });
 
+  it('keeps prose Enter focused on an editable following line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: '' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+    let textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: 'first' } });
+    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+
+    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('');
+
+    for (const value of ['s', 'se', 'sec', 'seco', 'secon', 'second']) {
+      fireEvent.input(textarea, { target: { value } });
+      textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+      await waitFor(() => expect(document.activeElement).toBe(textarea));
+      expect(textarea.value).toBe(value);
+    }
+    fireEvent.blur(textarea);
+
+    await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('first\nsecond'));
+  });
+
   it('renders blank paragraph blocks as blank document content', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: '' })]);
     await renderEditor({ backend });

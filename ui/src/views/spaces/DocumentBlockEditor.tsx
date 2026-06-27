@@ -259,22 +259,6 @@ function renderedLineHtml(line: MarkdownLineRegion): string {
   return line.text ? renderDocumentText(line.text).html : '';
 }
 
-function markdownLineAtOffset(markdown: string, offset: number): MarkdownLineRegion {
-  const bounded = Math.max(0, Math.min(offset, markdown.length));
-  const lineStart = markdown.lastIndexOf('\n', Math.max(0, bounded - 1)) + 1;
-  const nextBreak = markdown.indexOf('\n', bounded);
-  const lineEnd = nextBreak === -1 ? markdown.length : nextBreak;
-  const text = markdown.slice(lineStart, lineEnd);
-  const match = /^(\s{0,3}#{1,6}\s+)(.*)$/.exec(text);
-  return {
-    start: lineStart,
-    end: lineEnd,
-    text,
-    prefixLength: match ? match[1].length : 0,
-    isHeading: Boolean(match),
-  };
-}
-
 function markdownHeadingLines(markdown: string): Array<{ start: number; prefixLength: number; text: string }> {
   const lines: Array<{ start: number; prefixLength: number; text: string }> = [];
   let start = 0;
@@ -1016,9 +1000,6 @@ export function DocumentBlockEditor({
         queueAutosave(blockId, next);
         return;
       }
-
-      const activeLine = markdownLineAtOffset(textarea.value, Math.min(selectionStart, selectionEnd));
-      if (!activeLine.isHeading) return;
 
       event.preventDefault();
       const before = textarea.value.slice(0, Math.min(selectionStart, selectionEnd));
