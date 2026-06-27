@@ -383,4 +383,17 @@ describe('SpacesSidebar selection', () => {
       renderer: 'collection',
     });
   });
+
+  it('keeps project child rows aligned with project title text without bolding selection', () => {
+    expect(spacesSidebarStylesheet).toMatch(
+      /\.spaces-tree__space\s*\{[^}]*padding:\s*0\.28rem 0\.75rem 0\.28rem 2rem;/s,
+    );
+    expect(spacesSidebarStylesheet).toMatch(
+      /\.spaces-tree__space\s*\{[^}]*font-weight:\s*400;/s,
+    );
+    expect(spacesSidebarStylesheet).toMatch(/\.spaces-tree__space--active\s*\{[^}]*background:\s*var\(--overlay-selected\)/s);
+    expect(spacesSidebarStylesheet).not.toMatch(
+      /\.spaces-tree__space--active\s*\{[^}]*font-weight:\s*600/s,
+    );
+  });
 });

@@ -29,4 +29,14 @@ describe('app rail layering styles', () => {
     expect(hiddenSidebarBottomPanelRule).toMatch(/box-shadow:\s*none/);
     expect(hiddenSidebarBottomPanelRule).not.toMatch(/box-shadow:\s*var\(--shadow-rail\)/);
   });
+
+  it('does not cast shared app or sidebar shadows over Spaces canvas chrome', () => {
+    const spacesContentTopRule = findRule('.app-content--spaces::before');
+    const spacesSidebarRule = findRule('.app-layout--view-sidebar-open .view-sidebar.spaces-tree');
+
+    expect(spacesContentTopRule).toBeTruthy();
+    expect(spacesContentTopRule).toMatch(/box-shadow:\s*none/);
+    expect(spacesSidebarRule).toBeTruthy();
+    expect(spacesSidebarRule).toMatch(/box-shadow:\s*none/);
+  });
 });

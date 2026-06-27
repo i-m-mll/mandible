@@ -388,6 +388,16 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
 const DEFAULT_DEBOUNCE_MS = 400;
 const OCCURRENCE_MOVED_EVENT = 'space:occurrence:moved';
 const EDGE_EVENTS = ['space:edge:created', 'space:edge:updated', 'space:edge:removed'] as const;
+const MIN_INSPECTOR_HEIGHT = 160;
+const MAX_INSPECTOR_BODY_FRACTION = 0.7;
+
+function clampInspectorHeight(height: number, bodyHeight: number): number {
+  const maxHeight = Math.max(
+    MIN_INSPECTOR_HEIGHT,
+    Math.floor(bodyHeight * MAX_INSPECTOR_BODY_FRACTION),
+  );
+  return Math.min(Math.max(Math.round(height), MIN_INSPECTOR_HEIGHT), maxHeight);
+}
 
 /**
  * The editable Spaces canvas (node half). Registered into `SpacesViewShell` as
@@ -428,6 +438,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   // Whether the "Add items" picker popover is open (transient browser-local).
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
 
   // Refs that must not trigger re-render or re-subscribe.
   const draggingIds = useRef<Set<string>>(new Set());
@@ -435,6 +446,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const debounceTimer = useRef<number | null>(null);
   const occurrencesRef = useRef<SpaceOccurrence[]>(occurrences);
   const editingEdgeIds = useRef<Set<string>>(new Set());
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
   occurrencesRef.current = occurrences;
 
   const itemsById = useMemo(() => indexItems(items), [items]);
@@ -818,6 +831,44 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     [],
   );
 
+  const beginInspectorResize = useCallback((
+    event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    if (inspectorResizeRef.current) return;
+    const inspector = event.currentTarget.parentElement as HTMLElement | null;
+    if (!inspector) return;
+    inspectorResizeRef.current = {
+      startY: event.clientY,
+      startHeight: inspector.getBoundingClientRect().height,
+    };
+    const previousCursor = document.documentElement.style.cursor;
+    const previousUserSelect = document.documentElement.style.userSelect;
+    document.documentElement.style.cursor = 'row-resize';
+    document.documentElement.style.userSelect = 'none';
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const origin = inspectorResizeRef.current;
+      if (!origin) return;
+      const bodyHeight = bodyRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+      const nextHeight = clampInspectorHeight(
+        origin.startHeight + origin.startY - moveEvent.clientY,
+        bodyHeight,
+      );
+      setInspectorHeight(nextHeight);
+    };
+    const stopResize = () => {
+      inspectorResizeRef.current = null;
+      document.documentElement.style.cursor = previousCursor;
+      document.documentElement.style.userSelect = previousUserSelect;
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', stopResize);
+      window.removeEventListener('pointercancel', stopResize);
+    };
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', stopResize);
+    window.addEventListener('pointercancel', stopResize);
+  }, []);
+
   return (
     <div className="space-canvas" data-testid="space-canvas">
       <div className="space-canvas__toolbar" role="toolbar" aria-label="Canvas actions">
@@ -894,7 +945,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         </div>
         <span className="space-canvas__toolbar-spacer" />
       </div>
-      <div className="space-canvas__body">
+      <div className="space-canvas__body" ref={bodyRef}>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
           {placed.length === 0 ? (
             <div className="space-canvas__empty" data-testid="space-canvas-empty">
@@ -935,10 +986,12 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
           selectedNodeIds={selection}
           selectedEdge={resolvedSelectedEdge}
           placed={placed}
+          height={inspectorHeight}
           edgeStatus={edgeStatus}
           edgeStatusMessage={edgeStatusMessage}
           promoteLinkType={promoteLinkType}
           onPromoteLinkTypeChange={setPromoteLinkType}
+          onResizeStart={beginInspectorResize}
           onEdgeLabelEdit={handleEdgeLabelEdit}
           onEdgeDelete={handleEdgeDelete}
           onPromoteEdge={handlePromoteEdge}
@@ -952,10 +1005,14 @@ type CanvasSelectionInspectorProps = {
   selectedNodeIds: ReadonlySet<string>;
   selectedEdge: ResolvedSpaceEdge | null;
   placed: CanvasNode[];
+  height: number | null;
   edgeStatus: AutosaveStatus;
   edgeStatusMessage: string;
   promoteLinkType: Record<string, LedgerLinkType>;
   onPromoteLinkTypeChange: (next: Record<string, LedgerLinkType>) => void;
+  onResizeStart: (
+    event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
+  ) => void;
   onEdgeLabelEdit: (edgeId: string, label: string) => Promise<void>;
   onEdgeDelete: (edgeId: string) => Promise<void>;
   onPromoteEdge: (edge: ResolvedSpaceEdge) => Promise<void>;
@@ -965,22 +1022,35 @@ function CanvasSelectionInspector({
   selectedNodeIds,
   selectedEdge,
   placed,
+  height,
   edgeStatus,
   edgeStatusMessage,
   promoteLinkType,
   onPromoteLinkTypeChange,
+  onResizeStart,
   onEdgeLabelEdit,
   onEdgeDelete,
   onPromoteEdge,
 }: CanvasSelectionInspectorProps): JSX.Element {
   const selectedNodes = placed.filter((node) => selectedNodeIds.has(node.occurrence.id));
+  const style = height !== null ? ({ flexBasis: `${height}px` } as JSX.CSSProperties) : undefined;
   return (
     <aside
       className="space-canvas__inspector"
       data-testid="space-canvas-inspector"
       data-placement="bottom"
       aria-label="Selection inspector"
+      style={style}
     >
+      <div
+        className="space-canvas__inspector-resize"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize selection inspector"
+        onMouseDown={onResizeStart}
+        onPointerDown={onResizeStart}
+        data-testid="space-canvas-inspector-resize"
+      />
       {selectedEdge ? (
         <CanvasEdgeInspector
           resolved={selectedEdge}

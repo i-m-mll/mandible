@@ -167,10 +167,11 @@
   display: block;
   width: 100%;
   text-align: left;
-  padding: 0.28rem 0.75rem 0.28rem 1.6rem;
+  padding: 0.28rem 0.75rem 0.28rem 2rem;
   border: none;
   background: none;
   font-size: 0.8rem;
+  font-weight: 400;
   color: var(--text-secondary);
   cursor: pointer;
   white-space: nowrap;
@@ -186,7 +187,6 @@
 .spaces-tree__space--active {
   background: var(--overlay-selected);
   color: var(--text-primary);
-  font-weight: 600;
 }
 
 .spaces-tree__group--top .spaces-tree__space {
