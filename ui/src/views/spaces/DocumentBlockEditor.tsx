@@ -286,11 +286,16 @@ function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number |
 
 function renderedHeadingClickRoot(root: HTMLElement, event: MouseEvent): HTMLElement | null {
   const target = eventTargetElement(event);
-  const heading = target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null;
+  const targetHeading = target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null;
+  const heading =
+    targetHeading && root.contains(targetHeading)
+      ? targetHeading
+      : (root.querySelector(RENDERED_HEADING_SELECTOR) as HTMLElement | null);
   if (!heading || !root.contains(heading)) return null;
   const rects = Array.from(heading.getClientRects()).filter(
     (rect) => rect.width > 0 && rect.height > 0,
   );
+  if (!targetHeading && rects.length === 0) return null;
   if (
     rects.length > 0 &&
     !rects.some(
@@ -570,15 +575,6 @@ export function DocumentBlockEditor({
       const caret = root ? caretForRenderedClick(block, root, event) : (block.markdown ?? '').length;
       if (caret === null) return;
       beginEditing(block.id, false, { start: caret, end: caret });
-    },
-    [beginEditing],
-  );
-
-  const beginEditingFromRenderedKeyboard = useCallback(
-    (block: SpaceBlock, event: KeyboardEvent) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return;
-      event.preventDefault();
-      beginEditing(block.id, true);
     },
     [beginEditing],
   );
@@ -1063,15 +1059,10 @@ export function DocumentBlockEditor({
                     )}
                     {!isEditing && !isEmbed && (
                       <div
-                        role="button"
-                        tabIndex={0}
                         className="spaces-block-editor__rendered-block"
                         data-testid="spaces-block-editor-edit"
                         onClick={(event) =>
                           beginEditingFromRenderedClick(block, event as unknown as MouseEvent)
-                        }
-                        onKeyDown={(event) =>
-                          beginEditingFromRenderedKeyboard(block, event as unknown as KeyboardEvent)
                         }
                         onFocus={() => setActiveBlockId(block.id)}
                       >

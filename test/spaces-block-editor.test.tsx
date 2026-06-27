@@ -597,7 +597,8 @@ describe('DocumentBlockEditor (editable)', () => {
 
     const surface = screen.getByTestId('spaces-block-editor-edit');
     expect(surface.tagName).toBe('DIV');
-    expect(surface.getAttribute('role')).toBe('button');
+    expect(surface.getAttribute('role')).toBeNull();
+    expect(surface.getAttribute('tabindex')).toBeNull();
 
     const prose = screen.getByText('Selectable prose.');
     const range = document.createRange();
@@ -641,6 +642,52 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(textarea.value).toBe('# Title');
     expect(textarea.className).toBe('spaces-block-editor__textarea');
     expect(textarea.className).not.toContain('rendered');
+    expect(textarea.selectionStart).toBe(2);
+  });
+
+  it('enters heading edit mode when the rendered wrapper receives a click inside the heading line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
+    ]);
+    await renderEditor({ backend });
+
+    const surface = screen.getByTestId('spaces-block-editor-edit');
+    const heading = screen.getByRole('heading', { name: 'Title' }) as HTMLElement;
+    heading.getClientRects = () =>
+      ({
+        length: 1,
+        item: (index: number) =>
+          index === 0
+            ? ({
+                x: 0,
+                y: 0,
+                width: 120,
+                height: 24,
+                top: 0,
+                right: 120,
+                bottom: 24,
+                left: 0,
+                toJSON: () => ({}),
+              } as DOMRect)
+            : null,
+        0: {
+          x: 0,
+          y: 0,
+          width: 120,
+          height: 24,
+          top: 0,
+          right: 120,
+          bottom: 24,
+          left: 0,
+          toJSON: () => ({}),
+        } as DOMRect,
+      }) as DOMRectList;
+
+    fireEvent.click(surface, { clientX: 16, clientY: 12 });
+
+    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('# Title');
     expect(textarea.selectionStart).toBe(2);
   });
 
