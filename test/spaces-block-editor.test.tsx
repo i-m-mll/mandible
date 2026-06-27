@@ -495,6 +495,136 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(editor.getAttribute('data-stale')).toBe('false');
   });
 
+  it('renders the document without waiting for the space fact packet', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Body prose.' }),
+    ]);
+    const baseFetch = backend.fetchImpl;
+    backend.fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/api\/spaces\/sp1(?:\?.*)?$/.test(url)) {
+        return new Promise<Response>(() => undefined);
+      }
+      return baseFetch(input, init);
+    });
+
+    await renderEditor({ backend });
+
+    expect(screen.queryByText('Loading document…')).toBeNull();
+    expect(screen.getByText('Body prose.')).toBeTruthy();
+  });
+
+  it('ignores failed block loads from a previously selected document', async () => {
+    let rejectOldBlocks: ((reason?: unknown) => void) | null = null;
+    const fetchImpl = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url)) {
+        return new Promise<Response>((_resolve, reject) => {
+          rejectOldBlocks = reject;
+        });
+      }
+      if (/\/api\/spaces\/sp2\/blocks(?:\?.*)?$/.test(url)) {
+        return Promise.resolve(json({
+          blocks: [
+            makeBlock({
+              id: 'b2',
+              space_id: 'sp2',
+              sort_key: 'a',
+              markdown: 'Fresh document.',
+            }),
+          ],
+        }));
+      }
+      if (/\/api\/spaces\/sp[12]\/exports(?:\?.*)?$/.test(url)) {
+        return Promise.resolve(json({ exports: [] }));
+      }
+      if (/\/api\/spaces\/sp[12](?:\?.*)?$/.test(url)) {
+        return Promise.resolve(json({
+          space: {
+            id: url.includes('/sp2') ? 'sp2' : 'sp1',
+            project_id: 'prj1',
+            title: 'Space',
+            default_renderer: 'document',
+            description: null,
+            metadata: {},
+            created_at: NOW,
+            updated_at: NOW,
+          },
+          items: [],
+          occurrences: [],
+          edges: [],
+        }));
+      }
+      return Promise.resolve(json({}));
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const rendered = render(
+      <DocumentBlockEditor
+        projectId="prj1"
+        spaceId="sp1"
+        renderer="document"
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await waitFor(() => expect(rejectOldBlocks).toBeTruthy());
+
+    rendered.rerender(
+      <DocumentBlockEditor
+        projectId="prj1"
+        spaceId="sp2"
+        renderer="document"
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Fresh document.')).toBeTruthy());
+
+    await act(async () => {
+      rejectOldBlocks?.(new Error('old load failed'));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('spaces-block-editor-error')).toBeNull();
+    expect(screen.queryByText('Loading document…')).toBeNull();
+    expect(screen.getByText('Fresh document.')).toBeTruthy();
+  });
+
+  it('uses a selectable rendered document surface and preserves text selection', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Selectable prose.' }),
+    ]);
+    await renderEditor({ backend });
+
+    const surface = screen.getByTestId('spaces-block-editor-edit');
+    expect(surface.tagName).toBe('DIV');
+    expect(surface.getAttribute('role')).toBe('button');
+
+    const prose = screen.getByText('Selectable prose.');
+    const range = document.createRange();
+    range.selectNodeContents(prose);
+    const selection = document.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+    fireEvent.click(prose);
+
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    expect(document.getSelection()?.toString()).toBe('Selectable prose.');
+    selection?.removeAllRanges();
+  });
+
+  it('still enters paragraph edit mode from ordinary rendered prose clicks', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Editable prose.' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByText('Editable prose.'));
+
+    const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('Editable prose.');
+  });
+
   it('renders headings as headings before the first edit and focuses on first click', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),

@@ -111,7 +111,7 @@ export type EmbedDeleteDecision = {
 type LoadState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; blocks: SpaceBlock[]; exports: SpaceExport[]; items: SpaceItem[] }
+  | { status: 'ready'; spaceId: string; blocks: SpaceBlock[]; exports: SpaceExport[]; items: SpaceItem[] }
   | { status: 'error'; message: string };
 
 type SaveState =
@@ -239,6 +239,20 @@ function textOffsetFromNode(root: HTMLElement, node: Node, offset: number): numb
   return null;
 }
 
+function eventTargetElement(event: MouseEvent): Element | null {
+  const target = event.target;
+  if (target instanceof Element) return target;
+  if (target instanceof Node) return target.parentElement;
+  return null;
+}
+
+function hasSelectionInside(root: HTMLElement): boolean {
+  const selection = root.ownerDocument.getSelection();
+  if (!selection || selection.isCollapsed) return false;
+  const { anchorNode, focusNode } = selection;
+  return Boolean(anchorNode && focusNode && root.contains(anchorNode) && root.contains(focusNode));
+}
+
 function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number | null {
   const doc = root.ownerDocument;
   const caretPositionFromPoint = (
@@ -271,7 +285,7 @@ function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number |
 }
 
 function renderedHeadingClickRoot(root: HTMLElement, event: MouseEvent): HTMLElement | null {
-  const target = event.target as Element | null;
+  const target = eventTargetElement(event);
   const heading = target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null;
   if (!heading || !root.contains(heading)) return null;
   const rects = Array.from(heading.getClientRects()).filter(
@@ -304,7 +318,7 @@ function caretForRenderedClick(block: SpaceBlock, root: HTMLElement, event: Mous
 }
 
 function isResourceRefClick(event: MouseEvent): boolean {
-  const target = event.target as HTMLElement | null;
+  const target = eventTargetElement(event);
   return Boolean(target?.closest?.('a.resource-ref__link, a.spaces-doc-ref__link'));
 }
 
@@ -347,7 +361,9 @@ export function DocumentBlockEditor({
   const viewportRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const currentSpaceIdRef = useRef<string | null | undefined>(spaceId);
   fetchRef.current = fetchImpl;
+  currentSpaceIdRef.current = spaceId;
 
   // Re-hydrate per-space edit state whenever the open Space changes.
   useEffect(() => {
@@ -374,20 +390,38 @@ export function DocumentBlockEditor({
         setLoad({ status: 'idle' });
         return;
       }
+      const requestedSpaceId = spaceId;
       if (!isReconcile) setLoad({ status: 'loading' });
       try {
-        const [blocks, exportsResult, packet] = await Promise.all([
-          listSpaceBlocks(spaceId, fetcher()),
-          getSpaceExports(spaceId).catch(() => ({ exports: [] as SpaceExport[] })),
-          getSpaceFactPacket(spaceId).catch(() => ({ items: [] as SpaceItem[] })),
+        const [blocks, exportsResult] = await Promise.all([
+          listSpaceBlocks(requestedSpaceId, fetcher()),
+          getSpaceExports(requestedSpaceId).catch(() => ({ exports: [] as SpaceExport[] })),
         ]);
-        setLoad({ status: 'ready', blocks, exports: exportsResult.exports, items: packet.items });
+        if (currentSpaceIdRef.current !== requestedSpaceId) return;
+        setLoad((prior) => ({
+          status: 'ready',
+          spaceId: requestedSpaceId,
+          blocks,
+          exports: exportsResult.exports,
+          items: prior.status === 'ready' && prior.spaceId === requestedSpaceId ? prior.items : [],
+        }));
+        void getSpaceFactPacket(requestedSpaceId)
+          .then((packet) => {
+            if (currentSpaceIdRef.current !== requestedSpaceId) return;
+            setLoad((prior) =>
+              prior.status === 'ready' && prior.spaceId === requestedSpaceId
+                ? { ...prior, items: packet.items }
+                : prior,
+            );
+          })
+          .catch(() => undefined);
         // Reconcile edit state against live block ids without resetting the
         // user's in-progress drafts (Dataful-UX: refetch is reconciliation).
         setViewState((prior) =>
           reconcileBlockEditorViewState(prior, blocks.map((b) => b.id)),
         );
       } catch (err) {
+        if (currentSpaceIdRef.current !== requestedSpaceId) return;
         setLoad({ status: 'error', message: err instanceof Error ? err.message : String(err) });
       }
     },
@@ -532,9 +566,19 @@ export function DocumentBlockEditor({
     (block: SpaceBlock, event: MouseEvent) => {
       if (isResourceRefClick(event)) return;
       const root = event.currentTarget as HTMLElement | null;
+      if (root && hasSelectionInside(root)) return;
       const caret = root ? caretForRenderedClick(block, root, event) : (block.markdown ?? '').length;
       if (caret === null) return;
       beginEditing(block.id, false, { start: caret, end: caret });
+    },
+    [beginEditing],
+  );
+
+  const beginEditingFromRenderedKeyboard = useCallback(
+    (block: SpaceBlock, event: KeyboardEvent) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      event.preventDefault();
+      beginEditing(block.id, true);
     },
     [beginEditing],
   );
@@ -1018,12 +1062,16 @@ export function DocumentBlockEditor({
                       </div>
                     )}
                     {!isEditing && !isEmbed && (
-                      <button
-                        type="button"
+                      <div
+                        role="button"
+                        tabIndex={0}
                         className="spaces-block-editor__rendered-block"
                         data-testid="spaces-block-editor-edit"
                         onClick={(event) =>
                           beginEditingFromRenderedClick(block, event as unknown as MouseEvent)
+                        }
+                        onKeyDown={(event) =>
+                          beginEditingFromRenderedKeyboard(block, event as unknown as KeyboardEvent)
                         }
                         onFocus={() => setActiveBlockId(block.id)}
                       >
@@ -1041,7 +1089,7 @@ export function DocumentBlockEditor({
                         ) : (
                           <span className="spaces-block-editor__blank" aria-hidden="true" />
                         )}
-                      </button>
+                      </div>
                     )}
                     {!isEditing && isEmbed && renderedBlock && (
                       <div className="spaces-block-editor__embed-preview">
