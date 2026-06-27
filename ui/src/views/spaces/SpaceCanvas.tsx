@@ -91,6 +91,14 @@ export type CanvasNode = {
   y: number;
 };
 
+export type SpaceFlowNode = {
+  id: string;
+  position: { x: number; y: number };
+  data: { label: string; kind: string };
+  selected?: boolean;
+  type: 'spaceOccurrence';
+};
+
 /** A legacy unplaced occurrence entry. New Canvas adds place immediately. */
 export type ShelfEntry = {
   occurrence: SpaceOccurrence;
@@ -202,6 +210,43 @@ export function connectionToEdgeRequest(
   return { source, target, label: '' };
 }
 
+export function canvasNodesToFlowNodes(
+  placed: CanvasNode[],
+  selection: ReadonlySet<string>,
+): SpaceFlowNode[] {
+  return placed.map((node) => ({
+    id: node.occurrence.id,
+    position: { x: node.x, y: node.y },
+    data: {
+      label: occurrenceLabel(node.occurrence, node.item),
+      kind: occurrenceKind(node.occurrence, node.item),
+    },
+    selected: selection.has(node.occurrence.id),
+    type: 'spaceOccurrence',
+  }));
+}
+
+export function applyLocalNodeChanges(
+  nodes: SpaceFlowNode[],
+  changes: NodeChange[],
+): SpaceFlowNode[] {
+  let nextNodes = nodes;
+  for (const change of changes) {
+    if (change.type !== 'position' && change.type !== 'select') continue;
+    nextNodes = nextNodes.map((node) => {
+      if (node.id !== change.id) return node;
+      if (change.type === 'position' && change.position) {
+        return { ...node, position: { x: change.position.x, y: change.position.y } };
+      }
+      if (change.type === 'select') {
+        return { ...node, selected: change.selected };
+      }
+      return node;
+    });
+  }
+  return nextNodes;
+}
+
 /**
  * Map occurrences to `GraphNode`s so `layoutGraph()` (the existing structured
  * layout) can seed positions. Edges are mapped from `parent_id` links only so
@@ -279,12 +324,18 @@ export function reconcileOccurrences(
   incoming: SpaceOccurrence[],
   draggingIds: ReadonlySet<string>,
   previous: SpaceOccurrence[],
+  protectedPositions: Record<string, { x: number; y: number }> = {},
 ): SpaceOccurrence[] {
   const previousById = new Map(previous.map((o) => [o.id, o]));
   return incoming.map((next) => {
     if (draggingIds.has(next.id)) {
       // Keep the local in-flight value for nodes the user is actively moving.
       return previousById.get(next.id) ?? next;
+    }
+    const protectedPosition = protectedPositions[next.id];
+    if (protectedPosition && (next.x !== protectedPosition.x || next.y !== protectedPosition.y)) {
+      const previousOccurrence = previousById.get(next.id) ?? next;
+      return { ...previousOccurrence, x: protectedPosition.x, y: protectedPosition.y };
     }
     return next;
   });
@@ -371,7 +422,10 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
   debounceMs?: number;
 };
 
+type PendingAckPosition = { x: number; y: number; savedAt: number | null; expiresAt: number };
+
 const DEFAULT_DEBOUNCE_MS = 400;
+const POSITION_ACK_PROTECTION_MS = 10_000;
 const OCCURRENCE_MOVED_EVENT = 'space:occurrence:moved';
 const EDGE_EVENTS = ['space:edge:created', 'space:edge:updated', 'space:edge:removed'] as const;
 const MIN_INSPECTOR_HEIGHT = 160;
@@ -419,7 +473,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // reset by SSE reconciliation.
   const [selection, setSelection] = useState<Set<string>>(() => new Set());
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [localPositions, setLocalPositions] = useState<Record<string, { x: number; y: number }>>({});
   const [promoteLinkType, setPromoteLinkType] = useState<Record<string, LedgerLinkType>>({});
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
   // Whether the "Add items" picker popover is open (transient browser-local).
@@ -429,6 +482,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // Refs that must not trigger re-render or re-subscribe.
   const draggingIds = useRef<Set<string>>(new Set());
   const pendingPositions = useRef<Record<string, { x: number; y: number }>>({});
+  const pendingAckPositions = useRef<Record<string, PendingAckPosition>>({});
+  const reconcileRequestSeq = useRef(0);
   const debounceTimer = useRef<number | null>(null);
   const occurrencesRef = useRef<SpaceOccurrence[]>(occurrences);
   const editingEdgeIds = useRef<Set<string>>(new Set());
@@ -440,6 +495,68 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const { placed, shelf } = useMemo(
     () => partitionOccurrences(occurrences, itemsById),
     [occurrences, itemsById],
+  );
+
+  const protectPositionsUntilAck = useCallback((positions: Record<string, { x: number; y: number }>) => {
+    const expiresAt = Date.now() + POSITION_ACK_PROTECTION_MS;
+    for (const [id, position] of Object.entries(positions)) {
+      pendingAckPositions.current[id] = { ...position, savedAt: null, expiresAt };
+      draggingIds.current.add(id);
+    }
+  }, []);
+
+  const markPositionsSaved = useCallback((
+    entries: BatchSpaceOccurrenceEntry[],
+    savedOccurrences: SpaceOccurrence[],
+  ) => {
+    const savedById = new Map(savedOccurrences.map((occurrence) => [occurrence.id, occurrence]));
+    const fallbackSavedAt = Date.now();
+    for (const entry of entries) {
+      if (!entry.id) continue;
+      const pending = pendingAckPositions.current[entry.id];
+      if (!pending) continue;
+      const saved = savedById.get(entry.id);
+      pendingAckPositions.current[entry.id] = {
+        ...pending,
+        savedAt: saved?.updated_at ?? fallbackSavedAt,
+      };
+    }
+  }, []);
+
+  const protectedPositionsForIncoming = useCallback((incoming: SpaceOccurrence[]): Record<string, { x: number; y: number }> => {
+    const now = Date.now();
+    const incomingById = new Map(incoming.map((occurrence) => [occurrence.id, occurrence]));
+    const protectedPositions: Record<string, { x: number; y: number }> = {};
+    for (const [id, position] of Object.entries(pendingAckPositions.current)) {
+      if (position.expiresAt <= now) {
+        delete pendingAckPositions.current[id];
+        draggingIds.current.delete(id);
+        continue;
+      }
+      if (
+        !incomingById.has(id) ||
+        position.savedAt === null ||
+        incomingById.get(id)!.updated_at < position.savedAt
+      ) {
+        protectedPositions[id] = { x: position.x, y: position.y };
+        continue;
+      }
+      delete pendingAckPositions.current[id];
+      draggingIds.current.delete(id);
+    }
+    return protectedPositions;
+  }, []);
+
+  const reconcileModel = useCallback(
+    (model: SpaceCanvasModel) => {
+      const protectedPositions = protectedPositionsForIncoming(model.occurrences);
+      setItems(model.items);
+      setOccurrences((prev) =>
+        reconcileOccurrences(model.occurrences, draggingIds.current, prev, protectedPositions),
+      );
+      setEdges((prev) => reconcileEdges(model.edges ?? [], editingEdgeIds.current, prev));
+    },
+    [protectedPositionsForIncoming],
   );
 
   // --- initial load (only when no initialModel was provided) ---
@@ -465,7 +582,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     pendingPositions.current = {};
     setAutosave('saving');
     try {
-      await batchWrite(spaceId, entries);
+      const response = await batchWrite(spaceId, entries);
+      markPositionsSaved(entries, response.occurrences);
       setOccurrences((prev) =>
         prev.map((occurrence) => {
           const entry = entries.find((candidate) => candidate.id === occurrence.id);
@@ -474,21 +592,15 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             : occurrence;
         }),
       );
-      setLocalPositions((prev) => {
-        const next = { ...prev };
-        for (const entry of entries) {
-          if (entry.id) delete next[entry.id];
-        }
-        return next;
-      });
-      // Clear the dragging marks once their writes have landed.
+      // The short pending-ack guard still protects against stale refetches that
+      // were already in flight; active drag marks can clear once writes land.
       for (const entry of entries) {
         if (entry.id) draggingIds.current.delete(entry.id);
       }
       setAutosave('saved');
     } catch {
       // Graceful failure: surface the error state, re-queue the positions so a
-      // later flush retries, and keep the optimistic local positions on screen.
+      // later flush retries, and keep the optimistic positions on screen.
       pendingPositions.current = { ...positions, ...pendingPositions.current };
       setAutosave('error');
     }
@@ -526,14 +638,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         return pos ? { ...occurrence, x: pos.x, y: pos.y } : occurrence;
       }),
     );
-    setLocalPositions((prev) => {
-      const next = { ...prev };
-      for (const id of Object.keys(nextPositions)) delete next[id];
-      return next;
-    });
+    protectPositionsUntilAck(nextPositions);
     pendingPositions.current = { ...pendingPositions.current, ...nextPositions };
     scheduleFlush();
-  }, [shelf, itemsById, placed, scheduleFlush]);
+  }, [shelf, itemsById, placed, protectPositionsUntilAck, scheduleFlush]);
 
   // --- SSE reconciliation: refetch + reconcile WITHOUT touching viewport/sel ---
   // Subscribes to both occurrence moves AND edge events so drag-created or
@@ -546,12 +654,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const reconcile = (payload: SSEPayload) => {
       const data = (payload.data ?? payload) as { space_id?: string };
       if (data?.space_id && data.space_id !== spaceId) return;
+      const requestSeq = ++reconcileRequestSeq.current;
       void loadModel(spaceId).then((model) => {
-        setItems(model.items);
-        setOccurrences((prev) =>
-          reconcileOccurrences(model.occurrences, draggingIds.current, prev),
-        );
-        setEdges((prev) => reconcileEdges(model.edges ?? [], editingEdgeIds.current, prev));
+        if (requestSeq !== reconcileRequestSeq.current) return;
+        reconcileModel(model);
         // NOTE: selection and viewport state are intentionally untouched here.
       });
     };
@@ -563,22 +669,12 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       for (const unsubscribe of unsubscribers) unsubscribe();
       client.close();
     };
-  }, [spaceId, loadModel, createSse]);
+  }, [spaceId, loadModel, createSse, reconcileModel]);
 
   // --- React Flow nodes (positions come from persisted occurrence x/y) ---
   const flowNodes = useMemo(
-    () =>
-      placed.map((node) => ({
-        id: node.occurrence.id,
-        position: localPositions[node.occurrence.id] ?? { x: node.x, y: node.y },
-        data: {
-          label: occurrenceLabel(node.occurrence, node.item),
-          kind: occurrenceKind(node.occurrence, node.item),
-        },
-        selected: selection.has(node.occurrence.id),
-        type: 'spaceOccurrence',
-      })),
-    [placed, localPositions, selection],
+    () => canvasNodesToFlowNodes(placed, selection),
+    [placed, selection],
   );
 
   const nodeTypes = useMemo(() => ({ spaceOccurrence: OccurrenceNode }), []);
@@ -597,43 +693,30 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     return edge ? resolveEdge(edge, occurrencesById, edgeItemsById) : null;
   }, [selectedEdgeId, edges, occurrencesById, edgeItemsById]);
 
-  const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      let positionChanged = false;
-      for (const change of changes) {
-        if (change.type === 'position' && change.position) {
-          const id = change.id;
-          draggingIds.current.add(id);
-          // Pointer movement stays in a local overlay so the canonical
-          // occurrence list, shelf partition, and edge projection do not churn
-          // on every drag frame.
-          setLocalPositions((prev) => ({
-            ...prev,
-            [id]: { x: change.position!.x, y: change.position!.y },
-          }));
-          if (change.dragging === false) {
-            // Drag ended: queue the final position and debounce the write.
-            pendingPositions.current[id] = {
-              x: change.position.x,
-              y: change.position.y,
-            };
-            positionChanged = true;
-          }
-        }
-        if (change.type === 'select') {
-          setSelection((prev) => {
-            const next = new Set(prev);
-            if (change.selected) next.add(change.id);
-            else next.delete(change.id);
-            return next;
-          });
-          if (change.selected) setSelectedEdgeId(null);
-        }
-      }
-      if (positionChanged) scheduleFlush();
+  const onNodeDragStart = useCallback((id: string) => {
+    draggingIds.current.add(id);
+  }, []);
+
+  const onNodeDragStop = useCallback(
+    (id: string, position: { x: number; y: number }) => {
+      const nextPosition = { [id]: position };
+      protectPositionsUntilAck(nextPosition);
+      setOccurrences((prev) => applyOptimisticPosition(prev, id, position.x, position.y));
+      pendingPositions.current = { ...pendingPositions.current, ...nextPosition };
+      scheduleFlush();
     },
-    [scheduleFlush],
+    [protectPositionsUntilAck, scheduleFlush],
   );
+
+  const onNodeSelectionChange = useCallback((id: string, selected: boolean) => {
+    setSelection((prev) => {
+      const next = new Set(prev);
+      if (selected) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+    if (selected) setSelectedEdgeId(null);
+  }, []);
 
   const onEdgesChange = useCallback((changes: EdgeChange[]) => {
     for (const change of changes) {
@@ -765,18 +848,14 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       setOccurrences((prev) =>
         prev.map((o) => (positions[o.id] ? { ...o, x: positions[o.id].x, y: positions[o.id].y } : o)),
       );
-      setLocalPositions((prev) => {
-        const next = { ...prev };
-        for (const id of Object.keys(positions)) delete next[id];
-        return next;
-      });
+      protectPositionsUntilAck(positions);
       // ...and persist them through the same debounced batch path.
       for (const [id, pos] of Object.entries(positions)) {
         pendingPositions.current[id] = pos;
       }
       scheduleFlush();
     },
-    [selection, items, scheduleFlush],
+    [selection, items, protectPositionsUntilAck, scheduleFlush],
   );
 
   // --- refetch (after an add) WITHOUT touching viewport/selection ---
@@ -785,11 +864,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // ephemeral selection/viewport (Dataful-UX contract).
   const reload = useCallback(async () => {
     if (!spaceId || !loadModel) return;
+    const requestSeq = ++reconcileRequestSeq.current;
     const model = await loadModel(spaceId);
-    setItems(model.items);
-    setOccurrences((prev) => reconcileOccurrences(model.occurrences, draggingIds.current, prev));
-    setEdges((prev) => reconcileEdges(model.edges ?? [], editingEdgeIds.current, prev));
-  }, [spaceId, loadModel]);
+    if (requestSeq !== reconcileRequestSeq.current) return;
+    reconcileModel(model);
+  }, [spaceId, loadModel, reconcileModel]);
 
   // --- "Add items" picker: immediately place a canvas occurrence per new item ---
   const afterAddItem = useCallback(
@@ -938,24 +1017,16 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
               No canvas items yet.
             </div>
           ) : (
-            <ReactFlow
+            <SpaceCanvasFlowSurface
               nodes={flowNodes}
               edges={flowEdges}
               nodeTypes={nodeTypes}
-              proOptions={{ hideAttribution: true }}
-              fitView
-              minZoom={0.2}
-              maxZoom={1.8}
-              nodesDraggable
-              nodesConnectable
-              elementsSelectable
-              onNodesChange={onNodesChange}
+              onNodeDragStart={onNodeDragStart}
+              onNodeDragStop={onNodeDragStop}
+              onNodeSelectionChange={onNodeSelectionChange}
               onEdgesChange={onEdgesChange}
               onConnect={onConnect}
-            >
-              <Background gap={18} />
-              <Controls showInteractive={false} />
-            </ReactFlow>
+            />
           )}
           <span
             className="space-canvas__autosave"
@@ -984,6 +1055,114 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         />
       </div>
     </div>
+  );
+}
+
+type SpaceCanvasFlowSurfaceProps = {
+  nodes: SpaceFlowNode[];
+  edges: FlowEdge[];
+  nodeTypes: Record<string, typeof OccurrenceNode>;
+  onNodeDragStart: (id: string) => void;
+  onNodeDragStop: (id: string, position: { x: number; y: number }) => void;
+  onNodeSelectionChange: (id: string, selected: boolean) => void;
+  onEdgesChange: (changes: EdgeChange[]) => void;
+  onConnect: (connection: Connection) => void;
+};
+
+function sameFlowNode(left: SpaceFlowNode, right: SpaceFlowNode): boolean {
+  return (
+    left.id === right.id &&
+    left.type === right.type &&
+    left.selected === right.selected &&
+    left.position.x === right.position.x &&
+    left.position.y === right.position.y &&
+    left.data.label === right.data.label &&
+    left.data.kind === right.data.kind
+  );
+}
+
+function reconcileFlowNodeState(
+  previous: SpaceFlowNode[],
+  canonical: SpaceFlowNode[],
+  activeDragIds: ReadonlySet<string>,
+): SpaceFlowNode[] {
+  const previousById = new Map(previous.map((node) => [node.id, node]));
+  let changed = previous.length !== canonical.length;
+  const next = canonical.map((canonicalNode) => {
+    const previousNode = previousById.get(canonicalNode.id);
+    if (!previousNode) {
+      changed = true;
+      return canonicalNode;
+    }
+    const reconciledNode = activeDragIds.has(canonicalNode.id)
+      ? { ...canonicalNode, position: previousNode.position }
+      : canonicalNode;
+    if (sameFlowNode(previousNode, reconciledNode)) {
+      return previousNode;
+    }
+    changed = true;
+    return reconciledNode;
+  });
+  return changed ? next : previous;
+}
+
+function SpaceCanvasFlowSurface({
+  nodes: canonicalNodes,
+  edges,
+  nodeTypes,
+  onNodeDragStart,
+  onNodeDragStop,
+  onNodeSelectionChange,
+  onEdgesChange,
+  onConnect,
+}: SpaceCanvasFlowSurfaceProps): JSX.Element {
+  const [nodes, setNodes] = useState<SpaceFlowNode[]>(() => canonicalNodes);
+  const activeDragIds = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    setNodes((previous) => reconcileFlowNodeState(previous, canonicalNodes, activeDragIds.current));
+  }, [canonicalNodes]);
+
+  const onNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      setNodes((previous) => applyLocalNodeChanges(previous, changes));
+      for (const change of changes) {
+        if (change.type === 'position' && change.position) {
+          if (change.dragging === false) {
+            activeDragIds.current.delete(change.id);
+            onNodeDragStop(change.id, { x: change.position.x, y: change.position.y });
+          } else {
+            activeDragIds.current.add(change.id);
+            onNodeDragStart(change.id);
+          }
+        }
+        if (change.type === 'select') {
+          onNodeSelectionChange(change.id, Boolean(change.selected));
+        }
+      }
+    },
+    [onNodeDragStart, onNodeDragStop, onNodeSelectionChange],
+  );
+
+  return (
+    <ReactFlow
+      nodes={nodes}
+      edges={edges}
+      nodeTypes={nodeTypes}
+      proOptions={{ hideAttribution: true }}
+      fitView
+      minZoom={0.2}
+      maxZoom={1.8}
+      nodesDraggable
+      nodesConnectable
+      elementsSelectable
+      onNodesChange={onNodesChange}
+      onEdgesChange={onEdgesChange}
+      onConnect={onConnect}
+    >
+      <Background gap={18} />
+      <Controls showInteractive={false} />
+    </ReactFlow>
   );
 }
 

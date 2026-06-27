@@ -122,6 +122,8 @@ import {
   occurrencesToGraph,
   edgesToFlowEdges,
   connectionToEdgeRequest,
+  canvasNodesToFlowNodes,
+  applyLocalNodeChanges,
   type SpaceCanvasModel,
 } from '../ui/src/views/spaces/SpaceCanvas';
 import type { SpaceEdge } from '../ui/src/api';
@@ -270,6 +272,15 @@ describe('reconcileOccurrences (SSE path)', () => {
     expect([a.x, a.y]).toEqual([999, 999]);
     expect([b.x, b.y]).toEqual([2, 2]);
   });
+
+  it('preserves positions waiting for a server acknowledgement', () => {
+    const previous = [occ('a', { x: 55, y: 66 })];
+    const incoming = [occ('a', { x: 10, y: 20 })];
+    const next = reconcileOccurrences(incoming, new Set(), previous, {
+      a: { x: 55, y: 66 },
+    });
+    expect(next[0]).toMatchObject({ x: 55, y: 66 });
+  });
 });
 
 describe('applyOptimisticPosition', () => {
@@ -288,6 +299,19 @@ describe('nextAddedItemPosition', () => {
       {},
     ).placed;
     expect(nextAddedItemPosition(placed)).toEqual({ x: 380, y: 20 });
+  });
+});
+
+describe('React Flow local node helpers', () => {
+  it('apply position changes without needing the parent canvas state', () => {
+    const nodes = canvasNodesToFlowNodes(
+      partitionOccurrences([occ('a', { x: 10, y: 20 })], {}).placed,
+      new Set(),
+    );
+    const next = applyLocalNodeChanges(nodes, [
+      { type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true } as never,
+    ]);
+    expect(next[0].position).toEqual({ x: 25, y: 30 });
   });
 });
 
@@ -405,7 +429,11 @@ describe('SpaceCanvas drag persistence + autosave', () => {
       items: [item('a', 'Alpha')],
       occurrences: [occ('a', { x: 10, y: 20 })],
     };
-    const batchWrite = vi.fn().mockResolvedValue({ occurrences: [], created: 0, updated: 1 });
+    const batchWrite = vi.fn().mockResolvedValue({
+      occurrences: [occ('a', { x: 55, y: 66, updated_at: 100 })],
+      created: 0,
+      updated: 1,
+    });
     render(
       h(SpaceCanvas, {
         ...baseProps,
@@ -550,6 +578,181 @@ describe('SpaceCanvas SSE reconciliation', () => {
     await waitFor(() => expect(findNode('a').getAttribute('data-x')).toBe('111'));
     // ...but the selection is NOT reset by reconciliation.
     expect(findNode('a').getAttribute('data-selected')).toBe('true');
+  });
+
+  it('does not rematerialize an actively dragged node when an SSE refetch returns', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const stale: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 111, y: 222 })],
+    };
+    const loadModel = vi.fn().mockResolvedValue(stale);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+    });
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('30');
+  });
+
+  it('ignores an out-of-order refetch that started before a drag stop', async () => {
+    let resolveLoad: (model: SpaceCanvasModel) => void = () => {};
+    const pendingLoad = new Promise<SpaceCanvasModel>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const loadModel = vi.fn().mockReturnValue(pendingLoad);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    act(() => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+    });
+    expect(loadModel).toHaveBeenCalledWith('sp1');
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+
+    await act(async () => {
+      resolveLoad({ items: model.items, occurrences: [occ('a', { x: 10, y: 20 })] });
+      await pendingLoad;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
+  });
+
+  it('keeps a dropped position when a post-save SSE refetch is stale', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const stale: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({ occurrences: [], created: 0, updated: 1 });
+    const loadModel = vi.fn().mockResolvedValue(stale);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        loadModel,
+        createSse: () => client,
+        debounceMs: 50,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+    expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
+  });
+
+  it('accepts a newer server position after the saved drag is acknowledged', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const newer: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 70, y: 80, updated_at: 101 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({
+      occurrences: [occ('a', { x: 55, y: 66, updated_at: 100 })],
+      created: 0,
+      updated: 1,
+    });
+    const loadModel = vi.fn().mockResolvedValue(newer);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        loadModel,
+        createSse: () => client,
+        debounceMs: 50,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('70');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('80');
   });
 
   it('ignores moved events for a different space', async () => {
