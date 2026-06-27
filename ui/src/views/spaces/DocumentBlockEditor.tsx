@@ -72,8 +72,8 @@ const SPACE_EVENT_PREFIX = 'space:';
 const AUTOSAVE_DELAY_MS = 650;
 const MIN_INSPECTOR_HEIGHT = 160;
 const MAX_INSPECTOR_VIEWPORT_FRACTION = 0.7;
-const RENDERED_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6,p';
-const RENDERED_HEADING_HIT_AREA_SELECTOR = '[data-heading-hit-area="true"]';
+const RENDERED_MARKDOWN_HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
+const RENDERED_HEADING_SELECTOR = `${RENDERED_MARKDOWN_HEADING_SELECTOR},p`;
 
 function clampInspectorHeight(height: number, viewportHeight: number): number {
   const maxHeight = Math.max(
@@ -225,6 +225,40 @@ function headingMarkdownPrefixLength(markdown: string): number {
   return match ? match[1].length : 0;
 }
 
+function markdownHeadingLines(markdown: string): Array<{ start: number; prefixLength: number; text: string }> {
+  const lines: Array<{ start: number; prefixLength: number; text: string }> = [];
+  let start = 0;
+  for (const line of markdown.split('\n')) {
+    const match = /^(\s{0,3}#{1,6}\s+)(.*)$/.exec(line);
+    if (match) {
+      lines.push({ start, prefixLength: match[1].length, text: match[2].trim() });
+    }
+    start += line.length + 1;
+  }
+  return lines;
+}
+
+function markdownHeadingSourceLine(
+  markdown: string,
+  root: HTMLElement,
+  heading: HTMLElement,
+): { start: number; prefixLength: number } | null {
+  const headings = Array.from(
+    root.querySelectorAll(RENDERED_MARKDOWN_HEADING_SELECTOR),
+  ) as HTMLElement[];
+  const headingIndex = headings.indexOf(heading);
+  const lines = markdownHeadingLines(markdown);
+  if (headingIndex >= 0 && lines[headingIndex]) {
+    return { start: lines[headingIndex].start, prefixLength: lines[headingIndex].prefixLength };
+  }
+
+  const headingText = heading.textContent?.trim() ?? '';
+  const matchingLine = lines.find((line) => line.text === headingText);
+  return matchingLine
+    ? { start: matchingLine.start, prefixLength: matchingLine.prefixLength }
+    : null;
+}
+
 function textOffsetFromNode(root: HTMLElement, node: Node, offset: number): number | null {
   if (!root.contains(node)) return null;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -285,45 +319,60 @@ function renderedClickTextOffset(root: HTMLElement, event: MouseEvent): number |
   return null;
 }
 
+function eventPointIsInsideElement(element: HTMLElement, event: MouseEvent): boolean {
+  const rects = Array.from(element.getClientRects()).filter(
+    (rect) => rect.width > 0 && rect.height > 0,
+  );
+  if (rects.length === 0) return true;
+  return rects.some(
+    (rect) =>
+      event.clientX >= rect.left &&
+      event.clientX <= rect.right &&
+      event.clientY >= rect.top &&
+      event.clientY <= rect.bottom,
+  );
+}
+
 function renderedHeadingClickRoot(root: HTMLElement, event: MouseEvent): HTMLElement | null {
   const target = eventTargetElement(event);
   const targetHeading =
-    (target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null) ??
-    (target?.closest?.(RENDERED_HEADING_HIT_AREA_SELECTOR) as HTMLElement | null);
-  const heading =
-    targetHeading && root.contains(targetHeading)
-      ? targetHeading
-      : ((root.querySelector(RENDERED_HEADING_SELECTOR) ??
-          root.querySelector(RENDERED_HEADING_HIT_AREA_SELECTOR)) as HTMLElement | null);
-  if (!heading || !root.contains(heading)) return null;
-  const rects = Array.from(heading.getClientRects()).filter(
-    (rect) => rect.width > 0 && rect.height > 0,
-  );
-  if (!targetHeading && rects.length === 0) return null;
-  if (
-    rects.length > 0 &&
-    !rects.some(
-      (rect) =>
-        event.clientX >= rect.left &&
-        event.clientX <= rect.right &&
-        event.clientY >= rect.top &&
-        event.clientY <= rect.bottom,
-    )
-  ) {
+    (target?.closest?.(RENDERED_HEADING_SELECTOR) as HTMLElement | null) ?? null;
+  if (!targetHeading || !root.contains(targetHeading)) return null;
+
+  const realHeadings = root.querySelectorAll(RENDERED_MARKDOWN_HEADING_SELECTOR);
+  const isActualMarkdownHeading = targetHeading.matches(RENDERED_MARKDOWN_HEADING_SELECTOR);
+  if (!isActualMarkdownHeading && realHeadings.length > 0) {
     return null;
   }
-  return heading;
+  if (!eventPointIsInsideElement(targetHeading, event)) return null;
+  return targetHeading;
+}
+
+function caretForRenderedHeadingClick(
+  block: SpaceBlock,
+  root: HTMLElement,
+  event: MouseEvent,
+): number | null {
+  const markdown = block.markdown ?? '';
+  const renderedRoot = renderedHeadingClickRoot(root, event);
+  if (!renderedRoot) return null;
+
+  const renderedOffset = renderedClickTextOffset(renderedRoot, event) ?? 0;
+  const sourceLine = renderedRoot.matches(RENDERED_MARKDOWN_HEADING_SELECTOR)
+    ? markdownHeadingSourceLine(markdown, root, renderedRoot)
+    : null;
+  const sourceStart = sourceLine?.start ?? 0;
+  const prefix = sourceLine?.prefixLength ?? headingMarkdownPrefixLength(markdown);
+  return Math.max(0, Math.min(markdown.length, sourceStart + prefix + renderedOffset));
 }
 
 function caretForRenderedClick(block: SpaceBlock, root: HTMLElement, event: MouseEvent): number | null {
   const markdown = block.markdown ?? '';
-  const prefix = block.block_type === 'heading' ? headingMarkdownPrefixLength(markdown) : 0;
-  const renderedRoot =
-    block.block_type === 'heading' ? renderedHeadingClickRoot(root, event) : root;
-  if (!renderedRoot) return null;
-  const renderedOffset = renderedClickTextOffset(renderedRoot, event);
-  const fallbackOffset = block.block_type === 'heading' ? 0 : markdown.length;
-  return Math.max(0, Math.min(markdown.length, prefix + (renderedOffset ?? fallbackOffset)));
+  if (block.block_type === 'heading') {
+    return caretForRenderedHeadingClick(block, root, event);
+  }
+  const renderedOffset = renderedClickTextOffset(root, event);
+  return Math.max(0, Math.min(markdown.length, renderedOffset ?? markdown.length));
 }
 
 function isResourceRefClick(event: MouseEvent): boolean {
