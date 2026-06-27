@@ -791,30 +791,39 @@ describe('DocumentBlockEditor (editable)', () => {
     }
   });
 
-  it('does not edit a mixed heading block from paragraph lines next to the rendered heading', async () => {
+  it('edits paragraph lines around a mixed Markdown heading as independent line regions', async () => {
     const backend = makeBackend([
       makeBlock({
         id: 'b1',
-        block_type: 'heading',
+        block_type: 'paragraph',
         sort_key: 'a',
-        markdown: 'New heading\nddd\n## Heading',
+        markdown: 'intro\n## Heading\nbody',
       }),
     ]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByText(/New heading/));
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
 
-    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    fireEvent.click(screen.getByText('intro'));
+    let textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('intro');
+    fireEvent.blur(textarea);
+
+    fireEvent.click(screen.getByText('body'));
+    textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('body');
     expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
   });
 
-  it('maps a clicked rendered heading in a mixed block to the matching markdown line', async () => {
+  it('maps a clicked rendered heading in a mixed block to the matching markdown line region', async () => {
     const backend = makeBackend([
       makeBlock({
         id: 'b1',
-        block_type: 'heading',
+        block_type: 'paragraph',
         sort_key: 'a',
-        markdown: 'New heading\nddd\n## Heading',
+        markdown: 'intro\n## Heading\nbody',
       }),
     ]);
     await renderEditor({ backend });
@@ -836,14 +845,38 @@ describe('DocumentBlockEditor (editable)', () => {
       fireEvent.click(heading, { clientX: 48, clientY: 12 });
       const textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
       await waitFor(() => expect(document.activeElement).toBe(textarea));
-      expect(textarea.value).toBe('New heading\nddd\n## Heading');
-      expect(textarea.selectionStart).toBe('New heading\nddd\n## He'.length);
+      expect(textarea.value).toBe('## Heading');
+      expect(textarea.selectionStart).toBe('## He'.length);
     } finally {
       Object.defineProperty(document, 'caretRangeFromPoint', {
         configurable: true,
         value: priorCaretRangeFromPoint,
       });
     }
+  });
+
+  it('renders a typed Markdown heading as soon as Enter moves the caret to the next line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: '' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
+    let textarea = await screen.findByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    fireEvent.input(textarea, { target: { value: '## Something' } });
+    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    fireEvent.keyDown(textarea, { key: 'Enter', code: 'Enter' });
+
+    expect(await screen.findByRole('heading', { name: 'Something' })).toBeTruthy();
+    textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
+    await waitFor(() => expect(document.activeElement).toBe(textarea));
+    expect(textarea.value).toBe('');
+
+    fireEvent.input(textarea, { target: { value: 'body' } });
+    fireEvent.blur(textarea);
+
+    await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));
   });
 
   it('renders blank paragraph blocks as blank document content', async () => {
