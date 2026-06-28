@@ -15,10 +15,10 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useMemo } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
-import type { SpaceRenderer } from '../../api';
+import { getSpace, type Space, type SpaceRenderer } from '../../api';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -56,12 +56,9 @@ export type SpacesViewShellProps = {
   /** Canonical ledger Space id, or null when no Space is selected yet. */
   spaceId?: string | null;
   /**
-   * Active renderer. Accepts a raw string (e.g. a URL `?renderer=` param) and is
-   * normalized to a known {@link SpaceRenderer}, defaulting to `collection` for
-   * unknown/missing values. The render branch / nav scaffold drives the default;
-   * renderer children may drive it from their own view state once they mount.
-   * Kept as a prop (not shell-owned state) so the shell never silently promotes
-   * view state to canonical state.
+   * Explicit legacy renderer override from a URL `?renderer=` param. When this
+   * is absent, the shell loads the selected Space and opens its primary type
+   * (`space.default_renderer`).
    */
   renderer?: SpaceRenderer | string;
   /**
@@ -77,16 +74,41 @@ export type SpacesViewShellProps = {
    */
   sidebarHidden?: boolean;
   /**
-   * Navigate the URL hash to open a space or switch the active renderer. The
-   * host (app.tsx) rebuilds `#/spaces?project=…&space=…&renderer=…` preserving
-   * the `?sidebar=` param. Selection + renderer choice stay URL-canonical, never
-   * promoted to shell-owned state. When omitted the shell renders read-only
-   * (e.g. unit smoke tests) — the sidebar/switcher affordances no-op.
+   * Navigate the URL hash to open a space or a legacy renderer override. The
+   * host (app.tsx) rebuilds `#/spaces?...`, preserving `?sidebar=`.
    */
-  onNavigate?: (target: { projectId?: string | null; spaceId?: string | null; renderer?: string }) => void;
+  onNavigate?: (target: { projectId?: string | null; spaceId?: string | null; renderer?: string | null }) => void;
+  /** Injected selected-Space loader for tests; defaults to the real API client. */
+  loadSpace?: typeof getSpace;
 };
 
 const DEFAULT_RENDERER: SpaceRenderer = 'collection';
+
+const SPACE_TYPE_LABELS: Record<SpaceRenderer, string> = {
+  canvas: 'Canvas',
+  document: 'Document',
+  board: 'Board',
+  collection: 'Collection',
+};
+
+const SPACE_TYPE_BADGES: Record<SpaceRenderer, string> = {
+  canvas: 'Cv',
+  document: 'Doc',
+  board: 'Bd',
+  collection: 'Col',
+};
+
+function isSpaceRenderer(value: unknown): value is SpaceRenderer {
+  return typeof value === 'string' && SPACE_RENDERERS.includes(value as SpaceRenderer);
+}
+
+function spaceTypeLabel(renderer: SpaceRenderer): string {
+  return SPACE_TYPE_LABELS[renderer] ?? renderer;
+}
+
+function spaceTypeBadge(renderer: SpaceRenderer): string {
+  return SPACE_TYPE_BADGES[renderer] ?? renderer.slice(0, 3);
+}
 
 /**
  * Renderable Spaces shell. Routed from `route.tab === 'spaces'` in `app.tsx`.
@@ -96,28 +118,47 @@ const DEFAULT_RENDERER: SpaceRenderer = 'collection';
 export function SpacesViewShell({
   projectId,
   spaceId = null,
-  renderer = DEFAULT_RENDERER,
+  renderer,
   renderers,
   sidebarHidden = false,
   onNavigate,
+  loadSpace = getSpace,
 }: SpacesViewShellProps): JSX.Element {
-  // Normalize to a known renderer so an unexpected value can never break the
-  // frame; fall back to the default rather than rendering nothing.
-  const activeRenderer: SpaceRenderer = useMemo(
-    () =>
-      SPACE_RENDERERS.includes(renderer as SpaceRenderer)
-        ? (renderer as SpaceRenderer)
-        : DEFAULT_RENDERER,
-    [renderer],
-  );
+  const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
+  const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!spaceId) {
+      setSelectedSpace(null);
+      setSpaceLoadError(null);
+      return undefined;
+    }
+    let cancelled = false;
+    setSelectedSpace(null);
+    setSpaceLoadError(null);
+    loadSpace(spaceId)
+      .then((space) => {
+        if (!cancelled) setSelectedSpace(space);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setSpaceLoadError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [spaceId, loadSpace]);
+
+  const explicitRenderer = isSpaceRenderer(renderer) ? renderer : null;
+  const primaryRenderer = selectedSpace?.default_renderer ?? DEFAULT_RENDERER;
+  // Missing renderer means typed-primary open. A known renderer in the URL is a
+  // legacy/deep-link override and is still honored.
+  const activeRenderer: SpaceRenderer = explicitRenderer ?? primaryRenderer;
+  const waitingForPrimary = Boolean(spaceId && !explicitRenderer && !selectedSpace && !spaceLoadError);
+  const legacyRendererActive = Boolean(selectedSpace && explicitRenderer && explicitRenderer !== primaryRenderer);
+  const selectedSpaceTitle = selectedSpace?.title?.trim() || 'Untitled space';
+  const effectiveProjectId = selectedSpace ? (selectedSpace.project_id ?? '') : projectId;
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
-  // The switcher only offers renderers that are actually registered, so a
-  // choice can never strand the user on the shell empty-state.
-  const availableRenderers = useMemo<SpaceRenderer[]>(
-    () => SPACE_RENDERERS.filter((value) => Boolean(renderers?.[value])),
-    [renderers],
-  );
 
   return (
     <section
@@ -139,30 +180,38 @@ export function SpacesViewShell({
       <div className="spaces-shell__main">
         <header className="spaces-shell__header">
           {spaceId ? (
-            <div
-              className="spaces-shell__switcher"
-              role="tablist"
-              aria-label="Space renderer"
-              data-testid="spaces-shell-switcher"
-            >
-              {(availableRenderers.length > 0 ? availableRenderers : SPACE_RENDERERS).map((value) => (
-                <button
-                  key={value}
-                  type="button"
-                  role="tab"
-                  aria-selected={value === activeRenderer}
-                  className="spaces-shell__switcher-btn"
-                  data-active={value === activeRenderer}
-                  data-testid={`spaces-renderer-${value}`}
-                  onClick={() => onNavigate?.({ renderer: value })}
+            <>
+              <div className="spaces-shell__identity" data-testid="spaces-shell-identity">
+                <span
+                  className="spaces-shell__type-badge"
+                  title={spaceTypeLabel(primaryRenderer)}
+                  data-testid="spaces-shell-type"
                 >
-                  {value}
-                </button>
-              ))}
-            </div>
+                  {spaceTypeBadge(primaryRenderer)}
+                </span>
+                <span className="spaces-shell__title" title={selectedSpaceTitle}>
+                  {selectedSpace ? selectedSpaceTitle : 'Loading space...'}
+                </span>
+              </div>
+              {legacyRendererActive ? (
+                <div className="spaces-shell__legacy" data-testid="spaces-shell-legacy-renderer">
+                  <span className="spaces-shell__legacy-label">
+                    Legacy surface: {spaceTypeLabel(activeRenderer)}
+                  </span>
+                  <button
+                    type="button"
+                    className="spaces-shell__legacy-action"
+                    data-testid="spaces-shell-open-primary"
+                    onClick={() => onNavigate?.({ renderer: null })}
+                  >
+                    Open primary
+                  </button>
+                </div>
+              ) : null}
+            </>
           ) : (
             <span className="spaces-shell__renderer" data-testid="spaces-shell-renderer">
-              {activeRenderer}
+              {spaceTypeLabel(activeRenderer)}
             </span>
           )}
         </header>
@@ -173,12 +222,20 @@ export function SpacesViewShell({
                 Select a space, or create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
+          ) : waitingForPrimary ? (
+            <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
+              <p className="spaces-shell__empty-text">Loading space...</p>
+            </div>
+          ) : spaceLoadError && !explicitRenderer ? (
+            <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
+              <p className="spaces-shell__empty-text">{spaceLoadError}</p>
+            </div>
           ) : MountPoint ? (
-            <MountPoint projectId={projectId} spaceId={spaceId} renderer={activeRenderer} />
+            <MountPoint projectId={effectiveProjectId} spaceId={spaceId} renderer={activeRenderer} />
           ) : (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">
-                No <strong>{activeRenderer}</strong> renderer is available yet.
+                No <strong>{spaceTypeLabel(activeRenderer)}</strong> renderer is available yet.
               </p>
             </div>
           )}

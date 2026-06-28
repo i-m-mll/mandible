@@ -1,9 +1,9 @@
 // SpacesViewShell switcher + sidebar wiring tests (umbrella de56ffa, child 6a4a69a).
 //
-// The home lane adds three things to the shell: the home sidebar, an interactive
-// renderer switcher (shown only when a space is selected), and removal of the
-// redundant hardcoded "Spaces" title. These tests pin that behavior.
-import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
+// The home lane adds the home sidebar and typed-primary selected Space header.
+// These tests pin that normal selected Spaces no longer show all renderers as
+// equivalent tabs while explicit legacy renderer links still mount.
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -18,9 +18,23 @@ vi.mock('../ui/src/api', async (importActual) => {
 });
 
 import { SpacesViewShell, type SpaceRendererMountProps } from '../ui/src/views/spaces/SpacesViewShell';
+import type { Space } from '../ui/src/api';
 
 function Mount(props: SpaceRendererMountProps): JSX.Element {
   return <div data-testid="mount">{props.renderer}</div>;
+}
+
+function makeSpace(defaultRenderer: Space['default_renderer'] = 'document'): Space {
+  return {
+    id: 's1',
+    project_id: 'p1',
+    title: 'Typed workspace',
+    default_renderer: defaultRenderer,
+    description: null,
+    metadata: {},
+    created_at: 0,
+    updated_at: 0,
+  };
 }
 
 afterEach(() => {
@@ -41,41 +55,42 @@ describe('SpacesViewShell home polish', () => {
     expect(screen.getByTestId('spaces-shell-empty')).toBeTruthy();
   });
 
-  it('shows the switcher only for REGISTERED renderers when a space is selected', () => {
+  it('opens the selected Space primary type without showing renderer tabs', async () => {
     render(
       <SpacesViewShell
         projectId="p1"
         spaceId="s1"
-        renderer="collection"
         onNavigate={vi.fn()}
-        renderers={{ collection: Mount, canvas: Mount }}
+        renderers={{ document: Mount, canvas: Mount }}
+        loadSpace={vi.fn().mockResolvedValue(makeSpace('document'))}
       />,
     );
-    const switcher = screen.getByTestId('spaces-shell-switcher');
-    expect(switcher).toBeTruthy();
-    expect(screen.getByTestId('spaces-renderer-collection')).toBeTruthy();
-    expect(screen.getByTestId('spaces-renderer-canvas')).toBeTruthy();
-    // board/document are not registered here → not offered.
-    expect(screen.queryByTestId('spaces-renderer-board')).toBeNull();
-    expect(screen.queryByTestId('spaces-renderer-document')).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('mount').textContent).toBe('document'));
+    expect(screen.getByTestId('spaces-shell-type').textContent).toBe('Doc');
+    expect(screen.getByText('Typed workspace')).toBeTruthy();
+    expect(screen.queryByTestId('spaces-shell-switcher')).toBeNull();
+    expect(screen.queryByTestId('spaces-renderer-canvas')).toBeNull();
   });
 
-  it('highlights the active renderer and navigates renderer= on click', () => {
+  it('keeps explicit legacy renderer links working without restoring the full tablist', async () => {
     const onNavigate = vi.fn();
     render(
       <SpacesViewShell
         projectId="p1"
         spaceId="s1"
-        renderer="collection"
+        renderer="canvas"
         onNavigate={onNavigate}
-        renderers={{ collection: Mount, canvas: Mount }}
+        renderers={{ document: Mount, canvas: Mount }}
+        loadSpace={vi.fn().mockResolvedValue(makeSpace('document'))}
       />,
     );
-    const active = screen.getByTestId('spaces-renderer-collection');
-    expect(active.getAttribute('data-active')).toBe('true');
 
-    fireEvent.click(screen.getByTestId('spaces-renderer-canvas'));
-    expect(onNavigate).toHaveBeenCalledWith({ renderer: 'canvas' });
+    expect(screen.getByTestId('mount').textContent).toBe('canvas');
+    await waitFor(() => expect(screen.getByTestId('spaces-shell-legacy-renderer')).toBeTruthy());
+    expect(screen.queryByTestId('spaces-shell-switcher')).toBeNull();
+
+    fireEvent.click(screen.getByTestId('spaces-shell-open-primary'));
+    expect(onNavigate).toHaveBeenCalledWith({ renderer: null });
   });
 
   it('mounts the active renderer for a selected space', () => {
@@ -86,6 +101,7 @@ describe('SpacesViewShell home polish', () => {
         renderer="canvas"
         onNavigate={vi.fn()}
         renderers={{ canvas: Mount }}
+        loadSpace={vi.fn().mockResolvedValue(makeSpace('canvas'))}
       />,
     );
     expect(screen.getByTestId('mount').textContent).toBe('canvas');

@@ -99,9 +99,8 @@ const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
 const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
 
 type SpacesLastView = {
-  projectId: string;
+  projectId: string | null;
   spaceId: string;
-  renderer: string;
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -140,11 +139,10 @@ function readSpacesLastView(): SpacesLastView | null {
     const raw = window.localStorage.getItem(SPACES_LAST_VIEW_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<SpacesLastView>;
-    if (!parsed.projectId || !parsed.spaceId) return null;
+    if (!parsed.spaceId) return null;
     return {
-      projectId: parsed.projectId,
+      projectId: typeof parsed.projectId === 'string' && parsed.projectId ? parsed.projectId : null,
       spaceId: parsed.spaceId,
-      renderer: parsed.renderer || 'collection',
     };
   } catch {
     return null;
@@ -380,12 +378,12 @@ function App(): JSX.Element {
     navigateToHash(settingsReturnHashRef.current ?? '#/console');
   }, [navigateToHash]);
 
-  // Spaces home navigation: open a space and/or switch its renderer by rebuilding
-  // the `#/spaces?project=…&space=…&renderer=…` hash. Selection + renderer choice
-  // stay URL-canonical (Dataful UX rule), and the existing `?sidebar=` param is
-  // preserved so opening a space never toggles the sidebar.
+  // Spaces home navigation: open a typed-primary Space, or preserve an explicit
+  // legacy renderer override when supplied by a deep link / compatibility affordance.
+  // The existing `?sidebar=` param is preserved so opening a space never toggles
+  // the sidebar.
   const navigateToSpace = useCallback(
-    (target: { projectId?: string | null; spaceId?: string | null; renderer?: string }) => {
+    (target: { projectId?: string | null; spaceId?: string | null; renderer?: string | null }) => {
       if (typeof window === 'undefined') return;
       const hash = window.location.hash || '#/spaces';
       const queryPart = hash.replace(/^#/, '').split('?')[1] ?? '';
@@ -407,8 +405,8 @@ function App(): JSX.Element {
   useEffect(() => {
     if (route.tab !== 'spaces') return;
     const { project, space, renderer } = route.params;
-    if (project && space) {
-      writeSpacesLastView({ projectId: project, spaceId: space, renderer: renderer || 'collection' });
+    if (space) {
+      writeSpacesLastView({ projectId: project || null, spaceId: space });
       return;
     }
     if (project || space || renderer) return;
@@ -417,7 +415,7 @@ function App(): JSX.Element {
     navigateToSpace({
       projectId: last.projectId,
       spaceId: last.spaceId,
-      renderer: last.renderer,
+      renderer: null,
     });
   }, [route, navigateToSpace]);
 

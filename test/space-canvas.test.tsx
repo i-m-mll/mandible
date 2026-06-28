@@ -214,12 +214,13 @@ function makeFakeSse(): { client: SSEClient; emit: (type: string, data: unknown)
 // ============================================================================
 
 describe('partitionOccurrences / shelf vs canvas', () => {
-  it('places occurrences with both x and y, shelves the rest (NOT at origin)', () => {
+  it('places canvas occurrences with both x and y, shelves unplaced canvas occurrences only', () => {
     const items = [item('a', 'A'), item('b', 'B'), item('c', 'C')];
     const occurrences = [
       occ('a', { x: 10, y: 20 }),
       occ('b', { x: null, y: null }), // unplaced
       occ('c', { x: 5, y: null }), // half-placed → shelf
+      occ('board-card', { renderer: 'board', x: 30, y: 40 }),
     ];
     const { placed, shelf } = partitionOccurrences(occurrences, indexItems(items));
     expect(placed.map((p) => p.occurrence.id)).toEqual(['a']);
@@ -237,8 +238,12 @@ describe('partitionOccurrences / shelf vs canvas', () => {
 });
 
 describe('occurrencesToGraph + seedLayoutPositions', () => {
-  it('maps parent_id links to hierarchy edges and yields a position per node', () => {
-    const occurrences = [occ('p', { x: null, y: null }), occ('c', { x: null, y: null, parent_id: 'p' })];
+  it('maps canvas parent_id links to hierarchy edges and ignores non-canvas occurrences', () => {
+    const occurrences = [
+      occ('p', { x: null, y: null }),
+      occ('c', { x: null, y: null, parent_id: 'p' }),
+      occ('board-card', { renderer: 'board', x: 10, y: 10, parent_id: 'p' }),
+    ];
     const { nodes, edges } = occurrencesToGraph(occurrences, {});
     expect(nodes.map((n) => n.id).sort()).toEqual(['c', 'p']);
     expect(edges).toEqual([{ id: 'p->c', source: 'p', target: 'c', type: 'parent' }]);
@@ -322,10 +327,10 @@ describe('React Flow local node helpers', () => {
 const baseProps = { projectId: 'p1', renderer: 'canvas' as const };
 
 describe('SpaceCanvas rendering', () => {
-  it('renders placed occurrences as canvas nodes without a shelf', () => {
+  it('renders placed canvas occurrences as nodes and ignores other renderer occurrences', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
-      occurrences: [occ('a', { x: 10, y: 20 })],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { renderer: 'board', x: 30, y: 40 })],
     };
     render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
     const nodes = screen.getAllByTestId('rf-node');

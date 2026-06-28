@@ -32,6 +32,7 @@ import {
   type Space,
   type SpaceGroup,
   type ProjectPickerItem,
+  type SpaceRenderer,
 } from '../../api';
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
@@ -50,11 +51,11 @@ export type SpacesSidebarProps = {
   /** Currently selected space id (URL-canonical), or null. */
   selectedSpaceId?: string | null;
   /**
-   * Navigate to open a space. Receives the space's nullable project id, the
-   * space id, and the default renderer to open it with. The host (app.tsx)
-   * rebuilds the `#/spaces?...` hash, preserving the `?sidebar=` param.
+   * Navigate to open a space. Normal sidebar opens omit `renderer=` so the
+   * selected Space's primary type resolves in the shell; explicit legacy
+   * renderer links are owned by the route, not sidebar row clicks.
    */
-  onSelectSpace: (args: { projectId: string | null; spaceId: string; renderer: string }) => void;
+  onSelectSpace: (args: { projectId: string | null; spaceId: string; renderer?: string | null }) => void;
   /**
    * Injected loader (defaults to the real grouped read). Lets tests supply a
    * deterministic grouping without a daemon.
@@ -84,6 +85,30 @@ type CreatePopover = {
   seedSpaceId?: string;
   seedProjectId?: string | null;
 };
+
+const SPACE_TYPE_OPTIONS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
+
+const SPACE_TYPE_LABELS: Record<SpaceRenderer, string> = {
+  canvas: 'Canvas',
+  document: 'Document',
+  board: 'Board',
+  collection: 'Collection',
+};
+
+const SPACE_TYPE_BADGES: Record<SpaceRenderer, string> = {
+  canvas: 'Cv',
+  document: 'Doc',
+  board: 'Bd',
+  collection: 'Col',
+};
+
+function spaceTypeLabel(renderer: SpaceRenderer): string {
+  return SPACE_TYPE_LABELS[renderer] ?? renderer;
+}
+
+function spaceTypeBadge(renderer: SpaceRenderer): string {
+  return SPACE_TYPE_BADGES[renderer] ?? renderer.slice(0, 3);
+}
 
 function loadCollapseState(): Record<string, boolean> {
   if (typeof localStorage === 'undefined') return {};
@@ -199,6 +224,7 @@ export function SpacesSidebar({
   const [blankTitle, setBlankTitle] = useState('');
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [createRenderer, setCreateRenderer] = useState<SpaceRenderer>('canvas');
   const [internalRefresh, setInternalRefresh] = useState(0);
   // Project picker for the "top-level" create chooser (issue 6fdd924). Loaded
   // lazily from the registry when the chooser opens so projects with zero spaces
@@ -340,6 +366,7 @@ export function SpacesSidebar({
       setBlankTitle('');
       setCreateError(null);
       setChooserProjectId(null);
+      setCreateRenderer('canvas');
       setPopover({ target, mode: 'chooser' });
       // For the top-level kind, eagerly load projects from the registry so the
       // user can pick a project for their first space in that project (issue
@@ -354,7 +381,7 @@ export function SpacesSidebar({
   );
 
   const doCreate = useCallback(
-    async (target: CreateTarget, title: string, then: 'select' | 'seed') => {
+    async (target: CreateTarget, title: string, renderer: SpaceRenderer, then: 'select' | 'seed') => {
       const trimmed = title.trim();
       if (!trimmed || creating) return;
       setCreating(true);
@@ -364,7 +391,7 @@ export function SpacesSidebar({
         // registry picker. A null chooserProjectId means "create as top-level".
         const projectId =
           target.kind === 'project' ? target.projectId : chooserProjectId;
-        const space = await createSpaceFn({ project_id: projectId, title: trimmed });
+        const space = await createSpaceFn({ project_id: projectId, title: trimmed, default_renderer: renderer });
         if (then === 'seed') {
           setPopover({
             target,
@@ -378,7 +405,7 @@ export function SpacesSidebar({
           onSelectSpace({
             projectId: space.project_id,
             spaceId: space.id,
-            renderer: space.default_renderer,
+            renderer: null,
           });
         }
       } catch (error: unknown) {
@@ -399,7 +426,7 @@ export function SpacesSidebar({
         onSelectSpace({
           projectId: current.seedProjectId ?? null,
           spaceId: current.seedSpaceId,
-          renderer: 'collection',
+          renderer: null,
         });
       }
     },
@@ -420,16 +447,24 @@ export function SpacesSidebar({
         type="button"
         className={`spaces-tree__space${active ? ' spaces-tree__space--active' : ''}`}
         aria-current={active ? 'true' : undefined}
+        aria-label={`${space.title || 'Untitled space'} (${spaceTypeLabel(space.default_renderer)})`}
         data-testid={`space-row-${space.id}`}
         onClick={() =>
           onSelectSpace({
             projectId: space.project_id,
             spaceId: space.id,
-            renderer: space.default_renderer,
+            renderer: null,
           })
         }
       >
-        {space.title || 'Untitled space'}
+        <span
+          className="spaces-tree__space-type"
+          title={spaceTypeLabel(space.default_renderer)}
+          data-testid={`space-row-type-${space.id}`}
+        >
+          {spaceTypeBadge(space.default_renderer)}
+        </span>
+        <span className="spaces-tree__space-title">{space.title || 'Untitled space'}</span>
       </button>
     );
   };
@@ -470,11 +505,29 @@ export function SpacesSidebar({
             onInput={(event) => setBlankTitle((event.currentTarget as HTMLInputElement).value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && blankTitle.trim()) {
-                void doCreate(popover.target, blankTitle, 'select');
+                void doCreate(popover.target, blankTitle, createRenderer, 'select');
               }
             }}
           />
         </label>
+        <div className="spaces-tree__chooser-field">
+          <span>Type</span>
+          <div className="spaces-tree__type-options" role="group" aria-label="Space type">
+            {SPACE_TYPE_OPTIONS.map((value) => (
+              <button
+                key={value}
+                type="button"
+                className="spaces-tree__type-option"
+                data-active={createRenderer === value}
+                data-testid={`space-create-type-${value}`}
+                aria-pressed={createRenderer === value}
+                onClick={() => setCreateRenderer(value)}
+              >
+                {spaceTypeLabel(value)}
+              </button>
+            ))}
+          </div>
+        </div>
         {/* Project picker: only shown for the top-level create button (issue 6fdd924).
             Lets the user place the new space in any project from the registry, including
             projects that own zero existing spaces. Default (empty value) = top-level. */}
@@ -510,7 +563,7 @@ export function SpacesSidebar({
             className="spaces-tree__chooser-action"
             disabled={!blankTitle.trim() || creating}
             data-testid="space-create-blank"
-            onClick={() => void doCreate(popover.target, blankTitle, 'select')}
+            onClick={() => void doCreate(popover.target, blankTitle, createRenderer, 'select')}
           >
             Blank space
           </button>
@@ -519,7 +572,7 @@ export function SpacesSidebar({
             className="spaces-tree__chooser-action"
             disabled={!blankTitle.trim() || creating}
             data-testid="space-create-seed"
-            onClick={() => void doCreate(popover.target, blankTitle, 'seed')}
+            onClick={() => void doCreate(popover.target, blankTitle, createRenderer, 'seed')}
           >
             Seed from filter…
           </button>

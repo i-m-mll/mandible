@@ -43,6 +43,7 @@
 .spaces-shell__header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: 0.5rem;
   min-height: 2.25rem;
   padding: 0.5rem 0.75rem;
@@ -55,35 +56,62 @@
   text-transform: capitalize;
 }
 
-/* Renderer switcher (segmented control). */
-.spaces-shell__switcher {
-  display: inline-flex;
-  gap: 2px;
-  padding: 2px;
-  background: var(--neutral-alpha-035);
-  border: 1px solid var(--border);
-  border-radius: 6px;
+.spaces-shell__identity {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
 }
 
-.spaces-shell__switcher-btn {
-  padding: 0.2rem 0.6rem;
-  font-size: 0.75rem;
-  text-transform: capitalize;
+.spaces-shell__type-badge {
+  flex: 0 0 auto;
+  min-width: 1.75rem;
+  padding: 0.09rem 0.24rem;
+  font-size: 0.6rem;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: center;
   color: var(--text-muted);
-  background: none;
-  border: none;
+  background: var(--neutral-alpha-06);
+  border: 1px solid var(--neutral-alpha-08);
+  border-radius: 4px;
+}
+
+.spaces-shell__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.84rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.spaces-shell__legacy {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 0 0 auto;
+}
+
+.spaces-shell__legacy-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.spaces-shell__legacy-action {
+  padding: 0.22rem 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
   border-radius: 4px;
   cursor: pointer;
 }
 
-.spaces-shell__switcher-btn:hover {
+.spaces-shell__legacy-action:hover {
   color: var(--text-primary);
-}
-
-.spaces-shell__switcher-btn[data-active='true'] {
-  color: var(--text-primary);
-  background: var(--overlay-selected);
-  font-weight: 600;
+  border-color: var(--accent-blue);
 }
 
 .spaces-shell__body {

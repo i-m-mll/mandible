@@ -110,6 +110,10 @@ export type CanvasPartition = {
   shelf: ShelfEntry[];
 };
 
+export function isCanvasOccurrence(occurrence: Pick<SpaceOccurrence, 'renderer'>): boolean {
+  return occurrence.renderer === 'canvas';
+}
+
 /**
  * Split occurrences into placed vs legacy unplaced. An occurrence is placed iff
  * BOTH x and y are non-null finite numbers; otherwise it needs immediate
@@ -122,6 +126,7 @@ export function partitionOccurrences(
   const placed: CanvasNode[] = [];
   const shelf: ShelfEntry[] = [];
   for (const occurrence of occurrences) {
+    if (!isCanvasOccurrence(occurrence)) continue;
     const item = occurrence.item_id ? (itemsById[occurrence.item_id] ?? null) : null;
     if (isPlaced(occurrence)) {
       placed.push({ occurrence, item, x: occurrence.x as number, y: occurrence.y as number });
@@ -256,7 +261,8 @@ export function occurrencesToGraph(
   occurrences: SpaceOccurrence[],
   itemsById: Record<string, SpaceItem>,
 ): { nodes: GraphNode[]; edges: GraphEdge[] } {
-  const nodes: GraphNode[] = occurrences.map((occurrence) => {
+  const canvasOccurrences = occurrences.filter(isCanvasOccurrence);
+  const nodes: GraphNode[] = canvasOccurrences.map((occurrence) => {
     const item = occurrence.item_id ? (itemsById[occurrence.item_id] ?? null) : null;
     return {
       id: occurrence.id,
@@ -264,9 +270,9 @@ export function occurrencesToGraph(
       label: occurrenceLabel(occurrence, item),
     };
   });
-  const present = new Set(occurrences.map((o) => o.id));
+  const present = new Set(canvasOccurrences.map((o) => o.id));
   const edges: GraphEdge[] = [];
-  for (const occurrence of occurrences) {
+  for (const occurrence of canvasOccurrences) {
     if (occurrence.parent_id && present.has(occurrence.parent_id)) {
       edges.push({
         id: `${occurrence.parent_id}->${occurrence.id}`,
@@ -840,8 +846,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     (scope: 'all' | 'selected') => {
       const targets =
         scope === 'selected' && selection.size > 0
-          ? occurrencesRef.current.filter((o) => selection.has(o.id))
-          : occurrencesRef.current;
+          ? occurrencesRef.current.filter((o) => selection.has(o.id) && isCanvasOccurrence(o))
+          : occurrencesRef.current.filter(isCanvasOccurrence);
       if (targets.length === 0) return;
       const positions = seedLayoutPositions(targets, indexItems(items));
       // Optimistic local move for all seeded nodes...
