@@ -27,10 +27,12 @@
 // the conflict and stop.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { EditorSelection } from '@codemirror/state';
+import type { EditorView } from '@codemirror/view';
 
-import type { SpaceBlock, SpaceExport } from '../../api';
+import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
-import { getSpaceExports } from '../../api';
+import { getSpaceExports, getSpaceFactPacket } from '../../api';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -47,11 +49,9 @@ import {
 } from './blockEditorModel';
 import {
   createSpaceBlock,
-  deleteSpaceBlock,
   detachItemFromBlocks,
   listSpaceBlocks,
   updateSpaceBlock,
-  type BlockItemSnapshot,
   type CreateBlockBody,
 } from './spaceBlocksClient';
 import {
@@ -61,19 +61,31 @@ import {
   type BlockEditorViewState,
 } from './blockEditorViewState';
 import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
+import { SpaceItemPicker } from './SpaceItemPicker';
+import {
+  SpaceReferenceDetailContent,
+  detailTargetFromResourceRef,
+  type SpaceReferenceDetailTarget,
+} from './SpaceReferenceDetailPanel';
+import {
+  MarkdownSourceEditor,
+  type MarkdownSourceItemCommand,
+  type MarkdownSourceSelection,
+} from './MarkdownSourceEditor';
 import './DocumentBlockEditor.css';
 
 const SPACE_EVENT_PREFIX = 'space:';
 
-/** Prose block types the editor offers as "add prose" affordances. */
-const PROSE_BLOCK_TYPES: SpaceBlockType[] = ['paragraph', 'heading', 'todo'];
-
-/** Embed block types and the ref kind each one binds. */
-const EMBED_KIND: Record<string, SpaceBlockType> = {
-  issue: 'issue_embed',
-  artifact: 'artifact_embed',
-  comment: 'comment_embed',
-};
+const AUTOSAVE_DELAY_MS = 650;
+const MIN_INSPECTOR_HEIGHT = 160;
+const MAX_INSPECTOR_VIEWPORT_FRACTION = 0.7;
+function clampInspectorHeight(height: number, viewportHeight: number): number {
+  const maxHeight = Math.max(
+    MIN_INSPECTOR_HEIGHT,
+    Math.floor(viewportHeight * MAX_INSPECTOR_VIEWPORT_FRACTION),
+  );
+  return Math.min(Math.max(Math.round(height), MIN_INSPECTOR_HEIGHT), maxHeight);
+}
 
 /**
  * An item the editor can embed. The caller (the C8 collection / a future picker)
@@ -104,14 +116,29 @@ export type EmbedDeleteDecision = {
 type LoadState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ready'; blocks: SpaceBlock[]; exports: SpaceExport[] }
+  | { status: 'ready'; spaceId: string; blocks: SpaceBlock[]; exports: SpaceExport[]; items: SpaceItem[] }
   | { status: 'error'; message: string };
+
+type SaveState =
+  | { status: 'idle' }
+  | { status: 'saving'; blockId: string }
+  | { status: 'saved'; blockId: string }
+  | { status: 'error'; blockId: string; message: string };
+
+type CaretTarget = { blockId: string; start: number; end: number };
+type ItemCommandRange = { blockId: string; start: number; end: number };
+type SelectionMenuState = {
+  blockId: string;
+  start: number;
+  end: number;
+  top: number;
+  left: number;
+};
+type OverlayPosition = { top: number; left: number };
 
 export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
   /** Test seam: inject a fetch implementation for block reads/writes. */
   fetchImpl?: typeof fetch;
-  /** Items the editor may embed (issue / artifact / comment). */
-  embeddableItems?: EmbeddableItem[];
   /**
    * Explicit re-import affordance: pull the repo's current version into Mandible
    * working state. Surfaced only when custody is repo-authoritative + stale. The
@@ -131,15 +158,56 @@ export interface DocumentBlockEditorProps extends SpaceRendererMountProps {
   onEmbedDeleteDecision?: (decision: EmbedDeleteDecision) => void;
 }
 
-/** Build the C11 snapshot placeholder for an embedded item. */
-function snapshotFor(item: EmbeddableItem): BlockItemSnapshot {
+function blockCanEditMarkdown(block: SpaceBlock): boolean {
+  return block.item_id == null && block.item_snapshot == null;
+}
+
+function formatInlineRef(item: Pick<EmbeddableItem, 'ref_type' | 'ref_id' | 'ref_uri'>): string {
+  const raw = (item.ref_uri || item.ref_id || '').trim();
+  if (!raw) return `[${item.ref_type}:unknown]`;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) return `[${raw}]`;
+  if (item.ref_type === 'artifact') return `[artifact:${raw}]`;
+  if (item.ref_type === 'issue') return `[issue:${raw}]`;
+  if (item.ref_type === 'comment') return `[comment:${raw}]`;
+  return `[${item.ref_type}:${raw}]`;
+}
+
+function insertAtCaret(value: string, insertion: string, start: number, end: number): string {
+  const before = value.slice(0, Math.max(0, start));
+  const after = value.slice(Math.max(0, end));
+  const prefix = before && !/\s$/.test(before) ? ' ' : '';
+  const suffix = after && !/^\s/.test(after) ? ' ' : '';
+  return `${before}${prefix}${insertion}${suffix}${after}`;
+}
+
+function replaceRange(value: string, insertion: string, start: number, end: number): string {
+  return `${value.slice(0, Math.max(0, start))}${insertion}${value.slice(Math.max(0, end))}`;
+}
+
+function wrappedSelection(
+  value: string,
+  start: number,
+  end: number,
+  before: string,
+  after: string,
+): { next: string; caret: number } {
+  const selection = value.slice(start, end);
+  const replacement = `${before}${selection}${after}`;
   return {
-    item_id: item.id,
-    ref_type: item.ref_type,
-    ref_id: item.ref_id,
-    ref_uri: item.ref_uri ?? null,
-    title: item.title ?? null,
+    next: replaceRange(value, replacement, start, end),
+    caret: start + replacement.length,
   };
+}
+
+function refFromHref(href: string): string | null {
+  try {
+    const url = new URL(href, window.location.href);
+    return url.hash.includes('?')
+      ? new URLSearchParams(url.hash.slice(url.hash.indexOf('?') + 1)).get('ref')
+      : url.searchParams.get('ref');
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -154,7 +222,6 @@ export function DocumentBlockEditor({
   projectId,
   spaceId,
   fetchImpl,
-  embeddableItems = [],
   onReimport,
   onFork,
   onEmbedDeleteDecision,
@@ -164,10 +231,27 @@ export function DocumentBlockEditor({
     readBlockEditorViewState(projectId, spaceId ?? ''),
   );
   const [busy, setBusy] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [itemCommandRange, setItemCommandRange] = useState<ItemCommandRange | null>(null);
+  const [pickerPosition, setPickerPosition] = useState<OverlayPosition | null>(null);
+  const [selectionMenu, setSelectionMenu] = useState<SelectionMenuState | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
+  const [activeBlockId, setActiveBlockId] = useState<string | null>(null);
+  const [inspector, setInspector] = useState<SpaceReferenceDetailTarget | null>(null);
+  const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
   const [pendingEmbedDelete, setPendingEmbedDelete] = useState<EmbedDeleteDecision | null>(null);
   const fetchRef = useRef(fetchImpl);
+  const saveTimers = useRef<Map<string, number>>(new Map());
+  const editorViews = useRef<Map<string, EditorView>>(new Map());
+  const savedMarkdownAcks = useRef<Map<string, string>>(new Map());
+  const caretRef = useRef<CaretTarget | null>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
+  const currentSpaceIdRef = useRef<string | null | undefined>(spaceId);
   fetchRef.current = fetchImpl;
+  currentSpaceIdRef.current = spaceId;
 
   // Re-hydrate per-space edit state whenever the open Space changes.
   useEffect(() => {
@@ -179,6 +263,13 @@ export function DocumentBlockEditor({
     if (spaceId) writeBlockEditorViewState(projectId, spaceId, viewState);
   }, [projectId, spaceId, viewState]);
 
+  useEffect(() => {
+    return () => {
+      for (const timer of saveTimers.current.values()) window.clearTimeout(timer);
+      saveTimers.current.clear();
+    };
+  }, []);
+
   const fetcher = useCallback(() => fetchRef.current ?? fetch, []);
 
   const loadAll = useCallback(
@@ -187,19 +278,47 @@ export function DocumentBlockEditor({
         setLoad({ status: 'idle' });
         return;
       }
+      const requestedSpaceId = spaceId;
       if (!isReconcile) setLoad({ status: 'loading' });
       try {
-        const [blocks, exportsResult] = await Promise.all([
-          listSpaceBlocks(spaceId, fetcher()),
-          getSpaceExports(spaceId).catch(() => ({ exports: [] as SpaceExport[] })),
+        const [loadedBlocks, exportsResult] = await Promise.all([
+          listSpaceBlocks(requestedSpaceId, fetcher()),
+          getSpaceExports(requestedSpaceId).catch(() => ({ exports: [] as SpaceExport[] })),
         ]);
-        setLoad({ status: 'ready', blocks, exports: exportsResult.exports });
+        if (currentSpaceIdRef.current !== requestedSpaceId) return;
+        const blocks = loadedBlocks.map((block) => {
+          const acknowledgedMarkdown = savedMarkdownAcks.current.get(block.id);
+          if (acknowledgedMarkdown === undefined) return block;
+          if ((block.markdown ?? '') === acknowledgedMarkdown) {
+            savedMarkdownAcks.current.delete(block.id);
+            return block;
+          }
+          return { ...block, markdown: acknowledgedMarkdown };
+        });
+        setLoad((prior) => ({
+          status: 'ready',
+          spaceId: requestedSpaceId,
+          blocks,
+          exports: exportsResult.exports,
+          items: prior.status === 'ready' && prior.spaceId === requestedSpaceId ? prior.items : [],
+        }));
+        void getSpaceFactPacket(requestedSpaceId)
+          .then((packet) => {
+            if (currentSpaceIdRef.current !== requestedSpaceId) return;
+            setLoad((prior) =>
+              prior.status === 'ready' && prior.spaceId === requestedSpaceId
+                ? { ...prior, items: packet.items }
+                : prior,
+            );
+          })
+          .catch(() => undefined);
         // Reconcile edit state against live block ids without resetting the
         // user's in-progress drafts (Dataful-UX: refetch is reconciliation).
         setViewState((prior) =>
           reconcileBlockEditorViewState(prior, blocks.map((b) => b.id)),
         );
       } catch (err) {
+        if (currentSpaceIdRef.current !== requestedSpaceId) return;
         setLoad({ status: 'error', message: err instanceof Error ? err.message : String(err) });
       }
     },
@@ -227,8 +346,15 @@ export function DocumentBlockEditor({
     };
   }, [spaceId, loadAll]);
 
-  const blocks = load.status === 'ready' ? load.blocks : [];
+  const blocks = useMemo(() => {
+    const live = load.status === 'ready' ? load.blocks : [];
+    return live.map((block) => {
+      const draft = viewState.drafts[block.id];
+      return draft === undefined ? block : { ...block, markdown: draft };
+    });
+  }, [load, viewState.drafts]);
   const exports = load.status === 'ready' ? load.exports : [];
+  const spaceItems = load.status === 'ready' ? load.items : [];
 
   const custody: CustodyEditorUx = useMemo(
     () => resolveCustodyEditorUx(deriveDocumentCustody(exports)),
@@ -265,76 +391,193 @@ export function DocumentBlockEditor({
     [editable, spaceId, loadAll],
   );
 
-  const addProseBlock = useCallback(
-    (blockType: SpaceBlockType) => {
-      if (!spaceId) return;
-      const body: CreateBlockBody = {
-        block_type: blockType,
-        parent_id: null,
-        sort_key: appendSortKey(blocks, null),
-        markdown: blockType === 'heading' ? 'New heading' : '',
-      };
-      void runMutation(() => createSpaceBlock(spaceId, body, fetcher()));
+  const saveMarkdownNow = useCallback(
+    async (blockId: string, markdown: string) => {
+      if (!editable || !spaceId) return;
+      const prior = saveTimers.current.get(blockId);
+      if (prior) {
+        window.clearTimeout(prior);
+        saveTimers.current.delete(blockId);
+      }
+      setSaveState({ status: 'saving', blockId });
+      try {
+        const savedBlock = await updateSpaceBlock(spaceId, blockId, { markdown }, fetcher());
+        savedMarkdownAcks.current.set(blockId, markdown);
+        setSaveState({ status: 'saved', blockId });
+        setLoad((prior) => {
+          if (prior.status !== 'ready' || prior.spaceId !== spaceId) return prior;
+          return {
+            ...prior,
+            blocks: prior.blocks.map((block) => (block.id === blockId ? savedBlock : block)),
+          };
+        });
+        await loadAll(true);
+        setViewState((state) => {
+          if (state.drafts[blockId] !== markdown) return state;
+          const drafts = { ...state.drafts };
+          delete drafts[blockId];
+          return { ...state, drafts };
+        });
+      } catch (err) {
+        setSaveState({
+          status: 'error',
+          blockId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
     },
-    [spaceId, blocks, runMutation, fetcher],
+    [editable, spaceId, fetcher, loadAll],
   );
 
-  const embedItem = useCallback(
-    (item: EmbeddableItem) => {
+  const queueAutosave = useCallback(
+    (blockId: string, markdown: string) => {
+      const prior = saveTimers.current.get(blockId);
+      if (prior) window.clearTimeout(prior);
+      const timer = window.setTimeout(() => {
+        saveTimers.current.delete(blockId);
+        void saveMarkdownNow(blockId, markdown);
+      }, AUTOSAVE_DELAY_MS);
+      saveTimers.current.set(blockId, timer);
+    },
+    [saveMarkdownNow],
+  );
+
+  const cancelPendingAutosave = useCallback((blockId: string) => {
+    const prior = saveTimers.current.get(blockId);
+    if (!prior) return;
+    window.clearTimeout(prior);
+    saveTimers.current.delete(blockId);
+  }, []);
+
+  const setEditing = useCallback((blockId: string | null) => {
+    setActiveBlockId(blockId);
+    setViewState((prior) => ({ ...prior, editingId: blockId }));
+  }, []);
+
+  const beginEditing = useCallback((blockId: string) => {
+    setEditing(blockId);
+  }, [setEditing]);
+
+  const setDraft = useCallback((blockId: string, value: string) => {
+    setViewState((prior) => ({
+      ...prior,
+      drafts: { ...prior.drafts, [blockId]: value },
+    }));
+  }, []);
+
+  const addProseBlock = useCallback(
+    async (blockType: SpaceBlockType, afterBlockId?: string | null, markdown = '') => {
       if (!spaceId) return;
-      const blockType = EMBED_KIND[item.ref_type] ?? 'reference';
+      const anchor = afterBlockId ? blocks.find((b) => b.id === afterBlockId) : null;
+      const parentId = anchor?.parent_id ?? null;
+      const anchorIndex = anchor ? siblingIndexOf(blocks, anchor.id) + 1 : blocks.length;
+      const placement = afterBlockId
+        ? placementForIndex(blocks, parentId, anchorIndex, null)
+        : { sort_key: appendSortKey(blocks, null) };
       const body: CreateBlockBody = {
         block_type: blockType,
-        parent_id: null,
-        item_id: item.id,
-        item_snapshot: snapshotFor(item),
-        sort_key: appendSortKey(blocks, null),
-        markdown: '',
+        parent_id: parentId,
+        sort_key: placement.sort_key,
+        markdown: markdown || (blockType === 'heading' ? 'New heading' : ''),
       };
-      void runMutation(() => createSpaceBlock(spaceId, body, fetcher()));
+      await runMutation(async () => {
+        const created = await createSpaceBlock(spaceId, body, fetcher());
+        setActiveBlockId(created.id);
+        beginEditing(created.id);
+        return created;
+      });
     },
-    [spaceId, blocks, runMutation, fetcher],
+    [spaceId, blocks, runMutation, fetcher, beginEditing],
+  );
+
+  const embedSpaceItem = useCallback(
+    async (item: SpaceItem) => {
+      const embeddable = {
+        id: item.id,
+        ref_type: item.ref_type,
+        ref_id: item.ref_id,
+        ref_uri: item.ref_uri,
+        title: item.title,
+      };
+      const refText = formatInlineRef(embeddable);
+      const editableBlocks = blocks.filter(blockCanEditMarkdown);
+      const commandTargetId =
+        itemCommandRange && editableBlocks.some((b) => b.id === itemCommandRange.blockId)
+          ? itemCommandRange.blockId
+          : null;
+      const activeTargetId =
+        activeBlockId && editableBlocks.some((b) => b.id === activeBlockId)
+          ? activeBlockId
+          : null;
+      const targetId =
+        commandTargetId ??
+        activeTargetId ??
+        editableBlocks[editableBlocks.length - 1]?.id ??
+        null;
+      if (!targetId) {
+        await addProseBlock('paragraph', null, refText);
+        return;
+      }
+      const block = blocks.find((b) => b.id === targetId);
+      if (!block) return;
+      const editorView = editorViews.current.get(targetId);
+      const draft = editorView?.state.doc.toString() ?? viewState.drafts[targetId] ?? block.markdown ?? '';
+      const commandRange =
+        itemCommandRange?.blockId === targetId ? itemCommandRange : null;
+      const caret =
+        commandRange ??
+        (caretRef.current?.blockId === targetId
+          ? caretRef.current
+          : { blockId: targetId, start: draft.length, end: draft.length });
+      const next = commandRange
+        ? replaceRange(draft, refText, commandRange.start, commandRange.end)
+        : insertAtCaret(draft, refText, caret.start, caret.end);
+      const beforeCaret = draft.slice(0, caret.start);
+      const fallbackPrefixLength = !commandRange && beforeCaret && !/\s$/.test(beforeCaret) ? 1 : 0;
+      const nextPos = commandRange
+        ? commandRange.start + refText.length
+        : Math.min(next.length, caret.start + fallbackPrefixLength + refText.length);
+      setActiveBlockId(targetId);
+      setEditing(targetId);
+      setItemCommandRange(null);
+      setPickerPosition(null);
+      setPickerOpen(false);
+      setSelectionMenu(null);
+      if (editorView) {
+        editorView.dispatch({
+          changes: { from: 0, to: editorView.state.doc.length, insert: next },
+          selection: EditorSelection.cursor(nextPos),
+          scrollIntoView: true,
+        });
+        editorView.focus();
+        setDraft(targetId, next);
+        queueAutosave(targetId, next);
+        caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
+        return;
+      }
+      setDraft(targetId, next);
+      queueAutosave(targetId, next);
+      caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
+    },
+    [
+      activeBlockId,
+      addProseBlock,
+      blocks,
+      itemCommandRange,
+      queueAutosave,
+      setDraft,
+      setEditing,
+      viewState.drafts,
+    ],
   );
 
   const saveProse = useCallback(
     (blockId: string, markdown: string) => {
       if (!spaceId) return;
-      void runMutation(() => updateSpaceBlock(spaceId, blockId, { markdown }, fetcher()));
-      setViewState((prior) => {
-        const drafts = { ...prior.drafts };
-        delete drafts[blockId];
-        return { editingId: null, drafts };
-      });
+      void saveMarkdownNow(blockId, markdown);
+      setViewState((prior) => ({ ...prior, editingId: null }));
     },
-    [spaceId, runMutation, fetcher],
-  );
-
-  const moveBlock = useCallback(
-    (blockId: string, direction: -1 | 1) => {
-      if (!spaceId) return;
-      const block = blocks.find((b) => b.id === blockId);
-      if (!block) return;
-      const current = siblingIndexOf(blocks, blockId);
-      if (current < 0) return;
-      const target = current + direction;
-      try {
-        const placement = placementForIndex(blocks, block.parent_id ?? null, target, blockId);
-        void runMutation(() =>
-          updateSpaceBlock(spaceId, blockId, { sort_key: placement.sort_key }, fetcher()),
-        );
-      } catch (err) {
-        setActionError(err instanceof Error ? err.message : String(err));
-      }
-    },
-    [spaceId, blocks, runMutation, fetcher],
-  );
-
-  const removeBlock = useCallback(
-    (blockId: string) => {
-      if (!spaceId) return;
-      void runMutation(() => deleteSpaceBlock(spaceId, blockId, fetcher()));
-    },
-    [spaceId, runMutation, fetcher],
+    [spaceId, saveMarkdownNow],
   );
 
   /**
@@ -366,16 +609,171 @@ export function DocumentBlockEditor({
     [spaceId, editable, blocks, runMutation, fetcher, onEmbedDeleteDecision],
   );
 
-  const setEditing = useCallback((blockId: string | null) => {
-    setViewState((prior) => ({ ...prior, editingId: blockId }));
+  const handleSourceView = useCallback((blockId: string, view: EditorView | null) => {
+    if (view) editorViews.current.set(blockId, view);
+    else editorViews.current.delete(blockId);
   }, []);
 
-  const setDraft = useCallback((blockId: string, value: string) => {
-    setViewState((prior) => ({
-      ...prior,
-      drafts: { ...prior.drafts, [blockId]: value },
-    }));
+  const handleSourceChange = useCallback(
+    (blockId: string, value: string, selection: { start: number; end: number }) => {
+      setActiveBlockId(blockId);
+      setEditing(blockId);
+      caretRef.current = { blockId, start: selection.start, end: selection.end };
+      setDraft(blockId, value);
+      queueAutosave(blockId, value);
+    },
+    [queueAutosave, setDraft, setEditing],
+  );
+
+  const handleSourceBlur = useCallback(
+    (blockId: string, value: string) => {
+      window.setTimeout(() => {
+        setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
+      }, 0);
+      if (itemCommandRange?.blockId === blockId && pickerOpen) {
+        cancelPendingAutosave(blockId);
+        return;
+      }
+      saveProse(blockId, value);
+    },
+    [cancelPendingAutosave, itemCommandRange, pickerOpen, saveProse],
+  );
+
+  const handleSourceCaretChange = useCallback((blockId: string, selection: { start: number; end: number }) => {
+    caretRef.current = { blockId, start: selection.start, end: selection.end };
+    setActiveBlockId(blockId);
   }, []);
+
+  const handleSourceSelectionChange = useCallback(
+    (blockId: string, selection: MarkdownSourceSelection | null) => {
+      if (!selection) {
+        setSelectionMenu((current) => (current?.blockId === blockId ? null : current));
+        return;
+      }
+      setActiveBlockId(blockId);
+      setSelectionMenu({
+        blockId,
+        start: selection.start,
+        end: selection.end,
+        top: selection.top,
+        left: selection.left,
+      });
+    },
+    [],
+  );
+
+  const handleSourceItemCommand = useCallback(
+    (blockId: string, command: MarkdownSourceItemCommand) => {
+      cancelPendingAutosave(blockId);
+      setActiveBlockId(blockId);
+      setEditing(blockId);
+      setSelectionMenu(null);
+      setPickerPosition({ top: command.top, left: command.left });
+      setItemCommandRange({ blockId, start: command.start, end: command.end });
+      setPickerOpen(true);
+    },
+    [cancelPendingAutosave, setEditing],
+  );
+
+  const applySelectionFormat = useCallback(
+    (before: string, after: string) => {
+      if (!selectionMenu) return;
+      const block = blocks.find((b) => b.id === selectionMenu.blockId);
+      if (!block) return;
+      const editorView = editorViews.current.get(block.id);
+      const draft = editorView?.state.doc.toString() ?? viewState.drafts[block.id] ?? block.markdown ?? '';
+      const { next, caret } = wrappedSelection(
+        draft,
+        selectionMenu.start,
+        selectionMenu.end,
+        before,
+        after,
+      );
+      if (editorView) {
+        editorView.dispatch({
+          changes: { from: 0, to: editorView.state.doc.length, insert: next },
+          selection: EditorSelection.cursor(caret),
+          scrollIntoView: true,
+        });
+        editorView.focus();
+        setDraft(block.id, next);
+        queueAutosave(block.id, next);
+        setSelectionMenu(null);
+        caretRef.current = { blockId: block.id, start: caret, end: caret };
+        return;
+      }
+      setDraft(block.id, next);
+      queueAutosave(block.id, next);
+      setSelectionMenu(null);
+      caretRef.current = { blockId: block.id, start: caret, end: caret };
+    },
+    [blocks, queueAutosave, selectionMenu, setDraft, viewState.drafts],
+  );
+
+  const openReferenceInspector = useCallback(
+    (ref: string) => {
+      if (!ref.trim()) return;
+      setInspector(detailTargetFromResourceRef(ref));
+    },
+    [],
+  );
+
+  const handleDocumentClick = useCallback(
+    (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      const anchor = target?.closest?.('a.resource-ref__link, a.spaces-doc-ref__link') as HTMLAnchorElement | null;
+      if (!anchor) return;
+      const wrapper = anchor.closest('[data-resource-ref]') as HTMLElement | null;
+      const ref = wrapper?.getAttribute('data-resource-ref') || refFromHref(anchor.href);
+      if (!ref) return;
+      event.preventDefault();
+      openReferenceInspector(ref);
+    },
+    [openReferenceInspector],
+  );
+
+  const beginInspectorResize = useCallback(
+    (event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      if (inspectorResizeRef.current) return;
+      const inspectorElement = event.currentTarget.parentElement as HTMLElement | null;
+      if (!inspectorElement) return;
+      inspectorResizeRef.current = {
+        startY: event.clientY,
+        startHeight: inspectorElement.getBoundingClientRect().height,
+      };
+      const previousCursor = document.documentElement.style.cursor;
+      const previousUserSelect = document.documentElement.style.userSelect;
+      document.documentElement.style.cursor = 'row-resize';
+      document.documentElement.style.userSelect = 'none';
+      const handlePointerMove = (moveEvent: PointerEvent) => {
+        const origin = inspectorResizeRef.current;
+        if (!origin) return;
+        const bodyHeight =
+          bodyRef.current?.getBoundingClientRect().height ?? window.innerHeight;
+        setInspectorHeight(
+          clampInspectorHeight(
+            origin.startHeight + origin.startY - moveEvent.clientY,
+            bodyHeight,
+          ),
+        );
+      };
+      const stopResize = () => {
+        inspectorResizeRef.current = null;
+        document.documentElement.style.cursor = previousCursor;
+        document.documentElement.style.userSelect = previousUserSelect;
+        window.removeEventListener('pointermove', handlePointerMove);
+        window.removeEventListener('pointerup', stopResize);
+        window.removeEventListener('pointercancel', stopResize);
+      };
+      window.addEventListener('pointermove', handlePointerMove);
+      window.addEventListener('pointerup', stopResize);
+      window.addEventListener('pointercancel', stopResize);
+    },
+    [],
+  );
+
+  const pickerBlockId = itemCommandRange?.blockId ?? activeBlockId;
 
   // --- render ----------------------------------------------------------------
 
@@ -396,176 +794,286 @@ export function DocumentBlockEditor({
       data-testid="spaces-block-editor"
       data-editable={String(editable)}
       data-stale={String(custody.stale)}
+      ref={bodyRef}
     >
-      {load.status === 'loading' && (
-        <div className="spaces-block-editor__status">Loading document…</div>
-      )}
-      {load.status === 'error' && (
-        <div className="spaces-block-editor__error" data-testid="spaces-block-editor-error">
-          Failed to load document: {load.message}
-        </div>
-      )}
+      <div className="spaces-block-editor__viewport" ref={viewportRef}>
+        {saveState.status !== 'idle' && (
+          <div
+            className="spaces-block-editor__save-state"
+            data-state={saveState.status}
+            data-testid="spaces-block-editor-save-state"
+          >
+            {saveState.status === 'saving'
+              ? 'Autosaving…'
+              : saveState.status === 'saved'
+                ? 'Saved'
+                : `Autosave failed: ${saveState.message}`}
+          </div>
+        )}
+        <div className="spaces-block-editor__scroller">
+          {load.status === 'loading' && (
+            <div className="spaces-block-editor__status">
+              <span>Loading document…</span>
+              <div className="spaces-block-editor__doc-shell" aria-hidden="true">
+                <div className="spaces-block-editor__ghost-line spaces-block-editor__ghost-line--wide" />
+                <div className="spaces-block-editor__ghost-line" />
+              </div>
+            </div>
+          )}
+          {load.status === 'error' && (
+            <div className="spaces-block-editor__error" data-testid="spaces-block-editor-error">
+              Failed to load document: {load.message}
+            </div>
+          )}
 
-      {!editable && custody.stale && (
-        <CustodyStaleBanner
-          custody={custody}
-          onReimport={onReimport}
-          onFork={onFork}
-        />
-      )}
+          {!editable && custody.stale && (
+            <CustodyStaleBanner
+              custody={custody}
+              onReimport={onReimport}
+              onFork={onFork}
+            />
+          )}
 
-      {editable && load.status === 'ready' && (
-        <div className="spaces-block-editor__toolbar" data-testid="spaces-block-editor-toolbar">
-          {PROSE_BLOCK_TYPES.map((bt) => (
-            <button
-              key={bt}
-              type="button"
-              className="spaces-block-editor__add"
-              disabled={busy}
-              onClick={() => addProseBlock(bt)}
-              data-testid={`spaces-block-editor-add-${bt}`}
+          {actionError && (
+            <div className="spaces-block-editor__error" data-testid="spaces-block-editor-action-error">
+              {actionError}
+            </div>
+          )}
+
+          {/* The live document, rendered through the C14b renderer (read path). */}
+
+          {!editable && rendered && (
+            <div className="spaces-block-editor__doc" onClick={handleDocumentClick}>
+              <DocumentBody
+                document={rendered}
+                sources={sources}
+                collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
+              />
+            </div>
+          )}
+
+          {editable && load.status === 'ready' && blocks.length === 0 && (
+            <div className="spaces-block-editor__empty-author" data-testid="spaces-block-editor-empty-author">
+              <button
+                type="button"
+                className="spaces-block-editor__empty-start"
+                disabled={busy}
+                onClick={() => void addProseBlock('paragraph')}
+              >
+                Start writing
+              </button>
+            </div>
+          )}
+
+          {editable && load.status === 'ready' && blocks.length > 0 && (
+            <ul
+              className="spaces-block-editor__list"
+              data-testid="spaces-block-editor-list"
+              onClick={handleDocumentClick}
             >
-              + {bt}
-            </button>
-          ))}
-          {embeddableItems.length > 0 && (
-            <span className="spaces-block-editor__embeds" data-testid="spaces-block-editor-embeds">
-              {embeddableItems.map((item) => (
-                <button
-                  key={item.id}
-                  type="button"
-                  className="spaces-block-editor__embed"
-                  disabled={busy}
-                  onClick={() => embedItem(item)}
-                  data-testid={`spaces-block-editor-embed-${item.id}`}
-                >
-                  embed {item.ref_type}: {item.title || item.ref_id}
-                </button>
-              ))}
-            </span>
+              {blocks.map((block) => {
+                const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
+                const isEmbed = !blockCanEditMarkdown(block);
+                const renderedBlock = rendered?.blocks.find((b) => b.id === block.id);
+                return (
+                  <li
+                    key={block.id}
+                    className={`spaces-block-editor__row${activeBlockId === block.id ? ' spaces-block-editor__row--active' : ''}`}
+                    data-block-id={block.id}
+                    data-block-type={block.block_type}
+                    data-testid="spaces-block-editor-row"
+                    onFocusIn={() => setActiveBlockId(block.id)}
+                    onMouseEnter={() => setActiveBlockId(block.id)}
+                  >
+                    {!isEmbed && (
+                      <div className="spaces-block-editor__source-block" data-testid="spaces-block-editor-edit">
+                        <MarkdownSourceEditor
+                          blockId={block.id}
+                          value={draft}
+                          ariaLabel={`Edit ${block.block_type} Markdown`}
+                          onView={handleSourceView}
+                          onChange={(value, selection) => handleSourceChange(block.id, value, selection)}
+                          onBlur={(value) => handleSourceBlur(block.id, value)}
+                          onCaretChange={(selection) => handleSourceCaretChange(block.id, selection)}
+                          onSelectionChange={(selection) => handleSourceSelectionChange(block.id, selection)}
+                          onItemCommand={(command) => handleSourceItemCommand(block.id, command)}
+                          onOpenReference={openReferenceInspector}
+                        />
+                      </div>
+                    )}
+                    {isEmbed && renderedBlock && (
+                      <div className="spaces-block-editor__embed-preview">
+                        <DocumentBody
+                          document={{ format: rendered?.format ?? null, html: '', refs: [], isSpacesDoc: true, blocks: [renderedBlock] }}
+                          sources={sources}
+                          collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
+                        />
+                      </div>
+                    )}
+                    {isEmbed && block.item_id && (
+                      <span className="spaces-block-editor__commands" aria-label="Embedded item commands">
+                        <button
+                          type="button"
+                          className="spaces-block-editor__command spaces-block-editor__command--text"
+                          disabled={busy}
+                          onClick={() => requestItemDelete(block.item_id!)}
+                          data-testid="spaces-block-editor-delete-item"
+                          title="Delete the embedded item (prompts an embed-on-delete decision)"
+                        >
+                          Remove item
+                        </button>
+                      </span>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+
+          {/* DEFERRED embed-on-delete decision surfaced inline when no host handler. */}
+          {pendingEmbedDelete && (
+            <EmbedDeletePrompt decision={pendingEmbedDelete} busy={busy} />
           )}
         </div>
-      )}
+      </div>
 
-      {actionError && (
-        <div className="spaces-block-editor__error" data-testid="spaces-block-editor-action-error">
-          {actionError}
-        </div>
-      )}
-
-      {/* The live document, rendered through the C14b renderer (read path). */}
-      {rendered && (
-        <div className="spaces-block-editor__doc">
-          <DocumentBody
-            document={rendered}
-            sources={sources}
-            collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
+      {editable && pickerOpen && pickerBlockId && (
+        <div
+          className="spaces-block-editor__picker-overlay"
+          data-testid="spaces-block-editor-picker-overlay"
+          style={{
+            position: 'fixed',
+            top: `${pickerPosition?.top ?? 72}px`,
+            left: `${pickerPosition?.left ?? 24}px`,
+            zIndex: 42,
+          }}
+        >
+          <SpaceItemPicker
+            spaceId={spaceId}
+            projectId={projectId}
+            existingItems={spaceItems}
+            isItemInView={() => false}
+            afterAdd={embedSpaceItem}
+            onAdded={() => {
+              void loadAll(true);
+            }}
+            onClose={() => {
+              const focusBlockId = pickerBlockId;
+              setPickerOpen(false);
+              setItemCommandRange(null);
+              setPickerPosition(null);
+              const editorView = editorViews.current.get(focusBlockId);
+              if (editorView) window.setTimeout(() => editorView.focus(), 0);
+            }}
           />
         </div>
       )}
 
-      {/* Per-block edit controls (only when editable). */}
-      {editable && load.status === 'ready' && blocks.length > 0 && (
-        <ul className="spaces-block-editor__list" data-testid="spaces-block-editor-list">
-          {blocks.map((block) => {
-            const isEditing = viewState.editingId === block.id;
-            const draft = viewState.drafts[block.id] ?? block.markdown ?? '';
-            const isEmbed = block.item_id != null || block.item_snapshot != null;
-            return (
-              <li
-                key={block.id}
-                className="spaces-block-editor__row"
-                data-block-id={block.id}
-                data-block-type={block.block_type}
-                data-testid="spaces-block-editor-row"
-              >
-                <span className="spaces-block-editor__rowtype">{block.block_type}</span>
-                <span className="spaces-block-editor__rowctl">
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => moveBlock(block.id, -1)}
-                    aria-label="Move block up"
-                    data-testid="spaces-block-editor-up"
-                  >
-                    ↑
-                  </button>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => moveBlock(block.id, 1)}
-                    aria-label="Move block down"
-                    data-testid="spaces-block-editor-down"
-                  >
-                    ↓
-                  </button>
-                  {!isEmbed && !isEditing && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setEditing(block.id)}
-                      data-testid="spaces-block-editor-edit"
-                    >
-                      edit
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={() => removeBlock(block.id)}
-                    data-testid="spaces-block-editor-delete"
-                  >
-                    delete
-                  </button>
-                  {isEmbed && block.item_id && (
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => requestItemDelete(block.item_id!)}
-                      data-testid="spaces-block-editor-delete-item"
-                      title="Delete the embedded item (prompts an embed-on-delete decision)"
-                    >
-                      delete item
-                    </button>
-                  )}
-                </span>
-                {isEditing && !isEmbed && (
-                  <span className="spaces-block-editor__editbox">
-                    <textarea
-                      className="spaces-block-editor__textarea"
-                      value={draft}
-                      data-testid="spaces-block-editor-textarea"
-                      onInput={(e) => setDraft(block.id, (e.target as HTMLTextAreaElement).value)}
-                    />
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => saveProse(block.id, draft)}
-                      data-testid="spaces-block-editor-save"
-                    >
-                      save
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => setEditing(null)}
-                      data-testid="spaces-block-editor-cancel"
-                    >
-                      cancel
-                    </button>
-                  </span>
-                )}
-              </li>
-            );
-          })}
-        </ul>
+      {selectionMenu && (
+        <div
+          className="spaces-block-editor__selection-menu"
+          data-testid="spaces-block-editor-selection-menu"
+          style={{
+            position: 'fixed',
+            top: `${selectionMenu.top}px`,
+            left: `${selectionMenu.left}px`,
+            zIndex: 45,
+          }}
+          role="toolbar"
+          aria-label="Text formatting"
+        >
+          <button
+            type="button"
+            className="spaces-block-editor__selection-command"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              applySelectionFormat('**', '**');
+            }}
+            aria-label="Bold"
+            title="Bold"
+          >
+            B
+          </button>
+          <button
+            type="button"
+            className="spaces-block-editor__selection-command"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              applySelectionFormat('*', '*');
+            }}
+            aria-label="Italic"
+            title="Italic"
+          >
+            I
+          </button>
+          <button
+            type="button"
+            className="spaces-block-editor__selection-command"
+            onMouseDown={(event) => {
+              event.preventDefault();
+              applySelectionFormat('[', '](url)');
+            }}
+            aria-label="Link"
+            title="Link"
+          >
+            Link
+          </button>
+        </div>
       )}
 
-      {/* DEFERRED embed-on-delete decision surfaced inline when no host handler. */}
-      {pendingEmbedDelete && (
-        <EmbedDeletePrompt decision={pendingEmbedDelete} busy={busy} />
+      {inspector && (
+        <ReferenceInspector
+          target={inspector}
+          height={inspectorHeight}
+          onResizeStart={beginInspectorResize}
+          onClose={() => setInspector(null)}
+        />
       )}
     </div>
+  );
+}
+
+function ReferenceInspector({
+  target,
+  height,
+  onResizeStart,
+  onClose,
+}: {
+  target: SpaceReferenceDetailTarget;
+  height: number | null;
+  onResizeStart: (
+    event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>,
+  ) => void;
+  onClose: () => void;
+}): JSX.Element {
+  const style = height !== null ? ({ flexBasis: `${height}px` } as JSX.CSSProperties) : undefined;
+  return (
+    <aside
+      className="spaces-block-editor__inspector"
+      data-testid="spaces-block-editor-inspector"
+      data-placement="bottom"
+      aria-label="Reference inspector"
+      style={style}
+    >
+      <div
+        className="spaces-block-editor__inspector-resize"
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="Resize reference inspector"
+        onMouseDown={onResizeStart}
+        onPointerDown={onResizeStart}
+        data-testid="spaces-block-editor-inspector-resize"
+      />
+      <header className="spaces-block-editor__inspector-head">
+        <strong>{target.kind === 'unsupported' ? 'Reference' : target.kind}</strong>
+        <button type="button" onClick={onClose} aria-label="Close reference inspector">
+          ×
+        </button>
+      </header>
+      <div className="spaces-block-editor__inspector-body">
+        <SpaceReferenceDetailContent target={target} />
+      </div>
+    </aside>
   );
 }
 

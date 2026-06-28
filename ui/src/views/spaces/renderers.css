@@ -4,10 +4,7 @@
  * Per the Spaces UI styling convention (./README.md §1) renderer/registry code
  * owns its own stylesheet rather than adding rules to the global
  * `ui/src/style.css`. The only structural rule here is the canvas mount point,
- * which composes two SIBLING renderer surfaces in one mount: SpaceCanvas (nodes/
- * drag/shelf, fills the available space) above SpaceEdgeLayer (C9b edge CRUD +
- * promote-to-ledger panel, a fixed-height authoring strip below). The shell
- * mounts one component per renderer, so the composition lives here.
+ * which lets the integrated SpaceCanvas fill the shell body.
  */
 
 .space-canvas-mount {
@@ -18,16 +15,7 @@
   min-height: 0;
 }
 
-/* The node canvas takes the remaining height; the edge layer is an authoring
- * strip beneath it that scrolls internally when its edge list grows. */
 .space-canvas-mount > .space-canvas {
   flex: 1 1 auto;
   min-height: 0;
-}
-
-.space-canvas-mount > .space-edge-layer {
-  flex: 0 0 auto;
-  max-height: 40%;
-  overflow: auto;
-  border-top: 1px solid var(--border);
 }

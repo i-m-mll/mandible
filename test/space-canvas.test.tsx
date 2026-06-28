@@ -3,7 +3,7 @@
 // Covers the load-bearing acceptance criteria:
 //   - occurrences render from the model; drag persists via the batch client
 //     (optimistic + autosave indicator);
-//   - unplaced occurrences (x/y NULL) render in the shelf, NOT at the origin;
+//   - legacy unplaced occurrences (x/y NULL) are auto-placed, not shelved;
 //   - layoutGraph() runs only on explicit arrange/seed, never per render after a
 //     user move (asserted via a layout-call spy);
 //   - SSE `space:occurrence:moved` reconciles WITHOUT resetting selection.
@@ -24,17 +24,27 @@ import type { SpaceItem, SpaceOccurrence } from '../ui/src/api';
 
 let lastOnNodesChange: ((changes: unknown[]) => void) | null = null;
 let lastOnConnect: ((connection: unknown) => void) | null = null;
+let lastOnEdgesChange: ((changes: unknown[]) => void) | null = null;
 
 vi.mock('@xyflow/react', () => {
   const ReactFlow = (props: {
-    nodes: Array<{ id: string; position: { x: number; y: number }; selected?: boolean }>;
-    edges?: Array<{ id: string; source: string; target: string; label?: string }>;
+    nodes: Array<{
+      id: string;
+      position: { x: number; y: number };
+      selected?: boolean;
+      data?: { label: string; kind: string };
+      type?: string;
+    }>;
+    edges?: Array<{ id: string; source: string; target: string; label?: string; selected?: boolean }>;
+    nodeTypes?: Record<string, (props: { data: { label: string; kind: string }; selected?: boolean }) => unknown>;
     onNodesChange?: (changes: unknown[]) => void;
+    onEdgesChange?: (changes: unknown[]) => void;
     onConnect?: (connection: unknown) => void;
     children?: unknown;
   }) => {
     lastOnNodesChange = props.onNodesChange ?? null;
     lastOnConnect = props.onConnect ?? null;
+    lastOnEdgesChange = props.onEdgesChange ?? null;
     return h('div', { 'data-testid': 'rf-mock' }, [
       ...props.nodes.map((node) =>
         h(
@@ -47,7 +57,9 @@ vi.mock('@xyflow/react', () => {
             'data-y': String(node.position.y),
             'data-selected': node.selected ? 'true' : 'false',
           },
-          node.id,
+          props.nodeTypes?.[node.type ?? ''] && node.data
+            ? h(props.nodeTypes[node.type ?? '']!, { data: node.data, selected: node.selected })
+            : node.id,
         ),
       ),
       ...(props.edges ?? []).map((edge) =>
@@ -60,6 +72,7 @@ vi.mock('@xyflow/react', () => {
             'data-source': edge.source,
             'data-target': edge.target,
             'data-label': edge.label ?? '',
+            'data-selected': edge.selected ? 'true' : 'false',
           },
         ),
       ),
@@ -67,8 +80,13 @@ vi.mock('@xyflow/react', () => {
   };
   const Background = () => h('div', { 'data-testid': 'rf-bg' });
   const Controls = () => h('div', { 'data-testid': 'rf-controls' });
-  const Handle = (props: { type?: string }) =>
-    h('div', { 'data-testid': 'rf-handle', 'data-handle-type': props.type ?? '' });
+  const Handle = (props: { type?: string; className?: string; position?: string }) =>
+    h('div', {
+      'data-testid': 'rf-handle',
+      'data-handle-type': props.type ?? '',
+      'data-position': props.position ?? '',
+      className: props.className ?? '',
+    });
   const Position = { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' };
   const MarkerType = { ArrowClosed: 'arrowclosed', Arrow: 'arrow' };
   return { ReactFlow, Background, Controls, Handle, Position, MarkerType };
@@ -100,9 +118,12 @@ import {
   buildBatchEntries,
   reconcileOccurrences,
   applyOptimisticPosition,
+  nextAddedItemPosition,
   occurrencesToGraph,
   edgesToFlowEdges,
   connectionToEdgeRequest,
+  canvasNodesToFlowNodes,
+  applyLocalNodeChanges,
   type SpaceCanvasModel,
 } from '../ui/src/views/spaces/SpaceCanvas';
 import type { SpaceEdge } from '../ui/src/api';
@@ -112,6 +133,7 @@ afterEach(() => {
   cleanup();
   lastOnNodesChange = null;
   lastOnConnect = null;
+  lastOnEdgesChange = null;
   layoutCalls.count = 0;
   vi.useRealTimers();
 });
@@ -250,6 +272,15 @@ describe('reconcileOccurrences (SSE path)', () => {
     expect([a.x, a.y]).toEqual([999, 999]);
     expect([b.x, b.y]).toEqual([2, 2]);
   });
+
+  it('preserves positions waiting for a server acknowledgement', () => {
+    const previous = [occ('a', { x: 55, y: 66 })];
+    const incoming = [occ('a', { x: 10, y: 20 })];
+    const next = reconcileOccurrences(incoming, new Set(), previous, {
+      a: { x: 55, y: 66 },
+    });
+    expect(next[0]).toMatchObject({ x: 55, y: 66 });
+  });
 });
 
 describe('applyOptimisticPosition', () => {
@@ -260,6 +291,30 @@ describe('applyOptimisticPosition', () => {
   });
 });
 
+describe('nextAddedItemPosition', () => {
+  it('places the first added item immediately and subsequent items to the right', () => {
+    expect(nextAddedItemPosition([])).toEqual({ x: 0, y: 0 });
+    const placed = partitionOccurrences(
+      [occ('a', { x: 10, y: 40 }), occ('b', { x: 120, y: 20 })],
+      {},
+    ).placed;
+    expect(nextAddedItemPosition(placed)).toEqual({ x: 380, y: 20 });
+  });
+});
+
+describe('React Flow local node helpers', () => {
+  it('apply position changes without needing the parent canvas state', () => {
+    const nodes = canvasNodesToFlowNodes(
+      partitionOccurrences([occ('a', { x: 10, y: 20 })], {}).placed,
+      new Set(),
+    );
+    const next = applyLocalNodeChanges(nodes, [
+      { type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true } as never,
+    ]);
+    expect(next[0].position).toEqual({ x: 25, y: 30 });
+  });
+});
+
 // ============================================================================
 // Component behavior
 // ============================================================================
@@ -267,19 +322,88 @@ describe('applyOptimisticPosition', () => {
 const baseProps = { projectId: 'p1', renderer: 'canvas' as const };
 
 describe('SpaceCanvas rendering', () => {
-  it('renders placed occurrences as canvas nodes and unplaced in the shelf', () => {
+  it('renders placed occurrences as canvas nodes without a shelf', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
-      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: null, y: null })],
+      occurrences: [occ('a', { x: 10, y: 20 })],
     };
     render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
     const nodes = screen.getAllByTestId('rf-node');
     expect(nodes.map((n) => n.getAttribute('data-node-id'))).toEqual(['a']);
-    const shelfItems = screen.getAllByTestId('space-canvas-shelf-item');
-    expect(shelfItems).toHaveLength(1);
-    expect(shelfItems[0].getAttribute('data-occurrence-id')).toBe('b');
+    expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
     // No layout on plain render.
     expect(layoutCalls.count).toBe(0);
+  });
+
+  it('uses simple Saved copy for the idle autosave status', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saved');
+  });
+
+  it('resizes the bottom inspector from the invisible top-border handle', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    const inspector = screen.getByTestId('space-canvas-inspector') as HTMLElement;
+    const handle = screen.getByTestId('space-canvas-inspector-resize') as HTMLElement;
+
+    inspector.getBoundingClientRect = () => ({
+      x: 0,
+      y: 440,
+      width: 800,
+      height: 220,
+      top: 440,
+      right: 800,
+      bottom: 660,
+      left: 0,
+      toJSON: () => ({}),
+    });
+    (inspector.parentElement as HTMLElement).getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      left: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.mouseDown(handle, { clientY: 440 });
+    act(() => {
+      window.dispatchEvent(new MouseEvent('pointermove', { clientY: 380 }));
+      window.dispatchEvent(new MouseEvent('pointerup'));
+    });
+
+    await waitFor(() => expect(inspector.style.flexBasis).toBe('280px'));
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
+  });
+
+  it('renders stable left target and right source handles on nodes', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    const handles = screen.getAllByTestId('rf-handle');
+    expect(handles.map((handle) => handle.getAttribute('data-handle-type'))).toEqual([
+      'target',
+      'source',
+    ]);
+    expect(handles.map((handle) => handle.getAttribute('data-position'))).toEqual([
+      'left',
+      'right',
+    ]);
+    expect(handles[0].className).toContain('space-canvas__handle--target');
+    expect(handles[1].className).toContain('space-canvas__handle--source');
   });
 
   it('does NOT run layoutGraph on render, only on explicit arrange', () => {
@@ -292,12 +416,54 @@ describe('SpaceCanvas rendering', () => {
       h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model, batchWrite }),
     );
     expect(layoutCalls.count).toBe(0);
+    fireEvent.click(screen.getByTestId('space-canvas-actions-menu'));
     fireEvent.click(screen.getByTestId('space-canvas-arrange-all'));
     expect(layoutCalls.count).toBe(1);
   });
 });
 
 describe('SpaceCanvas drag persistence + autosave', () => {
+  it('keeps pointer-frame drag updates local until drag stop', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({
+      occurrences: [occ('a', { x: 55, y: 66, updated_at: 100 })],
+      created: 0,
+      updated: 1,
+    });
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        debounceMs: 100,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+    });
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+    expect(batchWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(150);
+    });
+    expect(batchWrite).not.toHaveBeenCalled();
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(120);
+    });
+    expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+  });
+
   it('optimistically moves a node and debounce-writes the batch with the id', async () => {
     vi.useFakeTimers();
     const model: SpaceCanvasModel = {
@@ -414,6 +580,181 @@ describe('SpaceCanvas SSE reconciliation', () => {
     expect(findNode('a').getAttribute('data-selected')).toBe('true');
   });
 
+  it('does not rematerialize an actively dragged node when an SSE refetch returns', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const stale: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 111, y: 222 })],
+    };
+    const loadModel = vi.fn().mockResolvedValue(stale);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+    });
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('30');
+  });
+
+  it('ignores an out-of-order refetch that started before a drag stop', async () => {
+    let resolveLoad: (model: SpaceCanvasModel) => void = () => {};
+    const pendingLoad = new Promise<SpaceCanvasModel>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const loadModel = vi.fn().mockReturnValue(pendingLoad);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    act(() => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+    });
+    expect(loadModel).toHaveBeenCalledWith('sp1');
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+
+    await act(async () => {
+      resolveLoad({ items: model.items, occurrences: [occ('a', { x: 10, y: 20 })] });
+      await pendingLoad;
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
+  });
+
+  it('keeps a dropped position when a post-save SSE refetch is stale', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const stale: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({ occurrences: [], created: 0, updated: 1 });
+    const loadModel = vi.fn().mockResolvedValue(stale);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        loadModel,
+        createSse: () => client,
+        debounceMs: 50,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+    expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
+  });
+
+  it('accepts a newer server position after the saved drag is acknowledged', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const newer: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 70, y: 80, updated_at: 101 })],
+    };
+    const batchWrite = vi.fn().mockResolvedValue({
+      occurrences: [occ('a', { x: 55, y: 66, updated_at: 100 })],
+      created: 0,
+      updated: 1,
+    });
+    const loadModel = vi.fn().mockResolvedValue(newer);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        loadModel,
+        createSse: () => client,
+        debounceMs: 50,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('70');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('80');
+  });
+
   it('ignores moved events for a different space', async () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha')],
@@ -438,8 +779,8 @@ describe('SpaceCanvas SSE reconciliation', () => {
   });
 });
 
-describe('SpaceCanvas shelf placement', () => {
-  it('places a shelf occurrence onto the canvas via a layout seed and queues a write', async () => {
+describe('SpaceCanvas legacy unplaced placement', () => {
+  it('auto-places an unplaced occurrence without rendering a shelf and queues a write', async () => {
     vi.useFakeTimers();
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
@@ -456,14 +797,15 @@ describe('SpaceCanvas shelf placement', () => {
       }),
     );
 
-    // 'b' starts in the shelf.
-    expect(screen.getAllByTestId('space-canvas-shelf-item')).toHaveLength(1);
-
-    act(() => {
-      fireEvent.click(screen.getByTestId('space-canvas-shelf-item'));
-    });
+    expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
     // Placement seeds via layoutGraph.
-    expect(layoutCalls.count).toBeGreaterThanOrEqual(1);
+    await waitFor(() => expect(layoutCalls.count).toBeGreaterThanOrEqual(1));
+    await waitFor(() =>
+      expect(screen.getAllByTestId('rf-node').map((node) => node.getAttribute('data-node-id'))).toEqual([
+        'a',
+        'b',
+      ]),
+    );
 
     await act(async () => {
       vi.advanceTimersByTime(50);
@@ -496,6 +838,12 @@ describe('edgesToFlowEdges (pure)', () => {
     const flow = edgesToFlowEdges([edge('e1', 'a', 'b')], placed);
     expect(flow).toHaveLength(0);
   });
+
+  it('marks the selected edge for React Flow styling', () => {
+    const flow = edgesToFlowEdges([edge('e1', 'a', 'b')], new Set(['a', 'b']), 'e1');
+    expect(flow[0].selected).toBe(true);
+    expect(flow[0].markerEnd).toMatchObject({ color: 'var(--accent-blue)' });
+  });
 });
 
 describe('connectionToEdgeRequest (pure)', () => {
@@ -527,6 +875,69 @@ describe('SpaceCanvas renders authored edges as lines', () => {
     expect(rendered[0].getAttribute('data-edge-id')).toBe('e1');
     expect(rendered[0].getAttribute('data-source')).toBe('a');
     expect(rendered[0].getAttribute('data-target')).toBe('b');
+  });
+
+  it('selects an edge and edits its label through the Canvas inspector', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [edge('e1', 'a', 'b', 'relates')],
+    };
+    const updateEdge = vi.fn().mockResolvedValue(edge('e1', 'a', 'b', 'blocks'));
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model, updateEdge }));
+
+    act(() => {
+      lastOnEdgesChange?.([{ type: 'select', id: 'e1', selected: true }]);
+    });
+    expect(screen.getByTestId('rf-edge').getAttribute('data-selected')).toBe('true');
+    expect(screen.getByTestId('space-canvas-edge-inspector')).toBeTruthy();
+
+    const input = screen.getByTestId('space-canvas-edge-label-input') as HTMLInputElement;
+    input.focus();
+    fireEvent.input(input, { target: { value: 'blocks' } });
+    await act(async () => {
+      input.blur();
+    });
+    expect(updateEdge).toHaveBeenCalledWith('sp1', 'e1', { label: 'blocks' });
+  });
+
+  it('promotes and deletes a selected edge through the Canvas inspector', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [edge('e1', 'a', 'b', 'blocks')],
+    };
+    const promote = vi.fn().mockResolvedValue({ action_id: 'act-1' });
+    const removeEdge = vi.fn().mockResolvedValue(undefined);
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        promote,
+        removeEdge,
+      }),
+    );
+
+    act(() => {
+      lastOnEdgesChange?.([{ type: 'select', id: 'e1', selected: true }]);
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('space-canvas-edge-promote-btn'));
+    });
+    expect(promote).toHaveBeenCalledWith({
+      sourceRef: 'a',
+      targetRef: 'b',
+      linkType: 'blocks',
+      note: 'blocks',
+    });
+
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('space-canvas-edge-delete-btn'));
+    });
+    expect(removeEdge).toHaveBeenCalledWith('sp1', 'e1');
+    expect(screen.queryByTestId('rf-edge')).toBeNull();
   });
 });
 

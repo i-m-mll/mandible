@@ -8,6 +8,8 @@
 //   - artifact:<7-64hex>            (compact artifact ref form)
 //   - <7-64hex> / sha256:<64hex>    (bare hash forms)
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
+//   - issue:<id>                    (Mandible issue refs)
+//   - comment:<issue>#<comment>     (Mandible comment refs)
 //   - mandible://<repo>/issue/<id>  (app-route entity refs)
 //
 // It drives an unresolved-reference UI: every recognized ref is linkified with a
@@ -46,6 +48,8 @@ const ARTIFACT_SHA256_REF = /^artifact:sha256:([0-9a-f]{64})$/i;
 const COMPACT_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
 const BARE_SHA_REF = /^[0-9a-f]{7,64}$/i;
 const BARE_SHA256_REF = /^sha256:([0-9a-f]{64})$/i;
+const ISSUE_REF = /^issue:([^\s\]]+)$/i;
+const COMMENT_REF = /^comment:([^\s\]]+)$/i;
 
 /**
  * A recognizer turns a candidate ref string into a ParsedResourceRef, or null
@@ -113,6 +117,15 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
     return { raw, canonical: raw, kind: 'repo', display: raw };
   }
 
+  // issue:<id> and comment:<issue>#<comment> inline refs. Keep the authority
+  // opaque here; the resolver owns validation and entity lookup.
+  if (ISSUE_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'issue', display: compactIssueRef(raw) };
+  }
+  if (COMMENT_REF.test(raw)) {
+    return { raw, canonical: raw, kind: 'comment', display: compactCommentRef(raw) };
+  }
+
   // mandible://<repo>/issue/<id> and other mandible app-route refs.
   if (raw.startsWith('mandible://')) {
     return { raw, canonical: raw, kind: 'mandible', display: raw };
@@ -154,6 +167,26 @@ export function compactArtifactRef(hash: string, length = 12): string {
   const bare = hash.trim().replace(/^artifact:/i, '').replace(/^sha256:/i, '');
   const clipped = bare.slice(0, Math.max(7, Math.min(length, bare.length))).toLowerCase();
   return `artifact:${clipped}`;
+}
+
+function compactLongIdSegments(value: string, length = 7): string {
+  return value.replace(/[0-9a-f]{12,64}/gi, (segment) =>
+    segment.slice(0, Math.max(7, Math.min(length, segment.length))).toLowerCase(),
+  );
+}
+
+export function compactIssueRef(ref: string): string {
+  return ref.replace(
+    /^issue:(.+)$/i,
+    (_match, id: string) => `issue:${compactLongIdSegments(id)}`,
+  );
+}
+
+export function compactCommentRef(ref: string): string {
+  return ref.replace(
+    /^comment:(.+)$/i,
+    (_match, id: string) => `comment:${compactLongIdSegments(id)}`,
+  );
 }
 
 /** Compact human-friendly label for a ref; passthrough for unrecognized text. */
@@ -227,7 +260,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|repo|mandible):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');
@@ -266,23 +299,10 @@ export function linkifyResourceRefs(html: string): string {
   return container.innerHTML;
 }
 
-function styleResolveButton(button: HTMLButtonElement): void {
-  button.style.marginLeft = '0.3em';
-  button.style.font = 'inherit';
-  button.style.fontSize = '0.85em';
-  button.style.cursor = 'pointer';
-  button.style.padding = '0 0.35em';
-  button.style.border = '1px solid currentColor';
-  button.style.borderRadius = '3px';
-  button.style.background = 'transparent';
-  button.style.color = 'inherit';
-  button.style.opacity = '0.75';
-}
-
 /**
- * Build a resource-ref anchor in the unresolved state plus its resolve
- * affordance, wrapped in a single inline `<span>` so callers can attach
- * resolution handlers via {@link attachResourceRefResolution}.
+ * Build a quiet resource-ref anchor in the unresolved state, wrapped in a single
+ * inline `<span>`. Retry/repair controls are reserved for actual failed lookup
+ * surfaces rather than every normal ref.
  */
 function buildRefElement(parsed: ParsedResourceRef, labelOverride?: string): HTMLSpanElement {
   const wrapper = document.createElement('span');
@@ -299,15 +319,6 @@ function buildRefElement(parsed: ParsedResourceRef, labelOverride?: string): HTM
   anchor.textContent = labelOverride && labelOverride.trim() ? labelOverride : parsed.display;
   anchor.title = `Resource reference ${parsed.canonical} (unresolved)`;
   wrapper.appendChild(anchor);
-
-  const resolveBtn = document.createElement('button');
-  resolveBtn.type = 'button';
-  resolveBtn.className = 'resource-ref__resolve';
-  resolveBtn.setAttribute('data-resolve-ref', parsed.canonical);
-  resolveBtn.title = `Resolve ${parsed.canonical}`;
-  resolveBtn.textContent = 'resolve';
-  styleResolveButton(resolveBtn);
-  wrapper.appendChild(resolveBtn);
 
   return wrapper;
 }

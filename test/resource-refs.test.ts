@@ -19,6 +19,8 @@ import {
 const OLD_COMPACT_SHA_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
 
 const HASH64 = 'a'.repeat(64);
+const ISSUE_ID64 = 'ceb5963936d47c70315242651c792dd1840ad49d6c3ce79a942f7e0ef3257053';
+const COMMENT_ID64 = 'c8819b4725e341cc7e035a578a2f5c0e2fcfaff736fb75b04c4cf2954a746238';
 
 afterEach(() => {
   __resetResourceRefRecognizers();
@@ -69,6 +71,20 @@ describe('parseResourceRef recognizes all four ref forms', () => {
     expect(parsed?.canonical).toBe('mandible://mandible/issue/252e125');
   });
 
+  it('issue: inline refs', () => {
+    const parsed = parseResourceRef(`issue:${ISSUE_ID64}`);
+    expect(parsed?.kind).toBe('issue');
+    expect(parsed?.canonical).toBe(`issue:${ISSUE_ID64}`);
+    expect(parsed?.display).toBe('issue:ceb5963');
+  });
+
+  it('comment: inline refs', () => {
+    const parsed = parseResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`);
+    expect(parsed?.kind).toBe('comment');
+    expect(parsed?.canonical).toBe(`comment:${ISSUE_ID64}#${COMMENT_ID64}`);
+    expect(parsed?.display).toBe('comment:ceb5963#c8819b4');
+  });
+
   it('rejects plain http(s)/mailto navigation links', () => {
     expect(isResourceRef('https://example.com/x')).toBe(false);
     expect(isResourceRef('mailto:a@b.com')).toBe(false);
@@ -82,6 +98,8 @@ describe('round-trip: text and markdown-link hrefs', () => {
     ['compact artifact', 'artifact:abcdef0'],
     ['repo', 'repo://mandible@main/src/db.ts'],
     ['mandible', 'mandible://mandible/issue/252e125'],
+    ['issue', 'issue:abc123'],
+    ['comment', 'comment:mandible/abc#com_1'],
   ];
 
   for (const [name, ref] of cases) {
@@ -125,6 +143,17 @@ describe('display helpers', () => {
   it('displayResourceRef passes through unrecognized text', () => {
     expect(displayResourceRef('hello world')).toBe('hello world');
   });
+
+  it('displayResourceRef compacts long issue and comment ids without changing canonical refs', () => {
+    expect(displayResourceRef(`issue:${ISSUE_ID64}`)).toBe('issue:ceb5963');
+    expect(displayResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`)).toBe(
+      'comment:ceb5963#c8819b4',
+    );
+    expect(parseResourceRef(`issue:${ISSUE_ID64}`)?.canonical).toBe(`issue:${ISSUE_ID64}`);
+    expect(parseResourceRef(`comment:${ISSUE_ID64}#${COMMENT_ID64}`)?.canonical).toBe(
+      `comment:${ISSUE_ID64}#${COMMENT_ID64}`,
+    );
+  });
 });
 
 describe('artifact series nav hrefs', () => {
@@ -135,12 +164,12 @@ describe('artifact series nav hrefs', () => {
 });
 
 describe('unresolved-reference UI + C2 resolver', () => {
-  it('renders an unresolved placeholder with a resolve affordance', () => {
+  it('renders an unresolved placeholder as a quiet link without resolve clutter', () => {
     const html = linkifyResourceRefs(`<p>[artifact:sha256:${HASH64}]</p>`);
     expect(html).toContain('resource-ref--unresolved');
     expect(html).toContain('data-ref-state="unresolved"');
-    expect(html).toContain('data-resolve-ref="artifact:sha256:' + HASH64 + '"');
-    expect(html).toContain('>resolve</button>');
+    expect(html).toContain('#/artifacts?ref=artifact%3Asha256%3A' + HASH64);
+    expect(html).not.toContain('resource-ref__resolve');
   });
 
   it('resolveResourceRef calls the C2 endpoint and unwraps {resolution}', async () => {
@@ -157,7 +186,7 @@ describe('unresolved-reference UI + C2 resolver', () => {
     expect(result.resolved).toBe(true);
   });
 
-  it('resolve affordance resolves a ref and updates the placeholder to resolved', async () => {
+  it('attachResourceRefResolution is inert when normal refs have no retry button', async () => {
     const container = document.createElement('div');
     container.innerHTML = linkifyResourceRefs(`<p>[artifact:sha256:${HASH64}]</p>`);
     const resolve = vi.fn(
@@ -166,30 +195,44 @@ describe('unresolved-reference UI + C2 resolver', () => {
     attachResourceRefResolution(container, { resolve });
 
     const button = container.querySelector('button.resource-ref__resolve') as HTMLButtonElement;
-    expect(button).toBeTruthy();
-    button.click();
-    await vi.waitFor(() => {
-      const wrapper = container.querySelector('.resource-ref') as HTMLElement;
-      expect(wrapper.getAttribute('data-ref-state')).toBe('resolved');
-    });
-    expect(resolve).toHaveBeenCalledWith(`artifact:sha256:${HASH64}`);
-    // affordance removed once resolved; ref never silently dropped
+    expect(button).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+    const wrapper = container.querySelector('.resource-ref') as HTMLElement;
+    expect(wrapper.getAttribute('data-ref-state')).toBe('unresolved');
+    expect(wrapper.querySelector('.resource-ref__link')).toBeTruthy();
     expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
-    expect(container.querySelector('.resource-ref--resolved')).toBeTruthy();
   });
 
-  it('an unresolvable ref surfaces an error state, not a dropped ref', async () => {
+  it('an unresolvable-looking ref still renders as a quiet unresolved placeholder', async () => {
     const container = document.createElement('div');
     container.innerHTML = linkifyResourceRefs(`<p>[artifact:abcdef0]</p>`);
     const resolve = vi.fn(
       async (ref: string): Promise<ResolverResult> => ({ ref, kind: 'artifact', resolved: false, entity: null, error: 'not found' }),
     );
     attachResourceRefResolution(container, { resolve });
-    (container.querySelector('button.resource-ref__resolve') as HTMLButtonElement).click();
-    await vi.waitFor(() => {
-      expect(container.querySelector('.resource-ref--error')).toBeTruthy();
-    });
+    expect(container.querySelector('button.resource-ref__resolve')).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
     expect(container.querySelector('[data-resource-ref="artifact:abcdef0"]')).toBeTruthy();
+  });
+
+  it('linkifies long issue and comment refs with compact labels but canonical authority', () => {
+    const issueRef = `issue:${ISSUE_ID64}`;
+    const commentRef = `comment:${ISSUE_ID64}#${COMMENT_ID64}`;
+    const html = linkifyResourceRefs(`<p>See [${issueRef}] and [${commentRef}]</p>`);
+    const container = document.createElement('div');
+    container.innerHTML = html;
+
+    const issueLink = container.querySelector(
+      `[data-resource-ref="${issueRef}"] a.resource-ref__link`,
+    ) as HTMLAnchorElement | null;
+    const commentLink = container.querySelector(
+      `[data-resource-ref="${commentRef}"] a.resource-ref__link`,
+    ) as HTMLAnchorElement | null;
+
+    expect(issueLink?.textContent).toBe('issue:ceb5963');
+    expect(commentLink?.textContent).toBe('comment:ceb5963#c8819b4');
+    expect(issueLink?.getAttribute('href')).toContain(encodeURIComponent(issueRef));
+    expect(commentLink?.getAttribute('href')).toContain(encodeURIComponent(commentRef));
   });
 });
 

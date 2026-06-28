@@ -71,6 +71,11 @@ type LabelRow = {
   created_at: number;
   deleted_at: number | null;
 };
+type TimelineEventIndexes = {
+  commentsByIssue: Map<string, CommentRow[]>;
+  stateEventsByIssue: Map<string, StateEventRow[]>;
+  stateEventTypes: string[];
+};
 type InternalRowSpec = TimelineNormalizedRowSpec & {
   anchorIssue: IssueRow | null;
   legacyKind: TimelineRowOccurrenceKind | null;
@@ -125,6 +130,7 @@ export function buildProjectTimelineProjection(
   const issueById = new Map(issues.map((issue) => [issue.id, issue]));
   const issueRefs = new Map(issues.map((issue) => [issue.id, issueRef(issue)]));
   const normalized = normalizeInput(input, project.id, issueById);
+  const eventIndexes = loadTimelineEventIndexes(db, project.id, issues, normalized);
   const relationshipSources = loadRelationshipSources(db, project.id);
   const labelHistory = loadLabelHistory(db, project.id, issues);
   const relationshipSourcesByEventSource = groupRelationshipSources(relationshipSources);
@@ -242,7 +248,7 @@ export function buildProjectTimelineProjection(
 
   for (let cursor = 0; cursor < rows.length; cursor += 1) {
     const row = rows[cursor];
-    const rowEvents = buildEventsForRow(db, row, issueById, issueRefs, normalized);
+    const rowEvents = buildEventsForRow(row, issueById, issueRefs, normalized, eventIndexes);
     for (const event of rowEvents) {
       const eventSourceKey = sourceKey(event.source_entity.type, event.source_entity.id);
       const sourceRows = relationshipSourcesByEventSource.get(eventSourceKey) ?? [];
@@ -599,6 +605,94 @@ function loadLabelHistory(db: Db, projectId: string, issues: IssueRow[]): LabelH
   return { intervalsByLabel };
 }
 
+function loadTimelineEventIndexes(
+  db: Db,
+  projectId: string,
+  issues: IssueRow[],
+  input: ProjectTimelineNormalizedInput,
+): TimelineEventIndexes {
+  const commentsByIssue = eventKindEnabled(input, "comment")
+    ? loadCommentsByIssue(db, projectId)
+    : new Map<string, CommentRow[]>();
+  const stateEventTypes = selectedStateEventTypes(input);
+  const stateEventsByIssue = stateEventTypes.length > 0
+    ? loadStateEventsByIssue(db, projectId, issues, stateEventTypes)
+    : new Map<string, StateEventRow[]>();
+  return { commentsByIssue, stateEventsByIssue, stateEventTypes };
+}
+
+function loadCommentsByIssue(db: Db, projectId: string): Map<string, CommentRow[]> {
+  const rows = db.prepare(
+    `SELECT c.id, c.issue_id, c.ordinal, c.body, c.created_at, c.updated_at, c.deleted_at
+       FROM ledger_comments c
+       JOIN ledger_issues i ON i.id = c.issue_id
+      WHERE i.project_id = ?
+        AND c.deleted_at IS NULL
+      ORDER BY c.issue_id ASC, c.ordinal ASC, c.created_at ASC`,
+  ).all(projectId) as CommentRow[];
+  const byIssue = new Map<string, CommentRow[]>();
+  for (const row of rows) {
+    const comments = byIssue.get(row.issue_id) ?? [];
+    comments.push(row);
+    byIssue.set(row.issue_id, comments);
+  }
+  return byIssue;
+}
+
+function loadStateEventsByIssue(
+  db: Db,
+  projectId: string,
+  issues: IssueRow[],
+  stateEventTypes: string[],
+): Map<string, StateEventRow[]> {
+  const byIssue = new Map<string, StateEventRow[]>();
+  const projectIssueIds = new Set(issues.map((issue) => issue.id));
+  const placeholders = stateEventTypes.map(() => "?").join(", ");
+  const issueEvents = db.prepare(
+    `SELECT e.id, e.entity_type, e.entity_id, e.event_type, e.source, e.payload_json,
+            e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_issues i ON i.id = e.entity_id
+      WHERE i.project_id = ?
+        AND e.entity_type = 'issue'
+        AND e.event_type IN (${placeholders})
+      ORDER BY e.entity_id ASC, e.occurred_at ASC, e.observed_at ASC, e.id ASC`,
+  ).all(projectId, ...stateEventTypes) as StateEventRow[];
+  const operationalEvents = db.prepare(
+    `SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at
+       FROM ledger_events
+      WHERE entity_type != 'issue'
+        AND event_type IN (${placeholders})
+      ORDER BY occurred_at ASC, observed_at ASC, id ASC`,
+  ).all(...stateEventTypes) as StateEventRow[];
+
+  for (const event of issueEvents) {
+    addStateEvent(byIssue, event.entity_id, event);
+  }
+  for (const event of operationalEvents) {
+    const issueId = issueIdFromStateEventPayload(event);
+    if (!issueId || !projectIssueIds.has(issueId)) continue;
+    addStateEvent(byIssue, issueId, event);
+  }
+  for (const events of byIssue.values()) events.sort(compareStateEvents);
+  return byIssue;
+}
+
+function addStateEvent(
+  byIssue: Map<string, StateEventRow[]>,
+  issueId: string,
+  event: StateEventRow,
+): void {
+  const events = byIssue.get(issueId) ?? [];
+  events.push(event);
+  byIssue.set(issueId, events);
+}
+
+function issueIdFromStateEventPayload(event: StateEventRow): string | null {
+  const issueId = parseJsonObject(event.payload_json).issue_id;
+  return typeof issueId === "string" && issueId ? issueId : null;
+}
+
 function intervalsForIssueLabel(input: {
   issue: IssueRow;
   label: string;
@@ -894,11 +988,11 @@ function rootKind(issueId: string, input: ProjectTimelineNormalizedInput): Timel
 }
 
 function buildEventsForRow(
-  db: Db,
   row: TimelineRowOccurrence,
   issueById: Map<string, IssueRow>,
   issueRefs: Map<string, TimelineIssueRef>,
   input: ProjectTimelineNormalizedInput,
+  indexes: TimelineEventIndexes,
 ): TimelineEvent[] {
   if (!row.issue) return [];
   const issue = issueById.get(row.issue.id);
@@ -922,12 +1016,7 @@ function buildEventsForRow(
   }
 
   const comments = eventKindEnabled(input, "comment")
-    ? db.prepare(
-      `SELECT id, issue_id, ordinal, body, created_at, updated_at, deleted_at
-         FROM ledger_comments
-        WHERE issue_id = ? AND deleted_at IS NULL
-        ORDER BY ordinal ASC, created_at ASC`,
-    ).all(issue.id) as CommentRow[]
+    ? indexes.commentsByIssue.get(issue.id) ?? []
     : [];
   if (eventKindEnabled(input, "comment")) {
     for (const comment of comments) {
@@ -948,30 +1037,14 @@ function buildEventsForRow(
     }
   }
 
-  const stateEventTypes = selectedStateEventTypes(input);
+  const stateEventTypes = indexes.stateEventTypes;
   if (stateEventTypes.length === 0) return result.sort(compareTimelineEvents);
-  const stateEvents = db.prepare(
-    `SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at
-       FROM ledger_events
-      WHERE (
-          entity_type = 'issue'
-          AND entity_id = ?
-        )
-        AND event_type IN (${stateEventTypes.map(() => "?").join(", ")})
-      UNION ALL
-      SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at
-        FROM ledger_events
-       WHERE event_type IN (${stateEventTypes.map(() => "?").join(", ")})
-         AND entity_type != 'issue'
-      ORDER BY occurred_at ASC, observed_at ASC, id ASC`,
-  ).all(issue.id, ...stateEventTypes, ...stateEventTypes) as StateEventRow[];
+  const stateEvents = indexes.stateEventsByIssue.get(issue.id) ?? [];
   let stateOrdinal = comments.length + 1;
   const hasAuthCompletion = stateEvents.some((event) => (
     event.event_type === "auth_request.completed"
-    && stateEventBelongsToIssue(event, issue.id)
   ));
   for (const event of stateEvents) {
-    if (!stateEventBelongsToIssue(event, issue.id)) continue;
     if (event.event_type === "issue.closed" && event.source === "auth_queue" && hasAuthCompletion) continue;
     const parsed = parseStatePayload(event);
     if (!parsed) continue;
@@ -1011,11 +1084,6 @@ function selectedStateEventTypes(input: ProjectTimelineNormalizedInput): string[
     for (const eventType of STATE_EVENT_TYPES_BY_KIND[kind]) eventTypes.add(eventType);
   }
   return Array.from(eventTypes).sort();
-}
-
-function stateEventBelongsToIssue(event: StateEventRow, issueId: string): boolean {
-  if (event.entity_type === "issue") return event.entity_id === issueId;
-  return parseJsonObject(event.payload_json).issue_id === issueId;
 }
 
 function buildBacklinkEvents(input: {
@@ -1407,6 +1475,12 @@ function compareTimelineEvents(a: TimelineEvent, b: TimelineEvent): number {
   if (a.timestamp !== b.timestamp) return a.timestamp - b.timestamp;
   if (a.row_id !== b.row_id) return a.row_id.localeCompare(b.row_id);
   if (a.ordinal !== b.ordinal) return a.ordinal - b.ordinal;
+  return a.id.localeCompare(b.id);
+}
+
+function compareStateEvents(a: StateEventRow, b: StateEventRow): number {
+  if (a.occurred_at !== b.occurred_at) return a.occurred_at - b.occurred_at;
+  if (a.observed_at !== b.observed_at) return a.observed_at - b.observed_at;
   return a.id.localeCompare(b.id);
 }
 

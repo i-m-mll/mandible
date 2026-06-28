@@ -115,6 +115,15 @@
   background: var(--overlay-hover);
 }
 
+.space-item-picker__option:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.space-item-picker__option:disabled:hover {
+  background: transparent;
+}
+
 .space-item-picker__option[data-selected='true'] {
   background: var(--overlay-selected);
 }
@@ -161,6 +170,10 @@
 .space-item-picker__badge[data-kind='artifact'] {
   border-color: color-mix(in srgb, var(--accent-blue) 45%, var(--border));
   color: var(--accent-blue);
+}
+
+.space-item-picker__state {
+  white-space: nowrap;
 }
 
 .space-item-picker__project {

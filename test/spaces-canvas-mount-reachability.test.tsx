@@ -1,12 +1,8 @@
-// Reachability guard for the `canvas` renderer mount (umbrella de56ffa, UX-review
-// child bd0a4cf).
+// Reachability guard for the `canvas` renderer mount (umbrella de56ffa).
 //
-// Seam found in the UX review: SpaceEdgeLayer (C9b edge CRUD + promote-to-ledger)
-// is a built renderer surface that was mounted NOWHERE in the app — the canvas
-// mount point only rendered SpaceCanvas (nodes), so the entire authored-edge +
-// promote-to-ledger feature was unreachable. The fix composes both siblings in
-// the registry's `canvas` mount point. This test pins that composition so the
-// edge surface cannot silently fall out of the app again.
+// The canvas mount should expose one integrated node/edge canvas with a
+// selection inspector. It must not regress to the old composition where a
+// permanent bottom SpaceEdgeLayer form/list duplicated edge actions.
 
 import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
@@ -54,15 +50,13 @@ it('registers a canvas renderer', () => {
   expect(SPACE_RENDERERS_REGISTRY.canvas).toBeTruthy();
 });
 
-it('mounts BOTH the node canvas and the edge-authoring layer for the canvas renderer', async () => {
+it('mounts the integrated canvas inspector without the old permanent edge panel', async () => {
   const Canvas = SPACE_RENDERERS_REGISTRY.canvas!;
   render(h(Canvas, { projectId: 'p1', spaceId: 'sp1', renderer: 'canvas' }));
 
-  // The node half (SpaceCanvas) is present...
   await waitFor(() => expect(screen.getByTestId('space-canvas')).toBeTruthy());
-  // ...and the edge-authoring half (SpaceEdgeLayer) is reachable in the same
-  // mount — the seam this lane closed.
-  expect(screen.getByTestId('space-edge-layer')).toBeTruthy();
-  // The edge create form (the affordance that was previously unreachable).
-  expect(screen.getByTestId('space-edge-create-form')).toBeTruthy();
+  expect(screen.getByTestId('space-canvas-inspector').getAttribute('data-placement')).toBe('bottom');
+  expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
+  expect(screen.queryByTestId('space-edge-layer')).toBeNull();
+  expect(screen.queryByTestId('space-edge-create-form')).toBeNull();
 });

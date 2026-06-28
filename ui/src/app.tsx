@@ -86,6 +86,7 @@ import {
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
+const SPACES_LAST_VIEW_KEY = 'mandible.spaces.lastView:v1';
 const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#0b0f14',
   light: '#f5f7fb',
@@ -96,6 +97,12 @@ const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
   dark: 'Dark',
 };
 const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
+
+type SpacesLastView = {
+  projectId: string;
+  spaceId: string;
+  renderer: string;
+};
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -124,6 +131,32 @@ function setLastSeenCommit(hash: string): void {
     window.localStorage.setItem(LAST_SEEN_COMMIT_KEY, hash);
   } catch {
     return;
+  }
+}
+
+function readSpacesLastView(): SpacesLastView | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(SPACES_LAST_VIEW_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SpacesLastView>;
+    if (!parsed.projectId || !parsed.spaceId) return null;
+    return {
+      projectId: parsed.projectId,
+      spaceId: parsed.spaceId,
+      renderer: parsed.renderer || 'collection',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeSpacesLastView(view: SpacesLastView): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(SPACES_LAST_VIEW_KEY, JSON.stringify(view));
+  } catch {
+    // Browser-local view restoration is best-effort only.
   }
 }
 
@@ -370,6 +403,23 @@ function App(): JSX.Element {
     },
     [navigateToHash],
   );
+
+  useEffect(() => {
+    if (route.tab !== 'spaces') return;
+    const { project, space, renderer } = route.params;
+    if (project && space) {
+      writeSpacesLastView({ projectId: project, spaceId: space, renderer: renderer || 'collection' });
+      return;
+    }
+    if (project || space || renderer) return;
+    const last = readSpacesLastView();
+    if (!last) return;
+    navigateToSpace({
+      projectId: last.projectId,
+      spaceId: last.spaceId,
+      renderer: last.renderer,
+    });
+  }, [route, navigateToSpace]);
 
   useEffect(() => {
     const handleChange = () => setRoute(parseHashRoute());

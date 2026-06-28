@@ -1,11 +1,10 @@
 import { Fragment } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 
 import { getProjectTimeline } from '../api';
 import { useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
-import { sanitizeMarkdown } from '../sanitize';
+import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import type { WorkRepo } from './work';
 import {
   TIMELINE_DAY_MS,
@@ -471,19 +470,6 @@ function eventEyebrow(event: TimelineEvent): string {
   return `${eventKindLabel(event.kind)} ${shortIssueId(event.issue.display_id)} #${event.ordinal}`;
 }
 
-function normalizeMarkdownSource(source: string): string {
-  if (!source.includes('\\n')) return source;
-  const literalNewlineCount = (source.match(/\\n/g) ?? []).length;
-  const actualNewlineCount = (source.match(/\n/g) ?? []).length;
-  if (literalNewlineCount < 2 || actualNewlineCount > 0) return source;
-  return source.replace(/\\n/g, '\n');
-}
-
-function renderTimelineMarkdown(source: string): string {
-  const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
-  return sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
-}
-
 type TimelineClusterMark = TimelineSameTimeCluster | TimelineRangeCluster;
 
 function clusterKindLabel(cluster: TimelineClusterMark): string {
@@ -829,6 +815,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       expanded_event_ids: viewState.expandedEventIds,
       expanded_paths: viewState.expandedPaths.filter((path) => !isLocalFilterPath(path)),
       include_closed: viewState.includeClosed,
+      event_kinds: viewState.visibleEventTypes,
       depth: projectionDepth,
       root_specs: rootSpecs,
     }, controller.signal)
@@ -853,6 +840,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     viewState.expandedEventIds.join(','),
     viewState.expandedPaths.join(','),
     viewState.includeClosed,
+    viewState.visibleEventTypes.join(','),
     rootSpecs,
     projectionDepth,
   ]);
@@ -1006,6 +994,36 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const aggregateMarkById = useMemo(() => (
     new Map(timelineLayout.aggregateMarks.map((mark) => [mark.aggregateId, mark]))
   ), [timelineLayout.aggregateMarks]);
+  const sameTimeClustersByRow = useMemo(() => {
+    const result = new Map<string, TimelineSameTimeCluster[]>();
+    for (const cluster of timelineLayout.sameTimeClusters) {
+      if (cluster.expanded) continue;
+      const clusters = result.get(cluster.rowId) ?? [];
+      clusters.push(cluster);
+      result.set(cluster.rowId, clusters);
+    }
+    return result;
+  }, [timelineLayout.sameTimeClusters]);
+  const rangeClustersByRow = useMemo(() => {
+    const result = new Map<string, TimelineRangeCluster[]>();
+    for (const cluster of timelineLayout.rangeClusters) {
+      const clusters = result.get(cluster.rowId) ?? [];
+      clusters.push(cluster);
+      result.set(cluster.rowId, clusters);
+    }
+    return result;
+  }, [timelineLayout.rangeClusters]);
+  const aggregateMarksByRow = useMemo(() => {
+    const result = new Map<string, Array<{ interval: TimelineAggregateInterval; mark: TimelineAggregateMark }>>();
+    for (const interval of aggregateIntervals) {
+      const mark = aggregateMarkById.get(interval.id);
+      if (!mark) continue;
+      const entries = result.get(mark.rowId) ?? [];
+      entries.push({ interval, mark });
+      result.set(mark.rowId, entries);
+    }
+    return result;
+  }, [aggregateIntervals, aggregateMarkById]);
   const clusterById = useMemo(() => (
     new Map<TimelineClusterMark['id'], TimelineClusterMark>([
       ...timelineLayout.sameTimeClusters.map((cluster) => [cluster.id, cluster] as const),
@@ -1544,6 +1562,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     : 'No timeline rows match the current controls.';
   const inspectorContent = useMemo(() => (
     <TimelineInspector
+      project={projection?.project ?? null}
       selectedEvent={selectedEvent}
       selectedCluster={selectedCluster}
       selectedClusterEvents={selectedClusterEvents}
@@ -1569,6 +1588,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     linkById,
     links,
     promoteRow,
+    projection?.project,
     removePromotedRow,
     removeTransientRow,
     selectEvent,
@@ -1923,15 +1943,9 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
                 const rowEventMarks = rowEvents
                   .map((event) => ({ event, mark: eventMarkById.get(event.id) }))
                   .filter((entry): entry is { event: TimelineEvent; mark: TimelineEventMark } => Boolean(entry.mark));
-                const rowSameTimeClusters = timelineLayout.sameTimeClusters.filter(
-                  (cluster) => cluster.rowId === row.id && !cluster.expanded,
-                );
-                const rowRangeClusters = timelineLayout.rangeClusters.filter((cluster) => cluster.rowId === row.id);
-                const rowAggregateMarks = aggregateIntervals
-                  .map((interval) => ({ interval, mark: aggregateMarkById.get(interval.id) }))
-                  .filter((entry): entry is { interval: TimelineAggregateInterval; mark: TimelineAggregateMark } => (
-                    Boolean(entry.mark) && entry.mark.rowId === row.id
-                  ));
+                const rowSameTimeClusters = sameTimeClustersByRow.get(row.id) ?? [];
+                const rowRangeClusters = rangeClustersByRow.get(row.id) ?? [];
+                const rowAggregateMarks = aggregateMarksByRow.get(row.id) ?? [];
                 const earlier = rowEvents.filter((event) => event.timestamp < start).length;
                 const later = rowEvents.filter((event) => event.timestamp > end).length;
                 const sourceEvent = row.source_event_id ? eventById.get(row.source_event_id) : null;
@@ -2102,6 +2116,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
 }
 
 type InspectorProps = {
+  project: ProjectTimelineProjection['project'] | null;
   selectedEvent: TimelineEvent | null;
   selectedCluster: TimelineClusterMark | null;
   selectedClusterEvents: TimelineEvent[];
@@ -2123,6 +2138,7 @@ type InspectorProps = {
 };
 
 function TimelineInspector({
+  project,
   selectedEvent,
   selectedCluster,
   selectedClusterEvents,
@@ -2150,11 +2166,17 @@ function TimelineInspector({
   const otherRefs = eventLinks.filter((link) => (
     link.ref_kind !== 'issue' || !link.target_issue || link.target_issue.deleted
   ));
-  const selectedEventBodyHtml = useMemo(() => (
-    selectedEvent
-      ? renderTimelineMarkdown(selectedEvent.body || selectedEvent.display_headline)
-      : ''
-  ), [selectedEvent?.body, selectedEvent?.display_headline]);
+  const selectedEventDetail = selectedEvent
+    ? {
+        id: selectedEvent.issue.id,
+        display_id: selectedEvent.issue.display_id,
+        project: {
+          repo_id: project?.repo_id ?? project?.repo_name ?? project?.display_name ?? selectedEvent.issue.project_id,
+          display_name: project?.display_name ?? project?.repo_name ?? selectedEvent.issue.project_id,
+        },
+        auth_requests: [],
+      }
+    : null;
   return (
     <div className="timeline-inspector__content">
       {missingEventId || missingClusterId || missingRowId ? (
@@ -2206,8 +2228,7 @@ function TimelineInspector({
               {selectedEvent.state.event_type}: {selectedEvent.state.status ?? 'none'}
             </div>
           ) : null}
-          <div className="timeline-event-body" dangerouslySetInnerHTML={{ __html: selectedEventBodyHtml }} />
-          <div className="timeline-action-row">
+          <div className="timeline-action-row timeline-action-row--event">
             {expandedEventIds.includes(selectedEvent.id) ? (
               <button type="button" onClick={() => onCollapseEvent(selectedEvent.id)}>Fold refs</button>
             ) : expandableLinks.length > 0 ? (
@@ -2215,6 +2236,14 @@ function TimelineInspector({
             ) : null}
             <a href={`#/issues?issue=${encodeURIComponent(selectedEvent.issue.display_id)}`}>Open issue</a>
           </div>
+          {selectedEventDetail ? (
+            <LedgerRenderedBody
+              className="timeline-event-body"
+              source={selectedEvent.body || selectedEvent.display_headline}
+              empty=""
+              detail={selectedEventDetail}
+            />
+          ) : null}
           {expandableLinks.length > 0 ? (
             <div className="timeline-ref-list">
               <h3>Issue refs</h3>

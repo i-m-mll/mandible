@@ -2270,6 +2270,12 @@ describe('ArtifactsView', () => {
     const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
     expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
     expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
+    expect(screen.getByLabelText('Artifact version')).toBeTruthy();
+    expect(screen.queryByText('Version')).toBeNull();
+    expect(document.querySelector('.artifact-detail__badge')).toBeNull();
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    expect(screen.getByRole('menuitem', { name: 'Add to Space' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
     const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
@@ -2834,9 +2840,10 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: v1.id }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('report-v1.md'));
-    const versionSelect = screen.getByLabelText('Version') as HTMLSelectElement;
+    const versionSelect = screen.getByLabelText('Artifact version') as HTMLSelectElement;
     await waitFor(() => expect(versionSelect.value).toBe('1'));
-    expect(screen.getByText('Jump to latest')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    expect(screen.getByRole('menuitem', { name: 'Jump to latest' })).toBeTruthy();
     expect(screen.queryByText('series_latest_not_pinned')).toBeNull();
     expect(versionRefs).toContain(v1.id);
     await waitFor(() => expect(versionRefs).toContain(artifactSeries.summary.ref));
@@ -2891,8 +2898,8 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialRef: ref }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('latest-v2.md'));
-    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('');
-    expect(screen.getByText('latest')).toBeTruthy();
+    expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('');
+    expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
   });
 
@@ -2935,14 +2942,15 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialSeriesRef: 'artifact-series:pinned-series', initialVersionNo: 1 }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md'));
-    fireEvent.click(screen.getByRole('button', { name: 'Version history' }));
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Version history' }));
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
 
     fireEvent.input(screen.getByPlaceholderText('Search artifacts'), { target: { value: 'pinned' } });
 
     await waitFor(() => expect(seriesCalls).toBeGreaterThan(2));
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
-    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('1');
+    expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('1');
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /pinned-report\.md/ }).textContent).toContain('v3');
@@ -3011,7 +3019,7 @@ describe('ArtifactsView', () => {
     rerender(h(ArtifactsView, { initialSeriesRef: firstSeries.summary.ref, initialVersionNo: 1 }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('hash-self-v1.md'));
-    expect((screen.getByLabelText('Version') as HTMLSelectElement).value).toBe('1');
+    expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('1');
   });
 
   it('renders bundle artifacts as member navigation before manifest JSON', async () => {

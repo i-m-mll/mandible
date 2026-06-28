@@ -74,6 +74,14 @@ describe("ledger comment card surfaces", () => {
     expect(body).not.toMatch(/background:\s*var\(--neutral-alpha/);
   });
 
+  it("keeps the timeline inspector body on the normal content surface", () => {
+    const body = cssRuleBody(".timeline-event-body");
+
+    expect(body).toContain("min-height: 0");
+    expect(body).toContain("background: var(--surface-content)");
+    expect(body).not.toMatch(/background:\s*rgba\(0,\s*0,\s*0,\s*0\.22\)/);
+  });
+
   it("keeps comment inline code clear while preserving code-block affordances", () => {
     const inlineCode = cssRuleBody(".spec-panel code");
     const codeBlock = cssRuleBody(".spec-panel pre");

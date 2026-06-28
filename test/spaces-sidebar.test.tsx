@@ -5,6 +5,7 @@
 // filter, foldable headers, drag-reorder persistence, the bare "+" create flow
 // (blank + seeded → SpaceSeedDialog mount), selection navigation, and the
 // sidebarHidden contract.
+import { readFileSync } from 'node:fs';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
@@ -21,6 +22,8 @@ vi.mock('../ui/src/api', async (importActual) => {
 
 import { SpacesSidebar } from '../ui/src/views/spaces/SpacesSidebar';
 import type { Space, SpaceGroup } from '../ui/src/api';
+
+const spacesSidebarStylesheet = readFileSync('ui/src/views/spaces/SpacesSidebar.css', 'utf8');
 
 function makeSpace(id: string, title: string, projectId: string | null): Space {
   return {
@@ -190,6 +193,28 @@ describe('SpacesSidebar drag-reorder', () => {
 });
 
 describe('SpacesSidebar create flow', () => {
+  it('keeps project create buttons accessible while revealing them only on row hover or focus', async () => {
+    const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
+    render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
+    await screen.findByText('Roadmap');
+
+    const projectCreate = screen.getByTestId('create-in-proj-a');
+    expect(projectCreate.getAttribute('aria-label')).toBe('Create space in Alpha');
+
+    const topLevelCreate = screen.getByTestId('create-top-level');
+    expect(topLevelCreate.getAttribute('aria-label')).toBe('Create top-level space');
+
+    expect(spacesSidebarStylesheet).toMatch(
+      /\.spaces-tree__group-header\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/s,
+    );
+    expect(spacesSidebarStylesheet).toMatch(
+      /\.spaces-tree__group-header:hover\s+\.spaces-tree__create,\s*\.spaces-tree__group-header:focus-within\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/s,
+    );
+    expect(spacesSidebarStylesheet).not.toMatch(
+      /\.spaces-tree__header\s+\.spaces-tree__create\s*\{[^}]*opacity:\s*0;/s,
+    );
+  });
+
   it('creates a blank space in a project and selects it', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('new1', 'New one', 'proj-a'));
@@ -357,5 +382,18 @@ describe('SpacesSidebar selection', () => {
       spaceId: 'b1',
       renderer: 'collection',
     });
+  });
+
+  it('keeps project child rows aligned with project title text without bolding selection', () => {
+    expect(spacesSidebarStylesheet).toMatch(
+      /\.spaces-tree__space\s*\{[^}]*padding:\s*0\.28rem 0\.75rem 0\.28rem 2rem;/s,
+    );
+    expect(spacesSidebarStylesheet).toMatch(
+      /\.spaces-tree__space\s*\{[^}]*font-weight:\s*400;/s,
+    );
+    expect(spacesSidebarStylesheet).toMatch(/\.spaces-tree__space--active\s*\{[^}]*background:\s*var\(--overlay-selected\)/s);
+    expect(spacesSidebarStylesheet).not.toMatch(
+      /\.spaces-tree__space--active\s*\{[^}]*font-weight:\s*600/s,
+    );
   });
 });

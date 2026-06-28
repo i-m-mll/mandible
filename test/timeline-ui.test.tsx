@@ -72,6 +72,7 @@ function projection(overrides: Partial<ProjectTimelineProjection> = {}): Project
       expanded_paths: [],
       include_closed: false,
       statuses: ['open'],
+      event_kinds: ['body', 'comment', 'state'],
       depth: 2,
       from: null,
       to: null,
@@ -853,6 +854,7 @@ describe('TimelineView', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.project_ref).toBe('mandible');
     expect(body.root_policy).toBe('coordination_and_explicit');
+    expect(body.event_kinds).toEqual(['body', 'comment', 'state']);
 
     resolveInitial(projectProjection(
       'mandible',
@@ -908,9 +910,33 @@ describe('TimelineView', () => {
     const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
     expect(body.include_closed).toBe(true);
     expect(body.expanded_event_ids).toEqual(['url-event']);
+    expect(body.event_kinds).toEqual(['body', 'comment', 'state']);
     expect(body).not.toHaveProperty('from');
     expect(body).not.toHaveProperty('to');
     expect(document.querySelector('.timeline-grid--compact')).toBeTruthy();
+  });
+
+  it('requests only the currently visible event kinds from the projection', async () => {
+    let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
+    const second = new Promise<ProjectTimelineProjection>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const fetchMock = stubTimelineFetch(projection(), second);
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.click(screen.getByText('Comment'));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    const body = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(body.event_kinds).toEqual(['body', 'state']);
+
+    resolveSecond(projection());
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
   });
 
   it('keeps route-ref and canonical project storage coherent after load', async () => {
@@ -1273,9 +1299,13 @@ describe('TimelineView', () => {
       body: 'Comment body',
       link_ids: [],
     };
+    let resolveNarrow: (value: ProjectTimelineProjection) => void = () => undefined;
+    const narrow = new Promise<ProjectTimelineProjection>((resolve) => {
+      resolveNarrow = resolve;
+    });
     const fetchMock = stubTimelineFetch(projection({
       events: [base.events[0], commentEvent],
-    }));
+    }), narrow);
 
     render(h(TimelineView, {
       repos: [{ id: 'mandible', name: 'mandible' }],
@@ -1288,7 +1318,14 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.queryByText('Build shared axis')).toBeNull());
     const commentButton = screen.getByText('Comment extent anchor').closest('button') as HTMLButtonElement;
     expect(commentButton.style.left).toBe('410px');
-    expect(fetchMock.mock.calls.length).toBe(1);
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    const body = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(body.event_kinds).toEqual(['comment', 'state']);
+
+    resolveNarrow(projection({
+      events: [commentEvent],
+    }));
+    await waitFor(() => expect(screen.getByText('Comment extent anchor')).toBeTruthy());
   });
 
   it('pads fitted timeline edges by the rendered mark width', async () => {
@@ -1494,6 +1531,7 @@ describe('TimelineView', () => {
     expect(body.expanded_event_ids).toEqual([]);
     expect(body.expanded_paths).toEqual([]);
     expect(body.root_specs).toEqual([]);
+    expect(body.event_kinds).toEqual(['body', 'comment', 'state']);
 
     resolveSecond(other);
     await waitFor(() => expect(screen.getByText('Load Humble coordination root')).toBeTruthy());
@@ -1660,6 +1698,34 @@ describe('TimelineView', () => {
     await waitFor(() => expect(document.querySelectorAll('.timeline-row').length).toBe(2));
     expect(screen.getByText('Full body text')).toBeTruthy();
     expect(screen.queryByText('No selection')).toBeNull();
+  });
+
+  it('renders selected event bodies with ledger links and header actions', async () => {
+    const base = projection();
+    stubTimelineFetch(projection({
+      events: [{
+        ...base.events[0],
+        body: 'Full body text references [issue:96b5bff].',
+      }],
+    }));
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    fireEvent.click(screen.getByText('Build shared axis'));
+
+    const body = document.querySelector<HTMLElement>('.timeline-event-body');
+    const actionRow = document.querySelector<HTMLElement>('.timeline-action-row--event');
+    expect(body).toBeTruthy();
+    expect(actionRow).toBeTruthy();
+    expect(actionRow?.nextElementSibling).toBe(body);
+    expect(within(body!).getByRole('link', { name: '96b5bff' }).getAttribute('href')).toBe(
+      '#/issues?repo=mandible&issue=96b5bff',
+    );
+    expect(screen.getByText('Expand refs')).toBeTruthy();
   });
 
   it('expands issue refs from a selected transient event', async () => {

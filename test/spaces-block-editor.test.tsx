@@ -2,8 +2,9 @@
 //
 // Covers the acceptance criteria:
 //   - The editor reads/writes `space_blocks` via the C11 routes and renders the
-//     live tree through the C14b renderer (create / edit prose / reorder /
-//     delete / embed all hit the right routes).
+//     live tree through the C14b renderer. Authoring controls must stay
+//     transparent: typed document commands and transient overlays, not persistent
+//     block chrome.
 //   - Custody-aware gating (C13d): a repo-authoritative + drifted document is
 //     read-only/stale with re-import / fork affordances; Mandible-custody and
 //     clean repo documents are freely editable.
@@ -16,12 +17,15 @@
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
+import { act } from 'preact/test-utils';
+import { EditorSelection } from '@codemirror/state';
+import type { EditorView } from '@codemirror/view';
 
 import {
   DocumentBlockEditor,
-  type EmbeddableItem,
   type EmbedDeleteDecision,
 } from '../ui/src/views/spaces/DocumentBlockEditor';
+import { MarkdownSourceEditor } from '../ui/src/views/spaces/MarkdownSourceEditor';
 import {
   generateSortKey,
   isValidSortKey,
@@ -45,7 +49,7 @@ import {
   deleteSpaceBlock,
   detachItemFromBlocks,
 } from '../ui/src/views/spaces/spaceBlocksClient';
-import type { SpaceBlock, SpaceExport } from '../ui/src/api';
+import type { LedgerIssueDetailProjection, SpaceBlock, SpaceExport, SpaceItem } from '../ui/src/api';
 import { __resetResourceRefRecognizers } from '../ui/src/resource-refs';
 
 const NOW = 1_700_000_000_000;
@@ -130,13 +134,28 @@ function makeExport(over: Partial<SpaceExport>): SpaceExport {
   };
 }
 
+function makeItem(over: Partial<SpaceItem> & Pick<SpaceItem, 'id'>): SpaceItem {
+  return {
+    id: over.id,
+    space_id: 'sp1',
+    ref_type: 'issue',
+    ref_id: 'abc123',
+    ref_uri: null,
+    title: 'Issue abc123',
+    metadata: {},
+    created_at: NOW,
+    updated_at: NOW,
+    ...over,
+  };
+}
+
 /**
  * A mutable in-memory backend stub over the C11 block routes + the C13a exports
  * read. Records every write so the tests can assert the editor hit the right
  * route with the right body. Shared as both the editor `fetchImpl` and the
  * global `fetch` (the editor reads exports through the C3 `getSpaceExports`).
  */
-function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = []) {
+function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = [], items: SpaceItem[] = []) {
   const blocks = new Map(initial.map((b) => [b.id, { ...b }]));
   const calls: { method: string; url: string; body: unknown }[] = [];
   let idSeq = 0;
@@ -154,9 +173,28 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = []) {
     const blockItem = url.match(/\/api\/spaces\/sp1\/blocks\/([^/?]+)$/);
     const detach = url.match(/\/api\/spaces\/sp1\/items\/([^/?]+)\/detach-blocks$/);
     const exportsRead = url.match(/\/api\/spaces\/sp1\/exports(?:\?.*)?$/);
+    const spaceRead = url.match(/\/api\/spaces\/sp1(?:\?.*)?$/);
+    const issueDetail = url.match(/\/api\/ledger\/issues\/([^/?]+)$/);
 
     if (exportsRead && method === 'GET') {
       return json({ exports, repo_id: 'repo1', settings: { path: 'doc.md', branch: 'docs' } });
+    }
+    if (spaceRead && method === 'GET') {
+      return json({
+        space: {
+          id: 'sp1',
+          project_id: 'prj1',
+          title: 'Space',
+          default_renderer: 'document',
+          description: null,
+          metadata: {},
+          created_at: NOW,
+          updated_at: NOW,
+        },
+        items,
+        occurrences: [],
+        edges: [],
+      });
     }
     if (blockColl && method === 'GET') {
       return json({ blocks: list() });
@@ -206,10 +244,49 @@ function makeBackend(initial: SpaceBlock[], exports: SpaceExport[] = []) {
     if (url.includes('/api/spaces/resolve')) {
       return json({ resolution: { ref: 'x', kind: 'artifact', resolved: false, entity: null } });
     }
+    if (issueDetail && method === 'GET') {
+      return json(makeIssueDetail(issueDetail[1]));
+    }
     return json({});
   });
 
   return { fetchImpl, calls, list, blocks };
+}
+
+function makeIssueDetail(issueId: string): LedgerIssueDetailProjection {
+  return {
+    id: issueId,
+    display_id: issueId,
+    title: `Issue ${issueId}`,
+    body: '',
+    status: 'open',
+    labels: [],
+    aliases: [],
+    created_at: NOW,
+    updated_at: NOW,
+    closed_at: null,
+    author: { id: null, type: 'mandible_user', display: 'Mandible' },
+    project: {
+      id: 'prj1',
+      project_key: 'mandible',
+      display_name: 'mandible',
+      remote_identity: '',
+      upstream_identity: '',
+      repo_id: 'mandible',
+      work_repo_id: 'mandible',
+      repo_name: 'mandible',
+      repo_root: '',
+      default_branch: 'main',
+    },
+    relationships: [],
+    sessions: [],
+    auth_requests: [],
+    work_units: [],
+    timeline: [],
+    associated_artifacts: [],
+    conflicts: [],
+    sync: { state: 'clean', last_synced_at: null, message: null },
+  } as unknown as LedgerIssueDetailProjection;
 }
 
 function json(payload: unknown, status = 200): Response {
@@ -223,6 +300,32 @@ beforeEach(() => {
   stubLocalStorage();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
+  if (!Range.prototype.getClientRects) {
+    Object.defineProperty(Range.prototype, 'getClientRects', {
+      configurable: true,
+      value: () => ({
+        length: 0,
+        item: () => null,
+        [Symbol.iterator]: function* () {},
+      }),
+    });
+  }
+  if (!Range.prototype.getBoundingClientRect) {
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        toJSON: () => ({}),
+      }),
+    });
+  }
 });
 
 afterEach(() => {
@@ -398,94 +501,669 @@ async function renderEditor(props: Partial<Parameters<typeof DocumentBlockEditor
   await waitFor(() => expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy());
 }
 
+type SourceHost = HTMLElement & { __spacesEditorView?: EditorView };
+
+function sourceHost(index = 0): SourceHost {
+  return screen.getAllByTestId('spaces-block-editor-source')[index] as SourceHost;
+}
+
+function sourceView(index = 0): EditorView {
+  const view = sourceHost(index).__spacesEditorView;
+  if (!view) throw new Error(`missing source editor view ${index}`);
+  return view;
+}
+
+function sourceText(index = 0): string {
+  return sourceView(index).state.doc.toString();
+}
+
+function setSourceText(index: number, value: string, cursor = value.length): EditorView {
+  const view = sourceView(index);
+  act(() => {
+    view.focus();
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: value },
+      selection: EditorSelection.cursor(Math.max(0, Math.min(cursor, value.length))),
+    });
+  });
+  return view;
+}
+
+function setSourceSelection(index: number, start: number, end: number): EditorView {
+  const view = sourceView(index);
+  act(() => {
+    view.focus();
+    view.dispatch({ selection: EditorSelection.range(start, end) });
+  });
+  return view;
+}
+
+function blurSource(index = 0): void {
+  fireEvent.blur(sourceView(index).contentDOM);
+}
+
+async function flushEffects(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+describe('MarkdownSourceEditor state synchronization', () => {
+  it('does not replace local editor text with a stale parent value while the draft catches up', async () => {
+    const changes: Array<{ value: string; selection: { start: number; end: number } }> = [];
+    const renderSource = (value: string) => (
+      <MarkdownSourceEditor
+        blockId="b1"
+        value={value}
+        ariaLabel="Edit Markdown"
+        onChange={(nextValue, selection) => changes.push({ value: nextValue, selection })}
+        onBlur={() => undefined}
+        onCaretChange={() => undefined}
+        onSelectionChange={() => undefined}
+        onItemCommand={() => undefined}
+        onOpenReference={() => undefined}
+      />
+    );
+    const { rerender } = render(renderSource('## Heading'));
+    await flushEffects();
+
+    const nextValue = '## Heading\nbody';
+    setSourceText(0, nextValue, nextValue.length);
+    expect(changes.at(-1)).toEqual({
+      value: nextValue,
+      selection: { start: nextValue.length, end: nextValue.length },
+    });
+
+    rerender(renderSource('## Heading'));
+    await flushEffects();
+
+    expect(sourceText()).toBe(nextValue);
+    expect(sourceView().state.selection.main.from).toBe(nextValue.length);
+
+    rerender(renderSource(nextValue));
+    await flushEffects();
+    rerender(renderSource('external update'));
+    await flushEffects();
+
+    expect(sourceText()).toBe('external update');
+  });
+});
+
 describe('DocumentBlockEditor (editable)', () => {
-  it('renders the live tree through the C14b renderer and shows add/edit controls', async () => {
+  it('renders the live tree as document-like editable rows', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
       makeBlock({ id: 'b2', sort_key: 'b', markdown: 'Body prose.' }),
     ]);
     await renderEditor({ backend });
 
-    // C14b renderer body is present (read path), with the prose rendered.
-    expect(screen.getByTestId('spaces-document')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
     expect(screen.getByText('Body prose.')).toBeTruthy();
-    // Editable: toolbar + per-block controls visible.
-    expect(screen.getByTestId('spaces-block-editor-toolbar')).toBeTruthy();
+    expect(sourceText(0)).toBe('# Title');
+    expect(sourceText(1)).toBe('Body prose.');
+    expect(screen.getAllByTestId('spaces-block-editor-row')).toHaveLength(2);
+    expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-command-trigger')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-picker-overlay')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-add-items')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-up')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-down')).toBeNull();
+    expect(screen.queryByTestId('spaces-block-editor-delete')).toBeNull();
     const editor = screen.getByTestId('spaces-block-editor');
     expect(editor.getAttribute('data-editable')).toBe('true');
     expect(editor.getAttribute('data-stale')).toBe('false');
   });
 
-  it('creates a prose block via POST /api/spaces/:id/blocks', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
+  it('renders the document without waiting for the space fact packet', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Body prose.' }),
+    ]);
+    const baseFetch = backend.fetchImpl;
+    backend.fetchImpl = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (/\/api\/spaces\/sp1(?:\?.*)?$/.test(url)) {
+        return new Promise<Response>(() => undefined);
+      }
+      return baseFetch(input, init);
+    });
+
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-add-paragraph'));
+    expect(screen.queryByText('Loading document…')).toBeNull();
+    expect(screen.getByText('Body prose.')).toBeTruthy();
+  });
+
+  it('ignores failed block loads from a previously selected document', async () => {
+    let rejectOldBlocks: ((reason?: unknown) => void) | null = null;
+    const fetchImpl = vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url)) {
+        return new Promise<Response>((_resolve, reject) => {
+          rejectOldBlocks = reject;
+        });
+      }
+      if (/\/api\/spaces\/sp2\/blocks(?:\?.*)?$/.test(url)) {
+        return Promise.resolve(json({
+          blocks: [
+            makeBlock({
+              id: 'b2',
+              space_id: 'sp2',
+              sort_key: 'a',
+              markdown: 'Fresh document.',
+            }),
+          ],
+        }));
+      }
+      if (/\/api\/spaces\/sp[12]\/exports(?:\?.*)?$/.test(url)) {
+        return Promise.resolve(json({ exports: [] }));
+      }
+      if (/\/api\/spaces\/sp[12](?:\?.*)?$/.test(url)) {
+        return Promise.resolve(json({
+          space: {
+            id: url.includes('/sp2') ? 'sp2' : 'sp1',
+            project_id: 'prj1',
+            title: 'Space',
+            default_renderer: 'document',
+            description: null,
+            metadata: {},
+            created_at: NOW,
+            updated_at: NOW,
+          },
+          items: [],
+          occurrences: [],
+          edges: [],
+        }));
+      }
+      return Promise.resolve(json({}));
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const rendered = render(
+      <DocumentBlockEditor
+        projectId="prj1"
+        spaceId="sp1"
+        renderer="document"
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await waitFor(() => expect(rejectOldBlocks).toBeTruthy());
+
+    rendered.rerender(
+      <DocumentBlockEditor
+        projectId="prj1"
+        spaceId="sp2"
+        renderer="document"
+        fetchImpl={fetchImpl as unknown as typeof fetch}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Fresh document.')).toBeTruthy());
+
+    await act(async () => {
+      rejectOldBlocks?.(new Error('old load failed'));
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByTestId('spaces-block-editor-error')).toBeNull();
+    expect(screen.queryByText('Loading document…')).toBeNull();
+    expect(screen.getByText('Fresh document.')).toBeTruthy();
+  });
+
+  it('uses one source editor per editable Markdown block without textarea islands', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Selectable prose.' }),
+    ]);
+    await renderEditor({ backend });
+
+    const surface = screen.getByTestId('spaces-block-editor-edit');
+    expect(surface.tagName).toBe('DIV');
+    expect(surface.getAttribute('role')).toBeNull();
+    expect(surface.getAttribute('tabindex')).toBeNull();
+    expect(sourceText()).toBe('Selectable prose.');
+    expect(sourceView().contentDOM.getAttribute('role')).toBe('textbox');
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+  });
+
+  it('keeps paragraph prose directly editable in the source editor', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Editable prose.' }),
+    ]);
+    await renderEditor({ backend });
+
+    sourceView().focus();
+    await waitFor(() => expect(document.activeElement).toBe(sourceView().contentDOM));
+    expect(sourceText()).toBe('Editable prose.');
+  });
+
+  it('renders headings as headings until the caret enters that source line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '# Title' }),
+    ]);
+    await renderEditor({ backend });
+
+    const heading = screen.getByRole('heading', { name: 'Title' });
+    expect(heading).toBeTruthy();
+    expect(heading.closest('[data-heading-hit-area="true"]')).toBeTruthy();
+    fireEvent.mouseDown(heading);
+
+    const view = sourceView();
+    await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+    expect(sourceText()).toBe('# Title');
+    expect(view.state.selection.main.from).toBe(2);
+    expect(screen.queryByRole('heading', { name: 'Title' })).toBeNull();
+  });
+
+  it('keeps rendered headings visible while focus is outside their source line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: 'intro\n# Title' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceSelection(0, 2, 2);
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Title' })).toBeTruthy();
+  });
+
+  it('shows plain source for heading blocks whose markdown has no hash prefix', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: 'New heading' }),
+    ]);
+    await renderEditor({ backend });
+
+    expect(sourceText()).toBe('New heading');
+    expect(screen.getByText('New heading')).toBeTruthy();
+  });
+
+  it('places the caret inside a clicked rendered heading instead of selecting the end', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'heading', sort_key: 'a', markdown: '## Some heading' }),
+    ]);
+    await renderEditor({ backend });
+
+    const heading = screen.getByRole('heading', { name: 'Some heading' });
+    const textNode = heading.firstChild;
+    expect(textNode).toBeTruthy();
+    const range = document.createRange();
+    range.setStart(textNode!, 5);
+    range.setEnd(textNode!, 5);
+    const priorCaretRangeFromPoint = (
+      document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
+    ).caretRangeFromPoint;
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: () => range,
+    });
+    try {
+      fireEvent.mouseDown(heading, { clientX: 48, clientY: 12 });
+      const view = sourceView();
+      await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+      expect(sourceText()).toBe('## Some heading');
+      expect(view.state.selection.main.from).toBe(8);
+      expect(view.state.selection.main.from).not.toBe(sourceText().length);
+    } finally {
+      Object.defineProperty(document, 'caretRangeFromPoint', {
+        configurable: true,
+        value: priorCaretRangeFromPoint,
+      });
+    }
+  });
+
+  it('keeps lines before and after a mixed Markdown heading in one editable source buffer', async () => {
+    const backend = makeBackend([
+      makeBlock({
+        id: 'b1',
+        block_type: 'paragraph',
+        sort_key: 'a',
+        markdown: 'intro\n## Heading\nbody',
+      }),
+    ]);
+    await renderEditor({ backend });
+
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
+    expect(sourceText()).toBe('intro\n## Heading\nbody');
+    setSourceSelection(0, 0, 0);
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
+    setSourceSelection(0, sourceText().length, sourceText().length);
+    expect(screen.getByRole('heading', { name: 'Heading' })).toBeTruthy();
+  });
+
+  it('maps a clicked rendered heading in a mixed block to the matching markdown source line', async () => {
+    const backend = makeBackend([
+      makeBlock({
+        id: 'b1',
+        block_type: 'paragraph',
+        sort_key: 'a',
+        markdown: 'intro\n## Heading\nbody',
+      }),
+    ]);
+    await renderEditor({ backend });
+
+    const heading = screen.getByRole('heading', { name: 'Heading' });
+    const textNode = heading.firstChild;
+    expect(textNode).toBeTruthy();
+    const range = document.createRange();
+    range.setStart(textNode!, 2);
+    range.setEnd(textNode!, 2);
+    const priorCaretRangeFromPoint = (
+      document as Document & { caretRangeFromPoint?: (x: number, y: number) => Range | null }
+    ).caretRangeFromPoint;
+    Object.defineProperty(document, 'caretRangeFromPoint', {
+      configurable: true,
+      value: () => range,
+    });
+    try {
+      fireEvent.mouseDown(heading, { clientX: 48, clientY: 12 });
+      const view = sourceView();
+      await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+      expect(sourceText()).toBe('intro\n## Heading\nbody');
+      expect(view.state.selection.main.from).toBe('intro\n## He'.length);
+    } finally {
+      Object.defineProperty(document, 'caretRangeFromPoint', {
+        configurable: true,
+        value: priorCaretRangeFromPoint,
+      });
+    }
+  });
+
+  it('renders a typed Markdown heading as soon as Enter moves the caret to the next line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: '' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceText(0, '## Something\n', '## Something\n'.length);
+
+    expect(await screen.findByRole('heading', { name: 'Something' })).toBeTruthy();
+    expect(sourceView().state.selection.main.from).toBe('## Something\n'.length);
+
+    for (const value of ['b', 'bo', 'bod', 'body']) {
+      setSourceText(0, `## Something\n${value}`, `## Something\n${value}`.length);
+      expect(sourceText()).toBe(`## Something\n${value}`);
+    }
+    blurSource();
+
+    await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));
+  });
+
+  it('keeps prose Enter focused on an editable following line', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: '' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceText(0, 'first\n', 'first\n'.length);
+    expect(document.activeElement).toBe(sourceView().contentDOM);
+    expect(sourceText()).toBe('first\n');
+
+    for (const value of ['s', 'se', 'sec', 'seco', 'secon', 'second']) {
+      setSourceText(0, `first\n${value}`, `first\n${value}`.length);
+      expect(document.activeElement).toBe(sourceView().contentDOM);
+    }
+    blurSource();
+
+    await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('first\nsecond'));
+  });
+
+  it('Backspace at an empty line or line start removes the newline normally', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: 'first\nsecond' }),
+    ]);
+    await renderEditor({ backend });
+
+    const emptyLine = 'first\n\nsecond';
+    setSourceText(0, emptyLine, 'first\n\n'.length);
+    act(() => {
+      const view = sourceView();
+      view.dispatch({
+        changes: { from: 'first\n'.length, to: 'first\n\n'.length, insert: '' },
+        selection: EditorSelection.cursor('first\n'.length),
+      });
+    });
+    expect(sourceText()).toBe('first\nsecond');
+
+    act(() => {
+      const view = sourceView();
+      view.dispatch({
+        changes: { from: 'first'.length, to: 'first\n'.length, insert: '' },
+        selection: EditorSelection.cursor('first'.length),
+      });
+    });
+    expect(sourceText()).toBe('firstsecond');
+  });
+
+  it('renders blank paragraph blocks as blank document content', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: '' })]);
+    await renderEditor({ backend });
+
+    expect(screen.queryByText('Write here…')).toBeNull();
+    expect(sourceText()).toBe('');
+  });
+
+  it('opens the shared bottom detail panel for inline issue references', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See [issue:abc123].' }),
+    ]);
+    await renderEditor({ backend });
+
+    const refLink = screen.getByText('issue:abc123');
+    expect(refLink.classList.contains('resource-ref__link')).toBe(true);
+
+    fireEvent.click(refLink);
+
+    expect(screen.getByTestId('spaces-block-editor-inspector')).toBeTruthy();
+    expect(screen.getByTestId('spaces-block-editor-inspector-resize')).toBeTruthy();
+    expect(screen.queryByTestId('spaces-block-editor-textarea')).toBeNull();
+    expect(document.querySelector('.spaces-block-editor__inspector-meta')).toBeNull();
+    expect(screen.queryByText('issue:abc123', { selector: '.spaces-block-editor__inspector-meta code' })).toBeNull();
+    await waitFor(() =>
+      expect(backend.calls.some((c) => c.method === 'GET' && /\/api\/ledger\/issues\/abc123$/.test(c.url))).toBe(true),
+    );
+    expect(screen.queryByTestId('spaces-block-editor-embed-delete')).toBeNull();
+  });
+
+  it('resizes the bottom reference inspector from its top-edge separator', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See [issue:abc123].' }),
+    ]);
+    await renderEditor({ backend });
+
+    fireEvent.click(screen.getByText('issue:abc123'));
+    const inspector = screen.getByTestId('spaces-block-editor-inspector') as HTMLElement;
+    const handle = screen.getByTestId('spaces-block-editor-inspector-resize') as HTMLElement;
+    const editor = screen.getByTestId('spaces-block-editor') as HTMLElement;
+
+    inspector.getBoundingClientRect = () => ({
+      x: 0,
+      y: 440,
+      width: 800,
+      height: 220,
+      top: 440,
+      right: 800,
+      bottom: 660,
+      left: 0,
+      toJSON: () => ({}),
+    });
+    editor.getBoundingClientRect = () => ({
+      x: 0,
+      y: 0,
+      width: 800,
+      height: 600,
+      top: 0,
+      right: 800,
+      bottom: 600,
+      left: 0,
+      toJSON: () => ({}),
+    });
+
+    fireEvent.mouseDown(handle, { clientY: 440 });
+    act(() => {
+      window.dispatchEvent(new MouseEvent('pointermove', { clientY: 380 }));
+      window.dispatchEvent(new MouseEvent('pointerup'));
+    });
+
+    await waitFor(() => expect(inspector.style.flexBasis).toBe('280px'));
+    expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
+  });
+
+  it('creates the first prose block via POST /api/spaces/:id/blocks', async () => {
+    const backend = makeBackend([]);
+    vi.stubGlobal('fetch', backend.fetchImpl);
+    render(
+      <DocumentBlockEditor
+        projectId="prj1"
+        spaceId="sp1"
+        renderer="document"
+        fetchImpl={backend.fetchImpl}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-empty-author')).toBeTruthy());
+    fireEvent.click(screen.getByText('Start writing'));
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'POST' && /\/blocks$/.test(c.url))).toBe(true),
     );
     const post = backend.calls.find((c) => c.method === 'POST');
     expect((post!.body as { block_type: string }).block_type).toBe('paragraph');
-    expect((post!.body as { sort_key: string }).sort_key > 'a').toBe(true);
+    expect(typeof (post!.body as { sort_key: string }).sort_key).toBe('string');
   });
 
-  it('edits a prose block and saves via PATCH', async () => {
+  it('edits a prose block and autosaves via PATCH on blur', async () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'new text' } });
-    fireEvent.click(screen.getByTestId('spaces-block-editor-save'));
+    setSourceText(0, 'new text');
+    blurSource();
 
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true),
     );
     const patch = backend.calls.find((c) => c.method === 'PATCH');
     expect((patch!.body as { markdown: string }).markdown).toBe('new text');
+    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-save-state')).toBeTruthy());
+    const saveState = screen.getByTestId('spaces-block-editor-save-state');
+    expect(saveState.parentElement?.classList.contains('spaces-block-editor__viewport')).toBe(true);
+    expect(saveState.closest('.spaces-block-editor__scroller')).toBeNull();
+    expect(saveState.closest('.spaces-block-editor__list')).toBeNull();
   });
 
-  it('reorders a block down via a PATCH that changes sort_key', async () => {
-    const backend = makeBackend([
-      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'first' }),
-      makeBlock({ id: 'b2', sort_key: 'm', markdown: 'second' }),
-    ]);
+  it('debounces autosave while a prose block is being edited', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
+    await renderEditor({ backend });
+    vi.useFakeTimers();
+    try {
+      setSourceText(0, 'draft autosave');
+      expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(700);
+      await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
+      expect((backend.calls.find((c) => c.method === 'PATCH')!.body as { markdown: string }).markdown)
+        .toBe('draft autosave');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the draft visible while autosave waits for canonical reload', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
+    const baseFetch = backend.fetchImpl;
+    let blockGetCount = 0;
+    let releaseReload: (() => void) | null = null;
+    backend.fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url) && method === 'GET') {
+        blockGetCount += 1;
+        if (blockGetCount > 1) {
+          await new Promise<void>((resolve) => {
+            releaseReload = resolve;
+          });
+        }
+      }
+      return baseFetch(input, init);
+    });
     await renderEditor({ backend });
 
-    // The first row is b1; move it down past b2.
-    const rows = screen.getAllByTestId('spaces-block-editor-row');
-    const downBtn = rows[0].querySelector('[data-testid="spaces-block-editor-down"]')!;
-    fireEvent.click(downBtn);
+    const nextValue = '## Heading\nbody';
+    setSourceText(0, nextValue, nextValue.length);
+    blurSource();
 
     await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
-    const patch = backend.calls.find((c) => c.method === 'PATCH')!;
-    expect(patch.url).toContain('/blocks/b1');
-    expect((patch.body as { sort_key: string }).sort_key > 'm').toBe(true);
+    await waitFor(() => expect(releaseReload).not.toBeNull());
+    expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBe(nextValue);
+    expect(sourceText()).toBe(nextValue);
+    expect(sourceView().state.selection.main.from).toBe(nextValue.length);
+
+    releaseReload?.();
+    await waitFor(() => expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBeUndefined());
+    expect(sourceText()).toBe(nextValue);
   });
 
-  it('deletes a block via DELETE', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
+  it('does not regress to stale canonical block text after autosave acknowledgement', async () => {
+    const staleBlock = makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' });
+    const backend = makeBackend([staleBlock]);
+    const baseFetch = backend.fetchImpl;
+    let blockGetCount = 0;
+    backend.fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url) && method === 'GET') {
+        blockGetCount += 1;
+        if (blockGetCount === 2) {
+          return json({ blocks: [staleBlock] });
+        }
+      }
+      return baseFetch(input, init);
+    });
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-delete'));
-    await waitFor(() => expect(backend.calls.some((c) => c.method === 'DELETE')).toBe(true));
-    expect(backend.calls.find((c) => c.method === 'DELETE')!.url).toContain('/blocks/b1');
+    const nextValue = '## Heading\nbody';
+    setSourceText(0, nextValue, nextValue.length);
+    blurSource();
+
+    await waitFor(() => expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBeUndefined());
+    expect(sourceText()).toBe(nextValue);
+    expect(sourceView().state.selection.main.from).toBe(nextValue.length);
   });
 
-  it('embeds an item via POST with item_id + item_snapshot placeholder', async () => {
-    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'x' })]);
-    const items: EmbeddableItem[] = [
-      { id: 'it1', ref_type: 'issue', ref_id: 'mandible://repo/issue/abc', title: 'An issue' },
-    ];
-    await renderEditor({ backend, embeddableItems: items });
+  it('shows a transient selected-text formatting menu and wraps the selected Markdown', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'Body text' })]);
+    await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-embed-it1'));
-    await waitFor(() =>
-      expect(backend.calls.some((c) => c.method === 'POST' && (c.body as { item_id?: string }).item_id === 'it1')).toBe(true),
+    setSourceSelection(0, 0, 4);
+
+    expect(screen.getByTestId('spaces-block-editor-selection-menu')).toBeTruthy();
+    fireEvent.mouseDown(screen.getByLabelText('Bold'));
+    await waitFor(() => expect(sourceText()).toBe('**Body** text'));
+  });
+
+  it('opens the item picker from typed /item and replaces that command range with a bracket ref', async () => {
+    const backend = makeBackend(
+      [
+        makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See /item' }),
+        makeBlock({ id: 'b2', sort_key: 'b', markdown: 'Other block' }),
+      ],
+      [],
+      [makeItem({ id: 'it1', ref_type: 'issue', ref_id: 'abc123', title: 'Issue abc123' })],
     );
-    const post = backend.calls.find((c) => c.method === 'POST' && (c.body as { item_id?: string }).item_id === 'it1')!;
-    expect((post.body as { block_type: string }).block_type).toBe('issue_embed');
-    expect((post.body as { item_snapshot: { item_id: string } }).item_snapshot.item_id).toBe('it1');
+    await renderEditor({ backend });
+
+    const view = sourceView(0);
+    act(() => {
+      view.focus();
+      view.dispatch({ selection: EditorSelection.cursor(sourceText(0).length) });
+    });
+    fireEvent.keyDown(view.contentDOM, { key: 'Enter', code: 'Enter' });
+    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-picker-overlay')).toBeTruthy());
+    fireEvent.mouseEnter(screen.getAllByTestId('spaces-block-editor-row')[1]);
+    await waitFor(() => expect(screen.getByTestId('space-item-picker')).toBeTruthy());
+    fireEvent.click(screen.getByText('Issue abc123'));
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
+
+    await waitFor(() => expect(sourceText(0)).toBe('See [issue:abc123]'));
+    expect(backend.blocks.get('b2')?.markdown).toBe('Other block');
+    await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
+    expect((backend.calls.find((c) => c.method === 'PATCH')!.body as { markdown: string }).markdown)
+      .toBe('See [issue:abc123]');
   });
 });
 
@@ -536,7 +1214,8 @@ describe('DocumentBlockEditor (custody gating)', () => {
     );
     await renderEditor({ backend });
     expect(screen.getByTestId('spaces-block-editor').getAttribute('data-editable')).toBe('true');
-    expect(screen.getByTestId('spaces-block-editor-toolbar')).toBeTruthy();
+    expect(screen.getByTestId('spaces-block-editor-list')).toBeTruthy();
+    expect(screen.queryByTestId('spaces-block-editor-toolbar')).toBeNull();
   });
 });
 
@@ -601,9 +1280,7 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
     await renderEditor({ backend });
 
-    fireEvent.click(screen.getByTestId('spaces-block-editor-edit'));
-    const textarea = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-    fireEvent.input(textarea, { target: { value: 'work in progress' } });
+    setSourceText(0, 'work in progress');
 
     // Persisted browser-local for this space.
     const stored = readBlockEditorViewState('prj1', 'sp1');
@@ -616,8 +1293,7 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
 
     // The draft survives the refetch (Dataful-UX: reconcile never resets intent).
     await waitFor(() => {
-      const ta = screen.getByTestId('spaces-block-editor-textarea') as HTMLTextAreaElement;
-      expect(ta.value).toBe('work in progress');
+      expect(sourceText()).toBe('work in progress');
     });
     expect(blockEditorStorageKey('prj1', 'sp1')).toContain('sp1');
   });
