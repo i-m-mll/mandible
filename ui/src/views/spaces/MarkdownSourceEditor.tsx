@@ -398,6 +398,7 @@ export function MarkdownSourceEditor({
 }: MarkdownSourceEditorProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const pendingLocalValueRef = useRef<string | null>(null);
   const callbacksRef = useRef<CallbackSet>({
     onChange,
     onBlur,
@@ -444,8 +445,10 @@ export function MarkdownSourceEditor({
         }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged && !update.transactions.some((tr) => tr.annotation(externalUpdate))) {
+            const nextValue = update.state.doc.toString();
+            pendingLocalValueRef.current = nextValue;
             const range = update.state.selection.main;
-            callbacksRef.current.onChange(update.state.doc.toString(), {
+            callbacksRef.current.onChange(nextValue, {
               start: range.from,
               end: range.to,
             });
@@ -473,13 +476,25 @@ export function MarkdownSourceEditor({
     const view = viewRef.current;
     if (!view) return;
     const current = view.state.doc.toString();
-    if (current === value) return;
-    const pos = Math.min(value.length, view.state.selection.main.from);
+    if (current === value) {
+      pendingLocalValueRef.current = null;
+      return;
+    }
+
+    // CodeMirror applies user edits synchronously, while parent state updates can
+    // briefly re-render this component with the previous value. Do not let that
+    // stale prop replace the live editor document and move the caret backward.
+    if (pendingLocalValueRef.current === current) return;
+
+    const range = view.state.selection.main;
+    const anchor = Math.max(0, Math.min(value.length, range.anchor));
+    const head = Math.max(0, Math.min(value.length, range.head));
     view.dispatch({
       changes: { from: 0, to: current.length, insert: value },
-      selection: EditorSelection.cursor(pos),
+      selection: EditorSelection.range(anchor, head),
       annotations: externalUpdate.of(true),
     });
+    pendingLocalValueRef.current = null;
   }, [value]);
 
   return (

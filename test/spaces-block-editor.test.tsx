@@ -25,6 +25,7 @@ import {
   DocumentBlockEditor,
   type EmbedDeleteDecision,
 } from '../ui/src/views/spaces/DocumentBlockEditor';
+import { MarkdownSourceEditor } from '../ui/src/views/spaces/MarkdownSourceEditor';
 import {
   generateSortKey,
   isValidSortKey,
@@ -541,6 +542,53 @@ function blurSource(index = 0): void {
   fireEvent.blur(sourceView(index).contentDOM);
 }
 
+async function flushEffects(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+  });
+}
+
+describe('MarkdownSourceEditor state synchronization', () => {
+  it('does not replace local editor text with a stale parent value while the draft catches up', async () => {
+    const changes: Array<{ value: string; selection: { start: number; end: number } }> = [];
+    const renderSource = (value: string) => (
+      <MarkdownSourceEditor
+        blockId="b1"
+        value={value}
+        ariaLabel="Edit Markdown"
+        onChange={(nextValue, selection) => changes.push({ value: nextValue, selection })}
+        onBlur={() => undefined}
+        onCaretChange={() => undefined}
+        onSelectionChange={() => undefined}
+        onItemCommand={() => undefined}
+        onOpenReference={() => undefined}
+      />
+    );
+    const { rerender } = render(renderSource('## Heading'));
+    await flushEffects();
+
+    const nextValue = '## Heading\nbody';
+    setSourceText(0, nextValue, nextValue.length);
+    expect(changes.at(-1)).toEqual({
+      value: nextValue,
+      selection: { start: nextValue.length, end: nextValue.length },
+    });
+
+    rerender(renderSource('## Heading'));
+    await flushEffects();
+
+    expect(sourceText()).toBe(nextValue);
+    expect(sourceView().state.selection.main.from).toBe(nextValue.length);
+
+    rerender(renderSource(nextValue));
+    await flushEffects();
+    rerender(renderSource('external update'));
+    await flushEffects();
+
+    expect(sourceText()).toBe('external update');
+  });
+});
+
 describe('DocumentBlockEditor (editable)', () => {
   it('renders the live tree as document-like editable rows', async () => {
     const backend = makeBackend([
@@ -1013,6 +1061,68 @@ describe('DocumentBlockEditor (editable)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps the draft visible while autosave waits for canonical reload', async () => {
+    const backend = makeBackend([makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' })]);
+    const baseFetch = backend.fetchImpl;
+    let blockGetCount = 0;
+    let releaseReload: (() => void) | null = null;
+    backend.fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url) && method === 'GET') {
+        blockGetCount += 1;
+        if (blockGetCount > 1) {
+          await new Promise<void>((resolve) => {
+            releaseReload = resolve;
+          });
+        }
+      }
+      return baseFetch(input, init);
+    });
+    await renderEditor({ backend });
+
+    const nextValue = '## Heading\nbody';
+    setSourceText(0, nextValue, nextValue.length);
+    blurSource();
+
+    await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
+    await waitFor(() => expect(releaseReload).not.toBeNull());
+    expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBe(nextValue);
+    expect(sourceText()).toBe(nextValue);
+    expect(sourceView().state.selection.main.from).toBe(nextValue.length);
+
+    releaseReload?.();
+    await waitFor(() => expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBeUndefined());
+    expect(sourceText()).toBe(nextValue);
+  });
+
+  it('does not regress to stale canonical block text after autosave acknowledgement', async () => {
+    const staleBlock = makeBlock({ id: 'b1', sort_key: 'a', markdown: 'old' });
+    const backend = makeBackend([staleBlock]);
+    const baseFetch = backend.fetchImpl;
+    let blockGetCount = 0;
+    backend.fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (/\/api\/spaces\/sp1\/blocks(?:\?.*)?$/.test(url) && method === 'GET') {
+        blockGetCount += 1;
+        if (blockGetCount === 2) {
+          return json({ blocks: [staleBlock] });
+        }
+      }
+      return baseFetch(input, init);
+    });
+    await renderEditor({ backend });
+
+    const nextValue = '## Heading\nbody';
+    setSourceText(0, nextValue, nextValue.length);
+    blurSource();
+
+    await waitFor(() => expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBeUndefined());
+    expect(sourceText()).toBe(nextValue);
+    expect(sourceView().state.selection.main.from).toBe(nextValue.length);
   });
 
   it('shows a transient selected-text formatting menu and wraps the selected Markdown', async () => {

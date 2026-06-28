@@ -244,6 +244,7 @@ export function DocumentBlockEditor({
   const fetchRef = useRef(fetchImpl);
   const saveTimers = useRef<Map<string, number>>(new Map());
   const editorViews = useRef<Map<string, EditorView>>(new Map());
+  const savedMarkdownAcks = useRef<Map<string, string>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -280,11 +281,20 @@ export function DocumentBlockEditor({
       const requestedSpaceId = spaceId;
       if (!isReconcile) setLoad({ status: 'loading' });
       try {
-        const [blocks, exportsResult] = await Promise.all([
+        const [loadedBlocks, exportsResult] = await Promise.all([
           listSpaceBlocks(requestedSpaceId, fetcher()),
           getSpaceExports(requestedSpaceId).catch(() => ({ exports: [] as SpaceExport[] })),
         ]);
         if (currentSpaceIdRef.current !== requestedSpaceId) return;
+        const blocks = loadedBlocks.map((block) => {
+          const acknowledgedMarkdown = savedMarkdownAcks.current.get(block.id);
+          if (acknowledgedMarkdown === undefined) return block;
+          if ((block.markdown ?? '') === acknowledgedMarkdown) {
+            savedMarkdownAcks.current.delete(block.id);
+            return block;
+          }
+          return { ...block, markdown: acknowledgedMarkdown };
+        });
         setLoad((prior) => ({
           status: 'ready',
           spaceId: requestedSpaceId,
@@ -391,15 +401,23 @@ export function DocumentBlockEditor({
       }
       setSaveState({ status: 'saving', blockId });
       try {
-        await updateSpaceBlock(spaceId, blockId, { markdown }, fetcher());
+        const savedBlock = await updateSpaceBlock(spaceId, blockId, { markdown }, fetcher());
+        savedMarkdownAcks.current.set(blockId, markdown);
         setSaveState({ status: 'saved', blockId });
+        setLoad((prior) => {
+          if (prior.status !== 'ready' || prior.spaceId !== spaceId) return prior;
+          return {
+            ...prior,
+            blocks: prior.blocks.map((block) => (block.id === blockId ? savedBlock : block)),
+          };
+        });
+        await loadAll(true);
         setViewState((state) => {
           if (state.drafts[blockId] !== markdown) return state;
           const drafts = { ...state.drafts };
           delete drafts[blockId];
           return { ...state, drafts };
         });
-        await loadAll(true);
       } catch (err) {
         setSaveState({
           status: 'error',
@@ -532,6 +550,8 @@ export function DocumentBlockEditor({
           scrollIntoView: true,
         });
         editorView.focus();
+        setDraft(targetId, next);
+        queueAutosave(targetId, next);
         caretRef.current = { blockId: targetId, start: nextPos, end: nextPos };
         return;
       }
@@ -676,6 +696,8 @@ export function DocumentBlockEditor({
           scrollIntoView: true,
         });
         editorView.focus();
+        setDraft(block.id, next);
+        queueAutosave(block.id, next);
         setSelectionMenu(null);
         caretRef.current = { blockId: block.id, start: caret, end: caret };
         return;
