@@ -218,6 +218,66 @@ describe("space items + project scoping + idempotency", () => {
     expect((missing.body as { error: string }).error).toMatch(/not found/);
   });
 
+  it("links real typed Spaces as items, including explicit cross-project targets", async () => {
+    const canvasId = await makeSpace("Canvas");
+    const sameProjectDoc = await makeSpace("Doc");
+    const otherSpace = await call("POST", "/api/spaces", {
+      project_id: OTHER_PROJECT_ID,
+      title: "Other Board",
+      default_renderer: "board",
+    });
+    expect(otherSpace.status).toBe(201);
+    const otherSpaceId = (otherSpace.body as { space: { id: string } }).space.id;
+
+    const sameProject = await call("POST", `/api/spaces/${canvasId}/items`, {
+      ref_type: "space",
+      ref_id: sameProjectDoc,
+      title: "Doc node",
+    });
+    expect(sameProject.status).toBe(201);
+    expect((sameProject.body as { item: { ref_type: string; ref_id: string } }).item).toMatchObject({
+      ref_type: "space",
+      ref_id: sameProjectDoc,
+    });
+
+    const crossProject = await call("POST", `/api/spaces/${canvasId}/items`, {
+      ref_type: "space",
+      ref_id: otherSpaceId,
+    });
+    expect(crossProject.status).toBe(201);
+    expect((crossProject.body as { item: { ref_type: string; ref_id: string } }).item).toMatchObject({
+      ref_type: "space",
+      ref_id: otherSpaceId,
+    });
+
+    const dup = await call("POST", `/api/spaces/${canvasId}/items`, {
+      ref_type: "space",
+      ref_id: otherSpaceId,
+    });
+    expect(dup.status).toBe(200);
+    expect((dup.body as { created: boolean; already_present: boolean })).toMatchObject({
+      created: false,
+      already_present: true,
+    });
+  });
+
+  it("rejects missing Space refs and self-links", async () => {
+    const canvasId = await makeSpace("Canvas");
+    const missing = await call("POST", `/api/spaces/${canvasId}/items`, {
+      ref_type: "space",
+      ref_id: "space-does-not-exist",
+    });
+    expect(missing.status).toBe(400);
+    expect((missing.body as { error: string }).error).toMatch(/space ref not found/);
+
+    const self = await call("POST", `/api/spaces/${canvasId}/items`, {
+      ref_type: "space",
+      ref_id: canvasId,
+    });
+    expect(self.status).toBe(400);
+    expect((self.body as { error: string }).error).toMatch(/cannot link to its containing space/);
+  });
+
   it("requires external_ref items to carry a ref_uri (schema CHECK)", async () => {
     const spaceId = await makeSpace();
     const res = await call("POST", `/api/spaces/${spaceId}/items`, {

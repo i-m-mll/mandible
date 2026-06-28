@@ -176,6 +176,26 @@ function item(id: string, title: string): SpaceItem {
   };
 }
 
+function linkedSpaceItem(id: string, title: string, over: Partial<SpaceItem> = {}): SpaceItem {
+  return {
+    id: `item-${id}`,
+    space_id: 'sp1',
+    ref_type: 'space',
+    ref_id: id,
+    ref_uri: null,
+    title,
+    metadata: {
+      default_renderer: 'document',
+      primary_type: 'document',
+      primary_type_label: 'Document',
+      project_label: 'Mandible',
+    },
+    created_at: 0,
+    updated_at: 0,
+    ...over,
+  } as unknown as SpaceItem;
+}
+
 function edge(id: string, source: string, target: string, label: string | null = null): SpaceEdge {
   return {
     id,
@@ -409,6 +429,22 @@ describe('SpaceCanvas rendering', () => {
     ]);
     expect(handles[0].className).toContain('space-canvas__handle--target');
     expect(handles[1].className).toContain('space-canvas__handle--source');
+  });
+
+  it('renders linked Space nodes with type/project cues and a canonical Open route', () => {
+    const model: SpaceCanvasModel = {
+      items: [linkedSpaceItem('space-doc', 'Design doc')],
+      occurrences: [occ('space-doc', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+    const node = screen.getByTestId('space-canvas-node');
+    expect(node.getAttribute('data-ref-type')).toBe('space');
+    expect(screen.getByText('Document')).toBeTruthy();
+    expect(screen.getByText('Mandible')).toBeTruthy();
+    expect(screen.getByText('Design doc')).toBeTruthy();
+    const open = screen.getByTestId('space-canvas-linked-space-open') as HTMLAnchorElement;
+    expect(open.getAttribute('href')).toBe('#/spaces?space=space-doc');
+    expect(open.textContent).toBe('Open');
   });
 
   it('does NOT run layoutGraph on render, only on explicit arrange', () => {

@@ -172,6 +172,12 @@
   color: var(--accent-blue);
 }
 
+.space-item-picker__badge[data-kind='space'] {
+  border-color: color-mix(in srgb, var(--accent-blue) 58%, var(--border));
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+  color: var(--accent-blue);
+}
+
 .space-item-picker__state {
   white-space: nowrap;
 }

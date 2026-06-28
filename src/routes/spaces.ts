@@ -168,18 +168,28 @@ function projectExists(db: Db, projectId: string): boolean {
  * item-level capability for EVERY Space (issue 812df41): a Space's optional
  * `project_id` only controls where it appears in the sidebar (under that
  * project's header, or top-level when null), never which items it may contain.
- * So `issue`/`comment` refs from ANY project are accepted for ANY Space —
- * project-scoped and top-level alike — exactly like `artifact`/`external_ref`
+ * So `issue`/`comment`/`space` refs from ANY project are accepted for ANY Space
+ * — project-scoped and top-level alike — exactly like `artifact`/`external_ref`
  * refs. The only constraint is existence: the ref must resolve to a real row.
+ * Space-to-space self links are rejected to avoid canvas nodes that recurse into
+ * their own container.
  */
-function validateItemProjectScope(
+function validateItemRef(
   db: Db,
   space: SpaceRecord,
   refType: SpaceItemRefType,
   refId: string,
 ): void {
-  void space;
   if (refType === "artifact" || refType === "external_ref") return;
+  if (refType === "space") {
+    if (refId === space.id) {
+      throw new HttpError(400, "space ref cannot link to its containing space");
+    }
+    if (!getSpace(db, refId)) {
+      throw new HttpError(400, `space ref not found: ${refId}`);
+    }
+    return;
+  }
   if (refType === "issue") {
     const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?").get(refId) as
       | { project_id: string }
@@ -475,7 +485,7 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       const body = bodyRecord(req);
       const refType = requireRefType(body.ref_type);
       const refId = requireString(body, "ref_id");
-      validateItemProjectScope(db, space, refType, refId);
+      validateItemRef(db, space, refType, refId);
       const result = addSpaceItem(db, space.id, {
         ref_type: refType,
         ref_id: refId,

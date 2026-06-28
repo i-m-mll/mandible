@@ -94,9 +94,21 @@ export type CanvasNode = {
 export type SpaceFlowNode = {
   id: string;
   position: { x: number; y: number };
-  data: { label: string; kind: string };
+  data: SpaceFlowNodeData;
   selected?: boolean;
   type: 'spaceOccurrence';
+};
+
+type SpaceFlowNodeData = {
+  label: string;
+  kind: string;
+  linkedSpace?: {
+    id: string;
+    primaryType: string;
+    primaryLabel: string;
+    projectLabel: string;
+    href: string;
+  };
 };
 
 /** A legacy unplaced occurrence entry. New Canvas adds place immediately. */
@@ -165,6 +177,47 @@ function occurrenceKind(occurrence: SpaceOccurrence, item: SpaceItem | null): st
   return item?.ref_type ?? 'occurrence';
 }
 
+function metadataString(metadata: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function formatSpacePrimaryLabel(value: string): string {
+  switch (value) {
+    case 'document':
+      return 'Document';
+    case 'board':
+      return 'Board';
+    case 'collection':
+      return 'Collection';
+    case 'canvas':
+      return 'Canvas';
+    default:
+      return value || 'Space';
+  }
+}
+
+function linkedSpaceData(item: SpaceItem | null): SpaceFlowNodeData['linkedSpace'] | undefined {
+  if (!item || (item.ref_type as string) !== 'space') return undefined;
+  const metadata = item.metadata ?? {};
+  const primaryType =
+    metadataString(metadata, ['primary_type', 'default_renderer', 'space_type']) || 'space';
+  const primaryLabel =
+    metadataString(metadata, ['primary_type_label', 'default_renderer_label']) ||
+    formatSpacePrimaryLabel(primaryType);
+  const projectLabel = metadataString(metadata, ['project_label', 'project_name', 'project_key']);
+  return {
+    id: item.ref_id,
+    primaryType,
+    primaryLabel,
+    projectLabel,
+    href: `#/spaces?space=${encodeURIComponent(item.ref_id)}`,
+  };
+}
+
 /**
  * Map authored `space_edges` to React Flow edges so a connection the user draws
  * or an SSE-refetched edge renders as a line between the
@@ -225,6 +278,7 @@ export function canvasNodesToFlowNodes(
     data: {
       label: occurrenceLabel(node.occurrence, node.item),
       kind: occurrenceKind(node.occurrence, node.item),
+      linkedSpace: linkedSpaceData(node.item),
     },
     selected: selection.has(node.occurrence.id),
     type: 'spaceOccurrence',
@@ -481,8 +535,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [promoteLinkType, setPromoteLinkType] = useState<Record<string, LedgerLinkType>>({});
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false);
-  // Whether the "Add items" picker popover is open (transient browser-local).
-  const [pickerOpen, setPickerOpen] = useState(false);
+  // Which picker popover is open (transient browser-local).
+  const [pickerMode, setPickerMode] = useState<'items' | 'spaces' | null>(null);
   const [inspectorHeight, setInspectorHeight] = useState<number | null>(null);
 
   // Refs that must not trigger re-render or re-subscribe.
@@ -947,26 +1001,52 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
           <button
             type="button"
             className="space-canvas__btn space-canvas__btn--primary"
-            onClick={() => setPickerOpen((open) => !open)}
+            onClick={() => setPickerMode((mode) => (mode === 'items' ? null : 'items'))}
             aria-haspopup="dialog"
-            aria-expanded={pickerOpen}
+            aria-expanded={pickerMode === 'items'}
             data-testid="space-canvas-add-items"
           >
             + Add items
           </button>
-          {pickerOpen && spaceId ? (
+          <button
+            type="button"
+            className="space-canvas__btn"
+            onClick={() => setPickerMode((mode) => (mode === 'spaces' ? null : 'spaces'))}
+            aria-haspopup="dialog"
+            aria-expanded={pickerMode === 'spaces'}
+            data-testid="space-canvas-link-space"
+          >
+            Link Space
+          </button>
+          {pickerMode && spaceId ? (
             <div className="space-canvas__picker-anchor">
               <SpaceItemPicker
                 spaceId={spaceId}
                 projectId={projectId}
                 existingItems={items}
+                existingItemRefTypes={
+                  pickerMode === 'spaces'
+                    ? ['space']
+                    : ['issue', 'comment', 'artifact', 'external_ref']
+                }
+                includeIssues={pickerMode === 'items'}
+                includeArtifacts={pickerMode === 'items'}
+                includeSpaces={pickerMode === 'spaces'}
+                title={pickerMode === 'spaces' ? 'Link Space' : 'Add items'}
+                searchPlaceholder={
+                  pickerMode === 'spaces'
+                    ? 'Search Spaces by title or project...'
+                    : 'Search issues and artifacts by title...'
+                }
+                emptyLabel={pickerMode === 'spaces' ? 'No Spaces available.' : 'No items available.'}
+                addButtonLabel={pickerMode === 'spaces' ? 'Link' : 'Add'}
                 isItemInView={isItemOnCanvas}
                 alreadyInViewLabel="Already on canvas"
                 afterAdd={afterAddItem}
                 onAdded={() => {
                   void reload();
                 }}
-                onClose={() => setPickerOpen(false)}
+                onClose={() => setPickerMode(null)}
               />
             </div>
           ) : null}
@@ -1083,7 +1163,12 @@ function sameFlowNode(left: SpaceFlowNode, right: SpaceFlowNode): boolean {
     left.position.x === right.position.x &&
     left.position.y === right.position.y &&
     left.data.label === right.data.label &&
-    left.data.kind === right.data.kind
+    left.data.kind === right.data.kind &&
+    left.data.linkedSpace?.id === right.data.linkedSpace?.id &&
+    left.data.linkedSpace?.primaryType === right.data.linkedSpace?.primaryType &&
+    left.data.linkedSpace?.primaryLabel === right.data.linkedSpace?.primaryLabel &&
+    left.data.linkedSpace?.projectLabel === right.data.linkedSpace?.projectLabel &&
+    left.data.linkedSpace?.href === right.data.linkedSpace?.href
   );
 }
 
@@ -1419,13 +1504,15 @@ function edgeStatusLabel(status: AutosaveStatus): string {
 
 /** React Flow custom node for a Space occurrence. */
 function OccurrenceNode(props: {
-  data: { label: string; kind: string };
+  data: SpaceFlowNodeData;
   selected?: boolean;
 }): JSX.Element {
+  const linkedSpace = props.data.linkedSpace;
   return (
     <div
-      className="space-canvas__node"
+      className={`space-canvas__node${linkedSpace ? ' space-canvas__node--linked-space' : ''}`}
       data-selected={props.selected ? 'true' : 'false'}
+      data-ref-type={linkedSpace ? 'space' : props.data.kind}
       data-testid="space-canvas-node"
     >
       {/* Target handle (left): the drop side of a drag-to-connect gesture. */}
@@ -1435,8 +1522,32 @@ function OccurrenceNode(props: {
         className="space-canvas__handle space-canvas__handle--target"
         data-testid="space-canvas-handle-target"
       />
-      <div className="space-canvas__node-kind">{props.data.kind}</div>
+      <div className="space-canvas__node-kind">
+        {linkedSpace ? (
+          <>
+            <span className="space-canvas__node-space-badge" data-kind={linkedSpace.primaryType}>
+              {linkedSpace.primaryLabel}
+            </span>
+            {linkedSpace.projectLabel ? (
+              <span className="space-canvas__node-project">{linkedSpace.projectLabel}</span>
+            ) : null}
+          </>
+        ) : (
+          props.data.kind
+        )}
+      </div>
       <div className="space-canvas__node-title">{props.data.label}</div>
+      {linkedSpace ? (
+        <a
+          className="space-canvas__node-open"
+          href={linkedSpace.href}
+          data-testid="space-canvas-linked-space-open"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          Open
+        </a>
+      ) : null}
       {/* Source handle (right): drag from here to another node to author an edge. */}
       <Handle
         type="source"
