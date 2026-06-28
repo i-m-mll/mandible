@@ -295,6 +295,14 @@
   text-decoration-style: solid;
 }
 
+.spaces-markdown-source__emphasis--strong {
+  font-weight: 700;
+}
+
+.spaces-markdown-source__emphasis--em {
+  font-style: italic;
+}
+
 .spaces-block-editor__rendered-block {
   display: block;
   width: 100%;

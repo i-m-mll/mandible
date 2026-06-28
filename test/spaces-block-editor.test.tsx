@@ -884,6 +884,41 @@ describe('DocumentBlockEditor (editable)', () => {
     await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));
   });
 
+  it('renders inline Markdown emphasis visually while preserving source text', async () => {
+    const backend = makeBackend([
+      makeBlock({
+        id: 'b1',
+        block_type: 'paragraph',
+        sort_key: 'a',
+        markdown: '*one* _two_ **three** __four__',
+      }),
+    ]);
+    await renderEditor({ backend });
+
+    const emphasis = Array.from(sourceHost().querySelectorAll('.spaces-markdown-source__emphasis'));
+    expect(emphasis.map((node) => node.textContent)).toEqual(['one', 'two', 'three', 'four']);
+    expect(sourceHost().querySelectorAll('.spaces-markdown-source__emphasis--em')).toHaveLength(2);
+    expect(sourceHost().querySelectorAll('.spaces-markdown-source__emphasis--strong')).toHaveLength(2);
+    expect(sourceText()).toBe('*one* _two_ **three** __four__');
+  });
+
+  it('reveals raw Markdown emphasis source when the caret enters that span', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: 'A **bold** move' }),
+    ]);
+    await renderEditor({ backend });
+
+    expect(sourceHost().querySelector('.spaces-markdown-source__emphasis--strong')?.textContent)
+      .toBe('bold');
+    expect(sourceHost().textContent).not.toContain('**bold**');
+
+    setSourceSelection(0, 'A **b'.length, 'A **b'.length);
+
+    expect(sourceHost().querySelector('.spaces-markdown-source__emphasis--strong')).toBeNull();
+    expect(sourceHost().textContent).toContain('**bold**');
+    expect(sourceText()).toBe('A **bold** move');
+  });
+
   it('keeps prose Enter focused on an editable following line', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: '' }),
