@@ -90,7 +90,6 @@ async function main(options) {
   }
 
   const preview = previewPaths(branch);
-  fs.mkdirSync(preview.root, { recursive: true });
 
   if (options.dryRun) {
     return {
@@ -106,6 +105,8 @@ async function main(options) {
       wouldStart: true,
     };
   }
+
+  fs.mkdirSync(preview.root, { recursive: true });
 
   if (!options.noBuild) {
     ensureDependencies(worktree);
