@@ -973,6 +973,79 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(sourceText()).toBe('');
   });
 
+  it('focuses the final editable block at document end when blank space below content is clicked', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'First block' }),
+      makeBlock({ id: 'b2', sort_key: 'b', markdown: 'Final block' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceSelection(0, 0, 0);
+    const scroller = document.querySelector('.spaces-block-editor__scroller') as HTMLElement;
+    fireEvent.mouseDown(scroller, { button: 0, clientX: 16, clientY: 640 });
+
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(1).contentDOM));
+    expect(sourceView(1).state.selection.main.from).toBe('Final block'.length);
+  });
+
+  it('places the caret at line end when horizontal whitespace beside a line is clicked', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'alpha\nbeta' }),
+    ]);
+    await renderEditor({ backend });
+
+    const view = sourceView();
+    vi.spyOn(view, 'lineBlockAtHeight').mockReturnValue({
+      from: 0,
+      to: 'alpha'.length,
+    } as ReturnType<EditorView['lineBlockAtHeight']>);
+    vi.spyOn(view, 'coordsAtPos').mockReturnValue({
+      left: 48,
+      right: 52,
+      top: 0,
+      bottom: 20,
+    });
+
+    fireEvent.mouseDown(screen.getByTestId('spaces-block-editor-row'), {
+      button: 0,
+      clientX: 320,
+      clientY: 10,
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+    expect(view.state.selection.main.from).toBe('alpha'.length);
+  });
+
+  it('moves arrow focus through legacy empty blocks around headings', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: '' }),
+      makeBlock({ id: 'b2', block_type: 'heading', sort_key: 'b', markdown: 'New heading' }),
+      makeBlock({ id: 'b3', sort_key: 'c', markdown: '' }),
+      makeBlock({ id: 'b4', block_type: 'heading', sort_key: 'd', markdown: '## gad' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceSelection(0, 0, 0);
+    fireEvent.keyDown(sourceView(0).contentDOM, { key: 'ArrowDown', code: 'ArrowDown' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(1).contentDOM));
+    expect(sourceView(1).state.selection.main.from).toBe(0);
+
+    setSourceSelection(1, 0, 0);
+    fireEvent.keyDown(sourceView(1).contentDOM, { key: 'ArrowUp', code: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(0).contentDOM));
+    expect(sourceView(0).state.selection.main.from).toBe(0);
+
+    setSourceSelection(1, 'New heading'.length, 'New heading'.length);
+    fireEvent.keyDown(sourceView(1).contentDOM, { key: 'ArrowDown', code: 'ArrowDown' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(2).contentDOM));
+    expect(sourceView(2).state.selection.main.from).toBe(0);
+
+    setSourceSelection(3, 0, 0);
+    fireEvent.keyDown(sourceView(3).contentDOM, { key: 'ArrowUp', code: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(2).contentDOM));
+    expect(sourceView(2).state.selection.main.from).toBe(0);
+  });
+
   it('opens the shared bottom detail panel for inline issue references', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', sort_key: 'a', markdown: 'See [issue:abc123].' }),

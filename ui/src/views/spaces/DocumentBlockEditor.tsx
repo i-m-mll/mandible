@@ -69,6 +69,7 @@ import {
 } from './SpaceReferenceDetailPanel';
 import {
   MarkdownSourceEditor,
+  type MarkdownSourceBoundaryDirection,
   type MarkdownSourceItemCommand,
   type MarkdownSourceSelection,
 } from './MarkdownSourceEditor';
@@ -208,6 +209,65 @@ function refFromHref(href: string): string | null {
   } catch {
     return null;
   }
+}
+
+function blockEndPosition(view: EditorView): number {
+  return view.state.doc.length;
+}
+
+function eventTargetsEditorChrome(target: HTMLElement | null): boolean {
+  if (!target) return false;
+  return Boolean(
+    target.closest(
+      [
+        'button',
+        'input',
+        'select',
+        'textarea',
+        'a.resource-ref__link',
+        'a.spaces-doc-ref__link',
+        '[data-heading-hit-area="true"]',
+        '.spaces-markdown-source__emphasis',
+        '.spaces-block-editor__picker-overlay',
+        '.spaces-block-editor__selection-menu',
+        '.spaces-block-editor__inspector',
+      ].join(', '),
+    ),
+  );
+}
+
+function lineEndAtClientY(view: EditorView, clientY: number): number {
+  const doc = view.state.doc;
+  try {
+    const block = view.lineBlockAtHeight(clientY - view.documentTop);
+    const pos = Math.max(0, Math.min(doc.length, block.to));
+    return doc.lineAt(pos).to;
+  } catch {
+    return doc.length;
+  }
+}
+
+function isHorizontalWhitespaceClick(view: EditorView, event: MouseEvent): boolean {
+  const lineEnd = lineEndAtClientY(view, event.clientY);
+  try {
+    const coords = view.coordsAtPos(lineEnd, 1);
+    return Boolean(coords && event.clientX >= coords.right - 1);
+  } catch {
+    return true;
+  }
+}
+
+function caretPositionForDocumentClick(view: EditorView, event: MouseEvent): number {
+  const rect = view.dom.getBoundingClientRect();
+  if (rect.height > 0 && event.clientY > rect.bottom) return blockEndPosition(view);
+  if (isHorizontalWhitespaceClick(view, event)) return lineEndAtClientY(view, event.clientY);
+  try {
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
+    if (pos !== null) return Math.max(0, Math.min(view.state.doc.length, pos));
+  } catch {
+    // Fall back to line end below.
+  }
+  return lineEndAtClientY(view, event.clientY);
 }
 
 /**
@@ -614,6 +674,50 @@ export function DocumentBlockEditor({
     else editorViews.current.delete(blockId);
   }, []);
 
+  const focusEditorAt = useCallback(
+    (blockId: string, position: number) => {
+      const view = editorViews.current.get(blockId);
+      if (!view) return false;
+      const pos = Math.max(0, Math.min(view.state.doc.length, position));
+      setActiveBlockId(blockId);
+      setEditing(blockId);
+      caretRef.current = { blockId, start: pos, end: pos };
+      view.dispatch({
+        selection: EditorSelection.cursor(pos),
+        scrollIntoView: true,
+      });
+      view.focus();
+      return true;
+    },
+    [setEditing],
+  );
+
+  const editableBlockIds = useMemo(
+    () => blocks.filter(blockCanEditMarkdown).map((block) => block.id),
+    [blocks],
+  );
+
+  const focusFinalEditableBlockEnd = useCallback(() => {
+    const finalBlockId = editableBlockIds[editableBlockIds.length - 1];
+    if (!finalBlockId) return false;
+    const view = editorViews.current.get(finalBlockId);
+    return focusEditorAt(finalBlockId, view ? blockEndPosition(view) : 0);
+  }, [editableBlockIds, focusEditorAt]);
+
+  const handleSourceBoundaryArrow = useCallback(
+    (blockId: string, direction: MarkdownSourceBoundaryDirection) => {
+      const index = editableBlockIds.indexOf(blockId);
+      if (index === -1) return false;
+      const targetBlockId =
+        direction === 'up' ? editableBlockIds[index - 1] : editableBlockIds[index + 1];
+      if (!targetBlockId) return false;
+      const targetView = editorViews.current.get(targetBlockId);
+      const position = direction === 'up' && targetView ? blockEndPosition(targetView) : 0;
+      return focusEditorAt(targetBlockId, position);
+    },
+    [editableBlockIds, focusEditorAt],
+  );
+
   const handleSourceChange = useCallback(
     (blockId: string, value: string, selection: { start: number; end: number }) => {
       setActiveBlockId(blockId);
@@ -732,6 +836,32 @@ export function DocumentBlockEditor({
     [openReferenceInspector],
   );
 
+  const handleDocumentMouseDown = useCallback(
+    (event: MouseEvent) => {
+      if (!editable || load.status !== 'ready' || event.button !== 0 || event.defaultPrevented) return;
+      const target = event.target as HTMLElement | null;
+      if (eventTargetsEditorChrome(target)) return;
+
+      const row = target?.closest?.('[data-block-id]') as HTMLElement | null;
+      if (!row) {
+        if (focusFinalEditableBlockEnd()) event.preventDefault();
+        return;
+      }
+
+      const blockId = row.getAttribute('data-block-id');
+      if (!blockId || !editableBlockIds.includes(blockId)) return;
+      const view = editorViews.current.get(blockId);
+      if (!view) return;
+
+      const insideCodeMirror = Boolean(target?.closest?.('.cm-editor'));
+      if (insideCodeMirror && !isHorizontalWhitespaceClick(view, event)) return;
+
+      const position = caretPositionForDocumentClick(view, event);
+      if (focusEditorAt(blockId, position)) event.preventDefault();
+    },
+    [editable, editableBlockIds, focusEditorAt, focusFinalEditableBlockEnd, load.status],
+  );
+
   const beginInspectorResize = useCallback(
     (event: JSX.TargetedMouseEvent<HTMLDivElement> | JSX.TargetedPointerEvent<HTMLDivElement>) => {
       event.preventDefault();
@@ -810,7 +940,7 @@ export function DocumentBlockEditor({
                 : `Autosave failed: ${saveState.message}`}
           </div>
         )}
-        <div className="spaces-block-editor__scroller">
+        <div className="spaces-block-editor__scroller" onMouseDown={handleDocumentMouseDown}>
           {load.status === 'loading' && (
             <div className="spaces-block-editor__status">
               <span>Loading document…</span>
@@ -898,6 +1028,7 @@ export function DocumentBlockEditor({
                           onSelectionChange={(selection) => handleSourceSelectionChange(block.id, selection)}
                           onItemCommand={(command) => handleSourceItemCommand(block.id, command)}
                           onOpenReference={openReferenceInspector}
+                          onBoundaryArrow={handleSourceBoundaryArrow}
                         />
                       </div>
                     )}

@@ -38,6 +38,7 @@ export type MarkdownSourceItemCommand = {
 };
 
 type CaretRange = { start: number; end: number };
+export type MarkdownSourceBoundaryDirection = 'up' | 'down';
 
 export type MarkdownSourceEditorProps = {
   blockId: string;
@@ -50,11 +51,18 @@ export type MarkdownSourceEditorProps = {
   onSelectionChange: (selection: MarkdownSourceSelection | null) => void;
   onItemCommand: (command: MarkdownSourceItemCommand) => void;
   onOpenReference: (ref: string) => void;
+  onBoundaryArrow?: (blockId: string, direction: MarkdownSourceBoundaryDirection) => boolean;
 };
 
 type CallbackSet = Pick<
   MarkdownSourceEditorProps,
-  'onChange' | 'onBlur' | 'onCaretChange' | 'onSelectionChange' | 'onItemCommand' | 'onOpenReference'
+  | 'onChange'
+  | 'onBlur'
+  | 'onCaretChange'
+  | 'onSelectionChange'
+  | 'onItemCommand'
+  | 'onOpenReference'
+  | 'onBoundaryArrow'
 >;
 
 const externalUpdate = Annotation.define<boolean>();
@@ -484,6 +492,27 @@ function openItemCommand(
   return true;
 }
 
+function handleBoundaryArrow(
+  view: EditorView,
+  blockId: string,
+  direction: MarkdownSourceBoundaryDirection,
+  callbacksRef: { current: CallbackSet },
+): boolean {
+  const callback = callbacksRef.current.onBoundaryArrow;
+  if (!callback) return false;
+  const range = view.state.selection.main;
+  if (!range.empty) return false;
+  const line = view.state.doc.lineAt(range.from);
+  if (direction === 'up' && (line.number !== 1 || range.from !== line.from)) return false;
+  if (
+    direction === 'down' &&
+    (line.number !== view.state.doc.lines || range.from !== line.to)
+  ) {
+    return false;
+  }
+  return callback(blockId, direction);
+}
+
 const editorTheme = EditorView.theme({
   '&': {
     background: 'transparent',
@@ -523,6 +552,7 @@ export function MarkdownSourceEditor({
   onSelectionChange,
   onItemCommand,
   onOpenReference,
+  onBoundaryArrow,
 }: MarkdownSourceEditorProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -534,6 +564,7 @@ export function MarkdownSourceEditor({
     onSelectionChange,
     onItemCommand,
     onOpenReference,
+    onBoundaryArrow,
   });
   callbacksRef.current = {
     onChange,
@@ -542,6 +573,7 @@ export function MarkdownSourceEditor({
     onSelectionChange,
     onItemCommand,
     onOpenReference,
+    onBoundaryArrow,
   };
 
   useLayoutEffect(() => {
@@ -559,6 +591,14 @@ export function MarkdownSourceEditor({
           spellcheck: 'true',
         }),
         keymap.of([
+          {
+            key: 'ArrowUp',
+            run: (view) => handleBoundaryArrow(view, blockId, 'up', callbacksRef),
+          },
+          {
+            key: 'ArrowDown',
+            run: (view) => handleBoundaryArrow(view, blockId, 'down', callbacksRef),
+          },
           {
             key: 'Enter',
             run: (view) => openItemCommand(view, callbacksRef),
