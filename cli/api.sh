@@ -44,6 +44,104 @@ api_curl_ambient_headers() {
     '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
 }
 
+api_operational_mutation_category() {
+  local method="$1"
+  local request_path="$2"
+  local pathname="${request_path%%\?*}"
+  method="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
+
+  case "$method" in
+    POST|PUT|PATCH|DELETE) ;;
+    *) return 1 ;;
+  esac
+
+  [[ "$pathname" != "/api/auth/check" ]] || return 1
+
+  case "$pathname" in
+    /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
+    /api/ledger|/api/ledger/*) printf 'ledger'; return 0 ;;
+    /api/issues|/api/issues/*) printf 'issues'; return 0 ;;
+    /api/work-units|/api/work-units/*) printf 'work_units'; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+api_non_main_operational_mutation_override_enabled() {
+  case "${MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS:-}" in
+    1|true|TRUE|yes|YES|allow|ALLOW) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+api_fetch_instance_payload() {
+  local output_file="$1"
+  local status
+
+  if api_is_file_rpc; then
+    return 1
+  fi
+
+  status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
+    "$(api_base)/api/instance" 2>/dev/null || printf '')
+  if [[ "$status" =~ ^2 ]] && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
+    "$(api_base)/api/health" 2>/dev/null || printf '')
+  [[ "$status" =~ ^2 ]] \
+    && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1
+}
+
+api_preflight_operational_mutation() {
+  local method="$1"
+  local request_path="$2"
+  local output_file="${3:-}"
+  local category tmp_response role policy db_path source_db_path message
+
+  category=$(api_operational_mutation_category "$method" "$request_path") || return 0
+  api_non_main_operational_mutation_override_enabled && return 0
+
+  tmp_response="$(mktemp)"
+  if ! api_fetch_instance_payload "$tmp_response"; then
+    rm -f "$tmp_response"
+    return 0
+  fi
+
+  role=$(jq -r '.instance.role // "main"' "$tmp_response")
+  policy=$(jq -r '.instance.operational_mutations // "allow"' "$tmp_response")
+  if [[ "$role" == "main" && "$policy" == "allow" ]]; then
+    rm -f "$tmp_response"
+    return 0
+  fi
+
+  db_path=$(jq -r '.instance.db_path // ""' "$tmp_response")
+  source_db_path=$(jq -r '.instance.source_db_path // ""' "$tmp_response")
+  rm -f "$tmp_response"
+
+  message="Refusing ${category} mutation against Mandible ${role} instance (${policy}). This target is not the main operational daemon"
+  if [[ -n "$db_path" ]]; then
+    message="${message}; db=${db_path}"
+  fi
+  if [[ -n "$source_db_path" ]]; then
+    message="${message}; source_db=${source_db_path}"
+  fi
+  message="${message}. Use the main Mandible daemon, or set MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS=1 only in isolated test/dev environments."
+
+  printf '%s\n' "$message" >&2
+  if [[ -n "$output_file" ]]; then
+    jq -n \
+      --arg error "cli_instance_mutation_forbidden" \
+      --arg message "$message" \
+      --arg category "$category" \
+      --arg role "$role" \
+      --arg operational_mutations "$policy" \
+      '{error:$error, message:$message, category:$category, instance_role:$role, operational_mutations:$operational_mutations}' \
+      > "$output_file"
+  fi
+  return 22
+}
+
 urlencode() {
   jq -rn --arg value "$1" '$value|@uri'
 }
@@ -75,6 +173,11 @@ api_capture() {
   local data="$3"
   local output_file="$4"
   local ambient_headers=()
+
+  if ! api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
+    printf '403'
+    return 0
+  fi
 
   if api_is_file_rpc; then
     api_file_rpc_exchange "$method" "$request_path" "$data" "$output_file"
@@ -121,6 +224,8 @@ api_request() {
   local data="${3:-}"
   local tmp_response response_status
   local ambient_headers=()
+
+  api_preflight_operational_mutation "$method" "$request_path" || return 22
 
   if api_is_file_rpc; then
     tmp_response=$(mktemp)
@@ -169,6 +274,10 @@ api_request() {
 # - HTTP (shared filesystem): FIELD is set to the daemon-visible absolute path.
 api_send_content() {
   local method="$1" request_path="$2" data="$3" field="$4" src="$5" output_file="$6"
+  if ! api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
+    printf '403'
+    return 0
+  fi
   if api_is_file_rpc; then
     api_file_rpc_exchange "$method" "$request_path" "$data" "$output_file" "$field" "$src"
     return

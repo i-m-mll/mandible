@@ -98,9 +98,12 @@ describe("instance mutation policy", () => {
 
   it("exposes instance metadata through health and instance routes", async () => {
     const instance = resolveInstanceInfo({
-      env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_INSTANCE_SOURCE_DB: "/tmp/mandible-main.db",
+      },
       dbPath: "/tmp/mandible-preview.db",
-      dbPathSource: "env",
     });
     const router = new Router({ instance });
     createServer({
@@ -121,7 +124,9 @@ describe("instance mutation policy", () => {
         role: "preview",
         operational_mutations: "reject",
         db_path: "/tmp/mandible-preview.db",
-        db_path_source: "env",
+        db_path_source: "iab-preview-copy",
+        source_db_path: "/tmp/mandible-main.db",
+        source_db_path_source: "env",
       },
     });
 

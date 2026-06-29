@@ -79,7 +79,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const db = openDb(dbPath);
   const instance = resolveInstanceInfo({
     dbPath,
-    dbPathSource: options.dbPath ? "start_options" : process.env.MANDIBLE_DB ? "env" : "default",
+    dbPathSource: options.dbPath
+      ? "start_options"
+      : process.env.MANDIBLE_INSTANCE_DB_PATH_SOURCE
+        ?? (process.env.MANDIBLE_DB ? "env" : "default"),
   });
   const sse = new SseManager();
   const version = resolveVersion();

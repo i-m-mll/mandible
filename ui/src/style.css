@@ -3748,6 +3748,24 @@ tr:last-child td {
   justify-content: flex-end;
 }
 
+.auth-instance-warning {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--neutral-alpha-16);
+  background: var(--neutral-alpha-06);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.auth-instance-warning strong {
+  color: var(--text-primary);
+  text-transform: capitalize;
+  white-space: nowrap;
+}
+
 /* Bug: 816476e — submitting/executing in-progress button state */
 .btn--submitting {
   opacity: 0.6;

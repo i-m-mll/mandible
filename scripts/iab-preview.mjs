@@ -90,6 +90,7 @@ async function main(options) {
   }
 
   const preview = previewPaths(branch);
+  const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
 
   if (options.dryRun) {
     return {
@@ -103,6 +104,12 @@ async function main(options) {
       wouldBuild: !options.noBuild,
       wouldCopyDb: true,
       wouldStart: true,
+      instanceEnv: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+        MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
+      },
     };
   }
 
@@ -114,7 +121,6 @@ async function main(options) {
   }
 
   const port = options.port ?? await findFreePort(DEFAULT_PORT_START, DEFAULT_PORT_END);
-  const sourceDb = path.resolve(expandHome(options.db ?? process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH));
   if (!fs.existsSync(sourceDb)) {
     throw new Error(`Source database does not exist: ${sourceDb}`);
   }
@@ -132,6 +138,7 @@ async function main(options) {
     worktree,
     port,
     dbCopy,
+    sourceDb,
     pidFile,
     nodePath: process.execPath,
     stdoutLog,
@@ -146,6 +153,7 @@ async function main(options) {
     worktree,
     port,
     dbCopy,
+    sourceDb,
     pidFile,
     stdoutLog,
     stderrLog,
@@ -164,6 +172,7 @@ async function main(options) {
     freshUrl: `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline`,
     db: dbCopy,
     sourceDb,
+    instanceEnv: previewInstanceEnv({ port, dbCopy, sourceDb, pidFile }),
     previewRoot: preview.root,
     launchLabel,
     pidFile,
@@ -642,28 +651,41 @@ async function startPreviewProcess(details) {
   const child = spawn(process.execPath, ["dist/index.js"], {
     cwd: details.worktree,
     detached: true,
-    env: {
-      ...process.env,
-      MANDIBLE_PORT: String(details.port),
-      MANDIBLE_DB: details.dbCopy,
-      MANDIBLE_PID_FILE: details.pidFile,
-    },
+    env: previewProcessEnv(details),
     stdio: ["ignore", stdout, stderr],
   });
   child.unref();
 }
 
 function writeRunScript(runScript, details) {
+  const env = previewInstanceEnv(details);
   const content = `#!/bin/zsh
 set -euo pipefail
 cd ${shellQuote(details.worktree)}
 exec env \\
-  MANDIBLE_PORT=${shellQuote(String(details.port))} \\
-  MANDIBLE_DB=${shellQuote(details.dbCopy)} \\
-  MANDIBLE_PID_FILE=${shellQuote(details.pidFile)} \\
+${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value))} \\`).join("\n")}
   ${shellQuote(details.nodePath)} dist/index.js >> ${shellQuote(details.stdoutLog)} 2>> ${shellQuote(details.stderrLog)}
 `;
   fs.writeFileSync(runScript, content, { mode: 0o755 });
+}
+
+function previewInstanceEnv(details) {
+  return {
+    MANDIBLE_PORT: String(details.port),
+    MANDIBLE_DB: details.dbCopy,
+    MANDIBLE_PID_FILE: details.pidFile,
+    MANDIBLE_INSTANCE_ROLE: "preview",
+    MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+    MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+    MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
+  };
+}
+
+function previewProcessEnv(details) {
+  return {
+    ...process.env,
+    ...previewInstanceEnv(details),
+  };
 }
 
 async function waitForHealth(port, timeoutMs, stderrLog) {

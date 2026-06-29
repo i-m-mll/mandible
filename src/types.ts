@@ -48,6 +48,8 @@ export interface InstanceInfo {
   operational_mutations_overridden: boolean;
   db_path: string | null;
   db_path_source: string | null;
+  source_db_path?: string | null;
+  source_db_path_source?: string | null;
 }
 
 export type InstanceMutationDecision =

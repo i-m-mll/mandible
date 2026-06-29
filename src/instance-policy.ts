@@ -12,6 +12,8 @@ export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
   dbPath?: string | null;
   dbPathSource?: string | null;
+  sourceDbPath?: string | null;
+  sourceDbPathSource?: string | null;
 } = {}): InstanceInfo {
   const env = options.env ?? process.env;
   const role = normalizeRole(env.MANDIBLE_INSTANCE_ROLE);
@@ -19,7 +21,11 @@ export function resolveInstanceInfo(options: {
     ?? (role === "main" ? "allow" : "reject");
   const dbPath = options.dbPath ?? env.MANDIBLE_DB ?? null;
   const dbPathSource = options.dbPathSource
+    ?? env.MANDIBLE_INSTANCE_DB_PATH_SOURCE
     ?? (options.dbPath ? "start_options" : env.MANDIBLE_DB ? "env" : "default");
+  const sourceDbPath = options.sourceDbPath ?? env.MANDIBLE_INSTANCE_SOURCE_DB ?? null;
+  const sourceDbPathSource = options.sourceDbPathSource
+    ?? (options.sourceDbPath ? "start_options" : env.MANDIBLE_INSTANCE_SOURCE_DB ? "env" : null);
 
   return {
     role,
@@ -27,6 +33,8 @@ export function resolveInstanceInfo(options: {
     operational_mutations_overridden: env.MANDIBLE_OPERATIONAL_MUTATIONS !== undefined,
     db_path: dbPath ? path.resolve(dbPath) : null,
     db_path_source: dbPathSource,
+    source_db_path: sourceDbPath ? path.resolve(sourceDbPath) : null,
+    source_db_path_source: sourceDbPathSource,
   };
 }
 

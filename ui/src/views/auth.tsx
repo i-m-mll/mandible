@@ -17,6 +17,7 @@ import {
   type AuthRequestAction,
   type AuthAutoApproveStatus,
   type AuthHook,
+  type InstanceInfo,
 } from '../api';
 
 export type AuthRequestType =
@@ -89,6 +90,7 @@ export type AuthQueueViewProps = {
    * so no mutation POST fires into a half-initialized daemon. Defaults to true.
    */
   daemonReady?: boolean;
+  instance?: InstanceInfo | null;
   onSelectAuth?: (id: string | null) => void;
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
@@ -137,6 +139,12 @@ function getStats(request: AuthRequest): { files: number | null; additions: numb
 
 function formatNumber(value: number): string {
   return value.toLocaleString();
+}
+
+function compactPath(value: string): string {
+  const parts = value.split('/').filter(Boolean);
+  if (parts.length <= 3) return value;
+  return `.../${parts.slice(-3).join('/')}`;
 }
 
 function extractMandibleIssueRefs(message: string): string[] {
@@ -360,11 +368,13 @@ function AuthActionBundle({
   request,
   actions,
   inFlightActionIds,
+  mutationsAllowed,
   onToggleVeto,
 }: {
   request: AuthRequest;
   actions: AuthRequestAction[];
   inFlightActionIds: Set<string>;
+  mutationsAllowed: boolean;
   onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
 }): JSX.Element | null {
   const requestId = getAuthId(request);
@@ -468,7 +478,7 @@ function AuthActionBundle({
                   className={`auth-action-row__veto${vetoed ? ' auth-action-row__veto--on' : ''}`}
                   role="switch"
                   aria-checked={vetoed}
-                  disabled={vetoBusy}
+                  disabled={vetoBusy || !mutationsAllowed}
                   onClick={() => onToggleVeto(requestId, action, !vetoed)}
                 >
                   {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
@@ -1571,6 +1581,7 @@ export function AuthQueueView({
   onUpdateField,
   sidebarHidden = false,
   daemonReady = true,
+  instance = null,
 }: AuthQueueViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -1828,6 +1839,11 @@ export function AuthQueueView({
   const [autoApproveBusy, setAutoApproveBusy] = useState(false);
   const [showAutoApproveSetupModal, setShowAutoApproveSetupModal] = useState(false);
   const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
+  const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
+  const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
+  const instanceLabel = instance?.role ?? 'main';
+  const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
+  const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -1866,6 +1882,10 @@ export function AuthQueueView({
   }, []);
 
   const handleAutoApproveToggle = useCallback(async () => {
+    if (!operationalMutationsAllowed) {
+      showToast('Auth mutations are disabled on this Mandible preview instance.');
+      return;
+    }
     if (!autoApproveStatus?.enabled && !autoApproveSigningConfigured) {
       setShowAutoApproveSetupModal(true);
       return;
@@ -1881,14 +1901,14 @@ export function AuthQueueView({
     } finally {
       setAutoApproveBusy(false);
     }
-  }, [autoApproveSigningConfigured, autoApproveStatus?.enabled, showToast]);
+  }, [autoApproveSigningConfigured, autoApproveStatus?.enabled, operationalMutationsAllowed, showToast]);
 
   const runAction = useCallback(
     (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
       // Bug: 645f8a8 — block all mutating actions while the daemon is not ready
       // (rebuilding / starting). The buttons are also disabled, but gate here too
       // so no mutation POST can fire from a keyboard/programmatic trigger.
-      if (!daemonReady) {
+      if (!daemonReady || !operationalMutationsAllowed) {
         return;
       }
       if (!id || inFlightRef.current.has(id)) {
@@ -1914,7 +1934,7 @@ export function AuthQueueView({
           });
         });
     },
-    [setInFlightState, daemonReady],
+    [setInFlightState, daemonReady, operationalMutationsAllowed],
   );
 
   const handleApprove = useCallback(
@@ -1988,6 +2008,10 @@ export function AuthQueueView({
 
   const handleToggleActionVeto = useCallback(
     (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
+      if (!operationalMutationsAllowed) {
+        showToast('Auth mutations are disabled on this Mandible preview instance.');
+        return;
+      }
       if (inFlightActionIdsRef.current.has(action.id)) return;
       setInFlightActionIds((prev) => {
         const next = new Set(prev);
@@ -2007,7 +2031,7 @@ export function AuthQueueView({
           });
         });
     },
-    [showToast, updateActionForRequest],
+    [operationalMutationsAllowed, showToast, updateActionForRequest],
   );
 
   const [dismissConfirmId, setDismissConfirmId] = useState<string | null>(null);
@@ -2305,7 +2329,7 @@ export function AuthQueueView({
     // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
     // mutating actions are blocked. Kept separate from actionDisabled (in-flight)
     // so it doesn't trip the "Submitting…" label when nothing is actually queued.
-    const mutationsBlocked = !daemonReady;
+    const mutationsBlocked = !daemonReady || !operationalMutationsAllowed;
     const actionDisabled = inFlight.has(id);
     // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
     // the inFlight window before the API returns (where status is still 'pending'
@@ -2644,7 +2668,9 @@ export function AuthQueueView({
               <div className="auth-auto-approve__text">
                 <span className="auth-auto-approve__label">Auto-approve</span>
                 <span className="auth-auto-approve__status">
-                  {autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
+                  {instanceMutationBlocked
+                    ? `Disabled on ${instanceLabel}`
+                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
                 </span>
               </div>
               <button
@@ -2653,7 +2679,7 @@ export function AuthQueueView({
                 role="switch"
                 aria-checked={Boolean(autoApproveStatus?.enabled)}
                 aria-label="Toggle auth auto-approve"
-                disabled={autoApproveBusy || !autoApproveStatus}
+                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
                 onClick={() => void handleAutoApproveToggle()}
               >
                 <span className="auth-auto-approve__knob" />
@@ -2668,6 +2694,16 @@ export function AuthQueueView({
 
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>
+        {instanceMutationBlocked && (
+          <div className="auth-instance-warning" role="status">
+            <strong>{instanceLabel} instance</strong>
+            <span>
+              Auth actions are disabled for this copied queue
+              {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
+              {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
+            </span>
+          </div>
+        )}
         {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>
@@ -2698,6 +2734,7 @@ export function AuthQueueView({
                     request={request}
                     actions={requestActions}
                     inFlightActionIds={inFlightActionIds}
+                    mutationsAllowed={operationalMutationsAllowed}
                     onToggleVeto={handleToggleActionVeto}
                   />
                 ) : null
