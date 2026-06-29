@@ -641,6 +641,27 @@ function getResolvedTimestampLabel(request: AuthRequest): string {
   return `resolved ${formatRelativeTime(resolvedAtMs)}`;
 }
 
+function formatMetadataTimestamp(value?: string | number | null): string | null {
+  const timestamp = getTimestampMs(value ?? null);
+  if (timestamp == null) return null;
+  return `${formatRelativeTime(timestamp)} (${new Date(timestamp).toLocaleString()})`;
+}
+
+function getStringField(request: AuthRequest, field: string): string | null {
+  const value = request[field];
+  return typeof value === 'string' && value.trim() ? value : null;
+}
+
+function MetadataRow({ label, value }: { label: string; value: string | JSX.Element | null | undefined }): JSX.Element | null {
+  if (value == null || value === '') return null;
+  return (
+    <div className="auth-detail-meta__row">
+      <dt>{label}</dt>
+      <dd>{value}</dd>
+    </div>
+  );
+}
+
 function AuthCard({
   request,
   expanded,
@@ -1127,6 +1148,502 @@ function AuthCard({
         </div>
       )}
     </div>
+  );
+}
+
+function AuthRequestDetail({
+  request,
+  history,
+  failureSummary,
+  attemptCount,
+  timestampLabel,
+  branchMerged,
+  actionBundle,
+  actions,
+  executionOutput,
+  onUpdateField,
+}: {
+  request: AuthRequest;
+  history?: boolean;
+  failureSummary?: string | null;
+  attemptCount?: number | null;
+  timestampLabel?: string;
+  branchMerged?: boolean;
+  actionBundle?: JSX.Element | null;
+  actions?: JSX.Element | null;
+  executionOutput?: string;
+  onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
+}): JSX.Element {
+  const [showCommit, setShowCommit] = useState(true);
+  const [showSpec, setShowSpec] = useState(false);
+  const [showDiff, setShowDiff] = useState(true);
+  const [showConsole, setShowConsole] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<number>(-1);
+  const [editingCommitMsg, setEditingCommitMsg] = useState(false);
+  const [editCommitValue, setEditCommitValue] = useState('');
+  const consoleEndRef = useRef<HTMLDivElement>(null);
+
+  const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
+  const specContent = typeof request.spec_content === 'string' ? request.spec_content : '';
+  const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
+
+  const { branch: commitBranch, body: commitBody } = useMemo(
+    () => parseBranchTag(commitMsg),
+    [commitMsg],
+  );
+  const commitHtml = useMemo(() => commitBody ? renderMarkdown(commitBody) : '', [commitBody]);
+  const specHtml = useMemo(() => specContent ? renderMarkdown(specContent) : '', [specContent]);
+  const diffSections = useMemo(() => parseDiffSections(diffRaw), [diffRaw]);
+  const diffHtml = useMemo(() => {
+    if (selectedFile === -1) {
+      return renderHunksHtml(diffSections.map((s) => s.hunks).join('\n'));
+    }
+    return renderHunksHtml(diffSections[selectedFile]?.hunks || '');
+  }, [diffSections, selectedFile]);
+
+  const rawConsoleOutput = executionOutput ||
+    (typeof request.output === 'string' ? request.output : '');
+  const consoleText = useMemo(() => stripAnsi(rawConsoleOutput), [rawConsoleOutput]);
+  const hasConsoleOutput = consoleText.trim().length > 0;
+
+  const stats = getStats(request);
+  const status = getAuthStatus(request);
+  const statusLabel = getStatusLabel(request);
+  const statusClass = getStatusClass(request);
+  const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
+  const isApproved = status === 'approved' || status === 'executing';
+  const showYubikeyWarning = isApproved;
+  const showConsoleToggle = isApproved || (hasConsoleOutput && (status === 'completed' || failedLike));
+  const showFailure = failedLike;
+  const attemptLabel = attemptCount && attemptCount > 1 ? `Attempt ${attemptCount}` : null;
+  const requestHash = getRequestHash(request);
+  const fullId = getAuthId(request);
+
+  const baseBranch = request.base_branch ?? request.base;
+  const headBranch = request.head_branch ?? request.head;
+  const repoId = request.repo ?? '';
+  const repoName = repoId.includes('/') && !looksLikeBranchName(repoId) && repoId.split('/').length === 2
+    ? repoId.split('/')[1]
+    : repoId;
+
+  const sessionId = request.session_id;
+  const structuredReferenceIds = request.issue_references;
+  const structuredLegacyIds = request.issue_ids;
+  const referenceRefs = useMemo(
+    () => uniqueStrings([
+      ...(Array.isArray(structuredReferenceIds) ? structuredReferenceIds : []),
+      ...(Array.isArray(structuredLegacyIds) ? structuredLegacyIds : extractMandibleIssueRefs(commitMsg)),
+    ]),
+    [structuredReferenceIds, structuredLegacyIds, commitMsg]
+  );
+  const closureRefs = useMemo(
+    () => uniqueStrings([
+      ...(Array.isArray(request.issue_closures) ? request.issue_closures : []),
+      ...(Array.isArray(request.issues) ? request.issues as string[] : []),
+    ]),
+    [request.issue_closures, request.issues]
+  );
+  const canIssueLink = Boolean(repoId) && !looksLikeBranchName(repoId);
+  const hasLinks = Boolean(sessionId) || ((referenceRefs.length > 0 || closureRefs.length > 0) && canIssueLink);
+
+  useEffect(() => {
+    if (isApproved) {
+      setShowConsole(true);
+    }
+  }, [isApproved]);
+
+  useEffect(() => {
+    if (showConsole && consoleEndRef.current) {
+      consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [showConsole, consoleText]);
+
+  const effectiveTimestampLabel = timestampLabel ?? (history
+    ? getResolvedTimestampLabel(request)
+    : getSubmissionTimestampLabel(request));
+
+  const authType = getAuthType(request);
+  const typeMeta = AUTH_TYPE_META[authType];
+  const showDiffStats = typeHasDiffStats(authType);
+  const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
+  const statsLine = showDiffStats ? (
+    <span className="auth-detail__stats">
+      {hasStats ? (
+        <>
+          <span>{formatNumber(stats.files ?? 0)} files</span>
+          <span className="stats-plus">+{formatNumber(stats.additions ?? 0)}</span>
+          <span className="stats-minus">-{formatNumber(stats.deletions ?? 0)}</span>
+        </>
+      ) : (
+        <span className="stats-unavailable">—</span>
+      )}
+    </span>
+  ) : null;
+
+  const createdAt = formatMetadataTimestamp(request.created_at ?? null);
+  const lastExecutedAt = formatMetadataTimestamp(request.last_executed_at ?? null);
+  const resolvedAt = formatMetadataTimestamp(request.resolved_at ?? null);
+  const finalizedAt = formatMetadataTimestamp(request.finalized_at as string | number | null | undefined);
+  const mergeSha = getStringField(request, 'merge_sha') ?? getStringField(request, 'merged_sha');
+  const targetSession = getStringField(request, 'target_session_id');
+  const targetRepo = getStringField(request, 'target_repo');
+  const conversationId = getStringField(request, 'conversation_id') ?? getStringField(request, 'target_conversation_id');
+
+  return (
+    <article className={`auth-detail-surface${history ? ' auth-detail-surface--history' : ''}`}>
+      <header className="auth-detail__header">
+        <div className="auth-detail__header-main">
+          <div className="auth-detail__eyebrow">
+            <span className={statusClass}>{statusLabel}</span>
+            <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
+            {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
+            {branchMerged && <span className="branch-merged-tag">branch merged</span>}
+          </div>
+          <h2
+            className="auth-detail__title"
+            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+          />
+          <div className="auth-detail__summary-grid">
+            {repoName && (
+              <div className="auth-detail__summary-item">
+                <span className="auth-detail__summary-label">Repo</span>
+                <span className="auth-detail__summary-value">{repoName}</span>
+              </div>
+            )}
+            {headBranch && baseBranch && (
+              <div className="auth-detail__summary-item auth-detail__summary-item--wide">
+                <span className="auth-detail__summary-label">Branch flow</span>
+                <span className="branch-flow">
+                  <span className="branch-name">{headBranch}</span>
+                  {' \u2192 '}
+                  <span className="branch-name">{baseBranch}</span>
+                </span>
+              </div>
+            )}
+            {commitBranch && (
+              <div className="auth-detail__summary-item">
+                <span className="auth-detail__summary-label">Commit branch</span>
+                <span className="branch-tag">{commitBranch}</span>
+              </div>
+            )}
+            {statsLine && (
+              <div className="auth-detail__summary-item">
+                <span className="auth-detail__summary-label">Changes</span>
+                {statsLine}
+              </div>
+            )}
+            <div className="auth-detail__summary-item">
+              <span className="auth-detail__summary-label">Request</span>
+              <button
+                type="button"
+                className="auth-detail__request-id"
+                onClick={() => {
+                  if (fullId) {
+                    navigator.clipboard.writeText(fullId);
+                  }
+                }}
+                title="Copy full request id"
+              >
+                {requestHash || 'unknown'}
+              </button>
+            </div>
+            <div className="auth-detail__summary-item">
+              <span className="auth-detail__summary-label">Time</span>
+              <span className="auth-detail__summary-value">{effectiveTimestampLabel}</span>
+            </div>
+          </div>
+          {hasLinks && (
+            <div className="auth-detail__links">
+              {sessionId && (
+                <a
+                  className="auth-card__link"
+                  href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
+                >
+                  Session
+                </a>
+              )}
+              {referenceRefs.length > 0 && canIssueLink && (
+                <span className="auth-card__issue-group">
+                  <span className="auth-card__issue-group-label">References</span>
+                  {referenceRefs.map((ref) => (
+                    <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                  ))}
+                </span>
+              )}
+              {closureRefs.length > 0 && canIssueLink && (
+                <span className="auth-card__issue-group">
+                  <span className="auth-card__issue-group-label">Closes</span>
+                  {closureRefs.map((ref) => (
+                    <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                  ))}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="auth-detail__header-side">
+          {actions}
+          <details className="auth-detail-meta">
+            <summary>Metadata</summary>
+            <dl className="auth-detail-meta__content">
+              <MetadataRow
+                label="Full request id"
+                value={(
+                  <button
+                    type="button"
+                    className="auth-detail-meta__copy"
+                    onClick={() => {
+                      if (fullId) {
+                        navigator.clipboard.writeText(fullId);
+                      }
+                    }}
+                  >
+                    {fullId || 'unknown'}
+                  </button>
+                )}
+              />
+              <MetadataRow label="Status" value={status} />
+              <MetadataRow label="Type" value={authType} />
+              <MetadataRow label="Repo" value={repoId || null} />
+              <MetadataRow label="Head branch" value={headBranch ?? null} />
+              <MetadataRow label="Base branch" value={baseBranch ?? null} />
+              <MetadataRow label="Created" value={createdAt} />
+              <MetadataRow label="Last executed" value={lastExecutedAt} />
+              <MetadataRow label="Resolved" value={resolvedAt} />
+              <MetadataRow label="Approval source" value={request.approval_source ?? null} />
+              <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
+              <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
+              <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
+              <MetadataRow label="Merge SHA" value={mergeSha} />
+              <MetadataRow label="Finalized" value={finalizedAt} />
+              <MetadataRow label="Session" value={sessionId ?? null} />
+              <MetadataRow label="Target session" value={targetSession} />
+              <MetadataRow label="Target repo" value={targetRepo} />
+              <MetadataRow label="Conversation" value={conversationId} />
+            </dl>
+          </details>
+        </div>
+      </header>
+
+      <div className="auth-detail__body">
+        {showFailure && (
+          <div className={`auth-failure${status === 'expired' ? ' auth-failure--expired' : ''}`}>
+            <div className="auth-failure__header">
+              <span className="auth-failure__title">
+                {status === 'expired'
+                  ? 'Expired'
+                  : status === 'needs_rebase'
+                    ? 'Needs rebase'
+                    : 'Failed'}
+              </span>
+              {request.exit_code != null && request.exit_code !== 0 && (
+                <span className="auth-failure__code">Exit {request.exit_code}</span>
+              )}
+            </div>
+            <p className="auth-failure__summary">
+              {failureSummary ||
+                (status === 'expired'
+                  ? 'Expired without a response.'
+                  : status === 'needs_rebase'
+                    ? 'Another auth merge changed the target branch; rebase and retry this request.'
+                    : 'No output captured.')}
+            </p>
+          </div>
+        )}
+
+        {showYubikeyWarning && (
+          <div className="auth-yubikey-warning">
+            <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+            <span className="auth-yubikey-warning__text">
+              Executing — touch your YubiKey when it lights up
+            </span>
+          </div>
+        )}
+
+        {actionBundle}
+
+        <div className="auth-detail__panels">
+          <div className="auth-detail__left-col">
+            <div className="panel">
+              <button
+                type="button"
+                className="panel__toggle"
+                onClick={() => setShowCommit((prev) => !prev)}
+              >
+                <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
+                  {'\u25B8'}
+                </span>
+                Commit Message
+                {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                  <span
+                    className="panel__edit-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditCommitValue(commitMsg);
+                      setEditingCommitMsg(true);
+                    }}
+                  >
+                    edit
+                  </span>
+                )}
+              </button>
+              {showCommit && (
+                editingCommitMsg ? (
+                  <div className="panel__body spec-panel">
+                    <textarea
+                      className="panel__edit-textarea"
+                      value={editCommitValue}
+                      onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
+                      rows={8}
+                    />
+                    <div className="panel__edit-actions">
+                      <button
+                        type="button"
+                        className="panel__edit-save"
+                        onClick={() => {
+                          const id = getAuthId(request);
+                          if (id && onUpdateField) {
+                            void onUpdateField(id, 'commit_message', editCommitValue);
+                          }
+                          setEditingCommitMsg(false);
+                        }}
+                      >
+                        Save
+                      </button>
+                      <button
+                        type="button"
+                        className="panel__edit-cancel"
+                        onClick={() => setEditingCommitMsg(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                ) : commitHtml ? (
+                  <div
+                    className="panel__body spec-panel"
+                    dangerouslySetInnerHTML={{ __html: commitHtml }}
+                  />
+                ) : (
+                  <div className="panel__body spec-panel spec-panel--empty">
+                    No commit message provided. Merge will use git's default message.
+                  </div>
+                )
+              )}
+            </div>
+            <div className="panel">
+              <button
+                type="button"
+                className="panel__toggle"
+                onClick={() => setShowSpec((prev) => !prev)}
+              >
+                <span className={`panel__chevron${showSpec ? ' panel__chevron--open' : ''}`}>
+                  {'\u25B8'}
+                </span>
+                Specification
+              </button>
+              {showSpec && (
+                specHtml ? (
+                  <div
+                    className="panel__body spec-panel"
+                    dangerouslySetInnerHTML={{ __html: specHtml }}
+                  />
+                ) : (
+                  <div className="panel__body spec-panel spec-panel--empty">
+                    No specification attached.
+                  </div>
+                )
+              )}
+            </div>
+          </div>
+          <div className="panel auth-detail__right-col">
+            <button
+              type="button"
+              className="panel__toggle"
+              onClick={() => setShowDiff((prev) => !prev)}
+            >
+              <span className={`panel__chevron${showDiff ? ' panel__chevron--open' : ''}`}>
+                {'\u25B8'}
+              </span>
+              {showDiffStats ? 'Changes' : 'Details'}
+            </button>
+            {showDiff && (
+              showDiffStats ? (
+                diffSections.length > 0 ? (
+                  <div className="panel__body diff-panel">
+                    <div className="diff-file-tabs">
+                      {diffSections.length > 1 && (
+                        <button
+                          className={`diff-file-tab${selectedFile === -1 ? ' diff-file-tab--active' : ''}`}
+                          onClick={() => setSelectedFile(-1)}
+                        >All</button>
+                      )}
+                      {diffSections.map((section, i) => (
+                        <button
+                          key={i}
+                          className={`diff-file-tab${selectedFile === i ? ' diff-file-tab--active' : ''}`}
+                          onClick={() => setSelectedFile(i)}
+                          title={section.filename}
+                        >
+                          {section.filename.split('/').pop()}
+                        </button>
+                      ))}
+                    </div>
+                    <div dangerouslySetInnerHTML={{ __html: diffHtml }} />
+                  </div>
+                ) : (
+                  <div className="panel__body diff-panel spec-panel--empty">
+                    No diff available.
+                  </div>
+                )
+              ) : (
+                <div className="panel__body spec-panel">
+                  <p className="type-detail-summary">
+                    <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
+                    {' '}{getAuthTitle(request)}
+                  </p>
+                  {specContent && (
+                    <div dangerouslySetInnerHTML={{ __html: specHtml }} />
+                  )}
+                  {!specContent && (
+                    <p className="text-muted">No additional details for this request type.</p>
+                  )}
+                </div>
+              )
+            )}
+          </div>
+        </div>
+
+        {showConsoleToggle && (
+          <div className="console-output">
+            <button
+              type="button"
+              className="console-output__toggle"
+              onClick={() => setShowConsole((prev) => !prev)}
+            >
+              <span className={`panel__chevron${showConsole ? ' panel__chevron--open' : ''}`}>
+                {'\u25B8'}
+              </span>
+              {showConsole ? 'Hide output' : 'Show output'}
+              {isApproved && (
+                <span className="console-output__live-dot" />
+              )}
+            </button>
+            {showConsole && (
+              <div className="console-output__panel">
+                {hasConsoleOutput ? (
+                  <pre className="console-output__pre">{consoleText}<div ref={consoleEndRef} /></pre>
+                ) : (
+                  <div className="console-output__waiting">
+                    Waiting for output…
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -2684,9 +3201,8 @@ export function AuthQueueView({
           const isHistory = isHistoryStatus(status, exitCode);
           const requestActions = actionLists.get(id) ?? (Array.isArray(request.actions) ? request.actions : []);
           return (
-            <AuthCard
+            <AuthRequestDetail
               request={request}
-              expanded
               history={isHistory}
               failureSummary={failureSummary}
               attemptCount={attemptCount}

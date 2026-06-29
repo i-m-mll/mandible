@@ -854,6 +854,44 @@ describe('AuthQueueView', () => {
     expect(screen.getByText('Force Dismiss')).toBeTruthy();
   });
 
+  it('renders the selected request as a structured detail surface', async () => {
+    stubFetch();
+    render(
+      h(AuthQueueView, {
+        queue: [
+          {
+            id: 'req-structured-detail',
+            title: 'Structured auth detail',
+            type: 'merge',
+            repo: 'mandible',
+            base_branch: 'main',
+            head_branch: 'feature/detail',
+            status: 'pending',
+            created_at: 1,
+            approval_source: 'manual',
+            approval_lease_id: 'lease-123',
+          },
+        ],
+        outputs: {},
+        selectedAuthId: 'req-structured-detail',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    expect(screen.getByRole('heading', { name: 'Structured auth detail' })).toBeTruthy();
+    expect(document.querySelector('.auth-detail-surface')).toBeTruthy();
+    expect(document.querySelector('.auth-card--expanded')).toBeNull();
+    expect(screen.getByText('Branch flow')).toBeTruthy();
+    expect(screen.getAllByText('feature/detail').length).toBeGreaterThan(0);
+    expect(screen.getByText('Approve')).toBeTruthy();
+    expect(screen.getByText('Metadata')).toBeTruthy();
+
+    fireEvent.click(screen.getByText('Metadata'));
+    await waitFor(() => expect(screen.getByText('Approval source')).toBeTruthy());
+    expect(screen.getByText('lease-123')).toBeTruthy();
+  });
+
   it('renders deferred action badges and bundle details', async () => {
     const actions = [
       { id: 'act1', auth_request_id: 'req-actions', ordinal: 1, kind: 'issue_close', target_issue_ref: 'abc123', payload: { reason_comment: 'Done' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
