@@ -21,6 +21,7 @@ import type {
 } from '../../api';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
+import { DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
 type IssueMetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
@@ -147,17 +148,19 @@ export function LedgerIssueDetail({
     >
       <header className="ledger-issue-detail__header" ref={headerRef}>
         <div className="ledger-issue-detail__heading">
-          <div className="ledger-issue-detail__eyebrow">
-            <span>{detail.project.repo_name ?? detail.project.display_name}</span>
-            <code>{detail.display_id}</code>
-            <CopyIssueRefButton detail={detail} />
+          <DetailHeaderIdentity
+            className="ledger-issue-detail__eyebrow"
+            contextLabel={detail.project.repo_name ?? detail.project.display_name}
+            shortId={detail.display_id}
+            copyValue={`${detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name}/${detail.display_id}`}
+          >
             <StatusPill
               status={detail.status}
               resolution={detail.resolution}
               linkedAuth={resolvingAuth}
               onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
             />
-          </div>
+          </DetailHeaderIdentity>
           <div className="ledger-issue-detail__title-row">
             <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
             {hasIssueActions && (
@@ -529,32 +532,6 @@ function IssueActionsMenu({
         </div>
       )}
     </div>
-  );
-}
-
-function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection }): JSX.Element {
-  const [copied, setCopied] = useState(false);
-  const project = detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name;
-  const value = `${project}/${detail.display_id}`;
-  const handleCopy = async () => {
-    try {
-      await copyText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <button
-      type="button"
-      className="ledger-copy-ref-button"
-      title={copied ? 'Copied' : `Copy ${value}`}
-      aria-label={copied ? 'Copied issue reference' : `Copy ${value}`}
-      onClick={() => void handleCopy()}
-    >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-    </button>
   );
 }
 
@@ -1275,23 +1252,6 @@ function MetadataIcon(): JSX.Element {
       <circle cx="12" cy="12" r="9" />
       <path d="M12 17v-5" />
       <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-function CopyIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
-    </svg>
-  );
-}
-
-function CheckIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20 6 9 17l-5-5" />
     </svg>
   );
 }
