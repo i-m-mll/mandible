@@ -14022,6 +14022,12 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
   letter-spacing: 0;
 }
 
+.ledger-issue-detail__eyebrow .status-pill {
+  margin-left: 2px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
 .ledger-issue-detail h2 {
   margin: 0;
   color: var(--text-primary);
