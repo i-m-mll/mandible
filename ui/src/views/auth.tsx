@@ -662,6 +662,11 @@ function MetadataRow({ label, value }: { label: string; value: string | JSX.Elem
   );
 }
 
+async function copyAuthText(value: string): Promise<void> {
+  if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+  await navigator.clipboard.writeText(value);
+}
+
 function AuthCard({
   request,
   expanded,
@@ -1181,7 +1186,9 @@ function AuthRequestDetail({
   const [selectedFile, setSelectedFile] = useState<number>(-1);
   const [editingCommitMsg, setEditingCommitMsg] = useState(false);
   const [editCommitValue, setEditCommitValue] = useState('');
+  const [metadataOpen, setMetadataOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
+  const metadataRef = useRef<HTMLDetailsElement>(null);
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
   const specContent = typeof request.spec_content === 'string' ? request.spec_content : '';
@@ -1258,6 +1265,24 @@ function AuthRequestDetail({
     }
   }, [showConsole, consoleText]);
 
+  useEffect(() => {
+    if (!metadataOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = metadataRef.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setMetadataOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMetadataOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [metadataOpen]);
+
   const effectiveTimestampLabel = timestampLabel ?? (history
     ? getResolvedTimestampLabel(request)
     : getSubmissionTimestampLabel(request));
@@ -1266,19 +1291,13 @@ function AuthRequestDetail({
   const typeMeta = AUTH_TYPE_META[authType];
   const showDiffStats = typeHasDiffStats(authType);
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
-  const statsLine = showDiffStats ? (
-    <span className="auth-detail__stats">
-      {hasStats ? (
-        <>
-          <span>{formatNumber(stats.files ?? 0)} files</span>
-          <span className="stats-plus">+{formatNumber(stats.additions ?? 0)}</span>
-          <span className="stats-minus">-{formatNumber(stats.deletions ?? 0)}</span>
-        </>
-      ) : (
-        <span className="stats-unavailable">—</span>
-      )}
-    </span>
-  ) : null;
+  const statsSummary = showDiffStats && hasStats
+    ? `${formatNumber(stats.files ?? 0)} files · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
+    : null;
+  const primarySubtitle = [statsSummary, effectiveTimestampLabel].filter(Boolean).join(' · ');
+  const flowText = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : commitBranch;
+  const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
+  const copyRef = requestHash ? `auth:${requestHash}` : '';
 
   const createdAt = formatMetadataTimestamp(request.created_at ?? null);
   const lastExecutedAt = formatMetadataTimestamp(request.last_executed_at ?? null);
@@ -1290,12 +1309,21 @@ function AuthRequestDetail({
   const conversationId = getStringField(request, 'conversation_id') ?? getStringField(request, 'target_conversation_id');
 
   return (
-    <article className={`auth-detail-surface${history ? ' auth-detail-surface--history' : ''}`}>
+    <article className={`auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}>
       <header className="auth-detail__header">
         <div className="auth-detail__header-main">
           <div className="auth-detail__eyebrow">
-            <span className={statusClass}>{statusLabel}</span>
-            <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
+            {repoName && <span className="auth-detail__repo">{repoName}</span>}
+            <code className="auth-detail__short-ref">{copyRef || 'auth:unknown'}</code>
+            <button
+              type="button"
+              className="auth-detail__copy-ref"
+              aria-label={`Copy ${copyRef || 'auth reference'}`}
+              title={`Copy ${copyRef || 'auth reference'}`}
+              onClick={() => void copyAuthText(copyRef)}
+            >
+              <CopyIcon />
+            </button>
             {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
             {branchMerged && <span className="branch-merged-tag">branch merged</span>}
           </div>
@@ -1303,54 +1331,11 @@ function AuthRequestDetail({
             className="auth-detail__title"
             dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
           />
-          <div className="auth-detail__summary-grid">
-            {repoName && (
-              <div className="auth-detail__summary-item">
-                <span className="auth-detail__summary-label">Repo</span>
-                <span className="auth-detail__summary-value">{repoName}</span>
-              </div>
-            )}
-            {headBranch && baseBranch && (
-              <div className="auth-detail__summary-item auth-detail__summary-item--wide">
-                <span className="auth-detail__summary-label">Branch flow</span>
-                <span className="branch-flow">
-                  <span className="branch-name">{headBranch}</span>
-                  {' \u2192 '}
-                  <span className="branch-name">{baseBranch}</span>
-                </span>
-              </div>
-            )}
-            {commitBranch && (
-              <div className="auth-detail__summary-item">
-                <span className="auth-detail__summary-label">Commit branch</span>
-                <span className="branch-tag">{commitBranch}</span>
-              </div>
-            )}
-            {statsLine && (
-              <div className="auth-detail__summary-item">
-                <span className="auth-detail__summary-label">Changes</span>
-                {statsLine}
-              </div>
-            )}
-            <div className="auth-detail__summary-item">
-              <span className="auth-detail__summary-label">Request</span>
-              <button
-                type="button"
-                className="auth-detail__request-id"
-                onClick={() => {
-                  if (fullId) {
-                    navigator.clipboard.writeText(fullId);
-                  }
-                }}
-                title="Copy full request id"
-              >
-                {requestHash || 'unknown'}
-              </button>
-            </div>
-            <div className="auth-detail__summary-item">
-              <span className="auth-detail__summary-label">Time</span>
-              <span className="auth-detail__summary-value">{effectiveTimestampLabel}</span>
-            </div>
+          <div className="auth-detail__subtitle">
+            <span>{primarySubtitle}</span>
+            <span className="auth-detail__subtitle-line">
+              {typeSubtitle}
+            </span>
           </div>
           {hasLinks && (
             <div className="auth-detail__links">
@@ -1382,9 +1367,17 @@ function AuthRequestDetail({
           )}
         </div>
         <div className="auth-detail__header-side">
+          <span className={statusClass}>{statusLabel}</span>
           {actions}
-          <details className="auth-detail-meta">
-            <summary>Metadata</summary>
+          <details
+            className="auth-detail-meta"
+            ref={metadataRef}
+            open={metadataOpen}
+            onToggle={(event) => setMetadataOpen(event.currentTarget.open)}
+          >
+            <summary aria-label="Auth metadata menu" title="Auth metadata menu">
+              <HorizontalDotsIcon />
+            </summary>
             <dl className="auth-detail-meta__content">
               <MetadataRow
                 label="Full request id"
@@ -1392,11 +1385,7 @@ function AuthRequestDetail({
                   <button
                     type="button"
                     className="auth-detail-meta__copy"
-                    onClick={() => {
-                      if (fullId) {
-                        navigator.clipboard.writeText(fullId);
-                      }
-                    }}
+                    onClick={() => void copyAuthText(fullId)}
                   >
                     {fullId || 'unknown'}
                   </button>
@@ -1644,6 +1633,25 @@ function AuthRequestDetail({
         )}
       </div>
     </article>
+  );
+}
+
+function CopyIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
+    </svg>
+  );
+}
+
+function HorizontalDotsIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="5" cy="12" r="1.5" />
+      <circle cx="12" cy="12" r="1.5" />
+      <circle cx="19" cy="12" r="1.5" />
+    </svg>
   );
 }
 

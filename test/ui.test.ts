@@ -856,6 +856,11 @@ describe('AuthQueueView', () => {
 
   it('renders the selected request as a structured detail surface', async () => {
     stubFetch();
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     render(
       h(AuthQueueView, {
         queue: [
@@ -880,14 +885,24 @@ describe('AuthQueueView', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Structured auth detail' })).toBeTruthy();
-    expect(document.querySelector('.auth-detail-surface')).toBeTruthy();
+    expect(document.querySelector('.auth-detail-pane')).toBeTruthy();
+    expect(document.querySelector('.auth-detail-surface')).toBeNull();
     expect(document.querySelector('.auth-card--expanded')).toBeNull();
-    expect(screen.getByText('Branch flow')).toBeTruthy();
-    expect(screen.getAllByText('feature/detail').length).toBeGreaterThan(0);
+    expect(document.querySelector('.auth-detail__summary-grid')).toBeNull();
+    expect(document.querySelector('.auth-detail__summary-label')).toBeNull();
+    expect(screen.queryByText('Branch flow')).toBeNull();
+    expect(screen.queryByText('Request')).toBeNull();
+    expect(screen.queryByText('Metadata')).toBeNull();
+    expect(document.querySelector('.auth-detail__repo')?.textContent).toBe('mandible');
+    expect(document.querySelector('.auth-detail__short-ref')?.textContent).toBe('auth:req-stru');
+    expect(document.querySelector('.auth-detail__eyebrow .type-badge')).toBeNull();
+    expect(screen.getByText('merge · feature/detail → main')).toBeTruthy();
     expect(screen.getByText('Approve')).toBeTruthy();
-    expect(screen.getByText('Metadata')).toBeTruthy();
 
-    fireEvent.click(screen.getByText('Metadata'));
+    fireEvent.click(screen.getByLabelText('Copy auth:req-stru'));
+    expect(writeText).toHaveBeenCalledWith('auth:req-stru');
+
+    fireEvent.click(screen.getByLabelText('Auth metadata menu'));
     await waitFor(() => expect(screen.getByText('Approval source')).toBeTruthy());
     expect(screen.getByText('lease-123')).toBeTruthy();
   });

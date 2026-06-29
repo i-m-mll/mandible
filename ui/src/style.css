@@ -2937,33 +2937,27 @@ tr:last-child td {
   gap: 12px;
 }
 
-.auth-detail-surface {
+.auth-detail-pane {
   min-height: 100%;
-  background: var(--bg-card);
-  border: 1px solid var(--neutral-alpha-04);
-  border-radius: 12px;
-  box-shadow: var(--shadow-soft);
-  overflow: hidden;
-}
-
-.auth-detail-surface--history {
-  border-left: 3px solid var(--text-muted);
+  display: flex;
+  flex-direction: column;
 }
 
 .auth-detail__header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 20px;
-  padding: 18px 20px;
+  margin: -24px -24px 0;
+  padding: 20px 24px;
   border-bottom: 1px solid var(--neutral-alpha-06);
-  background: linear-gradient(180deg, var(--neutral-alpha-025), transparent);
+  background: var(--bg);
 }
 
 .auth-detail__header-main {
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .auth-detail__eyebrow {
@@ -2971,6 +2965,46 @@ tr:last-child td {
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.auth-detail__repo {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.auth-detail__short-ref {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.auth-detail__copy-ref {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.auth-detail__copy-ref:hover {
+  color: var(--text-primary);
+  background: var(--neutral-alpha-05);
+}
+
+.auth-detail__copy-ref svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linejoin: round;
 }
 
 .auth-detail__title {
@@ -2982,63 +3016,15 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
-.auth-detail__summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 10px 14px;
-}
-
-.auth-detail__summary-item {
-  min-width: 0;
+.auth-detail__subtitle {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-}
-
-.auth-detail__summary-item--wide {
-  grid-column: span 2;
-}
-
-.auth-detail__summary-label {
+  gap: 4px;
   color: var(--text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-}
-
-.auth-detail__summary-value {
-  min-width: 0;
-  color: var(--text-primary);
-  font-size: 13px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.auth-detail__stats {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--text-primary);
   font-size: 13px;
 }
 
-.auth-detail__request-id {
-  align-self: flex-start;
-  max-width: 100%;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
-  padding: 0;
-  cursor: pointer;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.auth-detail__request-id:hover {
+.auth-detail__subtitle-line {
   color: var(--text-primary);
 }
 
@@ -3064,25 +3050,46 @@ tr:last-child td {
 
 .auth-detail-meta {
   position: relative;
-  align-self: stretch;
+  align-self: flex-end;
 }
 
 .auth-detail-meta summary {
   display: inline-flex;
+  align-items: center;
   justify-content: center;
-  width: 100%;
-  padding: 6px 10px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   border-radius: 8px;
+  border: 1px solid transparent;
   color: var(--text-muted);
-  background: var(--neutral-alpha-05);
-  font-size: 12px;
+  background: transparent;
   cursor: pointer;
   user-select: none;
 }
 
+.auth-detail-meta summary::-webkit-details-marker {
+  display: none;
+}
+
+.auth-detail-meta summary::marker {
+  content: '';
+}
+
 .auth-detail-meta summary:hover {
   color: var(--text-primary);
+  background: var(--neutral-alpha-05);
+}
+
+.auth-detail-meta[open] summary {
+  color: var(--text-primary);
   background: var(--neutral-alpha-08);
+}
+
+.auth-detail-meta summary svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
 }
 
 .auth-detail-meta__content {
@@ -3141,7 +3148,7 @@ tr:last-child td {
   display: flex;
   flex-direction: column;
   gap: 14px;
-  padding: 18px 20px 20px;
+  padding-top: 20px;
 }
 
 .auth-detail__body .auth-failure,
@@ -7449,10 +7456,6 @@ code.inbox-detail__meta-value {
   .auth-detail__header-side {
     min-width: 0;
     align-items: stretch;
-  }
-
-  .auth-detail__summary-item--wide {
-    grid-column: auto;
   }
 
   .auth-detail__panels {
