@@ -94,6 +94,34 @@ api_non_main_operational_mutation_override_enabled() {
   esac
 }
 
+api_instance_metadata_valid() {
+  local input_file="$1"
+  jq -e '
+    .instance
+    and (.instance.role | type == "string")
+    and (.instance.role | IN("main", "preview", "dev", "test"))
+    and (.instance.operational_mutations | type == "string")
+    and (.instance.operational_mutations | IN("allow", "reject"))
+  ' "$input_file" >/dev/null 2>&1
+}
+
+api_write_instance_metadata_unknown() {
+  local category="$1"
+  local output_file="${2:-}"
+  local message
+
+  message="Refusing ${category} mutation because Mandible instance metadata is unavailable from /api/instance or /api/health. Use a daemon that exposes valid instance metadata, or set MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS=1 only in isolated test/dev environments."
+  printf '%s\n' "$message" >&2
+  if [[ -n "$output_file" ]]; then
+    jq -n \
+      --arg error "cli_instance_metadata_unknown" \
+      --arg message "$message" \
+      --arg category "$category" \
+      '{error:$error, message:$message, category:$category}' \
+      > "$output_file"
+  fi
+}
+
 api_fetch_instance_payload() {
   local output_file="$1"
   local http_status
@@ -127,21 +155,18 @@ api_preflight_operational_mutation() {
   tmp_response="$(mktemp)"
   if ! api_fetch_instance_payload "$tmp_response"; then
     rm -f "$tmp_response"
-    message="Refusing ${category} mutation because Mandible instance metadata is unavailable from /api/instance or /api/health. Use a daemon that exposes instance metadata, or set MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS=1 only in isolated test/dev environments."
-    printf '%s\n' "$message" >&2
-    if [[ -n "$output_file" ]]; then
-      jq -n \
-        --arg error "cli_instance_metadata_unknown" \
-        --arg message "$message" \
-        --arg category "$category" \
-        '{error:$error, message:$message, category:$category}' \
-        > "$output_file"
-    fi
+    api_write_instance_metadata_unknown "$category" "$output_file"
     return 22
   fi
 
-  role=$(jq -r '.instance.role // "main"' "$tmp_response")
-  policy=$(jq -r '.instance.operational_mutations // "allow"' "$tmp_response")
+  if ! api_instance_metadata_valid "$tmp_response"; then
+    rm -f "$tmp_response"
+    api_write_instance_metadata_unknown "$category" "$output_file"
+    return 22
+  fi
+
+  role=$(jq -r '.instance.role' "$tmp_response")
+  policy=$(jq -r '.instance.operational_mutations' "$tmp_response")
   if [[ "$role" == "main" && "$policy" == "allow" ]]; then
     rm -f "$tmp_response"
     return 0

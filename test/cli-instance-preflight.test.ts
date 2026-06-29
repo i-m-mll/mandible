@@ -106,12 +106,42 @@ function listenForInstancePreflight(options: {
         res.end(JSON.stringify({ id: "comment-1" }));
         return;
       }
+      if (req.method === "POST" && req.url?.startsWith("/api/issues/")) {
+        res.writeHead(201, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ display_id: "reminder-1" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/inbox/auth_result/item-1/ack") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
       if (req.method === "POST" && req.url === "/api/projects") {
         res.writeHead(201, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ project: { project_key: "demo" } }));
         return;
       }
+      if (req.method === "GET" && req.url?.startsWith("/api/sessions/by-pid/")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: "session-1" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/sessions/register") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
       if (req.method === "POST" && req.url === "/api/sessions/session-1/issues") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.method === "PATCH" && req.url === "/api/sessions/session-1") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.method === "PATCH" && req.url === "/api/sessions/session-1/end") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true }));
         return;
@@ -245,6 +275,38 @@ describe("CLI instance mutation preflight", () => {
     }
   });
 
+  it.each([
+    ["missing fields", {}],
+    ["missing policy", { role: "main" }],
+    ["invalid role", { role: "copy", operational_mutations: "allow" }],
+    ["invalid policy", { role: "main", operational_mutations: "sometimes" }],
+  ])("fails closed when operational mutation target metadata is malformed: %s", async (
+    _label,
+    instance,
+  ) => {
+    const target = await listenForInstancePreflight({ instance });
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"New comment\"}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("403\n");
+      expect(result.stdout).toContain("cli_instance_metadata_unknown");
+      expect(result.stderr).toContain("instance metadata is unavailable");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
   it("refuses project mutations against preview instances before sending POST", async () => {
     const target = await listenForInstancePreflight();
     try {
@@ -276,6 +338,59 @@ describe("CLI instance mutation preflight", () => {
       expect(result.status).not.toBe(0);
       expect(result.stderr).toContain("Refusing sessions mutation against Mandible preview instance");
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("refuses inbox ack mutations from the direct inbox script before sending POST", async () => {
+    const target = await listenForInstancePreflight();
+    try {
+      const result = await runMandible(["inbox", "ack", "auth_result", "item-1"], target.port);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Refusing inbox mutation against Mandible preview instance");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("refuses session registration from wrap before sending POST", async () => {
+    const target = await listenForInstancePreflight();
+    try {
+      const result = await runMandible([
+        "wrap",
+        "--app",
+        "test",
+        "--id",
+        "session-1",
+        "--",
+        "true",
+      ], target.port);
+
+      expect(result.status).toBe(0);
+      expect(target.requests.some((request) => request.url === "/api/instance")).toBe(true);
+      expect(target.requests.some((request) => request.method === "POST")).toBe(false);
+      expect(target.requests.some((request) => request.method === "PATCH")).toBe(false);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("refuses task session updates before sending PATCH", async () => {
+    const target = await listenForInstancePreflight();
+    try {
+      const result = await runMandible(["task", "Fixing preview guard"], target.port);
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain("Refusing sessions mutation against Mandible preview instance");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        expect.stringMatching(/^GET \/api\/sessions\/by-pid\/\d+$/),
         "GET /api/instance",
       ]);
     } finally {

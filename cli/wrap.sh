@@ -13,6 +13,8 @@ set -uo pipefail
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
 source "$GIT_ENV_HELPER"
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
 
 # ── Argument parsing ─────────────────────────────────────────────
 
@@ -207,9 +209,7 @@ register_session() {
       nav_extra: $nav_extra
     }') || return 0
 
-  curl -sS --max-time 2 -X POST "${MANDIBLE_BASE}/api/sessions/register" \
-    -H "Content-Type: application/json" \
-    -d "$payload" >/dev/null 2>&1 || true
+  api_send POST "/api/sessions/register" "$payload" >/dev/null 2>&1 || true
 }
 
 # ── Orphan watcher (deregisters when exec'd process dies) ────────
@@ -225,10 +225,7 @@ spawn_watcher() {
       sleep 1
     done
     # Process died — deregister
-    curl -sS --max-time 2 -X PATCH \
-      "${MANDIBLE_BASE}/api/sessions/${SESSION_ID}/end" \
-      -H "Content-Type: application/json" \
-      -d '{"status":"ended"}' >/dev/null 2>&1 || true
+    api_send PATCH "/api/sessions/$(urlencode "$SESSION_ID")/end" '{"status":"ended"}' >/dev/null 2>&1 || true
   ) &
   disown 2>/dev/null || true
 }
