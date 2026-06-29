@@ -29,6 +29,7 @@ import {
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
+  resolveArtifactVersionHistory,
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
 import { discoverRepoArtifacts, scanRepoArtifacts } from "../src/repo-artifact-scanner.js";
@@ -602,6 +603,137 @@ describe("provider/artifact substrate", () => {
       artifact: null,
       alias: { resolution_status: "unsupported", artifact_id: null },
     });
+  });
+
+  it("resolves artifact series and version prefixes with explicit ambiguity states", () => {
+    const first = recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "alpha-report",
+      logical_name: "alpha.md",
+      content: "alpha v1\n",
+      media_type: "text/markdown",
+      role: "report",
+    }, 1000, tempDir);
+    const second = recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "alpha-report",
+      logical_name: "alpha.md",
+      content: "alpha v2\n",
+      media_type: "text/markdown",
+      role: "report",
+    }, 2000, tempDir);
+    recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "ambiguous-one",
+      logical_name: "ambiguous-one.md",
+      content: "ambiguous one\n",
+      media_type: "text/markdown",
+      role: "report",
+    }, 3000, tempDir);
+    recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "ambiguous-two",
+      logical_name: "ambiguous-two.md",
+      content: "ambiguous two\n",
+      media_type: "text/markdown",
+      role: "report",
+    }, 4000, tempDir);
+
+    const seriesKeyPrefix = resolveArtifactRef(db, "artifact-series:alpha-r", 5000);
+    const seriesIdPrefix = resolveArtifactRef(
+      db,
+      `artifact-series:${first.series.id.replace(/^artifact-series:/, "").slice(0, 7)}`,
+      5001,
+    );
+    const latest = resolveArtifactRef(db, "artifact-series:alpha-r@latest", 5002);
+    const pinned = resolveArtifactRef(db, "artifact-series:alpha-r@1", 5003);
+    const versionPrefix = resolveArtifactRef(
+      db,
+      `artifact-version:${second.version.id.replace(/^artifact-version:/, "").slice(0, 7)}`,
+      5004,
+    );
+    const ambiguous = resolveArtifactRef(db, "artifact-series:ambiguo", 5005);
+    const unresolved = resolveArtifactRef(db, "artifact-series:missing", 5006);
+    const tooShort = resolveArtifactRef(db, "artifact-series:alpha", 5007);
+    const versionTooShort = resolveArtifactRef(db, "artifact-version:abc", 5008);
+
+    expect(seriesKeyPrefix).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      series: { id: first.series.id, series_key: "alpha-report" },
+      version: { id: second.version.id, version_no: 2 },
+      warnings: ["series_latest_not_pinned"],
+    });
+    expect(seriesIdPrefix).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      series: { id: first.series.id },
+      version: { version_no: 2 },
+    });
+    expect(latest).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      version: { version_no: 2 },
+      warnings: ["series_latest_not_pinned"],
+    });
+    expect(pinned).toMatchObject({
+      status: "resolved",
+      artifact: { id: first.artifact.id },
+      version: { version_no: 1 },
+      warnings: [],
+    });
+    expect(versionPrefix).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      series: { id: first.series.id },
+      version: { id: second.version.id },
+      warnings: [],
+    });
+    expect(ambiguous).toMatchObject({
+      status: "ambiguous",
+      artifact: null,
+      alias: null,
+      warnings: ["artifact_series_ambiguous"],
+    });
+    expect(unresolved).toMatchObject({
+      status: "unresolved",
+      artifact: null,
+      alias: null,
+      warnings: ["artifact_series_unresolved"],
+    });
+    expect(tooShort).toMatchObject({
+      status: "unsupported",
+      artifact: null,
+      alias: null,
+      warnings: ["artifact_series_prefix_too_short"],
+    });
+    expect(versionTooShort).toMatchObject({
+      status: "unsupported",
+      artifact: null,
+      alias: null,
+      warnings: ["artifact_version_prefix_too_short"],
+    });
+  });
+
+  it("resolves short artifact series refs through version history", () => {
+    const recorded = recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "history-report",
+      logical_name: "history.md",
+      content: "history\n",
+      media_type: "text/markdown",
+      role: "report",
+    }, 1000, tempDir);
+
+    const history = resolveArtifactVersionHistory(db, "artifact-series:history@latest");
+    const versionHistory = resolveArtifactVersionHistory(
+      db,
+      `artifact-version:${recorded.version.id.replace(/^artifact-version:/, "").slice(0, 7)}`,
+    );
+
+    expect(history?.series.id).toBe(recorded.series.id);
+    expect(history?.versions.map((version) => version.id)).toEqual([recorded.version.id]);
+    expect(versionHistory?.series.id).toBe(recorded.series.id);
   });
 
   it("resolves repo and provider aliases without requiring issue association", () => {
