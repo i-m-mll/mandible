@@ -7,6 +7,34 @@ import type {
 } from "./types.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+const SAFE_UNSAFE_ROUTE_EXCEPTIONS = new Set(["POST /api/auth/check"]);
+
+const OPERATIONAL_ROUTE_CATEGORIES: Array<{ prefix: string; category: string }> = [
+  { prefix: "/api/admin", category: "system" },
+  { prefix: "/api/artifacts", category: "artifacts" },
+  { prefix: "/api/auth", category: "auth" },
+  { prefix: "/api/backup", category: "backup" },
+  { prefix: "/api/chats", category: "chats" },
+  { prefix: "/api/console", category: "console" },
+  { prefix: "/api/conversations", category: "conversations" },
+  { prefix: "/api/inbox", category: "inbox" },
+  { prefix: "/api/issues", category: "issues" },
+  { prefix: "/api/knowledge-backrefs", category: "artifacts" },
+  { prefix: "/api/ledger", category: "ledger" },
+  { prefix: "/api/presets", category: "presets" },
+  { prefix: "/api/projects", category: "projects" },
+  { prefix: "/api/provider-manifests", category: "providers" },
+  { prefix: "/api/providers", category: "providers" },
+  { prefix: "/api/runtime", category: "runtime" },
+  { prefix: "/api/settings", category: "settings" },
+  { prefix: "/api/sessions", category: "sessions" },
+  { prefix: "/api/spaces", category: "spaces" },
+  { prefix: "/api/system", category: "system" },
+  { prefix: "/api/timeline", category: "timeline" },
+  { prefix: "/api/webhooks", category: "webhooks" },
+  { prefix: "/api/work-units", category: "work_units" },
+  { prefix: "/api/work", category: "work" },
+];
 
 export function resolveInstanceInfo(options: {
   env?: NodeJS.ProcessEnv;
@@ -67,20 +95,18 @@ function operationalMutationCategory(method: string, pathname: string): string |
     return null;
   }
 
-  if (pathname === "/api/auth/check") {
+  if (SAFE_UNSAFE_ROUTE_EXCEPTIONS.has(`${normalizedMethod} ${pathname}`)) {
     return null;
   }
-  if (pathname === "/api/auth" || pathname.startsWith("/api/auth/")) {
-    return "auth";
+
+  for (const route of OPERATIONAL_ROUTE_CATEGORIES) {
+    if (pathname === route.prefix || pathname.startsWith(`${route.prefix}/`)) {
+      return route.category;
+    }
   }
-  if (pathname === "/api/ledger" || pathname.startsWith("/api/ledger/")) {
-    return "ledger";
-  }
-  if (pathname === "/api/issues" || pathname.startsWith("/api/issues/")) {
-    return "issues";
-  }
-  if (pathname === "/api/work-units" || pathname.startsWith("/api/work-units/")) {
-    return "work_units";
+
+  if (pathname === "/api" || pathname.startsWith("/api/")) {
+    return "api";
   }
 
   return null;
