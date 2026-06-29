@@ -1113,26 +1113,31 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
   });
 
-  it('creates the first prose block via POST /api/spaces/:id/blocks', async () => {
+  it('opens an empty document directly in a blank focused editor', async () => {
     const backend = makeBackend([]);
-    vi.stubGlobal('fetch', backend.fetchImpl);
-    render(
-      <DocumentBlockEditor
-        projectId="prj1"
-        spaceId="sp1"
-        renderer="document"
-        fetchImpl={backend.fetchImpl}
-      />,
-    );
+    await renderEditor({ backend });
 
-    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-empty-author')).toBeTruthy());
-    fireEvent.click(screen.getByText('Start writing'));
+    expect(screen.queryByTestId('spaces-block-editor-empty-author')).toBeNull();
+    expect(screen.queryByText('Start writing')).toBeNull();
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'POST' && /\/blocks$/.test(c.url))).toBe(true),
     );
     const post = backend.calls.find((c) => c.method === 'POST');
     expect((post!.body as { block_type: string }).block_type).toBe('paragraph');
     expect(typeof (post!.body as { sort_key: string }).sort_key).toBe('string');
+    expect(sourceText()).toBe('');
+    await waitFor(() => expect(document.activeElement).toBe(sourceView().contentDOM));
+    expect(sourceView().state.selection.main.from).toBe(0);
+
+    sourceView().contentDOM.blur();
+    fireEvent.mouseDown(screen.getByTestId('spaces-block-editor-row'), {
+      button: 0,
+      clientX: 320,
+      clientY: 10,
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(sourceView().contentDOM));
+    expect(sourceView().state.selection.main.from).toBe(0);
   });
 
   it('edits a prose block and autosaves via PATCH on blur', async () => {

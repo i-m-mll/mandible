@@ -306,6 +306,8 @@ export function DocumentBlockEditor({
   const editorViews = useRef<Map<string, EditorView>>(new Map());
   const savedMarkdownAcks = useRef<Map<string, string>>(new Map());
   const caretRef = useRef<CaretTarget | null>(null);
+  const autoCreatedEmptySpaces = useRef<Set<string>>(new Set());
+  const pendingFocusBlockId = useRef<string | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -542,13 +544,23 @@ export function DocumentBlockEditor({
       };
       await runMutation(async () => {
         const created = await createSpaceBlock(spaceId, body, fetcher());
+        const caret = body.markdown.length;
         setActiveBlockId(created.id);
         beginEditing(created.id);
+        pendingFocusBlockId.current = created.id;
+        caretRef.current = { blockId: created.id, start: caret, end: caret };
         return created;
       });
     },
     [spaceId, blocks, runMutation, fetcher, beginEditing],
   );
+
+  useEffect(() => {
+    if (!spaceId || !editable || load.status !== 'ready' || load.blocks.length > 0) return;
+    if (autoCreatedEmptySpaces.current.has(spaceId)) return;
+    autoCreatedEmptySpaces.current.add(spaceId);
+    void addProseBlock('paragraph');
+  }, [addProseBlock, editable, load, spaceId]);
 
   const embedSpaceItem = useCallback(
     async (item: SpaceItem) => {
@@ -670,8 +682,21 @@ export function DocumentBlockEditor({
   );
 
   const handleSourceView = useCallback((blockId: string, view: EditorView | null) => {
-    if (view) editorViews.current.set(blockId, view);
-    else editorViews.current.delete(blockId);
+    if (view) {
+      editorViews.current.set(blockId, view);
+      if (pendingFocusBlockId.current === blockId) {
+        pendingFocusBlockId.current = null;
+        const target = caretRef.current?.blockId === blockId ? caretRef.current.end : 0;
+        const pos = Math.max(0, Math.min(view.state.doc.length, target));
+        view.dispatch({
+          selection: EditorSelection.cursor(pos),
+          scrollIntoView: true,
+        });
+        view.focus();
+      }
+    } else {
+      editorViews.current.delete(blockId);
+    }
   }, []);
 
   const focusEditorAt = useCallback(
@@ -979,19 +1004,6 @@ export function DocumentBlockEditor({
                 sources={sources}
                 collapsed={EMPTY_DOCUMENT_VIEW_STATE.collapsed}
               />
-            </div>
-          )}
-
-          {editable && load.status === 'ready' && blocks.length === 0 && (
-            <div className="spaces-block-editor__empty-author" data-testid="spaces-block-editor-empty-author">
-              <button
-                type="button"
-                className="spaces-block-editor__empty-start"
-                disabled={busy}
-                onClick={() => void addProseBlock('paragraph')}
-              >
-                Start writing
-              </button>
             </div>
           )}
 
