@@ -15,13 +15,6 @@
   color: var(--text-primary);
 }
 
-.space-seed-dialog--embedded {
-  width: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-}
-
 .space-seed-dialog__header {
   display: flex;
   align-items: center;

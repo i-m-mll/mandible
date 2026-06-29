@@ -3,7 +3,7 @@
 // Covers the cohesive Spaces-home interaction the sidebar owns: grouped tree
 // render (top-level group above project headers, typed space lines), live
 // filter, foldable headers, drag-reorder persistence, the bare "+" typed create
-// flow (including inline advanced seeding), selection navigation, and the
+// flow (including optional post-create seeding), selection navigation, and the
 // sidebarHidden contract.
 import { readFileSync } from 'node:fs';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
@@ -238,9 +238,12 @@ describe('SpacesSidebar create flow', () => {
     expect(screen.queryByText('Blank space')).toBeNull();
     expect(screen.getByTestId('space-create-type-canvas').textContent).toContain('Canvas');
     expect(screen.getByTestId('space-create-type-document').textContent).toContain('Document');
-    expect(screen.getByTestId('space-create-seed-toggle')).toBeTruthy();
+    expect((screen.getByTestId('space-create-seed-toggle') as HTMLInputElement).disabled).toBe(false);
     fireEvent.click(screen.getByTestId('space-create-type-document'));
-    expect(screen.queryByTestId('space-create-seed-toggle')).toBeNull();
+    expect((screen.getByTestId('space-create-seed-toggle') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('space-create-type-board'));
+    expect((screen.getByTestId('space-create-seed-toggle') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('space-create-type-document'));
     fireEvent.click(screen.getByTestId('space-create-submit'));
 
     await waitFor(() =>
@@ -286,7 +289,7 @@ describe('SpacesSidebar create flow', () => {
     );
   });
 
-  it('advanced seed path is inline for compatible types and selects after seeding', async () => {
+  it('opens the second seed dialog after creating a compatible seeded type', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('seed1', 'Seeded', 'proj-a', 'collection'));
     seedSpace.mockResolvedValue({ space_id: 'seed1', added: 0 });
@@ -309,12 +312,10 @@ describe('SpacesSidebar create flow', () => {
         default_renderer: 'collection',
       }),
     );
-    // The seed controls stay in the same create modal instead of a separate overlay.
-    expect(screen.queryByTestId('space-create-seed-overlay')).toBeNull();
-    expect(await screen.findByTestId('space-create-seed-inline')).toBeTruthy();
+    expect(await screen.findByTestId('space-create-seed-overlay')).toBeTruthy();
     const dialog = await screen.findByTestId('space-seed-dialog');
     expect(dialog).toBeTruthy();
-    expect(dialog.getAttribute('role')).toBe('region');
+    expect(dialog.getAttribute('role')).toBe('dialog');
 
     // Submit the seed (filter source is default; add no chip → seed via the
     // dialog's own submit which calls seedSpace). We drive the seed through the

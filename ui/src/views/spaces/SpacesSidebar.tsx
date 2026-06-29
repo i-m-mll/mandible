@@ -11,9 +11,8 @@
 //     "+" create icon. Spaces render as single name-only lines.
 //
 // Create flow: each "+" opens a typed create modal. Compatible types can opt
-// into Advanced seeding inline, so creation no longer forks into a separate
-// seed overlay. On success the new space is selected by navigating the URL hash
-// (the single source of truth for selection).
+// into opening the seed dialog after creation. On success the new space is
+// selected by navigating the URL hash (the single source of truth for selection).
 //
 // Per the project Dataful UX State rule:
 //   - SELECTION is URL-canonical (driven from the `selectedSpaceId` prop, never
@@ -209,7 +208,6 @@ export function SpacesSidebar({
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createRenderer, setCreateRenderer] = useState<SpaceRenderer>('canvas');
-  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [seedAfterCreate, setSeedAfterCreate] = useState(false);
   const [internalRefresh, setInternalRefresh] = useState(0);
   // Project picker for the "top-level" create chooser (issue 6fdd924). Loaded
@@ -353,7 +351,6 @@ export function SpacesSidebar({
       setCreateError(null);
       setChooserProjectId(null);
       setCreateRenderer('canvas');
-      setAdvancedOpen(false);
       setSeedAfterCreate(false);
       setPopover({ target, mode: 'create' });
       // For the top-level kind, eagerly load projects from the registry so the
@@ -513,7 +510,6 @@ export function SpacesSidebar({
                 onClick={() => {
                   setCreateRenderer(value);
                   if (!canSeedRenderer(value)) {
-                    setAdvancedOpen(false);
                     setSeedAfterCreate(false);
                   }
                 }}
@@ -523,27 +519,16 @@ export function SpacesSidebar({
             ))}
           </div>
         </div>
-        {seedCompatible ? (
-          <details
-            className="spaces-tree__advanced"
-            open={advancedOpen}
-            onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
-          >
-            <summary>Advanced</summary>
-            <label className="spaces-tree__advanced-option">
-              <input
-                type="checkbox"
-                checked={seedAfterCreate}
-                data-testid="space-create-seed-toggle"
-                onChange={(event) => setSeedAfterCreate((event.currentTarget as HTMLInputElement).checked)}
-              />
-              <span>Seed from filter after creating</span>
-            </label>
-            <p className="spaces-tree__advanced-hint">
-              Available for Canvas and Collection spaces.
-            </p>
-          </details>
-        ) : null}
+        <label className="spaces-tree__seed-option" data-disabled={seedCompatible ? 'false' : 'true'}>
+          <input
+            type="checkbox"
+            checked={seedAfterCreate}
+            disabled={!seedCompatible}
+            data-testid="space-create-seed-toggle"
+            onChange={(event) => setSeedAfterCreate((event.currentTarget as HTMLInputElement).checked)}
+          />
+          <span>Seed after creation</span>
+        </label>
         {/* Project picker: only shown for the top-level create button (issue 6fdd924).
             Lets the user place the new space in any project from the registry, including
             projects that own zero existing spaces. Default (empty value) = top-level. */}
@@ -595,13 +580,12 @@ export function SpacesSidebar({
   const renderSeedDialog = (): JSX.Element | null => {
     if (!popover || popover.mode !== 'seed' || !popover.seedSpaceId) return null;
     return (
-      <div className="spaces-tree__chooser spaces-tree__chooser--seed" role="dialog" aria-label="Seed new space" data-testid="space-create-seed-inline">
+      <div className="spaces-tree__seed-overlay" data-testid="space-create-seed-overlay">
         <SpaceSeedDialog
           spaceId={popover.seedSpaceId}
           projectId={popover.seedProjectId ?? ''}
           onSeeded={handleSeeded}
           onClose={handleSeedClose}
-          embedded
         />
       </div>
     );

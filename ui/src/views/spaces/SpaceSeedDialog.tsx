@@ -63,8 +63,6 @@ export type SpaceSeedDialogProps = {
   onSeeded?: (result: SeedSpaceResult) => void;
   /** Dismiss the dialog without seeding. */
   onClose?: () => void;
-  /** Render inside another create dialog instead of as a standalone modal. */
-  embedded?: boolean;
 };
 
 /**
@@ -112,7 +110,6 @@ export function SpaceSeedDialog({
   issueOptions = [],
   onSeeded,
   onClose,
-  embedded = false,
 }: SpaceSeedDialogProps): JSX.Element {
   const [source, setSource] = useState<SpaceSeedSource>('filter');
   const [issueId, setIssueId] = useState('');
@@ -230,10 +227,10 @@ export function SpaceSeedDialog({
 
   return (
     <section
-      className={`space-seed-dialog${embedded ? ' space-seed-dialog--embedded' : ''}`}
-      role={embedded ? 'region' : 'dialog'}
-      aria-modal={embedded ? undefined : 'true'}
-      aria-label={embedded ? 'Advanced seed options' : 'Seed Space'}
+      className="space-seed-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Seed Space"
       data-testid="space-seed-dialog"
       data-source={source}
     >
