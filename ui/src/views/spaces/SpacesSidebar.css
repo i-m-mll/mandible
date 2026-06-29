@@ -196,12 +196,9 @@
 
 .spaces-tree__space-type {
   flex: 0 0 auto;
-  min-width: 1.75rem;
-  padding: 0.08rem 0.22rem;
-  font-size: 0.58rem;
-  font-weight: 650;
-  line-height: 1.2;
-  text-align: center;
+  width: 1.35rem;
+  height: 1.35rem;
+  font-size: 0.95rem;
   color: var(--text-muted);
   background: var(--neutral-alpha-06);
   border: 1px solid var(--neutral-alpha-08);
@@ -268,9 +265,14 @@
 }
 
 .spaces-tree__type-option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
   min-width: 0;
   padding: 0.32rem 0.4rem;
   font-size: 0.73rem;
+  text-align: left;
   color: var(--text-muted);
   background: var(--bg-secondary);
   border: 1px solid var(--border);
@@ -287,6 +289,41 @@
   color: var(--text-primary);
   background: var(--overlay-selected);
   border-color: var(--accent-blue);
+}
+
+.spaces-tree__type-indicator {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.spaces-tree__advanced {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.45rem;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+}
+
+.spaces-tree__advanced summary {
+  cursor: pointer;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.spaces-tree__advanced-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-top: 0.45rem;
+  font-size: 0.76rem;
+  color: var(--text-primary);
+}
+
+.spaces-tree__advanced-hint {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-muted);
 }
 
 .spaces-tree__chooser-error {
@@ -320,14 +357,7 @@
   cursor: not-allowed;
 }
 
-/* Seed dialog overlay (mounts the otherwise-orphaned SpaceSeedDialog). */
-.spaces-tree__seed-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 50;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.45);
+.spaces-tree__chooser--seed {
+  max-height: calc(100% - 4rem);
+  overflow: auto;
 }

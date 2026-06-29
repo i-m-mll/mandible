@@ -272,6 +272,7 @@
 .space-canvas__node-space-badge {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   max-width: 120px;
   min-height: 16px;
   padding: 1px 5px;

@@ -9,10 +9,17 @@
   gap: 12px;
   width: min(520px, 92vw);
   padding: 16px;
-  border: 1px solid var(--border, var(--neutral-alpha-12, rgba(255, 255, 255, 0.12)));
-  border-radius: 10px;
-  background: var(--surface, rgba(10, 16, 24, 0.98));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-primary);
   color: var(--text-primary);
+}
+
+.space-seed-dialog--embedded {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
 .space-seed-dialog__header {
@@ -44,10 +51,10 @@
 
 .space-seed-dialog__source {
   min-height: 28px;
-  border: 1px solid var(--neutral-alpha-10, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 9px;
-  background: var(--neutral-alpha-04, rgba(255, 255, 255, 0.04));
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font: inherit;
   font-size: 11px;
@@ -55,8 +62,8 @@
 }
 
 .space-seed-dialog__source[data-active='true'] {
-  border-color: var(--accent, rgba(77, 163, 255, 0.6));
-  background: var(--accent-soft, rgba(77, 163, 255, 0.14));
+  border-color: var(--accent-blue);
+  background: var(--overlay-selected);
 }
 
 .space-seed-dialog__body {
@@ -73,10 +80,10 @@
 
 .space-seed-dialog__field input {
   height: 30px;
-  border: 1px solid var(--neutral-alpha-12, rgba(255, 255, 255, 0.12));
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 8px;
-  background: var(--neutral-alpha-04, rgba(0, 0, 0, 0.2));
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font: inherit;
 }
@@ -94,7 +101,7 @@
   margin: 0;
   padding: 0;
   list-style: none;
-  border: 1px solid var(--neutral-alpha-10, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -113,7 +120,7 @@
   gap: 12px;
   margin: 0;
   padding: 8px 10px;
-  border: 1px solid var(--neutral-alpha-10, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border);
   border-radius: 6px;
 }
 
@@ -139,7 +146,7 @@
 
 .space-seed-dialog__error {
   margin: 0;
-  color: var(--danger, #ff7676);
+  color: var(--status-danger);
   font-size: 12px;
 }
 
@@ -151,10 +158,10 @@
 
 .space-seed-dialog__actions button {
   min-height: 30px;
-  border: 1px solid var(--neutral-alpha-10, rgba(255, 255, 255, 0.1));
+  border: 1px solid var(--border);
   border-radius: 6px;
   padding: 0 12px;
-  background: var(--neutral-alpha-06, rgba(255, 255, 255, 0.06));
+  background: var(--bg-secondary);
   color: var(--text-primary);
   font: inherit;
   font-size: 12px;
@@ -162,8 +169,8 @@
 }
 
 .space-seed-dialog__seed {
-  border-color: var(--accent, rgba(77, 163, 255, 0.6)) !important;
-  background: var(--accent-soft, rgba(77, 163, 255, 0.16)) !important;
+  border-color: var(--accent-blue) !important;
+  background: var(--overlay-selected) !important;
 }
 
 .space-seed-dialog__actions button:disabled {

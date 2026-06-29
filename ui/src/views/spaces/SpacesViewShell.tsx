@@ -24,6 +24,7 @@ import { getSpace, type Space, type SpaceRenderer } from '../../api';
 // records from `../../../src/contracts`).
 import { SPACE_RENDERERS } from '../../../../src/contracts';
 import { SpacesSidebar } from './SpacesSidebar';
+import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesViewShell.css';
 
 /**
@@ -84,30 +85,8 @@ export type SpacesViewShellProps = {
 
 const DEFAULT_RENDERER: SpaceRenderer = 'collection';
 
-const SPACE_TYPE_LABELS: Record<SpaceRenderer, string> = {
-  canvas: 'Canvas',
-  document: 'Document',
-  board: 'Board',
-  collection: 'Collection',
-};
-
-const SPACE_TYPE_BADGES: Record<SpaceRenderer, string> = {
-  canvas: 'Cv',
-  document: 'Doc',
-  board: 'Bd',
-  collection: 'Col',
-};
-
 function isSpaceRenderer(value: unknown): value is SpaceRenderer {
   return typeof value === 'string' && SPACE_RENDERERS.includes(value as SpaceRenderer);
-}
-
-function spaceTypeLabel(renderer: SpaceRenderer): string {
-  return SPACE_TYPE_LABELS[renderer] ?? renderer;
-}
-
-function spaceTypeBadge(renderer: SpaceRenderer): string {
-  return SPACE_TYPE_BADGES[renderer] ?? renderer.slice(0, 3);
 }
 
 /**
@@ -182,13 +161,11 @@ export function SpacesViewShell({
           {spaceId ? (
             <>
               <div className="spaces-shell__identity" data-testid="spaces-shell-identity">
-                <span
+                <SpaceTypeIndicator
+                  renderer={primaryRenderer}
                   className="spaces-shell__type-badge"
-                  title={spaceTypeLabel(primaryRenderer)}
                   data-testid="spaces-shell-type"
-                >
-                  {spaceTypeBadge(primaryRenderer)}
-                </span>
+                />
                 <span className="spaces-shell__title" title={selectedSpaceTitle}>
                   {selectedSpace ? selectedSpaceTitle : 'Loading space...'}
                 </span>

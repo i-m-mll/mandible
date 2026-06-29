@@ -10,10 +10,10 @@
 //     per-project foldable, drag-reorderable headers, each with its own bare
 //     "+" create icon. Spaces render as single name-only lines.
 //
-// Create flow: each "+" opens a small chooser offering a Blank space (inline
-// title input → createSpace) or a Seeded space (createSpace, then mount the
-// otherwise-orphaned SpaceSeedDialog). On success the new space is selected by
-// navigating the URL hash (the single source of truth for selection).
+// Create flow: each "+" opens a typed create modal. Compatible types can opt
+// into Advanced seeding inline, so creation no longer forks into a separate
+// seed overlay. On success the new space is selected by navigating the URL hash
+// (the single source of truth for selection).
 //
 // Per the project Dataful UX State rule:
 //   - SELECTION is URL-canonical (driven from the `selectedSpaceId` prop, never
@@ -37,6 +37,7 @@ import {
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
+import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
 
 const COLLAPSE_STORAGE_KEY = 'spaces-tree:collapsed';
@@ -76,7 +77,7 @@ type CreateTarget =
   | { kind: 'project'; projectId: string; projectName: string }
   | { kind: 'top-level' };
 
-type CreateMode = 'chooser' | 'blank' | 'seed';
+type CreateMode = 'create' | 'seed';
 
 type CreatePopover = {
   target: CreateTarget;
@@ -87,27 +88,10 @@ type CreatePopover = {
 };
 
 const SPACE_TYPE_OPTIONS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
+const SEED_COMPATIBLE_RENDERERS = new Set<SpaceRenderer>(['canvas', 'collection']);
 
-const SPACE_TYPE_LABELS: Record<SpaceRenderer, string> = {
-  canvas: 'Canvas',
-  document: 'Document',
-  board: 'Board',
-  collection: 'Collection',
-};
-
-const SPACE_TYPE_BADGES: Record<SpaceRenderer, string> = {
-  canvas: 'Cv',
-  document: 'Doc',
-  board: 'Bd',
-  collection: 'Col',
-};
-
-function spaceTypeLabel(renderer: SpaceRenderer): string {
-  return SPACE_TYPE_LABELS[renderer] ?? renderer;
-}
-
-function spaceTypeBadge(renderer: SpaceRenderer): string {
-  return SPACE_TYPE_BADGES[renderer] ?? renderer.slice(0, 3);
+function canSeedRenderer(renderer: SpaceRenderer): boolean {
+  return SEED_COMPATIBLE_RENDERERS.has(renderer);
 }
 
 function loadCollapseState(): Record<string, boolean> {
@@ -225,6 +209,8 @@ export function SpacesSidebar({
   const [createError, setCreateError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [createRenderer, setCreateRenderer] = useState<SpaceRenderer>('canvas');
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [seedAfterCreate, setSeedAfterCreate] = useState(false);
   const [internalRefresh, setInternalRefresh] = useState(0);
   // Project picker for the "top-level" create chooser (issue 6fdd924). Loaded
   // lazily from the registry when the chooser opens so projects with zero spaces
@@ -367,7 +353,9 @@ export function SpacesSidebar({
       setCreateError(null);
       setChooserProjectId(null);
       setCreateRenderer('canvas');
-      setPopover({ target, mode: 'chooser' });
+      setAdvancedOpen(false);
+      setSeedAfterCreate(false);
+      setPopover({ target, mode: 'create' });
       // For the top-level kind, eagerly load projects from the registry so the
       // user can pick a project for their first space in that project (issue
       // 6fdd924). Project-scoped buttons don't need the picker.
@@ -381,7 +369,7 @@ export function SpacesSidebar({
   );
 
   const doCreate = useCallback(
-    async (target: CreateTarget, title: string, renderer: SpaceRenderer, then: 'select' | 'seed') => {
+    async (target: CreateTarget, title: string, renderer: SpaceRenderer, shouldSeed: boolean) => {
       const trimmed = title.trim();
       if (!trimmed || creating) return;
       setCreating(true);
@@ -392,7 +380,7 @@ export function SpacesSidebar({
         const projectId =
           target.kind === 'project' ? target.projectId : chooserProjectId;
         const space = await createSpaceFn({ project_id: projectId, title: trimmed, default_renderer: renderer });
-        if (then === 'seed') {
+        if (shouldSeed && canSeedRenderer(renderer)) {
           setPopover({
             target,
             mode: 'seed',
@@ -457,13 +445,11 @@ export function SpacesSidebar({
           })
         }
       >
-        <span
+        <SpaceTypeIndicator
+          renderer={space.default_renderer}
           className="spaces-tree__space-type"
-          title={spaceTypeLabel(space.default_renderer)}
           data-testid={`space-row-type-${space.id}`}
-        >
-          {spaceTypeBadge(space.default_renderer)}
-        </span>
+        />
         <span className="spaces-tree__space-title">{space.title || 'Untitled space'}</span>
       </button>
     );
@@ -486,13 +472,16 @@ export function SpacesSidebar({
   );
 
   const renderChooser = (): JSX.Element | null => {
-    if (!popover || popover.mode !== 'chooser') return null;
+    if (!popover || popover.mode !== 'create') return null;
     const isTopLevel = popover.target.kind === 'top-level';
     const label = isTopLevel
       ? 'New space'
       : `New space in ${popover.target.projectName}`;
+    const selectedTypeLabel = spaceTypeLabel(createRenderer);
+    const seedCompatible = canSeedRenderer(createRenderer);
+    const createWithSeed = seedCompatible && seedAfterCreate;
     return (
-      <div className="spaces-tree__chooser" role="menu" data-testid="space-create-chooser">
+      <div className="spaces-tree__chooser" role="dialog" aria-label={label} data-testid="space-create-chooser">
         <div className="spaces-tree__chooser-title">{label}</div>
         <label className="spaces-tree__chooser-field">
           <span>Title</span>
@@ -505,7 +494,7 @@ export function SpacesSidebar({
             onInput={(event) => setBlankTitle((event.currentTarget as HTMLInputElement).value)}
             onKeyDown={(event) => {
               if (event.key === 'Enter' && blankTitle.trim()) {
-                void doCreate(popover.target, blankTitle, createRenderer, 'select');
+                void doCreate(popover.target, blankTitle, createRenderer, createWithSeed);
               }
             }}
           />
@@ -521,13 +510,40 @@ export function SpacesSidebar({
                 data-active={createRenderer === value}
                 data-testid={`space-create-type-${value}`}
                 aria-pressed={createRenderer === value}
-                onClick={() => setCreateRenderer(value)}
+                onClick={() => {
+                  setCreateRenderer(value);
+                  if (!canSeedRenderer(value)) {
+                    setAdvancedOpen(false);
+                    setSeedAfterCreate(false);
+                  }
+                }}
               >
-                {spaceTypeLabel(value)}
+                <SpaceTypeIndicator renderer={value} showLabel className="spaces-tree__type-indicator" />
               </button>
             ))}
           </div>
         </div>
+        {seedCompatible ? (
+          <details
+            className="spaces-tree__advanced"
+            open={advancedOpen}
+            onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}
+          >
+            <summary>Advanced</summary>
+            <label className="spaces-tree__advanced-option">
+              <input
+                type="checkbox"
+                checked={seedAfterCreate}
+                data-testid="space-create-seed-toggle"
+                onChange={(event) => setSeedAfterCreate((event.currentTarget as HTMLInputElement).checked)}
+              />
+              <span>Seed from filter after creating</span>
+            </label>
+            <p className="spaces-tree__advanced-hint">
+              Available for Canvas and Collection spaces.
+            </p>
+          </details>
+        ) : null}
         {/* Project picker: only shown for the top-level create button (issue 6fdd924).
             Lets the user place the new space in any project from the registry, including
             projects that own zero existing spaces. Default (empty value) = top-level. */}
@@ -562,19 +578,14 @@ export function SpacesSidebar({
             type="button"
             className="spaces-tree__chooser-action"
             disabled={!blankTitle.trim() || creating}
-            data-testid="space-create-blank"
-            onClick={() => void doCreate(popover.target, blankTitle, createRenderer, 'select')}
+            data-testid="space-create-submit"
+            onClick={() => void doCreate(popover.target, blankTitle, createRenderer, createWithSeed)}
           >
-            Blank space
-          </button>
-          <button
-            type="button"
-            className="spaces-tree__chooser-action"
-            disabled={!blankTitle.trim() || creating}
-            data-testid="space-create-seed"
-            onClick={() => void doCreate(popover.target, blankTitle, createRenderer, 'seed')}
-          >
-            Seed from filter…
+            {creating
+              ? 'Creating...'
+              : createWithSeed
+                ? `Create and seed ${selectedTypeLabel}`
+                : `Create ${selectedTypeLabel}`}
           </button>
         </div>
       </div>
@@ -584,12 +595,13 @@ export function SpacesSidebar({
   const renderSeedDialog = (): JSX.Element | null => {
     if (!popover || popover.mode !== 'seed' || !popover.seedSpaceId) return null;
     return (
-      <div className="spaces-tree__seed-overlay" data-testid="space-create-seed-overlay">
+      <div className="spaces-tree__chooser spaces-tree__chooser--seed" role="dialog" aria-label="Seed new space" data-testid="space-create-seed-inline">
         <SpaceSeedDialog
           spaceId={popover.seedSpaceId}
           projectId={popover.seedProjectId ?? ''}
           onSeeded={handleSeeded}
           onClose={handleSeedClose}
+          embedded
         />
       </div>
     );

@@ -58,6 +58,7 @@ import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-clie
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import { ArtifactReferenceDetail, IssueReferenceDetail } from './SpaceReferenceDetailPanel';
+import { SpaceTypeIndicator } from './SpaceTypeIndicator';
 import {
   LEDGER_LINK_TYPES,
   evaluatePromotion,
@@ -1526,7 +1527,7 @@ function OccurrenceNode(props: {
         {linkedSpace ? (
           <>
             <span className="space-canvas__node-space-badge" data-kind={linkedSpace.primaryType}>
-              {linkedSpace.primaryLabel}
+              <SpaceTypeIndicator renderer={linkedSpace.primaryType} showLabel />
             </span>
             {linkedSpace.projectLabel ? (
               <span className="space-canvas__node-project">{linkedSpace.projectLabel}</span>

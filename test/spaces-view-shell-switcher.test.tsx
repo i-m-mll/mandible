@@ -66,7 +66,8 @@ describe('SpacesViewShell home polish', () => {
       />,
     );
     await waitFor(() => expect(screen.getByTestId('mount').textContent).toBe('document'));
-    expect(screen.getByTestId('spaces-shell-type').textContent).toBe('Doc');
+    expect(screen.getByTestId('spaces-shell-type').getAttribute('aria-label')).toBe('Document space type');
+    expect(screen.getByTestId('spaces-shell-type').textContent).toBe('');
     expect(screen.getByText('Typed workspace')).toBeTruthy();
     expect(screen.queryByTestId('spaces-shell-switcher')).toBeNull();
     expect(screen.queryByTestId('spaces-renderer-canvas')).toBeNull();

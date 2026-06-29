@@ -65,12 +65,9 @@
 
 .spaces-shell__type-badge {
   flex: 0 0 auto;
-  min-width: 1.75rem;
-  padding: 0.09rem 0.24rem;
-  font-size: 0.6rem;
-  font-weight: 650;
-  line-height: 1.2;
-  text-align: center;
+  width: 1.45rem;
+  height: 1.45rem;
+  font-size: 1rem;
   color: var(--text-muted);
   background: var(--neutral-alpha-06);
   border: 1px solid var(--neutral-alpha-08);

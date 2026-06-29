@@ -439,7 +439,7 @@ describe('SpaceCanvas rendering', () => {
     render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
     const node = screen.getByTestId('space-canvas-node');
     expect(node.getAttribute('data-ref-type')).toBe('space');
-    expect(screen.getByText('Document')).toBeTruthy();
+    expect(screen.getByText('Document').closest('.space-type-indicator')).toBeTruthy();
     expect(screen.getByText('Mandible')).toBeTruthy();
     expect(screen.getByText('Design doc')).toBeTruthy();
     const open = screen.getByTestId('space-canvas-linked-space-open') as HTMLAnchorElement;
