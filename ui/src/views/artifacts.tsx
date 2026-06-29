@@ -842,9 +842,6 @@ export function ArtifactDetail({
           <span>Updated: {formatTime(createdUpdated.updated)}</span>
         </div>
       </header>
-      {resolution?.warnings?.includes('series_latest_not_pinned') && (
-        <div className="artifact-detail__warning">series_latest_not_pinned</div>
-      )}
       {versionHistoryOpen && (
         <div className="artifact-detail__modal" role="dialog" aria-modal="true" aria-labelledby="artifact-version-history-title">
           <div className="artifact-detail__modal-panel" ref={historyPanelRef}>
@@ -879,56 +876,61 @@ export function ArtifactDetail({
           </div>
         </div>
       )}
-      <div className={`artifact-detail__body${metadataOpen ? ' artifact-detail__body--metadata-open' : ''}`}>
-        <PreviewSection
-          preview={preview}
-          content={content}
-          contentLoading={contentLoading}
-          contentError={contentError}
-        />
-        {artifact.links && artifact.links.length > 0 && (
-          <section className="artifact-detail__section">
-            <h3>Links</h3>
-            <div className="artifact-detail__list">
-              {artifact.links.map((link) => (
-                <div key={link.id} className="artifact-detail__list-item artifact-detail__list-item--artifact-link">
-                  <a className="artifact-detail__entity-link" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
-                    <code>{link.entity_type}:{link.entity_id}</code>
-                  </a>
-                  <span className="artifact-detail__link-meta">
-                    <span>{link.link_type}</span>
-                    <a
-                      className={`type-badge type-badge--sm artifact-link-badge artifact-link-badge--${artifactLinkKind(link)}`}
-                      href={artifactLinkBadgeHref(link)}
-                    >
-                      {artifactLinkBadgeLabel(link)}
-                    </a>
-                  </span>
-                  <span>{link.role || link.source}</span>
-                </div>
-              ))}
-            </div>
-          </section>
+      <div className={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}>
+        {resolution?.warnings?.includes('series_latest_not_pinned') && (
+          <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
-        {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
-          <section className="artifact-detail__section">
-            <h3>Knowledge Backrefs</h3>
-            {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
-            {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
-            {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+        <div className="artifact-detail__body">
+          <PreviewSection
+            preview={preview}
+            content={content}
+            contentLoading={contentLoading}
+            contentError={contentError}
+          />
+          {artifact.links && artifact.links.length > 0 && (
+            <section className="artifact-detail__section">
+              <h3>Links</h3>
               <div className="artifact-detail__list">
-                {knowledgeBackrefs.map((backref) => (
-                  <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
-                    <code>{backref.external_ref || backref.external_id}</code>
-                    <span>{backref.ref_type}</span>
-                    <span>{backref.provider_id}</span>
-                    <span>{backref.status}</span>
+                {artifact.links.map((link) => (
+                  <div key={link.id} className="artifact-detail__list-item artifact-detail__list-item--artifact-link">
+                    <a className="artifact-detail__entity-link" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
+                      <code>{link.entity_type}:{link.entity_id}</code>
+                    </a>
+                    <span className="artifact-detail__link-meta">
+                      <span>{link.link_type}</span>
+                      <a
+                        className={`type-badge type-badge--sm artifact-link-badge artifact-link-badge--${artifactLinkKind(link)}`}
+                        href={artifactLinkBadgeHref(link)}
+                      >
+                        {artifactLinkBadgeLabel(link)}
+                      </a>
+                    </span>
+                    <span>{link.role || link.source}</span>
                   </div>
                 ))}
               </div>
-            )}
-          </section>
-        )}
+            </section>
+          )}
+          {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
+            <section className="artifact-detail__section">
+              <h3>Knowledge Backrefs</h3>
+              {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
+              {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
+              {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+                <div className="artifact-detail__list">
+                  {knowledgeBackrefs.map((backref) => (
+                    <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
+                      <code>{backref.external_ref || backref.external_id}</code>
+                      <span>{backref.ref_type}</span>
+                      <span>{backref.provider_id}</span>
+                      <span>{backref.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          )}
+        </div>
         {metadataOpen && (
           <div className="artifact-detail__metadata-modal" role="dialog" aria-modal="true" aria-labelledby="artifact-metadata-title">
             <div className="artifact-detail__metadata-panel" ref={metadataPanelRef}>

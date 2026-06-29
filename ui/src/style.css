@@ -6016,8 +6016,8 @@ tr:hover .work-actions__trigger {
 
 .artifact-detail {
   display: grid;
-  gap: 18px;
-  max-width: 1120px;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-height: calc(100% + 24px);
   position: relative;
 }
 
@@ -6284,18 +6284,30 @@ tr:hover .work-actions__trigger {
   stroke-linecap: round;
 }
 
+.artifact-detail__pane {
+  position: relative;
+  display: grid;
+  gap: 18px;
+  align-content: start;
+  min-height: min(560px, calc(100vh - 190px));
+  margin: 0 -24px -24px;
+  padding: 18px 24px 24px;
+  background: var(--issues-detail-bg);
+}
+
+.artifact-detail__pane--metadata-open {
+  overflow: hidden;
+}
+
 .artifact-detail__body {
   position: relative;
   display: grid;
   gap: 18px;
+  width: min(1120px, 100%);
   min-height: min(560px, calc(100vh - 190px));
   border-radius: 8px;
   background: var(--issues-detail-bg);
   transition: filter 160ms ease, opacity 160ms ease;
-}
-
-.artifact-detail__body--metadata-open {
-  overflow: hidden;
 }
 
 .artifact-detail__metadata-modal {
