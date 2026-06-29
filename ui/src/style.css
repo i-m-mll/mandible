@@ -6316,8 +6316,11 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail__metadata-modal {
-  position: absolute;
-  inset: 0;
+  position: fixed;
+  top: var(--artifact-detail-metadata-top);
+  right: var(--artifact-detail-metadata-right);
+  bottom: var(--artifact-detail-metadata-bottom);
+  left: var(--artifact-detail-metadata-left);
   z-index: 20;
   display: flex;
   align-items: flex-start;
