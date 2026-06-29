@@ -2304,7 +2304,8 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
-    expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
@@ -2637,7 +2638,9 @@ describe('ArtifactsView', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
-    expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*100%;[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
