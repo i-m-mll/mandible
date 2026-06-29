@@ -2302,8 +2302,11 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('menuitem', { name: 'Add to Space' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
+    const detailScroller = document.querySelector('.artifacts-detail');
+    expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    await waitFor(() => expect(detailScroller?.className).toContain('artifacts-detail--metadata-open'));
     expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(true);
     expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
@@ -2313,6 +2316,7 @@ describe('ArtifactsView', () => {
     expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaa');
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
+    await waitFor(() => expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open'));
     const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
@@ -2637,12 +2641,13 @@ describe('ArtifactsView', () => {
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifacts-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
-    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
-    expect(css).toMatch(/\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*100%;[^}]*overflow:\s*auto;/s);
+    expect(css).toMatch(/\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);

@@ -108,6 +108,7 @@ export function ArtifactsView({
   const [error, setError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [versionHistoryOpen, setVersionHistoryOpen] = useState(false);
+  const [detailMetadataOpen, setDetailMetadataOpen] = useState(false);
   const [facetSeries, setFacetSeries] = useState<ArtifactSeriesSummary[]>([]);
   const deepLinkActiveRef = useRef(Boolean(initialArtifactId || initialRef || initialSeriesRef));
   const listRequestIdRef = useRef(0);
@@ -510,7 +511,7 @@ export function ArtifactsView({
           <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
         </>
       ) : null}
-      <main className="artifacts-detail">
+      <main className={`artifacts-detail${selectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {error && <div className="artifacts-error">{error}</div>}
         {detailLoading && !selectedArtifact && !resolution && <div className="artifacts-empty">Loading artifact...</div>}
         {!detailLoading && !selectedArtifact && !resolution && (
@@ -531,6 +532,7 @@ export function ArtifactsView({
             onVersionChange={selectVersion}
             onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
             onCloseVersionHistory={() => setVersionHistoryOpen(false)}
+            onMetadataOpenChange={setDetailMetadataOpen}
             content={artifactContent}
             contentLoading={contentLoading}
             contentError={contentError}
@@ -583,6 +585,7 @@ export type ArtifactDetailProps = {
   onVersionChange: (versionNo: number | null) => void;
   onToggleVersionHistory: () => void;
   onCloseVersionHistory: () => void;
+  onMetadataOpenChange?: (open: boolean) => void;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
   contentError: string | null;
@@ -602,6 +605,7 @@ export function ArtifactDetail({
   onVersionChange,
   onToggleVersionHistory,
   onCloseVersionHistory,
+  onMetadataOpenChange,
   content,
   contentLoading,
   contentError,
@@ -731,6 +735,13 @@ export function ArtifactDetail({
       document.removeEventListener('keydown', closeOnEscape, true);
     };
   }, [metadataOpen]);
+
+  useEffect(() => {
+    onMetadataOpenChange?.(metadataOpen);
+    return () => {
+      if (metadataOpen) onMetadataOpenChange?.(false);
+    };
+  }, [metadataOpen, onMetadataOpenChange]);
 
   const closeActionsAfter = (callback: () => void) => {
     callback();
