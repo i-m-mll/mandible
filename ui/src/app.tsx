@@ -1532,6 +1532,7 @@ function App(): JSX.Element {
             settings={state.settings}
             onSave={handleSettingsSave}
             onClose={handleSettingsClose}
+            instance={instanceInfo}
           />
         )}
         {route.tab === 'logs' && (

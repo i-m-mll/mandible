@@ -58,10 +58,31 @@ api_operational_mutation_category() {
   [[ "$pathname" != "/api/auth/check" ]] || return 1
 
   case "$pathname" in
+    /api/admin|/api/admin/*) printf 'system'; return 0 ;;
+    /api/artifacts|/api/artifacts/*) printf 'artifacts'; return 0 ;;
     /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
+    /api/backup|/api/backup/*) printf 'backup'; return 0 ;;
+    /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
+    /api/console|/api/console/*) printf 'console'; return 0 ;;
+    /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
+    /api/inbox|/api/inbox/*) printf 'inbox'; return 0 ;;
     /api/ledger|/api/ledger/*) printf 'ledger'; return 0 ;;
     /api/issues|/api/issues/*) printf 'issues'; return 0 ;;
+    /api/knowledge-backrefs|/api/knowledge-backrefs/*) printf 'artifacts'; return 0 ;;
+    /api/presets|/api/presets/*) printf 'presets'; return 0 ;;
+    /api/projects|/api/projects/*) printf 'projects'; return 0 ;;
+    /api/provider-manifests|/api/provider-manifests/*) printf 'providers'; return 0 ;;
+    /api/providers|/api/providers/*) printf 'providers'; return 0 ;;
+    /api/runtime|/api/runtime/*) printf 'runtime'; return 0 ;;
+    /api/settings|/api/settings/*) printf 'settings'; return 0 ;;
+    /api/sessions|/api/sessions/*) printf 'sessions'; return 0 ;;
+    /api/spaces|/api/spaces/*) printf 'spaces'; return 0 ;;
+    /api/system|/api/system/*) printf 'system'; return 0 ;;
+    /api/timeline|/api/timeline/*) printf 'timeline'; return 0 ;;
+    /api/webhooks|/api/webhooks/*) printf 'webhooks'; return 0 ;;
     /api/work-units|/api/work-units/*) printf 'work_units'; return 0 ;;
+    /api/work|/api/work/*) printf 'work'; return 0 ;;
+    /api|/api/*) printf 'api'; return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -75,21 +96,21 @@ api_non_main_operational_mutation_override_enabled() {
 
 api_fetch_instance_payload() {
   local output_file="$1"
-  local status
+  local http_status
 
   if api_is_file_rpc; then
     return 1
   fi
 
-  status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
+  http_status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
     "$(api_base)/api/instance" 2>/dev/null || printf '')
-  if [[ "$status" =~ ^2 ]] && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+  if [[ "$http_status" =~ ^2 ]] && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
     return 0
   fi
 
-  status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
+  http_status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
     "$(api_base)/api/health" 2>/dev/null || printf '')
-  [[ "$status" =~ ^2 ]] \
+  [[ "$http_status" =~ ^2 ]] \
     && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1
 }
 
@@ -100,12 +121,23 @@ api_preflight_operational_mutation() {
   local category tmp_response role policy db_path source_db_path message
 
   category=$(api_operational_mutation_category "$method" "$request_path") || return 0
+  api_is_file_rpc && return 0
   api_non_main_operational_mutation_override_enabled && return 0
 
   tmp_response="$(mktemp)"
   if ! api_fetch_instance_payload "$tmp_response"; then
     rm -f "$tmp_response"
-    return 0
+    message="Refusing ${category} mutation because Mandible instance metadata is unavailable from /api/instance or /api/health. Use a daemon that exposes instance metadata, or set MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS=1 only in isolated test/dev environments."
+    printf '%s\n' "$message" >&2
+    if [[ -n "$output_file" ]]; then
+      jq -n \
+        --arg error "cli_instance_metadata_unknown" \
+        --arg message "$message" \
+        --arg category "$category" \
+        '{error:$error, message:$message, category:$category}' \
+        > "$output_file"
+    fi
+    return 22
   fi
 
   role=$(jq -r '.instance.role // "main"' "$tmp_response")

@@ -671,6 +671,7 @@ function AuthCard({
   onDragOver,
   onDrop,
   onUpdateField,
+  mutationsAllowed = true,
 }: {
   request: AuthRequest;
   expanded: boolean;
@@ -691,6 +692,7 @@ function AuthCard({
   onDragOver?: (event: DragEvent) => void;
   onDrop?: (event: DragEvent) => void;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
+  mutationsAllowed?: boolean;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(false);
@@ -961,7 +963,7 @@ function AuthCard({
                   </span>
                   Commit Message
                   {/* Bug: 2c826ca — editable commit message for pending/failed requests */}
-                  {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                  {onUpdateField && mutationsAllowed && (status === 'pending' || failedLike) && !editingCommitMsg && (
                     <span
                       className="panel__edit-btn"
                       onClick={(e) => {
@@ -981,15 +983,17 @@ function AuthCard({
                         className="panel__edit-textarea"
                         value={editCommitValue}
                         onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
+                        disabled={!mutationsAllowed}
                         rows={8}
                       />
                       <div className="panel__edit-actions">
                         <button
                           type="button"
                           className="panel__edit-save"
+                          disabled={!mutationsAllowed}
                           onClick={() => {
                             const id = getAuthId(request);
-                            if (id && onUpdateField) {
+                            if (id && onUpdateField && mutationsAllowed) {
                               void onUpdateField(id, 'commit_message', editCommitValue);
                             }
                             setEditingCommitMsg(false);
@@ -1308,7 +1312,13 @@ function AuthSidebarItem({
 }
 
 /** Hooks management panel for auth hook settings. */
-export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Element {
+export function AuthHooksPanel({
+  onClose,
+  mutationsAllowed = true,
+}: {
+  onClose?: () => void;
+  mutationsAllowed?: boolean;
+}): JSX.Element {
   const [hooks, setHooks] = useState<AuthHook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1346,6 +1356,10 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleSave = async () => {
+    if (!mutationsAllowed) {
+      setError('Auth hook mutations are disabled on this Mandible preview instance.');
+      return;
+    }
     try {
       if (editId) {
         await updateAuthHook(editId, {
@@ -1370,6 +1384,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleEdit = (hook: AuthHook) => {
+    if (!mutationsAllowed) return;
     setFormRepo(hook.repo_pattern);
     setFormType(hook.auth_type as AuthRequestType);
     setFormCommand(hook.command);
@@ -1379,7 +1394,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleToggle = async (hook: AuthHook) => {
-    if (hook.builtin) return; // Built-in hooks cannot be toggled
+    if (hook.builtin || !mutationsAllowed) return; // Built-in hooks cannot be toggled
     try {
       await updateAuthHook(hook.id, { enabled: !hook.enabled });
       await loadHooks();
@@ -1389,7 +1404,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleDelete = async (hook: AuthHook) => {
-    if (hook.builtin) return;
+    if (hook.builtin || !mutationsAllowed) return;
     try {
       await deleteAuthHook(hook.id);
       await loadHooks();
@@ -1407,6 +1422,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
             type="button"
             className="btn btn--sm btn--ghost"
             onClick={() => { resetForm(); setShowForm(true); }}
+            disabled={!mutationsAllowed}
           >
             + Add Hook
           </button>
@@ -1425,6 +1441,11 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
       {error && (
         <div className="auth-hooks-panel__error">{error}</div>
       )}
+      {!mutationsAllowed && (
+        <div className="auth-hooks-panel__error">
+          Auth hook mutations are disabled on this Mandible preview instance.
+        </div>
+      )}
 
       {showForm && (
         <div className="auth-hooks-panel__form">
@@ -1435,6 +1456,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               placeholder="Hook description"
               value={formLabel}
               onInput={(e) => setFormLabel((e.target as HTMLInputElement).value)}
+              disabled={!mutationsAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1444,6 +1466,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               placeholder="* for all, or repo name"
               value={formRepo}
               onInput={(e) => setFormRepo((e.target as HTMLInputElement).value)}
+              disabled={!mutationsAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -1451,6 +1474,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
             <select
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
+              disabled={!mutationsAllowed}
             >
               <option value="merge">Merge</option>
               <option value="commit">Commit</option>
@@ -1468,6 +1492,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               value={formCommand}
               rows={3}
               onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
+              disabled={!mutationsAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-actions">
@@ -1475,7 +1500,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               type="button"
               className="btn btn--sm btn--success"
               onClick={() => void handleSave()}
-              disabled={!formCommand.trim()}
+              disabled={!mutationsAllowed || !formCommand.trim()}
             >
               {editId ? 'Update' : 'Create'}
             </button>
@@ -1506,8 +1531,8 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
                   type="button"
                   className={`auth-hooks-panel__toggle${hook.enabled ? ' auth-hooks-panel__toggle--on' : ''}`}
                   onClick={() => void handleToggle(hook)}
-                  disabled={hook.builtin}
-                  title={hook.builtin ? 'Built-in hooks are always enabled' : (hook.enabled ? 'Disable' : 'Enable')}
+                  disabled={hook.builtin || !mutationsAllowed}
+                  title={hook.builtin ? 'Built-in hooks are always enabled' : !mutationsAllowed ? 'Disabled on preview instances' : (hook.enabled ? 'Disable' : 'Enable')}
                 >
                   {hook.enabled ? 'ON' : 'OFF'}
                 </button>
@@ -1533,6 +1558,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
                     type="button"
                     className="btn btn--sm btn--ghost"
                     onClick={() => handleEdit(hook)}
+                    disabled={!mutationsAllowed}
                   >
                     Edit
                   </button>
@@ -1540,6 +1566,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
                     type="button"
                     className="btn btn--sm btn--danger"
                     onClick={() => void handleDelete(hook)}
+                    disabled={!mutationsAllowed}
                   >
                     Delete
                   </button>
@@ -2741,6 +2768,7 @@ export function AuthQueueView({
               }
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
+              mutationsAllowed={operationalMutationsAllowed}
             />
           );
         })()}

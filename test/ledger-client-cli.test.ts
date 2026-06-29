@@ -275,6 +275,7 @@ describe("ledger mechanism CLI client", () => {
       ["GET", "/api/instance"],
       ["POST", "/api/work-units/release"],
       ["GET", "/api/ledger/issues/abc123"],
+      ["GET", "/api/instance"],
       ["POST", "/api/sessions/session-1/issues"],
     ]);
     expect(requests.some((request) => request.url === "/api/health")).toBe(false);
@@ -345,6 +346,7 @@ describe("ledger mechanism CLI client", () => {
         CODEX_THREAD_ID: "thread-file-release",
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
       });
 
       expect(find.status).toBe(0);

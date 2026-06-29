@@ -512,6 +512,7 @@ async function healthyExistingPreview(branch) {
 
   const health = await readHealth(metadata.port);
   if (!health) return null;
+  if (!hasExpectedPreviewPolicy(health)) return null;
 
   return {
     ...metadata,
@@ -692,7 +693,15 @@ async function waitForHealth(port, timeoutMs, stderrLog) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const health = await readHealth(port);
-    if (health) return health;
+    if (health) {
+      if (!hasExpectedPreviewPolicy(health)) {
+        throw new Error(
+          `Preview on port ${port} became healthy without preview/reject instance policy: ` +
+          `${describePreviewPolicy(health)}`,
+        );
+      }
+      return health;
+    }
     await delay(500);
   }
 
@@ -734,6 +743,17 @@ function readHealth(port) {
     });
     req.on("error", () => resolve(null));
   });
+}
+
+function hasExpectedPreviewPolicy(health) {
+  return health?.instance?.role === "preview" &&
+    health.instance.operational_mutations === "reject";
+}
+
+function describePreviewPolicy(health) {
+  const role = health?.instance?.role ?? "unknown";
+  const policy = health?.instance?.operational_mutations ?? "unknown";
+  return `role=${role}, operational_mutations=${policy}`;
 }
 
 async function findFreePort(start, end) {

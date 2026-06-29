@@ -28,6 +28,7 @@ import {
   type DesktopDaemonStatus,
   type RuntimeStatus,
 } from '../api';
+import type { InstanceInfo } from '../api';
 import { AuthHooksPanel } from './auth';
 import { APP_THEME_MODES, normalizeAppThemeMode } from '../theme';
 
@@ -35,6 +36,7 @@ export type SettingsViewProps = {
   settings: Record<string, string>;
   onSave: (key: string, value: string) => Promise<void>;
   onClose?: () => void;
+  instance?: InstanceInfo | null;
 };
 
 type FeedbackState = {
@@ -1413,7 +1415,8 @@ function RuntimeSection(): JSX.Element {
 }
 
 export function SettingsView(props: SettingsViewProps): JSX.Element {
-  const { settings, onSave, onClose } = props;
+  const { settings, onSave, onClose, instance = null } = props;
+  const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
   const [protectedBranches, setProtectedBranches] = useState('');
   const [quietHours, setQuietHours] = useState('');
   const [issueDefaultFilter, setIssueDefaultFilter] = useState('status:open');
@@ -1808,7 +1811,7 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
           </p>
         </div>
         <div className="settings-view__section-body">
-          <AuthHooksPanel />
+          <AuthHooksPanel mutationsAllowed={operationalMutationsAllowed} />
         </div>
       </div>
 
