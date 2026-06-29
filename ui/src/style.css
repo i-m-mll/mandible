@@ -416,6 +416,22 @@
   box-shadow: var(--shadow-header);
 }
 
+:root[data-theme='light'] .auth-sidebar-layout {
+  position: relative;
+  z-index: 2;
+}
+
+:root[data-theme='light'] .auth-detail__header {
+  background: #ffffff;
+  box-shadow: none;
+}
+
+:root[data-theme='light'] .auth-detail__body .panel,
+:root[data-theme='light'] .auth-detail__body .auth-action-bundle {
+  background: #ffffff;
+  border: 1px solid var(--neutral-alpha-08);
+}
+
 :root[data-theme='light'] .ledger-comment-card {
   background: #ffffff;
 }
@@ -3880,6 +3896,11 @@ tr:last-child td {
 .auth-action-row--failed {
   border-color: rgba(242, 107, 107, 0.45);
   background: rgba(242, 107, 107, 0.13);
+}
+
+:root[data-theme='light'] .auth-action-row--staged {
+  border-color: rgba(148, 163, 184, 0.24);
+  background: rgba(248, 250, 252, 0.92);
 }
 
 .auth-action-row__expand {
