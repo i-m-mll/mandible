@@ -3154,7 +3154,7 @@ tr:last-child td {
 .auth-detail__diff-toggle:hover,
 .auth-detail__diff-toggle--active {
   color: var(--accent-blue);
-  background: var(--neutral-alpha-06);
+  background: transparent;
 }
 
 .auth-detail__diff-toggle svg {
