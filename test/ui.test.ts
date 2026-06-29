@@ -2303,10 +2303,59 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
     const detailScroller = document.querySelector('.artifacts-detail');
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getArtifactRect() {
+      if (this.classList.contains('artifacts-detail')) {
+        return {
+          x: 376,
+          y: 0,
+          top: 0,
+          right: 1123,
+          bottom: 900,
+          left: 376,
+          width: 747,
+          height: 900,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList.contains('artifact-detail__header')) {
+        return {
+          x: 376,
+          y: 0,
+          top: 0,
+          right: 1123,
+          bottom: 219,
+          left: 376,
+          width: 747,
+          height: 219,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    if (detailScroller) detailScroller.scrollTop = 480;
     expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open');
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
     await waitFor(() => expect(detailScroller?.className).toContain('artifacts-detail--metadata-open'));
+    expect(detailScroller?.scrollTop).toBe(480);
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-top')).toBe('219px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-left')).toBe('376px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-right')).toBe('317px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-bottom')).toBe('0px');
     expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(true);
     expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
@@ -2317,6 +2366,9 @@ describe('ArtifactsView', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
     await waitFor(() => expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open'));
+    rectSpy.mockRestore();
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
     const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
@@ -2646,7 +2698,7 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
-    expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
+    expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--artifact-detail-metadata-top\);[^}]*right:\s*var\(--artifact-detail-metadata-right\);[^}]*bottom:\s*var\(--artifact-detail-metadata-bottom\);[^}]*left:\s*var\(--artifact-detail-metadata-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
