@@ -632,14 +632,19 @@ export function ArtifactDetail({
   ];
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const seriesRefValue = series ? seriesRecordRef(series) : '';
-  const selectedArtifactRef = selectedVersion?.artifact_id || artifact.id;
+  const copyableSeriesRef = seriesRefValue ? shortArtifactSeriesRef(seriesRefValue) : '';
+  const selectedArtifactRef = selectedVersion && copyableSeriesRef
+    ? `${copyableSeriesRef}@${selectedVersion.version_no}`
+    : selectedVersion?.id
+      ? shortArtifactVersionRef(selectedVersion.id)
+      : shortImmutableArtifactRef(artifact.id);
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
-    ['Series', seriesRefValue, true],
+    ['Series', seriesRefValue, true, copyableSeriesRef || seriesRefValue],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
     ['URI', artifact.uri, true],
     ['Content hash', artifact.content_hash, true],
-    ['Short ID', shortArtifactId(artifact.id), true, artifact.id],
+    ['Short ID', shortArtifactId(artifact.id), true, shortImmutableArtifactRef(artifact.id)],
     ['Home repo', artifact.home_repo_id],
     ['Provider', artifact.provider_id],
     ['Manifest', artifact.manifest_id],
@@ -738,7 +743,7 @@ export function ArtifactDetail({
         <div className="artifact-detail__top-row">
           <div className="artifact-detail__topline">
             <span className="artifact-detail__series-id">{seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id)}</span>
-            <CopyButton value={seriesRefValue || artifact.id} label="Copy artifact series ref" />
+            <CopyButton value={copyableSeriesRef || shortImmutableArtifactRef(artifact.id)} label="Copy artifact series ref" />
           </div>
           <div className="artifact-detail__status">
             <label className="artifact-detail__version-control">
@@ -1271,6 +1276,22 @@ function artifactTitleCandidate(value: string): string {
 
 function shortSeriesId(ref: string): string {
   return ref.trim().replace(/^artifact-series:/i, '').slice(0, 7);
+}
+
+function shortArtifactSeriesRef(ref: string): string {
+  const trimmed = ref.trim();
+  const bare = trimmed.replace(/^artifact-series:/i, '');
+  return `artifact-series:${bare.slice(0, 7)}`;
+}
+
+function shortArtifactVersionRef(ref: string): string {
+  const trimmed = ref.trim();
+  const bare = trimmed.replace(/^artifact-version:/i, '');
+  return `artifact-version:${bare.slice(0, 7)}`;
+}
+
+function shortImmutableArtifactRef(ref: string): string {
+  return `artifact:${shortArtifactId(ref)}`;
 }
 
 function shortArtifactId(ref: string): string {

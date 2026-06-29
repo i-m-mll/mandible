@@ -6,6 +6,8 @@
 //
 //   - artifact:sha256:<64hex>       (canonical artifact id form)
 //   - artifact:<7-64hex>            (compact artifact ref form)
+//   - artifact-series:<id-or-prefix>[@<version>|@latest]
+//   - artifact-version:<id-or-prefix>
 //   - <7-64hex> / sha256:<64hex>    (bare hash forms)
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
 //   - issue:<id>                    (Mandible issue refs)
@@ -46,6 +48,8 @@ const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
 // `artifact:sha256:<hash>` (canonical id) OR compact `artifact:<7-64hex>`.
 const ARTIFACT_SHA256_REF = /^artifact:sha256:([0-9a-f]{64})$/i;
 const COMPACT_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
+const ARTIFACT_SERIES_REF = /^artifact-series:([^@#\s]+)(?:([@#])([^\s]+))?$/i;
+const ARTIFACT_VERSION_REF = /^artifact-version:([^\s]+)$/i;
 const BARE_SHA_REF = /^[0-9a-f]{7,64}$/i;
 const BARE_SHA256_REF = /^sha256:([0-9a-f]{64})$/i;
 const ISSUE_REF = /^issue:([^\s\]]+)$/i;
@@ -99,6 +103,16 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   const compact = COMPACT_ARTIFACT_REF.exec(raw);
   if (compact) {
     return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(compact[1]) };
+  }
+
+  const artifactSeries = ARTIFACT_SERIES_REF.exec(raw);
+  if (artifactSeries) {
+    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactSeriesRef(raw) };
+  }
+
+  const artifactVersion = ARTIFACT_VERSION_REF.exec(raw);
+  if (artifactVersion) {
+    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactVersionRef(raw) };
   }
 
   // sha256:<64hex> bare-hash form — normalize display, keep canonical authority.
@@ -169,6 +183,21 @@ export function compactArtifactRef(hash: string, length = 12): string {
   return `artifact:${clipped}`;
 }
 
+export function compactArtifactSeriesRef(ref: string, length = 7): string {
+  return ref.replace(
+    /^artifact-series:([^@#\s]+)(.*)$/i,
+    (_match, id: string, selector: string) =>
+      `artifact-series:${compactLongIdSegments(id, length)}${selector ?? ''}`,
+  );
+}
+
+export function compactArtifactVersionRef(ref: string, length = 7): string {
+  return ref.replace(
+    /^artifact-version:(.+)$/i,
+    (_match, id: string) => `artifact-version:${compactLongIdSegments(id, length)}`,
+  );
+}
+
 function compactLongIdSegments(value: string, length = 7): string {
   return value.replace(/[0-9a-f]{12,64}/gi, (segment) =>
     segment.slice(0, Math.max(7, Math.min(length, segment.length))).toLowerCase(),
@@ -203,6 +232,15 @@ export function resourceRefHref(ref: string): string {
   // scheme forms (`artifact:sha256:<hash>`, `repo://…`, `mandible://…`) keep
   // their full ref as the resolver authority.
   const compact = COMPACT_ARTIFACT_REF.exec(ref.trim());
+  const series = ARTIFACT_SERIES_REF.exec(ref.trim());
+  if (series) {
+    const base = `artifact-series:${series[1]}`;
+    const selector = series[3]?.toLowerCase();
+    if (selector && /^[1-9][0-9]*$/.test(selector)) {
+      return versionDetailHref(base, Number.parseInt(selector, 10));
+    }
+    return seriesDetailHref(selector === 'latest' ? ref.trim() : base);
+  }
   const navRef = compact ? compact[1] : ref;
   return `#/artifacts?ref=${encodeURIComponent(navRef)}`;
 }

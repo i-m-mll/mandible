@@ -54,6 +54,19 @@ describe('parseResourceRef recognizes all four ref forms', () => {
     expect(parsed?.canonical).toBe('artifact:abcdef0');
   });
 
+  it('artifact series and version forms', () => {
+    const series = parseResourceRef('artifact-series:abcdef0@2');
+    const latest = parseResourceRef('artifact-series:abcdef0@latest');
+    const version = parseResourceRef('artifact-version:1234567');
+
+    expect(series?.kind).toBe('artifact');
+    expect(series?.canonical).toBe('artifact-series:abcdef0@2');
+    expect(series?.display).toBe('artifact-series:abcdef0@2');
+    expect(latest?.canonical).toBe('artifact-series:abcdef0@latest');
+    expect(version?.kind).toBe('artifact');
+    expect(version?.canonical).toBe('artifact-version:1234567');
+  });
+
   it('bare and sha256 hash forms', () => {
     expect(parseResourceRef(HASH64)?.kind).toBe('artifact');
     expect(parseResourceRef(`sha256:${HASH64}`)?.kind).toBe('artifact');
@@ -160,6 +173,12 @@ describe('artifact series nav hrefs', () => {
   it('builds shareable series and pinned-version artifact routes', () => {
     expect(seriesDetailHref('artifact-series:demo')).toBe('#/artifacts?series=artifact-series%3Ademo');
     expect(versionDetailHref('artifact-series:demo', 2)).toBe('#/artifacts?series=artifact-series%3Ademo&version=2');
+    expect(resourceRefHref('artifact-series:abcdef0')).toBe('#/artifacts?series=artifact-series%3Aabcdef0');
+    expect(resourceRefHref('artifact-series:abcdef0@latest')).toBe(
+      '#/artifacts?series=artifact-series%3Aabcdef0%40latest',
+    );
+    expect(resourceRefHref('artifact-series:abcdef0@2')).toBe('#/artifacts?series=artifact-series%3Aabcdef0&version=2');
+    expect(resourceRefHref('artifact-version:1234567')).toBe('#/artifacts?ref=artifact-version%3A1234567');
   });
 });
 

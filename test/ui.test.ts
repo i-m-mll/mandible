@@ -2284,13 +2284,13 @@ describe('ArtifactsView', () => {
     const seriesCopyButton = screen.getByLabelText('Copy artifact series ref');
     fireEvent.click(seriesCopyButton);
     fireEvent.pointerUp(seriesCopyButton);
-    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report');
+    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-re');
     expect(seriesCopyButton.className).not.toContain('active');
     expect(document.activeElement).not.toBe(seriesCopyButton);
     const artifactCopyButton = screen.getByLabelText('Copy selected artifact ref');
     fireEvent.click(artifactCopyButton);
     fireEvent.pointerUp(artifactCopyButton);
-    expect(writeText).toHaveBeenCalledWith(artifact.id);
+    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-re@1');
     expect(artifactCopyButton.className).not.toContain('active');
     expect(document.activeElement).not.toBe(artifactCopyButton);
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
@@ -2309,7 +2309,7 @@ describe('ArtifactsView', () => {
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
     fireEvent.click(within(metadataDialog).getByText('aaaaaaa').closest('button') as HTMLButtonElement);
-    expect(writeText).toHaveBeenCalledWith(artifact.id);
+    expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaa');
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
     const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;

@@ -214,4 +214,46 @@ describe("artifact series list", () => {
     expect(body.series.map((item) => item.id)).toEqual([selected.series.id]);
     expect(body.series[0].latest_artifact.role).toBe("route-role");
   });
+
+  it("serves short artifact-series refs through resolve and history routes", async () => {
+    const first = recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "route-short-series",
+      logical_name: "route-short",
+      content: "v1\n",
+      media_type: "text/plain",
+      role: "report",
+    }, 1000);
+    const second = recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "route-short-series",
+      logical_name: "route-short",
+      content: "v2\n",
+      media_type: "text/plain",
+      role: "report",
+    }, 2000);
+    const router = createRouter();
+
+    const resolved = await router.invoke({
+      method: "GET",
+      url: "/api/artifacts/resolve?ref=artifact-series%3Aroute-s%402",
+    });
+    const history = await router.invoke({
+      method: "GET",
+      url: "/api/artifacts/versions?ref=artifact-series%3Aroute-s%40latest",
+    });
+
+    expect(resolved.status).toBe(200);
+    expect((resolved.body as any).resolution).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      series: { id: first.series.id },
+      version: { version_no: 2 },
+    });
+    expect(history.status).toBe(200);
+    expect((history.body as any).history).toMatchObject({
+      series: { id: first.series.id },
+      versions: [{ id: first.version.id }, { id: second.version.id }],
+    });
+  });
 });
