@@ -613,6 +613,7 @@ export function ArtifactDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [actionsMenuStyle, setActionsMenuStyle] = useState<{ top: number; left: number } | null>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
   const metadataPanelRef = useRef<HTMLDivElement>(null);
@@ -651,9 +652,24 @@ export function ArtifactDetail({
     ['Size', formatBytes(artifact.size_bytes)],
     ['Created', formatTime(artifact.created_at)],
   ].filter(([, value]) => Boolean(value)) as MetadataRow[];
+  const locatorRows = artifact.aliases ?? [];
+
+  const updateActionsMenuPosition = useCallback(() => {
+    const node = actionsRef.current;
+    if (!node) return;
+    const rect = node.getBoundingClientRect();
+    const menuWidth = 190;
+    const margin = 8;
+    const maxLeft = Math.max(margin, window.innerWidth - menuWidth - margin);
+    setActionsMenuStyle({
+      top: Math.round(rect.bottom + 6),
+      left: Math.round(Math.min(Math.max(margin, rect.right - menuWidth), maxLeft)),
+    });
+  }, []);
 
   useEffect(() => {
     if (!actionsOpen) return undefined;
+    updateActionsMenuPosition();
     const closeOnOutsidePointer = (event: PointerEvent) => {
       const node = actionsRef.current;
       if (!node || node.contains(event.target as Node)) return;
@@ -662,13 +678,18 @@ export function ArtifactDetail({
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') setActionsOpen(false);
     };
+    const updatePosition = () => updateActionsMenuPosition();
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     document.addEventListener('keydown', closeOnEscape, true);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
     return () => {
       document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
       document.removeEventListener('keydown', closeOnEscape, true);
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
     };
-  }, [actionsOpen]);
+  }, [actionsOpen, updateActionsMenuPosition]);
 
   useEffect(() => {
     if (!versionHistoryOpen) return undefined;
@@ -747,12 +768,19 @@ export function ArtifactDetail({
               aria-haspopup="menu"
               aria-expanded={actionsOpen}
               title="Artifact actions"
-              onClick={() => setActionsOpen((open) => !open)}
+              onClick={() => {
+                updateActionsMenuPosition();
+                setActionsOpen((open) => !open);
+              }}
             >
               <HorizontalDotsIcon />
             </button>
             {actionsOpen && (
-              <div className="artifact-detail__actions-menu" role="menu">
+              <div
+                className="artifact-detail__actions-menu"
+                role="menu"
+                style={actionsMenuStyle ? { top: `${actionsMenuStyle.top}px`, left: `${actionsMenuStyle.left}px` } : undefined}
+              >
                 <button
                   type="button"
                   className="artifact-detail__actions-item"
@@ -853,20 +881,6 @@ export function ArtifactDetail({
           contentLoading={contentLoading}
           contentError={contentError}
         />
-        {artifact.aliases && artifact.aliases.length > 0 && (
-          <section className="artifact-detail__section">
-            <h3>Locators</h3>
-            <div className="artifact-detail__list">
-              {artifact.aliases.map((alias) => (
-                <div key={alias.id} className="artifact-detail__list-item">
-                  <code>{alias.normalized_ref}</code>
-                  <span>{alias.scheme}</span>
-                  <span>{alias.resolution_status}</span>
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
         {artifact.links && artifact.links.length > 0 && (
           <section className="artifact-detail__section">
             <h3>Links</h3>
@@ -910,32 +924,46 @@ export function ArtifactDetail({
             )}
           </section>
         )}
-      </div>
-      {metadataOpen && (
-        <div className="artifact-detail__metadata-modal" role="dialog" aria-modal="true" aria-labelledby="artifact-metadata-title">
-          <div className="artifact-detail__metadata-panel" ref={metadataPanelRef}>
-            <div className="artifact-detail__modal-header">
-              <h3 id="artifact-metadata-title">Artifact metadata</h3>
-              <button
-                type="button"
-                className="artifact-detail__modal-close"
-                aria-label="Close artifact metadata"
-                onClick={() => setMetadataOpen(false)}
-              >
-                <CloseIcon />
-              </button>
+        {metadataOpen && (
+          <div className="artifact-detail__metadata-modal" role="dialog" aria-modal="true" aria-labelledby="artifact-metadata-title">
+            <div className="artifact-detail__metadata-panel" ref={metadataPanelRef}>
+              <div className="artifact-detail__modal-header">
+                <h3 id="artifact-metadata-title">Artifact metadata</h3>
+                <button
+                  type="button"
+                  className="artifact-detail__modal-close"
+                  aria-label="Close artifact metadata"
+                  onClick={() => setMetadataOpen(false)}
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+              <section className="artifact-detail__section">
+                <h3>Identity</h3>
+                <MetadataKeyValue rows={identityRows} />
+              </section>
+              <section className="artifact-detail__section">
+                <h3>Custody</h3>
+                <MetadataKeyValue rows={custodyRows} />
+              </section>
+              {locatorRows.length > 0 && (
+                <section className="artifact-detail__section">
+                  <h3>Locators</h3>
+                  <div className="artifact-detail__list">
+                    {locatorRows.map((alias) => (
+                      <div key={alias.id} className="artifact-detail__list-item">
+                        <code>{alias.normalized_ref}</code>
+                        <span>{alias.scheme}</span>
+                        <span>{alias.resolution_status}</span>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
-            <section className="artifact-detail__section">
-              <h3>Identity</h3>
-              <MetadataKeyValue rows={identityRows} />
-            </section>
-            <section className="artifact-detail__section">
-              <h3>Custody</h3>
-              <MetadataKeyValue rows={custodyRows} />
-            </section>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </article>
   );
 }
@@ -986,8 +1014,7 @@ function PreviewSection({
 }): JSX.Element {
   const showPreview = !contentError && preview !== null;
   return (
-    <section className="artifact-detail__section">
-      <h3>Preview</h3>
+    <section className="artifact-detail__section" aria-label="Preview">
       <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
         {contentLoading && (
           <div className="artifact-preview-frame__loading" role="status">
@@ -1274,6 +1301,7 @@ function CopyButton({ value, label }: { value: string; label: string }): JSX.Ele
       type="button"
       className="artifact-detail__copy-button"
       onClick={() => void copyText(value)}
+      onPointerUp={(event) => event.currentTarget.blur()}
       aria-label={label}
       title={label}
     >

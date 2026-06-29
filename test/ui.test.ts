@@ -2269,10 +2269,11 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
     const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
-    expect(sectionHeadings[0]).toBe('Preview');
+    expect(screen.queryByRole('heading', { name: 'Preview' })).toBeNull();
     expect(sectionHeadings).not.toContain('Identity');
     expect(sectionHeadings).not.toContain('Custody');
-    expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
+    expect(sectionHeadings[0]).toBe('Links');
+    expect(sectionHeadings.indexOf('Links')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
     expect(screen.getByLabelText('Artifact version')).toBeTruthy();
     expect(screen.queryByText('Version')).toBeNull();
     expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
@@ -2280,17 +2281,30 @@ describe('ArtifactsView', () => {
     expect(detailHeader?.textContent).toContain('managed · report');
     expect(detailHeader?.textContent).toContain('Created:');
     expect(detailHeader?.textContent).toContain('Updated:');
-    fireEvent.click(screen.getByLabelText('Copy artifact series ref'));
+    const seriesCopyButton = screen.getByLabelText('Copy artifact series ref');
+    fireEvent.click(seriesCopyButton);
+    fireEvent.pointerUp(seriesCopyButton);
     expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report');
-    fireEvent.click(screen.getByLabelText('Copy selected artifact ref'));
+    expect(seriesCopyButton.className).not.toContain('active');
+    expect(document.activeElement).not.toBe(seriesCopyButton);
+    const artifactCopyButton = screen.getByLabelText('Copy selected artifact ref');
+    fireEvent.click(artifactCopyButton);
+    fireEvent.pointerUp(artifactCopyButton);
     expect(writeText).toHaveBeenCalledWith(artifact.id);
+    expect(artifactCopyButton.className).not.toContain('active');
+    expect(document.activeElement).not.toBe(artifactCopyButton);
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     fireEvent.click(screen.getByLabelText('Artifact actions'));
+    const actionsMenu = screen.getByRole('menu');
+    expect(actionsMenu.className).toContain('artifact-detail__actions-menu');
+    expect((actionsMenu as HTMLElement).style.top).toBeTruthy();
+    expect((actionsMenu as HTMLElement).style.left).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Add to Space' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(true);
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
@@ -2604,13 +2618,29 @@ describe('ArtifactsView', () => {
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
 
-    resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
-      headers: { 'content-type': 'application/json' },
-    }));
+    await act(async () => {
+      resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    });
 
-    await waitFor(() => expect(screen.getByText('Locators')).toBeTruthy());
-    expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.queryByText('Locators')).toBeNull());
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const hydratedMetadata = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    await waitFor(() => expect(within(hydratedMetadata).getByText('Locators')).toBeTruthy());
+    expect(within(hydratedMetadata).getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
     expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0);
+  });
+
+  it('keeps artifact overlays scoped and layered by CSS contract', () => {
+    const css = readFileSync('ui/src/style.css', 'utf8');
+    expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
+    expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;/s);
+    expect(css).toMatch(/\.artifact-detail__copy-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s);
+    expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);
   });
 
   it('keeps artifact facet options available after selecting a facet value', async () => {
