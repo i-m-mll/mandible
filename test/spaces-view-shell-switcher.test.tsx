@@ -66,8 +66,11 @@ describe('SpacesViewShell home polish', () => {
       />,
     );
     await waitFor(() => expect(screen.getByTestId('mount').textContent).toBe('document'));
-    expect(screen.getByTestId('spaces-shell-type').getAttribute('aria-label')).toBe('Document space type');
-    expect(screen.getByTestId('spaces-shell-type').textContent).toBe('');
+    const typeIcon = screen.getByTestId('spaces-shell-type');
+    expect(typeIcon.getAttribute('aria-label')).toBe('Document space type');
+    expect(typeIcon.className).toContain('spaces-shell__type-icon');
+    expect(typeIcon.className).not.toContain('spaces-shell__type-badge');
+    expect(typeIcon.textContent).toBe('');
     expect(screen.getByText('Typed workspace')).toBeTruthy();
     expect(screen.queryByTestId('spaces-shell-switcher')).toBeNull();
     expect(screen.queryByTestId('spaces-renderer-canvas')).toBeNull();

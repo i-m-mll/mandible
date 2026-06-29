@@ -196,18 +196,14 @@
 
 .spaces-tree__space-type {
   flex: 0 0 auto;
-  width: 1.35rem;
-  height: 1.35rem;
+  width: 1.1rem;
+  height: 1.1rem;
   font-size: 0.95rem;
   color: var(--text-muted);
-  background: var(--neutral-alpha-06);
-  border: 1px solid var(--neutral-alpha-08);
-  border-radius: 4px;
 }
 
 .spaces-tree__space--active .spaces-tree__space-type {
   color: var(--text-primary);
-  background: var(--neutral-alpha-10);
 }
 
 .spaces-tree__space-title {

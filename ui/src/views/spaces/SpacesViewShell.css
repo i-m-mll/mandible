@@ -63,15 +63,12 @@
   min-width: 0;
 }
 
-.spaces-shell__type-badge {
+.spaces-shell__type-icon {
   flex: 0 0 auto;
-  width: 1.45rem;
-  height: 1.45rem;
+  width: 1.1rem;
+  height: 1.1rem;
   font-size: 1rem;
   color: var(--text-muted);
-  background: var(--neutral-alpha-06);
-  border: 1px solid var(--neutral-alpha-08);
-  border-radius: 4px;
 }
 
 .spaces-shell__title {

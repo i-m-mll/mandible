@@ -163,7 +163,7 @@ export function SpacesViewShell({
               <div className="spaces-shell__identity" data-testid="spaces-shell-identity">
                 <SpaceTypeIndicator
                   renderer={primaryRenderer}
-                  className="spaces-shell__type-badge"
+                  className="spaces-shell__type-icon"
                   data-testid="spaces-shell-type"
                 />
                 <span className="spaces-shell__title" title={selectedSpaceTitle}>

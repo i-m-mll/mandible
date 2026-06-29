@@ -1526,7 +1526,7 @@ function OccurrenceNode(props: {
       <div className="space-canvas__node-kind">
         {linkedSpace ? (
           <>
-            <span className="space-canvas__node-space-badge" data-kind={linkedSpace.primaryType}>
+            <span className="space-canvas__node-space-type" data-kind={linkedSpace.primaryType}>
               <SpaceTypeIndicator renderer={linkedSpace.primaryType} showLabel />
             </span>
             {linkedSpace.projectLabel ? (

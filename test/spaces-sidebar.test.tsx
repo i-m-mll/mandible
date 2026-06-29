@@ -105,10 +105,12 @@ describe('SpacesSidebar render + grouping', () => {
     // Space rows carry accessible primary-type icons, not abbreviation text.
     expect(screen.getByText('Roadmap')).toBeTruthy();
     expect(screen.getByText('Backlog')).toBeTruthy();
-    expect(screen.getByTestId('space-row-type-t1').getAttribute('aria-label')).toBe('Canvas space type');
+    const canvasTypeIcon = screen.getByTestId('space-row-type-t1');
+    expect(canvasTypeIcon.getAttribute('aria-label')).toBe('Canvas space type');
+    expect(canvasTypeIcon.className).toContain('spaces-tree__space-type');
     expect(screen.getByTestId('space-row-type-a1').getAttribute('aria-label')).toBe('Document space type');
     expect(screen.getByTestId('space-row-type-b1').getAttribute('aria-label')).toBe('Board space type');
-    expect(screen.getByTestId('space-row-type-t1').textContent).toBe('');
+    expect(canvasTypeIcon.textContent).toBe('');
 
     // Top-level group sits above the first project group in DOM order.
     const scroll = screen.getByTestId('spaces-tree-scroll');
