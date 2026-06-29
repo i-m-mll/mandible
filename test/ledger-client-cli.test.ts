@@ -139,6 +139,18 @@ function listen(): Promise<{ port: number; requests: Array<Record<string, unknow
         ambientSession: req.headers["x-mandible-ambient-provider-session-id"],
       });
       res.writeHead(200, { "Content-Type": "application/json" });
+      if (req.method === "GET" && req.url === "/api/instance") {
+        res.end(JSON.stringify({
+          instance: {
+            role: "main",
+            operational_mutations: "allow",
+            operational_mutations_overridden: false,
+            db_path: "/tmp/mandible-test.db",
+            db_path_source: "test",
+          },
+        }));
+        return;
+      }
       if (req.method === "GET" && req.url?.startsWith("/api/ledger/issues/abc123")) {
         res.end(JSON.stringify({ id: "abc123-full", display_id: "abc123", title: "Ledger client issue" }));
         return;
@@ -253,15 +265,33 @@ describe("ledger mechanism CLI client", () => {
     ], port)).status).toBe(0);
 
     expect(requests.map((request) => [request.method, request.url])).toEqual([
+      ["GET", "/api/instance"],
       ["POST", "/api/work-units/claim"],
+      ["GET", "/api/instance"],
       ["POST", "/api/work-units/activate"],
       ["GET", "/api/work-units?repo_id=mandible&branch=feature%2Fabc123&state=committed"],
+      ["GET", "/api/instance"],
       ["PATCH", "/api/work-units/wu-1"],
+      ["GET", "/api/instance"],
       ["POST", "/api/work-units/release"],
       ["GET", "/api/ledger/issues/abc123"],
       ["POST", "/api/sessions/session-1/issues"],
     ]);
-    expect(requests[0].body).toMatchObject({
+    expect(requests.some((request) => request.url === "/api/health")).toBe(false);
+
+    const actualMutations = requests
+      .filter((request) => request.method !== "GET" || request.url === "/api/sessions/session-1/issues")
+      .map((request) => [request.method, request.url]);
+    expect(actualMutations).toEqual([
+      ["POST", "/api/work-units/claim"],
+      ["POST", "/api/work-units/activate"],
+      ["PATCH", "/api/work-units/wu-1"],
+      ["POST", "/api/work-units/release"],
+      ["POST", "/api/sessions/session-1/issues"],
+    ]);
+
+    const claimRequest = requests.find((request) => request.url === "/api/work-units/claim");
+    expect(claimRequest?.body).toMatchObject({
       issue_id: "abc123",
       repo_id: "mandible",
       branch: "feature/abc123",
@@ -269,13 +299,16 @@ describe("ledger mechanism CLI client", () => {
       kind: "solo",
       assigned_session_id: "session-1",
     });
-    expect(requests[3].body).toEqual({ state: "resolved", auth_request_id: "auth-1" });
-    expect(requests[4]).toMatchObject({
+    expect(requests.find((request) => request.url === "/api/work-units/wu-1")?.body).toEqual({
+      state: "resolved",
+      auth_request_id: "auth-1",
+    });
+    expect(requests.find((request) => request.url === "/api/work-units/release")).toMatchObject({
       ambientProvider: "codex",
       ambientSession: "thread-release-cli",
       body: { issue_id: "abc123", repo_id: "mandible" },
     });
-    expect(requests[6].body).toEqual({
+    expect(requests.find((request) => request.url === "/api/sessions/session-1/issues")?.body).toEqual({
       issue_id: "abc123",
       repo_id: "mandible",
       repo_name: "Mandible",
