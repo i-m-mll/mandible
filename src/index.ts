@@ -5,7 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
-import { openDb, setDb, type Db } from "./db.js";
+import { getDbPath, openDb, setDb, type Db } from "./db.js";
+import { resolveInstanceInfo } from "./instance-policy.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
 import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
@@ -74,7 +75,12 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   setDaemonReady(false);
   const port = options.port ?? getPort();
   const logger = createLogger();
-  const db = openDb(options.dbPath);
+  const dbPath = options.dbPath ?? getDbPath();
+  const db = openDb(dbPath);
+  const instance = resolveInstanceInfo({
+    dbPath,
+    dbPathSource: options.dbPath ? "start_options" : process.env.MANDIBLE_DB ? "env" : "default",
+  });
   const sse = new SseManager();
   const version = resolveVersion();
   try {
@@ -89,7 +95,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   sse.startHeartbeat();
 
   // Create router and register all partition routes
-  const router = new Router({ logger });
+  const router = new Router({ logger, instance });
   const sessionRegistry = new SessionRegistry(db);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
@@ -152,6 +158,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     isRebuilding: () => authQueue.isRebuilding,
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
+    instance,
   });
   const fileRpcTransport = new FileRpcTransport({ router, logger });
   fileRpcTransport.start();
