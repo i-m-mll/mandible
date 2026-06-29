@@ -13,6 +13,8 @@ emulate -L zsh -o pipefail
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
 GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
 source "$GIT_ENV_HELPER"
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
 
 # Derive branch and repo from git
 branch=$(git branch --show-current 2>/dev/null) || true
@@ -25,21 +27,12 @@ fi
 
 session_id="${MANDIBLE_SESSION_ID:-}"
 
-# Helper: silent curl that exits 0 on failure (non-fatal)
-api_get() {
-  curl -fsS --max-time 3 "$1" 2>/dev/null
-}
-
-api_post() {
-  curl -fsS --max-time 3 -X POST "$1" -H 'Content-Type: application/json' -d "$2" 2>/dev/null
-}
-
 # --- Subcommands ---
 
 cmd_default() {
-  local url="${MANDIBLE_BASE}/api/inbox?branch=${branch}"
-  [[ -n "$repo" ]] && url="${url}&repo=${repo}"
-  [[ -n "$session_id" ]] && url="${url}&session_id=${session_id}"
+  local url="/api/inbox?branch=$(urlencode "$branch")"
+  [[ -n "$repo" ]] && url="${url}&repo=$(urlencode "$repo")"
+  [[ -n "$session_id" ]] && url="${url}&session_id=$(urlencode "$session_id")"
 
   local response
   response=$(api_get "$url") || exit 0
@@ -83,9 +76,9 @@ cmd_default() {
 }
 
 cmd_check() {
-  local url="${MANDIBLE_BASE}/api/inbox?branch=${branch}"
-  [[ -n "$repo" ]] && url="${url}&repo=${repo}"
-  [[ -n "$session_id" ]] && url="${url}&session_id=${session_id}"
+  local url="/api/inbox?branch=$(urlencode "$branch")"
+  [[ -n "$repo" ]] && url="${url}&repo=$(urlencode "$repo")"
+  [[ -n "$session_id" ]] && url="${url}&session_id=$(urlencode "$session_id")"
 
   local response
   response=$(api_get "$url") || exit 0
@@ -133,7 +126,7 @@ cmd_add() {
     --arg root "$root" \
     '{title:$title, body:$body, root:$root, labels:["reminder"]}')
 
-  response=$(api_post "${MANDIBLE_BASE}/api/issues/${repo_name}" "$payload") || {
+  response=$(api_send POST "/api/issues/$(urlencode "$repo_name")" "$payload") || {
     print -u2 "error: failed to create reminder (Mandible unreachable or ledger writes unavailable)"
     exit 1
   }
@@ -160,7 +153,7 @@ cmd_ack() {
   fi
 
   local response
-  response=$(api_post "${MANDIBLE_BASE}/api/inbox/${type}/${id}/ack" "$body") || {
+  response=$(api_send POST "/api/inbox/$(urlencode "$type")/$(urlencode "$id")/ack" "$body") || {
     print -u2 "error: failed to acknowledge (Mandible unreachable or item not found)"
     exit 1
   }
@@ -190,7 +183,7 @@ cmd_watch() {
 
   while [[ $elapsed -lt $timeout ]]; do
     local response
-    response=$(api_get "${MANDIBLE_BASE}/api/auth/request/${request_id}") || {
+    response=$(api_get "/api/auth/request/$(urlencode "$request_id")") || {
       sleep "$interval"
       elapsed=$((elapsed + interval))
       continue

@@ -80,6 +80,16 @@ function listenForAuthRequest(): Promise<{
   const bodies: Record<string, unknown>[] = [];
   const checkBodies: Record<string, unknown>[] = [];
   const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/api/instance") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({
+        instance: {
+          role: "main",
+          operational_mutations: "allow",
+        },
+      }));
+      return;
+    }
     if (req.method === "POST" && req.url === "/api/auth/check") {
       let raw = "";
       req.setEncoding("utf8");

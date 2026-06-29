@@ -6,9 +6,10 @@ import {
   normalizeAmbientProviderIdentity,
   type AmbientProviderIdentity,
 } from "./ambient-provider-identity.js";
+import { evaluateInstanceMutation, resolveInstanceInfo } from "./instance-policy.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
-import type { HealthResponse, Logger, StartupCommitInfo } from "./types.js";
+import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const ROOT_DIR = resolveRootDir();
@@ -54,6 +55,7 @@ export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
 
 export interface RouterOptions {
   logger?: Logger;
+  instance?: InstanceInfo;
 }
 
 export interface RouterInvokeRequest {
@@ -153,8 +155,11 @@ class CapturedResponse implements ResponseLike {
 
 export class Router implements RouteRegistrar {
   private routes: CompiledRoute[] = [];
+  private readonly instance: InstanceInfo;
 
-  constructor(private options: RouterOptions = {}) {}
+  constructor(private options: RouterOptions = {}) {
+    this.instance = options.instance ?? resolveInstanceInfo();
+  }
 
   get(path: string, handler: RouteHandler): void {
     this.addRoute("GET", path, handler);
@@ -235,6 +240,12 @@ export class Router implements RouteRegistrar {
         params[name] = decodeURIComponent(match[i + 1]);
       });
 
+      const mutationDecision = evaluateInstanceMutation(this.instance, normalizedMethod, pathname);
+      if (!mutationDecision.allowed) {
+        response.status(mutationDecision.status).json(mutationDecision.body);
+        return true;
+      }
+
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => {
         query[key] = value;
@@ -297,10 +308,12 @@ export interface ServerOptions {
   // e.g. unit tests). The real daemon wires this to the lifecycle readiness
   // flag so health reports false until critical startup work completes.
   isReady?: () => boolean;
+  instance?: InstanceInfo;
 }
 
 export function createServer(options: ServerOptions): http.Server {
   const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady } = options;
+  const instance = options.instance ?? resolveInstanceInfo();
 
   router.get("/api/health", (_req, res) => {
     const startupCommit =
@@ -319,10 +332,15 @@ export function createServer(options: ServerOptions): http.Server {
       uptime: process.uptime(),
       version,
       startup_commit: startupCommit,
+      instance,
       ready,
       ...(rebuilding ? { rebuilding: true } : {})
     };
     res.json(payload);
+  });
+
+  router.get("/api/instance", (_req, res) => {
+    res.json({ instance });
   });
 
   return http.createServer(async (req, res) => {

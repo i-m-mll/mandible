@@ -25,6 +25,7 @@ import {
   scanIssues,
   updateAuthRequestField,
   updateSetting,
+  type InstanceInfo,
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
@@ -323,6 +324,7 @@ function App(): JSX.Element {
   // down/restarting) that detects a not-ready daemon via the mount probe / poll,
   // even though it never saw the mandible:rebuilding SSE event.
   const [daemonStarting, setDaemonStarting] = useState(false);
+  const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(null);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
@@ -792,6 +794,9 @@ function App(): JSX.Element {
         health = null;
       }
       if (cancelled) return;
+      if (health?.instance) {
+        setInstanceInfo(health.instance);
+      }
       if (!shouldEnterSplashOnProbe(health)) return; // ready, or unreachable cold mount — render normally
       if (health?.rebuilding) {
         setRebuilding(true);
@@ -1450,6 +1455,7 @@ function App(): JSX.Element {
             initialRequestId={route.params.request}
             sidebarHidden={viewSidebarHidden}
             daemonReady={daemonReady}
+            instance={instanceInfo}
             onSelectAuth={handleSelectAuth}
             onApprove={handleApprove}
             onReject={handleReject}
@@ -1526,6 +1532,7 @@ function App(): JSX.Element {
             settings={state.settings}
             onSave={handleSettingsSave}
             onClose={handleSettingsClose}
+            instance={instanceInfo}
           />
         )}
         {route.tab === 'logs' && (
