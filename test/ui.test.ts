@@ -1104,7 +1104,8 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
-    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByText('Loading full issue detail; more timeline entries may appear.')).toBeTruthy();
     expect(screen.queryByText('Loading...')).toBeNull();
 
@@ -1136,7 +1137,8 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
-    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     const card = document.querySelector('.ledger-comment-card.ledger-timeline-card');
     expect(card).toBeTruthy();
     expect(card?.getAttribute('id')).toBe('comment-0');
@@ -1880,7 +1882,7 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
   });
 
-  it('keeps issue and comment provenance behind metadata controls', () => {
+  it('keeps issue and comment provenance behind metadata controls', async () => {
     const now = Date.now();
     const detail = {
       id: 'issue_1',
@@ -1936,7 +1938,81 @@ describe('LedgerIssueDetail', () => {
     expect(issueVisibleMeta).toContain('MLL');
     expect(issueVisibleMeta).not.toContain('git_bug');
     expect(issueVisibleMeta).not.toContain('umbrella');
-    expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeTruthy();
+    expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeNull();
+    const detailScroller = document.querySelector('.ledger-issue-detail') as HTMLElement | null;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+    const originalClosest = HTMLElement.prototype.closest;
+    const closestSpy = vi.spyOn(HTMLElement.prototype, 'closest').mockImplementation(function closestIssueOwner(selector: string) {
+      if (selector === '.issues-detail' && this.classList.contains('ledger-issue-detail__header')) {
+        return detailScroller;
+      }
+      return originalClosest.call(this, selector);
+    });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getIssueRect() {
+      if (this.classList.contains('ledger-issue-detail')) {
+        return {
+          x: 300,
+          y: 0,
+          top: 0,
+          right: 1180,
+          bottom: 800,
+          left: 300,
+          width: 880,
+          height: 800,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList.contains('ledger-issue-detail__header')) {
+        return {
+          x: 300,
+          y: 0,
+          top: 0,
+          right: 1180,
+          bottom: 176,
+          left: 300,
+          width: 880,
+          height: 176,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    if (detailScroller) detailScroller.scrollTop = 320;
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const issueMetadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
+    await waitFor(() => expect(detailScroller?.className).toContain('issues-detail--metadata-open'));
+    expect(detailScroller?.scrollTop).toBe(320);
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('176px');
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('300px');
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('100px');
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('0px');
+    expect(within(issueMetadataDialog).getByText('Identity')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('Status')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('Provenance')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('abc123')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('umbrella')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('git_bug')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
+    await waitFor(() => expect(detailScroller?.className).not.toContain('issues-detail--metadata-open'));
+    rectSpy.mockRestore();
+    closestSpy.mockRestore();
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
 
     const commentHeader = document.querySelectorAll('.ledger-comment-card__header')[1];
     const commentVisibleMeta = Array.from(commentHeader?.querySelectorAll(':scope > span, :scope > time') ?? [])
@@ -2003,6 +2079,7 @@ describe('LedgerIssueDetail', () => {
 
     expect(screen.getByText('Start Agent')).toBeTruthy();
     expect(screen.getByText('Close Issue')).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getAllByText('Add Comment')).toHaveLength(2);
   });
 });
@@ -2352,10 +2429,10 @@ describe('ArtifactsView', () => {
     const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
     await waitFor(() => expect(detailScroller?.className).toContain('artifacts-detail--metadata-open'));
     expect(detailScroller?.scrollTop).toBe(480);
-    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-top')).toBe('219px');
-    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-left')).toBe('376px');
-    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-right')).toBe('317px');
-    expect((metadataDialog as HTMLElement).style.getPropertyValue('--artifact-detail-metadata-bottom')).toBe('0px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('219px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('376px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('317px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('0px');
     expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(true);
     expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
@@ -2693,13 +2770,13 @@ describe('ArtifactsView', () => {
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
-    expect(css).toMatch(/\.artifacts-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
     expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
-    expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--artifact-detail-metadata-top\);[^}]*right:\s*var\(--artifact-detail-metadata-right\);[^}]*bottom:\s*var\(--artifact-detail-metadata-bottom\);[^}]*left:\s*var\(--artifact-detail-metadata-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
-    expect(css).toMatch(/\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
+    expect(css).toMatch(/\.detail-pane-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--detail-pane-modal-top\);[^}]*right:\s*var\(--detail-pane-modal-right\);[^}]*bottom:\s*var\(--detail-pane-modal-bottom\);[^}]*left:\s*var\(--detail-pane-modal-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
+    expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
