@@ -9,18 +9,20 @@ import { spawn, spawnSync } from "node:child_process";
 const DEFAULT_PORT_START = 19421;
 const DEFAULT_PORT_END = 19499;
 const DEFAULT_DB_PATH = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
-const PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
+const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
+const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
 
-const args = parseArgs(process.argv.slice(2));
+const command = process.argv[2] === "cleanup" ? "cleanup" : "preview";
+const args = parseArgs(command === "cleanup" ? process.argv.slice(3) : process.argv.slice(2), command);
 
 if (args.help) {
-  printUsage();
+  printUsage(command);
   process.exit(0);
 }
 
 try {
-  const result = await main(args);
+  const result = command === "cleanup" ? await cleanupPreviewCache(args) : await main(args);
   printResult(result, args.json);
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -88,7 +90,6 @@ async function main(options) {
   }
 
   const preview = previewPaths(branch);
-  fs.mkdirSync(preview.root, { recursive: true });
 
   if (options.dryRun) {
     return {
@@ -104,6 +105,8 @@ async function main(options) {
       wouldStart: true,
     };
   }
+
+  fs.mkdirSync(preview.root, { recursive: true });
 
   if (!options.noBuild) {
     ensureDependencies(worktree);
@@ -172,10 +175,91 @@ async function main(options) {
   };
 
   fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
+  metadata.cacheCleanup = prunePreviewSnapshots(preview.root, {
+    apply: true,
+    keepDbPaths: [dbCopy],
+  });
+  fs.writeFileSync(preview.metadata, `${JSON.stringify(metadata, null, 2)}\n`);
   return metadata;
 }
 
-function parseArgs(argv) {
+async function cleanupPreviewCache(options) {
+  const root = previewBaseDir(options.previewBaseDir);
+  const report = {
+    ok: true,
+    status: options.apply ? "applied" : "dry-run",
+    previewBaseDir: root,
+    apply: options.apply,
+    reclaimedBytes: 0,
+    reclaimableBytes: 0,
+    entries: [],
+  };
+
+  if (!fs.existsSync(root)) {
+    return report;
+  }
+
+  const rootEntries = fs.readdirSync(root, { withFileTypes: true });
+  const protectedDbPaths = new Set();
+
+  for (const dirent of rootEntries) {
+    const entryPath = path.join(root, dirent.name);
+    if (dirent.isDirectory()) {
+      const entry = await analyzePreviewDirForCleanup(entryPath, options.apply);
+      report.entries.push(entry);
+      for (const dbPath of [entry.metadataDb, entry.currentDb]) {
+        if (dbPath) protectedDbPaths.add(path.resolve(dbPath));
+      }
+      if (entry.action === "delete-dir") {
+        report.reclaimableBytes += entry.bytes;
+        if (options.apply) {
+          fs.rmSync(entryPath, { recursive: true, force: true });
+          report.reclaimedBytes += entry.bytes;
+        }
+      }
+    }
+  }
+
+  for (const dirent of rootEntries) {
+    const entryPath = path.join(root, dirent.name);
+    if (dirent.isFile() && DB_SNAPSHOT_PATTERN.test(dirent.name)) {
+      const bytes = fs.statSync(entryPath).size;
+      if (protectedDbPaths.has(path.resolve(entryPath))) {
+        report.entries.push({
+          path: entryPath,
+          kind: "root-db",
+          action: "skip",
+          reason: "root-level preview database is referenced by preview metadata or current.db",
+          bytes: 0,
+        });
+        continue;
+      }
+      const entry = {
+        path: entryPath,
+        kind: "root-db",
+        action: "delete-file",
+        reason: "root-level preview database snapshot is not owned by a preview directory",
+        bytes,
+      };
+      report.entries.push(entry);
+      report.reclaimableBytes += bytes;
+      if (options.apply) {
+        fs.rmSync(entryPath, { force: true });
+        report.reclaimedBytes += bytes;
+      }
+    }
+  }
+
+  report.reclaimable = formatBytes(report.reclaimableBytes);
+  report.reclaimed = formatBytes(report.reclaimedBytes);
+  return report;
+}
+
+function parseArgs(argv, commandName) {
+  if (commandName === "cleanup") {
+    return parseCleanupArgs(argv);
+  }
+
   const options = {
     branch: null,
     db: null,
@@ -226,6 +310,41 @@ function parseArgs(argv) {
   return options;
 }
 
+function parseCleanupArgs(argv) {
+  const options = {
+    apply: false,
+    help: false,
+    json: false,
+    previewBaseDir: null,
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    switch (arg) {
+      case "--apply":
+        options.apply = true;
+        break;
+      case "--dry-run":
+        options.apply = false;
+        break;
+      case "--help":
+      case "-h":
+        options.help = true;
+        break;
+      case "--json":
+        options.json = true;
+        break;
+      case "--preview-base-dir":
+        options.previewBaseDir = requireValue(argv, ++index, arg);
+        break;
+      default:
+        throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
 function requireValue(argv, index, flag) {
   const value = argv[index];
   if (!value || value.startsWith("--")) {
@@ -234,7 +353,25 @@ function requireValue(argv, index, flag) {
   return value;
 }
 
-function printUsage() {
+function printUsage(commandName = "preview") {
+  if (commandName === "cleanup") {
+    console.log(`Usage: node scripts/iab-preview.mjs cleanup [options]
+
+Clean stale Mandible IAB preview cache entries.
+
+Options:
+  --dry-run             Report cleanup candidates without deleting them. This is the default.
+  --apply               Delete cleanup candidates.
+  --json                Print machine-readable result JSON.
+  --preview-base-dir P  Override the preview cache root. Defaults to MANDIBLE_PREVIEW_BASE_DIR or ~/.cache/mandible/previews.
+  -h, --help            Show this help.
+
+Cleanup is conservative: active preview directories are skipped when metadata,
+current.db, pid files, or live health checks indicate the preview may still be in use.
+`);
+    return;
+  }
+
   console.log(`Usage: node scripts/iab-preview.mjs [options]
 
 Create or reuse an isolated Mandible integration preview instance.
@@ -257,6 +394,17 @@ Default branch from main/develop:
 function printResult(result, json) {
   if (json) {
     console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (result.previewBaseDir) {
+    console.log(`Mandible IAB preview cleanup ${result.status}`);
+    console.log(`Preview cache: ${result.previewBaseDir}`);
+    console.log(`Reclaimable: ${result.reclaimable ?? formatBytes(result.reclaimableBytes ?? 0)}`);
+    if (result.apply) console.log(`Reclaimed: ${result.reclaimed ?? formatBytes(result.reclaimedBytes ?? 0)}`);
+    for (const entry of result.entries ?? []) {
+      console.log(`${entry.action}: ${entry.path} (${formatBytes(entry.bytes ?? 0)}) - ${entry.reason}`);
+    }
     return;
   }
 
@@ -360,6 +508,106 @@ async function healthyExistingPreview(branch) {
     ...metadata,
     health,
     freshUrl: `http://127.0.0.1:${metadata.port}/?fresh=${Date.now()}#/timeline`,
+  };
+}
+
+async function analyzePreviewDirForCleanup(dirPath, apply) {
+  const metadataPath = path.join(dirPath, "metadata.json");
+  const currentPath = path.join(dirPath, "current.db");
+  const metadata = readJsonFile(metadataPath);
+  const currentTarget = readSymlinkTarget(currentPath);
+  const pidCandidates = [
+    metadata?.pidFile,
+    path.join(dirPath, "mandible.pid"),
+  ].filter(Boolean);
+  const livePid = pidCandidates.some((pidFile) => {
+    const pid = readPidFile(pidFile);
+    return pid !== null && isProcessAlive(pid);
+  });
+  const liveHealth = metadata?.port ? await readHealth(metadata.port) : null;
+
+  if (!metadata) {
+    return {
+      path: dirPath,
+      kind: "preview-dir",
+      action: "skip",
+      reason: "missing or unreadable metadata; manual inspection required",
+      bytes: 0,
+      metadataDb: null,
+      currentDb: currentTarget,
+    };
+  }
+
+  if (livePid || liveHealth) {
+    return {
+      path: dirPath,
+      kind: "preview-dir",
+      action: "skip-active",
+      reason: liveHealth
+        ? `metadata port ${metadata.port} answered /api/health`
+        : "metadata or directory pid file points to a live process",
+      bytes: 0,
+      port: metadata.port ?? null,
+      pidFiles: pidCandidates,
+      metadataDb: metadata.db ?? null,
+      currentDb: currentTarget,
+    };
+  }
+
+  const bytes = directorySize(dirPath);
+  return {
+    path: dirPath,
+    kind: "preview-dir",
+    action: "delete-dir",
+    reason: apply
+      ? "stale preview directory removed after metadata, pid, and health checks"
+      : "stale preview directory; metadata exists, no live pid, and health check failed",
+    bytes,
+    port: metadata.port ?? null,
+    pidFiles: pidCandidates,
+    metadataDb: metadata.db ?? null,
+    currentDb: currentTarget,
+  };
+}
+
+function prunePreviewSnapshots(previewRoot, options) {
+  const keep = new Set((options.keepDbPaths ?? []).map((candidate) => path.resolve(candidate)));
+  const currentTarget = readSymlinkTarget(path.join(previewRoot, "current.db"));
+  if (currentTarget) keep.add(path.resolve(currentTarget));
+
+  const entries = [];
+  let reclaimableBytes = 0;
+  let reclaimedBytes = 0;
+  for (const dirent of fs.readdirSync(previewRoot, { withFileTypes: true })) {
+    if (!dirent.isFile() || !DB_SNAPSHOT_PATTERN.test(dirent.name)) continue;
+
+    const filePath = path.join(previewRoot, dirent.name);
+    const resolved = path.resolve(filePath);
+    if (keep.has(resolved)) continue;
+
+    const bytes = fs.statSync(filePath).size;
+    const entry = {
+      path: filePath,
+      action: "delete-file",
+      reason: "older preview database snapshot superseded by healthy preview start",
+      bytes,
+    };
+    entries.push(entry);
+    reclaimableBytes += bytes;
+    if (options.apply) {
+      fs.rmSync(filePath, { force: true });
+      reclaimedBytes += bytes;
+    }
+  }
+
+  return {
+    status: options.apply ? "applied" : "dry-run",
+    keptDbPaths: [...keep],
+    reclaimableBytes,
+    reclaimedBytes,
+    reclaimable: formatBytes(reclaimableBytes),
+    reclaimed: formatBytes(reclaimedBytes),
+    entries,
   };
 }
 
@@ -490,11 +738,77 @@ function isPortOpen(port) {
 }
 
 function previewPaths(branch) {
-  const root = path.join(PREVIEW_BASE_DIR, slugify(branch));
+  const root = path.join(previewBaseDir(), slugify(branch));
   return {
     root,
     metadata: path.join(root, "metadata.json"),
   };
+}
+
+function previewBaseDir(override = null) {
+  return path.resolve(expandHome(override ?? process.env.MANDIBLE_PREVIEW_BASE_DIR ?? DEFAULT_PREVIEW_BASE_DIR));
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+function readSymlinkTarget(linkPath) {
+  try {
+    const target = fs.readlinkSync(linkPath);
+    return path.isAbsolute(target) ? target : path.resolve(path.dirname(linkPath), target);
+  } catch {
+    return null;
+  }
+}
+
+function readPidFile(filePath) {
+  try {
+    const value = Number.parseInt(fs.readFileSync(filePath, "utf8").trim(), 10);
+    return Number.isInteger(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function directorySize(targetPath) {
+  let total = 0;
+  for (const dirent of fs.readdirSync(targetPath, { withFileTypes: true })) {
+    const entryPath = path.join(targetPath, dirent.name);
+    if (dirent.isDirectory()) {
+      total += directorySize(entryPath);
+    } else if (dirent.isFile()) {
+      total += fs.statSync(entryPath).size;
+    } else if (dirent.isSymbolicLink()) {
+      total += fs.lstatSync(entryPath).size;
+    }
+  }
+  return total;
+}
+
+function formatBytes(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let value = bytes / 1024;
+  let unit = units.shift();
+  while (value >= 1024 && units.length > 0) {
+    value /= 1024;
+    unit = units.shift();
+  }
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
 function run(command, commandArgs, options = {}) {
