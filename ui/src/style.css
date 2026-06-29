@@ -6007,6 +6007,7 @@ tr:hover .work-actions__trigger {
   min-width: 0;
   overflow-y: auto;
   padding: 24px;
+  background: var(--issues-detail-bg);
 }
 
 .artifact-detail {
@@ -6137,9 +6138,14 @@ tr:hover .work-actions__trigger {
 
 .artifact-detail__actions-trigger:hover,
 .artifact-detail__actions-trigger--active,
-.artifact-detail__copy-button:hover,
-.artifact-detail__copy-button:focus-visible {
+.artifact-detail__copy-button:hover {
   background: var(--neutral-alpha-08);
+  color: var(--text-primary);
+}
+
+.artifact-detail__copy-button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
   color: var(--text-primary);
 }
 
@@ -6159,14 +6165,12 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail__actions-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 32;
+  position: fixed;
+  z-index: 80;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  min-width: 170px;
+  width: 190px;
   padding: 4px;
   border: 1px solid var(--neutral-alpha-10);
   border-radius: 8px;
@@ -6277,24 +6281,26 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail__body {
+  position: relative;
   display: grid;
   gap: 18px;
+  min-height: min(560px, calc(100vh - 190px));
+  border-radius: 8px;
+  background: var(--issues-detail-bg);
   transition: filter 160ms ease, opacity 160ms ease;
 }
 
 .artifact-detail__body--metadata-open {
-  filter: blur(2px);
-  opacity: 0.62;
+  overflow: hidden;
 }
 
 .artifact-detail__metadata-modal {
   position: absolute;
-  inset: 86px 0 auto;
+  inset: 0;
   z-index: 20;
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  min-height: min(560px, calc(100vh - 190px));
   padding: 18px;
   background: rgba(5,10,14,0.32);
   backdrop-filter: blur(2px);
@@ -6554,8 +6560,6 @@ code.inbox-detail__meta-value {
   }
 
   .artifact-detail__metadata-modal {
-    inset: 118px 0 auto;
-    min-height: min(520px, calc(100vh - 170px));
     padding: 12px;
   }
 
