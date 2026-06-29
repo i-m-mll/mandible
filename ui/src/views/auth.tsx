@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
+import { html as diff2htmlHtml } from 'diff2html';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -416,7 +417,7 @@ function AuthActionBundle({
   return (
     <section className="auth-action-bundle" aria-label="Deferred auth actions">
       <div className="auth-action-bundle__header">
-        <span className="auth-action-bundle__title">On merge, this request will also</span>
+        <span className="auth-action-bundle__title">On merge...</span>
         <span className="auth-action-bundle__count">{actions.length}</span>
       </div>
       <div className="auth-action-bundle__rows">
@@ -543,7 +544,7 @@ function renderInlineMarkdown(src: string): string {
   return linkifyArtifactRefs(sanitizeInlineHtml(stripped));
 }
 
-type DiffFileSection = { filename: string; hunks: string };
+type DiffFileSection = { filename: string; hunks: string; raw: string };
 
 /** Parse unified diff into per-file sections, stripping noise lines. */
 function parseDiffSections(raw: string): DiffFileSection[] {
@@ -571,7 +572,7 @@ function parseDiffSections(raw: string): DiffFileSection[] {
       if (line.startsWith('rename to')) return false;
       return true;
     });
-    sections.push({ filename, hunks: lines.join('\n') });
+    sections.push({ filename, hunks: lines.join('\n'), raw: trimmed });
   }
   return sections;
 }
@@ -593,6 +594,21 @@ function renderHunksHtml(raw: string): string {
     return esc;
   });
   return `<pre class="diff-content">${escaped.join('\n')}</pre>`;
+}
+
+function renderDiff2Html(raw: string): string | null {
+  if (!raw.trim()) return null;
+  try {
+    const html = diff2htmlHtml(raw, {
+      inputFormat: 'diff',
+      outputFormat: 'line-by-line',
+      drawFileList: false,
+      matching: 'lines',
+    });
+    return sanitizeInlineHtml(html);
+  } catch {
+    return null;
+  }
 }
 
 /** Check if the request's head_branch no longer exists in the repo's known branches. */
@@ -1185,9 +1201,9 @@ function AuthRequestDetail({
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(true);
-  const [showDiff, setShowDiff] = useState(true);
+  const [diffViewActive, setDiffViewActive] = useState(false);
+  const [expandedDiffFiles, setExpandedDiffFiles] = useState<Set<number>>(() => new Set());
   const [showConsole, setShowConsole] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<number>(-1);
   const [editingCommitMsg, setEditingCommitMsg] = useState(false);
   const [editCommitValue, setEditCommitValue] = useState('');
   const [metadataOpen, setMetadataOpen] = useState(false);
@@ -1207,12 +1223,10 @@ function AuthRequestDetail({
   const commitHtml = useMemo(() => commitBody ? renderMarkdown(commitBody) : '', [commitBody]);
   const specHtml = useMemo(() => specContent ? renderMarkdown(specContent) : '', [specContent]);
   const diffSections = useMemo(() => parseDiffSections(diffRaw), [diffRaw]);
-  const diffHtml = useMemo(() => {
-    if (selectedFile === -1) {
-      return renderHunksHtml(diffSections.map((s) => s.hunks).join('\n'));
-    }
-    return renderHunksHtml(diffSections[selectedFile]?.hunks || '');
-  }, [diffSections, selectedFile]);
+  const renderedDiffSections = useMemo(
+    () => diffSections.map((section) => renderDiff2Html(section.raw)),
+    [diffSections],
+  );
 
   const rawConsoleOutput = executionOutput ||
     (typeof request.output === 'string' ? request.output : '');
@@ -1297,6 +1311,7 @@ function AuthRequestDetail({
   const typeMeta = AUTH_TYPE_META[authType];
   const showDiffStats = typeHasDiffStats(authType);
   const hasStats = stats.files != null || stats.additions != null || stats.deletions != null;
+  const hasMeaningfulDiffToggle = showDiffStats && (hasStats || diffRaw.trim().length > 0);
   const statsSummary = showDiffStats && hasStats
     ? `${formatNumber(stats.files ?? 0)} files · +${formatNumber(stats.additions ?? 0)} -${formatNumber(stats.deletions ?? 0)}`
     : null;
@@ -1317,6 +1332,23 @@ function AuthRequestDetail({
   const closeActionsAfter = (callback: () => void) => {
     callback();
     setActionsOpen(false);
+  };
+
+  useEffect(() => {
+    setDiffViewActive(false);
+  }, [fullId]);
+
+  useEffect(() => {
+    setExpandedDiffFiles(new Set(diffSections.map((_, index) => index)));
+  }, [diffSections]);
+
+  const toggleDiffFile = (index: number) => {
+    setExpandedDiffFiles((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) next.delete(index);
+      else next.add(index);
+      return next;
+    });
   };
 
   return (
@@ -1402,8 +1434,22 @@ function AuthRequestDetail({
             )}
           </div>
         </div>
-        {actions && (
+        {(hasMeaningfulDiffToggle || actions) && (
           <div className="auth-detail__aux-header">
+            <div className="auth-detail__aux-left">
+              {hasMeaningfulDiffToggle && (
+                <button
+                  type="button"
+                  className={`auth-detail__diff-toggle${diffViewActive ? ' auth-detail__diff-toggle--active' : ''}`}
+                  aria-label={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
+                  aria-pressed={diffViewActive}
+                  title={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
+                  onClick={() => setDiffViewActive((active) => !active)}
+                >
+                  <DiffIcon />
+                </button>
+              )}
+            </div>
             <div className="auth-detail__action-strip">
               {actions}
             </div>
@@ -1446,161 +1492,153 @@ function AuthRequestDetail({
           </div>
         )}
 
-        {actionBundle}
-
-        <div className="auth-detail__panels">
-          <div className="auth-detail__left-col">
-            <div className="panel">
-              <div className="panel__header">
+        {diffViewActive ? (
+          <section className="auth-detail__diff-view" aria-label="Auth request changes">
+            {diffSections.length > 0 ? (
+              diffSections.map((section, index) => {
+                const expanded = expandedDiffFiles.has(index);
+                const diffHtml = renderedDiffSections[index];
+                return (
+                  <div key={`${section.filename}-${index}`} className="auth-diff-file">
+                    <button
+                      type="button"
+                      className="auth-diff-file__header"
+                      aria-expanded={expanded}
+                      onClick={() => toggleDiffFile(index)}
+                    >
+                      <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
+                        {'\u25B8'}
+                      </span>
+                      <span className="auth-diff-file__path" title={section.filename}>
+                        {section.filename}
+                      </span>
+                    </button>
+                    {expanded && (
+                      <div className="auth-diff-file__body">
+                        {diffHtml ? (
+                          <div
+                            className="auth-diff-file__html"
+                            dangerouslySetInnerHTML={{ __html: diffHtml }}
+                          />
+                        ) : (
+                          <div
+                            className="auth-diff-file__fallback"
+                            dangerouslySetInnerHTML={{ __html: renderHunksHtml(section.hunks) }}
+                          />
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            ) : (
+              <div className="auth-detail__diff-empty">
+                No diff available for this request.
+              </div>
+            )}
+          </section>
+        ) : (
+          <div className="auth-detail__panels">
+            <div className="auth-detail__left-col">
+              <div className="panel">
+                <div className="panel__header">
+                  <button
+                    type="button"
+                    className="panel__toggle"
+                    onClick={() => setShowCommit((prev) => !prev)}
+                  >
+                    <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
+                      {'\u25B8'}
+                    </span>
+                    Commit Message
+                  </button>
+                  {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                    <button
+                      type="button"
+                      className="panel__edit-btn"
+                      onClick={() => {
+                        setEditCommitValue(commitMsg);
+                        setEditingCommitMsg(true);
+                      }}
+                    >
+                      edit
+                    </button>
+                  )}
+                </div>
+                {showCommit && (
+                  editingCommitMsg ? (
+                    <div className="panel__body spec-panel">
+                      <textarea
+                        className="panel__edit-textarea"
+                        value={editCommitValue}
+                        onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
+                        rows={8}
+                      />
+                      <div className="panel__edit-actions">
+                        <button
+                          type="button"
+                          className="panel__edit-save"
+                          onClick={() => {
+                            const id = getAuthId(request);
+                            if (id && onUpdateField) {
+                              void onUpdateField(id, 'commit_message', editCommitValue);
+                            }
+                            setEditingCommitMsg(false);
+                          }}
+                        >
+                          Save
+                        </button>
+                        <button
+                          type="button"
+                          className="panel__edit-cancel"
+                          onClick={() => setEditingCommitMsg(false)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : commitHtml ? (
+                    <div
+                      className="panel__body spec-panel"
+                      dangerouslySetInnerHTML={{ __html: commitHtml }}
+                    />
+                  ) : (
+                    <div className="panel__body spec-panel spec-panel--empty">
+                      No commit message provided. Merge will use git's default message.
+                    </div>
+                  )
+                )}
+              </div>
+              <div className="panel">
                 <button
                   type="button"
                   className="panel__toggle"
-                  onClick={() => setShowCommit((prev) => !prev)}
+                  onClick={() => setShowSpec((prev) => !prev)}
                 >
-                  <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
+                  <span className={`panel__chevron${showSpec ? ' panel__chevron--open' : ''}`}>
                     {'\u25B8'}
                   </span>
-                  Commit Message
+                  Specification
                 </button>
-                {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
-                  <button
-                    type="button"
-                    className="panel__edit-btn"
-                    onClick={() => {
-                      setEditCommitValue(commitMsg);
-                      setEditingCommitMsg(true);
-                    }}
-                  >
-                    edit
-                  </button>
+                {showSpec && (
+                  specHtml ? (
+                    <div
+                      className="panel__body spec-panel"
+                      dangerouslySetInnerHTML={{ __html: specHtml }}
+                    />
+                  ) : (
+                    <div className="panel__body spec-panel spec-panel--empty">
+                      No specification attached.
+                    </div>
+                  )
                 )}
               </div>
-              {showCommit && (
-                editingCommitMsg ? (
-                  <div className="panel__body spec-panel">
-                    <textarea
-                      className="panel__edit-textarea"
-                      value={editCommitValue}
-                      onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
-                      rows={8}
-                    />
-                    <div className="panel__edit-actions">
-                      <button
-                        type="button"
-                        className="panel__edit-save"
-                        onClick={() => {
-                          const id = getAuthId(request);
-                          if (id && onUpdateField) {
-                            void onUpdateField(id, 'commit_message', editCommitValue);
-                          }
-                          setEditingCommitMsg(false);
-                        }}
-                      >
-                        Save
-                      </button>
-                      <button
-                        type="button"
-                        className="panel__edit-cancel"
-                        onClick={() => setEditingCommitMsg(false)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                ) : commitHtml ? (
-                  <div
-                    className="panel__body spec-panel"
-                    dangerouslySetInnerHTML={{ __html: commitHtml }}
-                  />
-                ) : (
-                  <div className="panel__body spec-panel spec-panel--empty">
-                    No commit message provided. Merge will use git's default message.
-                  </div>
-                )
-              )}
             </div>
-            <div className="panel">
-              <button
-                type="button"
-                className="panel__toggle"
-                onClick={() => setShowSpec((prev) => !prev)}
-              >
-                <span className={`panel__chevron${showSpec ? ' panel__chevron--open' : ''}`}>
-                  {'\u25B8'}
-                </span>
-                Specification
-              </button>
-              {showSpec && (
-                specHtml ? (
-                  <div
-                    className="panel__body spec-panel"
-                    dangerouslySetInnerHTML={{ __html: specHtml }}
-                  />
-                ) : (
-                  <div className="panel__body spec-panel spec-panel--empty">
-                    No specification attached.
-                  </div>
-                )
-              )}
+            <div className="auth-detail__right-col">
+              {actionBundle}
             </div>
           </div>
-          <div className="panel auth-detail__right-col">
-            <button
-              type="button"
-              className="panel__toggle"
-              onClick={() => setShowDiff((prev) => !prev)}
-            >
-              <span className={`panel__chevron${showDiff ? ' panel__chevron--open' : ''}`}>
-                {'\u25B8'}
-              </span>
-              {showDiffStats ? 'Changes' : 'Details'}
-            </button>
-            {showDiff && (
-              showDiffStats ? (
-                diffSections.length > 0 ? (
-                  <div className="panel__body diff-panel">
-                    <div className="diff-file-tabs">
-                      {diffSections.length > 1 && (
-                        <button
-                          className={`diff-file-tab${selectedFile === -1 ? ' diff-file-tab--active' : ''}`}
-                          onClick={() => setSelectedFile(-1)}
-                        >All</button>
-                      )}
-                      {diffSections.map((section, i) => (
-                        <button
-                          key={i}
-                          className={`diff-file-tab${selectedFile === i ? ' diff-file-tab--active' : ''}`}
-                          onClick={() => setSelectedFile(i)}
-                          title={section.filename}
-                        >
-                          {section.filename.split('/').pop()}
-                        </button>
-                      ))}
-                    </div>
-                    <div dangerouslySetInnerHTML={{ __html: diffHtml }} />
-                  </div>
-                ) : (
-                  <div className="panel__body diff-panel spec-panel--empty">
-                    No diff available.
-                  </div>
-                )
-              ) : (
-                <div className="panel__body spec-panel">
-                  <p className="type-detail-summary">
-                    <span className={`type-badge ${typeMeta.cssClass}`}>{typeMeta.label}</span>
-                    {' '}{getAuthTitle(request)}
-                  </p>
-                  {specContent && (
-                    <div dangerouslySetInnerHTML={{ __html: specHtml }} />
-                  )}
-                  {!specContent && (
-                    <p className="text-muted">No additional details for this request type.</p>
-                  )}
-                </div>
-              )
-            )}
-          </div>
-        </div>
+        )}
 
         {showConsoleToggle && (
           <div className="console-output">
@@ -1686,6 +1724,14 @@ function HorizontalDotsIcon(): JSX.Element {
       <circle cx="5" cy="12" r="1.5" />
       <circle cx="12" cy="12" r="1.5" />
       <circle cx="19" cy="12" r="1.5" />
+    </svg>
+  );
+}
+
+function DiffIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M7 4h10M7 20h10M5 8h8M5 12h14M11 16h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }

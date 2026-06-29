@@ -875,8 +875,19 @@ describe('AuthQueueView', () => {
             created_at: 1,
             approval_source: 'manual',
             approval_lease_id: 'lease-123',
+            stats: { files: 1, additions: 1, deletions: 1 },
             commit_message: 'Structured auth detail commit',
             spec_content: 'Structured auth detail specification',
+            diff_summary: [
+              'diff --git a/ui/src/views/auth.tsx b/ui/src/views/auth.tsx',
+              'index 1111111..2222222 100644',
+              '--- a/ui/src/views/auth.tsx',
+              '+++ b/ui/src/views/auth.tsx',
+              '@@ -1,2 +1,2 @@',
+              ' old line',
+              '-removed line',
+              '+added line',
+            ].join('\n'),
           },
         ],
         outputs: {},
@@ -913,9 +924,16 @@ describe('AuthQueueView', () => {
     expect(statusPill?.parentElement).toBe(eyebrow);
     expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
     expect(document.querySelector('.auth-detail__aux-header .auth-detail__action-strip .auth-actions')).toBeTruthy();
+    const diffToggle = screen.getByRole('button', { name: 'Show changes diff' });
+    expect(diffToggle.closest('.auth-detail__aux-header')).toBeTruthy();
+    expect(diffToggle.getAttribute('aria-pressed')).toBe('false');
+    expect(document.querySelector('.auth-detail__aux-left')?.contains(diffToggle)).toBe(true);
     expect(document.querySelector('.auth-detail__action-strip .auth-actions')).toBeTruthy();
     expect(document.querySelector('.auth-detail__header-actions .auth-actions')).toBeNull();
     expect(document.querySelector('.auth-detail__header-primary .auth-actions')).toBeNull();
+    expect(document.querySelector('.auth-detail__panels')).toBeTruthy();
+    expect(screen.queryByLabelText('Auth request changes')).toBeNull();
+    expect(screen.queryByText('Changes')).toBeNull();
     expect(screen.getByText('Structured auth detail specification')).toBeTruthy();
     const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
     expect(commitPanel?.querySelector('.panel__header > .panel__toggle')?.textContent).toContain('Commit Message');
@@ -924,6 +942,19 @@ describe('AuthQueueView', () => {
 
     fireEvent.click(copyButton);
     expect(writeText).toHaveBeenCalledWith('auth:req-stru');
+
+    fireEvent.click(diffToggle);
+    const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
+    expect(activeDiffToggle.getAttribute('aria-pressed')).toBe('true');
+    expect(document.querySelector('.auth-detail__panels')).toBeNull();
+    const diffRegion = screen.getByLabelText('Auth request changes');
+    expect(diffRegion).toBeTruthy();
+    expect(screen.getAllByText('ui/src/views/auth.tsx').length).toBeGreaterThan(0);
+    expect(diffRegion.textContent).toContain('added line');
+    expect(screen.queryByText('Commit Message')).toBeNull();
+    fireEvent.click(activeDiffToggle);
+    expect(screen.getByRole('button', { name: 'Show changes diff' })).toBeTruthy();
+    expect(document.querySelector('.auth-detail__panels')).toBeTruthy();
 
     const detailScroller = document.querySelector('.auth-detail') as HTMLElement | null;
     fireEvent.click(screen.getByRole('button', { name: 'Auth actions' }));
@@ -934,6 +965,37 @@ describe('AuthQueueView', () => {
     expect(document.querySelector('.auth-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Approval source')).toBeTruthy();
     expect(within(metadataDialog).getByText('lease-123')).toBeTruthy();
+  });
+
+  it('shows a clear diff empty state when diff stats exist without diff text', () => {
+    render(
+      h(AuthQueueView, {
+        queue: [
+          {
+            id: 'req-empty-diff',
+            title: 'Empty diff auth',
+            type: 'merge',
+            repo: 'mandible',
+            base_branch: 'main',
+            head_branch: 'feature/empty-diff',
+            status: 'pending',
+            stats: { files: 1, additions: 0, deletions: 0 },
+            commit_message: 'Empty diff commit',
+            spec_content: 'Empty diff specification',
+          },
+        ],
+        outputs: {},
+        selectedAuthId: 'req-empty-diff',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    expect(screen.queryByLabelText('Auth request changes')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show changes diff' }));
+    expect(screen.getByLabelText('Auth request changes')).toBeTruthy();
+    expect(screen.getByText('No diff available for this request.')).toBeTruthy();
+    expect(document.querySelector('.auth-detail__panels')).toBeNull();
   });
 
   it('renders deferred action badges and bundle details', async () => {
@@ -967,6 +1029,8 @@ describe('AuthQueueView', () => {
 
     expect(screen.getByTitle('4 deferred actions')).toBeTruthy();
     expect(screen.getByLabelText('Deferred auth actions')).toBeTruthy();
+    expect(screen.getByText('On merge...')).toBeTruthy();
+    expect(screen.queryByText('On merge, this request will also')).toBeNull();
     expect(screen.getByText('Close issue')).toBeTruthy();
     expect(screen.getByText('Closeout comment body')).toBeTruthy();
     expect(screen.getByText('Add merged')).toBeTruthy();
@@ -2972,7 +3036,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
     expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
-    expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
+    expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
+    expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__header\s*\{[^}]*background:\s*#ffffff;[^}]*box-shadow:\s*none;/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
