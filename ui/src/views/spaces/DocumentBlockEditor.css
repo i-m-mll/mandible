@@ -177,22 +177,6 @@
   color: var(--danger, #c0392b);
 }
 
-.spaces-block-editor__empty-author {
-  display: flex;
-  min-height: 12rem;
-  align-items: center;
-  justify-content: center;
-}
-
-.spaces-block-editor__empty-start {
-  font: inherit;
-  border: 1px solid var(--border, rgba(127, 127, 127, 0.3));
-  background: var(--panel, rgba(127, 127, 127, 0.05));
-  border-radius: 6px;
-  padding: 0.45rem 0.8rem;
-  cursor: pointer;
-}
-
 /* --- per-block edit controls --------------------------------------------- */
 
 .spaces-block-editor__list {
