@@ -151,6 +151,12 @@ export function LedgerIssueDetail({
             <span>{detail.project.repo_name ?? detail.project.display_name}</span>
             <code>{detail.display_id}</code>
             <CopyIssueRefButton detail={detail} />
+            <StatusPill
+              status={detail.status}
+              resolution={detail.resolution}
+              linkedAuth={resolvingAuth}
+              onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
+            />
           </div>
           <div className="ledger-issue-detail__title-row">
             <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
@@ -189,17 +195,11 @@ export function LedgerIssueDetail({
             )}
           </div>
         </div>
-        <div className="ledger-issue-detail__header-actions">
-          <StatusPill
-            status={detail.status}
-            resolution={detail.resolution}
-            linkedAuth={resolvingAuth}
-            onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
-          />
-          {detail.sync.state !== 'clean' && (
+        {detail.sync.state !== 'clean' && (
+          <div className="ledger-issue-detail__header-actions">
             <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
-          )}
-        </div>
+          </div>
+        )}
       </header>
       <DetailPaneModal
         open={metadataOpen}

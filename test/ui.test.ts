@@ -1507,6 +1507,28 @@ describe('API contract helpers', () => {
 });
 
 describe('LedgerIssueDetail', () => {
+  it('renders issue status in the top metadata row after the copy affordance', () => {
+    const detail = issueDetailProjection({
+      displayId: 'abc123',
+      title: 'Status placement',
+    });
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    const eyebrow = document.querySelector('.ledger-issue-detail__eyebrow') as HTMLElement | null;
+    const copyButton = screen.getByRole('button', { name: 'Copy mandible/abc123' });
+    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
+    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+
+    expect(eyebrow).toBeTruthy();
+    expect(statusPill?.textContent).toBe('open');
+    expect(copyButton.parentElement).toBe(eyebrow);
+    expect(statusPill?.parentElement).toBe(eyebrow);
+    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(document.querySelector('.ledger-issue-detail__title-row .status-pill')).toBeNull();
+    expect(document.querySelector('.ledger-issue-detail__header-actions .status-pill')).toBeNull();
+  });
+
   it('renders ledger issue evidence and sanitizes Markdown HTML', () => {
     const detail = {
       id: 'issue_1',
