@@ -28,6 +28,13 @@ type IssueMetadataSection = {
   title: string;
   rows: IssueMetadataRow[];
 };
+const ISSUE_METADATA_SCROLL_OWNER_SELECTORS = [
+  '.issues-detail',
+  '.graph-detail-pane',
+  '.space-canvas__inspector',
+  '.spaces-block-editor__inspector',
+  '.ledger-issue-detail',
+];
 type RenderTimelineEntry =
   | LedgerIssueTimelineEntry
   | {
@@ -201,13 +208,7 @@ export function LedgerIssueDetail({
         title="Issue metadata"
         closeLabel="Close issue metadata"
         excludeAboveRef={headerRef}
-        scrollOwnerSelector={[
-          '.issues-detail',
-          '.graph-detail-pane',
-          '.space-canvas__inspector',
-          '.spaces-block-editor__inspector',
-          '.ledger-issue-detail',
-        ]}
+        scrollOwnerSelector={ISSUE_METADATA_SCROLL_OWNER_SELECTORS}
         scrollLockClassName="issues-detail--metadata-open"
         className="ledger-issue-detail__metadata-modal"
         panelClassName="ledger-issue-detail__metadata-panel"
