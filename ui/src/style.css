@@ -4734,6 +4734,8 @@ tr:last-child td {
 
 /* Auth detail panel */
 .auth-detail {
+  position: relative;
+  z-index: 3;
   flex: 1;
   overflow-y: auto;
   padding: 24px;
