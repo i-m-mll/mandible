@@ -2953,6 +2953,14 @@ describe('ArtifactsView', () => {
     expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);
   });
 
+  it('keeps auth light detail surfaces visually separated by CSS contract', () => {
+    const css = readFileSync('ui/src/style.css', 'utf8');
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__header\s*\{[^}]*background:\s*#ffffff;[^}]*box-shadow:\s*none;/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
+  });
+
   it('keeps artifact facet options available after selecting a facet value', async () => {
     const makeArtifact = (
       hashChar: string,
