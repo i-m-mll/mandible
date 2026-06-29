@@ -21,6 +21,7 @@ import { artifactDetailHref, compactArtifactRef, displayResourceRef, seriesDetai
 import { renderDocumentText } from './spaces/DocumentRenderer';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
+import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -618,11 +619,9 @@ export function ArtifactDetail({
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [actionsMenuStyle, setActionsMenuStyle] = useState<{ top: number; left: number } | null>(null);
-  const [metadataOverlayBounds, setMetadataOverlayBounds] = useState<{ top: number; right: number; bottom: number; left: number } | null>(null);
   const actionsRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
-  const metadataPanelRef = useRef<HTMLDivElement>(null);
   // Resolve a project scope for the Add-to-Space picker. Artifacts are not
   // project-scoped in the data model, but an issue-linked artifact (the common
   // case) lets us derive the owning project from that issue. When no issue link
@@ -678,24 +677,6 @@ export function ArtifactDetail({
     });
   }, []);
 
-  const updateMetadataOverlayBounds = useCallback(() => {
-    const header = headerRef.current;
-    const detailScroller = header?.closest('.artifacts-detail');
-    if (!header || !detailScroller) {
-      setMetadataOverlayBounds(null);
-      return;
-    }
-    const headerRect = header.getBoundingClientRect();
-    const scrollerRect = detailScroller.getBoundingClientRect();
-    const top = Math.min(scrollerRect.bottom, Math.max(scrollerRect.top, headerRect.bottom));
-    setMetadataOverlayBounds({
-      top: Math.round(top),
-      right: Math.round(Math.max(0, window.innerWidth - scrollerRect.right)),
-      bottom: Math.round(Math.max(0, window.innerHeight - scrollerRect.bottom)),
-      left: Math.round(Math.max(0, scrollerRect.left)),
-    });
-  }, []);
-
   useEffect(() => {
     if (!actionsOpen) return undefined;
     updateActionsMenuPosition();
@@ -739,30 +720,6 @@ export function ArtifactDetail({
   }, [versionHistoryOpen, onCloseVersionHistory]);
 
   useEffect(() => {
-    if (!metadataOpen) return undefined;
-    updateMetadataOverlayBounds();
-    const updateOverlayBounds = () => updateMetadataOverlayBounds();
-    const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = metadataPanelRef.current;
-      if (!node || node.contains(event.target as Node)) return;
-      setMetadataOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMetadataOpen(false);
-    };
-    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
-    document.addEventListener('keydown', closeOnEscape, true);
-    window.addEventListener('resize', updateOverlayBounds);
-    window.addEventListener('scroll', updateOverlayBounds, true);
-    return () => {
-      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
-      document.removeEventListener('keydown', closeOnEscape, true);
-      window.removeEventListener('resize', updateOverlayBounds);
-      window.removeEventListener('scroll', updateOverlayBounds, true);
-    };
-  }, [metadataOpen, updateMetadataOverlayBounds]);
-
-  useEffect(() => {
     onMetadataOpenChange?.(metadataOpen);
     return () => {
       if (metadataOpen) onMetadataOpenChange?.(false);
@@ -773,20 +730,6 @@ export function ArtifactDetail({
     callback();
     setActionsOpen(false);
   };
-
-  const openMetadata = () => {
-    updateMetadataOverlayBounds();
-    setMetadataOpen(true);
-  };
-
-  const metadataOverlayStyle = metadataOverlayBounds
-    ? {
-        '--artifact-detail-metadata-top': `${metadataOverlayBounds.top}px`,
-        '--artifact-detail-metadata-right': `${metadataOverlayBounds.right}px`,
-        '--artifact-detail-metadata-bottom': `${metadataOverlayBounds.bottom}px`,
-        '--artifact-detail-metadata-left': `${metadataOverlayBounds.left}px`,
-      } as JSX.CSSProperties
-    : undefined;
 
   return (
     <article className="artifact-detail">
@@ -851,7 +794,7 @@ export function ArtifactDetail({
                   type="button"
                   className="artifact-detail__actions-item"
                   role="menuitem"
-                  onClick={() => closeActionsAfter(openMetadata)}
+                  onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
                 >
                   Show metadata
                 </button>
@@ -983,49 +926,41 @@ export function ArtifactDetail({
           )}
         </div>
         {metadataOpen && (
-          <div
+          <DetailPaneModal
+            open={metadataOpen}
+            onClose={() => setMetadataOpen(false)}
+            titleId="artifact-metadata-title"
+            title="Artifact metadata"
+            closeLabel="Close artifact metadata"
+            excludeAboveRef={headerRef}
+            scrollOwnerSelector=".artifacts-detail"
+            scrollLockClassName="artifacts-detail--metadata-open"
             className="artifact-detail__metadata-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="artifact-metadata-title"
-            style={metadataOverlayStyle}
+            panelClassName="artifact-detail__metadata-panel"
           >
-            <div className="artifact-detail__metadata-panel" ref={metadataPanelRef}>
-              <div className="artifact-detail__modal-header">
-                <h3 id="artifact-metadata-title">Artifact metadata</h3>
-                <button
-                  type="button"
-                  className="artifact-detail__modal-close"
-                  aria-label="Close artifact metadata"
-                  onClick={() => setMetadataOpen(false)}
-                >
-                  <CloseIcon />
-                </button>
-              </div>
+            <section className="artifact-detail__section">
+              <h3>Identity</h3>
+              <MetadataKeyValue rows={identityRows} />
+            </section>
+            <section className="artifact-detail__section">
+              <h3>Custody</h3>
+              <MetadataKeyValue rows={custodyRows} />
+            </section>
+            {locatorRows.length > 0 && (
               <section className="artifact-detail__section">
-                <h3>Identity</h3>
-                <MetadataKeyValue rows={identityRows} />
+                <h3>Locators</h3>
+                <div className="artifact-detail__list">
+                  {locatorRows.map((alias) => (
+                    <div key={alias.id} className="artifact-detail__list-item">
+                      <code>{alias.normalized_ref}</code>
+                      <span>{alias.scheme}</span>
+                      <span>{alias.resolution_status}</span>
+                    </div>
+                  ))}
+                </div>
               </section>
-              <section className="artifact-detail__section">
-                <h3>Custody</h3>
-                <MetadataKeyValue rows={custodyRows} />
-              </section>
-              {locatorRows.length > 0 && (
-                <section className="artifact-detail__section">
-                  <h3>Locators</h3>
-                  <div className="artifact-detail__list">
-                    {locatorRows.map((alias) => (
-                      <div key={alias.id} className="artifact-detail__list-item">
-                        <code>{alias.normalized_ref}</code>
-                        <span>{alias.scheme}</span>
-                        <span>{alias.resolution_status}</span>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              )}
-            </div>
-          </div>
+            )}
+          </DetailPaneModal>
         )}
       </div>
     </article>

@@ -6014,7 +6014,8 @@ tr:hover .work-actions__trigger {
   background: var(--issues-detail-bg);
 }
 
-.artifacts-detail--metadata-open {
+.artifacts-detail--metadata-open,
+.issues-detail--metadata-open {
   overflow: hidden;
 }
 
@@ -6247,21 +6248,24 @@ tr:hover .work-actions__trigger {
   padding: 14px;
 }
 
-.artifact-detail__modal-header {
+.artifact-detail__modal-header,
+.detail-pane-modal__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
 }
 
-.artifact-detail__modal-header h3 {
+.artifact-detail__modal-header h3,
+.detail-pane-modal__header h3 {
   margin: 0;
   color: var(--text-primary);
   font-size: 15px;
   line-height: 1.3;
 }
 
-.artifact-detail__modal-close {
+.artifact-detail__modal-close,
+.detail-pane-modal__close {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6274,12 +6278,14 @@ tr:hover .work-actions__trigger {
   cursor: pointer;
 }
 
-.artifact-detail__modal-close:hover {
+.artifact-detail__modal-close:hover,
+.detail-pane-modal__close:hover {
   background: var(--neutral-alpha-08);
   color: var(--text-primary);
 }
 
-.artifact-detail__modal-close svg {
+.artifact-detail__modal-close svg,
+.detail-pane-modal__close svg {
   width: 18px;
   height: 18px;
   fill: none;
@@ -6315,12 +6321,12 @@ tr:hover .work-actions__trigger {
   transition: filter 160ms ease, opacity 160ms ease;
 }
 
-.artifact-detail__metadata-modal {
+.detail-pane-modal {
   position: fixed;
-  top: var(--artifact-detail-metadata-top);
-  right: var(--artifact-detail-metadata-right);
-  bottom: var(--artifact-detail-metadata-bottom);
-  left: var(--artifact-detail-metadata-left);
+  top: var(--detail-pane-modal-top);
+  right: var(--detail-pane-modal-right);
+  bottom: var(--detail-pane-modal-bottom);
+  left: var(--detail-pane-modal-left);
   z-index: 20;
   display: flex;
   align-items: flex-start;
@@ -6331,6 +6337,7 @@ tr:hover .work-actions__trigger {
   box-sizing: border-box;
 }
 
+.detail-pane-modal__panel,
 .artifact-detail__metadata-panel {
   display: grid;
   gap: 14px;
@@ -6588,7 +6595,7 @@ code.inbox-detail__meta-value {
     justify-content: flex-start;
   }
 
-  .artifact-detail__metadata-modal {
+  .detail-pane-modal {
     padding: 12px;
   }
 
@@ -13985,6 +13992,10 @@ button.graph-detail-pane__edge:not(:disabled):hover code {
 
 .issues-detail .ledger-issue-detail > :not(.ledger-issue-detail__header) {
   max-width: 720px;
+}
+
+.issues-detail .ledger-issue-detail > .detail-pane-modal {
+  max-width: none;
 }
 
 .ledger-issue-detail__heading {

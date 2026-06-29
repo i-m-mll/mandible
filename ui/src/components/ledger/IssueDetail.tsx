@@ -20,8 +20,21 @@ import type {
   LedgerIssueTimelineEntry,
 } from '../../api';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
+import { DetailPaneModal } from '../shared/DetailPaneModal';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
+type IssueMetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
+type IssueMetadataSection = {
+  title: string;
+  rows: IssueMetadataRow[];
+};
+const ISSUE_METADATA_SCROLL_OWNER_SELECTORS = [
+  '.issues-detail',
+  '.graph-detail-pane',
+  '.space-canvas__inspector',
+  '.spaces-block-editor__inspector',
+  '.ledger-issue-detail',
+];
 type RenderTimelineEntry =
   | LedgerIssueTimelineEntry
   | {
@@ -69,9 +82,11 @@ export function LedgerIssueDetail({
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [metadataOpen, setMetadataOpen] = useState(false);
   const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
@@ -86,15 +101,7 @@ export function LedgerIssueDetail({
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
-  const hasIssueActions = Boolean(
-    (!isInitialDetail && liveSession) ||
-    (!isInitialDetail && onStartAgent) ||
-    onSetStatus ||
-    onAddComment ||
-    onAddToSpace ||
-    detail.auth_requests.length > 0 ||
-    (detail.labels.includes('umbrella') && onShowChildren)
-  );
+  const hasIssueActions = true;
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
     : detail.sync.state === 'pending'
@@ -138,15 +145,12 @@ export function LedgerIssueDetail({
       className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}
       aria-busy={hydrating ? 'true' : 'false'}
     >
-      <header className="ledger-issue-detail__header">
+      <header className="ledger-issue-detail__header" ref={headerRef}>
         <div className="ledger-issue-detail__heading">
           <div className="ledger-issue-detail__eyebrow">
             <span>{detail.project.repo_name ?? detail.project.display_name}</span>
             <code>{detail.display_id}</code>
             <CopyIssueRefButton detail={detail} />
-            <MetadataDisclosure label="Issue metadata">
-              <MetadataRows rows={issueMetadataRows(detail)} />
-            </MetadataDisclosure>
           </div>
           <div className="ledger-issue-detail__title-row">
             <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
@@ -164,6 +168,7 @@ export function LedgerIssueDetail({
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
                 onAddToSpace={onAddToSpace}
+                onShowMetadata={() => setMetadataOpen(true)}
                 onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
                 onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
               />
@@ -196,6 +201,20 @@ export function LedgerIssueDetail({
           )}
         </div>
       </header>
+      <DetailPaneModal
+        open={metadataOpen}
+        onClose={() => setMetadataOpen(false)}
+        titleId="issue-metadata-title"
+        title="Issue metadata"
+        closeLabel="Close issue metadata"
+        excludeAboveRef={headerRef}
+        scrollOwnerSelector={ISSUE_METADATA_SCROLL_OWNER_SELECTORS}
+        scrollLockClassName="issues-detail--metadata-open"
+        className="ledger-issue-detail__metadata-modal"
+        panelClassName="ledger-issue-detail__metadata-panel"
+      >
+        <IssueMetadataContent detail={detail} />
+      </DetailPaneModal>
 
       <section className="ledger-issue-detail__section">
         <div className="ledger-comment-list ledger-timeline-list">
@@ -382,6 +401,7 @@ function IssueActionsMenu({
   onSetStatus,
   onAddComment,
   onAddToSpace,
+  onShowMetadata,
   onShowAuthEvidence,
   onShowChildren,
 }: {
@@ -397,6 +417,7 @@ function IssueActionsMenu({
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
   onAddToSpace?: () => void;
+  onShowMetadata: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
@@ -464,6 +485,14 @@ function IssueActionsMenu({
               Add to Space
             </button>
           )}
+          <button
+            type="button"
+            className="ledger-issue-actions-menu__item"
+            role="menuitem"
+            onClick={() => closeAfter(onShowMetadata)}
+          >
+            Show metadata
+          </button>
           {onShowChildren && (
             <button
               type="button"
@@ -812,6 +841,44 @@ function MetadataRows({ rows }: { rows: Array<[string, string]> }): JSX.Element 
   );
 }
 
+function IssueMetadataContent({ detail }: { detail: LedgerIssueDetailProjection }): JSX.Element {
+  const sections = issueMetadataSections(detail);
+  return (
+    <>
+      {sections.map((section) => (
+        <section key={section.title} className="artifact-detail__section ledger-issue-detail__metadata-section">
+          <h3>{section.title}</h3>
+          <IssueMetadataKeyValue rows={section.rows} />
+        </section>
+      ))}
+    </>
+  );
+}
+
+function IssueMetadataKeyValue({ rows }: { rows: IssueMetadataRow[] }): JSX.Element {
+  return (
+    <div className="artifact-detail__kv ledger-issue-detail__metadata-kv">
+      {rows.filter(([, value]) => value).map(([key, value, copyable, copyValue]) => (
+        <div key={key}>
+          <span>{key}</span>
+          {copyable ? (
+            <button
+              type="button"
+              className="artifact-detail__copy-value"
+              onClick={() => void copyText(copyValue ?? value)}
+              title={`Copy ${key}`}
+            >
+              <code>{value}</code>
+            </button>
+          ) : (
+            <code>{value}</code>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RelationshipList({
   relationships,
   onOpenEntity,
@@ -1033,6 +1100,29 @@ function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, 
   if (alternateAliases.length > 0) rows.push(['Alternate refs', alternateAliases.join(', ')]);
   if (detail.sync.state !== 'clean') rows.push(['Sync', syncLabel(detail.sync.state)]);
   return rows.filter(([, value]) => Boolean(value));
+}
+
+function issueMetadataSections(detail: LedgerIssueDetailProjection): IssueMetadataSection[] {
+  const sourceRows = issueMetadataRows(detail);
+  const copyable = new Set(['Reference', 'Canonical ID', 'Alternate refs']);
+  const rowsByKey = new Map(sourceRows.map(([key, value]) => [
+    key,
+    [key, value, copyable.has(key), copyValueForIssueMetadata(key, value)] as IssueMetadataRow,
+  ]));
+  const pullRows = (keys: string[]) => keys
+    .map((key) => rowsByKey.get(key))
+    .filter((row): row is IssueMetadataRow => Boolean(row));
+  const sections: IssueMetadataSection[] = [
+    { title: 'Identity', rows: pullRows(['Reference', 'Canonical ID', 'Alternate refs', 'Project']) },
+    { title: 'Status', rows: pullRows(['Kind', 'Priority', 'Sync']) },
+    { title: 'Provenance', rows: pullRows(['Source', 'Created', 'Updated', 'Closed']) },
+  ];
+  return sections.filter((section) => section.rows.length > 0);
+}
+
+function copyValueForIssueMetadata(key: string, value: string): string {
+  if (key !== 'Alternate refs') return value;
+  return value.split(',')[0]?.trim() || value;
 }
 
 function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body' }>): Array<[string, string]> {
