@@ -385,6 +385,10 @@
   background: transparent;
 }
 
+:root[data-theme='light'] .artifact-preview.spec-panel {
+  background: var(--bg-card);
+}
+
 :root[data-theme='light'] .react-flow__minimap {
   background: var(--surface-popover);
   border-color: var(--neutral-alpha-12);
@@ -6468,6 +6472,10 @@ code.inbox-detail__meta-value {
   border: 1px solid var(--neutral-alpha-07);
   border-radius: 8px;
   padding: 14px;
+  background: var(--bg-card);
+}
+
+.artifact-preview.spec-panel {
   background: var(--bg-card);
 }
 

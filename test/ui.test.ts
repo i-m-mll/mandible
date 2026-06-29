@@ -2641,6 +2641,8 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.artifact-detail__metadata-modal\s*\{[^}]*position:\s*absolute;[^}]*inset:\s*0;[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*100%;[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-detail__copy-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s);
     expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);
   });
