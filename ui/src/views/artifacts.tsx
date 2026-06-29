@@ -60,6 +60,8 @@ type BundleMemberPreview = {
   order: number;
 };
 
+type MetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
+
 type ArtifactPreview =
   | { kind: 'json' | 'markdown' | 'text' | 'html' | 'empty'; value: string }
   | { kind: 'binary'; value: string }
@@ -112,6 +114,9 @@ export function ArtifactsView({
   const facetRequestIdRef = useRef(0);
   const versionsRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
+  const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
+    initialSeriesRef ? { seriesRef: normalizeSeriesRef(initialSeriesRef), versionNo: initialVersionNo } : null,
+  );
 
   useEffect(() => {
     setFilters((current) => {
@@ -280,13 +285,16 @@ export function ArtifactsView({
     const lastWritten = lastWrittenHashRef.current;
     if (lastWritten?.seriesRef === nextSeriesRef && lastWritten.versionNo === nextVersionNo) {
       lastWrittenHashRef.current = null;
+      lastAppliedInitialSeriesRef.current = { seriesRef: nextSeriesRef, versionNo: nextVersionNo };
       return;
     }
-    if (selectedSeriesRef === nextSeriesRef && selectedVersionNo === nextVersionNo) return;
+    const lastApplied = lastAppliedInitialSeriesRef.current;
+    if (lastApplied?.seriesRef === nextSeriesRef && lastApplied.versionNo === nextVersionNo) return;
+    lastAppliedInitialSeriesRef.current = { seriesRef: nextSeriesRef, versionNo: nextVersionNo };
     setSelectedSeriesRef(nextSeriesRef);
     setSelectedVersionNo(nextVersionNo);
     setResolution(null);
-  }, [initialSeriesRef, initialVersionNo, selectedSeriesRef, selectedVersionNo]);
+  }, [initialSeriesRef, initialVersionNo]);
 
   useEffect(() => {
     if (!selectedSeriesRef) {
@@ -353,7 +361,6 @@ export function ArtifactsView({
     let cancelled = false;
     setContentLoading(true);
     setContentError(null);
-    setArtifactContent(null);
     getArtifactContent(selectedArtifact.id)
       .then((content) => {
         if (!cancelled) setArtifactContent(content);
@@ -397,8 +404,10 @@ export function ArtifactsView({
 
   const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
   const selectedVersion = useMemo(() => (
-    versionHistory?.versions.find((version) => version.artifact_id === selectedArtifactId) ?? null
-  ), [selectedArtifactId, versionHistory]);
+    selectedVersionNo === null
+      ? versionHistory?.versions.find((version) => version.artifact_id === selectedArtifactId) ?? versionHistory?.versions[0] ?? null
+      : versionHistory?.versions.find((version) => version.version_no === selectedVersionNo) ?? null
+  ), [selectedArtifactId, selectedVersionNo, versionHistory]);
   const selectedSeries = useMemo(() => (
     series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
   ), [selectedSeriesRef, series]);
@@ -419,7 +428,6 @@ export function ArtifactsView({
       ? versionHistory?.versions[0] ?? null
       : versionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
     setSelectedArtifactId(version?.artifact_id ?? null);
-    setSelectedArtifact(null);
     if (!selectedSeriesRef) return;
     writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
@@ -492,11 +500,8 @@ export function ArtifactsView({
                 >
                   <span className="artifacts-sidebar__name">{seriesTitle(entry)}</span>
                   <span className="artifacts-sidebar__meta">
-                    <span>{seriesSidebarLocation(entry)}</span>
-                    <em>
-                      {entry.latest_version ? `v${entry.latest_version.version_no}` : 'no versions'}
-                      {entry.version_count > 1 ? ` · ${entry.version_count} versions` : ''}
-                    </em>
+                    <span>{shortSeriesId(seriesRef(entry))}</span>
+                    {entry.latest_artifact?.role ? <em>{entry.latest_artifact.role}</em> : null}
                   </span>
                 </button>
               ))}
@@ -607,8 +612,10 @@ export function ArtifactDetail({
   const preview = content ? artifactPreview(content) : null;
   const [actionsOpen, setActionsOpen] = useState(false);
   const [spacePickerOpen, setSpacePickerOpen] = useState(false);
+  const [metadataOpen, setMetadataOpen] = useState(false);
   const actionsRef = useRef<HTMLDivElement>(null);
   const historyPanelRef = useRef<HTMLDivElement>(null);
+  const metadataPanelRef = useRef<HTMLDivElement>(null);
   // Resolve a project scope for the Add-to-Space picker. Artifacts are not
   // project-scoped in the data model, but an issue-linked artifact (the common
   // case) lets us derive the owning project from that issue. When no issue link
@@ -623,16 +630,27 @@ export function ArtifactDetail({
     },
   ];
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
-  const locatorRows = [
-    ['Series', series ? seriesRecordRef(series) : ''],
+  const seriesRefValue = series ? seriesRecordRef(series) : '';
+  const selectedArtifactRef = selectedVersion?.artifact_id || artifact.id;
+  const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
+  const identityRows: MetadataRow[] = [
+    ['Series', seriesRefValue, true],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
-    ['URI', artifact.uri],
-    ['Content hash', artifact.content_hash],
+    ['URI', artifact.uri, true],
+    ['Content hash', artifact.content_hash, true],
+    ['Short ID', shortArtifactId(artifact.id), true, artifact.id],
     ['Home repo', artifact.home_repo_id],
     ['Provider', artifact.provider_id],
     ['Manifest', artifact.manifest_id],
     ['Resolved from', resolution?.ref ?? ''],
-  ].filter(([, value]) => Boolean(value)) as Array<[string, string]>;
+  ].filter(([, value]) => Boolean(value)) as MetadataRow[];
+  const custodyRows: MetadataRow[] = [
+    ['Mode', artifact.custody_mode],
+    ['Role', artifact.role ?? ''],
+    ['Media type', artifact.media_type ?? ''],
+    ['Size', formatBytes(artifact.size_bytes)],
+    ['Created', formatTime(artifact.created_at)],
+  ].filter(([, value]) => Boolean(value)) as MetadataRow[];
 
   useEffect(() => {
     if (!actionsOpen) return undefined;
@@ -670,6 +688,24 @@ export function ArtifactDetail({
     };
   }, [versionHistoryOpen, onCloseVersionHistory]);
 
+  useEffect(() => {
+    if (!metadataOpen) return undefined;
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const node = metadataPanelRef.current;
+      if (!node || node.contains(event.target as Node)) return;
+      setMetadataOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMetadataOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsidePointer, true);
+    document.addEventListener('keydown', closeOnEscape, true);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
+      document.removeEventListener('keydown', closeOnEscape, true);
+    };
+  }, [metadataOpen]);
+
   const closeActionsAfter = (callback: () => void) => {
     callback();
     setActionsOpen(false);
@@ -678,25 +714,31 @@ export function ArtifactDetail({
   return (
     <article className="artifact-detail">
       <header className="artifact-detail__header">
-        <div>
-          <div className="artifact-detail__type">{artifact.custody_mode} artifact</div>
-          <h2>{artifactTitle(artifact)}</h2>
+        <div className="artifact-detail__top-row">
+          <div className="artifact-detail__topline">
+            <span className="artifact-detail__series-id">{seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id)}</span>
+            <CopyButton value={seriesRefValue || artifact.id} label="Copy artifact series ref" />
+          </div>
+          <div className="artifact-detail__status">
+            <label className="artifact-detail__version-control">
+              <select
+                aria-label="Artifact version"
+                value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
+                onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
+              >
+                <option value="">Latest</option>
+                {versions.map((version) => (
+                  <option key={version.id} value={String(version.version_no)}>
+                    v{version.version_no}{version.label ? ` · ${version.label}` : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <CopyButton value={selectedArtifactRef} label="Copy selected artifact ref" />
+          </div>
         </div>
-        <div className="artifact-detail__status">
-          <label className="artifact-detail__version-control">
-            <select
-              aria-label="Artifact version"
-              value={selectedVersionNo === null ? '' : String(selectedVersionNo)}
-              onChange={(event) => onVersionChange(event.currentTarget.value ? Number(event.currentTarget.value) : null)}
-            >
-              <option value="">Latest</option>
-              {versions.map((version) => (
-                <option key={version.id} value={String(version.version_no)}>
-                  v{version.version_no}{version.label ? ` · ${version.label}` : ''}
-                </option>
-              ))}
-            </select>
-          </label>
+        <div className="artifact-detail__title-row">
+          <h2>{artifactTitle(artifact)}</h2>
           <div className="artifact-detail__actions" ref={actionsRef}>
             <button
               type="button"
@@ -720,6 +762,14 @@ export function ArtifactDetail({
                   onClick={() => closeActionsAfter(() => setSpacePickerOpen(true))}
                 >
                   Add to Space
+                </button>
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
+                  onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
+                >
+                  Show metadata
                 </button>
                 <button
                   type="button"
@@ -750,6 +800,13 @@ export function ArtifactDetail({
               onOpenChange={setSpacePickerOpen}
             />
           </div>
+        </div>
+        <div className="artifact-detail__subline">
+          {[artifact.custody_mode, artifact.role].filter(Boolean).join(' · ')}
+        </div>
+        <div className="artifact-detail__dates">
+          <span>Created: {formatTime(createdUpdated.created)}</span>
+          <span>Updated: {formatTime(createdUpdated.updated)}</span>
         </div>
       </header>
       {resolution?.warnings?.includes('series_latest_not_pinned') && (
@@ -789,82 +846,95 @@ export function ArtifactDetail({
           </div>
         </div>
       )}
-      <section className="artifact-detail__section">
-        <h3>Identity</h3>
-        <KeyValue rows={locatorRows} />
-      </section>
-      <section className="artifact-detail__section">
-        <h3>Custody</h3>
-        <KeyValue rows={[
-          ['Mode', artifact.custody_mode],
-          ['Role', artifact.role ?? ''],
-          ['Media type', artifact.media_type ?? ''],
-          ['Size', formatBytes(artifact.size_bytes)],
-          ['Created', formatTime(artifact.created_at)],
-        ]} />
-      </section>
-      <PreviewSection
-        preview={preview}
-        content={content}
-        contentLoading={contentLoading}
-        contentError={contentError}
-      />
-      {artifact.aliases && artifact.aliases.length > 0 && (
-        <section className="artifact-detail__section">
-          <h3>Locators</h3>
-          <div className="artifact-detail__list">
-            {artifact.aliases.map((alias) => (
-              <div key={alias.id} className="artifact-detail__list-item">
-                <code>{alias.normalized_ref}</code>
-                <span>{alias.scheme}</span>
-                <span>{alias.resolution_status}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-      {artifact.links && artifact.links.length > 0 && (
-        <section className="artifact-detail__section">
-          <h3>Links</h3>
-          <div className="artifact-detail__list">
-            {artifact.links.map((link) => (
-              <div key={link.id} className="artifact-detail__list-item artifact-detail__list-item--artifact-link">
-                <a className="artifact-detail__entity-link" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
-                  <code>{link.entity_type}:{link.entity_id}</code>
-                </a>
-                <span className="artifact-detail__link-meta">
-                  <span>{link.link_type}</span>
-                  <a
-                    className={`type-badge type-badge--sm artifact-link-badge artifact-link-badge--${artifactLinkKind(link)}`}
-                    href={artifactLinkBadgeHref(link)}
-                  >
-                    {artifactLinkBadgeLabel(link)}
-                  </a>
-                </span>
-                <span>{link.role || link.source}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-      {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
-        <section className="artifact-detail__section">
-          <h3>Knowledge Backrefs</h3>
-          {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
-          {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
-          {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+      <div className={`artifact-detail__body${metadataOpen ? ' artifact-detail__body--metadata-open' : ''}`}>
+        <PreviewSection
+          preview={preview}
+          content={content}
+          contentLoading={contentLoading}
+          contentError={contentError}
+        />
+        {artifact.aliases && artifact.aliases.length > 0 && (
+          <section className="artifact-detail__section">
+            <h3>Locators</h3>
             <div className="artifact-detail__list">
-              {knowledgeBackrefs.map((backref) => (
-                <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
-                  <code>{backref.external_ref || backref.external_id}</code>
-                  <span>{backref.ref_type}</span>
-                  <span>{backref.provider_id}</span>
-                  <span>{backref.status}</span>
+              {artifact.aliases.map((alias) => (
+                <div key={alias.id} className="artifact-detail__list-item">
+                  <code>{alias.normalized_ref}</code>
+                  <span>{alias.scheme}</span>
+                  <span>{alias.resolution_status}</span>
                 </div>
               ))}
             </div>
-          )}
-        </section>
+          </section>
+        )}
+        {artifact.links && artifact.links.length > 0 && (
+          <section className="artifact-detail__section">
+            <h3>Links</h3>
+            <div className="artifact-detail__list">
+              {artifact.links.map((link) => (
+                <div key={link.id} className="artifact-detail__list-item artifact-detail__list-item--artifact-link">
+                  <a className="artifact-detail__entity-link" href={entityHref(link.entity_type, link.entity_id, link.repo_id)}>
+                    <code>{link.entity_type}:{link.entity_id}</code>
+                  </a>
+                  <span className="artifact-detail__link-meta">
+                    <span>{link.link_type}</span>
+                    <a
+                      className={`type-badge type-badge--sm artifact-link-badge artifact-link-badge--${artifactLinkKind(link)}`}
+                      href={artifactLinkBadgeHref(link)}
+                    >
+                      {artifactLinkBadgeLabel(link)}
+                    </a>
+                  </span>
+                  <span>{link.role || link.source}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+        {(knowledgeLoading || knowledgeError || knowledgeBackrefs.length > 0) && (
+          <section className="artifact-detail__section">
+            <h3>Knowledge Backrefs</h3>
+            {knowledgeLoading && <div className="artifacts-empty">Loading knowledge references...</div>}
+            {!knowledgeLoading && knowledgeError && <div className="artifacts-error">{knowledgeError}</div>}
+            {!knowledgeLoading && !knowledgeError && knowledgeBackrefs.length > 0 && (
+              <div className="artifact-detail__list">
+                {knowledgeBackrefs.map((backref) => (
+                  <div key={backref.id} className="artifact-detail__list-item artifact-detail__list-item--backref">
+                    <code>{backref.external_ref || backref.external_id}</code>
+                    <span>{backref.ref_type}</span>
+                    <span>{backref.provider_id}</span>
+                    <span>{backref.status}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        )}
+      </div>
+      {metadataOpen && (
+        <div className="artifact-detail__metadata-modal" role="dialog" aria-modal="true" aria-labelledby="artifact-metadata-title">
+          <div className="artifact-detail__metadata-panel" ref={metadataPanelRef}>
+            <div className="artifact-detail__modal-header">
+              <h3 id="artifact-metadata-title">Artifact metadata</h3>
+              <button
+                type="button"
+                className="artifact-detail__modal-close"
+                aria-label="Close artifact metadata"
+                onClick={() => setMetadataOpen(false)}
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <section className="artifact-detail__section">
+              <h3>Identity</h3>
+              <MetadataKeyValue rows={identityRows} />
+            </section>
+            <section className="artifact-detail__section">
+              <h3>Custody</h3>
+              <MetadataKeyValue rows={custodyRows} />
+            </section>
+          </div>
+        </div>
       )}
     </article>
   );
@@ -914,38 +984,46 @@ function PreviewSection({
   contentLoading: boolean;
   contentError: string | null;
 }): JSX.Element {
+  const showPreview = !contentError && preview !== null;
   return (
     <section className="artifact-detail__section">
       <h3>Preview</h3>
-      {contentLoading && <div className="artifacts-empty">Loading preview...</div>}
-      {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
-      {!contentLoading && !contentError && content?.warnings?.map((warning) => (
+      <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
+        {contentLoading && (
+          <div className="artifact-preview-frame__loading" role="status">
+            Loading preview...
+          </div>
+        )}
+        {!showPreview && contentLoading && <div className="artifacts-empty">Loading preview...</div>}
+        {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
+        {showPreview && content?.warnings?.map((warning) => (
         <div key={warning} className="artifact-detail__warning">{warning}</div>
-      ))}
-      {!contentLoading && !contentError && preview?.kind === 'bundle' && <BundlePreview preview={preview} />}
-      {!contentLoading && !contentError && preview?.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-      {!contentLoading && !contentError && preview?.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-      {!contentLoading && !contentError && preview?.kind === 'html' && (
-        <iframe
-          className="artifact-preview artifact-preview--html"
-          sandbox="allow-scripts"
-          referrerPolicy="no-referrer"
-          srcDoc={preview.value}
-          title="Artifact HTML preview"
-        />
-      )}
-      {!contentLoading && !contentError && preview?.kind === 'markdown' && (
-        <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />
-      )}
-      {!contentLoading && !contentError && preview?.kind === 'binary' && (
-        <div className="artifacts-empty">
-          Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
-        </div>
-      )}
-      {!contentLoading && !contentError && preview?.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
-      {!contentLoading && !contentError && content?.preview?.truncated && (
-        <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
-      )}
+        ))}
+        {showPreview && preview.kind === 'bundle' && <BundlePreview preview={preview} />}
+        {showPreview && preview.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+        {showPreview && preview.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+        {showPreview && preview.kind === 'html' && (
+          <iframe
+            className="artifact-preview artifact-preview--html"
+            sandbox="allow-scripts"
+            referrerPolicy="no-referrer"
+            srcDoc={preview.value}
+            title="Artifact HTML preview"
+          />
+        )}
+        {showPreview && preview.kind === 'markdown' && (
+          <div className="artifact-preview spec-panel" dangerouslySetInnerHTML={{ __html: preview.value }} />
+        )}
+        {showPreview && preview.kind === 'binary' && (
+          <div className="artifacts-empty">
+            Binary artifact available ({formatBytes(content?.download.size_bytes ?? 0) || content?.download.media_type}).
+          </div>
+        )}
+        {showPreview && preview.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
+        {showPreview && content?.preview?.truncated && (
+          <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
+        )}
+      </div>
     </section>
   );
 }
@@ -1004,17 +1082,32 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
   );
 }
 
-function KeyValue({ rows }: { rows: Array<[string, string]> }): JSX.Element {
+function MetadataKeyValue({ rows }: { rows: MetadataRow[] }): JSX.Element {
   return (
     <div className="artifact-detail__kv">
-      {rows.filter(([, value]) => value).map(([key, value]) => (
+      {rows.filter(([, value]) => value).map(([key, value, copyable, copyValue]) => (
         <div key={key}>
           <span>{key}</span>
-          <code>{value}</code>
+          {copyable ? (
+            <button
+              type="button"
+              className="artifact-detail__copy-value"
+              onClick={() => void copyText(copyValue ?? value)}
+              title={`Copy ${key}`}
+            >
+              <code>{value}</code>
+            </button>
+          ) : (
+            <code>{value}</code>
+          )}
         </div>
       ))}
     </div>
   );
+}
+
+function KeyValue({ rows }: { rows: Array<[string, string]> }): JSX.Element {
+  return <MetadataKeyValue rows={rows} />;
 }
 
 function buildFacetOptions(series: ArtifactSeriesSummary[]): {
@@ -1124,11 +1217,6 @@ function seriesTitle(series: ArtifactSeriesSummary): string {
     || seriesRef(series);
 }
 
-function seriesSidebarLocation(series: ArtifactSeriesSummary): string {
-  if (series.latest_artifact) return artifactSidebarLocation(series.latest_artifact);
-  return series.repo_id || series.source_kind;
-}
-
 function artifactTitle(artifact: ArtifactRecord): string {
   const metadataTitle = typeof artifact.metadata.title === 'string' ? artifact.metadata.title : '';
   const filename = typeof artifact.metadata.filename === 'string' ? artifact.metadata.filename : '';
@@ -1150,19 +1238,53 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
   return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
 }
 
-function artifactSidebarLocation(artifact: ArtifactRecord): string {
-  const repoId = typeof artifact.repo_locator.repo_id === 'string'
-    ? artifact.repo_locator.repo_id
-    : artifact.home_repo_id || '';
-  const repoPath = typeof artifact.repo_locator.path === 'string'
-    ? artifact.repo_locator.path.replace(/^\/+/, '')
-    : '';
-  if (repoId && repoPath) return `${repoId}/${repoPath}`;
-  return artifact.home_repo_id || artifact.provider_id || artifact.custody_mode;
-}
-
 function artifactTitleCandidate(value: string): string {
   return value && displayResourceRef(value) === value ? value : '';
+}
+
+function shortSeriesId(ref: string): string {
+  return ref.trim().replace(/^artifact-series:/i, '').slice(0, 7);
+}
+
+function shortArtifactId(ref: string): string {
+  return ref.trim().replace(/^artifact:/i, '').replace(/^sha256:/i, '').slice(0, 7).toLowerCase();
+}
+
+function artifactCreatedUpdated(
+  artifact: ArtifactRecord,
+  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null,
+  versions: ArtifactVersionRecord[],
+): { created: number; updated: number } {
+  const versionTimes = versions.map((version) => version.created_at).filter((value) => value > 0);
+  if (versionTimes.length > 0) {
+    return {
+      created: Math.min(...versionTimes),
+      updated: Math.max(...versionTimes),
+    };
+  }
+  return {
+    created: series?.created_at || artifact.created_at,
+    updated: series?.updated_at || artifact.created_at,
+  };
+}
+
+function CopyButton({ value, label }: { value: string; label: string }): JSX.Element {
+  return (
+    <button
+      type="button"
+      className="artifact-detail__copy-button"
+      onClick={() => void copyText(value)}
+      aria-label={label}
+      title={label}
+    >
+      <CopyIcon />
+    </button>
+  );
+}
+
+async function copyText(value: string): Promise<void> {
+  if (!value || typeof navigator === 'undefined' || !navigator.clipboard?.writeText) return;
+  await navigator.clipboard.writeText(value);
 }
 
 function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
@@ -1247,6 +1369,15 @@ function CloseIcon(): JSX.Element {
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="m18 6-12 12" />
       <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
+function CopyIcon(): JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <rect x="9" y="9" width="10" height="10" rx="2" />
+      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
     </svg>
   );
 }

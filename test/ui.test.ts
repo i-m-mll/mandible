@@ -2244,6 +2244,8 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     });
     vi.stubGlobal('fetch', mockFetch);
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
 
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
@@ -2258,8 +2260,7 @@ describe('ArtifactsView', () => {
     expect(sidebarItem.textContent).not.toContain('pinned');
     expect(sidebarItem.querySelector('.artifacts-sidebar__badges')).toBeNull();
     const sidebarMeta = sidebarItem.querySelector('.artifacts-sidebar__meta');
-    expect(sidebarMeta?.textContent).toContain('mandible');
-    expect(sidebarMeta?.textContent).toContain('reports/demo-report.md');
+    expect(sidebarMeta?.textContent).toContain('demo-re');
     expect(sidebarMeta?.textContent).toContain('report');
     const filterButton = screen.getByLabelText('Artifact filters');
     expect(filterButton.textContent).not.toContain('⋯');
@@ -2268,14 +2269,35 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
     const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
-    expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
+    expect(sectionHeadings[0]).toBe('Preview');
+    expect(sectionHeadings).not.toContain('Identity');
+    expect(sectionHeadings).not.toContain('Custody');
     expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
     expect(screen.getByLabelText('Artifact version')).toBeTruthy();
     expect(screen.queryByText('Version')).toBeNull();
+    expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
+    expect(detailHeader?.textContent).toContain('demo-rep');
+    expect(detailHeader?.textContent).toContain('managed · report');
+    expect(detailHeader?.textContent).toContain('Created:');
+    expect(detailHeader?.textContent).toContain('Updated:');
+    fireEvent.click(screen.getByLabelText('Copy artifact series ref'));
+    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-report');
+    fireEvent.click(screen.getByLabelText('Copy selected artifact ref'));
+    expect(writeText).toHaveBeenCalledWith(artifact.id);
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     fireEvent.click(screen.getByLabelText('Artifact actions'));
     expect(screen.getByRole('menuitem', { name: 'Add to Space' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
+    expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
+    expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
+    fireEvent.click(within(metadataDialog).getByText('aaaaaaa').closest('button') as HTMLButtonElement);
+    expect(writeText).toHaveBeenCalledWith(artifact.id);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
     const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
@@ -2575,16 +2597,20 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(listUrl).toContain('summary=true'));
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
-    await waitFor(() => expect(screen.getByText('Loading preview...')).toBeTruthy());
-    expect(screen.getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
 
     resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
       headers: { 'content-type': 'application/json' },
     }));
 
     await waitFor(() => expect(screen.getByText('Locators')).toBeTruthy());
-    expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
-    expect(screen.getByText('Loading preview...')).toBeTruthy();
+    expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0);
   });
 
   it('keeps artifact facet options available after selecting a facet value', async () => {
@@ -2784,7 +2810,9 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
     expect(screen.getByText('sidebar-first.md')).toBeTruthy();
-    expect(screen.getByText(ref)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(ref)).toBeTruthy();
   });
 
   it('pins legacy artifact deep links to the exact resolved version', async () => {
@@ -2848,7 +2876,8 @@ describe('ArtifactsView', () => {
     expect(versionRefs).toContain(v1.id);
     await waitFor(() => expect(versionRefs).toContain(artifactSeries.summary.ref));
     expect(versionRefs).not.toContain(`artifact-series:${artifactSeries.summary.ref}`);
-    expect(screen.getByText(artifactSeries.summary.ref)).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(artifactSeries.summary.ref)).toBeTruthy();
   });
 
   it('keeps artifact-series @latest refs latest-tracking and shows the resolver warning badge', async () => {
@@ -2903,6 +2932,61 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
   });
 
+  it('keeps artifact detail mounted while switching versions', async () => {
+    const v1 = makeArtifactFixture('1', 'stable-v1.md');
+    const v2 = makeArtifactFixture('2', 'stable-v2.md');
+    const artifactSeries = makeArtifactSeries('stable-series', [v1, v2], 'stable-report.md');
+    let resolveV2Detail: (response: Response) => void = () => undefined;
+    const v2Detail = new Promise<Response>((resolve) => {
+      resolveV2Detail = resolve;
+    });
+    const contentCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        const artifact = url.includes(encodeURIComponent(v1.id)) ? v1 : v2;
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'text',
+            media_type: 'text/plain',
+            size_bytes: artifact.id.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: artifact.metadata.title, truncated: false },
+            download: { available: true, media_type: 'text/plain', size_bytes: artifact.id.length, filename: null },
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(v1.id))) return jsonResponse({ artifact: v1 });
+      if (url.includes(encodeURIComponent(v2.id))) return v2Detail;
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialSeriesRef: artifactSeries.summary.ref, initialVersionNo: 1 }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md'));
+    await waitFor(() => expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0));
+
+    changeSelect(screen.getByLabelText('Artifact version') as HTMLSelectElement, '2');
+
+    await waitFor(() => expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('2'));
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md');
+    expect(screen.queryByText('Loading artifact...')).toBeNull();
+    expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0);
+
+    resolveV2Detail(new Response(JSON.stringify({ artifact: v2 }), {
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v2.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(v2.id)))).toBe(true));
+  });
+
   it('keeps pinned version and open history stable when the series sidebar refetches with a newer latest', async () => {
     const v1 = makeArtifactFixture('c', 'pinned-v1.md');
     const v2 = makeArtifactFixture('d', 'pinned-v2.md');
@@ -2952,9 +3036,10 @@ describe('ArtifactsView', () => {
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
     expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('1');
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /pinned-report\.md/ }).textContent).toContain('v3');
-    });
+    const pinnedRow = screen.getByRole('button', { name: /pinned-report\.md/ });
+    expect(pinnedRow.textContent).toContain('pinned-');
+    expect(pinnedRow.textContent).toContain('report');
+    expect(pinnedRow.textContent).not.toContain('v3');
   });
 
   it('ignores self-written series hash updates but reconciles external series changes', async () => {
