@@ -2024,6 +2024,80 @@ describe('LedgerIssueDetail', () => {
     expect(commentHeader?.querySelector('[aria-label="Comment metadata"]')).toBeTruthy();
   });
 
+  it('scopes issue metadata to embedded graph detail panes', async () => {
+    const detail = issueDetailProjection({
+      displayId: 'embed123',
+      title: 'Embedded metadata',
+    });
+
+    render(h('div', { class: 'graph-detail-pane' }, h(LedgerIssueDetail, { detail })));
+
+    const graphPane = document.querySelector('.graph-detail-pane') as HTMLElement | null;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 760, configurable: true });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getEmbeddedIssueRect() {
+      if (this.classList.contains('graph-detail-pane')) {
+        return {
+          x: 720,
+          y: 80,
+          top: 80,
+          right: 1180,
+          bottom: 740,
+          left: 720,
+          width: 460,
+          height: 660,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList.contains('ledger-issue-detail__header')) {
+        return {
+          x: 720,
+          y: 80,
+          top: 80,
+          right: 1180,
+          bottom: 196,
+          left: 720,
+          width: 460,
+          height: 116,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    if (graphPane) graphPane.scrollTop = 144;
+
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
+
+    await waitFor(() => expect(graphPane?.className).toContain('issues-detail--metadata-open'));
+    expect(graphPane?.scrollTop).toBe(144);
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('196px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('720px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('20px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('20px');
+    expect(within(metadataDialog).getByText('embed123')).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
+    await waitFor(() => expect(graphPane?.className).not.toContain('issues-detail--metadata-open'));
+    rectSpy.mockRestore();
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
+  });
+
   it('keeps issue actions in the header overflow menu while preserving the comment composer button', () => {
     const detail = {
       id: 'issue_1',

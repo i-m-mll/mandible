@@ -201,7 +201,13 @@ export function LedgerIssueDetail({
         title="Issue metadata"
         closeLabel="Close issue metadata"
         excludeAboveRef={headerRef}
-        scrollOwnerSelector=".issues-detail"
+        scrollOwnerSelector={[
+          '.issues-detail',
+          '.graph-detail-pane',
+          '.space-canvas__inspector',
+          '.spaces-block-editor__inspector',
+          '.ledger-issue-detail',
+        ]}
         scrollLockClassName="issues-detail--metadata-open"
         className="ledger-issue-detail__metadata-modal"
         panelClassName="ledger-issue-detail__metadata-panel"

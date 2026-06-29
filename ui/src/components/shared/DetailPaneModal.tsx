@@ -7,7 +7,7 @@ export type DetailPaneModalProps = {
   title: string;
   closeLabel: string;
   excludeAboveRef: { current: HTMLElement | null };
-  scrollOwnerSelector: string;
+  scrollOwnerSelector: string | string[];
   scrollLockClassName?: string;
   className?: string;
   panelClassName?: string;
@@ -46,7 +46,7 @@ export function DetailPaneModal({
     if (!open) return undefined;
 
     const excluded = excludeAboveRef.current;
-    const scrollOwner = excluded?.closest<HTMLElement>(scrollOwnerSelector);
+    const scrollOwner = excluded ? findScrollOwner(excluded, scrollOwnerSelector) : null;
     if (!excluded || !scrollOwner) {
       setBoundsState(null);
       return undefined;
@@ -151,6 +151,14 @@ export function DetailPaneModal({
       </div>
     </div>
   );
+}
+
+function findScrollOwner(excluded: HTMLElement, selectors: string | string[]): HTMLElement | null {
+  for (const selector of Array.isArray(selectors) ? selectors : [selectors]) {
+    const owner = excluded.closest<HTMLElement>(selector);
+    if (owner) return owner;
+  }
+  return null;
 }
 
 function CloseIcon(): JSX.Element {
