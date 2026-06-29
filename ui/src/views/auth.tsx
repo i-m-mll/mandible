@@ -969,29 +969,31 @@ function AuthCard({
           <div className="auth-card__panels">
             <div className="auth-card__left-col">
               <div className="panel">
-                <button
-                  type="button"
-                  className="panel__toggle"
-                  onClick={() => setShowCommit((prev) => !prev)}
-                >
-                  <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
-                    {'\u25B8'}
-                  </span>
-                  Commit Message
+                <div className="panel__header">
+                  <button
+                    type="button"
+                    className="panel__toggle"
+                    onClick={() => setShowCommit((prev) => !prev)}
+                  >
+                    <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
+                      {'\u25B8'}
+                    </span>
+                    Commit Message
+                  </button>
                   {/* Bug: 2c826ca — editable commit message for pending/failed requests */}
                   {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
-                    <span
+                    <button
+                      type="button"
                       className="panel__edit-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
+                      onClick={() => {
                         setEditCommitValue(commitMsg);
                         setEditingCommitMsg(true);
                       }}
                     >
                       edit
-                    </span>
+                    </button>
                   )}
-                </button>
+                </div>
                 {showCommit && (
                   editingCommitMsg ? (
                     <div className="panel__body spec-panel">
@@ -1182,7 +1184,7 @@ function AuthRequestDetail({
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
-  const [showSpec, setShowSpec] = useState(false);
+  const [showSpec, setShowSpec] = useState(true);
   const [showDiff, setShowDiff] = useState(true);
   const [showConsole, setShowConsole] = useState(false);
   const [selectedFile, setSelectedFile] = useState<number>(-1);
@@ -1320,87 +1322,91 @@ function AuthRequestDetail({
   return (
     <article className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}>
       <header className="auth-detail__header" ref={headerRef}>
-        <div className="auth-detail__header-main">
-          <DetailHeaderIdentity
-            className="auth-detail__eyebrow"
-            contextLabel={repoName}
-            contextClassName="auth-detail__repo"
-            shortId={shortRef}
-            shortIdClassName="auth-detail__short-ref"
-            copyValue={copyRef}
-            copyLabel={`Copy ${copyRef || 'auth reference'}`}
-          >
-            <span className={statusClass}>{statusLabel}</span>
-            {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
-            {branchMerged && <span className="branch-merged-tag">branch merged</span>}
-          </DetailHeaderIdentity>
-          <h2
-            className="auth-detail__title"
-            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
-          />
-          <div className="auth-detail__subtitle">
-            <span>{primarySubtitle}</span>
-            <span className="auth-detail__subtitle-line">
-              {typeSubtitle}
-            </span>
+        <div className="auth-detail__header-primary">
+          <div className="auth-detail__header-main">
+            <DetailHeaderIdentity
+              className="auth-detail__eyebrow"
+              contextLabel={repoName}
+              contextClassName="auth-detail__repo"
+              shortId={shortRef}
+              shortIdClassName="auth-detail__short-ref"
+              copyValue={copyRef}
+              copyLabel={`Copy ${copyRef || 'auth reference'}`}
+            >
+              <span className={statusClass}>{statusLabel}</span>
+              {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
+              {branchMerged && <span className="branch-merged-tag">branch merged</span>}
+            </DetailHeaderIdentity>
+            <h2
+              className="auth-detail__title"
+              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+            />
+            <div className="auth-detail__subtitle">
+              <span>{primarySubtitle}</span>
+              <span className="auth-detail__subtitle-line">
+                {typeSubtitle}
+              </span>
+            </div>
+            {hasLinks && (
+              <div className="auth-detail__links">
+                {sessionId && (
+                  <a
+                    className="auth-card__link"
+                    href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
+                  >
+                    Session
+                  </a>
+                )}
+                {referenceRefs.length > 0 && canIssueLink && (
+                  <span className="auth-card__issue-group">
+                    <span className="auth-card__issue-group-label">References</span>
+                    {referenceRefs.map((ref) => (
+                      <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                    ))}
+                  </span>
+                )}
+                {closureRefs.length > 0 && canIssueLink && (
+                  <span className="auth-card__issue-group">
+                    <span className="auth-card__issue-group-label">Closes</span>
+                    {closureRefs.map((ref) => (
+                      <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
+                    ))}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-          {hasLinks && (
-            <div className="auth-detail__links">
-              {sessionId && (
-                <a
-                  className="auth-card__link"
-                  href={`#/sessions?session=${encodeURIComponent(sessionId)}`}
+          <div className="auth-detail__header-actions" ref={actionsMenuRef}>
+            <button
+              type="button"
+              className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
+              aria-label="Auth actions"
+              aria-haspopup="menu"
+              aria-expanded={actionsOpen}
+              title="Auth actions"
+              onClick={() => setActionsOpen((open) => !open)}
+            >
+              <HorizontalDotsIcon />
+            </button>
+            {actionsOpen && (
+              <div className="auth-detail__actions-menu" role="menu">
+                <button
+                  type="button"
+                  className="auth-detail__actions-item"
+                  role="menuitem"
+                  onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
                 >
-                  Session
-                </a>
-              )}
-              {referenceRefs.length > 0 && canIssueLink && (
-                <span className="auth-card__issue-group">
-                  <span className="auth-card__issue-group-label">References</span>
-                  {referenceRefs.map((ref) => (
-                    <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
-                  ))}
-                </span>
-              )}
-              {closureRefs.length > 0 && canIssueLink && (
-                <span className="auth-card__issue-group">
-                  <span className="auth-card__issue-group-label">Closes</span>
-                  {closureRefs.map((ref) => (
-                    <EntityPill key={ref} type="issue" id={ref} repoId={repoId} />
-                  ))}
-                </span>
-              )}
-            </div>
-          )}
-        </div>
-        <div className="auth-detail__header-actions" ref={actionsMenuRef}>
-          <button
-            type="button"
-            className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
-            aria-label="Auth actions"
-            aria-haspopup="menu"
-            aria-expanded={actionsOpen}
-            title="Auth actions"
-            onClick={() => setActionsOpen((open) => !open)}
-          >
-            <HorizontalDotsIcon />
-          </button>
-          {actionsOpen && (
-            <div className="auth-detail__actions-menu" role="menu">
-              <button
-                type="button"
-                className="auth-detail__actions-item"
-                role="menuitem"
-                onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
-              >
-                Show metadata
-              </button>
-            </div>
-          )}
+                  Show metadata
+                </button>
+              </div>
+            )}
+          </div>
         </div>
         {actions && (
-          <div className="auth-detail__action-strip">
-            {actions}
+          <div className="auth-detail__aux-header">
+            <div className="auth-detail__action-strip">
+              {actions}
+            </div>
           </div>
         )}
       </header>
@@ -1445,28 +1451,30 @@ function AuthRequestDetail({
         <div className="auth-detail__panels">
           <div className="auth-detail__left-col">
             <div className="panel">
-              <button
-                type="button"
-                className="panel__toggle"
-                onClick={() => setShowCommit((prev) => !prev)}
-              >
-                <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
-                  {'\u25B8'}
-                </span>
-                Commit Message
+              <div className="panel__header">
+                <button
+                  type="button"
+                  className="panel__toggle"
+                  onClick={() => setShowCommit((prev) => !prev)}
+                >
+                  <span className={`panel__chevron${showCommit ? ' panel__chevron--open' : ''}`}>
+                    {'\u25B8'}
+                  </span>
+                  Commit Message
+                </button>
                 {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
-                  <span
+                  <button
+                    type="button"
                     className="panel__edit-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
+                    onClick={() => {
                       setEditCommitValue(commitMsg);
                       setEditingCommitMsg(true);
                     }}
                   >
                     edit
-                  </span>
+                  </button>
                 )}
-              </button>
+              </div>
               {showCommit && (
                 editingCommitMsg ? (
                   <div className="panel__body spec-panel">

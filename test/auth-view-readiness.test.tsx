@@ -76,7 +76,7 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
-    expect(approve.closest('.auth-detail__action-strip')).toBeTruthy();
+    expect(approve.closest('.auth-detail__aux-header')).toBeTruthy();
     expect(approve.closest('.auth-detail__header-actions')).toBeNull();
 
     fireEvent.click(approve);
@@ -89,7 +89,7 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(false);
-    expect(approve.closest('.auth-detail__action-strip')).toBeTruthy();
+    expect(approve.closest('.auth-detail__aux-header')).toBeTruthy();
     expect(approve.closest('.auth-detail__header-actions')).toBeNull();
 
     fireEvent.click(approve);

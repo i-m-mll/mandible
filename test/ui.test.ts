@@ -875,12 +875,15 @@ describe('AuthQueueView', () => {
             created_at: 1,
             approval_source: 'manual',
             approval_lease_id: 'lease-123',
+            commit_message: 'Structured auth detail commit',
+            spec_content: 'Structured auth detail specification',
           },
         ],
         outputs: {},
         selectedAuthId: 'req-structured-detail',
         onApprove: () => undefined,
         onReject: () => undefined,
+        onUpdateField: () => undefined,
       }),
     );
 
@@ -909,8 +912,15 @@ describe('AuthQueueView', () => {
     expect(copyButton.parentElement).toBe(eyebrow);
     expect(statusPill?.parentElement).toBe(eyebrow);
     expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(document.querySelector('.auth-detail__aux-header .auth-detail__action-strip .auth-actions')).toBeTruthy();
     expect(document.querySelector('.auth-detail__action-strip .auth-actions')).toBeTruthy();
     expect(document.querySelector('.auth-detail__header-actions .auth-actions')).toBeNull();
+    expect(document.querySelector('.auth-detail__header-primary .auth-actions')).toBeNull();
+    expect(screen.getByText('Structured auth detail specification')).toBeTruthy();
+    const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
+    expect(commitPanel?.querySelector('.panel__header > .panel__toggle')?.textContent).toContain('Commit Message');
+    expect(commitPanel?.querySelector('.panel__header > .panel__edit-btn')?.textContent).toBe('edit');
+    expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
 
     fireEvent.click(copyButton);
     expect(writeText).toHaveBeenCalledWith('auth:req-stru');
@@ -2955,7 +2965,13 @@ describe('ArtifactsView', () => {
 
   it('keeps auth light detail surfaces visually separated by CSS contract', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
-    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;/s);
+    expect(css).toMatch(/\.app-content::before\s*\{[^}]*z-index:\s*0;/s);
+    expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
+    expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
+    expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
+    expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+    expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
+    expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*flex-end;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__header\s*\{[^}]*background:\s*#ffffff;[^}]*box-shadow:\s*none;/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
