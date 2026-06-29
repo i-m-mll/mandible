@@ -409,7 +409,8 @@
   background: var(--neutral-alpha-055);
 }
 
-:root[data-theme='light'] .issues-detail .ledger-issue-detail__header {
+:root[data-theme='light'] .issues-detail .ledger-issue-detail__header,
+:root[data-theme='light'] .auth-detail__header {
   background: var(--surface-popover);
   border-bottom-color: var(--neutral-alpha-08);
   box-shadow: var(--shadow-header);
@@ -2944,9 +2945,10 @@ tr:last-child td {
 }
 
 .auth-detail__header {
+  position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 20px;
+  gap: 16px;
   margin: -24px -24px 0;
   padding: 20px 24px;
   border-bottom: 1px solid var(--neutral-alpha-06);
@@ -2966,7 +2968,9 @@ tr:last-child td {
   gap: 8px;
   flex-wrap: wrap;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
 .auth-detail__repo {
@@ -2977,34 +2981,49 @@ tr:last-child td {
 .auth-detail__short-ref {
   color: var(--text-muted);
   font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
 }
 
-.auth-detail__copy-ref {
+.auth-detail__eyebrow .status-pill,
+.auth-detail__eyebrow .attempt-tag,
+.auth-detail__eyebrow .branch-merged-tag {
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.auth-detail__header-actions {
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
+  align-self: start;
+}
+
+.auth-detail__actions-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
   border: none;
   border-radius: 6px;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
+  padding: 0;
 }
 
-.auth-detail__copy-ref:hover {
+.auth-detail__actions-trigger:hover,
+.auth-detail__actions-trigger--active {
   color: var(--text-primary);
-  background: var(--neutral-alpha-05);
+  background: var(--neutral-alpha-08);
 }
 
-.auth-detail__copy-ref svg {
-  width: 14px;
-  height: 14px;
-  fill: none;
-  stroke: currentColor;
-  stroke-width: 1.8;
-  stroke-linejoin: round;
+.auth-detail__actions-trigger svg {
+  width: 17px;
+  height: 17px;
+  fill: currentColor;
 }
 
 .auth-detail__title {
@@ -3035,79 +3054,62 @@ tr:last-child td {
   flex-wrap: wrap;
 }
 
-.auth-detail__header-side {
-  min-width: 220px;
+.auth-detail__actions-menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 6px);
+  right: 0;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
-  gap: 12px;
+  gap: 2px;
+  width: 190px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--neutral-alpha-10);
+  background: var(--bg-card);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.36);
 }
 
-.auth-detail__header-side .auth-actions {
+.auth-detail__actions-item {
+  display: block;
+  width: 100%;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 10px;
+  background: transparent;
+  color: var(--text-primary);
+  cursor: pointer;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.35;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.auth-detail__actions-item:hover {
+  background: var(--neutral-alpha-06);
+}
+
+.auth-detail__action-strip {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--neutral-alpha-04);
+}
+
+.auth-detail__action-strip .auth-actions {
   justify-content: flex-end;
   flex-wrap: wrap;
 }
 
-.auth-detail-meta {
-  position: relative;
-  align-self: flex-end;
+.auth-detail-metadata__content {
+  display: grid;
+  gap: 0;
+  margin: 0;
 }
 
-.auth-detail-meta summary {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  border-radius: 8px;
-  border: 1px solid transparent;
-  color: var(--text-muted);
-  background: transparent;
-  cursor: pointer;
-  user-select: none;
-}
-
-.auth-detail-meta summary::-webkit-details-marker {
-  display: none;
-}
-
-.auth-detail-meta summary::marker {
-  content: '';
-}
-
-.auth-detail-meta summary:hover {
-  color: var(--text-primary);
-  background: var(--neutral-alpha-05);
-}
-
-.auth-detail-meta[open] summary {
-  color: var(--text-primary);
-  background: var(--neutral-alpha-08);
-}
-
-.auth-detail-meta summary svg {
-  width: 18px;
-  height: 18px;
-  fill: currentColor;
-}
-
-.auth-detail-meta__content {
-  position: absolute;
-  right: 0;
-  z-index: 12;
-  width: min(420px, calc(100vw - 48px));
-  max-height: min(560px, calc(100vh - 160px));
-  overflow: auto;
-  margin: 8px 0 0;
-  padding: 10px 12px;
-  border-radius: 10px;
-  border: 1px solid var(--neutral-alpha-08);
-  background: var(--bg-card);
-  box-shadow: var(--shadow-soft);
-}
-
-.auth-detail-meta__row {
+.auth-detail-metadata__row {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
   gap: 10px;
@@ -3116,15 +3118,15 @@ tr:last-child td {
   font-size: 12px;
 }
 
-.auth-detail-meta__row:last-child {
+.auth-detail-metadata__row:last-child {
   border-bottom: none;
 }
 
-.auth-detail-meta__row dt {
+.auth-detail-metadata__row dt {
   color: var(--text-muted);
 }
 
-.auth-detail-meta__row dd {
+.auth-detail-metadata__row dd {
   margin: 0;
   min-width: 0;
   color: var(--text-primary);
@@ -3132,7 +3134,7 @@ tr:last-child td {
   overflow-wrap: anywhere;
 }
 
-.auth-detail-meta__copy {
+.auth-detail-metadata__copy {
   max-width: 100%;
   border: none;
   background: transparent;
@@ -3142,6 +3144,10 @@ tr:last-child td {
   text-align: left;
   cursor: pointer;
   overflow-wrap: anywhere;
+}
+
+.auth-detail--metadata-open {
+  overflow: hidden;
 }
 
 .auth-detail__body {
@@ -4676,6 +4682,7 @@ tr:last-child td {
   flex: 1;
   overflow-y: auto;
   padding: 24px;
+  background: var(--issues-detail-bg);
 }
 
 .auth-detail__empty {
@@ -7453,19 +7460,17 @@ code.inbox-detail__meta-value {
     grid-template-columns: 1fr;
   }
 
-  .auth-detail__header-side {
-    min-width: 0;
-    align-items: stretch;
+  .auth-detail__header-actions {
+    justify-content: flex-start;
   }
 
   .auth-detail__panels {
     grid-template-columns: 1fr;
   }
 
-  .auth-detail-meta__content {
+  .auth-detail__actions-menu {
     left: 0;
     right: auto;
-    width: min(100%, calc(100vw - 48px));
   }
 
   .auth-card__right-col {

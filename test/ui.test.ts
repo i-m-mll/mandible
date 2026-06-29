@@ -894,17 +894,36 @@ describe('AuthQueueView', () => {
     expect(screen.queryByText('Request')).toBeNull();
     expect(screen.queryByText('Metadata')).toBeNull();
     expect(document.querySelector('.auth-detail__repo')?.textContent).toBe('mandible');
-    expect(document.querySelector('.auth-detail__short-ref')?.textContent).toBe('auth:req-stru');
+    expect(document.querySelector('.auth-detail__short-ref')?.textContent).toBe('req-stru');
     expect(document.querySelector('.auth-detail__eyebrow .type-badge')).toBeNull();
+    expect(document.querySelector('.auth-detail-meta')).toBeNull();
+    expect(document.querySelector('.auth-detail__header-side')).toBeNull();
     expect(screen.getByText('merge · feature/detail → main')).toBeTruthy();
     expect(screen.getByText('Approve')).toBeTruthy();
 
-    fireEvent.click(screen.getByLabelText('Copy auth:req-stru'));
+    const eyebrow = document.querySelector('.auth-detail__eyebrow') as HTMLElement | null;
+    const copyButton = screen.getByRole('button', { name: 'Copy auth:req-stru' });
+    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
+    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+    expect(statusPill?.textContent).toBe('Pending');
+    expect(copyButton.parentElement).toBe(eyebrow);
+    expect(statusPill?.parentElement).toBe(eyebrow);
+    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(document.querySelector('.auth-detail__action-strip .auth-actions')).toBeTruthy();
+    expect(document.querySelector('.auth-detail__header-actions .auth-actions')).toBeNull();
+
+    fireEvent.click(copyButton);
     expect(writeText).toHaveBeenCalledWith('auth:req-stru');
 
-    fireEvent.click(screen.getByLabelText('Auth metadata menu'));
-    await waitFor(() => expect(screen.getByText('Approval source')).toBeTruthy());
-    expect(screen.getByText('lease-123')).toBeTruthy();
+    const detailScroller = document.querySelector('.auth-detail') as HTMLElement | null;
+    fireEvent.click(screen.getByRole('button', { name: 'Auth actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Auth metadata' });
+    await waitFor(() => expect(detailScroller?.className).toContain('auth-detail--metadata-open'));
+    expect(document.querySelector('.auth-detail__pane')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.auth-detail__body')?.contains(metadataDialog)).toBe(false);
+    expect(within(metadataDialog).getByText('Approval source')).toBeTruthy();
+    expect(within(metadataDialog).getByText('lease-123')).toBeTruthy();
   });
 
   it('renders deferred action badges and bundle details', async () => {
@@ -2920,6 +2939,7 @@ describe('ArtifactsView', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
     expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);

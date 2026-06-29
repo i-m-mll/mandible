@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks'
 import { marked } from 'marked';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
+import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
+import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import {
   disableAuthAutoApprove,
@@ -655,7 +657,7 @@ function getStringField(request: AuthRequest, field: string): string | null {
 function MetadataRow({ label, value }: { label: string; value: string | JSX.Element | null | undefined }): JSX.Element | null {
   if (value == null || value === '') return null;
   return (
-    <div className="auth-detail-meta__row">
+    <div className="auth-detail-metadata__row">
       <dt>{label}</dt>
       <dd>{value}</dd>
     </div>
@@ -1187,8 +1189,10 @@ function AuthRequestDetail({
   const [editingCommitMsg, setEditingCommitMsg] = useState(false);
   const [editCommitValue, setEditCommitValue] = useState('');
   const [metadataOpen, setMetadataOpen] = useState(false);
+  const [actionsOpen, setActionsOpen] = useState(false);
   const consoleEndRef = useRef<HTMLDivElement>(null);
-  const metadataRef = useRef<HTMLDetailsElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
+  const actionsMenuRef = useRef<HTMLDivElement>(null);
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
   const specContent = typeof request.spec_content === 'string' ? request.spec_content : '';
@@ -1266,14 +1270,14 @@ function AuthRequestDetail({
   }, [showConsole, consoleText]);
 
   useEffect(() => {
-    if (!metadataOpen) return undefined;
+    if (!actionsOpen) return undefined;
     const closeOnOutsidePointer = (event: PointerEvent) => {
-      const node = metadataRef.current;
+      const node = actionsMenuRef.current;
       if (!node || node.contains(event.target as Node)) return;
-      setMetadataOpen(false);
+      setActionsOpen(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMetadataOpen(false);
+      if (event.key === 'Escape') setActionsOpen(false);
     };
     document.addEventListener('pointerdown', closeOnOutsidePointer, true);
     document.addEventListener('keydown', closeOnEscape, true);
@@ -1281,7 +1285,7 @@ function AuthRequestDetail({
       document.removeEventListener('pointerdown', closeOnOutsidePointer, true);
       document.removeEventListener('keydown', closeOnEscape, true);
     };
-  }, [metadataOpen]);
+  }, [actionsOpen]);
 
   const effectiveTimestampLabel = timestampLabel ?? (history
     ? getResolvedTimestampLabel(request)
@@ -1297,6 +1301,7 @@ function AuthRequestDetail({
   const primarySubtitle = [statsSummary, effectiveTimestampLabel].filter(Boolean).join(' · ');
   const flowText = headBranch && baseBranch ? `${headBranch} \u2192 ${baseBranch}` : commitBranch;
   const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
+  const shortRef = requestHash || 'unknown';
   const copyRef = requestHash ? `auth:${requestHash}` : '';
 
   const createdAt = formatMetadataTimestamp(request.created_at ?? null);
@@ -1307,26 +1312,28 @@ function AuthRequestDetail({
   const targetSession = getStringField(request, 'target_session_id');
   const targetRepo = getStringField(request, 'target_repo');
   const conversationId = getStringField(request, 'conversation_id') ?? getStringField(request, 'target_conversation_id');
+  const closeActionsAfter = (callback: () => void) => {
+    callback();
+    setActionsOpen(false);
+  };
 
   return (
-    <article className={`auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}>
-      <header className="auth-detail__header">
+    <article className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}>
+      <header className="auth-detail__header" ref={headerRef}>
         <div className="auth-detail__header-main">
-          <div className="auth-detail__eyebrow">
-            {repoName && <span className="auth-detail__repo">{repoName}</span>}
-            <code className="auth-detail__short-ref">{copyRef || 'auth:unknown'}</code>
-            <button
-              type="button"
-              className="auth-detail__copy-ref"
-              aria-label={`Copy ${copyRef || 'auth reference'}`}
-              title={`Copy ${copyRef || 'auth reference'}`}
-              onClick={() => void copyAuthText(copyRef)}
-            >
-              <CopyIcon />
-            </button>
+          <DetailHeaderIdentity
+            className="auth-detail__eyebrow"
+            contextLabel={repoName}
+            contextClassName="auth-detail__repo"
+            shortId={shortRef}
+            shortIdClassName="auth-detail__short-ref"
+            copyValue={copyRef}
+            copyLabel={`Copy ${copyRef || 'auth reference'}`}
+          >
+            <span className={statusClass}>{statusLabel}</span>
             {attemptLabel && <span className="attempt-tag">{attemptLabel}</span>}
             {branchMerged && <span className="branch-merged-tag">branch merged</span>}
-          </div>
+          </DetailHeaderIdentity>
           <h2
             className="auth-detail__title"
             dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
@@ -1366,52 +1373,36 @@ function AuthRequestDetail({
             </div>
           )}
         </div>
-        <div className="auth-detail__header-side">
-          <span className={statusClass}>{statusLabel}</span>
-          {actions}
-          <details
-            className="auth-detail-meta"
-            ref={metadataRef}
-            open={metadataOpen}
-            onToggle={(event) => setMetadataOpen(event.currentTarget.open)}
+        <div className="auth-detail__header-actions" ref={actionsMenuRef}>
+          <button
+            type="button"
+            className={`auth-detail__actions-trigger${actionsOpen ? ' auth-detail__actions-trigger--active' : ''}`}
+            aria-label="Auth actions"
+            aria-haspopup="menu"
+            aria-expanded={actionsOpen}
+            title="Auth actions"
+            onClick={() => setActionsOpen((open) => !open)}
           >
-            <summary aria-label="Auth metadata menu" title="Auth metadata menu">
-              <HorizontalDotsIcon />
-            </summary>
-            <dl className="auth-detail-meta__content">
-              <MetadataRow
-                label="Full request id"
-                value={(
-                  <button
-                    type="button"
-                    className="auth-detail-meta__copy"
-                    onClick={() => void copyAuthText(fullId)}
-                  >
-                    {fullId || 'unknown'}
-                  </button>
-                )}
-              />
-              <MetadataRow label="Status" value={status} />
-              <MetadataRow label="Type" value={authType} />
-              <MetadataRow label="Repo" value={repoId || null} />
-              <MetadataRow label="Head branch" value={headBranch ?? null} />
-              <MetadataRow label="Base branch" value={baseBranch ?? null} />
-              <MetadataRow label="Created" value={createdAt} />
-              <MetadataRow label="Last executed" value={lastExecutedAt} />
-              <MetadataRow label="Resolved" value={resolvedAt} />
-              <MetadataRow label="Approval source" value={request.approval_source ?? null} />
-              <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
-              <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
-              <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
-              <MetadataRow label="Merge SHA" value={mergeSha} />
-              <MetadataRow label="Finalized" value={finalizedAt} />
-              <MetadataRow label="Session" value={sessionId ?? null} />
-              <MetadataRow label="Target session" value={targetSession} />
-              <MetadataRow label="Target repo" value={targetRepo} />
-              <MetadataRow label="Conversation" value={conversationId} />
-            </dl>
-          </details>
+            <HorizontalDotsIcon />
+          </button>
+          {actionsOpen && (
+            <div className="auth-detail__actions-menu" role="menu">
+              <button
+                type="button"
+                className="auth-detail__actions-item"
+                role="menuitem"
+                onClick={() => closeActionsAfter(() => setMetadataOpen(true))}
+              >
+                Show metadata
+              </button>
+            </div>
+          )}
         </div>
+        {actions && (
+          <div className="auth-detail__action-strip">
+            {actions}
+          </div>
+        )}
       </header>
 
       <div className="auth-detail__body">
@@ -1632,16 +1623,52 @@ function AuthRequestDetail({
           </div>
         )}
       </div>
+      <DetailPaneModal
+        open={metadataOpen}
+        onClose={() => setMetadataOpen(false)}
+        titleId="auth-metadata-title"
+        title="Auth metadata"
+        closeLabel="Close auth metadata"
+        excludeAboveRef={headerRef}
+        scrollOwnerSelector=".auth-detail"
+        scrollLockClassName="auth-detail--metadata-open"
+        className="auth-detail__metadata-modal"
+        panelClassName="auth-detail__metadata-panel"
+      >
+        <dl className="auth-detail-metadata__content">
+          <MetadataRow
+            label="Full request id"
+            value={(
+              <button
+                type="button"
+                className="auth-detail-metadata__copy"
+                onClick={() => void copyAuthText(fullId)}
+              >
+                {fullId || 'unknown'}
+              </button>
+            )}
+          />
+          <MetadataRow label="Status" value={status} />
+          <MetadataRow label="Type" value={authType} />
+          <MetadataRow label="Repo" value={repoId || null} />
+          <MetadataRow label="Head branch" value={headBranch ?? null} />
+          <MetadataRow label="Base branch" value={baseBranch ?? null} />
+          <MetadataRow label="Created" value={createdAt} />
+          <MetadataRow label="Last executed" value={lastExecutedAt} />
+          <MetadataRow label="Resolved" value={resolvedAt} />
+          <MetadataRow label="Approval source" value={request.approval_source ?? null} />
+          <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
+          <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
+          <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
+          <MetadataRow label="Merge SHA" value={mergeSha} />
+          <MetadataRow label="Finalized" value={finalizedAt} />
+          <MetadataRow label="Session" value={sessionId ?? null} />
+          <MetadataRow label="Target session" value={targetSession} />
+          <MetadataRow label="Target repo" value={targetRepo} />
+          <MetadataRow label="Conversation" value={conversationId} />
+        </dl>
+      </DetailPaneModal>
     </article>
-  );
-}
-
-function CopyIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
-    </svg>
   );
 }
 
