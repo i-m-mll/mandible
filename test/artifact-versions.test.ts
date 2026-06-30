@@ -10,6 +10,8 @@ import {
   getArtifact,
   getArtifactSeries,
   getArtifactVersion,
+  associateProjectArtifact,
+  listProjectArtifactAssociations,
   listArtifactVersions,
   recordArtifactVersion,
   registerLocalArtifactPath,
@@ -231,6 +233,93 @@ describe("diff derivation", () => {
 });
 
 describe("ref resolution backward-compat and no silent retarget", () => {
+  it("resolves new canonical logical/version/blob refs and warns for legacy hash refs", () => {
+    const r1 = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "test",
+      content: "A\n",
+      media_type: "text/plain",
+      logical_name: "ev",
+    }, 1000);
+    const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
+    const blobRef = `artifact-blob:${r1.artifact.content_hash}`;
+
+    const logical = resolveArtifactRef(db, logicalRef);
+    expect(logical.status).toBe("resolved");
+    expect(logical.target_type).toBe("artifact");
+    expect(logical.logical_artifact?.id).toBe(logicalRef);
+    expect(logical.artifact_version?.id).toBe(r1.version.id);
+    expect(logical.artifact_blob?.id).toBe(blobRef);
+    expect(logical.artifact?.id).toBe(r1.artifact.id);
+
+    const version = resolveArtifactRef(db, r1.version.id);
+    expect(version.status).toBe("resolved");
+    expect(version.target_type).toBe("artifact_version");
+    expect(version.target_id).toBe(r1.version.id);
+    expect(version.artifact_version?.blob_id).toBe(blobRef);
+    expect(version.version?.id).toBe(r1.version.id);
+
+    const blob = resolveArtifactRef(db, blobRef.slice(0, "artifact-blob:".length + 12));
+    expect(blob.status).toBe("resolved");
+    expect(blob.target_type).toBe("artifact_blob");
+    expect(blob.target_id).toBe(blobRef);
+
+    const legacy = resolveArtifactRef(db, `artifact:sha256:${r1.artifact.content_hash}`);
+    expect(legacy.status).toBe("resolved");
+    expect(legacy.target_type).toBe("artifact_blob");
+    expect(legacy.target_id).toBe(blobRef);
+    expect(legacy.warnings).toEqual(["legacy_artifact_ref_read_only", "repair_to_artifact_blob_ref"]);
+  });
+
+  it("records explicit project associations without inferring them from source repo", () => {
+    createLedgerCheckout("mandible", tempDir);
+    const r1 = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "test",
+      content: "A\n",
+      media_type: "text/plain",
+      logical_name: "ev",
+    }, 1000);
+    const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
+
+    expect(listProjectArtifactAssociations(db, { projectRef: "mandible" })).toEqual([]);
+
+    const result = associateProjectArtifact(db, {
+      project_ref: "mandible",
+      target_ref: logicalRef,
+      association_kind: "canonical",
+      role: "context",
+      title: "Evidence context",
+    }, 1100);
+    expect(result.association).toMatchObject({
+      project_id: "prj_mandible",
+      target_type: "artifact",
+      target_id: logicalRef,
+      association_kind: "canonical",
+      role: "context",
+      title: "Evidence context",
+    });
+    expect(listProjectArtifactAssociations(db, { projectRef: "mandible", associationKind: "canonical" }))
+      .toHaveLength(1);
+    associateProjectArtifact(db, {
+      project_ref: "mandible",
+      target_ref: logicalRef,
+      association_kind: "associated",
+      role: "context",
+    }, 1200);
+    expect(listProjectArtifactAssociations(db, { projectRef: "mandible" })[0]).toMatchObject({
+      target_id: logicalRef,
+      association_kind: "canonical",
+      role: "context",
+    });
+    expect(() =>
+      associateProjectArtifact(db, {
+        project_ref: "mandible",
+        target_ref: `artifact-blob:${r1.artifact.content_hash}`,
+      }),
+    ).toThrow(/not blobs/);
+  });
+
   it("keeps artifact:sha256 refs immutable and resolves version/series refs", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
     const fullId = r1.artifact.id; // artifact:sha256:<hash>

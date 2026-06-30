@@ -7,6 +7,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
+const CLI_TEST_ENV = {
+  MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+};
 
 let tempDir = "";
 
@@ -23,7 +26,7 @@ function run(
   const result = spawnSync(CLI, args, {
     cwd: tempDir,
     encoding: "utf8",
-    env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
+    env: { ...process.env, MANDIBLE_PORT: "9", ...CLI_TEST_ENV, ...extraEnv },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -35,7 +38,7 @@ function runAsync(
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
       cwd: tempDir,
-      env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
+      env: { ...process.env, MANDIBLE_PORT: "9", ...CLI_TEST_ENV, ...extraEnv },
     });
     let stdout = "";
     let stderr = "";
@@ -128,10 +131,10 @@ describe("artifact link CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[--pinned|--living]");
-    expect(result.stdout).toContain("artifact-series:<id>      logical artifact");
-    expect(result.stdout).toContain("links pin latest by default");
+    expect(result.stdout).toContain("artifact:<id>             logical artifact");
     expect(result.stdout).toContain("artifact-version:<id>     specific artifact version");
-    expect(result.stdout).toContain("artifact:sha256:<hash>    immutable artifact version");
+    expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
+    expect(result.stdout).toContain("artifact:sha256:<hash>    legacy read/repair input");
   });
 
   it("omits link_kind when no typed-link flag is supplied and prints a pinned badge", async () => {

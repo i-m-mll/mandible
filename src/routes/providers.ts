@@ -8,6 +8,7 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { checkArtifactMaterialization, diffArtifacts, getArtifactContent } from "../artifact-content.js";
 import {
   addArtifactBundleMembers,
+  associateProjectArtifact,
   createArtifactBundle,
   getArtifactBundle,
   getArtifact,
@@ -17,8 +18,11 @@ import {
   ingestArtifact,
   ingestProviderManifest,
   ingestProviderManifestFile,
+  listArtifactBlobs,
+  listLogicalArtifacts,
   listArtifactSeries,
   listArtifacts,
+  listProjectArtifactAssociations,
   listProviders,
   planLocalArtifactPath,
   recordArtifactVersion,
@@ -241,6 +245,58 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         return;
       }
       sendJson(res, 200, { resolution: resolveArtifactRef(getDb(), ref) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  });
+
+  app.get("/api/artifacts/logical", (req, res) => {
+    const artifacts = listLogicalArtifacts(getDb(), {
+      q: queryString(req, "q"),
+      sourceProjectId: queryString(req, "source_project_id"),
+      sourceRepoId: queryString(req, "source_repo_id") ?? queryString(req, "repo"),
+      sourceKind: queryString(req, "source_kind"),
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { artifacts });
+  });
+
+  app.get("/api/artifacts/blobs", (req, res) => {
+    const blobs = listArtifactBlobs(getDb(), {
+      q: queryString(req, "q"),
+      hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
+      custody: queryString(req, "custody"),
+      availability: queryString(req, "availability"),
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { blobs });
+  });
+
+  app.get("/api/artifacts/associations", (req, res) => {
+    const targetType = queryString(req, "target_type");
+    const associationKind = queryString(req, "association_kind");
+    const status = queryString(req, "status");
+    const associations = listProjectArtifactAssociations(getDb(), {
+      projectRef: queryString(req, "project") ?? queryString(req, "project_ref"),
+      targetType: targetType === "artifact" || targetType === "artifact_version" ? targetType : undefined,
+      targetId: queryString(req, "target_id"),
+      associationKind: associationKind === "associated" || associationKind === "canonical" ? associationKind : undefined,
+      status: status === "active" || status === "superseded" || status === "archived" ? status : undefined,
+      limit: queryNumber(req, "limit"),
+      offset: queryNumber(req, "offset"),
+    });
+    sendJson(res, 200, { associations });
+  });
+
+  app.post("/api/artifacts/associations", (req, res) => {
+    try {
+      const result = associateProjectArtifact(
+        getDb(),
+        bodyRecord(req) as unknown as Parameters<typeof associateProjectArtifact>[1],
+      );
+      sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
     }
