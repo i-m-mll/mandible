@@ -12,6 +12,7 @@ const DEFAULT_DB_PATH = path.join(os.homedir(), ".cache", "mandible", "mandible.
 const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
+const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm))?$/;
 
 const command = process.argv[2] === "cleanup" ? "cleanup" : "preview";
 const args = parseArgs(command === "cleanup" ? process.argv.slice(3) : process.argv.slice(2), command);
@@ -217,7 +218,7 @@ async function cleanupPreviewCache(options) {
       const entry = await analyzePreviewDirForCleanup(entryPath, options.apply);
       report.entries.push(entry);
       for (const dbPath of [entry.metadataDb, entry.currentDb]) {
-        if (dbPath) protectedDbPaths.add(path.resolve(dbPath));
+        addProtectedSnapshotPaths(protectedDbPaths, dbPath);
       }
       if (entry.action === "delete-dir") {
         report.reclaimableBytes += entry.bytes;
@@ -225,15 +226,18 @@ async function cleanupPreviewCache(options) {
           fs.rmSync(entryPath, { recursive: true, force: true });
           report.reclaimedBytes += entry.bytes;
         }
+      } else if (entry.action === "skip-active" && entry.snapshotCleanup) {
+        report.reclaimableBytes += entry.snapshotCleanup.reclaimableBytes;
+        report.reclaimedBytes += entry.snapshotCleanup.reclaimedBytes;
       }
     }
   }
 
   for (const dirent of rootEntries) {
     const entryPath = path.join(root, dirent.name);
-    if (dirent.isFile() && DB_SNAPSHOT_PATTERN.test(dirent.name)) {
+    if (dirent.isFile() && DB_SNAPSHOT_ARTIFACT_PATTERN.test(dirent.name)) {
       const bytes = fs.statSync(entryPath).size;
-      if (protectedDbPaths.has(path.resolve(entryPath))) {
+      if (protectedDbPaths.has(canonicalPath(entryPath))) {
         report.entries.push({
           path: entryPath,
           kind: "root-db",
@@ -375,8 +379,10 @@ Options:
   --preview-base-dir P  Override the preview cache root. Defaults to MANDIBLE_PREVIEW_BASE_DIR or ~/.cache/mandible/previews.
   -h, --help            Show this help.
 
-Cleanup is conservative: active preview directories are skipped when metadata,
-current.db, pid files, or live health checks indicate the preview may still be in use.
+Cleanup is conservative: active preview directories are never removed wholesale.
+When open-file inspection is available, stale snapshot artifacts inside active
+directories may still be pruned if they are not referenced by metadata/current.db
+and are not held open.
 `);
     return;
   }
@@ -549,6 +555,15 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
   }
 
   if (livePid || liveHealth) {
+    const openFileInspection = inspectOpenSnapshotArtifacts(dirPath);
+    const snapshotCleanup = prunePreviewSnapshots(dirPath, {
+      apply,
+      keepDbPaths: [metadata.db, currentTarget].filter(Boolean),
+      keepArtifactPaths: openFileInspection.paths,
+      protectAllReason: openFileInspection.available
+        ? null
+        : "lsof is unavailable; active preview snapshot artifacts require manual inspection",
+    });
     return {
       path: dirPath,
       kind: "preview-dir",
@@ -556,11 +571,16 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
       reason: liveHealth
         ? `metadata port ${metadata.port} answered /api/health`
         : "metadata or directory pid file points to a live process",
-      bytes: 0,
+      bytes: snapshotCleanup.reclaimableBytes,
+      reclaimedBytes: snapshotCleanup.reclaimedBytes,
+      reclaimable: snapshotCleanup.reclaimable,
+      reclaimed: snapshotCleanup.reclaimed,
       port: metadata.port ?? null,
       pidFiles: pidCandidates,
       metadataDb: metadata.db ?? null,
       currentDb: currentTarget,
+      openFileInspection,
+      snapshotCleanup,
     };
   }
 
@@ -581,25 +601,48 @@ async function analyzePreviewDirForCleanup(dirPath, apply) {
 }
 
 function prunePreviewSnapshots(previewRoot, options) {
-  const keep = new Set((options.keepDbPaths ?? []).map((candidate) => path.resolve(candidate)));
+  const keep = new Set();
+  for (const candidate of options.keepDbPaths ?? []) {
+    addProtectedSnapshotPaths(keep, candidate);
+  }
+  for (const candidate of options.keepArtifactPaths ?? []) {
+    addProtectedSnapshotArtifactPaths(keep, candidate);
+  }
   const currentTarget = readSymlinkTarget(path.join(previewRoot, "current.db"));
-  if (currentTarget) keep.add(path.resolve(currentTarget));
+  addProtectedSnapshotPaths(keep, currentTarget);
 
   const entries = [];
   let reclaimableBytes = 0;
   let reclaimedBytes = 0;
   for (const dirent of fs.readdirSync(previewRoot, { withFileTypes: true })) {
-    if (!dirent.isFile() || !DB_SNAPSHOT_PATTERN.test(dirent.name)) continue;
+    if (!dirent.isFile() || !DB_SNAPSHOT_ARTIFACT_PATTERN.test(dirent.name)) continue;
 
     const filePath = path.join(previewRoot, dirent.name);
-    const resolved = path.resolve(filePath);
-    if (keep.has(resolved)) continue;
+    const resolved = canonicalPath(filePath);
+    if (options.protectAllReason) {
+      entries.push({
+        path: filePath,
+        action: "skip",
+        reason: options.protectAllReason,
+        bytes: 0,
+      });
+      continue;
+    }
+    if (keep.has(resolved)) {
+      entries.push({
+        path: filePath,
+        action: "skip",
+        reason: "preview database snapshot artifact is protected by metadata, current.db, or open file inspection",
+        bytes: 0,
+      });
+      continue;
+    }
 
     const bytes = fs.statSync(filePath).size;
     const entry = {
       path: filePath,
       action: "delete-file",
-      reason: "older preview database snapshot superseded by healthy preview start",
+      reason: "older preview database snapshot artifact superseded by healthy preview start",
       bytes,
     };
     entries.push(entry);
@@ -619,6 +662,82 @@ function prunePreviewSnapshots(previewRoot, options) {
     reclaimed: formatBytes(reclaimedBytes),
     entries,
   };
+}
+
+function inspectOpenSnapshotArtifacts(previewRoot) {
+  if (!commandExists("lsof")) {
+    return {
+      available: false,
+      reason: "lsof is not available",
+      paths: [],
+    };
+  }
+
+  const result = run("lsof", ["-F", "n", "+D", previewRoot], { allowFailure: true });
+  if (result.error) {
+    return {
+      available: false,
+      reason: result.error.message,
+      paths: [],
+    };
+  }
+
+  const paths = new Set();
+  for (const line of result.stdout.split(/\r?\n/)) {
+    if (!line.startsWith("n")) continue;
+    const filePath = line.slice(1);
+    if (!filePath || !DB_SNAPSHOT_ARTIFACT_PATTERN.test(path.basename(filePath))) continue;
+    const resolved = canonicalPath(filePath);
+    if (isPathWithin(previewRoot, resolved)) paths.add(resolved);
+  }
+
+  return {
+    available: true,
+    reason: paths.size > 0 ? "lsof reported open snapshot artifacts" : "lsof reported no open snapshot artifacts",
+    paths: [...paths],
+  };
+}
+
+function addProtectedSnapshotPaths(paths, dbPath) {
+  if (!dbPath) return;
+  const resolved = canonicalPath(dbPath);
+  paths.add(resolved);
+  if (!DB_SNAPSHOT_PATTERN.test(path.basename(resolved))) return;
+  for (const sidecarPath of snapshotSidecarPaths(resolved)) {
+    paths.add(sidecarPath);
+  }
+}
+
+function addProtectedSnapshotArtifactPaths(paths, artifactPath) {
+  if (!artifactPath) return;
+  const resolved = canonicalPath(artifactPath);
+  paths.add(resolved);
+  const dbPath = snapshotBaseDbPath(resolved);
+  if (dbPath) addProtectedSnapshotPaths(paths, dbPath);
+}
+
+function snapshotBaseDbPath(artifactPath) {
+  const basename = path.basename(artifactPath);
+  if (!DB_SNAPSHOT_ARTIFACT_PATTERN.test(basename)) return null;
+  if (basename.endsWith(".db")) return artifactPath;
+  return artifactPath.replace(/\.db-(?:wal|shm)$/, ".db");
+}
+
+function snapshotSidecarPaths(dbPath) {
+  return [`${dbPath}-wal`, `${dbPath}-shm`].map((candidate) => canonicalPath(candidate));
+}
+
+function isPathWithin(parentPath, candidatePath) {
+  const relative = path.relative(canonicalPath(parentPath), canonicalPath(candidatePath));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function canonicalPath(candidatePath) {
+  try {
+    return fs.realpathSync.native(candidatePath);
+  } catch {
+    return path.resolve(candidatePath);
+  }
 }
 
 function ensureDependencies(worktree) {
