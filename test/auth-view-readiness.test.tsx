@@ -58,13 +58,14 @@ function renderView(
   onApprove: (id: string) => void,
   instance?: InstanceInfo | null,
   onUpdateField?: (requestId: string, field: string, value: string) => void,
+  selectedAuthId: string | null = 'req-1',
 ) {
   return render(
     <AuthQueueView
       queue={[pendingRequest]}
       historyQueue={[]}
       outputs={{}}
-      selectedAuthId="req-1"
+      selectedAuthId={selectedAuthId}
       daemonReady={daemonReady}
       instance={instance}
       onApprove={onApprove}
@@ -122,9 +123,15 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     const warningLabel = screen.getByText('preview instance');
     const warning = warningLabel.closest('.preview-disabled-notice');
+    const detail = warning?.parentElement;
+    const requestPane = document.querySelector('.auth-detail-pane');
+    const requestHeader = document.querySelector('.auth-detail__header');
     expect(warning).toBeTruthy();
     expect(warning?.getAttribute('data-testid')).toBe('preview-disabled-notice');
-    expect(warning?.parentElement?.classList.contains('auth-detail-pane--with-preview-notice')).toBe(true);
+    expect(detail?.classList.contains('auth-detail--with-preview-notice')).toBe(true);
+    expect(detail?.firstElementChild).toBe(warning);
+    expect(warning?.nextElementSibling).toBe(requestPane);
+    expect(requestHeader && warning?.compareDocumentPosition(requestHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
@@ -132,6 +139,19 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     fireEvent.click(approve);
     expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  it('shows preview instance diagnostics at the top of the empty detail column', () => {
+    const onApprove = vi.fn();
+    renderView(true, onApprove, previewInstance, undefined, null);
+
+    const warning = screen.getByTestId('preview-disabled-notice');
+    const detail = warning.parentElement;
+    const empty = screen.getByText('Select a request to view details').closest('.auth-detail__empty');
+    expect(detail?.classList.contains('auth-detail')).toBe(true);
+    expect(detail?.firstElementChild).toBe(warning);
+    expect(warning.nextElementSibling).toBe(empty);
+    expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
   });
 
   it('hides commit message editing on preview instances', () => {

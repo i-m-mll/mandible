@@ -236,6 +236,11 @@ export function SpacesViewShell({
         }
       />
       <div className="spaces-shell__main">
+        {spaceId && previewMutationsBlocked ? (
+          <PreviewDisabledNotice title={`${instance?.role ?? 'preview'} instance`}>
+            Saving disabled in copied preview instance.
+          </PreviewDisabledNotice>
+        ) : null}
         <header className="spaces-shell__header">
           {spaceId ? (
             <>
@@ -271,11 +276,6 @@ export function SpacesViewShell({
             </span>
           )}
         </header>
-        {spaceId && previewMutationsBlocked ? (
-          <PreviewDisabledNotice title={`${instance?.role ?? 'preview'} instance`}>
-            Saving disabled in copied preview instance.
-          </PreviewDisabledNotice>
-        ) : null}
         <div className="spaces-shell__body" data-testid="spaces-shell-body">
           {!spaceId ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">

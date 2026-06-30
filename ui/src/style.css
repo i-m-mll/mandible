@@ -2975,11 +2975,11 @@ tr:last-child td {
   background: var(--bg);
 }
 
-.auth-detail-pane > .preview-disabled-notice {
+.auth-detail > .preview-disabled-notice {
   margin: -24px -24px 0;
 }
 
-.auth-detail-pane--with-preview-notice .auth-detail__header {
+.auth-detail--with-preview-notice .auth-detail__header {
   margin-top: 0;
 }
 
