@@ -48,6 +48,8 @@ Usage:
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
   mandible artifact list [--repo <repo>] [--issue <id>] [--role <role>] [--custody <mode>] [--json]
+  mandible artifact associate <ref> --project <project> [--canonical] [--role <role>] [--title <title>] [--json]
+  mandible artifact associations [--project <project>] [--canonical] [--json]
   mandible artifact show <ref> [--json]
   mandible artifact content <ref> [--output <path>] [--json]
   mandible artifact check <ref...> [--json]
@@ -76,9 +78,10 @@ Recoverability:
   mandible_cas  bytes are stored in Mandible artifact storage.
 
 Artifact refs:
-  artifact-series:<id>      logical artifact; links pin latest by default, or use --living to follow latest.
+  artifact:<id>             logical artifact.
   artifact-version:<id>     specific artifact version.
-  artifact:sha256:<hash>    immutable artifact version.
+  artifact-blob:<hash>      immutable artifact bytes.
+  artifact:sha256:<hash>    legacy read/repair input; new output uses artifact-blob:<hash>.
 EOF
 }
 
@@ -757,7 +760,10 @@ cmd_resolve() {
   if (( json )); then
     printf '%s\n' "$response" | jq .
   else
-    printf '%s\n' "$response" | jq -r '.resolution | "\(.status) \(.artifact.id) \(.normalized_ref)"'
+    printf '%s\n' "$response" | jq -r '
+      .resolution
+      | "\(.status) \(.target_type // "legacy_artifact") \(.target_id // .artifact.id // "-") \(.normalized_ref)",
+        ( (.warnings // [])[] | "warning: \(.)" )'
   fi
 }
 
@@ -792,6 +798,75 @@ cmd_list() {
     printf '%s\n' "$response" | jq .
   else
     printf '%s\n' "$response" | jq -r '.artifacts[]? | "\(.id) \(.custody_mode) \(.availability) \(.role // "-") \(.uri)"'
+  fi
+}
+
+cmd_associate() {
+  local ref="" project="" role="" title="" json=0 canonical=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --role) role="$2"; shift 2 ;;
+      --title) title="$2"; shift 2 ;;
+      --canonical) canonical=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" && -n "$project" ]] || die "Usage: mandible artifact associate <ref> --project <project> [--canonical] [--role <role>] [--title <title>] [--json]" 2
+  require_tools
+  local kind="associated"
+  (( canonical )) && kind="canonical"
+  local payload response
+  payload="$(jq -n \
+    --arg target_ref "$ref" \
+    --arg project_ref "$project" \
+    --arg association_kind "$kind" \
+    --arg role "$role" \
+    --arg title "$title" \
+    '{target_ref:$target_ref, project_ref:$project_ref, association_kind:$association_kind}
+      + (if $role != "" then {role:$role} else {} end)
+      + (if $title != "" then {title:$title} else {} end)')"
+  response="$(api_post "/api/artifacts/associations" "$payload")" \
+    || die "${RED}Failed to associate artifact with project.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .association
+      | "associated \(.target_type):\(.target_id) with project \(.project_id) [\(.association_kind)\(if .role != "" then " · " + .role else "" end)]"'
+  fi
+}
+
+cmd_associations() {
+  local project="" json=0 canonical=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --project) project="$2"; shift 2 ;;
+      --canonical) canonical=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+  require_tools
+  local query="" sep="?"
+  if [[ -n "$project" ]]; then
+    query+="${sep}project=$(urlencode "$project")"; sep="&"
+  fi
+  if (( canonical )); then
+    query+="${sep}association_kind=canonical"
+  fi
+  local response
+  response="$(api_get "/api/artifacts/associations${query}")" \
+    || die "${RED}Failed to list artifact associations.${RESET}" 1
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+  else
+    printf '%s\n' "$response" | jq -r '
+      .associations[]?
+      | "\(.project_id) \(.association_kind) \(.target_type):\(.target_id)\(if .role != "" then " " + .role else "" end)"'
   fi
 }
 
@@ -1341,6 +1416,8 @@ case "$cmd" in
   link) cmd_link "$@" ;;
   resolve) cmd_resolve "$@" ;;
   list) cmd_list "$@" ;;
+  associate) cmd_associate "$@" ;;
+  associations) cmd_associations "$@" ;;
   show) cmd_show "$@" ;;
   content) cmd_content "$@" ;;
   check) cmd_check "$@" ;;

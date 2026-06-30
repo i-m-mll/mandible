@@ -7,6 +7,9 @@ import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
+const CLI_TEST_ENV = {
+  MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
+};
 
 let tempDir = "";
 let tempRoots: string[] = [];
@@ -19,7 +22,7 @@ function run(
   const result = spawnSync(CLI, args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
+    env: { ...process.env, MANDIBLE_PORT: "9", ...CLI_TEST_ENV, ...extraEnv },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
@@ -32,7 +35,7 @@ function runAsync(
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
       cwd,
-      env: { ...process.env, MANDIBLE_PORT: "9", ...extraEnv },
+      env: { ...process.env, MANDIBLE_PORT: "9", ...CLI_TEST_ENV, ...extraEnv },
     });
     let stdout = "";
     let stderr = "";
@@ -158,9 +161,45 @@ describe("artifact CLI", () => {
     const result = run(["artifact", "--help"], process.cwd());
 
     expect(result.status).toBe(0);
+    expect(result.stdout).toContain("artifact:<id>             logical artifact");
+    expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
+    expect(result.stdout).toContain("mandible artifact associate <ref> --project <project>");
     expect(result.stdout).toContain("mandible artifact versions <ref>");
     expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
     expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
+  });
+
+  it("prints canonical resolve targets and repair warnings", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              target_type: "artifact_blob",
+              target_id: "artifact-blob:abc123",
+              normalized_ref: "artifact-blob:abc123",
+              artifact: { id: "artifact:sha256:abc123" },
+              warnings: ["legacy_artifact_ref_read_only", "repair_to_artifact_blob_ref"],
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "resolve", "artifact:sha256:abc123"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("resolved artifact_blob artifact-blob:abc123 artifact-blob:abc123");
+      expect(result.stdout).toContain("warning: legacy_artifact_ref_read_only");
+      expect(result.stdout).toContain("warning: repair_to_artifact_blob_ref");
+    } finally {
+      await recorder.close();
+    }
   });
 
   it("rejects an unknown record kind without contacting the daemon", () => {

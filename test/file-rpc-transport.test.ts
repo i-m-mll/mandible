@@ -252,6 +252,10 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/auth/check")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/queue")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/artifacts/resolve")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/logical")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/blobs")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/associations")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/associations")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/ingest")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/check")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/snapshot")).toBe(true);
