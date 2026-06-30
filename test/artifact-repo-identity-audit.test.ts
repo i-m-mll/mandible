@@ -6,7 +6,10 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { buildArtifactRepoIdentityAudit } from "../scripts/audit-artifact-repo-identity.mjs";
+import {
+  buildArtifactRepoIdentityAudit,
+  runArtifactRepoIdentityAudit,
+} from "../scripts/audit-artifact-repo-identity.mjs";
 
 let tempDir = "";
 let db: Database.Database;
@@ -136,6 +139,126 @@ describe("artifact repo identity audit planner", () => {
   });
 });
 
+describe("artifact repo identity safe apply", () => {
+  it("requires a non-existing backup path before applying safe updates", async () => {
+    const dbPath = resetToFileDatabase();
+    const repoRoot = createGitRepo("feature__31e67ff-cap-independent-soft-lambda-redo", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: false,
+    });
+    const backupPath = path.join(tempDir, "existing-backup.db");
+    fs.writeFileSync(backupPath, "already here");
+
+    await expect(runArtifactRepoIdentityAudit({
+      dbPath,
+      apply: true,
+      backupPath,
+      reportPath: path.join(tempDir, "apply-report.json"),
+    })).rejects.toThrow(/Refusing to overwrite existing backup/);
+
+    expect(
+      db.prepare("SELECT home_repo_id FROM artifacts WHERE id = 'artifact:sha256:fixture'").get(),
+    ).toEqual({ home_repo_id: "feature__31e67ff-cap-independent-soft-lambda-redo" });
+  });
+
+  it("applies safe updates in place and records before and after counts", async () => {
+    const dbPath = resetToFileDatabase();
+    const repoRoot = createGitRepo("feature__31e67ff-cap-independent-soft-lambda-redo", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: false,
+    });
+
+    const backupPath = path.join(tempDir, "backup.db");
+    const reportPath = path.join(tempDir, "apply-report.json");
+    const report = await runArtifactRepoIdentityAudit({
+      dbPath,
+      apply: true,
+      backupPath,
+      reportPath,
+    });
+
+    expect(report.mode).toBe("apply");
+    expect(report.mutates_db).toBe(true);
+    expect(report.backup_path).toBe(backupPath);
+    expect(fs.existsSync(backupPath)).toBe(true);
+    expect(fs.statSync(backupPath).size).toBeGreaterThan(0);
+    expect(report.before_summary.safe_updates).toBeGreaterThan(0);
+    expect(report.after_summary.safe_updates).toBe(0);
+    expect(report.applied_update_count).toBe(report.before_summary.safe_updates);
+    expect(JSON.parse(fs.readFileSync(reportPath, "utf8")).backup_path).toBe(backupPath);
+
+    expect(
+      db.prepare("SELECT uri, home_repo_id, repo_locator_json FROM artifacts WHERE id = 'artifact:sha256:fixture'").get(),
+    ).toEqual({
+      uri: `repo://rlrmp@${commit}/results/report.md`,
+      home_repo_id: "rlrmp",
+      repo_locator_json: JSON.stringify({ repo_id: "rlrmp", ref: commit, path: "results/report.md" }),
+    });
+  });
+
+  it("does not apply blocked updates while applying safe ones", async () => {
+    const dbPath = resetToFileDatabase();
+    const repoRoot = createGitRepo("feature__31e67ff-cap-independent-soft-lambda-redo", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    const badUri = `repo://feature__31e67ff-cap-independent-soft-lambda-redo@${commit}/results/report.md`;
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: true,
+    });
+
+    const report = await runArtifactRepoIdentityAudit({
+      dbPath,
+      apply: true,
+      backupPath: path.join(tempDir, "backup-collision.db"),
+      reportPath: path.join(tempDir, "apply-collision-report.json"),
+    });
+
+    expect(report.before_summary.safe_updates).toBeGreaterThan(0);
+    expect(report.before_summary.blocked_updates).toBeGreaterThan(0);
+    expect(report.after_summary.blocked_updates).toBeGreaterThan(0);
+    expect(
+      db.prepare("SELECT alias, normalized_ref FROM artifact_aliases WHERE id = 'alias-bad'").get(),
+    ).toEqual({ alias: badUri, normalized_ref: badUri });
+    expect(
+      db.prepare("SELECT home_repo_id FROM artifacts WHERE id = 'artifact:sha256:fixture'").get(),
+    ).toEqual({ home_repo_id: "rlrmp" });
+  });
+});
+
 function createSchema(database: Database.Database) {
   database.exec(`
     CREATE TABLE ledger_projects (
@@ -235,6 +358,14 @@ function createSchema(database: Database.Database) {
       source TEXT NOT NULL
     );
   `);
+}
+
+function resetToFileDatabase() {
+  db.close();
+  const dbPath = path.join(tempDir, "mandible.db");
+  db = new Database(dbPath);
+  createSchema(db);
+  return dbPath;
 }
 
 function insertProject(input: { projectKey: string; workRepoId: string; root: string }) {
