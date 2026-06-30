@@ -25,6 +25,7 @@ export interface HealthResponse {
   uptime: number;
   version: string;
   startup_commit: StartupCommitInfo;
+  instance: InstanceInfo;
   // Bug: 4db692a — true when daemon is about to restart after a self-merge.
   // The UI health poll uses this to avoid reloading prematurely while the
   // daemon is still alive but in the process of shutting down.
@@ -37,6 +38,23 @@ export interface HealthResponse {
   // not let users fire actions into a half-initialized daemon.
   ready?: boolean;
 }
+
+export type InstanceRole = "main" | "preview" | "dev" | "test";
+export type OperationalMutationPolicy = "allow" | "reject";
+
+export interface InstanceInfo {
+  role: InstanceRole;
+  operational_mutations: OperationalMutationPolicy;
+  operational_mutations_overridden: boolean;
+  db_path: string | null;
+  db_path_source: string | null;
+  source_db_path?: string | null;
+  source_db_path_source?: string | null;
+}
+
+export type InstanceMutationDecision =
+  | { allowed: true }
+  | { allowed: false; status: 403 | 409; body: Record<string, unknown> };
 
 export type LogLevel = "debug" | "info" | "warn" | "error";
 

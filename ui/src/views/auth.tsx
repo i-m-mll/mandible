@@ -20,6 +20,7 @@ import {
   type AuthRequestAction,
   type AuthAutoApproveStatus,
   type AuthHook,
+  type InstanceInfo,
 } from '../api';
 
 export type AuthRequestType =
@@ -95,6 +96,7 @@ export type AuthQueueViewProps = {
    * so no mutation POST fires into a half-initialized daemon. Defaults to true.
    */
   daemonReady?: boolean;
+  instance?: InstanceInfo | null;
   onSelectAuth?: (id: string | null) => void;
   onApprove: (requestId: string) => void | Promise<void>;
   onReject: (requestId: string) => void | Promise<void>;
@@ -143,6 +145,12 @@ function getStats(request: AuthRequest): { files: number | null; additions: numb
 
 function formatNumber(value: number): string {
   return value.toLocaleString();
+}
+
+function compactPath(value: string): string {
+  const parts = value.split('/').filter(Boolean);
+  if (parts.length <= 3) return value;
+  return `.../${parts.slice(-3).join('/')}`;
 }
 
 function extractMandibleIssueRefs(message: string): string[] {
@@ -366,11 +374,13 @@ function AuthActionBundle({
   request,
   actions,
   inFlightActionIds,
+  mutationsAllowed,
   onToggleVeto,
 }: {
   request: AuthRequest;
   actions: AuthRequestAction[];
   inFlightActionIds: Set<string>;
+  mutationsAllowed: boolean;
   onToggleVeto: (requestId: string, action: AuthRequestAction, vetoed: boolean) => void;
 }): JSX.Element | null {
   const requestId = getAuthId(request);
@@ -474,7 +484,7 @@ function AuthActionBundle({
                   className={`auth-action-row__veto${vetoed ? ' auth-action-row__veto--on' : ''}`}
                   role="switch"
                   aria-checked={vetoed}
-                  disabled={vetoBusy}
+                  disabled={vetoBusy || !mutationsAllowed}
                   onClick={() => onToggleVeto(requestId, action, !vetoed)}
                 >
                   {vetoBusy ? 'Saving' : vetoed ? 'Restore' : 'Veto'}
@@ -712,6 +722,7 @@ function AuthCard({
   onDragOver,
   onDrop,
   onUpdateField,
+  mutationsAllowed = true,
 }: {
   request: AuthRequest;
   expanded: boolean;
@@ -732,6 +743,7 @@ function AuthCard({
   onDragOver?: (event: DragEvent) => void;
   onDrop?: (event: DragEvent) => void;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
+  mutationsAllowed?: boolean;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(false);
@@ -1004,7 +1016,7 @@ function AuthCard({
                     Commit Message
                   </button>
                   {/* Bug: 2c826ca — editable commit message for pending/failed requests */}
-                  {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                  {onUpdateField && mutationsAllowed && (status === 'pending' || failedLike) && !editingCommitMsg && (
                     <button
                       type="button"
                       className="panel__edit-btn"
@@ -1024,15 +1036,17 @@ function AuthCard({
                         className="panel__edit-textarea"
                         value={editCommitValue}
                         onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
+                        disabled={!mutationsAllowed}
                         rows={8}
                       />
                       <div className="panel__edit-actions">
                         <button
                           type="button"
                           className="panel__edit-save"
+                          disabled={!mutationsAllowed}
                           onClick={() => {
                             const id = getAuthId(request);
-                            if (id && onUpdateField) {
+                            if (id && onUpdateField && mutationsAllowed) {
                               void onUpdateField(id, 'commit_message', editCommitValue);
                             }
                             setEditingCommitMsg(false);
@@ -1194,6 +1208,7 @@ function AuthRequestDetail({
   actions,
   executionOutput,
   onUpdateField,
+  mutationsAllowed = true,
 }: {
   request: AuthRequest;
   history?: boolean;
@@ -1205,6 +1220,7 @@ function AuthRequestDetail({
   actions?: JSX.Element | null;
   executionOutput?: string;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
+  mutationsAllowed?: boolean;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(true);
@@ -1590,7 +1606,7 @@ function AuthRequestDetail({
                     </span>
                     Commit Message
                   </button>
-                  {onUpdateField && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                  {onUpdateField && mutationsAllowed && (status === 'pending' || failedLike) && !editingCommitMsg && (
                     <button
                       type="button"
                       className="panel__edit-btn"
@@ -1610,15 +1626,17 @@ function AuthRequestDetail({
                         className="panel__edit-textarea"
                         value={editCommitValue}
                         onInput={(e) => setEditCommitValue((e.target as HTMLTextAreaElement).value)}
+                        disabled={!mutationsAllowed}
                         rows={8}
                       />
                       <div className="panel__edit-actions">
                         <button
                           type="button"
                           className="panel__edit-save"
+                          disabled={!mutationsAllowed}
                           onClick={() => {
                             const id = getAuthId(request);
-                            if (id && onUpdateField) {
+                            if (id && onUpdateField && mutationsAllowed) {
                               void onUpdateField(id, 'commit_message', editCommitValue);
                             }
                             setEditingCommitMsg(false);
@@ -1945,7 +1963,13 @@ function AuthSidebarItem({
 }
 
 /** Hooks management panel for auth hook settings. */
-export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Element {
+export function AuthHooksPanel({
+  onClose,
+  mutationsAllowed = true,
+}: {
+  onClose?: () => void;
+  mutationsAllowed?: boolean;
+}): JSX.Element {
   const [hooks, setHooks] = useState<AuthHook[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1983,6 +2007,10 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleSave = async () => {
+    if (!mutationsAllowed) {
+      setError('Auth hook mutations are disabled on this Mandible preview instance.');
+      return;
+    }
     try {
       if (editId) {
         await updateAuthHook(editId, {
@@ -2007,6 +2035,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleEdit = (hook: AuthHook) => {
+    if (!mutationsAllowed) return;
     setFormRepo(hook.repo_pattern);
     setFormType(hook.auth_type as AuthRequestType);
     setFormCommand(hook.command);
@@ -2016,7 +2045,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleToggle = async (hook: AuthHook) => {
-    if (hook.builtin) return; // Built-in hooks cannot be toggled
+    if (hook.builtin || !mutationsAllowed) return; // Built-in hooks cannot be toggled
     try {
       await updateAuthHook(hook.id, { enabled: !hook.enabled });
       await loadHooks();
@@ -2026,7 +2055,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
   };
 
   const handleDelete = async (hook: AuthHook) => {
-    if (hook.builtin) return;
+    if (hook.builtin || !mutationsAllowed) return;
     try {
       await deleteAuthHook(hook.id);
       await loadHooks();
@@ -2044,6 +2073,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
             type="button"
             className="btn btn--sm btn--ghost"
             onClick={() => { resetForm(); setShowForm(true); }}
+            disabled={!mutationsAllowed}
           >
             + Add Hook
           </button>
@@ -2062,6 +2092,11 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
       {error && (
         <div className="auth-hooks-panel__error">{error}</div>
       )}
+      {!mutationsAllowed && (
+        <div className="auth-hooks-panel__error">
+          Auth hook mutations are disabled on this Mandible preview instance.
+        </div>
+      )}
 
       {showForm && (
         <div className="auth-hooks-panel__form">
@@ -2072,6 +2107,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               placeholder="Hook description"
               value={formLabel}
               onInput={(e) => setFormLabel((e.target as HTMLInputElement).value)}
+              disabled={!mutationsAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -2081,6 +2117,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               placeholder="* for all, or repo name"
               value={formRepo}
               onInput={(e) => setFormRepo((e.target as HTMLInputElement).value)}
+              disabled={!mutationsAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-row">
@@ -2088,6 +2125,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
             <select
               value={formType}
               onChange={(e) => setFormType((e.target as HTMLSelectElement).value as AuthRequestType)}
+              disabled={!mutationsAllowed}
             >
               <option value="merge">Merge</option>
               <option value="commit">Commit</option>
@@ -2105,6 +2143,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               value={formCommand}
               rows={3}
               onInput={(e) => setFormCommand((e.target as HTMLTextAreaElement).value)}
+              disabled={!mutationsAllowed}
             />
           </div>
           <div className="auth-hooks-panel__form-actions">
@@ -2112,7 +2151,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
               type="button"
               className="btn btn--sm btn--success"
               onClick={() => void handleSave()}
-              disabled={!formCommand.trim()}
+              disabled={!mutationsAllowed || !formCommand.trim()}
             >
               {editId ? 'Update' : 'Create'}
             </button>
@@ -2143,8 +2182,8 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
                   type="button"
                   className={`auth-hooks-panel__toggle${hook.enabled ? ' auth-hooks-panel__toggle--on' : ''}`}
                   onClick={() => void handleToggle(hook)}
-                  disabled={hook.builtin}
-                  title={hook.builtin ? 'Built-in hooks are always enabled' : (hook.enabled ? 'Disable' : 'Enable')}
+                  disabled={hook.builtin || !mutationsAllowed}
+                  title={hook.builtin ? 'Built-in hooks are always enabled' : !mutationsAllowed ? 'Disabled on preview instances' : (hook.enabled ? 'Disable' : 'Enable')}
                 >
                   {hook.enabled ? 'ON' : 'OFF'}
                 </button>
@@ -2170,6 +2209,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
                     type="button"
                     className="btn btn--sm btn--ghost"
                     onClick={() => handleEdit(hook)}
+                    disabled={!mutationsAllowed}
                   >
                     Edit
                   </button>
@@ -2177,6 +2217,7 @@ export function AuthHooksPanel({ onClose }: { onClose?: () => void }): JSX.Eleme
                     type="button"
                     className="btn btn--sm btn--danger"
                     onClick={() => void handleDelete(hook)}
+                    disabled={!mutationsAllowed}
                   >
                     Delete
                   </button>
@@ -2218,6 +2259,7 @@ export function AuthQueueView({
   onUpdateField,
   sidebarHidden = false,
   daemonReady = true,
+  instance = null,
 }: AuthQueueViewProps): JSX.Element {
   const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
     defaultWidth: 320,
@@ -2475,6 +2517,11 @@ export function AuthQueueView({
   const [autoApproveBusy, setAutoApproveBusy] = useState(false);
   const [showAutoApproveSetupModal, setShowAutoApproveSetupModal] = useState(false);
   const autoApproveSigningConfigured = Boolean(autoApproveStatus?.signing?.configured);
+  const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
+  const instanceMutationBlocked = Boolean(instance && !operationalMutationsAllowed);
+  const instanceLabel = instance?.role ?? 'main';
+  const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
+  const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -2513,6 +2560,10 @@ export function AuthQueueView({
   }, []);
 
   const handleAutoApproveToggle = useCallback(async () => {
+    if (!operationalMutationsAllowed) {
+      showToast('Auth mutations are disabled on this Mandible preview instance.');
+      return;
+    }
     if (!autoApproveStatus?.enabled && !autoApproveSigningConfigured) {
       setShowAutoApproveSetupModal(true);
       return;
@@ -2528,14 +2579,14 @@ export function AuthQueueView({
     } finally {
       setAutoApproveBusy(false);
     }
-  }, [autoApproveSigningConfigured, autoApproveStatus?.enabled, showToast]);
+  }, [autoApproveSigningConfigured, autoApproveStatus?.enabled, operationalMutationsAllowed, showToast]);
 
   const runAction = useCallback(
     (id: string, action: (requestId: string) => void | Promise<void>, onError?: (err: unknown) => void) => {
       // Bug: 645f8a8 — block all mutating actions while the daemon is not ready
       // (rebuilding / starting). The buttons are also disabled, but gate here too
       // so no mutation POST can fire from a keyboard/programmatic trigger.
-      if (!daemonReady) {
+      if (!daemonReady || !operationalMutationsAllowed) {
         return;
       }
       if (!id || inFlightRef.current.has(id)) {
@@ -2561,7 +2612,7 @@ export function AuthQueueView({
           });
         });
     },
-    [setInFlightState, daemonReady],
+    [setInFlightState, daemonReady, operationalMutationsAllowed],
   );
 
   const handleApprove = useCallback(
@@ -2635,6 +2686,10 @@ export function AuthQueueView({
 
   const handleToggleActionVeto = useCallback(
     (requestId: string, action: AuthRequestAction, vetoed: boolean) => {
+      if (!operationalMutationsAllowed) {
+        showToast('Auth mutations are disabled on this Mandible preview instance.');
+        return;
+      }
       if (inFlightActionIdsRef.current.has(action.id)) return;
       setInFlightActionIds((prev) => {
         const next = new Set(prev);
@@ -2654,7 +2709,7 @@ export function AuthQueueView({
           });
         });
     },
-    [showToast, updateActionForRequest],
+    [operationalMutationsAllowed, showToast, updateActionForRequest],
   );
 
   const [dismissConfirmId, setDismissConfirmId] = useState<string | null>(null);
@@ -2952,7 +3007,7 @@ export function AuthQueueView({
     // Bug: 645f8a8 — while the daemon is not ready (rebuilding / starting), all
     // mutating actions are blocked. Kept separate from actionDisabled (in-flight)
     // so it doesn't trip the "Submitting…" label when nothing is actually queued.
-    const mutationsBlocked = !daemonReady;
+    const mutationsBlocked = !daemonReady || !operationalMutationsAllowed;
     const actionDisabled = inFlight.has(id);
     // Bug: 816476e — isExecuting covers both the optimistic 'approved' status and
     // the inFlight window before the API returns (where status is still 'pending'
@@ -3291,7 +3346,9 @@ export function AuthQueueView({
               <div className="auth-auto-approve__text">
                 <span className="auth-auto-approve__label">Auto-approve</span>
                 <span className="auth-auto-approve__status">
-                  {autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
+                  {instanceMutationBlocked
+                    ? `Disabled on ${instanceLabel}`
+                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
                 </span>
               </div>
               <button
@@ -3300,7 +3357,7 @@ export function AuthQueueView({
                 role="switch"
                 aria-checked={Boolean(autoApproveStatus?.enabled)}
                 aria-label="Toggle auth auto-approve"
-                disabled={autoApproveBusy || !autoApproveStatus}
+                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
                 onClick={() => void handleAutoApproveToggle()}
               >
                 <span className="auth-auto-approve__knob" />
@@ -3315,6 +3372,16 @@ export function AuthQueueView({
 
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>
+        {instanceMutationBlocked && (
+          <div className="auth-instance-warning" role="status">
+            <strong>{instanceLabel} instance</strong>
+            <span>
+              Auth actions are disabled for this copied queue
+              {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
+              {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
+            </span>
+          </div>
+        )}
         {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>
@@ -3344,12 +3411,14 @@ export function AuthQueueView({
                     request={request}
                     actions={requestActions}
                     inFlightActionIds={inFlightActionIds}
+                    mutationsAllowed={operationalMutationsAllowed}
                     onToggleVeto={handleToggleActionVeto}
                   />
                 ) : null
               }
               actions={renderDetailActions(request)}
               onUpdateField={onUpdateField}
+              mutationsAllowed={operationalMutationsAllowed}
             />
           );
         })()}

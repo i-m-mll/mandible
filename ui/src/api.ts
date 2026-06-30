@@ -77,6 +77,16 @@ export type {
 export type { Preset, PresetNode, LibraryConvention, ConventionSettingLink, SessionValidationWarning, SessionValidationResult } from './types/presets';
 export type AuthRequestAction = ContractAuthRequestAction;
 
+export type InstanceInfo = {
+  role: 'main' | 'preview' | 'dev' | 'test';
+  operational_mutations: 'allow' | 'reject';
+  operational_mutations_overridden: boolean;
+  db_path: string | null;
+  db_path_source: string | null;
+  source_db_path?: string | null;
+  source_db_path_source?: string | null;
+};
+
 export type InstructionTargetMode = 'managed-block' | 'standalone';
 
 export type InstructionTarget = {

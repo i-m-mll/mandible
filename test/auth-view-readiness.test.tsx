@@ -1,10 +1,11 @@
 // Bug: 645f8a8 — auth view mutation gate. While the daemon is not ready
 // (rebuilding / starting), the Approve button must be disabled and NO approval
 // action may fire. Once ready, Approve works normally.
-import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
+import { AuthHooksPanel, AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
+import type { InstanceInfo } from '../ui/src/api';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so the sidebar-width persistence round-trips.
@@ -36,12 +37,28 @@ const pendingRequest: AuthRequest = {
   base_branch: 'main',
   status: 'pending',
   command: 'mandible auth merge main',
+  commit_message: 'Merge feature/x',
   created_at: 1,
   updated_at: 1,
   actions: [],
 };
 
-function renderView(daemonReady: boolean, onApprove: (id: string) => void) {
+const previewInstance: InstanceInfo = {
+  role: 'preview',
+  operational_mutations: 'reject',
+  operational_mutations_overridden: true,
+  db_path: '/tmp/mandible-preview.db',
+  db_path_source: 'iab-preview-copy',
+  source_db_path: '/tmp/mandible-main.db',
+  source_db_path_source: 'env',
+};
+
+function renderView(
+  daemonReady: boolean,
+  onApprove: (id: string) => void,
+  instance?: InstanceInfo | null,
+  onUpdateField?: (requestId: string, field: string, value: string) => void,
+) {
   return render(
     <AuthQueueView
       queue={[pendingRequest]}
@@ -49,10 +66,12 @@ function renderView(daemonReady: boolean, onApprove: (id: string) => void) {
       outputs={{}}
       selectedAuthId="req-1"
       daemonReady={daemonReady}
+      instance={instance}
       onApprove={onApprove}
       onReject={() => undefined}
       onRetry={() => undefined}
       onDismiss={() => undefined}
+      onUpdateField={onUpdateField}
     />,
   );
 }
@@ -95,5 +114,72 @@ describe('AuthQueueView daemon readiness gate', () => {
     fireEvent.click(approve);
     expect(onApprove).toHaveBeenCalledTimes(1);
     expect(onApprove).toHaveBeenCalledWith('req-1');
+  });
+
+  it('shows preview instance diagnostics and blocks approval actions', () => {
+    const onApprove = vi.fn();
+    renderView(true, onApprove, previewInstance);
+
+    expect(screen.getByText('preview instance')).toBeTruthy();
+    expect(screen.getByText(/Auth actions are disabled for this copied queue/)).toBeTruthy();
+
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
+    expect(approve.disabled).toBe(true);
+
+    fireEvent.click(approve);
+    expect(onApprove).not.toHaveBeenCalled();
+  });
+
+  it('hides commit message editing on preview instances', () => {
+    const onApprove = vi.fn();
+    const onUpdateField = vi.fn();
+    renderView(true, onApprove, previewInstance, onUpdateField);
+
+    expect(screen.getByText('Commit Message')).toBeTruthy();
+    expect(screen.queryByText('edit')).toBeNull();
+  });
+
+  it('disables auth hook mutation controls on preview instances', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/api/auth/hooks' && method === 'GET') {
+        return Promise.resolve(new Response(JSON.stringify({
+          hooks: [
+            {
+              id: 'hook-1',
+              repo_pattern: '*',
+              auth_type: 'merge',
+              command: 'echo hook',
+              label: 'Test Hook',
+              enabled: true,
+              builtin: false,
+            },
+          ],
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    render(<AuthHooksPanel mutationsAllowed={false} />);
+
+    expect(await screen.findByText('Test Hook')).toBeTruthy();
+    expect(screen.getByText('Auth hook mutations are disabled on this Mandible preview instance.')).toBeTruthy();
+
+    const addButton = screen.getByRole('button', { name: '+ Add Hook' }) as HTMLButtonElement;
+    const toggleButton = screen.getByRole('button', { name: 'ON' }) as HTMLButtonElement;
+    const editButton = screen.getByRole('button', { name: 'Edit' }) as HTMLButtonElement;
+    const deleteButton = screen.getByRole('button', { name: 'Delete' }) as HTMLButtonElement;
+
+    expect(addButton.disabled).toBe(true);
+    expect(toggleButton.disabled).toBe(true);
+    expect(editButton.disabled).toBe(true);
+    expect(deleteButton.disabled).toBe(true);
+
+    fireEvent.click(editButton);
+    await waitFor(() => {
+      expect(screen.queryByPlaceholderText('Shell command to run after auth action')).toBeNull();
+    });
   });
 });

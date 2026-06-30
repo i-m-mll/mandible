@@ -6,6 +6,10 @@
 set -euo pipefail
 
 # MANDIBLE_PORT and MANDIBLE_BASE are exported by the dispatcher
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+source "$GIT_ENV_HELPER"
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
 
 usage() {
     echo "Usage: mandible task <task description>"
@@ -27,7 +31,7 @@ find_session_id() {
     local pid=$$
     while [ "$pid" -gt 1 ]; do
         local response
-        response=$(curl -sf "${MANDIBLE_BASE}/api/sessions/by-pid/${pid}" 2>/dev/null) || true
+        response=$(api_get "/api/sessions/by-pid/${pid}" 2>/dev/null) || true
         if [ -n "$response" ]; then
             local sid
             sid=$(printf '%s' "$response" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
@@ -59,9 +63,6 @@ else
     payload="{\"task\":\"${escaped}\"}"
 fi
 
-curl -sf -X PATCH \
-    -H "Content-Type: application/json" \
-    -d "$payload" \
-    "${MANDIBLE_BASE}/api/sessions/${session_id}" >/dev/null
+api_send PATCH "/api/sessions/$(urlencode "$session_id")" "$payload" >/dev/null
 
 echo "Task updated for session ${session_id}"

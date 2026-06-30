@@ -243,6 +243,15 @@ function listen(): Promise<number> {
         return raw ? JSON.parse(raw) : null;
       };
 
+      if (req.method === "GET" && req.url === "/api/instance") {
+        res.end(JSON.stringify({
+          instance: {
+            role: "main",
+            operational_mutations: "allow",
+          },
+        }));
+        return;
+      }
       if (req.url?.startsWith("/api/issues?")) {
         res.end(JSON.stringify([
           {

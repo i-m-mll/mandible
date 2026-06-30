@@ -68,6 +68,7 @@ function runWithResponder(
         ...process.env,
         MANDIBLE_BASE: `file://${spoolDir}`,
         MANDIBLE_FILE_RPC_TIMEOUT: "5",
+        MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
       },
     });
     let stdout = "";
