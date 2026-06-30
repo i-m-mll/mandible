@@ -10,6 +10,7 @@ import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverabili
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
 const HTML_PREVIEW_BYTES = 8 * 1024 * 1024;
+const JSON_PREVIEW_BYTES = 2 * 1024 * 1024;
 
 export type ArtifactContentKind = "text" | "markdown" | "json" | "html" | "binary" | "unavailable";
 export type ArtifactContentSourceKind = "managed_file" | "repo_locator" | "local_file";
@@ -223,7 +224,11 @@ export function getArtifactContent(
     };
   }
 
-  const textPreviewBytes = kind === "html" ? Math.max(previewBytes, HTML_PREVIEW_BYTES) : previewBytes;
+  const textPreviewBytes = kind === "html"
+    ? Math.max(previewBytes, HTML_PREVIEW_BYTES)
+    : kind === "json"
+      ? Math.max(previewBytes, JSON_PREVIEW_BYTES)
+      : previewBytes;
   const preview = readTextPreview(resolved.path, textPreviewBytes);
   if (!preview) {
     return {

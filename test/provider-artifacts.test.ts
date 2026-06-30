@@ -1835,6 +1835,37 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain('\n  "accuracy": 0.95,');
   });
 
+  it("auto-formats compact JSON beyond the default text preview window", () => {
+    const compact = JSON.stringify({
+      adam_grid: {
+        initialization: "zero",
+        learning_rates: [1e-5, 5e-5, 1e-4],
+        steps: Array.from({ length: 40_000 }, (_value, index) => index),
+      },
+    });
+    expect(compact.length).toBeGreaterThan(128 * 1024);
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "adam_soft_lambda_redo.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        raw_text: compact,
+        formatted: "json",
+        truncated: false,
+      },
+    });
+    expect(content?.preview?.text).toContain('\n  "adam_grid": {');
+    expect(content?.preview?.text).toContain('\n      39999\n');
+  });
+
   it("returns binary download metadata without inline preview", () => {
     const payload = Buffer.from([0, 1, 2, 3, 4]);
     const artifact = ingestArtifact(db, {
