@@ -109,6 +109,157 @@ describe("artifact repo identity audit planner", () => {
     expect(report.summary.alias_collisions).toBeGreaterThan(0);
   });
 
+  it("plans duplicate same-artifact alias collapses instead of blocking canonical rewrites", () => {
+    const repoRoot = createGitRepo("feature__31e67ff-cap-independent-soft-lambda-redo", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: false,
+    });
+    db.prepare(
+      `INSERT INTO artifact_aliases
+       (id, artifact_id, scheme, alias, normalized_ref, locator_json)
+       VALUES ('alias-duplicate', 'artifact:sha256:fixture', 'repo', ?, ?, ?)`,
+    ).run(
+      `repo://feature__other-worktree@${commit}/results/report.md`,
+      `repo://feature__other-worktree@${commit}/results/report.md`,
+      JSON.stringify({ repo_id: "feature__other-worktree", ref: commit, path: "results/report.md" }),
+    );
+    db.prepare(
+      `INSERT INTO ledger_project_checkouts
+       (id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at)
+       VALUES ('chk_rlrmp_other', 'prj_rlrmp', 'feature__other-worktree', ?, 'other checkout',
+               'main', 'git@github.com:i-m-mll/rlrmp.git', 1, 1)`,
+    ).run(repoRoot);
+
+    const report = buildArtifactRepoIdentityAudit(db);
+
+    expect(report.summary.blocked_updates).toBe(0);
+    expect(report.summary.alias_collapse_updates).toBe(4);
+    expect(report.summary.alias_collapse_plans).toBe(1);
+    expect(report.alias_collapse_plans[0]).toMatchObject({
+      canonical_ref: `repo://rlrmp@${commit}/results/report.md`,
+      artifact_id: "artifact:sha256:fixture",
+      content_hash: sha256("# Report\n"),
+    });
+    expect(report.alias_collapse_plans[0].delete_alias_ids).toEqual(["alias-duplicate"]);
+  });
+
+  it("validates through canonical checkout roots when an occurrence keeps a stale worktree root", () => {
+    const repoRoot = createGitRepo("rlrmp", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    const staleRoot = path.join(repoRoot, "worktrees", "feature__deleted");
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: false,
+    });
+    db.prepare(
+      `UPDATE artifacts
+       SET repo_locator_json = ?
+       WHERE id = 'artifact:sha256:fixture'`,
+    ).run(JSON.stringify({
+      repo_id: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: staleRoot,
+      ref: commit,
+      path: "results/report.md",
+    }));
+
+    const report = buildArtifactRepoIdentityAudit(db);
+    const uriUpdate = report.safe_updates.find((update: any) =>
+      update.table === "artifacts" && update.column === "uri"
+    );
+
+    expect(uriUpdate).toBeTruthy();
+    expect(uriUpdate.validation.checks.root_candidates).toContain(staleRoot);
+    expect(uriUpdate.validation.checks.validated_root).toBe(repoRoot);
+    expect(uriUpdate.validation.checks.content_hash_match).toBe(true);
+  });
+
+  it("uses artifact version context to resolve series repo ids with stale worktree names", () => {
+    const repoRoot = createGitRepo("rlrmp", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    const staleRoot = path.join(repoRoot, "worktrees", "feature__deleted");
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "rlrmp",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: false,
+    });
+    db.prepare(
+      `UPDATE artifacts
+       SET repo_locator_json = ?
+       WHERE id = 'artifact:sha256:fixture'`,
+    ).run(JSON.stringify({
+      repo_id: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: staleRoot,
+      ref: commit,
+      path: "results/report.md",
+    }));
+
+    const report = buildArtifactRepoIdentityAudit(db);
+    const seriesUpdate = report.safe_updates.find((update: any) =>
+      update.table === "artifact_series" &&
+      update.column === "repo_id" &&
+      update.after === "rlrmp"
+    );
+
+    expect(seriesUpdate).toBeTruthy();
+    expect(seriesUpdate.evidence.some((item: any) => item.matched_by === "checkout_ancestry")).toBe(true);
+    expect(seriesUpdate.validation.checks.validated_root).toBe(repoRoot);
+  });
+
+  it("classifies malformed repo uri captures as invalid references", () => {
+    const malformed = "repo://...`";
+    db.prepare(
+      `INSERT INTO artifacts
+       (id, algorithm, content_hash, uri, home_repo_id, repo_locator_json, metadata_json, reference_json)
+       VALUES ('artifact:ref:bad', 'ref-sha256', ?, ?, NULL, '{}', '{}', '{}')`,
+    ).run("a".repeat(64), malformed);
+    db.prepare(
+      `INSERT INTO artifact_aliases
+       (id, artifact_id, scheme, alias, normalized_ref, locator_json)
+       VALUES ('alias-malformed', 'artifact:ref:bad', 'repo', ?, ?, '{}')`,
+    ).run(malformed, malformed);
+
+    const report = buildArtifactRepoIdentityAudit(db);
+
+    expect(report.summary.invalid_reference_occurrences).toBe(3);
+    expect(report.summary.unresolved_occurrences).toBe(0);
+    expect(report.invalid_references.map((entry: any) => entry.before)).toEqual([
+      "repo://...`",
+      "repo://...`",
+      "repo://...`",
+    ]);
+  });
+
   it("reports ambiguous project candidates instead of proposing unsafe rewrites", () => {
     db.prepare(
       `INSERT INTO ledger_projects

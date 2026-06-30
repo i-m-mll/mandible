@@ -273,9 +273,15 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
   const registry = loadProjectRegistry(db, options.git);
   const artifactContext = loadArtifactContext(db);
   const artifactVersionContext = loadArtifactVersionContext(db);
+  const artifactSeriesContext = loadArtifactSeriesContext(db, artifactContext, artifactVersionContext);
   const aliasIndex = loadAliasIndex(db);
   const auditScope = buildAuditScope(db);
-  const occurrences = scanRepoIdentityOccurrences(db, artifactContext, artifactVersionContext);
+  const occurrences = scanRepoIdentityOccurrences(
+    db,
+    artifactContext,
+    artifactVersionContext,
+    artifactSeriesContext,
+  );
   const updates = occurrences.map((occurrence) =>
     planOccurrence(occurrence, registry, aliasIndex, options.git),
   );
@@ -285,9 +291,12 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
   const safe = changed.filter((update) => update.status === "safe");
   const review = changed.filter((update) => update.status === "needs_review");
   const blocked = changed.filter((update) => update.status === "blocked");
+  const aliasCollapse = changed.filter((update) => update.status === "alias_collapse");
   const alreadyCanonical = updates.filter((update) => update.status === "already_canonical");
   const unresolved = updates.filter((update) => update.status === "unresolved");
   const ambiguous = updates.filter((update) => update.status === "ambiguous");
+  const invalidReferences = updates.filter((update) => update.status === "invalid_reference");
+  const aliasCollapsePlans = buildAliasCollapsePlans(aliasCollapse);
 
   return {
     ok: true,
@@ -305,8 +314,11 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
       safe_updates: safe.length,
       needs_review_updates: review.length,
       blocked_updates: blocked.length,
+      alias_collapse_updates: aliasCollapse.length,
+      alias_collapse_plans: aliasCollapsePlans.length,
       unresolved_occurrences: unresolved.length,
       ambiguous_occurrences: ambiguous.length,
+      invalid_reference_occurrences: invalidReferences.length,
       alias_collisions: changed.filter((update) =>
         update.blockers.some((blocker) => blocker.kind === "alias_collision"),
       ).length,
@@ -321,8 +333,11 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
     safe_updates: safe,
     needs_review_updates: review,
     blocked_updates: blocked,
+    alias_collapse_updates: aliasCollapse,
+    alias_collapse_plans: aliasCollapsePlans,
     unresolved,
     ambiguous,
+    invalid_references: invalidReferences,
     already_canonical: alreadyCanonical.slice(0, 80),
     registry_evidence: registry.projects.map((project) => ({
       project_id: project.project_id,
@@ -361,15 +376,15 @@ function buildAuditScope(db) {
   });
 }
 
-function scanRepoIdentityOccurrences(db, artifactContext, artifactVersionContext) {
+function scanRepoIdentityOccurrences(db, artifactContext, artifactVersionContext, artifactSeriesContext) {
   const occurrences = [];
   scanArtifacts(db, artifactContext, artifactVersionContext, occurrences);
   scanArtifactAliases(db, artifactContext, artifactVersionContext, occurrences);
-  scanArtifactSeries(db, occurrences);
+  scanArtifactSeries(db, artifactSeriesContext, occurrences);
   scanArtifactVersions(db, artifactContext, occurrences);
   scanArtifactLinks(db, artifactContext, artifactVersionContext, occurrences);
-  scanGraphTables(db, occurrences);
-  scanJsonTables(db, artifactContext, artifactVersionContext, occurrences);
+  scanGraphTables(db, artifactContext, artifactVersionContext, occurrences);
+  scanJsonTables(db, artifactContext, artifactVersionContext, artifactSeriesContext, occurrences);
   return dedupeOccurrences(occurrences);
 }
 
@@ -458,7 +473,7 @@ function scanArtifactAliases(db, artifactContext, artifactVersionContext, occurr
   }
 }
 
-function scanArtifactSeries(db, occurrences) {
+function scanArtifactSeries(db, artifactSeriesContext, occurrences) {
   if (!tableExists(db, "artifact_series")) return;
   const columns = tableColumns(db, "artifact_series");
   const rows = selectRows(db, "artifact_series", available(columns, [
@@ -469,7 +484,11 @@ function scanArtifactSeries(db, occurrences) {
     "metadata_json",
   ]));
   for (const row of rows) {
-    const context = { series_id: row.id, path: row.logical_name };
+    const context = {
+      series_id: row.id,
+      path: row.logical_name,
+      ...artifactSeriesContext.get(row.id),
+    };
     if (typeof row.repo_id === "string" && row.repo_id.trim()) {
       occurrences.push(makeOccurrence(row, {
         table: "artifact_series",
@@ -581,7 +600,7 @@ function scanArtifactLinks(db, artifactContext, artifactVersionContext, occurren
   }
 }
 
-function scanGraphTables(db, occurrences) {
+function scanGraphTables(db, artifactContext, artifactVersionContext, occurrences) {
   if (tableExists(db, "graph_entities")) {
     const columns = tableColumns(db, "graph_entities");
     const rows = selectRows(db, "graph_entities", available(columns, [
@@ -594,7 +613,15 @@ function scanGraphTables(db, occurrences) {
       "summary_json",
     ]));
     for (const row of rows) {
-      const context = { graph_entity_id: row.id, entity_type: row.entity_type, external_id: row.external_id };
+      const graphArtifactId = row.entity_type === "artifact" ? row.id : null;
+      const artifact = artifactContext.get(row.external_id) ?? artifactContext.get(graphArtifactId) ?? {};
+      const context = {
+        graph_entity_id: row.id,
+        entity_type: row.entity_type,
+        external_id: row.external_id,
+        ...artifact,
+        ...versionHints(artifactVersionContext.get(row.external_id)),
+      };
       if (typeof row.repo_id === "string" && row.repo_id.trim()) {
         occurrences.push(makeOccurrence(row, {
           table: "graph_entities",
@@ -610,7 +637,7 @@ function scanGraphTables(db, occurrences) {
   }
 }
 
-function scanJsonTables(db, artifactContext, artifactVersionContext, occurrences) {
+function scanJsonTables(db, artifactContext, artifactVersionContext, artifactSeriesContext, occurrences) {
   for (const target of JSON_SCAN_TABLES) {
     if (!tableExists(db, target.table)) continue;
     const columns = tableColumns(db, target.table);
@@ -626,14 +653,22 @@ function scanJsonTables(db, artifactContext, artifactVersionContext, occurrences
       "entity_type",
       "entity_id",
       "series_id",
+      "external_id",
     ]);
     const rows = selectRows(db, target.table, [target.key, ...jsonColumns, ...contextColumns]);
     for (const row of rows) {
-      const artifact = artifactContext.get(row.artifact_id) ?? {};
+      const ownArtifactId = target.table === "artifacts" ? row[target.key] : null;
+      const graphArtifactId = target.table === "graph_entities" && row.entity_type === "artifact"
+        ? row[target.key]
+        : null;
+      const artifactId = row.artifact_id ?? ownArtifactId ?? graphArtifactId;
+      const artifact = artifactContext.get(artifactId) ?? {};
+      const externalArtifact = artifactContext.get(row.external_id) ?? {};
+      const series = artifactSeriesContext.get(row.series_id) ?? {};
       const context = {
-        artifact_id: row.artifact_id,
-        content_hash: row.content_hash ?? artifact.content_hash,
-        algorithm: row.algorithm ?? artifact.algorithm,
+        artifact_id: artifactId,
+        content_hash: row.content_hash ?? artifact.content_hash ?? externalArtifact.content_hash,
+        algorithm: row.algorithm ?? artifact.algorithm ?? externalArtifact.algorithm,
         commit: row.commit_sha,
         path: row.repo_path,
         observed_path: row.observed_path,
@@ -641,7 +676,10 @@ function scanJsonTables(db, artifactContext, artifactVersionContext, occurrences
         entity_id: row.entity_id,
         series_id: row.series_id,
         ...artifact,
+        ...externalArtifact,
+        ...series,
         ...versionHints(artifactVersionContext.get(row.artifact_id)),
+        ...versionHints(artifactVersionContext.get(row.external_id)),
       };
       for (const column of jsonColumns) {
         const json = parseJson(row[column]);
@@ -698,6 +736,29 @@ function collectJsonOccurrences(value, state, pathParts = [], nearestContext = {
 }
 
 function planOccurrence(occurrence, registry, aliasIndex, git) {
+  if (isInvalidRepoReference(occurrence)) {
+    return {
+      table: occurrence.table,
+      row_id: occurrence.row_id,
+      column: occurrence.column,
+      json_path: occurrence.json_path ?? null,
+      kind: occurrence.kind,
+      before: occurrence.before,
+      after: occurrence.before,
+      context: compactContext(occurrence.context),
+      status: "invalid_reference",
+      resolution: {
+        status: "invalid_reference",
+        reason: "malformed_repo_reference",
+        repo_ref: String(occurrence.value ?? ""),
+      },
+      evidence: [],
+      warnings: [{ kind: "invalid_reference", detail: "repo reference is syntactically garbage, not a project identity" }],
+      blockers: [],
+      validation: null,
+    };
+  }
+
   const resolution = resolveCanonicalProject(occurrence, registry, git);
   const base = {
     table: occurrence.table,
@@ -828,7 +889,8 @@ function resolveCanonicalProject(occurrence, registry, git) {
 function validateRepoPath(occurrence, project, git) {
   const context = occurrence.context ?? {};
   const locator = repoLocatorFromOccurrence(occurrence);
-  const root = context.root || project.checkouts.find((checkout) => checkout.root)?.root || null;
+  const rootCandidates = candidateRoots(context.root, project);
+  const root = rootCandidates[0] ?? null;
   const ref = locator.ref || context.commit || context.ref || null;
   const repoPath = locator.path || context.path || null;
   const contentHash = context.content_hash ?? null;
@@ -840,6 +902,8 @@ function validateRepoPath(occurrence, project, git) {
     ref,
     path: repoPath,
     content_hash: contentHash,
+    root_candidates: rootCandidates,
+    validated_root: null,
     commit_path_reachable: null,
     worktree_path_exists: null,
     content_hash_match: null,
@@ -856,51 +920,98 @@ function validateRepoPath(occurrence, project, git) {
     return { checks, warnings, blockers };
   }
 
-  if (ref) {
-    const content = runGitBuffer(root, ["show", `${ref}:${repoPath}`], git);
-    checks.commit_path_reachable = content.ok;
-    if (!content.ok) {
-      warnings.push({
-        kind: "missing_commit_path",
-        detail: `git show could not read ${ref}:${repoPath}`,
-      });
-    } else if (contentHash && algorithm === "sha256") {
-      const actual = createHash("sha256").update(content.stdout).digest("hex");
-      checks.content_hash_match = actual === contentHash;
-      if (actual !== contentHash) {
-        blockers.push({
-          kind: "hash_mismatch",
-          detail: `sha256 mismatch for ${ref}:${repoPath}`,
-          expected: contentHash,
-          actual,
-        });
-      }
-    }
-  } else {
-    const candidatePath = path.resolve(root, repoPath);
-    const inside = isPathInside(candidatePath, path.resolve(root));
-    const exists = inside && fs.existsSync(candidatePath);
-    checks.worktree_path_exists = exists;
-    if (!exists) {
-      warnings.push({
-        kind: "missing_path",
-        detail: `worktree path was not found: ${repoPath}`,
-      });
-    } else if (contentHash && algorithm === "sha256") {
-      const actual = fileSha256(candidatePath);
-      checks.content_hash_match = actual === contentHash;
-      if (actual !== contentHash) {
-        blockers.push({
-          kind: "hash_mismatch",
-          detail: `sha256 mismatch for ${repoPath}`,
-          expected: contentHash,
-          actual,
-        });
-      }
-    }
-  }
+  if (ref) validateCommitPath(rootCandidates, ref, repoPath, contentHash, algorithm, git, checks, warnings, blockers);
+  else validateWorktreePath(rootCandidates, repoPath, contentHash, algorithm, checks, warnings, blockers);
 
   return { checks, warnings, blockers };
+}
+
+function candidateRoots(contextRoot, project) {
+  const roots = [];
+  const add = (root) => {
+    if (typeof root !== "string" || !root.trim()) return;
+    const resolved = path.resolve(root);
+    if (!roots.includes(resolved)) roots.push(resolved);
+  };
+  add(contextRoot);
+  for (const checkout of project.checkouts) add(checkout.root);
+  return roots;
+}
+
+function validateCommitPath(rootCandidates, ref, repoPath, contentHash, algorithm, git, checks, warnings, blockers) {
+  const mismatches = [];
+  for (const candidateRoot of rootCandidates) {
+    const content = runGitBuffer(candidateRoot, ["show", `${ref}:${repoPath}`], git);
+    if (!content.ok) continue;
+    checks.root = candidateRoot;
+    checks.validated_root = candidateRoot;
+    checks.commit_path_reachable = true;
+    if (contentHash && algorithm === "sha256") {
+      const actual = createHash("sha256").update(content.stdout).digest("hex");
+      checks.content_hash_match = actual === contentHash;
+      if (actual === contentHash) return;
+      mismatches.push({ root: candidateRoot, actual });
+      continue;
+    }
+    return;
+  }
+  checks.commit_path_reachable = false;
+  if (mismatches.length > 0) {
+    const mismatch = mismatches[0];
+    checks.validated_root = mismatch.root;
+    checks.content_hash_match = false;
+    blockers.push({
+      kind: "hash_mismatch",
+      detail: `sha256 mismatch for ${ref}:${repoPath}`,
+      expected: contentHash,
+      actual: mismatch.actual,
+      root: mismatch.root,
+    });
+    return;
+  }
+  warnings.push({
+    kind: "missing_commit_path",
+    detail: `git show could not read ${ref}:${repoPath}`,
+  });
+}
+
+function validateWorktreePath(rootCandidates, repoPath, contentHash, algorithm, checks, warnings, blockers) {
+  const mismatches = [];
+  for (const candidateRoot of rootCandidates) {
+    const candidatePath = path.resolve(candidateRoot, repoPath);
+    const inside = isPathInside(candidatePath, path.resolve(candidateRoot));
+    const exists = inside && fs.existsSync(candidatePath);
+    if (!exists) continue;
+    checks.root = candidateRoot;
+    checks.validated_root = candidateRoot;
+    checks.worktree_path_exists = true;
+    if (contentHash && algorithm === "sha256") {
+      const actual = fileSha256(candidatePath);
+      checks.content_hash_match = actual === contentHash;
+      if (actual === contentHash) return;
+      mismatches.push({ root: candidateRoot, actual });
+      continue;
+    }
+    return;
+  }
+  checks.worktree_path_exists = false;
+  if (mismatches.length > 0) {
+    const mismatch = mismatches[0];
+    checks.validated_root = mismatch.root;
+    checks.content_hash_match = false;
+    blockers.push({
+      kind: "hash_mismatch",
+      detail: `sha256 mismatch for ${repoPath}`,
+      expected: contentHash,
+      actual: mismatch.actual,
+      root: mismatch.root,
+    });
+    return;
+  }
+  warnings.push({
+    kind: "missing_path",
+    detail: `worktree path was not found: ${repoPath}`,
+  });
 }
 
 function detectAliasCollision(occurrence, after, aliasIndex) {
@@ -933,6 +1044,18 @@ function markPlannedAliasCollisions(updates) {
   for (const bucket of byTarget.values()) {
     const distinctRows = new Set(bucket.map((update) => update.row_id));
     if (distinctRows.size <= 1) continue;
+    if (canCollapseAliasBucket(bucket)) {
+      const plan = aliasCollapsePlanForBucket(bucket);
+      for (const update of bucket) {
+        update.status = "alias_collapse";
+        update.alias_collapse = plan;
+        update.warnings.push({
+          kind: "alias_collapse_required",
+          detail: "duplicate alias rows converge on one canonical alias for the same artifact/content",
+        });
+      }
+      continue;
+    }
     for (const update of bucket) {
       update.blockers.push({
         kind: "alias_collision",
@@ -942,6 +1065,45 @@ function markPlannedAliasCollisions(updates) {
       update.status = "blocked";
     }
   }
+}
+
+function canCollapseAliasBucket(bucket) {
+  const rowArtifacts = new Map();
+  const rowHashes = new Map();
+  for (const update of bucket) {
+    if (update.blockers.length > 0) return false;
+    rowArtifacts.set(update.row_id, update.context?.artifact_id ?? null);
+    rowHashes.set(update.row_id, update.context?.content_hash ?? null);
+  }
+  const artifacts = new Set(rowArtifacts.values());
+  const hashes = new Set(rowHashes.values());
+  return artifacts.size === 1 && !artifacts.has(null) && hashes.size === 1 && !hashes.has(null);
+}
+
+function aliasCollapsePlanForBucket(bucket) {
+  const rows = Array.from(new Set(bucket.map((update) => update.row_id))).sort();
+  const keep = rows[0];
+  return {
+    scheme: bucket[0].context?.alias_scheme ?? "repo",
+    canonical_ref: bucket[0].after,
+    artifact_id: bucket[0].context?.artifact_id ?? null,
+    content_hash: bucket[0].context?.content_hash ?? null,
+    keep_alias_id: keep,
+    delete_alias_ids: rows.filter((row) => row !== keep),
+    update_alias_ids: rows,
+    update_count: bucket.length,
+  };
+}
+
+function buildAliasCollapsePlans(updates) {
+  const byRef = new Map();
+  for (const update of updates) {
+    const plan = update.alias_collapse;
+    if (!plan) continue;
+    const key = aliasKey(plan.scheme, plan.canonical_ref);
+    if (!byRef.has(key)) byRef.set(key, plan);
+  }
+  return Array.from(byRef.values());
 }
 
 function loadProjectRegistry(db, git) {
@@ -1068,8 +1230,28 @@ function resolveProjectByRoot(registry, root, git) {
 
   for (const checkout of registry.checkouts) {
     if (!checkout.root) continue;
-    if (isPathInside(real, safeRealpath(checkout.root)) || isPathInside(safeRealpath(checkout.root), real)) {
+    const checkoutRoot = path.resolve(checkout.root);
+    const checkoutReal = safeRealpath(checkout.root);
+    if (
+      isPathInside(resolved, checkoutRoot) ||
+      isPathInside(checkoutRoot, resolved) ||
+      isPathInside(real, checkoutReal) ||
+      isPathInside(checkoutReal, real)
+    ) {
       matches.push({ project: checkout.project, matched_by: "checkout_ancestry", detail: checkout.root });
+    }
+  }
+  if (matches.length > 0) return matches;
+
+  const worktreesIndex = resolved.split(path.sep).lastIndexOf("worktrees");
+  if (worktreesIndex > 0 && worktreesIndex < resolved.split(path.sep).length - 1) {
+    const canonicalRoot = resolved.split(path.sep).slice(0, worktreesIndex).join(path.sep) || path.sep;
+    for (const checkout of registry.checkouts) {
+      if (!checkout.root) continue;
+      const checkoutRoot = path.resolve(checkout.root);
+      if (checkoutRoot === canonicalRoot || safeRealpath(checkoutRoot) === safeRealpath(canonicalRoot)) {
+        matches.push({ project: checkout.project, matched_by: "stale_worktree_parent", detail: canonicalRoot });
+      }
     }
   }
   return matches;
@@ -1136,6 +1318,51 @@ function loadArtifactVersionContext(db) {
   return byArtifact;
 }
 
+function loadArtifactSeriesContext(db, artifactContext, artifactVersionContext) {
+  const bySeries = new Map();
+  if (!tableExists(db, "artifact_versions")) return bySeries;
+  const columns = tableColumns(db, "artifact_versions");
+  const rows = selectRows(db, "artifact_versions", available(columns, [
+    "id",
+    "artifact_id",
+    "series_id",
+    "commit_sha",
+    "repo_path",
+    "observed_path",
+    "content_hash",
+  ]));
+  for (const row of rows) {
+    if (!row.series_id) continue;
+    const artifact = artifactContext.get(row.artifact_id) ?? {};
+    const hint = versionHints(artifactVersionContext.get(row.artifact_id));
+    const context = {
+      artifact_id: row.artifact_id,
+      series_id: row.series_id,
+      version_id: row.id,
+      commit: row.commit_sha ?? hint.commit,
+      path: row.repo_path ?? hint.path,
+      observed_path: row.observed_path ?? hint.observed_path,
+      content_hash: row.content_hash ?? artifact.content_hash,
+      algorithm: artifact.algorithm,
+      root: artifact.root,
+      ref: artifact.ref,
+      ...artifact,
+      ...hint,
+    };
+    const existing = bySeries.get(row.series_id);
+    if (!existing || scoreContext(context) > scoreContext(existing)) bySeries.set(row.series_id, context);
+  }
+  return bySeries;
+}
+
+function scoreContext(context) {
+  let score = 0;
+  for (const key of ["root", "commit", "ref", "path", "content_hash", "artifact_id"]) {
+    if (context[key]) score += 1;
+  }
+  return score;
+}
+
 function loadAliasIndex(db) {
   const index = new Map();
   if (!tableExists(db, "artifact_aliases")) return index;
@@ -1185,15 +1412,23 @@ function dedupeOccurrences(occurrences) {
 }
 
 function contextFromObject(obj) {
-  return {
+  return compactNullableContext({
     repo_id: firstString(obj, ["repo_id", "home_repo_id"]),
     root: firstString(obj, ROOT_KEYS),
     path: firstString(obj, PATH_KEYS),
     ref: firstString(obj, REF_KEYS),
     commit: firstString(obj, ["commit", "commit_sha"]),
     content_hash: firstString(obj, HASH_KEYS),
-    algorithm: firstString(obj, ["algorithm"]) ?? "sha256",
-  };
+    algorithm: firstString(obj, ["algorithm"]),
+  });
+}
+
+function compactNullableContext(context) {
+  const out = {};
+  for (const [key, value] of Object.entries(context)) {
+    if (value !== undefined && value !== null && value !== "") out[key] = value;
+  }
+  return out;
 }
 
 function repoUriContext(value) {
@@ -1235,6 +1470,25 @@ function parseRepoUri(value) {
     ref: match[2] ?? null,
     path: match[3] ?? null,
   };
+}
+
+function isInvalidRepoReference(occurrence) {
+  if (occurrence.kind !== "repo_uri") return false;
+  const parsed = parseRepoUri(occurrence.before);
+  if (!parsed) return false;
+  return isGarbageRepoRef(parsed.repo_id);
+}
+
+function isGarbageRepoRef(repoRef) {
+  if (typeof repoRef !== "string") return false;
+  const trimmed = repoRef.trim();
+  return trimmed === "" ||
+    trimmed.includes("`") ||
+    trimmed.includes("…") ||
+    trimmed === "." ||
+    trimmed === ".." ||
+    trimmed === "..." ||
+    /^\.{2,}/.test(trimmed);
 }
 
 function rewriteRepoUri(value, repoId) {
