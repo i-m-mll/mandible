@@ -3176,6 +3176,64 @@ describe('ArtifactsView', () => {
     expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0);
   });
 
+  it('renders the artifact list as soon as the list request resolves while preview content remains pending', async () => {
+    const artifact = makeArtifactFixture('6', 'cold-load-report.md', {
+      uri: 'repo://mandible@main/results/cold-load-report.md',
+      repo_locator: { repo_id: 'mandible', ref: 'main', path: 'results/cold-load-report.md' },
+      alias_schemes: ['artifact', 'repo'],
+    });
+    const artifactSeries = makeArtifactSeries('cold-load-report', [artifact], 'cold-load-report.md');
+    let resolveList: (response: Response) => void = () => undefined;
+    const listPromise = new Promise<Response>((resolve) => {
+      resolveList = resolve;
+    });
+    const contentCalls: string[] = [];
+    let listRequestSeen = false;
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        if (url.includes('limit=200')) {
+          listRequestSeen = true;
+          return listPromise;
+        }
+        return jsonResponse({ series: [] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        return new Promise<Response>(() => undefined);
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return jsonResponse({ backrefs: [] });
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return jsonResponse({ artifact });
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(listRequestSeen).toBe(true));
+    expect(contentCalls).toHaveLength(0);
+    expect(screen.getByText('Loading artifacts...')).toBeTruthy();
+
+    await act(async () => {
+      resolveList(new Response(JSON.stringify({ series: [artifactSeries.summary] }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /cold-load-report\.md/ })).toBeTruthy());
+    expect(screen.queryByText('Loading artifacts...')).toBeNull();
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('cold-load-report.md'));
+    await waitFor(() => expect(contentCalls).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0));
+  });
+
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);

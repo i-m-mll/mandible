@@ -352,6 +352,59 @@ describe('React Flow local node helpers', () => {
 const baseProps = { projectId: 'p1', renderer: 'canvas' as const };
 
 describe('SpaceCanvas rendering', () => {
+  it('keeps pending initial load distinct from a truly empty canvas', async () => {
+    let resolveLoad: (model: SpaceCanvasModel) => void = () => {};
+    const pendingLoad = new Promise<SpaceCanvasModel>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const loadModel = vi.fn().mockReturnValue(pendingLoad);
+    const { client } = makeFakeSse();
+
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', loadModel, createSse: () => client }));
+
+    expect(screen.getByTestId('space-canvas-loading').textContent).toBe('Loading canvas items...');
+    expect(screen.queryByText('No canvas items yet.')).toBeNull();
+    expect(screen.queryByTestId('rf-node')).toBeNull();
+
+    await act(async () => {
+      resolveLoad({ items: [], occurrences: [] });
+      await pendingLoad;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('space-canvas-empty')).toBeTruthy());
+    expect(screen.getByTestId('space-canvas-empty').textContent).toBe('No canvas items yet.');
+    expect(screen.queryByTestId('space-canvas-loading')).toBeNull();
+  });
+
+  it('renders loaded nodes after a pending initial model resolves', async () => {
+    let resolveLoad: (model: SpaceCanvasModel) => void = () => {};
+    const pendingLoad = new Promise<SpaceCanvasModel>((resolve) => {
+      resolveLoad = resolve;
+    });
+    const loadModel = vi.fn().mockReturnValue(pendingLoad);
+    const { client } = makeFakeSse();
+
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', loadModel, createSse: () => client }));
+
+    expect(screen.getByTestId('space-canvas-loading')).toBeTruthy();
+    expect(screen.queryByText('No canvas items yet.')).toBeNull();
+
+    await act(async () => {
+      resolveLoad({
+        items: [item('a', 'Alpha')],
+        occurrences: [occ('a', { x: 10, y: 20 })],
+      });
+      await pendingLoad;
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(screen.getByTestId('rf-node').getAttribute('data-node-id')).toBe('a'));
+    expect(screen.getByText('Alpha')).toBeTruthy();
+    expect(screen.queryByTestId('space-canvas-empty')).toBeNull();
+    expect(screen.queryByTestId('space-canvas-loading')).toBeNull();
+  });
+
   it('renders placed canvas occurrences as nodes and ignores other renderer occurrences', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha'), item('b', 'Beta')],
