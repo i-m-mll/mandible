@@ -601,7 +601,7 @@ function renderDiff2Html(raw: string): string | null {
   try {
     const html = diff2htmlHtml(raw, {
       inputFormat: 'diff',
-      outputFormat: 'line-by-line',
+      outputFormat: 'side-by-side',
       drawFileList: false,
       matching: 'lines',
     });
@@ -1731,7 +1731,8 @@ function HorizontalDotsIcon(): JSX.Element {
 function DiffIcon(): JSX.Element {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M7 4h10M7 20h10M5 8h8M5 12h14M11 16h8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <rect x="5" y="5" width="14" height="14" rx="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M9 10h5M11.5 7.5v5M10 16h5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
