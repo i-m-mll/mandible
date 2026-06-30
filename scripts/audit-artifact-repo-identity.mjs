@@ -60,6 +60,16 @@ export async function runArtifactRepoIdentityAudit(options = {}) {
     throw new Error(`Mandible DB does not exist: ${dbPath}`);
   }
 
+  if (options.apply) {
+    return runArtifactRepoIdentityApply({
+      ...options,
+      dbPath,
+      outputDir,
+      reportPath,
+      createdAt,
+    });
+  }
+
   const db = new Database(dbPath, { fileMustExist: true, readonly: true });
   db.pragma("busy_timeout = 5000");
   const report = buildArtifactRepoIdentityAudit(db, {
@@ -73,6 +83,190 @@ export async function runArtifactRepoIdentityAudit(options = {}) {
   await fsp.mkdir(path.dirname(reportPath), { recursive: true });
   await fsp.writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   return report;
+}
+
+async function runArtifactRepoIdentityApply(options) {
+  const backupPath = resolveBackupPath(options.backupPath);
+  if (fs.existsSync(backupPath)) {
+    throw new Error(`Refusing to overwrite existing backup: ${backupPath}`);
+  }
+  if (path.resolve(backupPath) === path.resolve(options.dbPath)) {
+    throw new Error("Backup path must be different from the Mandible DB path.");
+  }
+
+  await fsp.mkdir(path.dirname(backupPath), { recursive: true });
+
+  const db = new Database(options.dbPath, { fileMustExist: true });
+  db.pragma("busy_timeout = 5000");
+  db.pragma("foreign_keys = ON");
+
+  try {
+    await db.backup(backupPath);
+
+    const beforeReport = buildArtifactRepoIdentityAudit(db, {
+      dbPath: options.dbPath,
+      reportPath: options.reportPath,
+      createdAt: options.createdAt,
+      git: options.git,
+    });
+    const safeUpdates = beforeReport.safe_updates;
+    if (safeUpdates.length === 0) {
+      throw new Error("Refusing to apply: the fresh plan contains no safe updates.");
+    }
+    const unsafeSelections = safeUpdates.filter((update) => update.status !== "safe");
+    if (unsafeSelections.length > 0) {
+      throw new Error(`Refusing to apply: plan selected ${unsafeSelections.length} non-safe updates.`);
+    }
+
+    const applySafeUpdates = db.transaction((updates) => {
+      db.pragma("foreign_keys = ON");
+      return updates.map((update) => applySafeUpdate(db, update));
+    });
+    const applied = applySafeUpdates(safeUpdates);
+
+    const afterReport = buildArtifactRepoIdentityAudit(db, {
+      dbPath: options.dbPath,
+      reportPath: options.reportPath,
+      createdAt: new Date(),
+      git: options.git,
+    });
+
+    const report = {
+      ok: true,
+      mode: "apply",
+      mutates_db: true,
+      created_at: (options.createdAt ?? new Date()).toISOString(),
+      db_path: options.dbPath,
+      report_path: options.reportPath,
+      backup_path: backupPath,
+      backup_method: "better-sqlite3 sqlite backup",
+      applied_update_count: applied.length,
+      before_summary: beforeReport.summary,
+      after_summary: afterReport.summary,
+      applied_updates: applied,
+      skipped_counts: {
+        needs_review_updates: beforeReport.needs_review_updates.length,
+        blocked_updates: beforeReport.blocked_updates.length,
+        unresolved_occurrences: beforeReport.unresolved.length,
+        ambiguous_occurrences: beforeReport.ambiguous.length,
+      },
+      after_audit: afterReport,
+    };
+
+    await fsp.mkdir(path.dirname(options.reportPath), { recursive: true });
+    await fsp.writeFile(options.reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    return report;
+  } finally {
+    db.close();
+  }
+}
+
+function resolveBackupPath(backupPath) {
+  if (typeof backupPath !== "string" || !backupPath.trim()) {
+    throw new Error("Apply mode requires --backup <path>.");
+  }
+  return path.resolve(expandHome(backupPath));
+}
+
+function applySafeUpdate(db, update) {
+  if (update.status !== "safe") {
+    throw new Error(`Refusing non-safe update ${describeUpdate(update)} with status ${update.status}.`);
+  }
+  if (update.before === update.after) {
+    throw new Error(`Refusing no-op safe update ${describeUpdate(update)}.`);
+  }
+  if (update.json_path) {
+    return applyJsonSafeUpdate(db, update);
+  }
+  return applyColumnSafeUpdate(db, update);
+}
+
+function applyColumnSafeUpdate(db, update) {
+  const sql = [
+    `UPDATE ${quoteIdent(update.table)}`,
+    `SET ${quoteIdent(update.column)} = ?`,
+    "WHERE id = ?",
+    `AND ${quoteIdent(update.column)} = ?`,
+  ].join(" ");
+  const result = db.prepare(sql).run(update.after, update.row_id, update.before);
+  if (result.changes !== 1) {
+    throw new Error(`Refusing stale or missing row while applying ${describeUpdate(update)}.`);
+  }
+  return appliedUpdateRecord(update);
+}
+
+function applyJsonSafeUpdate(db, update) {
+  const row = db.prepare(
+    `SELECT ${quoteIdent(update.column)} AS value FROM ${quoteIdent(update.table)} WHERE id = ?`,
+  ).get(update.row_id);
+  if (!row || typeof row.value !== "string") {
+    throw new Error(`Refusing missing JSON row while applying ${describeUpdate(update)}.`);
+  }
+  const json = parseJson(row.value);
+  if (!json) {
+    throw new Error(`Refusing unparsable JSON while applying ${describeUpdate(update)}.`);
+  }
+  const current = getJsonPath(json, update.json_path);
+  if (current !== update.before) {
+    throw new Error(`Refusing stale JSON value while applying ${describeUpdate(update)}.`);
+  }
+  setJsonPath(json, update.json_path, update.after);
+  const nextValue = JSON.stringify(json);
+  const result = db.prepare(
+    [
+      `UPDATE ${quoteIdent(update.table)}`,
+      `SET ${quoteIdent(update.column)} = ?`,
+      "WHERE id = ?",
+      `AND ${quoteIdent(update.column)} = ?`,
+    ].join(" "),
+  ).run(nextValue, update.row_id, row.value);
+  if (result.changes !== 1) {
+    throw new Error(`Refusing stale JSON row while applying ${describeUpdate(update)}.`);
+  }
+  return {
+    ...appliedUpdateRecord(update),
+    column_before: row.value,
+    column_after: nextValue,
+  };
+}
+
+function appliedUpdateRecord(update) {
+  return {
+    table: update.table,
+    row_id: update.row_id,
+    column: update.column,
+    json_path: update.json_path ?? null,
+    kind: update.kind,
+    before: update.before,
+    after: update.after,
+    status: update.status,
+  };
+}
+
+function describeUpdate(update) {
+  const jsonPath = update.json_path ? `:${update.json_path}` : "";
+  return `${update.table}.${update.column}${jsonPath}#${update.row_id}`;
+}
+
+function getJsonPath(value, jsonPath) {
+  let cursor = value;
+  for (const part of String(jsonPath).split(".")) {
+    if (cursor == null) return undefined;
+    cursor = cursor[part];
+  }
+  return cursor;
+}
+
+function setJsonPath(value, jsonPath, nextValue) {
+  const parts = String(jsonPath).split(".");
+  let cursor = value;
+  for (const part of parts.slice(0, -1)) {
+    cursor = cursor[part];
+    if (cursor == null || typeof cursor !== "object") {
+      throw new Error(`Cannot set missing JSON path: ${jsonPath}`);
+    }
+  }
+  cursor[parts.at(-1)] = nextValue;
 }
 
 export function buildArtifactRepoIdentityAudit(db, options = {}) {
@@ -1219,16 +1413,18 @@ function parseArgs(argv) {
     if (arg === "--db") options.dbPath = argv[++i];
     else if (arg === "--report") options.reportPath = argv[++i];
     else if (arg === "--output-dir") options.outputDir = argv[++i];
+    else if (arg === "--backup" || arg === "--backup-path") options.backupPath = argv[++i];
     else if (arg === "--json") options.json = true;
     else if (arg === "--dry-run") options.dryRun = true;
-    else if (arg === "--apply" || arg === "--write" || arg === "--in-place") {
-      throw new Error("This issue-scoped script is dry-run only; apply/write modes are not implemented.");
+    else if (arg === "--apply") options.apply = true;
+    else if (arg === "--write" || arg === "--in-place") {
+      throw new Error("Use --apply --backup <path>; write aliases are intentionally unsupported.");
     } else if (arg === "--help" || arg === "-h") {
       console.log([
-        "Usage: node scripts/audit-artifact-repo-identity.mjs [--db path] [--report path]",
+        "Usage: node scripts/audit-artifact-repo-identity.mjs [--db path] [--report path] [--apply --backup path]",
         "",
-        "Audits artifact repository identity rows and writes a dry-run JSON repair plan.",
-        "No apply mode exists in this script.",
+        "Audits artifact repository identity rows and writes a JSON repair plan.",
+        "Apply mode writes only updates classified safe by a fresh plan and requires a backup path.",
       ].join("\n"));
       process.exit(0);
     } else {
@@ -1246,8 +1442,12 @@ async function main() {
       ok: true,
       mode: report.mode,
       mutates_db: report.mutates_db,
+      backup_path: report.backup_path,
       report_path: report.report_path,
-      summary: report.summary,
+      summary: report.summary ?? report.after_summary,
+      before_summary: report.before_summary,
+      after_summary: report.after_summary,
+      applied_update_count: report.applied_update_count,
     }, null, 2));
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
