@@ -750,6 +750,9 @@ export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[
   { table: "ledger_sync_jobs", columns: ["project_id"] },
   { table: "ledger_reconciliation_mismatches", columns: ["project_id"] },
   { table: "ledger_project_checkouts", columns: ["project_id"] },
+  { table: "artifact", columns: ["source_project_id"] },
+  { table: "artifact_version", columns: ["source_project_id"] },
+  { table: "project_artifact_associations", columns: ["project_id"] },
   { table: "spaces", columns: ["project_id"] },
 ];
 
