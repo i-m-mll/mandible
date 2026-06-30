@@ -11,6 +11,7 @@ import Database from "better-sqlite3";
 
 const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), ".cache", "mandible", "artifact-repo-identity-audit");
+const GIT_BLOB_MAX_BUFFER = 64 * 1024 * 1024;
 const REPO_URI_PATTERN = /^repo:\/\/([^/@]+)(?:@([^/]+))?(?:\/(.*))?$/;
 const REPO_ID_KEYS = new Set(["repo_id", "home_repo_id"]);
 const ROOT_KEYS = ["root", "repo_root", "checkout_root", "worktree_root"];
@@ -274,6 +275,7 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
   const artifactContext = loadArtifactContext(db);
   const artifactVersionContext = loadArtifactVersionContext(db);
   const artifactSeriesContext = loadArtifactSeriesContext(db, artifactContext, artifactVersionContext);
+  const artifactUsageContext = loadArtifactUsageContext(db);
   const aliasIndex = loadAliasIndex(db);
   const auditScope = buildAuditScope(db);
   const occurrences = scanRepoIdentityOccurrences(
@@ -283,12 +285,13 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
     artifactSeriesContext,
   );
   const updates = occurrences.map((occurrence) =>
-    planOccurrence(occurrence, registry, aliasIndex, options.git),
+    planOccurrence(occurrence, registry, aliasIndex, artifactUsageContext, options.git),
   );
   markPlannedAliasCollisions(updates);
 
   const changed = updates.filter((update) => update.before !== update.after);
   const safe = changed.filter((update) => update.status === "safe");
+  const deterministicWarning = changed.filter((update) => update.status === "deterministic_warning");
   const review = changed.filter((update) => update.status === "needs_review");
   const blocked = changed.filter((update) => update.status === "blocked");
   const aliasCollapse = changed.filter((update) => update.status === "alias_collapse");
@@ -296,7 +299,9 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
   const unresolved = updates.filter((update) => update.status === "unresolved");
   const ambiguous = updates.filter((update) => update.status === "ambiguous");
   const invalidReferences = updates.filter((update) => update.status === "invalid_reference");
+  const orphanMalformedArtifacts = updates.filter((update) => update.status === "orphan_malformed_repo_artifact");
   const aliasCollapsePlans = buildAliasCollapsePlans(aliasCollapse);
+  const orphanMalformedPlans = buildOrphanMalformedArtifactPlans(orphanMalformedArtifacts);
 
   return {
     ok: true,
@@ -312,6 +317,7 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
       repo_identity_occurrences: occurrences.length,
       already_canonical: alreadyCanonical.length,
       safe_updates: safe.length,
+      deterministic_warning_updates: deterministicWarning.length,
       needs_review_updates: review.length,
       blocked_updates: blocked.length,
       alias_collapse_updates: aliasCollapse.length,
@@ -319,6 +325,8 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
       unresolved_occurrences: unresolved.length,
       ambiguous_occurrences: ambiguous.length,
       invalid_reference_occurrences: invalidReferences.length,
+      orphan_malformed_repo_artifact_occurrences: orphanMalformedArtifacts.length,
+      orphan_malformed_repo_artifacts: orphanMalformedPlans.length,
       alias_collisions: changed.filter((update) =>
         update.blockers.some((blocker) => blocker.kind === "alias_collision"),
       ).length,
@@ -331,6 +339,7 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
     },
     audit_scope: auditScope,
     safe_updates: safe,
+    deterministic_warning_updates: deterministicWarning,
     needs_review_updates: review,
     blocked_updates: blocked,
     alias_collapse_updates: aliasCollapse,
@@ -338,6 +347,8 @@ export function buildArtifactRepoIdentityAudit(db, options = {}) {
     unresolved,
     ambiguous,
     invalid_references: invalidReferences,
+    orphan_malformed_repo_artifact_updates: orphanMalformedArtifacts,
+    orphan_malformed_repo_artifacts: orphanMalformedPlans,
     already_canonical: alreadyCanonical.slice(0, 80),
     registry_evidence: registry.projects.map((project) => ({
       project_id: project.project_id,
@@ -735,8 +746,9 @@ function collectJsonOccurrences(value, state, pathParts = [], nearestContext = {
   }
 }
 
-function planOccurrence(occurrence, registry, aliasIndex, git) {
+function planOccurrence(occurrence, registry, aliasIndex, artifactUsageContext, git) {
   if (isInvalidRepoReference(occurrence)) {
+    const malformedArtifact = classifyOrphanMalformedRepoArtifact(occurrence, artifactUsageContext);
     return {
       table: occurrence.table,
       row_id: occurrence.row_id,
@@ -746,16 +758,17 @@ function planOccurrence(occurrence, registry, aliasIndex, git) {
       before: occurrence.before,
       after: occurrence.before,
       context: compactContext(occurrence.context),
-      status: "invalid_reference",
+      status: malformedArtifact ? "orphan_malformed_repo_artifact" : "invalid_reference",
       resolution: {
-        status: "invalid_reference",
-        reason: "malformed_repo_reference",
+        status: malformedArtifact ? "orphan_malformed_repo_artifact" : "invalid_reference",
+        reason: malformedArtifact ? "orphan_malformed_repo_artifact" : "malformed_repo_reference",
         repo_ref: String(occurrence.value ?? ""),
       },
       evidence: [],
       warnings: [{ kind: "invalid_reference", detail: "repo reference is syntactically garbage, not a project identity" }],
       blockers: [],
       validation: null,
+      orphan_malformed_repo_artifact: malformedArtifact,
     };
   }
 
@@ -798,8 +811,125 @@ function planOccurrence(occurrence, registry, aliasIndex, git) {
   if (aliasCollision) base.blockers.push(aliasCollision);
 
   if (base.blockers.length > 0) return { ...base, status: "blocked" };
+  const deterministicWarning = classifyDeterministicWarningRepair(
+    occurrence,
+    resolution.project,
+    canonical,
+    validation,
+    git,
+  );
+  if (deterministicWarning) {
+    return {
+      ...base,
+      status: "deterministic_warning",
+      repair_category: deterministicWarning.kind,
+      repair_evidence: deterministicWarning,
+    };
+  }
   if (base.warnings.length > 0) return { ...base, status: "needs_review" };
   return { ...base, status: "safe" };
+}
+
+function classifyDeterministicWarningRepair(occurrence, project, canonical, validation, git) {
+  if (validation.blockers.length > 0 || validation.warnings.length === 0) return null;
+  if (!validation.warnings.every((warning) =>
+    warning.kind === "missing_commit_path" || warning.kind === "missing_path"
+  )) {
+    return null;
+  }
+
+  if (
+    occurrence.table === "artifact_links" &&
+    occurrence.column === "repo_id" &&
+    occurrence.context?.repo_id === canonical
+  ) {
+    return {
+      kind: "link_repo_inferred_from_artifact_home_repo",
+      detail: "linked artifact already has the canonical project; link owner repair does not require blob validation",
+      artifact_id: occurrence.context?.artifact_id ?? null,
+      artifact_home_repo_id: occurrence.context?.repo_id ?? null,
+    };
+  }
+
+  const canonicalValidation = validateCanonicalCheckoutPath(occurrence, project, git);
+  if (canonicalValidation?.checks?.content_hash_match === true || (
+    canonicalValidation?.checks?.commit_path_reachable === true &&
+    !occurrence.context?.content_hash
+  )) {
+    return {
+      kind: "validated_via_canonical_checkout",
+      detail: "canonical checkout validates the ref/path despite stale occurrence root warnings",
+      validation: canonicalValidation,
+    };
+  }
+  return null;
+}
+
+function validateCanonicalCheckoutPath(occurrence, project, git) {
+  const canonicalRoots = canonicalCheckoutRoots(project);
+  if (canonicalRoots.length === 0) return null;
+  const locator = repoLocatorFromOccurrence(occurrence);
+  const ref = locator.ref || occurrence.context?.commit || occurrence.context?.ref || null;
+  const repoPath = locator.path || occurrence.context?.path || null;
+  if (!ref || !repoPath) return null;
+  const checks = {
+    root: canonicalRoots[0],
+    ref,
+    path: repoPath,
+    content_hash: occurrence.context?.content_hash ?? null,
+    root_candidates: canonicalRoots,
+    validated_root: null,
+    commit_path_reachable: null,
+    worktree_path_exists: null,
+    content_hash_match: null,
+  };
+  const warnings = [];
+  const blockers = [];
+  validateCommitPath(
+    canonicalRoots,
+    ref,
+    repoPath,
+    occurrence.context?.content_hash ?? null,
+    occurrence.context?.algorithm ?? "sha256",
+    git,
+    checks,
+    warnings,
+    blockers,
+  );
+  return { checks, warnings, blockers };
+}
+
+function canonicalCheckoutRoots(project) {
+  const roots = [];
+  const add = (root) => {
+    if (typeof root !== "string" || !root.trim()) return;
+    const resolved = path.resolve(root);
+    if (!roots.includes(resolved)) roots.push(resolved);
+  };
+  for (const checkout of project.checkouts) {
+    if (checkout.work_repo_id === project.project_key) add(checkout.root);
+  }
+  for (const checkout of project.checkouts) {
+    if (checkout.root && !path.resolve(checkout.root).split(path.sep).includes("worktrees")) add(checkout.root);
+  }
+  return roots;
+}
+
+function classifyOrphanMalformedRepoArtifact(occurrence, artifactUsageContext) {
+  const artifactId = occurrence.context?.artifact_id;
+  if (!artifactId) return null;
+  const usage = artifactUsageContext.get(artifactId);
+  if (!usage || usage.artifact_links > 0 || usage.graph_edges > 0) return null;
+  if (usage.algorithm !== "ref-sha256") return null;
+  return {
+    artifact_id: artifactId,
+    action: "delete_or_quarantine_record_set",
+    artifact_links: usage.artifact_links,
+    graph_edges: usage.graph_edges,
+    alias_count: usage.aliases,
+    version_count: usage.versions,
+    series_ids: Array.from(usage.series_ids).sort(),
+  };
 }
 
 function reportableResolution(resolution) {
@@ -1106,6 +1236,27 @@ function buildAliasCollapsePlans(updates) {
   return Array.from(byRef.values());
 }
 
+function buildOrphanMalformedArtifactPlans(updates) {
+  const byArtifact = new Map();
+  for (const update of updates) {
+    const artifact = update.orphan_malformed_repo_artifact;
+    if (!artifact?.artifact_id) continue;
+    const plan = byArtifact.get(artifact.artifact_id) ?? {
+      artifact_id: artifact.artifact_id,
+      action: artifact.action,
+      series_ids: artifact.series_ids,
+      alias_count: artifact.alias_count,
+      version_count: artifact.version_count,
+      occurrence_count: 0,
+      malformed_refs: [],
+    };
+    plan.occurrence_count += 1;
+    if (!plan.malformed_refs.includes(update.before)) plan.malformed_refs.push(update.before);
+    byArtifact.set(artifact.artifact_id, plan);
+  }
+  return Array.from(byArtifact.values()).sort((a, b) => a.artifact_id.localeCompare(b.artifact_id));
+}
+
 function loadProjectRegistry(db, git) {
   if (!tableExists(db, "ledger_projects")) {
     return { projects: [], checkouts: [], indexByRef: new Map(), indexByRemote: new Map() };
@@ -1314,6 +1465,66 @@ function loadArtifactVersionContext(db) {
       content_hash: row.content_hash,
     });
     byArtifact.set(row.artifact_id, existing);
+  }
+  return byArtifact;
+}
+
+function loadArtifactUsageContext(db) {
+  const byArtifact = new Map();
+  const ensure = (artifactId) => {
+    if (!artifactId) return null;
+    const existing = byArtifact.get(artifactId);
+    if (existing) return existing;
+    const usage = {
+      algorithm: null,
+      artifact_links: 0,
+      graph_edges: 0,
+      aliases: 0,
+      versions: 0,
+      series_ids: new Set(),
+    };
+    byArtifact.set(artifactId, usage);
+    return usage;
+  };
+
+  if (tableExists(db, "artifacts")) {
+    const columns = tableColumns(db, "artifacts");
+    for (const row of selectRows(db, "artifacts", available(columns, ["id", "algorithm"]))) {
+      const usage = ensure(row.id);
+      if (usage) usage.algorithm = row.algorithm ?? null;
+    }
+  }
+  if (tableExists(db, "artifact_links")) {
+    const columns = tableColumns(db, "artifact_links");
+    for (const row of selectRows(db, "artifact_links", available(columns, ["artifact_id"]))) {
+      const usage = ensure(row.artifact_id);
+      if (usage) usage.artifact_links += 1;
+    }
+  }
+  if (tableExists(db, "artifact_aliases")) {
+    const columns = tableColumns(db, "artifact_aliases");
+    for (const row of selectRows(db, "artifact_aliases", available(columns, ["artifact_id"]))) {
+      const usage = ensure(row.artifact_id);
+      if (usage) usage.aliases += 1;
+    }
+  }
+  if (tableExists(db, "artifact_versions")) {
+    const columns = tableColumns(db, "artifact_versions");
+    for (const row of selectRows(db, "artifact_versions", available(columns, ["artifact_id", "series_id"]))) {
+      const usage = ensure(row.artifact_id);
+      if (!usage) continue;
+      usage.versions += 1;
+      if (row.series_id) usage.series_ids.add(row.series_id);
+    }
+  }
+  if (tableExists(db, "graph_edges")) {
+    const columns = tableColumns(db, "graph_edges");
+    for (const row of selectRows(db, "graph_edges", available(columns, ["source_id", "target_id"]))) {
+      const sourceUsage = ensure(row.source_id);
+      if (sourceUsage) sourceUsage.graph_edges += 1;
+      const targetUsage = ensure(row.target_id);
+      if (targetUsage) targetUsage.graph_edges += 1;
+    }
   }
   return byArtifact;
 }
@@ -1552,6 +1763,7 @@ function runGitBuffer(cwd, args, git) {
       stdout: execFileSync("git", ["-C", cwd, ...args], {
         encoding: "buffer",
         env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        maxBuffer: GIT_BLOB_MAX_BUFFER,
         stdio: ["ignore", "pipe", "ignore"],
       }),
     };

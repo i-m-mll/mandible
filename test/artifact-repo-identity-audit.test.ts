@@ -195,6 +195,47 @@ describe("artifact repo identity audit planner", () => {
     expect(uriUpdate.validation.checks.content_hash_match).toBe(true);
   });
 
+  it("validates canonical checkout blobs larger than Node's default child-process buffer", () => {
+    const largeReport = `${"x".repeat(1_200_000)}\n`;
+    const repoRoot = createGitRepo("rlrmp", {
+      "results/report.md": largeReport,
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    const staleRoot = path.join(repoRoot, "worktrees", "feature__deleted");
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256(largeReport),
+      includeCollision: false,
+    });
+    db.prepare(
+      `UPDATE artifacts
+       SET repo_locator_json = ?
+       WHERE id = 'artifact:sha256:fixture'`,
+    ).run(JSON.stringify({
+      repo_id: "feature__31e67ff-cap-independent-soft-lambda-redo",
+      root: staleRoot,
+      ref: commit,
+      path: "results/report.md",
+    }));
+
+    const report = buildArtifactRepoIdentityAudit(db);
+    const uriUpdate = report.safe_updates.find((update: any) =>
+      update.table === "artifacts" && update.column === "uri"
+    );
+
+    expect(uriUpdate).toBeTruthy();
+    expect(uriUpdate.validation.checks.validated_root).toBe(repoRoot);
+    expect(uriUpdate.validation.checks.content_hash_match).toBe(true);
+    expect(report.summary.needs_review_updates).toBe(0);
+  });
+
   it("uses artifact version context to resolve series repo ids with stale worktree names", () => {
     const repoRoot = createGitRepo("rlrmp", {
       "results/report.md": "# Report\n",
@@ -251,13 +292,66 @@ describe("artifact repo identity audit planner", () => {
 
     const report = buildArtifactRepoIdentityAudit(db);
 
-    expect(report.summary.invalid_reference_occurrences).toBe(3);
+    expect(report.summary.invalid_reference_occurrences).toBe(0);
+    expect(report.summary.orphan_malformed_repo_artifact_occurrences).toBe(3);
+    expect(report.summary.orphan_malformed_repo_artifacts).toBe(1);
     expect(report.summary.unresolved_occurrences).toBe(0);
-    expect(report.invalid_references.map((entry: any) => entry.before)).toEqual([
+    expect(report.orphan_malformed_repo_artifact_updates.map((entry: any) => entry.before)).toEqual([
       "repo://...`",
       "repo://...`",
       "repo://...`",
     ]);
+    expect(report.orphan_malformed_repo_artifacts[0]).toMatchObject({
+      artifact_id: "artifact:ref:bad",
+      action: "delete_or_quarantine_record_set",
+      alias_count: 1,
+    });
+  });
+
+  it("classifies stale artifact link repo ids as deterministic link-owner repairs", () => {
+    const repoRoot = createGitRepo("feature__stale-link", {
+      "results/report.md": "# Report\n",
+    });
+    const commit = git(repoRoot, ["rev-parse", "HEAD"]);
+    insertProject({
+      projectKey: "rlrmp",
+      workRepoId: "feature__stale-link",
+      root: repoRoot,
+    });
+    insertArtifactGraph({
+      badRepo: "feature__stale-link",
+      canonicalRepo: "rlrmp",
+      commit,
+      contentHash: sha256("# Report\n"),
+      includeCollision: false,
+    });
+    db.prepare(
+      `UPDATE artifacts
+       SET home_repo_id = 'rlrmp', repo_locator_json = ?
+       WHERE id = 'artifact:sha256:fixture'`,
+    ).run(JSON.stringify({ repo_id: "rlrmp", ref: commit, path: "results/report.md" }));
+    db.prepare(
+      `UPDATE artifact_links
+       SET metadata_json = ?
+       WHERE id = 'link-1'`,
+    ).run(JSON.stringify({ repo_id: "feature__stale-link", ref: "missing-ref", path: "missing/path.md" }));
+    db.prepare(
+      `UPDATE artifact_versions
+       SET commit_sha = 'missing-ref', repo_path = 'missing/path.md'
+       WHERE artifact_id = 'artifact:sha256:fixture'`,
+    ).run();
+
+    const report = buildArtifactRepoIdentityAudit(db);
+    const update = report.deterministic_warning_updates.find((entry: any) =>
+      entry.table === "artifact_links" && entry.column === "repo_id"
+    );
+
+    expect(update).toBeTruthy();
+    expect(update.repair_category).toBe("link_repo_inferred_from_artifact_home_repo");
+    expect(update.after).toBe("rlrmp");
+    expect(report.needs_review_updates.some((entry: any) =>
+      entry.table === "artifact_links" && entry.column === "repo_id"
+    )).toBe(false);
   });
 
   it("reports ambiguous project candidates instead of proposing unsafe rewrites", () => {
