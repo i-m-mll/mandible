@@ -15,10 +15,10 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
-import { getSpace, type Space, type SpaceRenderer } from '../../api';
+import { getSpace, type InstanceInfo, type Space, type SpaceRenderer } from '../../api';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -49,6 +49,8 @@ export type SpaceRendererMountProps = {
   spaceId: string | null;
   /** The active renderer this mount point is being rendered for. */
   renderer: SpaceRenderer;
+  /** Current Mandible instance metadata; renderers use this for preview-safe UX. */
+  instance?: InstanceInfo | null;
 };
 
 export type SpacesViewShellProps = {
@@ -74,6 +76,8 @@ export type SpacesViewShellProps = {
    * show/hide contract every other VIEW_SIDEBAR_TABS view uses.
    */
   sidebarHidden?: boolean;
+  /** Current Mandible instance metadata from the app-level health probe. */
+  instance?: InstanceInfo | null;
   /**
    * Navigate the URL hash to open a space or a legacy renderer override. The
    * host (app.tsx) rebuilds `#/spaces?...`, preserving `?sidebar=`.
@@ -84,9 +88,59 @@ export type SpacesViewShellProps = {
 };
 
 const DEFAULT_RENDERER: SpaceRenderer = 'collection';
+const SPACE_SELECTION_CACHE_KEY = 'spaces:selected-space:v1';
+
+type SpaceSelectionSnapshot = {
+  id: string;
+  project_id: string | null;
+  title: string;
+  default_renderer: SpaceRenderer;
+};
 
 function isSpaceRenderer(value: unknown): value is SpaceRenderer {
   return typeof value === 'string' && SPACE_RENDERERS.includes(value as SpaceRenderer);
+}
+
+function snapshotFromSpace(space: Space): SpaceSelectionSnapshot {
+  return {
+    id: space.id,
+    project_id: space.project_id ?? null,
+    title: space.title,
+    default_renderer: space.default_renderer,
+  };
+}
+
+function loadCachedSelection(spaceId: string | null): SpaceSelectionSnapshot | null {
+  if (!spaceId || typeof localStorage === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(SPACE_SELECTION_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<SpaceSelectionSnapshot>;
+    if (
+      parsed.id === spaceId &&
+      typeof parsed.title === 'string' &&
+      isSpaceRenderer(parsed.default_renderer)
+    ) {
+      return {
+        id: parsed.id,
+        project_id: typeof parsed.project_id === 'string' ? parsed.project_id : null,
+        title: parsed.title,
+        default_renderer: parsed.default_renderer,
+      };
+    }
+  } catch {
+    // best-effort route-local view cache
+  }
+  return null;
+}
+
+function persistCachedSelection(snapshot: SpaceSelectionSnapshot): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(SPACE_SELECTION_CACHE_KEY, JSON.stringify(snapshot));
+  } catch {
+    // best-effort route-local view cache
+  }
 }
 
 /**
@@ -100,24 +154,35 @@ export function SpacesViewShell({
   renderer,
   renderers,
   sidebarHidden = false,
+  instance = null,
   onNavigate,
   loadSpace = getSpace,
 }: SpacesViewShellProps): JSX.Element {
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
+  const [selectedSnapshot, setSelectedSnapshot] = useState<SpaceSelectionSnapshot | null>(
+    () => loadCachedSelection(spaceId),
+  );
   const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!spaceId) {
       setSelectedSpace(null);
+      setSelectedSnapshot(null);
       setSpaceLoadError(null);
       return undefined;
     }
     let cancelled = false;
-    setSelectedSpace(null);
+    setSelectedSpace((current) => (current?.id === spaceId ? current : null));
+    setSelectedSnapshot((current) => (current?.id === spaceId ? current : loadCachedSelection(spaceId)));
     setSpaceLoadError(null);
     loadSpace(spaceId)
       .then((space) => {
-        if (!cancelled) setSelectedSpace(space);
+        if (!cancelled) {
+          const snapshot = snapshotFromSpace(space);
+          setSelectedSpace(space);
+          setSelectedSnapshot(snapshot);
+          persistCachedSelection(snapshot);
+        }
       })
       .catch((error: unknown) => {
         if (!cancelled) setSpaceLoadError(error instanceof Error ? error.message : String(error));
@@ -127,15 +192,26 @@ export function SpacesViewShell({
     };
   }, [spaceId, loadSpace]);
 
+  const handleSidebarSpaceResolved = useCallback((space: Space) => {
+    if (space.id !== spaceId) return;
+    const snapshot = snapshotFromSpace(space);
+    setSelectedSnapshot(snapshot);
+    persistCachedSelection(snapshot);
+  }, [spaceId]);
+
   const explicitRenderer = isSpaceRenderer(renderer) ? renderer : null;
-  const primaryRenderer = selectedSpace?.default_renderer ?? DEFAULT_RENDERER;
+  const primaryRenderer = selectedSpace?.default_renderer ?? selectedSnapshot?.default_renderer ?? DEFAULT_RENDERER;
   // Missing renderer means typed-primary open. A known renderer in the URL is a
   // legacy/deep-link override and is still honored.
   const activeRenderer: SpaceRenderer = explicitRenderer ?? primaryRenderer;
-  const waitingForPrimary = Boolean(spaceId && !explicitRenderer && !selectedSpace && !spaceLoadError);
   const legacyRendererActive = Boolean(selectedSpace && explicitRenderer && explicitRenderer !== primaryRenderer);
-  const selectedSpaceTitle = selectedSpace?.title?.trim() || 'Untitled space';
-  const effectiveProjectId = selectedSpace ? (selectedSpace.project_id ?? '') : projectId;
+  const selectedSpaceTitle =
+    selectedSpace?.title?.trim() || selectedSnapshot?.title?.trim() || 'Untitled space';
+  const effectiveProjectId = selectedSpace
+    ? (selectedSpace.project_id ?? '')
+    : selectedSnapshot
+      ? (selectedSnapshot.project_id ?? '')
+      : projectId;
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
 
@@ -152,6 +228,7 @@ export function SpacesViewShell({
       <SpacesSidebar
         hidden={sidebarHidden}
         selectedSpaceId={spaceId}
+        onSelectedSpaceResolved={handleSidebarSpaceResolved}
         onSelectSpace={(args) =>
           onNavigate?.({ projectId: args.projectId, spaceId: args.spaceId, renderer: args.renderer })
         }
@@ -167,7 +244,7 @@ export function SpacesViewShell({
                   data-testid="spaces-shell-type"
                 />
                 <span className="spaces-shell__title" title={selectedSpaceTitle}>
-                  {selectedSpace ? selectedSpaceTitle : 'Loading space...'}
+                  {selectedSpaceTitle}
                 </span>
               </div>
               {legacyRendererActive ? (
@@ -199,16 +276,17 @@ export function SpacesViewShell({
                 Select a space, or create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
-          ) : waitingForPrimary ? (
-            <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
-              <p className="spaces-shell__empty-text">Loading space...</p>
-            </div>
-          ) : spaceLoadError && !explicitRenderer ? (
+          ) : spaceLoadError && !explicitRenderer && !selectedSpace && !selectedSnapshot ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">{spaceLoadError}</p>
             </div>
           ) : MountPoint ? (
-            <MountPoint projectId={effectiveProjectId} spaceId={spaceId} renderer={activeRenderer} />
+            <MountPoint
+              projectId={effectiveProjectId}
+              spaceId={spaceId}
+              renderer={activeRenderer}
+              instance={instance}
+            />
           ) : (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">

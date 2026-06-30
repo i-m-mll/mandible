@@ -126,6 +126,27 @@ describe('SpacesSidebar render + grouping', () => {
     expect(container.querySelector('[data-testid="spaces-sidebar"]')).toBeNull();
     expect(loadGroups).not.toHaveBeenCalled();
   });
+
+  it('renders cached groups immediately while the backend refresh is still pending', async () => {
+    localStorage.setItem('spaces-tree:groups:v1', JSON.stringify(sampleGroups()));
+    const loadGroups = vi.fn(() => new Promise<SpaceGroup[]>(() => {}));
+    const onSelectedSpaceResolved = vi.fn();
+
+    render(
+      <SpacesSidebar
+        selectedSpaceId="t1"
+        onSelectSpace={vi.fn()}
+        loadGroups={loadGroups}
+        onSelectedSpaceResolved={onSelectedSpaceResolved}
+      />,
+    );
+
+    expect(screen.getByText('Global notes')).toBeTruthy();
+    expect(screen.queryByText('Loading spaces…')).toBeNull();
+    await waitFor(() => expect(onSelectedSpaceResolved).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 't1', default_renderer: 'canvas' }),
+    ));
+  });
 });
 
 describe('SpacesSidebar live filter', () => {

@@ -575,6 +575,47 @@ describe('SpaceCanvas drag persistence + autosave', () => {
     // Optimistic position is preserved despite the failure.
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('7');
   });
+
+  it('shows saving-disabled preview state without retrying rejected preview mutations', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const batchWrite = vi.fn();
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        debounceMs: 50,
+        instance: {
+          role: 'preview',
+          operational_mutations: 'reject',
+          operational_mutations_overridden: false,
+          db_path: null,
+          db_path_source: null,
+        },
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+    });
+
+    expect(batchWrite).not.toHaveBeenCalled();
+    expect(screen.getByTestId('space-canvas-autosave').getAttribute('data-status')).toBe('disabled');
+    expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saving disabled');
+    expect(screen.getByTestId('space-canvas-preview-disabled').textContent).toContain(
+      'Saving disabled in preview',
+    );
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+  });
 });
 
 describe('SpaceCanvas SSE reconciliation', () => {
@@ -738,6 +779,59 @@ describe('SpaceCanvas SSE reconciliation', () => {
       await Promise.resolve();
     });
     expect(batchWrite).toHaveBeenCalledWith('sp1', [{ id: 'a', x: 55, y: 66 }]);
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('66');
+  });
+
+  it('keeps a preview-disabled dropped position when backend reconciliation refetches stale data', async () => {
+    vi.useFakeTimers();
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const stale: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    const loadModel = vi.fn().mockResolvedValue(stale);
+    const batchWrite = vi.fn();
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        batchWrite,
+        loadModel,
+        createSse: () => client,
+        debounceMs: 50,
+        instance: {
+          role: 'preview',
+          operational_mutations: 'reject',
+          operational_mutations_overridden: false,
+          db_path: null,
+          db_path_source: null,
+        },
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false }]);
+    });
+    await act(async () => {
+      vi.advanceTimersByTime(60);
+      await Promise.resolve();
+    });
+    expect(batchWrite).not.toHaveBeenCalled();
 
     await act(async () => {
       emit('space:occurrence:moved', { space_id: 'sp1' });

@@ -41,6 +41,7 @@ import './SpacesSidebar.css';
 
 const COLLAPSE_STORAGE_KEY = 'spaces-tree:collapsed';
 const ORDER_STORAGE_KEY = 'spaces-tree:project-order';
+const GROUPS_CACHE_KEY = 'spaces-tree:groups:v1';
 
 /** Stable sentinel id for the top-level (null project) group. */
 const TOP_LEVEL_GROUP_ID = '__top_level__';
@@ -70,6 +71,8 @@ export type SpacesSidebarProps = {
   loadProjectsFn?: () => Promise<ProjectPickerItem[]>;
   /** Refresh nonce: bump to force a re-read after an external mutation. */
   refreshToken?: number;
+  /** Notify the shell when grouped state already knows the selected Space. */
+  onSelectedSpaceResolved?: (space: Space) => void;
 };
 
 type CreateTarget =
@@ -135,6 +138,35 @@ function persistOrder(order: string[]): void {
   }
 }
 
+function isSpaceGroupArray(value: unknown): value is SpaceGroup[] {
+  return Array.isArray(value) && value.every((group) => {
+    if (!group || typeof group !== 'object') return false;
+    const candidate = group as Partial<SpaceGroup>;
+    return Array.isArray(candidate.spaces);
+  });
+}
+
+function loadCachedGroups(): SpaceGroup[] {
+  if (typeof localStorage === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(GROUPS_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return isSpaceGroupArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistGroups(groups: SpaceGroup[]): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(GROUPS_CACHE_KEY, JSON.stringify(groups));
+  } catch {
+    // best-effort view cache
+  }
+}
+
 /** A group keyed for stable per-group state (collapse, order, drag). */
 type KeyedGroup = { key: string; group: SpaceGroup };
 
@@ -192,8 +224,9 @@ export function SpacesSidebar({
   createSpaceFn = createSpace,
   loadProjectsFn = listProjectsForPicker,
   refreshToken,
+  onSelectedSpaceResolved,
 }: SpacesSidebarProps): JSX.Element | null {
-  const [groups, setGroups] = useState<SpaceGroup[]>([]);
+  const [groups, setGroups] = useState<SpaceGroup[]>(() => loadCachedGroups());
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState('');
@@ -226,7 +259,10 @@ export function SpacesSidebar({
     setLoadError(null);
     loadGroups()
       .then((next) => {
-        if (active) setGroups(next);
+        if (active) {
+          setGroups(next);
+          persistGroups(next);
+        }
       })
       .catch((error: unknown) => {
         if (active) setLoadError(error instanceof Error ? error.message : String(error));
@@ -240,6 +276,17 @@ export function SpacesSidebar({
   }, [hidden, loadGroups, refreshToken, internalRefresh]);
 
   const refresh = useCallback(() => setInternalRefresh((n) => n + 1), []);
+
+  useEffect(() => {
+    if (!selectedSpaceId || !onSelectedSpaceResolved) return;
+    for (const group of groups) {
+      const match = group.spaces.find((space) => space.id === selectedSpaceId);
+      if (match) {
+        onSelectedSpaceResolved(match);
+        return;
+      }
+    }
+  }, [groups, selectedSpaceId, onSelectedSpaceResolved]);
 
   // --- close create popover on outside pointer / Escape ---
   useEffect(() => {

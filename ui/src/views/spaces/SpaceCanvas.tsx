@@ -79,7 +79,7 @@ import './SpaceCanvas.css';
 // ---------------------------------------------------------------------------
 
 /** Autosave indicator state for the debounced batch write. */
-export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'disabled';
 
 /**
  * A canvas node: a placed occurrence joined to its backing item. `x`/`y` are
@@ -483,7 +483,13 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
   debounceMs?: number;
 };
 
-type PendingAckPosition = { x: number; y: number; savedAt: number | null; expiresAt: number };
+type PendingAckPosition = {
+  x: number;
+  y: number;
+  savedAt: number | null;
+  expiresAt: number;
+  previewDisabled?: boolean;
+};
 
 const DEFAULT_DEBOUNCE_MS = 400;
 const POSITION_ACK_PROTECTION_MS = 10_000;
@@ -508,6 +514,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const {
     spaceId,
     projectId,
+    instance,
     initialModel,
     loadModel,
     batchWrite = batchWriteSpaceOccurrences,
@@ -589,6 +596,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const incomingById = new Map(incoming.map((occurrence) => [occurrence.id, occurrence]));
     const protectedPositions: Record<string, { x: number; y: number }> = {};
     for (const [id, position] of Object.entries(pendingAckPositions.current)) {
+      if (position.previewDisabled) {
+        protectedPositions[id] = { x: position.x, y: position.y };
+        continue;
+      }
       if (position.expiresAt <= now) {
         delete pendingAckPositions.current[id];
         draggingIds.current.delete(id);
@@ -606,6 +617,22 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       draggingIds.current.delete(id);
     }
     return protectedPositions;
+  }, []);
+
+  const previewMutationsDisabled = Boolean(instance && instance.operational_mutations === 'reject');
+
+  const markPositionsPreviewDisabled = useCallback((
+    positions: Record<string, { x: number; y: number }>,
+  ) => {
+    for (const [id, position] of Object.entries(positions)) {
+      pendingAckPositions.current[id] = {
+        ...position,
+        savedAt: null,
+        expiresAt: Number.POSITIVE_INFINITY,
+        previewDisabled: true,
+      };
+      draggingIds.current.delete(id);
+    }
   }, []);
 
   const reconcileModel = useCallback(
@@ -641,6 +668,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const entries = buildBatchEntries(positions);
     if (entries.length === 0 || !spaceId) return;
     pendingPositions.current = {};
+    if (previewMutationsDisabled) {
+      markPositionsPreviewDisabled(positions);
+      setAutosave('disabled');
+      return;
+    }
     setAutosave('saving');
     try {
       const response = await batchWrite(spaceId, entries);
@@ -659,13 +691,18 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         if (entry.id) draggingIds.current.delete(entry.id);
       }
       setAutosave('saved');
-    } catch {
+    } catch (error) {
+      if (isPreviewMutationRejected(error)) {
+        markPositionsPreviewDisabled(positions);
+        setAutosave('disabled');
+        return;
+      }
       // Graceful failure: surface the error state, re-queue the positions so a
       // later flush retries, and keep the optimistic positions on screen.
       pendingPositions.current = { ...positions, ...pendingPositions.current };
       setAutosave('error');
     }
-  }, [spaceId, batchWrite]);
+  }, [spaceId, batchWrite, previewMutationsDisabled, markPositionsPreviewDisabled]);
 
   const scheduleFlush = useCallback(() => {
     if (debounceTimer.current !== null) {
@@ -1125,6 +1162,15 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             <span className="space-canvas__autosave-dot" aria-hidden="true" />
             {autosaveLabel(autosave)}
           </span>
+          {autosave === 'disabled' ? (
+            <div
+              className="space-canvas__preview-disabled"
+              data-testid="space-canvas-preview-disabled"
+              role="status"
+            >
+              Saving disabled in preview
+            </div>
+          ) : null}
         </div>
         <CanvasSelectionInspector
           selectedNodeIds={selection}
@@ -1212,7 +1258,21 @@ function SpaceCanvasFlowSurface({
   const activeDragIds = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    setNodes((previous) => reconcileFlowNodeState(previous, canonicalNodes, activeDragIds.current));
+    setNodes((previous) => {
+      const next = reconcileFlowNodeState(previous, canonicalNodes, activeDragIds.current);
+      const nextById = new Map(next.map((node) => [node.id, node]));
+      for (const canonicalNode of canonicalNodes) {
+        const localNode = nextById.get(canonicalNode.id);
+        if (
+          localNode &&
+          localNode.position.x === canonicalNode.position.x &&
+          localNode.position.y === canonicalNode.position.y
+        ) {
+          activeDragIds.current.delete(canonicalNode.id);
+        }
+      }
+      return next;
+    });
   }, [canonicalNodes]);
 
   const onNodesChange = useCallback(
@@ -1221,7 +1281,6 @@ function SpaceCanvasFlowSurface({
       for (const change of changes) {
         if (change.type === 'position' && change.position) {
           if (change.dragging === false) {
-            activeDragIds.current.delete(change.id);
             onNodeDragStop(change.id, { x: change.position.x, y: change.position.y });
           } else {
             activeDragIds.current.add(change.id);
@@ -1485,6 +1544,8 @@ function autosaveLabel(status: AutosaveStatus): string {
       return 'Saved';
     case 'error':
       return 'Save failed - will retry';
+    case 'disabled':
+      return 'Saving disabled';
     default:
       return 'Saved';
   }
@@ -1498,9 +1559,16 @@ function edgeStatusLabel(status: AutosaveStatus): string {
       return 'Saved';
     case 'error':
       return 'Error';
+    case 'disabled':
+      return 'Disabled';
     default:
       return 'Ready';
   }
+}
+
+function isPreviewMutationRejected(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('instance_mutation_forbidden');
 }
 
 /** React Flow custom node for a Space occurrence. */
