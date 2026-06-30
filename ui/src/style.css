@@ -3341,6 +3341,7 @@ tr:last-child td {
 
 .auth-diff-file__body {
   overflow: auto;
+  max-width: 100%;
 }
 
 .auth-diff-file__html,
@@ -3365,7 +3366,8 @@ tr:last-child td {
 }
 
 .auth-diff-file .d2h-code-wrapper {
-  overflow: visible;
+  max-width: 100%;
+  overflow: auto hidden;
 }
 
 .auth-diff-file .d2h-diff-table {
@@ -3373,14 +3375,28 @@ tr:last-child td {
   font-family: var(--font-mono);
   font-size: 12px;
   line-height: 18px;
+  min-width: 100%;
   table-layout: auto;
-  width: 100%;
+  width: max-content;
 }
 
 .auth-diff-file .d2h-diff-tbody,
 .auth-diff-file .d2h-diff-tbody tr,
 .auth-diff-file .d2h-diff-tbody td {
   border: 0;
+}
+
+.auth-diff-file .d2h-cntx,
+.auth-diff-file .d2h-ins,
+.auth-diff-file .d2h-del,
+.auth-diff-file .d2h-info {
+  box-sizing: border-box;
+  height: 18px;
+  line-height: 18px;
+  padding-bottom: 0;
+  padding-top: 0;
+  vertical-align: top;
+  white-space: nowrap;
 }
 
 .auth-diff-file .d2h-files-diff {
@@ -3404,6 +3420,7 @@ tr:last-child td {
 
 .auth-diff-file .d2h-file-diff {
   overflow: auto hidden;
+  max-width: 100%;
 }
 
 .auth-diff-file .d2h-code-side-linenumber,
@@ -3452,25 +3469,34 @@ tr:last-child td {
 
 .auth-diff-file .d2h-code-line,
 .auth-diff-file .d2h-code-side-line {
+  align-items: flex-start;
   box-sizing: border-box;
-  display: block;
+  display: flex;
+  height: 18px;
   min-height: 18px;
   padding: 0 8px;
   width: auto;
   border: 0;
   line-height: 18px;
-  white-space: pre;
+  overflow: visible;
+  white-space: normal;
 }
 
 .auth-diff-file .d2h-code-line-ctn {
-  display: inline;
+  display: inline-block;
+  flex: 0 0 auto;
+  overflow-wrap: normal;
   vertical-align: top;
   white-space: pre;
+  word-break: normal;
   width: auto;
 }
 
 .auth-diff-file .d2h-code-line-prefix {
   display: inline-block;
+  flex: 0 0 12px;
+  line-height: 18px;
+  vertical-align: top;
   width: 12px;
 }
 
