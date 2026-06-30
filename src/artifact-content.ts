@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
+import { checkoutRootForCanonicalArtifactRepo } from "./artifact-repo-resolution.js";
 import { artifactCasPath, getArtifact, resolveArtifactRefReadonly } from "./provider-artifacts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverability } from "./types.js";
 
@@ -559,22 +560,7 @@ function reasonCode(reason: string): string {
 }
 
 function checkoutRootForRepo(db: Db, repoId: string): string | null {
-  if (!tableExists(db, "ledger_project_checkouts")) return null;
-  const hasProjects = tableExists(db, "ledger_projects");
-  const projectJoin = hasProjects ? "LEFT JOIN ledger_projects p ON p.id = c.project_id" : "";
-  const projectWhere = hasProjects ? "OR p.id = @repo OR lower(p.display_name) = lower(@repo)" : "";
-  const rows = db.prepare(
-    `SELECT c.root
-       FROM ledger_project_checkouts c
-       ${projectJoin}
-      WHERE c.work_repo_id = @repo
-         OR lower(c.name) = lower(@repo)
-         OR c.root = @repo
-         ${projectWhere}
-      ORDER BY c.updated_at DESC
-      LIMIT 1`,
-  ).all({ repo: repoId }) as Array<{ root: string | null }>;
-  return rows[0]?.root ?? null;
+  return checkoutRootForCanonicalArtifactRepo(db, repoId);
 }
 
 function tableExists(db: Db, name: string): boolean {

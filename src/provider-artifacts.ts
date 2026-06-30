@@ -4,6 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "./db.js";
+import {
+  resolveCanonicalArtifactRepoForRoot,
+  resolveCanonicalArtifactRepoRef,
+} from "./artifact-repo-resolution.js";
 // Cyclic import (artifact-content also imports from this module). Safe: both
 // sides reference each other only from inside functions, never at module-eval
 // top level. Used by recordArtifactVersion's managed-`ref` path to read the
@@ -578,11 +582,12 @@ function isRegisterableArtifactRef(ref: string): boolean {
   return schemeFromRef(trimmed) !== "unknown" && trimmed.includes("://");
 }
 
-function normalizeRef(ref: string): {
+function normalizeRef(ref: string, options: { db?: Db; validateRepo?: boolean } = {}): {
   scheme: string;
   alias: string;
   normalizedRef: string;
   locator: JsonRecord;
+  invalidReason?: string;
 } {
   const alias = ref.trim();
   const artifactHashRef = artifactHashRefFromRef(alias);
@@ -601,9 +606,20 @@ function normalizeRef(ref: string): {
 
   const repoMatch = /^repo:\/\/([^/@\s]+)(?:@([^/\s]+))?\/(.+)$/i.exec(alias);
   if (repoMatch) {
-    const repoId = repoMatch[1];
+    const inputRepoId = repoMatch[1];
     const refName = repoMatch[2];
     const repoPath = repoMatch[3].replace(/^\/+/, "");
+    const resolution = options.db ? resolveCanonicalArtifactRepoRef(options.db, inputRepoId) : null;
+    if (resolution && !resolution.ok && options.validateRepo) {
+      return {
+        scheme: "repo",
+        alias,
+        normalizedRef: alias,
+        locator: { repo_id: inputRepoId, ref: refName ?? null, path: repoPath },
+        invalidReason: resolution.reason,
+      };
+    }
+    const repoId = resolution?.ok ? resolution.project_key : inputRepoId;
     return {
       scheme: "repo",
       alias,
@@ -1365,7 +1381,7 @@ export function registerArtifactAlias(db: Db, args: {
     throw new Error("artifact_aliases table is missing; run database migrations");
   }
   const now = args.now ?? Date.now();
-  const normalized = normalizeRef(args.ref);
+  const normalized = normalizeRef(args.ref, { db });
   const artifactId = args.artifactId ?? null;
   const status = artifactId ? "resolved" : (args.resolutionStatus ?? "unresolved");
   const id = artifactRegistryId("artifact_alias", [normalized.scheme, normalized.normalizedRef]);
@@ -1526,6 +1542,7 @@ function runGit(cwd: string, args: string[]): string | null {
   try {
     return execFileSync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
   } catch {
@@ -1535,36 +1552,9 @@ function runGit(cwd: string, args: string[]): string | null {
 
 function repoInfoForRoot(db: Db, root: string): { repo_id: string | null; name: string | null } {
   const realRoot = path.resolve(root);
-  const rootCandidates = Array.from(new Set([
-    realRoot,
-    (() => {
-      try {
-        return fs.realpathSync(realRoot);
-      } catch {
-        return realRoot;
-      }
-    })(),
-  ]));
-  if (tableExists(db, "ledger_project_checkouts")) {
-    const row = db.prepare(
-      `SELECT work_repo_id, name
-         FROM ledger_project_checkouts
-        WHERE root IN (${rootCandidates.map(() => "?").join(", ")})
-        ORDER BY updated_at DESC
-        LIMIT 1`,
-    ).get(...rootCandidates) as { work_repo_id: string | null; name: string | null } | undefined;
-    if (row) return { repo_id: row.work_repo_id ?? row.name ?? null, name: row.name ?? null };
-  }
-  if (tableExists(db, "work_repos")) {
-    const row = db.prepare(
-      `SELECT id, name
-         FROM work_repos
-        WHERE root IN (${rootCandidates.map(() => "?").join(", ")})
-        LIMIT 1`,
-    ).get(...rootCandidates) as { id: string | null; name: string | null } | undefined;
-    if (row) return { repo_id: row.id ?? row.name ?? null, name: row.name ?? null };
-  }
-  return { repo_id: path.basename(realRoot), name: path.basename(realRoot) };
+  const canonical = resolveCanonicalArtifactRepoForRoot(db, realRoot);
+  if (canonical.ok) return { repo_id: canonical.project_key, name: canonical.checkout_name };
+  return { repo_id: null, name: null };
 }
 
 function mediaTypeForPath(filePath: string): string {
@@ -1856,7 +1846,11 @@ function computeLocalArtifactPlanCore(
   const resolvedPath = safeRealpathSync(lexicalPath);
   const gitState = classifyLocalArtifactPath(db, lexicalPath);
   const requestedCustody = asCustodyMode(input.custody_mode, "link");
-  const { recoverability, warnings } = recoverabilityForLocalPath(gitState, input, requestedCustody);
+  let { recoverability, warnings } = recoverabilityForLocalPath(gitState, input, requestedCustody);
+  if (gitState.inside_worktree && !gitState.repo_id && recoverability.startsWith("repo_")) {
+    recoverability = "local_only";
+    warnings.push("unknown_repo_identity");
+  }
   if (recoverability === "repo_worktree" && !input.allow_dirty_link && requestedCustody === "link") {
     warnings.push("dirty_link_requires_override_for_issue_evidence");
   }
@@ -2434,7 +2428,10 @@ function materializeReferenceArtifact(
   ref: string,
   now = Date.now(),
 ): { artifact: ArtifactRecord; alias: ArtifactAliasRecord } {
-  const normalized = normalizeRef(ref);
+  const normalized = normalizeRef(ref, { db, validateRepo: true });
+  if (normalized.invalidReason) {
+    throw new Error(`invalid repo artifact ref: ${normalized.invalidReason}`);
+  }
   const id = referenceArtifactId(normalized.normalizedRef);
   const identityHash = hashString(normalized.normalizedRef);
   const repoId = asString(normalized.locator.repo_id) ?? null;
@@ -4389,7 +4386,7 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
     if (fast) return fast;
     return resolveArtifactVersionRef(db, trimmed, Date.now());
   }
-  const normalized = normalizeRef(trimmed);
+  const normalized = normalizeRef(trimmed, { db, validateRepo: true });
   const direct = getArtifact(db, trimmed);
   if (direct) {
     return {
@@ -4402,6 +4399,19 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
       series: null,
       version: null,
       warnings: [],
+    };
+  }
+  if (normalized.invalidReason) {
+    return {
+      status: "unsupported",
+      ref,
+      scheme: normalized.scheme,
+      normalized_ref: normalized.normalizedRef,
+      artifact: null,
+      alias: null,
+      series: null,
+      version: null,
+      warnings: [normalized.invalidReason],
     };
   }
   if (tableExists(db, "artifact_aliases")) {
@@ -4553,7 +4563,7 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
   if (/^artifact-version:/i.test(trimmedRef) || /^artifact-series:/i.test(trimmedRef)) {
     return resolveArtifactVersionRef(db, trimmedRef, now);
   }
-  const normalized = normalizeRef(ref);
+  const normalized = normalizeRef(ref, { db, validateRepo: true });
   const hashRef = artifactHashRefFromRef(ref);
   if (hashRef) {
     if (hashRef.kind === "invalid") {
@@ -4648,7 +4658,7 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
     };
   }
 
-  if (!isRegisterableArtifactRef(ref)) {
+  if (normalized.invalidReason || !isRegisterableArtifactRef(ref)) {
     return {
       status: "unsupported",
       ref,
