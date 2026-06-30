@@ -276,7 +276,7 @@ export function SpacesViewShell({
                 Select a space, or create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
-          ) : spaceLoadError && !explicitRenderer && !MountPoint ? (
+          ) : spaceLoadError && !explicitRenderer && !selectedSpace && !selectedSnapshot ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">{spaceLoadError}</p>
             </div>

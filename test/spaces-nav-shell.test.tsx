@@ -1,6 +1,6 @@
 // Routing + shell tests for Spaces nav/route scaffold (umbrella de56ffa,
 // child 22b50f5).
-import { render, screen, cleanup } from '@testing-library/preact';
+import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 
@@ -140,6 +140,25 @@ describe('SpacesViewShell', () => {
     expect(screen.getByTestId('spaces-view-shell').getAttribute('data-active-renderer')).toBe('canvas');
     expect(screen.getByTestId('spaces-shell-identity').textContent).toContain('Cached canvas');
     expect(seen[0]).toMatchObject({ projectId: 'p1', spaceId: 's1', renderer: 'canvas' });
+  });
+
+  it('shows the selected Space read error when no cached snapshot exists', async () => {
+    function CollectionMount(): JSX.Element {
+      return <div data-testid="collection-mount">collection mount</div>;
+    }
+    const loadSpace = vi.fn().mockRejectedValue(new Error('space read failed'));
+
+    render(
+      <SpacesViewShell
+        projectId="p1"
+        spaceId="s1"
+        renderers={{ collection: CollectionMount }}
+        loadSpace={loadSpace}
+      />,
+    );
+
+    await waitFor(() => expect(screen.getByText('space read failed')).toBeTruthy());
+    expect(screen.queryByTestId('collection-mount')).toBeNull();
   });
 
   it('falls back to the empty-state when the active renderer has no registered mount point', () => {
