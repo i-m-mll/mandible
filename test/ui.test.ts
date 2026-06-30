@@ -953,6 +953,13 @@ describe('AuthQueueView', () => {
     expect(document.querySelector('.auth-detail__panels')).toBeNull();
     const diffRegion = screen.getByLabelText('Auth request changes');
     expect(diffRegion).toBeTruthy();
+    expect(diffRegion.getAttribute('data-diff-mode')).toBe('split');
+    expect(screen.getByRole('group', { name: 'Diff layout' })).toBeTruthy();
+    const unifiedMode = screen.getByRole('button', { name: 'Unified' });
+    const splitMode = screen.getByRole('button', { name: 'Split' });
+    expect(unifiedMode.getAttribute('aria-pressed')).toBe('false');
+    expect(splitMode.getAttribute('aria-pressed')).toBe('true');
+    expect(splitMode.className).toContain('auth-detail__diff-mode-button--active');
     expect(diffRegion.querySelector('.d2h-files-diff')).toBeTruthy();
     expect(diffRegion.querySelectorAll('.d2h-file-side-diff').length).toBeGreaterThanOrEqual(2);
     expect(diffRegion.querySelector('.d2h-code-side-linenumber')).toBeTruthy();
@@ -960,6 +967,21 @@ describe('AuthQueueView', () => {
     expect(screen.getAllByText('ui/src/views/auth.tsx').length).toBeGreaterThan(0);
     expect(diffRegion.textContent).toContain('added line');
     expect(screen.queryByText('Commit Message')).toBeNull();
+
+    fireEvent.click(unifiedMode);
+    const unifiedDiffRegion = screen.getByLabelText('Auth request changes');
+    expect(unifiedDiffRegion.getAttribute('data-diff-mode')).toBe('unified');
+    expect(screen.getByRole('button', { name: 'Unified' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Split' }).getAttribute('aria-pressed')).toBe('false');
+    expect(unifiedDiffRegion.querySelector('.d2h-file-diff')).toBeTruthy();
+    expect(unifiedDiffRegion.querySelector('.d2h-files-diff')).toBeNull();
+    expect(unifiedDiffRegion.querySelector('.d2h-code-linenumber')).toBeTruthy();
+    expect(unifiedDiffRegion.querySelector('.d2h-code-side-linenumber')).toBeNull();
+    expect(unifiedDiffRegion.querySelector('.line-num1')).toBeTruthy();
+    expect(unifiedDiffRegion.querySelector('.line-num2')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split' }));
+    expect(screen.getByLabelText('Auth request changes').getAttribute('data-diff-mode')).toBe('split');
     fireEvent.click(activeDiffToggle);
     expect(screen.getByRole('button', { name: 'Show changes diff' })).toBeTruthy();
     expect(document.querySelector('.auth-detail__panels')).toBeTruthy();

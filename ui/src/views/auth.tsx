@@ -75,6 +75,9 @@ export type AuthRequest = {
   [key: string]: unknown;
 };
 
+type AuthDiffMode = 'split' | 'unified';
+type Diff2HtmlOutputFormat = 'side-by-side' | 'line-by-line';
+
 export type AuthQueueViewProps = {
   queue: AuthRequest[];
   historyQueue?: AuthRequest[];
@@ -596,12 +599,16 @@ function renderHunksHtml(raw: string): string {
   return `<pre class="diff-content">${escaped.join('\n')}</pre>`;
 }
 
-function renderDiff2Html(raw: string): string | null {
+function getDiffOutputFormat(mode: AuthDiffMode): Diff2HtmlOutputFormat {
+  return mode === 'split' ? 'side-by-side' : 'line-by-line';
+}
+
+function renderDiff2Html(raw: string, mode: AuthDiffMode): string | null {
   if (!raw.trim()) return null;
   try {
     const html = diff2htmlHtml(raw, {
       inputFormat: 'diff',
-      outputFormat: 'side-by-side',
+      outputFormat: getDiffOutputFormat(mode),
       drawFileList: false,
       matching: 'lines',
     });
@@ -1202,6 +1209,7 @@ function AuthRequestDetail({
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(true);
   const [diffViewActive, setDiffViewActive] = useState(false);
+  const [diffMode, setDiffMode] = useState<AuthDiffMode>('split');
   const [expandedDiffFiles, setExpandedDiffFiles] = useState<Set<number>>(() => new Set());
   const [showConsole, setShowConsole] = useState(false);
   const [editingCommitMsg, setEditingCommitMsg] = useState(false);
@@ -1224,8 +1232,8 @@ function AuthRequestDetail({
   const specHtml = useMemo(() => specContent ? renderMarkdown(specContent) : '', [specContent]);
   const diffSections = useMemo(() => parseDiffSections(diffRaw), [diffRaw]);
   const renderedDiffSections = useMemo(
-    () => diffSections.map((section) => renderDiff2Html(section.raw)),
-    [diffSections],
+    () => diffSections.map((section) => renderDiff2Html(section.raw, diffMode)),
+    [diffSections, diffMode],
   );
 
   const rawConsoleOutput = executionOutput ||
@@ -1493,44 +1501,70 @@ function AuthRequestDetail({
         )}
 
         {diffViewActive ? (
-          <section className="auth-detail__diff-view" aria-label="Auth request changes">
+          <section
+            className="auth-detail__diff-view"
+            aria-label="Auth request changes"
+            data-diff-mode={diffMode}
+          >
             {diffSections.length > 0 ? (
-              diffSections.map((section, index) => {
-                const expanded = expandedDiffFiles.has(index);
-                const diffHtml = renderedDiffSections[index];
-                return (
-                  <div key={`${section.filename}-${index}`} className="auth-diff-file">
+              <>
+                <div className="auth-detail__diff-toolbar">
+                  <div className="auth-detail__diff-mode" role="group" aria-label="Diff layout">
                     <button
                       type="button"
-                      className="auth-diff-file__header"
-                      aria-expanded={expanded}
-                      onClick={() => toggleDiffFile(index)}
+                      className={`auth-detail__diff-mode-button${diffMode === 'unified' ? ' auth-detail__diff-mode-button--active' : ''}`}
+                      aria-pressed={diffMode === 'unified'}
+                      onClick={() => setDiffMode('unified')}
                     >
-                      <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
-                        {'\u25B8'}
-                      </span>
-                      <span className="auth-diff-file__path" title={section.filename}>
-                        {section.filename}
-                      </span>
+                      Unified
                     </button>
-                    {expanded && (
-                      <div className="auth-diff-file__body">
-                        {diffHtml ? (
-                          <div
-                            className="auth-diff-file__html"
-                            dangerouslySetInnerHTML={{ __html: diffHtml }}
-                          />
-                        ) : (
-                          <div
-                            className="auth-diff-file__fallback"
-                            dangerouslySetInnerHTML={{ __html: renderHunksHtml(section.hunks) }}
-                          />
-                        )}
-                      </div>
-                    )}
+                    <button
+                      type="button"
+                      className={`auth-detail__diff-mode-button${diffMode === 'split' ? ' auth-detail__diff-mode-button--active' : ''}`}
+                      aria-pressed={diffMode === 'split'}
+                      onClick={() => setDiffMode('split')}
+                    >
+                      Split
+                    </button>
                   </div>
-                );
-              })
+                </div>
+                {diffSections.map((section, index) => {
+                  const expanded = expandedDiffFiles.has(index);
+                  const diffHtml = renderedDiffSections[index];
+                  return (
+                    <div key={`${section.filename}-${index}`} className="auth-diff-file">
+                      <button
+                        type="button"
+                        className="auth-diff-file__header"
+                        aria-expanded={expanded}
+                        onClick={() => toggleDiffFile(index)}
+                      >
+                        <span className={`panel__chevron${expanded ? ' panel__chevron--open' : ''}`}>
+                          {'\u25B8'}
+                        </span>
+                        <span className="auth-diff-file__path" title={section.filename}>
+                          {section.filename}
+                        </span>
+                      </button>
+                      {expanded && (
+                        <div className="auth-diff-file__body">
+                          {diffHtml ? (
+                            <div
+                              className="auth-diff-file__html"
+                              dangerouslySetInnerHTML={{ __html: diffHtml }}
+                            />
+                          ) : (
+                            <div
+                              className="auth-diff-file__fallback"
+                              dangerouslySetInnerHTML={{ __html: renderHunksHtml(section.hunks) }}
+                            />
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </>
             ) : (
               <div className="auth-detail__diff-empty">
                 No diff available for this request.
