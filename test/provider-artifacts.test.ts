@@ -1880,6 +1880,7 @@ describe("provider/artifact substrate", () => {
     expect(content).toMatchObject({
       status: "available",
       kind: "json",
+      warnings: ["large artifact preview defers full sha256 validation"],
       preview: {
         truncated: true,
         format_skipped: "partial_preview",

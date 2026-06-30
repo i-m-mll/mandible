@@ -206,7 +206,6 @@ export function getArtifactContent(
     resolved.path,
     recoverabilityForArtifact(artifact),
     sizeBytes,
-    resolved.source?.kind ?? null,
   );
   if (!hashCheck.ok) {
     return unresolvedDownload(hashCheck.reason);
@@ -606,7 +605,6 @@ function validateContentHash(
   filePath: string,
   recoverability: ArtifactRecoverability | null,
   sizeBytes: number,
-  sourceKind: ArtifactContentSourceKind | null,
 ): { ok: true; warnings: string[] } | { ok: false; reason: string } {
   if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
     return { ok: true, warnings: [] };
@@ -614,9 +612,7 @@ function validateContentHash(
   if (sizeBytes > EAGER_HASH_VALIDATION_BYTES) {
     return {
       ok: true,
-      warnings: sourceKind === "local_file"
-        ? ["large local artifact preview skips eager sha256 validation"]
-        : [],
+      warnings: ["large artifact preview defers full sha256 validation"],
     };
   }
   const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
