@@ -1328,6 +1328,10 @@ function AuthRequestDetail({
   const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
   const shortRef = requestHash || 'unknown';
   const copyRef = requestHash ? `auth:${requestHash}` : '';
+  const hasActionBundle = Boolean(actionBundle);
+  const panelsClass = hasActionBundle
+    ? 'auth-detail__panels auth-detail__panels--with-actions'
+    : 'auth-detail__panels auth-detail__panels--single';
 
   const createdAt = formatMetadataTimestamp(request.created_at ?? null);
   const lastExecutedAt = formatMetadataTimestamp(request.last_executed_at ?? null);
@@ -1572,7 +1576,7 @@ function AuthRequestDetail({
             )}
           </section>
         ) : (
-          <div className="auth-detail__panels">
+          <div className={panelsClass}>
             <div className="auth-detail__left-col">
               <div className="panel">
                 <div className="panel__header">
@@ -1668,9 +1672,11 @@ function AuthRequestDetail({
                 )}
               </div>
             </div>
-            <div className="auth-detail__right-col">
-              {actionBundle}
-            </div>
+            {hasActionBundle && (
+              <div className="auth-detail__right-col">
+                {actionBundle}
+              </div>
+            )}
           </div>
         )}
 

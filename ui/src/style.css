@@ -3239,6 +3239,10 @@ tr:last-child td {
   align-items: start;
 }
 
+.auth-detail__panels--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .auth-detail__left-col {
   display: flex;
   flex-direction: column;
@@ -3248,7 +3252,11 @@ tr:last-child td {
 
 .auth-detail__right-col {
   min-width: 0;
-  align-self: stretch;
+  align-self: start;
+}
+
+.auth-detail__right-col .auth-action-bundle {
+  margin-top: 0;
 }
 
 .auth-detail__diff-view {
