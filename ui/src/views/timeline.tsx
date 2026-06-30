@@ -93,6 +93,7 @@ export type TimelineViewProps = {
 };
 
 type ProjectionStatus = 'loading' | 'syncing' | 'ready' | 'error';
+type TimelineSelectionStatus = 'empty' | 'present' | 'stale';
 
 type TimelineUrlState = Partial<TimelineViewState> & {
   projectRef?: string;
@@ -298,6 +299,12 @@ function clearTimelineSelection(state: TimelineViewState): TimelineViewState {
     selectedEventId: null,
     selectedClusterId: null,
   };
+}
+
+function timelineSelectionStatus(state: TimelineViewState): TimelineSelectionStatus {
+  return state.selectedEventId || state.selectedRowOccurrenceId || state.selectedClusterId
+    ? 'stale'
+    : 'empty';
 }
 
 function projectionDepthForExpandedEvents(
@@ -1045,7 +1052,19 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const selectedRow = viewState.selectedRowOccurrenceId
     ? rowById.get(viewState.selectedRowOccurrenceId) ?? null
     : selectedEvent ? rowById.get(selectedEvent.row_id) ?? null : null;
-  const selectedRowEvents = selectedRow ? eventsByRow.get(selectedRow.id) ?? EMPTY_TIMELINE_EVENTS : EMPTY_TIMELINE_EVENTS;
+  const missingEventId = viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null;
+  const missingClusterId = viewState.selectedClusterId && !selectedCluster ? viewState.selectedClusterId : null;
+  const missingRowId = viewState.selectedRowOccurrenceId && !selectedRow
+    ? viewState.selectedRowOccurrenceId
+    : null;
+  const selectionStatus: TimelineSelectionStatus = missingEventId || missingClusterId || missingRowId
+    ? 'stale'
+    : selectedEvent || selectedRow || selectedCluster
+    ? 'present'
+    : timelineSelectionStatus(viewState);
+  const selectedRowEvents = selectedRow
+    ? eventsByRow.get(selectedRow.id) ?? EMPTY_TIMELINE_EVENTS
+    : EMPTY_TIMELINE_EVENTS;
   const visibleSelectedRowEvents = useMemo(() => (
     selectedRowEvents.filter((event) => eventInWindow(event, start, end))
   ), [end, selectedRowEvents, start]);
@@ -1567,9 +1586,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       selectedCluster={selectedCluster}
       selectedClusterEvents={selectedClusterEvents}
       selectedRow={selectedRow}
-      missingEventId={viewState.selectedEventId && !selectedEvent ? viewState.selectedEventId : null}
-      missingClusterId={viewState.selectedClusterId && !selectedCluster ? viewState.selectedClusterId : null}
-      missingRowId={viewState.selectedRowOccurrenceId && !selectedRow ? viewState.selectedRowOccurrenceId : null}
+      missingEventId={selectionStatus === 'stale' ? missingEventId : null}
+      missingClusterId={selectionStatus === 'stale' ? missingClusterId : null}
+      missingRowId={selectionStatus === 'stale' ? missingRowId : null}
+      selectionStatus={selectionStatus}
       rowEvents={visibleSelectedRowEvents}
       links={links}
       linkById={linkById}
@@ -1596,10 +1616,11 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     selectedClusterEvents,
     selectedEvent,
     selectedRow,
+    selectionStatus,
     viewState.expandedEventIds,
-    viewState.selectedClusterId,
-    viewState.selectedEventId,
-    viewState.selectedRowOccurrenceId,
+    missingClusterId,
+    missingEventId,
+    missingRowId,
     visibleSelectedRowEvents,
     zoomToCluster,
   ]);
@@ -2124,6 +2145,7 @@ type InspectorProps = {
   missingEventId: string | null;
   missingClusterId: string | null;
   missingRowId: string | null;
+  selectionStatus: TimelineSelectionStatus;
   rowEvents: TimelineEvent[];
   links: TimelineLink[];
   linkById: Map<string, TimelineLink>;
@@ -2146,6 +2168,7 @@ function TimelineInspector({
   missingEventId,
   missingClusterId,
   missingRowId,
+  selectionStatus,
   rowEvents,
   linkById,
   expandedEventIds,
@@ -2299,7 +2322,7 @@ function TimelineInspector({
             ))}
           </div>
         </section>
-      ) : !selectedEvent && !selectedCluster ? (
+      ) : selectionStatus === 'empty' ? (
         <section className="timeline-inspector__section">
           <div className="timeline-inspector__header">
             <span>No selection</span>
