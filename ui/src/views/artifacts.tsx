@@ -648,6 +648,7 @@ export function ArtifactDetail({
   const homeRepoLabel = artifactHomeRepoLabel(artifact, series);
   const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
   const headerCopyValue = copyableSeriesRef || shortImmutableArtifactRef(artifact.id);
+  const headerCopyLabel = copyableSeriesRef ? 'Copy artifact series ref' : 'Copy artifact ref';
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
     ['Series', seriesRefValue, true, copyableSeriesRef || seriesRefValue],
@@ -747,7 +748,7 @@ export function ArtifactDetail({
             shortId={headerShortId}
             shortIdClassName="artifact-detail__short-ref"
             copyValue={headerCopyValue}
-            copyLabel="Copy artifact series ref"
+            copyLabel={headerCopyLabel}
           >
             {artifact.custody_mode && <span>{artifact.custody_mode}</span>}
             {artifact.role && <span>{artifact.role}</span>}
