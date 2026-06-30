@@ -133,6 +133,40 @@ describe('artifact preview helpers', () => {
       rawValue: '{"alpha":1}',
       autoFormatted: true,
       highlightLanguage: 'json',
+      partial: false,
+    });
+  });
+
+  it('keeps partial JSON raw and marks formatting as skipped', () => {
+    const preview = artifactPreview(content({
+      kind: 'json',
+      media_type: 'application/json',
+      size_bytes: 1024 * 1024,
+      preview: {
+        encoding: 'utf-8',
+        text: '{"items":[1,2,3',
+        truncated: true,
+        preview_bytes: 15,
+        total_bytes: 1024 * 1024,
+        omitted_bytes: (1024 * 1024) - 15,
+        format_skipped: 'partial_preview',
+      },
+      download: {
+        available: true,
+        media_type: 'application/json',
+        size_bytes: 1024 * 1024,
+        filename: 'large.json',
+      },
+    }));
+
+    expect(preview).toMatchObject({
+      kind: 'json',
+      value: '{"items":[1,2,3',
+      rawValue: '{"items":[1,2,3',
+      autoFormatted: false,
+      highlightLanguage: null,
+      partial: true,
+      formatSkipped: 'partial_preview',
     });
   });
 
@@ -194,5 +228,33 @@ describe('ArtifactDetail artifact preview rendering', () => {
     const code = container.querySelector('code.language-python');
     expect(code).toBeTruthy();
     expect(code?.querySelector('.hljs-keyword')?.textContent).toBe('def');
+  });
+
+  it('explains partial JSON previews without syntax-highlighting the large slice', () => {
+    const { container } = renderArtifactDetail(content({
+      kind: 'json',
+      media_type: 'application/json',
+      size_bytes: 1024 * 1024,
+      preview: {
+        encoding: 'utf-8',
+        text: '{"items":[1,2,3',
+        truncated: true,
+        preview_bytes: 15,
+        total_bytes: 1024 * 1024,
+        omitted_bytes: (1024 * 1024) - 15,
+        format_skipped: 'partial_preview',
+      },
+      download: {
+        available: true,
+        media_type: 'application/json',
+        size_bytes: 1024 * 1024,
+        filename: 'large.json',
+      },
+    }));
+
+    expect(container.querySelector('code.language-json')).toBeNull();
+    expect(container.querySelector('.artifact-preview')?.textContent).toContain('{"items":[1,2,3');
+    expect(screen.getByText(/Showing the first 15 B of 1\.0 MB/)).toBeTruthy();
+    expect(screen.getByText(/Formatting and highlighting are skipped/)).toBeTruthy();
   });
 });

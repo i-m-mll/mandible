@@ -1866,6 +1866,33 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain('\n      39999\n');
   });
 
+  it("serves only a bounded initial slice for large JSON previews", () => {
+    const compact = JSON.stringify({ payload: "x".repeat((2 * 1024 * 1024) + 4096) });
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "large-metrics.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        truncated: true,
+        format_skipped: "partial_preview",
+      },
+    });
+    expect(content?.preview?.text).toBe(compact.slice(0, 256 * 1024));
+    expect(content?.preview?.raw_text).toBeUndefined();
+    expect(content?.preview?.formatted).toBeUndefined();
+    expect(content?.preview?.preview_bytes).toBe(256 * 1024);
+    expect(content?.preview?.total_bytes).toBe(Buffer.byteLength(compact));
+    expect(content?.preview?.omitted_bytes).toBe(Buffer.byteLength(compact) - (256 * 1024));
+  });
+
   it("returns binary download metadata without inline preview", () => {
     const payload = Buffer.from([0, 1, 2, 3, 4]);
     const artifact = ingestArtifact(db, {

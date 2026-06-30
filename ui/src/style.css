@@ -7210,7 +7210,7 @@ code.inbox-detail__meta-value {
 }
 
 .artifact-preview--code {
-  height: clamp(220px, 42vh, 520px);
+  min-height: min(520px, calc(100vh - 330px));
   color: #24292f;
   white-space: pre;
 }

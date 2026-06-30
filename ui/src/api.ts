@@ -1835,6 +1835,10 @@ export type ArtifactContentResult = {
     raw_text?: string;
     formatted?: 'json';
     truncated: boolean;
+    preview_bytes?: number;
+    total_bytes?: number;
+    omitted_bytes?: number;
+    format_skipped?: 'partial_preview';
   } | null;
   download: {
     available: boolean;

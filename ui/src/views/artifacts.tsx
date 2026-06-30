@@ -90,6 +90,11 @@ type ArtifactPreview =
       autoFormatted: boolean;
       formatLabel: string;
       highlightLanguage: ArtifactHighlightLanguage | null;
+      partial: boolean;
+      previewBytes?: number;
+      totalBytes?: number;
+      omittedBytes?: number;
+      formatSkipped?: 'partial_preview';
     }
   | { kind: 'markdown' | 'html' | 'empty'; value: string }
   | { kind: 'binary'; value: string }
@@ -1061,11 +1066,17 @@ function PreviewSection({
     : preview && (preview.kind === 'json' || preview.kind === 'text')
       ? preview.value
       : '';
+  const highlightLanguage = preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && !preview.partial
+    && previewValue.length <= ARTIFACT_HIGHLIGHT_MAX_CHARS
+    ? preview.highlightLanguage
+    : null;
   const highlightedPreview = useMemo(() => (
     preview && (preview.kind === 'json' || preview.kind === 'text')
-      ? highlightArtifactCode(previewValue, preview.highlightLanguage)
+      ? highlightArtifactCode(previewValue, highlightLanguage)
       : null
-  ), [preview, previewValue]);
+  ), [preview, previewValue, highlightLanguage]);
   const codeClassName = highlightedPreview
     ? `hljs language-${highlightedPreview.language}`
     : undefined;
@@ -1133,7 +1144,13 @@ function PreviewSection({
           </div>
         )}
         {showPreview && preview.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
-        {showPreview && content?.preview?.truncated && (
+        {showPreview && preview && (preview.kind === 'json' || preview.kind === 'text') && preview.partial && (
+          <div className="artifact-detail__hint">
+            Showing the first {formatBytes(preview.previewBytes ?? content?.preview?.preview_bytes ?? 0) || 'preview'} of {formatBytes(preview.totalBytes ?? content?.size_bytes ?? 0) || 'the artifact'}.
+            {preview.formatSkipped ? ' Formatting and highlighting are skipped for this partial preview.' : ''}
+          </div>
+        )}
+        {showPreview && content?.preview?.truncated && (!preview || preview.kind === 'markdown' || preview.kind === 'html') && (
           <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
         )}
       </div>
@@ -1429,7 +1446,7 @@ async function copyText(value: string): Promise<void> {
 
 export function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
   if (content.kind === 'json' && content.preview) {
-    const bundle = artifactBundlePreview(content.preview.text);
+    const bundle = content.preview.truncated ? null : artifactBundlePreview(content.preview.text);
     if (bundle) return bundle;
     const rawValue = content.preview.raw_text ?? content.preview.text;
     return {
@@ -1438,7 +1455,12 @@ export function artifactPreview(content: ArtifactContentResult): ArtifactPreview
       rawValue,
       autoFormatted: content.preview.formatted === 'json' && rawValue !== content.preview.text,
       formatLabel: 'Auto-formatted JSON',
-      highlightLanguage: 'json',
+      highlightLanguage: content.preview.truncated ? null : 'json',
+      partial: content.preview.truncated,
+      previewBytes: content.preview.preview_bytes,
+      totalBytes: content.preview.total_bytes,
+      omittedBytes: content.preview.omitted_bytes,
+      formatSkipped: content.preview.format_skipped,
     };
   }
   if (content.kind === 'html' && content.preview) {
@@ -1465,6 +1487,10 @@ export function artifactPreview(content: ArtifactContentResult): ArtifactPreview
         autoFormatted: true,
         formatLabel: 'Auto-formatted JSON-like text',
         highlightLanguage: 'json',
+        partial: false,
+        previewBytes: content.preview.preview_bytes,
+        totalBytes: content.preview.total_bytes,
+        omittedBytes: content.preview.omitted_bytes,
       };
     }
     return {
@@ -1473,7 +1499,12 @@ export function artifactPreview(content: ArtifactContentResult): ArtifactPreview
       rawValue: content.preview.text,
       autoFormatted: false,
       formatLabel: '',
-      highlightLanguage: artifactHighlightLanguage(content),
+      highlightLanguage: content.preview.truncated ? null : artifactHighlightLanguage(content),
+      partial: content.preview.truncated,
+      previewBytes: content.preview.preview_bytes,
+      totalBytes: content.preview.total_bytes,
+      omittedBytes: content.preview.omitted_bytes,
+      formatSkipped: content.preview.format_skipped,
     };
   }
   if (content.kind === 'binary' && content.download.available) {
@@ -1506,6 +1537,7 @@ const ARTIFACT_HIGHLIGHT_LANGUAGES = {
 };
 
 type ArtifactHighlightLanguage = keyof typeof ARTIFACT_HIGHLIGHT_LANGUAGES;
+const ARTIFACT_HIGHLIGHT_MAX_CHARS = 256 * 1024;
 
 const REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES = new Set<ArtifactHighlightLanguage>();
 
@@ -1520,6 +1552,7 @@ export function highlightArtifactCode(
   language: ArtifactHighlightLanguage | null,
 ): { html: string; language: ArtifactHighlightLanguage } | null {
   if (!language || !code) return null;
+  if (code.length > ARTIFACT_HIGHLIGHT_MAX_CHARS) return null;
   ensureArtifactHighlightLanguage(language);
   return {
     html: hljs.highlight(code, { language, ignoreIllegals: true }).value,

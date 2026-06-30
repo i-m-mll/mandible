@@ -10,7 +10,9 @@ import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverabili
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
 const HTML_PREVIEW_BYTES = 8 * 1024 * 1024;
-const JSON_PREVIEW_BYTES = 2 * 1024 * 1024;
+const JSON_COMPLETE_PREVIEW_BYTES = 2 * 1024 * 1024;
+const JSON_PARTIAL_PREVIEW_BYTES = 256 * 1024;
+const EAGER_HASH_VALIDATION_BYTES = 2 * 1024 * 1024;
 
 export type ArtifactContentKind = "text" | "markdown" | "json" | "html" | "binary" | "unavailable";
 export type ArtifactContentSourceKind = "managed_file" | "repo_locator" | "local_file";
@@ -21,6 +23,10 @@ export interface ArtifactContentPreview {
   raw_text?: string;
   formatted?: "json";
   truncated: boolean;
+  preview_bytes: number;
+  total_bytes: number;
+  omitted_bytes: number;
+  format_skipped?: "partial_preview";
 }
 
 export interface ArtifactDownloadMetadata {
@@ -194,12 +200,18 @@ export function getArtifactContent(
     return unresolvedDownload("artifact locator does not point to a regular file");
   }
 
-  const hashCheck = validateContentHash(artifact, resolved.path, recoverabilityForArtifact(artifact));
+  const sizeBytes = stat.size;
+  const hashCheck = validateContentHash(
+    artifact,
+    resolved.path,
+    recoverabilityForArtifact(artifact),
+    sizeBytes,
+    resolved.source?.kind ?? null,
+  );
   if (!hashCheck.ok) {
     return unresolvedDownload(hashCheck.reason);
   }
 
-  const sizeBytes = stat.size;
   const base = {
     artifact_id: artifact.id,
     status: "available" as const,
@@ -227,7 +239,9 @@ export function getArtifactContent(
   const textPreviewBytes = kind === "html"
     ? Math.max(previewBytes, HTML_PREVIEW_BYTES)
     : kind === "json"
-      ? Math.max(previewBytes, JSON_PREVIEW_BYTES)
+      ? sizeBytes <= JSON_COMPLETE_PREVIEW_BYTES
+        ? Math.max(previewBytes, JSON_COMPLETE_PREVIEW_BYTES)
+        : Math.max(previewBytes, JSON_PARTIAL_PREVIEW_BYTES)
       : previewBytes;
   const preview = readTextPreview(resolved.path, textPreviewBytes);
   if (!preview) {
@@ -245,6 +259,7 @@ export function getArtifactContent(
       preview: {
         ...preview,
         ...(formatted && formatted !== preview.text ? { raw_text: preview.text, formatted: "json" as const } : {}),
+        ...(preview.truncated ? { format_skipped: "partial_preview" as const } : {}),
         text: formatted ?? preview.text,
       },
     };
@@ -590,9 +605,19 @@ function validateContentHash(
   artifact: ArtifactRecord,
   filePath: string,
   recoverability: ArtifactRecoverability | null,
+  sizeBytes: number,
+  sourceKind: ArtifactContentSourceKind | null,
 ): { ok: true; warnings: string[] } | { ok: false; reason: string } {
   if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
     return { ok: true, warnings: [] };
+  }
+  if (sizeBytes > EAGER_HASH_VALIDATION_BYTES) {
+    return {
+      ok: true,
+      warnings: sourceKind === "local_file"
+        ? ["large local artifact preview skips eager sha256 validation"]
+        : [],
+    };
   }
   const actual = crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
   if (actual === artifact.content_hash.toLowerCase()) {
@@ -663,6 +688,9 @@ function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPre
       encoding: "utf-8",
       text: decoded,
       truncated,
+      preview_bytes: previewBytes.byteLength,
+      total_bytes: stat.size,
+      omitted_bytes: Math.max(0, stat.size - previewBytes.byteLength),
     };
   } finally {
     fs.closeSync(fd);
