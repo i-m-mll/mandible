@@ -2975,6 +2975,14 @@ tr:last-child td {
   background: var(--bg);
 }
 
+.auth-detail-pane > .preview-disabled-notice {
+  margin: -24px -24px 0;
+}
+
+.auth-detail-pane--with-preview-notice .auth-detail__header {
+  margin-top: 0;
+}
+
 .auth-detail__header-primary {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -4387,34 +4395,6 @@ tr:last-child td {
   display: flex;
   gap: 12px;
   justify-content: flex-end;
-}
-
-.auth-instance-warning {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 14px;
-  padding: 10px 12px;
-  border: 1px solid var(--neutral-alpha-16);
-  background: var(--neutral-alpha-06);
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.auth-instance-warning--caution {
-  border: 1px solid var(--status-warning-border);
-  background: var(--status-warning-bg);
-  color: var(--text-primary);
-}
-
-.auth-instance-warning strong {
-  color: var(--text-primary);
-  text-transform: capitalize;
-  white-space: nowrap;
-}
-
-.auth-instance-warning--caution strong {
-  color: var(--status-warning);
 }
 
 /* Bug: 816476e — submitting/executing in-progress button state */

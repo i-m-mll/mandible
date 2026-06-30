@@ -19,6 +19,7 @@ import { useCallback, useEffect, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
 import { getSpace, type InstanceInfo, type Space, type SpaceRenderer } from '../../api';
+import { PreviewDisabledNotice } from '../../components/shared/PreviewDisabledNotice';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -214,6 +215,7 @@ export function SpacesViewShell({
       : projectId;
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
+  const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
 
   return (
     <section
@@ -269,6 +271,11 @@ export function SpacesViewShell({
             </span>
           )}
         </header>
+        {spaceId && previewMutationsBlocked ? (
+          <PreviewDisabledNotice title={`${instance?.role ?? 'preview'} instance`}>
+            Saving disabled in copied preview instance.
+          </PreviewDisabledNotice>
+        ) : null}
         <div className="spaces-shell__body" data-testid="spaces-shell-body">
           {!spaceId ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">

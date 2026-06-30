@@ -5,6 +5,7 @@ import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import {
   disableAuthAutoApprove,
@@ -1209,6 +1210,7 @@ function AuthRequestDetail({
   executionOutput,
   onUpdateField,
   mutationsAllowed = true,
+  previewNotice = null,
 }: {
   request: AuthRequest;
   history?: boolean;
@@ -1221,6 +1223,7 @@ function AuthRequestDetail({
   executionOutput?: string;
   onUpdateField?: (requestId: string, field: string, value: string) => void | Promise<void>;
   mutationsAllowed?: boolean;
+  previewNotice?: JSX.Element | null;
 }): JSX.Element {
   const [showCommit, setShowCommit] = useState(true);
   const [showSpec, setShowSpec] = useState(true);
@@ -1380,7 +1383,10 @@ function AuthRequestDetail({
   };
 
   return (
-    <article className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}>
+    <article
+      className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}${previewNotice ? ' auth-detail-pane--with-preview-notice' : ''}`}
+    >
+      {previewNotice}
       <header className="auth-detail__header" ref={headerRef}>
         <div className="auth-detail__header-primary">
           <div className="auth-detail__header-main">
@@ -3372,16 +3378,6 @@ export function AuthQueueView({
 
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>
-        {instanceMutationBlocked && (
-          <div className="auth-instance-warning auth-instance-warning--caution" role="status">
-            <strong>{instanceLabel} instance</strong>
-            <span>
-              Auth actions are disabled for this copied queue
-              {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
-              {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
-            </span>
-          </div>
-        )}
         {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>
@@ -3417,6 +3413,15 @@ export function AuthQueueView({
                 ) : null
               }
               actions={renderDetailActions(request)}
+              previewNotice={instanceMutationBlocked ? (
+                <PreviewDisabledNotice title={`${instanceLabel} instance`}>
+                  <>
+                    Auth actions are disabled for this copied preview queue
+                    {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
+                    {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
+                  </>
+                </PreviewDisabledNotice>
+              ) : null}
               onUpdateField={onUpdateField}
               mutationsAllowed={operationalMutationsAllowed}
             />
