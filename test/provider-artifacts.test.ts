@@ -1844,6 +1844,7 @@ describe("provider/artifact substrate", () => {
       },
     });
     expect(compact.length).toBeGreaterThan(128 * 1024);
+    expect(Buffer.byteLength(compact)).toBeLessThan(1024 * 1024);
     const artifact = ingestArtifact(db, {
       role: "metrics",
       media_type: "application/json",
@@ -1866,8 +1867,11 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain('\n      39999\n');
   });
 
-  it("serves only a bounded initial slice for large JSON previews", () => {
-    const compact = JSON.stringify({ payload: "x".repeat((2 * 1024 * 1024) + 4096) });
+  it("serves only a bounded initial slice for reported-size JSON previews", () => {
+    const targetBytes = 1_781_484;
+    const emptyJsonBytes = Buffer.byteLength(JSON.stringify({ payload: "" }));
+    const compact = JSON.stringify({ payload: "x".repeat(targetBytes - emptyJsonBytes) });
+    expect(Buffer.byteLength(compact)).toBe(targetBytes);
     const artifact = ingestArtifact(db, {
       role: "metrics",
       media_type: "application/json",
