@@ -4400,10 +4400,20 @@ tr:last-child td {
   font-size: 13px;
 }
 
+.auth-instance-warning--caution {
+  border: 1px solid var(--status-warning-border);
+  background: var(--status-warning-bg);
+  color: var(--text-primary);
+}
+
 .auth-instance-warning strong {
   color: var(--text-primary);
   text-transform: capitalize;
   white-space: nowrap;
+}
+
+.auth-instance-warning--caution strong {
+  color: var(--status-warning);
 }
 
 /* Bug: 816476e — submitting/executing in-progress button state */

@@ -120,7 +120,10 @@ describe('AuthQueueView daemon readiness gate', () => {
     const onApprove = vi.fn();
     renderView(true, onApprove, previewInstance);
 
-    expect(screen.getByText('preview instance')).toBeTruthy();
+    const warningLabel = screen.getByText('preview instance');
+    const warning = warningLabel.closest('.auth-instance-warning');
+    expect(warning).toBeTruthy();
+    expect(warning?.classList.contains('auth-instance-warning--caution')).toBe(true);
     expect(screen.getByText(/Auth actions are disabled for this copied queue/)).toBeTruthy();
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
