@@ -19,53 +19,71 @@ membership. The implementation should add a dedicated project-artifact
 association table and should keep contextual evidence links and authored Spaces
 as separate concepts.
 
-## Current state to preserve
+## Current state to migrate from
 
 The current implementation already contains most of the underlying concepts, but
-the names and field placement do not match the target model.
+the names and field placement do not match the target model. These names and ref
+forms are migration inputs, not compatibility contracts to keep indefinitely.
 
-- `artifact_series` is the current logical artifact identity.
-- `artifact_versions` is the current version table.
-- `artifacts` is the current content-addressed byte/reference table.
+- `artifact_series` is the current logical artifact identity; it should be
+  replaced by `artifact`.
+- `artifact_versions` is the current version table; it should be replaced by
+  singular `artifact_version`.
+- `artifacts` is the current content-addressed byte/reference table; it should
+  be replaced by singular `artifact_blob`.
 - `artifact_links` is the current contextual link table for issue evidence,
-  comments, bundles, and living/pinned contextual artifact references.
+  comments, bundles, and living/pinned contextual artifact references; its
+  target fields should be repaired to point at the new identity model.
 - `home_repo_id` and `repo_locator_json` currently live on `artifacts`, but they
-  describe source/provenance and materialization, not the byte identity itself.
+  describe source/provenance and materialization, not byte identity. They should
+  move onto `artifact` and `artifact_version` as appropriate.
 - `space_items` records that a thing appears in a Space. It is authored
   organization/presentation state, not project canonicality.
 
-The ref compatibility contract must also be preserved:
+Existing ref forms should be treated as data to repair:
 
-- `artifact:sha256:<hash>` remains an immutable content/blob ref.
-- Existing `artifact-series:*` and `artifact-version:*` refs remain resolvable
-  during and after the migration as compatibility aliases.
+- `artifact:sha256:<hash>`, `sha256:<hash>`, bare hash refs, and current
+  `artifact:<hash>` shorthand should be rewritten to `artifact-blob:<hash>` when
+  they refer to immutable bytes.
+- Existing `artifact-series:*` refs should be rewritten to `artifact:*` logical
+  refs or exact `artifact-version:*` refs based on context.
 - Issue evidence links must not silently retarget when a newer artifact version
   is recorded.
 
-## Reference compatibility
+## Canonical refs after the repair
 
-The table rename must not repurpose existing public ref namespaces in a way that
-changes what old refs mean. In v1, the logical table is named `artifact`
-internally, but the existing `artifact-series:*` public ref remains the
-compatibility ref for logical artifacts until a non-conflicting logical-artifact
-ref scheme is designed.
+The redesign is intentionally allowed to break old runtime ref forms. The
+migration should rewrite stored refs, aliases, issue comments/descriptions where
+Mandible owns the data, Space items, Space document refs, artifact links, tests,
+UI route params, and CLI help into the new canonical forms. Runtime parsers
+should reject old forms after the repair except inside the migration/repair tool.
 
-| accepted ref | resolves to | canonical output | behavior |
-| --- | --- | --- | --- |
-| `artifact:sha256:<hash>` | `artifact_blob` | `artifact:sha256:<hash>` | Immutable byte/blob ref. Never retargets. |
-| `sha256:<hash>` | `artifact_blob` | `artifact:sha256:<hash>` | Existing shorthand. Never retargets. |
-| bare hash or accepted hash prefix | `artifact_blob` | `artifact:sha256:<hash>` | Existing shorthand where currently supported. Never retargets. |
-| `artifact:<hash>` | `artifact_blob` | `artifact:sha256:<hash>` | Legacy hash shorthand only. Do not use `artifact:<id>` for logical artifacts in v1. |
-| `artifact-version:<id>` | `artifact_version` | `artifact-version:<id>` | Exact pinned version. |
-| `artifact-series:<id>` | logical `artifact` latest | `artifact-series:<id>` | Compatibility logical-artifact ref; resolves latest with `series_latest_not_pinned` warning. |
-| `artifact-series:<id>@latest` | logical `artifact` latest | `artifact-series:<id>@latest` | Same as above with explicit latest selector and warning. |
-| `artifact-series:<id>@<n>` or `#<n>` | `artifact_version` | `artifact-version:<id>` if available | Exact pinned version selector. |
-| `repo://...` | source locator / alias | resolved artifact/version/blob ref | Existing resolver behavior; repo source details move to version provenance. |
+Future canonical refs:
 
-New public logical artifact refs are out of scope for this first migration. The
-implementation may introduce display language that calls `artifact-series:*`
-"artifact" in CLI/UI, but the parser must continue to treat `artifact:*` as a
-hash/blob compatibility form when the suffix is hash-shaped.
+| canonical ref | target | behavior |
+| --- | --- | --- |
+| `artifact:<id-or-prefix>` | logical `artifact` | Refers to the logical artifact identity. Prefixes resolve with ambiguity checks. |
+| `artifact-version:<id-or-prefix>` | exact `artifact_version` | Refers to one immutable version. Issue evidence should use this when a version is intended. |
+| `artifact-blob:<hash-or-prefix>` | immutable `artifact_blob` | Refers to content-addressed bytes. Prefixes resolve with ambiguity checks. |
+| `repo://...` | source locator | Resolved as source/provenance input, not as project association or canonicality. |
+
+Deprecated migration inputs:
+
+| old ref | repair action |
+| --- | --- |
+| `artifact:sha256:<hash>` | Rewrite to `artifact-blob:<hash>` when it names bytes. |
+| `sha256:<hash>` | Rewrite to `artifact-blob:<hash>` when it names bytes. |
+| bare hash/prefix | Rewrite to `artifact-blob:<hash-or-prefix>` when context proves it is an artifact blob ref. |
+| `artifact:<hash>` | Rewrite to `artifact-blob:<hash-or-prefix>` when it was the old blob shorthand. After repair, `artifact:*` means logical artifact only. |
+| `artifact-series:<id>` | Rewrite to `artifact:<id>` when the link should follow the logical artifact, or to `artifact-version:<id>` when it should pin a specific migrated version. |
+| `artifact-series:<id>@latest` | Rewrite to `artifact:<id>` only where a living/latest logical artifact ref is intended. |
+| `artifact-series:<id>@<n>` or `#<n>` | Rewrite to the concrete migrated `artifact-version:<id>` for that version. |
+
+`sha256` remains a column/value inside `artifact_blob`, not a public namespace
+component. Mandible can add explicit multi-hash support later, but the current
+system does not implement alternate content digest algorithms. The ref grammar
+should therefore follow the issue-id precedent: one entity namespace plus opaque
+id or hash prefixes, with clear ambiguous/unresolved errors.
 
 ## Target invariants
 
@@ -88,6 +106,8 @@ hash/blob compatibility form when the suffix is hash-shaped.
    `repo_locator_json`, issue links, or Space membership.
 10. Backup/restore must round-trip the new tables, inline uniqueness
     constraints, foreign keys, CHECK constraints, and secondary indexes.
+11. Runtime code should not keep compatibility shims for old artifact table names
+    or old artifact ref namespaces after the repair migration completes.
 
 ## Target data model
 
@@ -109,7 +129,7 @@ Conceptual columns:
 | `source_kind` | `tracked_repo`, `local_only`, `managed`, `external`, or `mixed` |
 | `title` | display title |
 | `source_project_id` | optional FK to `ledger_projects(id)` when source resolves to a canonical Mandible project |
-| `source_repo_id` | compatibility/display repo key when present |
+| `source_repo_id` | legacy/display repo key when present |
 | `logical_name` | human logical name, path, or managed name |
 | `source_path` | repo path or local observed path when it is part of identity |
 | `latest_version_id` | denormalized latest version cache |
@@ -179,16 +199,16 @@ Conceptual columns:
 
 | column | purpose |
 | --- | --- |
-| `id` | immutable blob id, preserving `artifact:sha256:<hash>` compatibility |
+| `id` | immutable blob id, using `artifact-blob:<hash>` |
 | `algorithm` | hash algorithm, default `sha256` |
 | `content_hash` | content hash |
 | `storage_uri` | CAS/external/provider storage locator, not repo provenance |
 | `media_type` | MIME/media type |
-| `role` | optional role retained for compatibility; project roles belong on associations |
+| `role` | optional legacy role retained only when needed for migration; project roles belong on associations |
 | `size_bytes` | byte size |
 | `provider_id`, `manifest_id` | provider/provenance pointers |
 | `metadata_json` | object metadata |
-| `custody_mode` | `copy`, `managed`, `external`, or compatibility `link` while old rows exist |
+| `custody_mode` | `copy`, `managed`, `external`, or temporary `link` only during migration repair |
 | `availability` | materialization status |
 | `retention_json`, `reference_json` | durability/reference metadata |
 | `created_at` | timestamp |
@@ -205,8 +225,8 @@ Required constraints:
 Custody split:
 
 - `artifact_blob.custody_mode` describes actual byte-storage/materialization
-  state: CAS copy, managed CAS, external/provider store, or compatibility link
-  while old rows exist.
+  state: CAS copy, managed CAS, external/provider store, or temporary link
+  during migration repair.
 - `artifact_version.custody_mode` describes the observation/provenance intent
   for that version: commit-pinned repo version, dirty/local snapshot, managed
   snapshot, provider observation, and so on.
@@ -301,7 +321,7 @@ The second question is project memory. It belongs in
 Project artifact queries should use an intentional read model:
 
 - "Artifacts sourced from this project" comes from `artifact.source_project_id`
-  or compatible source repo fields.
+  or legacy source repo fields while migration diagnostics remain open.
 - "Artifacts associated with this project" comes from
   `project_artifact_associations`.
 - "Canonical artifacts for this project" comes only from association rows with
@@ -332,8 +352,8 @@ Target columns:
 | --- | --- |
 | `target_type` | `artifact_version` for pinned links, `artifact` for living links |
 | `target_id` | exact version id or logical artifact id |
-| `fallback_version_id` | pinned version retained for living links and compatibility display |
-| `legacy_blob_id` | old content/blob id during compatibility migration |
+| `fallback_version_id` | pinned version retained for living links and stable display |
+| `legacy_blob_id` | old content/blob id used only during migration repair |
 | `link_kind` | existing `pinned` or `living` semantics |
 | existing entity fields | contextual owner: issue, comment, bundle, etc. |
 
@@ -348,16 +368,17 @@ The intended target behavior is:
   polymorphic link table, target existence must be validated in the write path
   and covered by migration tests.
 - `fallback_version_id` should FK to `artifact_version(id)` when present.
-- `legacy_blob_id` is a compatibility field, not a semantic target.
-- Existing `artifact_id` values that currently name content rows must remain
-  resolvable through compatibility logic until all callers are migrated.
+- `legacy_blob_id` is a repair field, not a semantic target. It should be
+  dropped once the migration proves all links have unambiguous new targets.
+- Existing `artifact_id` values that currently name content rows must be
+  rewritten to `target_type`, `target_id`, and optional `fallback_version_id`.
 - Living issue evidence remains disallowed. Issue evidence must be pinned.
 - Old blob/content links migrate through the deterministic one-version wrapper
   created by the current orphan backfill. A pinned old link should become a
   pinned `artifact_version` link when the version can be identified.
 - No link row may retarget merely because a newer version is recorded.
 - If a link cannot be migrated unambiguously, preserve `legacy_blob_id`, keep the
-  old ref resolvable through compatibility code, and emit a migration diagnostic.
+  row out of active resolution until repaired, and emit a migration diagnostic.
 - Backup order must place `artifact_blob`, `artifact`, and `artifact_version`
   before any link table that FK-references them.
 
@@ -388,16 +409,18 @@ Rules:
 
 ## API and CLI surface
 
-The API should move toward logical artifacts as the primary user-facing object
-while preserving old ref resolution.
+The API should expose logical artifacts as the primary user-facing object after
+the migration. Old ref parsing belongs in the repair tool, not in normal runtime
+routes.
 
 Required API work:
 
 - Update shared contracts to expose `Artifact`, `ArtifactVersion`,
   `ArtifactBlob`, and `ProjectArtifactAssociation` types.
-- Keep `/api/artifacts/resolve` compatible with existing refs.
-- Make `/api/artifacts` list logical artifacts, or introduce a parallel logical
-  artifact list endpoint before changing the existing response shape.
+- Make `/api/artifacts/resolve` accept the new canonical refs only:
+  `artifact:*`, `artifact-version:*`, `artifact-blob:*`, and source locator refs
+  such as `repo://...`.
+- Make `/api/artifacts` list logical artifacts.
 - Add blob-specific read endpoints only for low-level custody/debug views.
 - Add project association endpoints, for example:
   - `GET /api/projects/:ref/artifacts`
@@ -412,7 +435,7 @@ Required API work:
 
 Required CLI work:
 
-- Keep existing `mandible artifact` commands compatible.
+- Update existing `mandible artifact` commands to the new ref grammar.
 - Add explicit project association commands instead of overloading `--repo`.
   Example command family:
   - `mandible artifact associate <artifact-ref> --project <project> [--role <role>]`
@@ -420,6 +443,8 @@ Required CLI work:
   - `mandible artifact associations [--project <project>] [--canonical]`
 - `--repo` remains source/repo filtering or source provenance. It does not mean
   project canonicality.
+- Add a separate repair command or migration subcommand for rewriting old refs;
+  ordinary CLI commands should not accept old artifact ref forms after repair.
 
 ## UI surface
 
@@ -443,9 +468,10 @@ Required UI work:
 
 ## Migration plan
 
-The implementation should use an expand/migrate/switch/contract sequence rather
-than a single blind rename. This keeps compatibility and makes data validation
-explicit.
+The implementation should use an expand/backfill/repair/switch/contract sequence
+rather than a single blind rename. Temporary migration code may understand the
+old model, but normal runtime should end on one canonical model with no
+long-lived compatibility shims.
 
 ### Phase 1: preflight and expand
 
@@ -466,7 +492,7 @@ explicit.
 Backfill should run inside a transaction and should be idempotent.
 
 1. Copy current `artifacts` rows into `artifact_blob`.
-   - Preserve ids as `artifact:sha256:<hash>`.
+   - Convert ids from `artifact:sha256:<hash>` to `artifact-blob:<hash>`.
    - Preserve content hash, media, size, provider, manifest, custody,
      availability, retention, reference, and metadata.
    - Do not copy `home_repo_id` or `repo_locator_json` into blob source fields.
@@ -476,16 +502,20 @@ Backfill should run inside a transaction and should be idempotent.
      - `repo://...`, checkout file paths, and local observed paths become
        candidate version source locators, not blob storage locators.
      - Ambiguous, stale, or missing locations become migration diagnostics and
-       compatibility metadata rather than false blob provenance.
+       repair metadata rather than false blob provenance.
 2. Copy current `artifact_series` rows into `artifact`.
-   - Preserve stable ids or install compatibility aliases if ids change.
+   - Convert ids from `artifact-series:<id>` to `artifact:<id>`, or preserve the
+     bare id portion under the new `artifact:` namespace.
    - Convert `series_key` to `identity_key`.
    - Resolve `repo_id` to `source_project_id` through the project registry when
      possible.
-   - Preserve unresolved repo strings as compatibility metadata for later repair.
+   - Preserve unresolved repo strings as repair metadata for later project
+     registry cleanup.
 3. Copy current `artifact_versions` rows into `artifact_version`.
    - `artifact_id` becomes the logical artifact FK.
    - old `artifact_id` becomes `blob_id`.
+   - Convert version ids to the singular `artifact-version:<id>` namespace if
+     any existing id format needs normalization.
    - Existing `commit_sha`, `repo_path`, and `observed_path` become version
      source provenance.
    - Source-provenance precedence is:
@@ -496,7 +526,7 @@ Backfill should run inside a transaction and should be idempotent.
      3. current blob-row `home_repo_id`, `repo_locator_json`, or repo/local
         `uri`, only when they match the parent artifact identity or when this is
         the only migrated version for that blob/logical artifact;
-     4. otherwise, store legacy locator data as compatibility metadata and emit a
+     4. otherwise, store legacy locator data as repair metadata and emit a
         repair diagnostic.
 4. Preserve the invariant that every migrated logical artifact has at least one
    version.
@@ -508,6 +538,11 @@ Backfill should run inside a transaction and should be idempotent.
    `project_artifact_associations` with `source='migration'`.
 8. Migrate `artifact_links` targets after artifacts/versions/blobs exist, using
    the target schema and ambiguity rules above.
+9. Rewrite stored refs in issue descriptions/comments, Space items, Space
+   document refs, artifact aliases, UI route-state records if persisted, and
+   any other Mandible-owned text/JSON that stores artifact refs.
+10. Emit diagnostics for refs that cannot be safely rewritten and leave them
+    unresolved until explicitly repaired.
 
 ### Phase 3: switch code
 
@@ -521,19 +556,22 @@ Backfill should run inside a transaction and should be idempotent.
 7. Update CLI commands and help text.
 8. Update backup/restore tests before relying on the migration in production.
 
-### Phase 4: compatibility and contract cleanup
+### Phase 4: remove legacy names and refs
 
-1. Keep old refs working:
+1. Remove or reject old runtime ref forms:
    - `artifact:sha256:<hash>`
-   - `artifact:<hash>` shorthand where currently accepted
+   - `sha256:<hash>`
+   - bare artifact hash refs
+   - old `artifact:<hash>` blob shorthand
    - `artifact-series:*`
-   - `artifact-version:*`
-2. Decide whether old table names become temporary views or are removed after
-   all code paths move to the new tables.
-3. Keep UI language on "artifact" for logical artifacts. Use "blob" only in
+2. Remove old table names or migration views after all code paths move to the
+   new tables.
+3. Remove old parser branches from the normal API, CLI, UI, and Spaces document
+   renderer. Keep old parsing only inside explicit repair/migration tooling.
+4. Keep UI language on "artifact" for logical artifacts. Use "blob" only in
    custody/debug views.
-4. Add migration diagnostics for unresolved source projects and ambiguous link
-   target migration.
+5. Add migration diagnostics for unresolved source projects, ambiguous link
+   target migration, and unrepaired legacy refs.
 
 ## Testing and verification
 
@@ -550,7 +588,10 @@ Required tests:
   - Space items referencing artifacts.
 - Fresh database schema convergence.
 - Backup/restore round trip for new tables and constraints.
-- Ref resolution compatibility for old and new refs.
+- Ref repair tests proving old refs are rewritten to new canonical refs.
+- Runtime parser tests proving old artifact ref forms are rejected after repair.
+- Prefix-resolution tests for `artifact:*`, `artifact-version:*`, and
+  `artifact-blob:*`, including ambiguity handling.
 - Materialization from:
   - commit-pinned repo version,
   - CAS-backed blob,
@@ -597,16 +638,14 @@ Required policy points:
 
 The implementation should settle these before code changes begin:
 
-1. Whether the first migration uses compatibility views for old table names or
-   updates all code paths in one branch.
-2. Whether new public logical artifact refs are introduced immediately, or
-   whether `artifact-series:*` stays as the external logical artifact ref during
-   the first migration.
-3. Whether canonical documents in v1 are always represented as artifacts, or
+1. Whether the implementation uses temporary migration views for old table names
+   during the repair branch, or updates all code paths directly in one branch.
+   Either way, old table names should not remain as normal runtime surfaces.
+2. Whether canonical documents in v1 are always represented as artifacts, or
    whether `project_artifact_associations.target_type` should reserve a future
    `document` target.
-4. Whether low-level blob rows may exist without a logical artifact/version
+3. Whether low-level blob rows may exist without a logical artifact/version
    after the migration, or whether normal registry APIs must always create the
    logical artifact/version wrapper.
-5. Whether CAS byte backup/restore is in scope for this redesign or remains a
+4. Whether CAS byte backup/restore is in scope for this redesign or remains a
    separate custody durability issue.
