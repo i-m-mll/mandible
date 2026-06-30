@@ -3373,7 +3373,7 @@ export function AuthQueueView({
       {/* RIGHT detail panel */}
       <div className="auth-detail" style={{ position: 'relative' }}>
         {instanceMutationBlocked && (
-          <div className="auth-instance-warning" role="status">
+          <div className="auth-instance-warning auth-instance-warning--caution" role="status">
             <strong>{instanceLabel} instance</strong>
             <span>
               Auth actions are disabled for this copied queue
