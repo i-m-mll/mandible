@@ -121,10 +121,11 @@ describe('AuthQueueView daemon readiness gate', () => {
     renderView(true, onApprove, previewInstance);
 
     const warningLabel = screen.getByText('preview instance');
-    const warning = warningLabel.closest('.auth-instance-warning');
+    const warning = warningLabel.closest('.preview-disabled-notice');
     expect(warning).toBeTruthy();
-    expect(warning?.classList.contains('auth-instance-warning--caution')).toBe(true);
-    expect(screen.getByText(/Auth actions are disabled for this copied queue/)).toBeTruthy();
+    expect(warning?.getAttribute('data-testid')).toBe('preview-disabled-notice');
+    expect(warning?.parentElement?.classList.contains('auth-detail-pane--with-preview-notice')).toBe(true);
+    expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
 
     const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);

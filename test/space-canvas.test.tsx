@@ -611,9 +611,7 @@ describe('SpaceCanvas drag persistence + autosave', () => {
     expect(batchWrite).not.toHaveBeenCalled();
     expect(screen.getByTestId('space-canvas-autosave').getAttribute('data-status')).toBe('disabled');
     expect(screen.getByTestId('space-canvas-autosave').textContent).toBe('Saving disabled');
-    expect(screen.getByTestId('space-canvas-preview-disabled').textContent).toContain(
-      'Saving disabled in preview',
-    );
+    expect(screen.queryByTestId('space-canvas-preview-disabled')).toBeNull();
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('55');
   });
 });

@@ -208,22 +208,6 @@
   background: var(--warning, #d29922);
 }
 
-.space-canvas__preview-disabled {
-  position: absolute;
-  left: 12px;
-  top: 12px;
-  z-index: 6;
-  max-width: min(24rem, calc(100% - 24px));
-  border: 1px solid color-mix(in srgb, var(--warning, #d29922) 70%, var(--border, #2a2a2a));
-  border-radius: 6px;
-  background: color-mix(in srgb, var(--warning, #d29922) 18%, var(--bg-secondary));
-  color: var(--text-primary);
-  padding: 8px 10px;
-  font-size: 12px;
-  font-weight: 600;
-  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
-}
-
 @keyframes space-canvas-pulse {
   0%,
   100% {

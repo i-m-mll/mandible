@@ -1162,15 +1162,6 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
             <span className="space-canvas__autosave-dot" aria-hidden="true" />
             {autosaveLabel(autosave)}
           </span>
-          {autosave === 'disabled' ? (
-            <div
-              className="space-canvas__preview-disabled"
-              data-testid="space-canvas-preview-disabled"
-              role="status"
-            >
-              Saving disabled in preview
-            </div>
-          ) : null}
         </div>
         <CanvasSelectionInspector
           selectedNodeIds={selection}
