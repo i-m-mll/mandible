@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { App } from '../ui/src/app';
-import { getReviewSpec, patchSession, updateConversation } from '../ui/src/api';
+import { getReviewSpec, patchSession, updateConversation, type InstanceInfo } from '../ui/src/api';
 import {
   installTauriDeepLinkHandler,
   navigateToMandibleDeepLink,
@@ -148,6 +148,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.doUnmock('@tauri-apps/plugin-deep-link');
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
+  delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
 });
 
 function changeSelect(select: HTMLElement, value: string): void {
@@ -261,6 +262,16 @@ function stubAppShellFetch(): void {
     );
   }));
 }
+
+const previewInstance: InstanceInfo = {
+  role: 'preview',
+  operational_mutations: 'reject',
+  operational_mutations_overridden: true,
+  db_path: '/tmp/mandible-preview.db',
+  db_path_source: 'iab-preview-copy',
+  source_db_path: '/tmp/mandible-main.db',
+  source_db_path_source: 'env',
+};
 
 describe('SessionsView', () => {
   it('renders session data and triggers navigate', () => {
@@ -704,6 +715,50 @@ describe('app shell', () => {
       const spacesNav = within(nav).getByLabelText('Spaces');
       expect(spacesNav.getAttribute('aria-current')).toBe('page');
     });
+  });
+
+  it('renders the Spaces preview notice from boot instance data before health resolves', () => {
+    stubEventSource();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: previewInstance,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/health') {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url === '/api/spaces/s1') {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/inbox/global') {
+        return Promise.resolve(new Response(JSON.stringify({
+          continuations: [],
+          auth_results: [],
+          open_issues: [],
+          total: 0,
+        }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.startsWith('/api/conversations')) {
+        return Promise.resolve(new Response(JSON.stringify({ conversations: [], total: 0 }), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+    window.history.replaceState(null, '', '#/spaces?project=p1&space=s1&renderer=collection');
+
+    render(h(App, {}));
+
+    const notice = screen.getByTestId('preview-disabled-notice');
+    expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
+    expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });
 });
 

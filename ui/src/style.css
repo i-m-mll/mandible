@@ -2975,10 +2975,6 @@ tr:last-child td {
   background: var(--bg);
 }
 
-.auth-detail > .preview-disabled-notice {
-  margin: -24px -24px 0;
-}
-
 .auth-detail--with-preview-notice .auth-detail__header {
   margin-top: 0;
 }
@@ -5085,6 +5081,8 @@ tr:last-child td {
 .auth-detail {
   position: relative;
   z-index: 3;
+  --preview-disabled-notice-edge-inset-top: 24px;
+  --preview-disabled-notice-edge-inset-x: 24px;
   flex: 1;
   overflow-y: auto;
   padding: 24px;

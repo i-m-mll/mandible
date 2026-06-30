@@ -16,6 +16,7 @@ const ROOT_DIR = resolveRootDir();
 const UI_DIR = path.join(ROOT_DIR, "ui");
 const UI_INDEX_PATH = path.join(UI_DIR, "index.html");
 const UI_DIST_DIR = path.join(UI_DIR, "dist");
+const UI_BOOTSTRAP_SCRIPT_RE = /<script\s+id="mandible-bootstrap"\s+type="application\/json"><\/script>/;
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -376,7 +377,7 @@ export function createServer(options: ServerOptions): http.Server {
       const handled = await router.handle(req, res);
       if (!handled) {
         if (!isApi && (method === "GET" || method === "HEAD")) {
-          const served = await handleStaticRequest(method, pathname, res);
+          const served = await handleStaticRequest(method, pathname, res, instance);
           if (served) {
             return;
           }
@@ -524,13 +525,14 @@ function sendNotFound(res: http.ServerResponse, isApi: boolean): void {
 async function handleStaticRequest(
   method: string,
   pathname: string,
-  res: http.ServerResponse
+  res: http.ServerResponse,
+  instance: InstanceInfo
 ): Promise<boolean> {
   const filePath = resolveStaticPath(pathname);
   if (!filePath) {
     return false;
   }
-  return sendFile(res, filePath, method);
+  return sendFile(res, filePath, method, instance);
 }
 
 const PWA_FILES = new Set([
@@ -578,12 +580,29 @@ function resolveSafePath(baseDir: string, requestPath: string): string | null {
 async function sendFile(
   res: http.ServerResponse,
   filePath: string,
-  method: string
+  method: string,
+  instance: InstanceInfo
 ): Promise<boolean> {
   try {
     const stat = await fs.promises.stat(filePath);
     if (!stat.isFile()) {
       return false;
+    }
+    if (filePath === UI_INDEX_PATH) {
+      const raw = await fs.promises.readFile(filePath, "utf8");
+      const body = injectBootstrapData(raw, instance);
+      res.writeHead(200, {
+        "Content-Type": getContentType(filePath),
+        "Content-Length": Buffer.byteLength(body),
+        "Cache-Control": "no-cache",
+        "Last-Modified": stat.mtime.toUTCString(),
+      });
+      if (method === "HEAD") {
+        res.end();
+        return true;
+      }
+      res.end(body);
+      return true;
     }
     res.writeHead(200, {
       "Content-Type": getContentType(filePath),
@@ -604,6 +623,26 @@ async function sendFile(
     }
     throw error;
   }
+}
+
+function injectBootstrapData(html: string, instance: InstanceInfo): string {
+  const json = JSON.stringify({ instance }).replace(/[<>&]/g, (char) => {
+    switch (char) {
+      case "<":
+        return "\\u003c";
+      case ">":
+        return "\\u003e";
+      case "&":
+        return "\\u0026";
+      default:
+        return char;
+    }
+  });
+  const script = `<script id="mandible-bootstrap" type="application/json">${json}</script>`;
+  if (UI_BOOTSTRAP_SCRIPT_RE.test(html)) {
+    return html.replace(UI_BOOTSTRAP_SCRIPT_RE, script);
+  }
+  return html.replace(/<script\s+type="module"\s+src="\.\/dist\/app\.js"><\/script>/, `${script}\n    $&`);
 }
 
 function getContentType(filePath: string): string {
