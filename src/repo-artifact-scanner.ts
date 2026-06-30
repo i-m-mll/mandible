@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "./db.js";
+import {
+  resolveCanonicalArtifactRepoForRoot,
+  resolveCanonicalArtifactRepoRef,
+} from "./artifact-repo-resolution.js";
 import { ingestArtifact } from "./provider-artifacts.js";
 import type { ArtifactRecord } from "./types.js";
 
@@ -144,60 +148,53 @@ function asString(value: unknown): string | undefined {
 function normalizeRoot(input: string | RepoArtifactRoot): RepoArtifactRoot {
   if (typeof input === "string") {
     const root = path.resolve(input);
-    return { root, repo_id: path.basename(root), name: path.basename(root), default_branch: null };
+    return { root, default_branch: null };
   }
   const root = path.resolve(input.root);
-  const repoId = asString(input.repo_id) ?? asString(input.name) ?? path.basename(root);
   return {
     root,
-    repo_id: repoId,
-    name: asString(input.name) ?? repoId,
+    repo_id: asString(input.repo_id),
+    name: asString(input.name),
     default_branch: asString(input.default_branch) ?? null,
   };
 }
 
 function configuredRoots(db: Db, options: RepoArtifactScannerOptions): RepoArtifactRoot[] {
-  const roots = options.roots?.map(normalizeRoot) ?? [];
+  const roots: RepoArtifactRoot[] = [];
   const allowedIds = new Set(options.repoIds ?? []);
-  if (options.roots) {
-    return roots.filter((root) =>
-      allowedIds.size === 0 || allowedIds.has(root.repo_id ?? "") || allowedIds.has(root.name ?? "")
-    );
-  }
+  const canonicalize = (root: RepoArtifactRoot): RepoArtifactRoot | null => {
+    const resolution = root.repo_id
+      ? resolveCanonicalArtifactRepoRef(db, root.repo_id)
+      : resolveCanonicalArtifactRepoForRoot(db, root.root);
+    if (!resolution.ok) return null;
+    return {
+      root: root.root,
+      repo_id: resolution.project_key,
+      name: root.name ?? resolution.checkout_name ?? resolution.project_key,
+      default_branch: root.default_branch ?? resolution.default_branch ?? null,
+    };
+  };
   const addRoot = (root: RepoArtifactRoot): void => {
-    const normalized = normalizeRoot(root);
-    if (allowedIds.size > 0 && !allowedIds.has(normalized.repo_id ?? "") && !allowedIds.has(normalized.name ?? "")) {
+    const normalized = canonicalize(normalizeRoot(root));
+    if (!normalized?.repo_id) return;
+    if (allowedIds.size > 0 && !allowedIds.has(normalized.repo_id) && !allowedIds.has(normalized.name ?? "")) {
       return;
     }
     if (!roots.some((existing) => path.resolve(existing.root) === normalized.root)) {
       roots.push(normalized);
     }
   };
-
-  if (tableExists(db, "work_repos")) {
-    const rows = db.prepare(
-      `SELECT id, root, name, default_branch
-         FROM work_repos
-        WHERE dir_exists = 1 AND excluded = 0
-        ORDER BY name, root`
-    ).all() as Array<{ id: string; root: string; name: string; default_branch: string | null }>;
-    for (const row of rows) {
-      addRoot({
-        root: row.root,
-        repo_id: row.id,
-        name: row.name,
-        default_branch: row.default_branch,
-      });
-    }
+  if (options.roots) {
+    for (const root of options.roots) addRoot(normalizeRoot(root));
+    return roots;
   }
 
   if (tableExists(db, "ledger_project_checkouts")) {
     const rows = db.prepare(
-      `SELECT work_repo_id, root, name, default_branch
+      `SELECT root, name, default_branch
          FROM ledger_project_checkouts
         ORDER BY name, root`
     ).all() as Array<{
-      work_repo_id: string | null;
       root: string;
       name: string;
       default_branch: string | null;
@@ -205,7 +202,6 @@ function configuredRoots(db: Db, options: RepoArtifactScannerOptions): RepoArtif
     for (const row of rows) {
       addRoot({
         root: row.root,
-        repo_id: row.work_repo_id ?? row.name,
         name: row.name,
         default_branch: row.default_branch,
       });
@@ -302,6 +298,9 @@ function candidateIssueRef(relativePath: string): string | null {
 
 function projectIdForRepo(db: Db, repoId: string, root: string): string | null {
   if (!tableExists(db, "ledger_projects")) return null;
+  const hasProjectKey = (db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>)
+    .some((column) => column.name === "project_key");
+  const projectKeyClause = hasProjectKey ? " OR project_key = @repoId" : "";
   const checkoutClause = tableExists(db, "ledger_project_checkouts")
     ? `UNION
        SELECT project_id AS id FROM ledger_project_checkouts
@@ -309,7 +308,7 @@ function projectIdForRepo(db: Db, repoId: string, root: string): string | null {
     : "";
   const rows = db.prepare(
     `SELECT id FROM ledger_projects
-      WHERE id = @repoId OR display_name = @repoId OR remote_identity = @repoId
+      WHERE id = @repoId OR display_name = @repoId OR remote_identity = @repoId${projectKeyClause}
      ${checkoutClause}`
   ).all({ repoId, root }) as Array<{ id: string }>;
   const ids = Array.from(new Set(rows.map((row) => row.id)));
@@ -420,7 +419,11 @@ export function discoverRepoArtifacts(
           skipped.push({ path: absolutePath, reason: "file_too_large" });
           continue;
         }
-        const repoId = repo.repo_id ?? path.basename(repo.root);
+        const repoId = repo.repo_id;
+        if (!repoId) {
+          skipped.push({ path: absolutePath, reason: "unknown_repo_identity" });
+          continue;
+        }
         const issueRef = candidateIssueRef(relativePath) ?? undefined;
         const issueId = issueRef ? resolveIssueId(db, repoId, repo.root, issueRef) ?? undefined : undefined;
         artifacts.push({
@@ -453,7 +456,8 @@ export function discoverRepoArtifacts(
   for (const repo of repos) {
     const root = path.resolve(repo.root);
     const exists = fs.existsSync(root);
-    scannedRepos.push({ repo_id: repo.repo_id ?? path.basename(root), root, exists });
+    if (!repo.repo_id) continue;
+    scannedRepos.push({ repo_id: repo.repo_id, root, exists });
     if (!exists) continue;
     visit({ ...repo, root }, root, 0);
   }

@@ -212,6 +212,7 @@ function createSchema(database: Database.Database): void {
     );
     CREATE TABLE ledger_projects (
       id TEXT PRIMARY KEY,
+      project_key TEXT NOT NULL DEFAULT '',
       display_name TEXT NOT NULL,
       remote_identity TEXT NOT NULL DEFAULT '',
       upstream_identity TEXT NOT NULL DEFAULT '',
@@ -268,9 +269,9 @@ function createLedgerIssue(projectName: string, alias: string, title = `Issue ${
   const issueId = `${alias}_${projectName}`;
   db.prepare(
     `INSERT OR IGNORE INTO ledger_projects (
-      id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
-    ) VALUES (?, ?, '', '', 'remote', 1, 1)`,
-  ).run(projectId, projectName);
+      id, project_key, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+    ) VALUES (?, ?, ?, '', '', 'remote', 1, 1)`,
+  ).run(projectId, projectName, projectName);
   db.prepare(
     `INSERT OR IGNORE INTO ledger_project_checkouts (
       id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
@@ -290,18 +291,36 @@ function createLedgerIssue(projectName: string, alias: string, title = `Issue ${
   return issueId;
 }
 
-function createLedgerCheckout(repoId: string, root: string): void {
-  const projectId = `prj_${repoId}`;
+function createLedgerCheckout(repoId: string, root: string, options: {
+  projectKey?: string;
+  displayName?: string;
+  workRepoId?: string;
+  remoteIdentity?: string;
+  remoteUrl?: string;
+  defaultBranch?: string;
+} = {}): void {
+  const projectKey = options.projectKey ?? repoId;
+  const projectId = `prj_${projectKey}`;
+  const displayName = options.displayName ?? projectKey;
+  const workRepoId = options.workRepoId ?? repoId;
   db.prepare(
     `INSERT OR IGNORE INTO ledger_projects (
-      id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
-    ) VALUES (?, ?, '', '', 'remote', 1, 1)`,
-  ).run(projectId, repoId);
+      id, project_key, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, '', 'remote', 1, 1)`,
+  ).run(projectId, projectKey, displayName, options.remoteIdentity ?? "");
   db.prepare(
     `INSERT OR REPLACE INTO ledger_project_checkouts (
       id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
-  ).run(`checkout_${repoId}`, projectId, repoId, root, repoId);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)`,
+  ).run(
+    `checkout_${workRepoId}`,
+    projectId,
+    workRepoId,
+    root,
+    displayName,
+    options.defaultBranch ?? "main",
+    options.remoteUrl ?? "",
+  );
 }
 
 function sha256(text: string | Buffer): string {
@@ -313,6 +332,23 @@ function git(repo: string, args: string[]): string {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
   }).trim();
+}
+
+function initGitRepo(root: string): void {
+  fs.mkdirSync(root, { recursive: true });
+  execFileSync("git", ["init", "-b", "main", root], { stdio: "ignore" });
+  git(root, ["config", "user.email", "test@example.invalid"]);
+  git(root, ["config", "user.name", "Test User"]);
+  git(root, ["config", "commit.gpgsign", "false"]);
+}
+
+function commitRepoFile(root: string, rel: string, body: string): string {
+  const target = path.join(root, rel);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, body, "utf8");
+  git(root, ["add", rel]);
+  git(root, ["commit", "-m", `add ${rel}`]);
+  return git(root, ["rev-parse", "HEAD"]);
 }
 
 beforeEach(() => {
@@ -606,6 +642,7 @@ describe("provider/artifact substrate", () => {
 
   it("resolves repo and provider aliases without requiring issue association", () => {
     const hash = "f".repeat(64);
+    createLedgerCheckout("rlrmp", path.join(tempDir, "rlrmp"));
     const artifact = ingestArtifact(db, {
       provider_id: "feedbax",
       role: "model_parameters",
@@ -631,6 +668,23 @@ describe("provider/artifact substrate", () => {
     expect(providerResolution).toMatchObject({ status: "resolved", artifact: { id: artifact.id } });
     expect(repoList.map((item) => item.id)).toEqual([artifact.id]);
     expect(providerList.map((item) => item.id)).toEqual([artifact.id]);
+  });
+
+  it("rejects arbitrary feature-worktree repo refs before materializing artifact rows", () => {
+    createLedgerCheckout("rlrmp", path.join(tempDir, "rlrmp"));
+
+    const resolution = resolveArtifactRef(
+      db,
+      "repo://feature__31e67ff-cap-independent-soft-lambda-redo@main/results/report.md",
+      2000,
+    );
+
+    expect(resolution).toMatchObject({
+      status: "unsupported",
+      artifact: null,
+      alias: null,
+    });
+    expect(listArtifacts(db)).toEqual([]);
   });
 
   it("keeps multiple contextual links for one content artifact", () => {
@@ -863,6 +917,82 @@ describe("provider/artifact substrate", () => {
       recoverability: "repo_commit",
       source: expect.stringContaining(`repo_commit:mandible@${commit}:results/report.md`),
     });
+  });
+
+  it("canonicalizes a registered feature worktree checkout to the project key", () => {
+    const mainRepo = path.join(tempDir, "rlrmp-main");
+    initGitRepo(mainRepo);
+    const commit = commitRepoFile(mainRepo, "results/report.md", "# Report\n");
+    const featureRoot = path.join(tempDir, "worktrees", "feature__31e67ff-redo");
+    fs.mkdirSync(path.dirname(featureRoot), { recursive: true });
+    git(mainRepo, ["worktree", "add", "-b", "feature/31e67ff-redo", featureRoot]);
+    createLedgerCheckout("rlrmp", fs.realpathSync(mainRepo));
+    createLedgerCheckout("feature__31e67ff-redo", fs.realpathSync(featureRoot), {
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-redo",
+    });
+
+    const registered = registerLocalArtifactPath(db, {
+      path: path.join(featureRoot, "results", "report.md"),
+      role: "report",
+    }, 1000, tempDir);
+
+    expect(registered.artifact).toMatchObject({
+      home_repo_id: "rlrmp",
+      repo_locator: {
+        repo_id: "rlrmp",
+        ref: commit,
+        commit,
+        path: "results/report.md",
+      },
+    });
+    expect(registered.artifact.uri).toBe(`repo://rlrmp@${commit}/results/report.md`);
+    expect(registered.artifact.uri).not.toContain("feature__31e67ff-redo");
+  });
+
+  it("resolves an unregistered feature worktree through the registered common git dir", () => {
+    const mainRepo = path.join(tempDir, "rlrmp-main");
+    initGitRepo(mainRepo);
+    const commit = commitRepoFile(mainRepo, "results/report.md", "# Report\n");
+    const featureRoot = path.join(tempDir, "worktrees", "feature__unregistered");
+    fs.mkdirSync(path.dirname(featureRoot), { recursive: true });
+    git(mainRepo, ["worktree", "add", "-b", "feature/unregistered", featureRoot]);
+    createLedgerCheckout("rlrmp", fs.realpathSync(mainRepo));
+
+    const registered = registerLocalArtifactPath(db, {
+      path: path.join(featureRoot, "results", "report.md"),
+      role: "report",
+    }, 1000, tempDir);
+
+    expect(registered.artifact).toMatchObject({
+      home_repo_id: "rlrmp",
+      repo_locator: {
+        repo_id: "rlrmp",
+        ref: commit,
+        path: "results/report.md",
+      },
+    });
+    expect(registered.artifact.uri).toBe(`repo://rlrmp@${commit}/results/report.md`);
+  });
+
+  it("fails closed for clean tracked files in unknown repos instead of inventing repo ids", () => {
+    const repoRoot = path.join(tempDir, "unknown-feature");
+    initGitRepo(repoRoot);
+    commitRepoFile(repoRoot, "results/report.md", "# Report\n");
+
+    const registered = registerLocalArtifactPath(db, {
+      path: path.join(repoRoot, "results", "report.md"),
+      role: "report",
+    }, 1000, tempDir);
+
+    expect(registered.recoverability).toBe("local_only");
+    expect(registered.warnings).toEqual(
+      expect.arrayContaining(["unknown_repo_identity", "local_only_link_requires_override_for_issue_evidence"]),
+    );
+    expect(registered.artifact.home_repo_id).toBeNull();
+    expect(registered.artifact.repo_locator).toEqual({});
+    expect(registered.artifact.uri).toMatch(/^file:\/\//);
+    expect(registered.artifact.uri).not.toContain("repo://unknown-feature");
   });
 
   it("links existing repo and artifact refs directly to issues", () => {
@@ -1189,6 +1319,7 @@ describe("provider/artifact substrate", () => {
     const repoRoot = path.join(tempDir, "repo");
     fs.mkdirSync(path.join(repoRoot, "results"), { recursive: true });
     fs.writeFileSync(path.join(repoRoot, "results", "summary.md"), "# Summary\n", "utf8");
+    createLedgerCheckout("mandible", repoRoot);
 
     const dryRun = scanRepoArtifacts(db, {
       roots: [{ root: repoRoot, repo_id: "mandible", name: "Mandible", default_branch: "main" }],
@@ -1797,6 +1928,31 @@ describe("provider/artifact substrate", () => {
     }));
   });
 
+  it("scans registered feature worktrees under the canonical project key", () => {
+    const featureRoot = path.join(tempDir, "feature__31e67ff-redo");
+    fs.mkdirSync(path.join(featureRoot, "results"), { recursive: true });
+    fs.writeFileSync(path.join(featureRoot, "results", "report.md"), "# Report\n");
+    createLedgerCheckout("feature__31e67ff-redo", featureRoot, {
+      projectKey: "rlrmp",
+      workRepoId: "feature__31e67ff-redo",
+      defaultBranch: "main",
+    });
+
+    const result = scanRepoArtifacts(db, {
+      roots: [{ root: featureRoot, repo_id: "feature__31e67ff-redo", default_branch: "main" }],
+      now: 2000,
+    });
+
+    expect(result.scanned_repos).toEqual([{ repo_id: "rlrmp", root: featureRoot, exists: true }]);
+    expect(result.artifacts[0]).toMatchObject({
+      home_repo_id: "rlrmp",
+      repo_locator: { repo_id: "rlrmp", ref: "main", path: "results/report.md", root: featureRoot },
+    });
+    expect(result.artifacts[0].aliases?.map((alias) => alias.normalized_ref)).toContain(
+      "repo://rlrmp@main/results/report.md",
+    );
+  });
+
   it("uses configured repo roots and skips dependency, build, and bulk directories", () => {
     const repoRoot = path.join(tempDir, "configured-repo");
     fs.mkdirSync(path.join(repoRoot, "reports"), { recursive: true });
@@ -1811,8 +1967,8 @@ describe("provider/artifact substrate", () => {
     fs.writeFileSync(path.join(repoRoot, "src", "index.ts"), "export {};\n");
     db.prepare(
       `INSERT INTO ledger_projects (
-        id, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
-      ) VALUES ('prj_configured', 'Configured', '', '', 'remote', 1, 1)`,
+        id, project_key, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
+      ) VALUES ('prj_configured', 'configured', 'Configured', '', '', 'remote', 1, 1)`,
     ).run();
     db.prepare(
       `INSERT INTO ledger_project_checkouts (
