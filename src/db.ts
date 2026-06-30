@@ -2437,6 +2437,133 @@ const MIGRATIONS: Migration[] = [
     // so existing DBs rebuild space_items in a post-migration helper; fresh DBs
     // get the expanded CHECK directly from spaces_core above.
     statements: []
+  },
+  {
+    version: 91,
+    name: "artifact_identity_project_associations",
+    // Issue: 2dc97b8 — expand the artifact model to the project-canonical
+    // identity contract without switching runtime code yet. The legacy tables
+    // stay in place because current provider/runtime and space_exports still
+    // reference them. New tables are parent-before-child: artifact_blob owns
+    // project-blind bytes, artifact owns logical identity, artifact_version pins
+    // one blob under one artifact, and project_artifact_associations records
+    // explicit project memory only. artifact.latest_version_id is deliberately a
+    // soft denormalized cache to avoid an artifact <-> artifact_version FK cycle.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS artifact_blob (
+        id             TEXT PRIMARY KEY,
+        algorithm      TEXT NOT NULL DEFAULT 'sha256',
+        content_hash   TEXT NOT NULL,
+        storage_uri    TEXT,
+        media_type     TEXT,
+        role           TEXT,
+        size_bytes     INTEGER NOT NULL DEFAULT 0,
+        provider_id    TEXT,
+        manifest_id    TEXT,
+        metadata_json  TEXT NOT NULL DEFAULT '{}',
+        custody_mode   TEXT NOT NULL DEFAULT 'managed'
+          CHECK(custody_mode IN ('link','copy','managed','external')),
+        availability   TEXT NOT NULL DEFAULT 'unchecked'
+          CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),
+        retention_json TEXT NOT NULL DEFAULT '{}',
+        reference_json TEXT NOT NULL DEFAULT '{}',
+        created_at     INTEGER NOT NULL,
+        UNIQUE(algorithm, content_hash)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_blob_provider
+        ON artifact_blob(provider_id)
+        WHERE provider_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_blob_role
+        ON artifact_blob(role)
+        WHERE role IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_blob_custody
+        ON artifact_blob(custody_mode, availability)`,
+      `CREATE TABLE IF NOT EXISTS artifact (
+        id                TEXT PRIMARY KEY,
+        identity_key      TEXT NOT NULL,
+        source_kind       TEXT NOT NULL DEFAULT 'managed'
+          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),
+        title             TEXT,
+        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        source_repo_id    TEXT,
+        logical_name      TEXT,
+        source_path       TEXT,
+        latest_version_id TEXT,
+        version_count     INTEGER NOT NULL DEFAULT 0,
+        metadata_json     TEXT NOT NULL DEFAULT '{}',
+        created_at        INTEGER NOT NULL,
+        updated_at        INTEGER NOT NULL,
+        UNIQUE(identity_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_source_kind
+        ON artifact(source_kind)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_source_project
+        ON artifact(source_project_id)
+        WHERE source_project_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_source_repo
+        ON artifact(source_repo_id)
+        WHERE source_repo_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS artifact_version (
+        id                  TEXT PRIMARY KEY,
+        artifact_id         TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,
+        version_no          INTEGER NOT NULL,
+        blob_id             TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,
+        source_kind         TEXT NOT NULL
+          CHECK(source_kind IN ('tracked_repo','local_only','managed','external')),
+        content_hash        TEXT NOT NULL,
+        source_project_id   TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        source_repo_id      TEXT,
+        repo_path           TEXT,
+        commit_sha          TEXT,
+        observed_path       TEXT,
+        source_locator_json TEXT NOT NULL DEFAULT '{}',
+        custody_mode        TEXT
+          CHECK(custody_mode IS NULL OR custody_mode IN ('link','copy','managed','external')),
+        label               TEXT,
+        note                TEXT,
+        metadata_json       TEXT NOT NULL DEFAULT '{}',
+        created_at          INTEGER NOT NULL,
+        UNIQUE(artifact_id, version_no)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_version_artifact
+        ON artifact_version(artifact_id, version_no DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_version_blob
+        ON artifact_version(blob_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_version_hash
+        ON artifact_version(content_hash)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_version_source_project
+        ON artifact_version(source_project_id)
+        WHERE source_project_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS project_artifact_associations (
+        id               TEXT PRIMARY KEY,
+        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        target_type      TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version')),
+        target_id        TEXT NOT NULL,
+        association_kind TEXT NOT NULL DEFAULT 'associated'
+          CHECK(association_kind IN ('associated','canonical')),
+        role             TEXT NOT NULL DEFAULT '',
+        title            TEXT,
+        description      TEXT,
+        rank             INTEGER,
+        status           TEXT NOT NULL DEFAULT 'active'
+          CHECK(status IN ('active','superseded','archived')),
+        source           TEXT NOT NULL DEFAULT 'user'
+          CHECK(source IN ('user','agent_explicit','space_rule','migration','system')),
+        source_ref_type  TEXT,
+        source_ref_id    TEXT,
+        metadata_json    TEXT NOT NULL DEFAULT '{}',
+        created_at       INTEGER NOT NULL,
+        updated_at       INTEGER NOT NULL,
+        UNIQUE(project_id, target_type, target_id, role)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_project_artifact_assoc_project
+        ON project_artifact_associations(project_id, association_kind, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_project_artifact_assoc_target
+        ON project_artifact_associations(target_type, target_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_project_artifact_assoc_source
+        ON project_artifact_associations(source_ref_type, source_ref_id)
+        WHERE source_ref_type IS NOT NULL AND source_ref_id IS NOT NULL`
+    ]
   }
 ];
 
@@ -2530,6 +2657,9 @@ export function migrate(db: Db): void {
         if (migration.version === 89) {
           ensureArtifactLinkSeriesColumns(db);
         }
+        if (migration.version === 91) {
+          ensureArtifactLinkTargetColumns(db);
+        }
         for (const statement of migration.statements) {
           db.exec(statement);
         }
@@ -2557,6 +2687,14 @@ export function migrate(db: Db): void {
   // DDL on the real apply path and fail loudly on drift.
   if (pending.some((migration) => migration.version === 89)) {
     verifyArtifactLinkSeriesSchema(db);
+  }
+
+  // Issue 2dc97b8 (migration 91): new artifact identity tables plus additive
+  // artifact_links target columns are created with IF NOT EXISTS / guarded ALTER.
+  // Verify the live contract so divergent pre-existing tables or same-named
+  // indexes fail before any backfill writes.
+  if (pending.some((migration) => migration.version === 91)) {
+    verifyArtifactIdentitySchema(db);
   }
 
   // Run post-DDL data migrations that require Node.js logic.
@@ -2709,6 +2847,26 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v90_space_items_link_space_refs", () => {
       rebuildSpaceItemsWithSpaceRefType(db);
+    });
+  }
+  // Issue 2dc97b8 (migration 91): backfill the new artifact identity tables from
+  // the legacy names, and repair artifact_links target columns where the legacy
+  // link has an unambiguous series/version target. This does not infer project
+  // associations from source repo identity, issue links, comments, bundles, or
+  // Spaces; project_artifact_associations remains empty unless explicit legacy
+  // association rows are added by a future migration.
+  if (
+    tableExists(db, "ledger_projects") &&
+    shouldRunPostMigration(db, "v91_backfill_artifact_identity", pending, 91, () =>
+      hasArtifactIdentityBackfillWork(db)
+    )
+  ) {
+    runPostMigration(db, "v91_backfill_artifact_identity", () => {
+      db.transaction(() => {
+        backfillArtifactIdentityTables(db);
+        backfillArtifactLinkTargets(db);
+        verifyArtifactIdentityBackfill(db);
+      }).immediate();
     });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
@@ -4215,6 +4373,478 @@ function verifyEveryArtifactHasSeries(db: Db, expectedArtifactCount: number): vo
   }
 }
 
+function ensureArtifactLinkTargetColumns(db: Db): void {
+  if (!tableExists(db, "artifact_links")) return;
+  const names = tableColumnNames(db, "artifact_links");
+  if (!names.has("target_type")) {
+    db.exec(
+      `ALTER TABLE artifact_links ADD COLUMN target_type TEXT
+        CHECK(target_type IS NULL OR target_type IN ('artifact','artifact_version'))`,
+    );
+  }
+  if (!names.has("target_id")) {
+    db.exec("ALTER TABLE artifact_links ADD COLUMN target_id TEXT");
+  }
+  if (!names.has("fallback_version_id")) {
+    db.exec("ALTER TABLE artifact_links ADD COLUMN fallback_version_id TEXT");
+  }
+  if (!names.has("legacy_blob_id")) {
+    db.exec("ALTER TABLE artifact_links ADD COLUMN legacy_blob_id TEXT");
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifact_links_target
+      ON artifact_links(target_type, target_id)
+      WHERE target_type IS NOT NULL AND target_id IS NOT NULL`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifact_links_fallback_version
+      ON artifact_links(fallback_version_id)
+      WHERE fallback_version_id IS NOT NULL`,
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_artifact_links_legacy_blob
+      ON artifact_links(legacy_blob_id)
+      WHERE legacy_blob_id IS NOT NULL`,
+  );
+}
+
+function artifactBlobIdFromLegacy(id: string): string {
+  const trimmed = id.trim();
+  const shaNamespaced = /^artifact:sha256:(.+)$/i.exec(trimmed);
+  if (shaNamespaced) return `artifact-blob:${shaNamespaced[1]}`;
+  const shaBare = /^sha256:(.+)$/i.exec(trimmed);
+  if (shaBare) return `artifact-blob:${shaBare[1]}`;
+  const artifactHash = /^artifact:([a-f0-9]{64})$/i.exec(trimmed);
+  if (artifactHash) return `artifact-blob:${artifactHash[1]}`;
+  if (/^artifact-blob:/i.test(trimmed)) return trimmed;
+  return `artifact-blob:${trimmed}`;
+}
+
+function artifactIdFromLegacySeries(id: string): string {
+  const trimmed = id.trim();
+  const series = /^artifact-series:(.+)$/i.exec(trimmed);
+  if (series) return `artifact:${series[1]}`;
+  if (/^artifact:/i.test(trimmed)) return trimmed;
+  return `artifact:${trimmed}`;
+}
+
+function artifactVersionIdFromLegacy(id: string): string {
+  const trimmed = id.trim();
+  if (/^artifact-version:/i.test(trimmed)) return trimmed;
+  return `artifact-version:${trimmed}`;
+}
+
+function normalizeArtifactSourceKind(value: unknown): string {
+  const kind = typeof value === "string" ? value : "";
+  return ["tracked_repo", "local_only", "managed", "external", "mixed"].includes(kind)
+    ? kind
+    : "managed";
+}
+
+function normalizeArtifactVersionSourceKind(value: unknown): string {
+  const kind = typeof value === "string" ? value : "";
+  return ["tracked_repo", "local_only", "managed", "external"].includes(kind)
+    ? kind
+    : "managed";
+}
+
+function resolveArtifactSourceProjectId(db: Db, repoId: unknown): string | null {
+  if (typeof repoId !== "string" || repoId.trim() === "" || !tableExists(db, "ledger_projects")) {
+    return null;
+  }
+  const columns = new Set(
+    (db.prepare("PRAGMA table_info(ledger_projects)").all() as Array<{ name: string }>).map(
+      (column) => column.name,
+    ),
+  );
+  const predicates = ["id = @repo", "display_name = @repo", "remote_identity = @repo", "upstream_identity = @repo"];
+  if (columns.has("project_key")) {
+    predicates.splice(1, 0, "project_key = @repo");
+  }
+  const row = db
+    .prepare(
+      `SELECT id FROM ledger_projects
+       WHERE ${predicates.join(" OR ")}
+       ORDER BY id
+       LIMIT 1`,
+    )
+    .get({ repo: repoId.trim() }) as { id: string } | undefined;
+  return row?.id ?? null;
+}
+
+function artifactIdentityRowCount(db: Db, table: string): number {
+  if (!tableExists(db, table)) return 0;
+  const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+  return row.n;
+}
+
+function hasArtifactIdentityBackfillWork(db: Db): boolean {
+  if (!tableExists(db, "artifact_blob") || !tableExists(db, "artifact") || !tableExists(db, "artifact_version")) {
+    return true;
+  }
+  if (artifactIdentityRowCount(db, "artifacts") > artifactIdentityRowCount(db, "artifact_blob")) {
+    return true;
+  }
+  if (artifactIdentityRowCount(db, "artifact_series") > artifactIdentityRowCount(db, "artifact")) {
+    return true;
+  }
+  if (artifactIdentityRowCount(db, "artifact_versions") > artifactIdentityRowCount(db, "artifact_version")) {
+    return true;
+  }
+  if (tableExists(db, "artifact_links")) {
+    const names = tableColumnNames(db, "artifact_links");
+    if (!names.has("target_type") || !names.has("target_id") || !names.has("legacy_blob_id")) {
+      return true;
+    }
+    const row = db
+      .prepare("SELECT 1 FROM artifact_links WHERE legacy_blob_id IS NULL LIMIT 1")
+      .get();
+    if (row) return true;
+  }
+  return false;
+}
+
+function backfillArtifactIdentityTables(db: Db): void {
+  if (tableExists(db, "artifacts")) {
+    const rows = db.prepare("SELECT * FROM artifacts ORDER BY id").all() as Array<Record<string, unknown>>;
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO artifact_blob (
+        id, algorithm, content_hash, storage_uri, media_type, role, size_bytes,
+        provider_id, manifest_id, metadata_json, custody_mode, availability,
+        retention_json, reference_json, created_at
+      ) VALUES (
+        @id, @algorithm, @content_hash, @storage_uri, @media_type, @role, @size_bytes,
+        @provider_id, @manifest_id, @metadata_json, @custody_mode, @availability,
+        @retention_json, @reference_json, @created_at
+      )`,
+    );
+    for (const row of rows) {
+      const legacyId = String(row.id);
+      const uri = typeof row.uri === "string" ? row.uri : null;
+      insert.run({
+        id: artifactBlobIdFromLegacy(legacyId),
+        algorithm: typeof row.algorithm === "string" && row.algorithm ? row.algorithm : "sha256",
+        content_hash: String(row.content_hash ?? legacyId),
+        storage_uri: uri?.startsWith("repo://") ? null : uri,
+        media_type: row.media_type ?? null,
+        role: row.role ?? null,
+        size_bytes: Number(row.size_bytes ?? 0),
+        provider_id: row.provider_id ?? null,
+        manifest_id: row.manifest_id ?? null,
+        metadata_json: typeof row.metadata_json === "string" ? row.metadata_json : "{}",
+        custody_mode: typeof row.custody_mode === "string" ? row.custody_mode : "managed",
+        availability: typeof row.availability === "string" ? row.availability : "unchecked",
+        retention_json: typeof row.retention_json === "string" ? row.retention_json : "{}",
+        reference_json: typeof row.reference_json === "string" ? row.reference_json : "{}",
+        created_at: Number(row.created_at ?? Date.now()),
+      });
+    }
+  }
+
+  if (tableExists(db, "artifact_series")) {
+    const rows = db.prepare("SELECT * FROM artifact_series ORDER BY id").all() as Array<Record<string, unknown>>;
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO artifact (
+        id, identity_key, source_kind, title, source_project_id, source_repo_id,
+        logical_name, source_path, latest_version_id, version_count, metadata_json,
+        created_at, updated_at
+      ) VALUES (
+        @id, @identity_key, @source_kind, @title, @source_project_id, @source_repo_id,
+        @logical_name, @source_path, @latest_version_id, @version_count, @metadata_json,
+        @created_at, @updated_at
+      )`,
+    );
+    for (const row of rows) {
+      const repoId = row.repo_id;
+      insert.run({
+        id: artifactIdFromLegacySeries(String(row.id)),
+        identity_key: String(row.series_key ?? row.id),
+        source_kind: normalizeArtifactSourceKind(row.source_kind),
+        title: row.title ?? null,
+        source_project_id: resolveArtifactSourceProjectId(db, repoId),
+        source_repo_id: repoId ?? null,
+        logical_name: row.logical_name ?? null,
+        source_path: row.logical_name ?? null,
+        latest_version_id: typeof row.latest_version_id === "string"
+          ? artifactVersionIdFromLegacy(row.latest_version_id)
+          : null,
+        version_count: Number(row.version_count ?? 0),
+        metadata_json: typeof row.metadata_json === "string" ? row.metadata_json : "{}",
+        created_at: Number(row.created_at ?? Date.now()),
+        updated_at: Number(row.updated_at ?? row.created_at ?? Date.now()),
+      });
+    }
+  }
+
+  if (tableExists(db, "artifact_versions")) {
+    const rows = db
+      .prepare(
+        `SELECT
+           v.*,
+           s.repo_id AS series_repo_id,
+           s.logical_name AS series_logical_name,
+           a.home_repo_id AS blob_home_repo_id,
+           a.repo_locator_json AS blob_repo_locator_json,
+           a.uri AS blob_uri
+         FROM artifact_versions v
+         LEFT JOIN artifact_series s ON s.id = v.series_id
+         LEFT JOIN artifacts a ON a.id = v.artifact_id
+         ORDER BY v.id`,
+      )
+      .all() as Array<Record<string, unknown>>;
+    const insert = db.prepare(
+      `INSERT OR IGNORE INTO artifact_version (
+        id, artifact_id, version_no, blob_id, source_kind, content_hash,
+        source_project_id, source_repo_id, repo_path, commit_sha, observed_path,
+        source_locator_json, custody_mode, label, note, metadata_json, created_at
+      ) VALUES (
+        @id, @artifact_id, @version_no, @blob_id, @source_kind, @content_hash,
+        @source_project_id, @source_repo_id, @repo_path, @commit_sha, @observed_path,
+        @source_locator_json, @custody_mode, @label, @note, @metadata_json, @created_at
+      )`,
+    );
+    for (const row of rows) {
+      const sourceRepoId = row.series_repo_id ?? row.blob_home_repo_id ?? null;
+      const locator = {
+        migrated_from: "artifact_versions",
+        legacy_series_id: row.series_id ?? null,
+        legacy_blob_id: row.artifact_id ?? null,
+        legacy_uri: row.blob_uri ?? null,
+        legacy_repo_locator: row.blob_repo_locator_json ?? null,
+        series_logical_name: row.series_logical_name ?? null,
+      };
+      insert.run({
+        id: artifactVersionIdFromLegacy(String(row.id)),
+        artifact_id: artifactIdFromLegacySeries(String(row.series_id)),
+        version_no: Number(row.version_no ?? 0),
+        blob_id: artifactBlobIdFromLegacy(String(row.artifact_id)),
+        source_kind: normalizeArtifactVersionSourceKind(row.source_kind),
+        content_hash: String(row.content_hash ?? ""),
+        source_project_id: resolveArtifactSourceProjectId(db, sourceRepoId),
+        source_repo_id: sourceRepoId,
+        repo_path: row.repo_path ?? null,
+        commit_sha: row.commit_sha ?? null,
+        observed_path: row.observed_path ?? null,
+        source_locator_json: JSON.stringify(locator),
+        custody_mode: row.custody_mode ?? null,
+        label: row.label ?? null,
+        note: row.note ?? null,
+        metadata_json: typeof row.metadata_json === "string" ? row.metadata_json : "{}",
+        created_at: Number(row.created_at ?? Date.now()),
+      });
+    }
+  }
+}
+
+function backfillArtifactLinkTargets(db: Db): void {
+  if (!tableExists(db, "artifact_links")) return;
+  const names = tableColumnNames(db, "artifact_links");
+  if (!names.has("target_type") || !names.has("target_id") || !names.has("legacy_blob_id")) return;
+
+  const oldArtifactRows = tableExists(db, "artifacts")
+    ? db.prepare("SELECT id FROM artifacts").all() as Array<{ id: string }>
+    : [];
+  const blobIdByLegacyArtifact = new Map(
+    oldArtifactRows.map((row) => [row.id, artifactBlobIdFromLegacy(row.id)]),
+  );
+  const versions = tableExists(db, "artifact_versions")
+    ? db.prepare("SELECT id, series_id, artifact_id FROM artifact_versions").all() as Array<{
+      id: string;
+      series_id: string;
+      artifact_id: string;
+    }>
+    : [];
+  const byBlob = new Map<string, typeof versions>();
+  const byBlobSeries = new Map<string, typeof versions>();
+  for (const version of versions) {
+    byBlob.set(version.artifact_id, [...(byBlob.get(version.artifact_id) ?? []), version]);
+    const key = `${version.artifact_id}\u0000${version.series_id}`;
+    byBlobSeries.set(key, [...(byBlobSeries.get(key) ?? []), version]);
+  }
+  const newArtifactIds = new Set(
+    tableExists(db, "artifact")
+      ? (db.prepare("SELECT id FROM artifact").all() as Array<{ id: string }>).map((row) => row.id)
+      : [],
+  );
+
+  const links = db
+    .prepare(
+      `SELECT id, artifact_id, link_kind, series_id
+       FROM artifact_links
+       WHERE legacy_blob_id IS NULL OR target_type IS NULL`,
+    )
+    .all() as Array<{
+      id: string;
+      artifact_id: string;
+      link_kind: string | null;
+      series_id: string | null;
+    }>;
+  const update = db.prepare(
+    `UPDATE artifact_links
+     SET target_type = COALESCE(target_type, @target_type),
+         target_id = COALESCE(target_id, @target_id),
+         fallback_version_id = COALESCE(fallback_version_id, @fallback_version_id),
+         legacy_blob_id = COALESCE(legacy_blob_id, @legacy_blob_id)
+     WHERE id = @id`,
+  );
+
+  for (const link of links) {
+    const legacyBlobId = blobIdByLegacyArtifact.get(link.artifact_id)
+      ?? artifactBlobIdFromLegacy(link.artifact_id);
+    let targetType: string | null = null;
+    let targetId: string | null = null;
+    let fallbackVersionId: string | null = null;
+    const seriesVersions = link.series_id
+      ? byBlobSeries.get(`${link.artifact_id}\u0000${link.series_id}`) ?? []
+      : [];
+    const blobVersions = byBlob.get(link.artifact_id) ?? [];
+
+    if (link.link_kind === "living" && link.series_id) {
+      const artifactId = artifactIdFromLegacySeries(link.series_id);
+      if (newArtifactIds.has(artifactId)) {
+        targetType = "artifact";
+        targetId = artifactId;
+      }
+      const fallback = seriesVersions.length === 1
+        ? seriesVersions[0]
+        : blobVersions.length === 1
+          ? blobVersions[0]
+          : null;
+      fallbackVersionId = fallback ? artifactVersionIdFromLegacy(fallback.id) : null;
+    } else {
+      const candidates = seriesVersions.length > 0 ? seriesVersions : blobVersions;
+      if (candidates.length === 1) {
+        targetType = "artifact_version";
+        targetId = artifactVersionIdFromLegacy(candidates[0].id);
+      }
+    }
+
+    update.run({
+      id: link.id,
+      target_type: targetType,
+      target_id: targetId,
+      fallback_version_id: fallbackVersionId,
+      legacy_blob_id: legacyBlobId,
+    });
+  }
+}
+
+function verifyArtifactIdentityBackfill(db: Db): void {
+  const expectedBlobs = artifactIdentityRowCount(db, "artifacts");
+  const expectedArtifacts = artifactIdentityRowCount(db, "artifact_series");
+  const expectedVersions = artifactIdentityRowCount(db, "artifact_versions");
+  if (artifactIdentityRowCount(db, "artifact_blob") < expectedBlobs) {
+    throw new Error("migration 91 verification: not every legacy artifacts row was backfilled to artifact_blob");
+  }
+  if (artifactIdentityRowCount(db, "artifact") < expectedArtifacts) {
+    throw new Error("migration 91 verification: not every artifact_series row was backfilled to artifact");
+  }
+  if (artifactIdentityRowCount(db, "artifact_version") < expectedVersions) {
+    throw new Error("migration 91 verification: not every artifact_versions row was backfilled to artifact_version");
+  }
+  const violations = db.prepare("PRAGMA foreign_key_check").all();
+  if (violations.length > 0) {
+    throw new Error(`migration 91 verification: ${violations.length} foreign key violation(s) after artifact identity backfill`);
+  }
+}
+
+function verifyArtifactIdentitySchema(db: Db): void {
+  const hasUniqueIndexOver = (table: string, expected: string[]): boolean => {
+    const indexes = db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>;
+    return indexes.some((index) => {
+      if (!index.unique) return false;
+      const cols = (db.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>)
+        .map((info) => info.name);
+      return cols.length === expected.length && expected.every((col, i) => cols[i] === col);
+    });
+  };
+  const requireTable = (table: string, columns: string[], checkPattern?: RegExp): string => {
+    const row = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table) as { sql: string | null } | undefined;
+    if (!row?.sql) {
+      throw new Error(`migration 91 verification: table ${table} is missing after migration`);
+    }
+    const present = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name),
+    );
+    for (const column of columns) {
+      if (!present.has(column)) {
+        throw new Error(`migration 91 verification: table ${table} is missing expected column '${column}'`);
+      }
+    }
+    if (checkPattern && !checkPattern.test(row.sql)) {
+      throw new Error(`migration 91 verification: table ${table} is missing expected CHECK constraint`);
+    }
+    return row.sql;
+  };
+
+  const blobSql = requireTable("artifact_blob", [
+    "id", "algorithm", "content_hash", "storage_uri", "media_type", "role",
+    "size_bytes", "provider_id", "manifest_id", "metadata_json", "custody_mode",
+    "availability", "retention_json", "reference_json", "created_at",
+  ], /CHECK\s*\(\s*custody_mode\s+IN/i);
+  if (/\bhome_repo_id\b/i.test(blobSql) || /\brepo_locator_json\b/i.test(blobSql)) {
+    throw new Error("migration 91 verification: artifact_blob must not carry project/source repo columns");
+  }
+  requireTable("artifact", [
+    "id", "identity_key", "source_kind", "title", "source_project_id", "source_repo_id",
+    "logical_name", "source_path", "latest_version_id", "version_count",
+    "metadata_json", "created_at", "updated_at",
+  ], /CHECK\s*\(\s*source_kind\s+IN/i);
+  requireTable("artifact_version", [
+    "id", "artifact_id", "version_no", "blob_id", "source_kind", "content_hash",
+    "source_project_id", "source_repo_id", "repo_path", "commit_sha", "observed_path",
+    "source_locator_json", "custody_mode", "label", "note", "metadata_json", "created_at",
+  ], /CHECK\s*\(\s*source_kind\s+IN/i);
+  requireTable("project_artifact_associations", [
+    "id", "project_id", "target_type", "target_id", "association_kind", "role",
+    "title", "description", "rank", "status", "source", "source_ref_type",
+    "source_ref_id", "metadata_json", "created_at", "updated_at",
+  ], /CHECK\s*\(\s*target_type\s+IN/i);
+
+  if (!hasUniqueIndexOver("artifact_blob", ["algorithm", "content_hash"])) {
+    throw new Error("migration 91 verification: artifact_blob is missing UNIQUE(algorithm, content_hash)");
+  }
+  if (!hasUniqueIndexOver("artifact", ["identity_key"])) {
+    throw new Error("migration 91 verification: artifact is missing UNIQUE(identity_key)");
+  }
+  if (!hasUniqueIndexOver("artifact_version", ["artifact_id", "version_no"])) {
+    throw new Error("migration 91 verification: artifact_version is missing UNIQUE(artifact_id, version_no)");
+  }
+  if (!hasUniqueIndexOver("project_artifact_associations", ["project_id", "target_type", "target_id", "role"])) {
+    throw new Error("migration 91 verification: project_artifact_associations is missing its inline UNIQUE");
+  }
+
+  const versionFkTargets = new Set(
+    (db.prepare("PRAGMA foreign_key_list(artifact_version)").all() as Array<{ table: string }>).map(
+      (fk) => fk.table,
+    ),
+  );
+  if (!versionFkTargets.has("artifact") || !versionFkTargets.has("artifact_blob")) {
+    throw new Error("migration 91 verification: artifact_version is missing artifact/blob foreign keys");
+  }
+  const artifactFks = db.prepare("PRAGMA foreign_key_list(artifact)").all() as Array<{ from: string; table: string }>;
+  if (artifactFks.some((fk) => fk.from === "latest_version_id" || fk.table === "artifact_version")) {
+    throw new Error("migration 91 verification: artifact.latest_version_id must remain a soft cache");
+  }
+
+  if (tableExists(db, "artifact_links")) {
+    const linkSql = (db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact_links'")
+      .get() as { sql: string | null } | undefined)?.sql ?? "";
+    const columns = tableColumnNames(db, "artifact_links");
+    for (const column of ["target_type", "target_id", "fallback_version_id", "legacy_blob_id"]) {
+      if (!columns.has(column)) {
+        throw new Error(`migration 91 verification: artifact_links is missing ${column}`);
+      }
+    }
+    if (!/CHECK\s*\(\s*target_type\s+IS\s+NULL\s+OR\s+target_type\s+IN/i.test(linkSql)) {
+      throw new Error("migration 91 verification: artifact_links.target_type is missing its CHECK");
+    }
+  }
+}
+
 function ensureLedgerProjectKeyColumn(db: Db): void {
   const hasTable = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ledger_projects'")
@@ -4369,13 +4999,17 @@ function tableExists(db: Db, table: string): boolean {
 
 function tableColumnNames(db: Db, table: string): Set<string> {
   const allowed = new Set([
+    "artifact",
+    "artifact_blob",
     "artifacts",
     "artifact_links",
+    "artifact_version",
     "auth_requests",
     "conversation_blocks",
     "conversations",
     "ledger_comments",
     "ledger_issues",
+    "project_artifact_associations",
     "session_projects",
     "sessions",
     "work_units",

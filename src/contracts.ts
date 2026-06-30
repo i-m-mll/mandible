@@ -364,6 +364,91 @@ export type ArtifactRecord = {
   links?: ArtifactLinkRecord[];
 };
 
+export type ArtifactIdentitySourceKind =
+  | "tracked_repo"
+  | "local_only"
+  | "managed"
+  | "external"
+  | "mixed";
+
+export type ArtifactBlobRecord = {
+  id: string;
+  algorithm: string;
+  content_hash: string;
+  storage_uri: string | null;
+  media_type: string | null;
+  role: string | null;
+  size_bytes: number;
+  provider_id: string | null;
+  manifest_id: string | null;
+  metadata: Record<string, unknown>;
+  custody_mode: "link" | "copy" | "managed" | "external";
+  availability: "present" | "missing" | "stale" | "unchecked" | "remote_only" | "pinned";
+  retention: Record<string, unknown>;
+  reference: Record<string, unknown>;
+  created_at: number;
+};
+
+export type ArtifactIdentityRecord = {
+  id: string;
+  identity_key: string;
+  source_kind: ArtifactIdentitySourceKind;
+  title: string | null;
+  source_project_id: string | null;
+  source_repo_id: string | null;
+  logical_name: string | null;
+  source_path: string | null;
+  latest_version_id: string | null;
+  version_count: number;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type CanonicalArtifactVersionRecord = {
+  id: string;
+  artifact_id: string;
+  version_no: number;
+  blob_id: string;
+  source_kind: Exclude<ArtifactIdentitySourceKind, "mixed">;
+  content_hash: string;
+  source_project_id: string | null;
+  source_repo_id: string | null;
+  repo_path: string | null;
+  commit_sha: string | null;
+  observed_path: string | null;
+  source_locator: Record<string, unknown>;
+  custody_mode: "link" | "copy" | "managed" | "external" | null;
+  label: string | null;
+  note: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+};
+
+export type Artifact = ArtifactIdentityRecord;
+export type ArtifactVersion = CanonicalArtifactVersionRecord;
+
+export type ProjectArtifactAssociationRecord = {
+  id: string;
+  project_id: string;
+  target_type: "artifact" | "artifact_version";
+  target_id: string;
+  association_kind: "associated" | "canonical";
+  role: string;
+  title: string | null;
+  description: string | null;
+  rank: number | null;
+  status: "active" | "superseded" | "archived";
+  source: "user" | "agent_explicit" | "space_rule" | "migration" | "system";
+  source_ref_type: string | null;
+  source_ref_id: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ProjectArtifactAssociation = ProjectArtifactAssociationRecord;
+
 export type ArtifactVersionSourceKind = "tracked_repo" | "local_only" | "managed";
 export type ArtifactSeriesSourceKind = ArtifactVersionSourceKind | "mixed";
 
@@ -403,8 +488,13 @@ export type ArtifactResolveResult = {
   ref: string;
   scheme: string;
   normalized_ref: string;
+  target_type?: "artifact" | "artifact_version" | "artifact_blob" | "legacy_artifact";
+  target_id?: string | null;
   artifact: ArtifactRecord | null;
   alias: ArtifactAliasRecord | null;
+  logical_artifact?: ArtifactIdentityRecord | null;
+  artifact_version?: CanonicalArtifactVersionRecord | null;
+  artifact_blob?: ArtifactBlobRecord | null;
   series?: ArtifactSeriesRecord | null;
   version?: ArtifactVersionRecord | null;
   warnings?: string[];

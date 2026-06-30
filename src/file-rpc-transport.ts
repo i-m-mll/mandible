@@ -308,6 +308,10 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "DELETE" && /^\/api\/auth\/request\/[^/]+\/actions\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/artifacts") return true;
   if (normalizedMethod === "GET" && pathname === "/api/artifacts/resolve") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/logical") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/blobs") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/artifacts/associations") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/artifacts/associations") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/ingest") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/plan") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
