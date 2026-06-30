@@ -1813,6 +1813,28 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain('"accuracy": 0.95');
   });
 
+  it("keeps raw compact JSON available when the preview is auto-formatted", () => {
+    const compact = '{"accuracy":0.95,"tags":["fast","stable"]}';
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "metrics.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        raw_text: compact,
+        formatted: "json",
+      },
+    });
+    expect(content?.preview?.text).toContain('\n  "accuracy": 0.95,');
+  });
+
   it("returns binary download metadata without inline preview", () => {
     const payload = Buffer.from([0, 1, 2, 3, 4]);
     const artifact = ingestArtifact(db, {
@@ -1833,6 +1855,41 @@ describe("provider/artifact substrate", () => {
         size_bytes: payload.length,
         filename: "model.bin",
       },
+    });
+  });
+
+  it("previews source-like UTF-8 artifacts as text despite octet-stream media type", () => {
+    const source = "def train():\n    return 1\n";
+    const artifact = ingestArtifact(db, {
+      media_type: "application/octet-stream",
+      content: source,
+      filename: "train.py",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "text",
+      media_type: "application/octet-stream",
+      preview: { encoding: "utf-8", text: source, truncated: false },
+    });
+  });
+
+  it("keeps source-like filenames binary when bytes are not safe UTF-8", () => {
+    const payload = Buffer.from([0, 1, 2, 3, 4]);
+    const artifact = ingestArtifact(db, {
+      media_type: "application/octet-stream",
+      content_base64: payload.toString("base64"),
+      filename: "train.py",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "binary",
+      preview: null,
     });
   });
 

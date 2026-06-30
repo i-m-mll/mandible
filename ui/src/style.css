@@ -382,7 +382,7 @@
 }
 
 :root[data-theme='light'] .artifact-preview {
-  background: transparent;
+  background: var(--bg-card);
 }
 
 :root[data-theme='light'] .artifact-preview.spec-panel {
@@ -6711,7 +6711,7 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail__top-row,
-.artifact-detail__topline,
+.artifact-detail__eyebrow,
 .artifact-detail__title-row,
 .artifact-detail__dates {
   display: flex;
@@ -6724,17 +6724,44 @@ tr:hover .work-actions__trigger {
   gap: 12px;
 }
 
-.artifact-detail__topline {
-  gap: 4px;
+.artifact-detail__eyebrow {
+  gap: 8px;
+  flex-wrap: wrap;
   color: var(--text-muted);
-  font-size: 12px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
 }
 
-.artifact-detail__series-id {
+.artifact-detail__repo {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.artifact-detail__short-ref {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--font-mono);
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.artifact-detail__eyebrow .ledger-copy-ref-button,
+.artifact-detail__eyebrow .ledger-copy-ref-button svg {
+  width: 18px;
+  height: 18px;
+}
+
+.artifact-detail__eyebrow .ledger-copy-ref-button {
+  border-radius: 5px;
+}
+
+.artifact-detail__eyebrow > span {
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .artifact-detail__title-row {
@@ -7157,6 +7184,33 @@ tr:hover .work-actions__trigger {
   color: var(--text-muted);
   font-size: 11px;
   box-shadow: 0 8px 18px rgba(0,0,0,0.22);
+}
+
+.artifact-preview-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.artifact-preview-toolbar button {
+  flex-shrink: 0;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.artifact-preview-toolbar button:hover,
+.artifact-preview-toolbar button:focus-visible {
+  border-color: var(--accent-blue);
+  color: var(--text-primary);
 }
 
 .artifact-preview > code,
