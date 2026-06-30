@@ -1376,6 +1376,7 @@ a {
   color: var(--accent-yellow);
   background: rgba(245, 194, 92, 0.1);
   border-bottom: 1px solid rgba(245, 194, 92, 0.18);
+  box-shadow: none;
   font-size: 12px;
 }
 

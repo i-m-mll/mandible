@@ -7,7 +7,10 @@ import type {
 } from "./types.js";
 
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const SAFE_UNSAFE_ROUTE_EXCEPTIONS = new Set(["POST /api/auth/check"]);
+const SAFE_UNSAFE_ROUTE_EXCEPTIONS = new Set([
+  "POST /api/auth/check",
+  "POST /api/timeline/project",
+]);
 
 const OPERATIONAL_ROUTE_CATEGORIES: Array<{ prefix: string; category: string }> = [
   { prefix: "/api/admin", category: "system" },

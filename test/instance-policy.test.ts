@@ -56,6 +56,22 @@ describe("instance mutation policy", () => {
     expect(response.body).toEqual({ check: { status: "clean" } });
   });
 
+  it("leaves Timeline projection queries available on preview instances", async () => {
+    const router = previewRouter();
+    router.post("/api/timeline/project", (_req, res) => {
+      res.status(200).json({ project: { id: "prj_mandible" }, rows: [], events: [] });
+    });
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/timeline/project",
+      body: { project_ref: "mandible" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ project: { id: "prj_mandible" }, rows: [], events: [] });
+  });
+
   it("rejects representative ledger and work-unit mutations on preview instances", async () => {
     const router = previewRouter();
     registerUnsafeRoutes(router);
