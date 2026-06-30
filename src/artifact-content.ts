@@ -10,9 +10,9 @@ import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverabili
 
 const DEFAULT_PREVIEW_BYTES = 128 * 1024;
 const HTML_PREVIEW_BYTES = 8 * 1024 * 1024;
-const JSON_COMPLETE_PREVIEW_BYTES = 2 * 1024 * 1024;
+const JSON_COMPLETE_PREVIEW_BYTES = 1 * 1024 * 1024;
 const JSON_PARTIAL_PREVIEW_BYTES = 256 * 1024;
-const EAGER_HASH_VALIDATION_BYTES = 2 * 1024 * 1024;
+const EAGER_HASH_VALIDATION_BYTES = JSON_COMPLETE_PREVIEW_BYTES;
 
 export type ArtifactContentKind = "text" | "markdown" | "json" | "html" | "binary" | "unavailable";
 export type ArtifactContentSourceKind = "managed_file" | "repo_locator" | "local_file";
