@@ -491,6 +491,8 @@ type PendingAckPosition = {
   previewDisabled?: boolean;
 };
 
+type InitialModelStatus = 'pending' | 'loaded' | 'error';
+
 const DEFAULT_DEBOUNCE_MS = 400;
 const POSITION_ACK_PROTECTION_MS = 10_000;
 const OCCURRENCE_MOVED_EVENT = 'space:occurrence:moved';
@@ -534,6 +536,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // Authored `space_edges` rendered as lines on the canvas and edited through the
   // Canvas selection inspector.
   const [edges, setEdges] = useState<SpaceEdge[]>(() => initialModel?.edges ?? []);
+  const [initialModelStatus, setInitialModelStatus] = useState<InitialModelStatus>(() =>
+    !initialModel && spaceId && loadModel ? 'pending' : 'loaded',
+  );
   const [autosave, setAutosave] = useState<AutosaveStatus>('idle');
   const [edgeStatus, setEdgeStatus] = useState<AutosaveStatus>('idle');
   const [edgeStatusMessage, setEdgeStatusMessage] = useState('');
@@ -649,14 +654,24 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
 
   // --- initial load (only when no initialModel was provided) ---
   useEffect(() => {
-    if (initialModel || !spaceId || !loadModel) return;
+    if (initialModel || !spaceId || !loadModel) {
+      setInitialModelStatus('loaded');
+      return;
+    }
     let cancelled = false;
-    void loadModel(spaceId).then((model) => {
-      if (cancelled) return;
-      setOccurrences(model.occurrences);
-      setItems(model.items);
-      setEdges(model.edges ?? []);
-    });
+    setInitialModelStatus('pending');
+    void loadModel(spaceId)
+      .then((model) => {
+        if (cancelled) return;
+        setOccurrences(model.occurrences);
+        setItems(model.items);
+        setEdges(model.edges ?? []);
+        setInitialModelStatus('loaded');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setInitialModelStatus('error');
+      });
     return () => {
       cancelled = true;
     };
@@ -1136,7 +1151,15 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       </div>
       <div className="space-canvas__body" ref={bodyRef}>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
-          {placed.length === 0 ? (
+          {initialModelStatus === 'pending' && placed.length === 0 ? (
+            <div className="space-canvas__empty" data-testid="space-canvas-loading">
+              Loading canvas items...
+            </div>
+          ) : initialModelStatus === 'error' && placed.length === 0 ? (
+            <div className="space-canvas__empty" data-testid="space-canvas-load-error">
+              Unable to load canvas items.
+            </div>
+          ) : placed.length === 0 ? (
             <div className="space-canvas__empty" data-testid="space-canvas-empty">
               No canvas items yet.
             </div>
