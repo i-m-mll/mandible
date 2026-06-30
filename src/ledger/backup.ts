@@ -58,6 +58,9 @@ export const METADATA_BACKUP_TABLES = [
   "message_params",
   "providers",
   "artifacts",
+  "artifact_blob",
+  "artifact",
+  "artifact_version",
   "provider_manifests",
   "artifact_aliases",
   "artifact_links",
@@ -70,6 +73,7 @@ export const METADATA_BACKUP_TABLES = [
   // backup round-trip.
   "artifact_series",
   "artifact_versions",
+  "project_artifact_associations",
   "knowledge_backrefs",
   // Spaces P1' core four (issue b395083 / umbrella de56ffa). Parent-before-child
   // order; the metadata backup emits inline UNIQUE/composite-FK constraints as

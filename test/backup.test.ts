@@ -186,4 +186,38 @@ describe("backup routes", () => {
     });
     expect(fs.existsSync(destination)).toBe(true);
   });
+
+  it("includes artifact identity tables and secondary indexes in metadata backup", async () => {
+    const { db } = await setupBackupRoutes();
+    const { METADATA_BACKUP_TABLES, buildMetadataBackupSql } = await import("../src/ledger/backup.js");
+
+    const idx = (table: string) => METADATA_BACKUP_TABLES.indexOf(table as never);
+    expect(idx("artifact_blob")).toBeGreaterThan(idx("artifacts"));
+    expect(idx("artifact")).toBeGreaterThan(idx("artifact_blob"));
+    expect(idx("artifact_version")).toBeGreaterThan(idx("artifact"));
+    expect(idx("artifact_links")).toBeGreaterThan(idx("artifact_version"));
+    expect(idx("project_artifact_associations")).toBeGreaterThan(idx("artifact_versions"));
+
+    db.prepare(
+      `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, custody_mode, created_at)
+       VALUES ('artifact-blob:hash-bk', 'sha256', 'hash-bk', 'file:///tmp/hash-bk', 'managed', 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO artifact (id, identity_key, source_kind, title, version_count, created_at, updated_at)
+       VALUES ('artifact:bk', 'managed:test:bk', 'managed', 'Backup artifact', 1, 1, 1)`,
+    ).run();
+    db.prepare(
+      `INSERT INTO artifact_version (
+        id, artifact_id, version_no, blob_id, source_kind, content_hash, created_at
+      ) VALUES ('artifact-version:bk-v1', 'artifact:bk', 1, 'artifact-blob:hash-bk', 'managed', 'hash-bk', 1)`,
+    ).run();
+
+    const dump = buildMetadataBackupSql(db);
+    expect(dump).toContain("-- Table: artifact_blob");
+    expect(dump).toContain("-- Table: artifact");
+    expect(dump).toContain("-- Table: artifact_version");
+    expect(dump).toContain("-- Table: project_artifact_associations");
+    expect(dump).toContain("idx_artifact_version_blob");
+    expect(dump).toContain("idx_project_artifact_assoc_target");
+  });
 });
