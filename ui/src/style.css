@@ -3151,10 +3151,16 @@ tr:last-child td {
   padding: 0;
 }
 
-.auth-detail__diff-toggle:hover,
-.auth-detail__diff-toggle--active {
-  color: var(--accent-blue);
+.auth-detail__diff-toggle:hover {
+  color: var(--text-primary);
   background: transparent;
+}
+
+.auth-detail__diff-toggle--active,
+.auth-detail__diff-toggle--active:hover {
+  color: var(--text-primary);
+  background: var(--neutral-alpha-10);
+  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.12);
 }
 
 .auth-detail__diff-toggle svg {
@@ -3304,6 +3310,7 @@ tr:last-child td {
 .auth-diff-file .d2h-wrapper {
   font-family: var(--font-mono);
   font-size: 12px;
+  line-height: 1.35;
 }
 
 .auth-diff-file .d2h-file-wrapper {
@@ -3320,11 +3327,54 @@ tr:last-child td {
   overflow: visible;
 }
 
+.auth-diff-file .d2h-diff-table {
+  border-collapse: collapse;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.35;
+  table-layout: fixed;
+  width: 100%;
+}
+
+.auth-diff-file .d2h-diff-tbody,
+.auth-diff-file .d2h-diff-tbody tr,
+.auth-diff-file .d2h-diff-tbody td {
+  border: 0;
+}
+
+.auth-diff-file .d2h-files-diff {
+  background: var(--bg-card);
+}
+
+.auth-diff-file .d2h-file-side-diff {
+  overflow-x: auto;
+}
+
 .auth-diff-file .d2h-code-side-linenumber,
 .auth-diff-file .d2h-code-linenumber {
-  background: var(--neutral-alpha-04);
+  background: var(--neutral-alpha-03);
   color: var(--text-muted);
-  border-color: var(--neutral-alpha-06);
+  border: 0;
+  border-right: 1px solid var(--neutral-alpha-05);
+  line-height: 1.35;
+}
+
+.auth-diff-file .d2h-code-line,
+.auth-diff-file .d2h-code-side-line {
+  padding-top: 1px;
+  padding-bottom: 1px;
+  border: 0;
+  line-height: 1.35;
+}
+
+.auth-diff-file .d2h-code-line-ctn {
+  vertical-align: top;
+}
+
+.auth-diff-file .d2h-info {
+  background: var(--neutral-alpha-03);
+  border-color: transparent;
+  color: var(--text-muted);
 }
 
 .auth-diff-file .d2h-code-line {
@@ -3332,19 +3382,32 @@ tr:last-child td {
 }
 
 .auth-diff-file .d2h-del {
-  background: rgba(248, 113, 113, 0.12);
+  background: rgba(248, 113, 113, 0.10);
+  border-color: transparent;
 }
 
 .auth-diff-file .d2h-ins {
-  background: rgba(74, 222, 128, 0.12);
+  background: rgba(74, 222, 128, 0.10);
+  border-color: transparent;
 }
 
 .auth-diff-file .d2h-del .d2h-code-line-ctn {
-  background: rgba(248, 113, 113, 0.10);
+  background: rgba(248, 113, 113, 0.08);
 }
 
 .auth-diff-file .d2h-ins .d2h-code-line-ctn {
-  background: rgba(74, 222, 128, 0.10);
+  background: rgba(74, 222, 128, 0.08);
+}
+
+@media (max-width: 760px) {
+  .auth-diff-file .d2h-files-diff {
+    display: block;
+  }
+
+  .auth-diff-file .d2h-file-side-diff {
+    display: block;
+    width: 100%;
+  }
 }
 
 .drag-indicator {

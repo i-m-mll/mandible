@@ -927,6 +927,9 @@ describe('AuthQueueView', () => {
     const diffToggle = screen.getByRole('button', { name: 'Show changes diff' });
     expect(diffToggle.closest('.auth-detail__aux-header')).toBeTruthy();
     expect(diffToggle.getAttribute('aria-pressed')).toBe('false');
+    expect(diffToggle.className).not.toContain('auth-detail__diff-toggle--active');
+    expect(diffToggle.querySelector('rect')).toBeTruthy();
+    expect(diffToggle.querySelectorAll('path').length).toBe(1);
     expect(document.querySelector('.auth-detail__aux-left')?.contains(diffToggle)).toBe(true);
     expect(document.querySelector('.auth-detail__action-strip .auth-actions')).toBeTruthy();
     expect(document.querySelector('.auth-detail__header-actions .auth-actions')).toBeNull();
@@ -946,9 +949,14 @@ describe('AuthQueueView', () => {
     fireEvent.click(diffToggle);
     const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
     expect(activeDiffToggle.getAttribute('aria-pressed')).toBe('true');
+    expect(activeDiffToggle.className).toContain('auth-detail__diff-toggle--active');
     expect(document.querySelector('.auth-detail__panels')).toBeNull();
     const diffRegion = screen.getByLabelText('Auth request changes');
     expect(diffRegion).toBeTruthy();
+    expect(diffRegion.querySelector('.d2h-files-diff')).toBeTruthy();
+    expect(diffRegion.querySelectorAll('.d2h-file-side-diff').length).toBeGreaterThanOrEqual(2);
+    expect(diffRegion.querySelector('.d2h-code-side-linenumber')).toBeTruthy();
+    expect(diffRegion.querySelector('.d2h-code-linenumber')).toBeNull();
     expect(screen.getAllByText('ui/src/views/auth.tsx').length).toBeGreaterThan(0);
     expect(diffRegion.textContent).toContain('added line');
     expect(screen.queryByText('Commit Message')).toBeNull();
