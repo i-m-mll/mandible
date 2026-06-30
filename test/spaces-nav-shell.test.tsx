@@ -61,7 +61,7 @@ describe('SpacesViewShell', () => {
     expect(
       screen.getByTestId('spaces-view-shell').getAttribute('data-active-renderer'),
     ).toBe('canvas');
-    expect(screen.getByTestId('spaces-shell-renderer').textContent).toBe('canvas');
+    expect(screen.getByTestId('spaces-shell-renderer').textContent).toBe('Canvas');
   });
 
   it('mounts a registered renderer at the matching mount point and forwards props', () => {

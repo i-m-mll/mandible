@@ -2080,7 +2080,7 @@ const MIGRATIONS: Migration[] = [
         id            TEXT NOT NULL,
         space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
         ref_type      TEXT NOT NULL
-                        CHECK(ref_type IN ('issue','comment','artifact','external_ref')),
+                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space')),
         ref_id        TEXT NOT NULL CHECK(ref_id != ''),
         ref_uri       TEXT,
         title         TEXT,
@@ -2425,6 +2425,18 @@ const MIGRATIONS: Migration[] = [
     // already joins METADATA_BACKUP_TABLES; backup.ts now also emits each backed-up
     // table's secondary indexes so the two new indexes survive a backup restore.
     statements: []
+  },
+  {
+    version: 90,
+    name: "space_items_link_space_refs",
+    // Issue: 8059130 (umbrella de56ffa) — allow a canvas Space to contain nodes
+    // linking to other typed Spaces. The durable model is the existing
+    // space_items membership table with ref_type='space', preserving the
+    // UNIQUE(space_id, ref_type, ref_id) idempotency contract and the
+    // space_occurrences presentation layer. SQLite cannot alter a CHECK in place,
+    // so existing DBs rebuild space_items in a post-migration helper; fresh DBs
+    // get the expanded CHECK directly from spaces_core above.
+    statements: []
   }
 ];
 
@@ -2687,6 +2699,16 @@ export function migrate(db: Db): void {
         backfillOrphanArtifactSeries(db);
         verifyEveryArtifactHasSeries(db, before);
       }).immediate();
+    });
+  }
+  // Issue 8059130 (migration 90): expand space_items.ref_type to include
+  // typed Space links. This is a CHECK-constraint table rebuild, gated on the
+  // live DDL so fresh DBs and re-runs are no-ops.
+  if (shouldRunPostMigration(db, "v90_space_items_link_space_refs", pending, 90, () =>
+    needsSpaceItemsSpaceRefType(db)
+  )) {
+    runPostMigration(db, "v90_space_items_link_space_refs", () => {
+      rebuildSpaceItemsWithSpaceRefType(db);
     });
   }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
@@ -3461,6 +3483,89 @@ function makeSpacesProjectIdNullable(db: Db): void {
   if (violations.length > 0) {
     throw new Error(
       `spaces nullable project_id migration left ${violations.length} foreign key violations`,
+    );
+  }
+}
+
+/**
+ * Issue 8059130 — true when `space_items.ref_type` still has the pre-v90 CHECK
+ * set that excludes typed Space links. Fresh DBs created from the updated
+ * spaces_core DDL already include 'space', so this returns false for them.
+ */
+function needsSpaceItemsSpaceRefType(db: Db): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'space_items'")
+    .get() as { sql: string } | undefined;
+  if (!row) return false;
+  return !row.sql.includes("'space'");
+}
+
+/**
+ * Issue 8059130 — rebuild `space_items` with `ref_type='space'` accepted by the
+ * inline CHECK. This preserves every other spaces_core invariant, including the
+ * inline UNIQUE constraints required by metadata backup/restore and the
+ * external_ref ref_uri CHECK. Child tables reference (space_id, id), so the
+ * rebuild follows the FK-safe foreign_keys OFF + foreign_key_check pattern used
+ * by the v86 spaces rebuild.
+ */
+function rebuildSpaceItemsWithSpaceRefType(db: Db): void {
+  if (!needsSpaceItemsSpaceRefType(db)) return;
+
+  const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS space_items_v90");
+      db.exec(
+        `CREATE TABLE space_items_v90 (
+          id            TEXT NOT NULL,
+          space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+          ref_type      TEXT NOT NULL
+                          CHECK(ref_type IN ('issue','comment','artifact','external_ref','space')),
+          ref_id        TEXT NOT NULL CHECK(ref_id != ''),
+          ref_uri       TEXT,
+          title         TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+          created_at    INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          PRIMARY KEY (id),
+          UNIQUE (space_id, id),
+          UNIQUE (space_id, ref_type, ref_id),
+          CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
+        )`,
+      );
+      db.exec(
+        `INSERT INTO space_items_v90 (
+          id, space_id, ref_type, ref_id, ref_uri, title,
+          metadata_json, created_at, updated_at
+        )
+        SELECT
+          id, space_id, ref_type, ref_id, ref_uri, title,
+          metadata_json, created_at, updated_at
+        FROM space_items`,
+      );
+      db.exec("DROP TABLE space_items");
+      db.exec("ALTER TABLE space_items_v90 RENAME TO space_items");
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_space_items_lookup
+          ON space_items(space_id, ref_type, ref_id)`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_space_items_by_ref
+          ON space_items(ref_type, ref_id, space_id)`,
+      );
+    })();
+  } finally {
+    if (previousForeignKeys) {
+      db.pragma("foreign_keys = ON");
+    }
+  }
+
+  const violations = db.prepare("PRAGMA foreign_key_check").all();
+  if (violations.length > 0) {
+    throw new Error(
+      `space_items linked-space migration left ${violations.length} foreign key violations`,
     );
   }
 }

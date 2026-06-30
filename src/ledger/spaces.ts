@@ -28,7 +28,7 @@ import {
 
 export type SpaceRenderer = "canvas" | "document" | "board" | "collection";
 export type SpaceOccurrenceRenderer = "canvas" | "board" | "collection";
-export type SpaceItemRefType = "issue" | "comment" | "artifact" | "external_ref";
+export type SpaceItemRefType = "issue" | "comment" | "artifact" | "external_ref" | "space";
 
 export const SPACE_RENDERERS: readonly SpaceRenderer[] = [
   "canvas",
@@ -46,6 +46,7 @@ export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = [
   "comment",
   "artifact",
   "external_ref",
+  "space",
 ];
 
 export interface SpaceRecord {

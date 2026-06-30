@@ -450,11 +450,11 @@ export type ArtifactSeriesSummary = {
 export type SpaceRenderer = 'canvas' | 'document' | 'board' | 'collection';
 /** Occurrence-level renderer. `document` is intentionally excluded — document structure lives in {@link SpaceBlock}, not occurrences. */
 export type SpaceOccurrenceRenderer = 'canvas' | 'board' | 'collection';
-export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref';
+export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref' | 'space';
 
 export const SPACE_RENDERERS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
 export const SPACE_OCCURRENCE_RENDERERS: readonly SpaceOccurrenceRenderer[] = ['canvas', 'board', 'collection'];
-export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref'];
+export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref', 'space'];
 
 export type Space = {
   id: string;

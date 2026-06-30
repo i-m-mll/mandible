@@ -7,26 +7,42 @@ import {
   addSpaceItem,
   getArtifacts,
   getGraph,
+  listSpacesGrouped,
   type ArtifactRecord,
+  type AddSpaceItemRequest,
   type GraphNode,
+  type Space,
+  type SpaceGroup,
   type SpaceItem,
   type SpaceItemRefType,
 } from '../../api';
 import './SpaceItemPicker.css';
 
+export type PickerRefType = SpaceItemRefType | 'space';
+
 /** One searchable candidate row: a ledger issue, artifact, or existing Space member. */
 export type PickerCandidate = {
   /** Stable key for selection (the ref_type:ref_id pair is unique enough). */
   key: string;
-  ref_type: SpaceItemRefType;
+  ref_type: PickerRefType;
   ref_id: string;
   ref_uri?: string | null;
   title: string;
   /** Human project label for the row (or '' for cross/top-level). */
   projectLabel: string;
+  metadata?: Record<string, unknown>;
   /** Existing membership row, when this candidate is already in the Space. */
   item?: SpaceItem;
 };
+
+export type SpaceItemPickerAddRequest = Omit<AddSpaceItemRequest, 'ref_type'> & {
+  ref_type: PickerRefType;
+};
+
+export type SpaceItemPickerAddItem = (
+  spaceId: string,
+  body: SpaceItemPickerAddRequest,
+) => ReturnType<typeof addSpaceItem>;
 
 export type SpaceItemPickerProps = {
   /** The space items are added to. */
@@ -46,13 +62,26 @@ export type SpaceItemPickerProps = {
   /**
    * Injectable candidate loaders (tests). Default to the real graph/artifact
    * reads. The loaders run once when the picker mounts.
-   */
+  */
   loadIssues?: () => Promise<PickerCandidate[]>;
   loadArtifacts?: () => Promise<PickerCandidate[]>;
+  loadSpaces?: () => Promise<PickerCandidate[]>;
   /** addSpaceItem client (tests); defaults to the real C2 client. */
-  addItem?: typeof addSpaceItem;
+  addItem?: SpaceItemPickerAddItem;
   /** Current Space membership rows; existing members are also picker candidates. */
   existingItems?: SpaceItem[];
+  /** Restrict existing-members rows to these ref types. */
+  existingItemRefTypes?: PickerRefType[];
+  /** Include issue search results. */
+  includeIssues?: boolean;
+  /** Include artifact search results. */
+  includeArtifacts?: boolean;
+  /** Include existing Space targets. */
+  includeSpaces?: boolean;
+  title?: string;
+  searchPlaceholder?: string;
+  emptyLabel?: string;
+  addButtonLabel?: string;
   /** Whether a Space item is already represented in the host renderer view. */
   isItemInView?: (item: SpaceItem) => boolean;
   /** Row status label for existing items already represented in the host view. */
@@ -72,7 +101,7 @@ type LoadState =
 
 const ARTIFACT_FETCH_LIMIT = 200;
 
-function candidateKey(refType: SpaceItemRefType, refId: string): string {
+function candidateKey(refType: PickerRefType, refId: string): string {
   return `${refType}:${refId}`;
 }
 
@@ -117,17 +146,74 @@ export function artifactsToCandidates(records: ArtifactRecord[]): PickerCandidat
   });
 }
 
+function projectLabelForSpace(group: SpaceGroup, space: Space): string {
+  if (group.project_name) return group.project_name;
+  if (group.project_key) return group.project_key;
+  return space.project_id ? 'Project' : 'Top-level';
+}
+
+function spaceTypeLabel(space: Space): string {
+  switch (space.default_renderer) {
+    case 'document':
+      return 'Document';
+    case 'board':
+      return 'Board';
+    case 'collection':
+      return 'Collection';
+    case 'canvas':
+    default:
+      return 'Canvas';
+  }
+}
+
+/** Project grouped Spaces into picker candidates for linked-Space canvas nodes. */
+export function spacesFromGroups(groups: SpaceGroup[], currentProjectId?: string | null): PickerCandidate[] {
+  const candidates: PickerCandidate[] = [];
+  for (const group of groups) {
+    for (const space of group.spaces) {
+      const projectLabel = projectLabelForSpace(group, space);
+      candidates.push({
+        key: candidateKey('space', space.id),
+        ref_type: 'space',
+        ref_id: space.id,
+        title: space.title || 'Untitled Space',
+        projectLabel,
+        metadata: {
+          default_renderer: space.default_renderer,
+          primary_type: space.default_renderer,
+          primary_type_label: spaceTypeLabel(space),
+          project_id: space.project_id,
+          project_key: group.project_key,
+          project_label: projectLabel,
+        },
+      });
+    }
+  }
+  return candidates.sort((left, right) => {
+    const leftSameProject = Boolean(currentProjectId && left.metadata?.project_id === currentProjectId);
+    const rightSameProject = Boolean(currentProjectId && right.metadata?.project_id === currentProjectId);
+    if (leftSameProject !== rightSameProject) return leftSameProject ? -1 : 1;
+    return left.title.localeCompare(right.title);
+  });
+}
+
 /** Project current Space memberships into picker candidates. */
-export function itemsToCandidates(items: SpaceItem[]): PickerCandidate[] {
-  return items.map((item) => ({
-    key: candidateKey(item.ref_type, item.ref_id),
-    ref_type: item.ref_type,
-    ref_id: item.ref_id,
-    ref_uri: item.ref_uri,
-    title: item.title || item.ref_uri || `${item.ref_type}:${item.ref_id}`,
-    projectLabel: 'In this Space',
-    item,
-  }));
+export function itemsToCandidates(
+  items: SpaceItem[],
+  allowedRefTypes?: ReadonlySet<PickerRefType>,
+): PickerCandidate[] {
+  return items
+    .filter((item) => !allowedRefTypes || allowedRefTypes.has(item.ref_type as PickerRefType))
+    .map((item) => ({
+      key: candidateKey(item.ref_type as PickerRefType, item.ref_id),
+      ref_type: item.ref_type as PickerRefType,
+      ref_id: item.ref_id,
+      ref_uri: item.ref_uri,
+      title: item.title || item.ref_uri || `${item.ref_type}:${item.ref_id}`,
+      projectLabel: 'In this Space',
+      metadata: item.metadata,
+      item,
+    }));
 }
 
 /** Default issue loader: cross-project ledger-backed graph read. */
@@ -140,6 +226,12 @@ async function defaultLoadIssues(): Promise<PickerCandidate[]> {
 async function defaultLoadArtifacts(): Promise<PickerCandidate[]> {
   const records = await getArtifacts({ limit: ARTIFACT_FETCH_LIMIT });
   return artifactsToCandidates(records);
+}
+
+/** Default Space loader: grouped list so cross-project/top-level targets carry labels. */
+async function defaultLoadSpaces(projectId: string): Promise<PickerCandidate[]> {
+  const groups = await listSpacesGrouped();
+  return spacesFromGroups(groups, projectId);
 }
 
 /** Case-insensitive title/ref/type filter. */
@@ -162,8 +254,17 @@ export function SpaceItemPicker({
   onClose,
   loadIssues = defaultLoadIssues,
   loadArtifacts = defaultLoadArtifacts,
-  addItem = addSpaceItem,
+  loadSpaces,
+  addItem = addSpaceItem as SpaceItemPickerAddItem,
   existingItems = [],
+  existingItemRefTypes,
+  includeIssues = true,
+  includeArtifacts = true,
+  includeSpaces = false,
+  title = 'Add items',
+  searchPlaceholder = 'Search issues and artifacts by title...',
+  emptyLabel = 'No items available.',
+  addButtonLabel = 'Add',
   isItemInView,
   alreadyInViewLabel = 'Already in this view',
 }: SpaceItemPickerProps): JSX.Element {
@@ -177,7 +278,11 @@ export function SpaceItemPicker({
   useEffect(() => {
     let active = true;
     setLoad({ status: 'loading' });
-    Promise.allSettled([loadIssues(), loadArtifacts()])
+    const loaders: Array<Promise<PickerCandidate[]>> = [];
+    if (includeIssues) loaders.push(loadIssues());
+    if (includeArtifacts) loaders.push(loadArtifacts());
+    if (includeSpaces) loaders.push(loadSpaces ? loadSpaces() : defaultLoadSpaces(_projectId));
+    Promise.allSettled(loaders)
       .then((results) => {
         if (!active) return;
         const candidates: PickerCandidate[] = [];
@@ -195,7 +300,7 @@ export function SpaceItemPicker({
     return () => {
       active = false;
     };
-  }, [loadIssues, loadArtifacts]);
+  }, [loadIssues, loadArtifacts, loadSpaces, includeIssues, includeArtifacts, includeSpaces, _projectId]);
 
   useEffect(() => {
     const closeOnOutsidePointer = (event: PointerEvent) => {
@@ -216,7 +321,8 @@ export function SpaceItemPicker({
 
   const rows = useMemo<PickerRow[]>(() => {
     const map = new Map<string, PickerRow>();
-    for (const itemCandidate of itemsToCandidates(existingItems)) {
+    const allowedRefTypes = existingItemRefTypes ? new Set(existingItemRefTypes) : undefined;
+    for (const itemCandidate of itemsToCandidates(existingItems, allowedRefTypes)) {
       const item = itemCandidate.item;
       map.set(itemCandidate.key, {
         ...itemCandidate,
@@ -226,6 +332,7 @@ export function SpaceItemPicker({
     }
     if (load.status === 'ready') {
       for (const candidate of load.candidates) {
+        if (candidate.ref_type === 'space' && candidate.ref_id === spaceId) continue;
         const existing = map.get(candidate.key);
         if (existing) {
           map.set(candidate.key, {
@@ -242,7 +349,7 @@ export function SpaceItemPicker({
       }
     }
     return [...map.values()];
-  }, [load, existingItems, isItemInView]);
+  }, [load, existingItems, existingItemRefTypes, isItemInView, spaceId]);
 
   const filtered = useMemo(
     () => rows.filter((candidate) => matchesQuery(candidate, query)),
@@ -301,6 +408,7 @@ export function SpaceItemPicker({
             ref_id: candidate.ref_id,
             ref_uri: candidate.ref_uri ?? null,
             title: candidate.title,
+            metadata: candidate.metadata,
           });
           item = response.item;
           if (response.already_present) alreadyPresent += 1;
@@ -338,9 +446,9 @@ export function SpaceItemPicker({
   );
 
   return (
-    <div className="space-item-picker" ref={containerRef} role="dialog" aria-modal="true" aria-label="Add items to this Space" data-testid="space-item-picker">
+    <div className="space-item-picker" ref={containerRef} role="dialog" aria-modal="true" aria-label={`${title} to this Space`} data-testid="space-item-picker">
       <header className="space-item-picker__header">
-        <strong className="space-item-picker__title">Add items</strong>
+        <strong className="space-item-picker__title">{title}</strong>
         {onClose ? (
           <button
             type="button"
@@ -358,7 +466,7 @@ export function SpaceItemPicker({
         className="space-item-picker__search"
         type="search"
         autoFocus
-        placeholder="Search issues and artifacts by title..."
+        placeholder={searchPlaceholder}
         aria-label="Search items to add"
         data-testid="space-item-picker-search"
         value={query}
@@ -374,7 +482,7 @@ export function SpaceItemPicker({
           </div>
         ) : filtered.length === 0 ? (
           <div className="space-item-picker__status" data-testid="space-item-picker-empty">
-            {query.trim() ? 'No items match your search.' : 'No items available.'}
+            {query.trim() ? 'No items match your search.' : emptyLabel}
           </div>
         ) : selectableCount === 0 ? (
           <div className="space-item-picker__status" data-testid="space-item-picker-empty">
@@ -437,7 +545,7 @@ export function SpaceItemPicker({
           disabled={busy || selected.size === 0}
           onClick={() => void handleAdd()}
         >
-          {busy ? 'Adding...' : `Add${selected.size > 0 ? ` (${selected.size})` : ''}`}
+          {busy ? 'Adding...' : `${addButtonLabel}${selected.size > 0 ? ` (${selected.size})` : ''}`}
         </button>
       </footer>
     </div>

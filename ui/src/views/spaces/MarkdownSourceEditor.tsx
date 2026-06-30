@@ -38,6 +38,7 @@ export type MarkdownSourceItemCommand = {
 };
 
 type CaretRange = { start: number; end: number };
+export type MarkdownSourceBoundaryDirection = 'up' | 'down';
 
 export type MarkdownSourceEditorProps = {
   blockId: string;
@@ -50,15 +51,38 @@ export type MarkdownSourceEditorProps = {
   onSelectionChange: (selection: MarkdownSourceSelection | null) => void;
   onItemCommand: (command: MarkdownSourceItemCommand) => void;
   onOpenReference: (ref: string) => void;
+  onBoundaryArrow?: (blockId: string, direction: MarkdownSourceBoundaryDirection) => boolean;
 };
 
 type CallbackSet = Pick<
   MarkdownSourceEditorProps,
-  'onChange' | 'onBlur' | 'onCaretChange' | 'onSelectionChange' | 'onItemCommand' | 'onOpenReference'
+  | 'onChange'
+  | 'onBlur'
+  | 'onCaretChange'
+  | 'onSelectionChange'
+  | 'onItemCommand'
+  | 'onOpenReference'
+  | 'onBoundaryArrow'
 >;
 
 const externalUpdate = Annotation.define<boolean>();
 const BRACKET_REF_PATTERN = /\[((?:artifact|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
+const EMPHASIS_DELIMITERS = ['**', '__', '*', '_'] as const;
+
+type InlineDecoration = {
+  from: number;
+  to: number;
+  decoration: Decoration;
+};
+
+type EmphasisMatch = {
+  from: number;
+  to: number;
+  contentFrom: number;
+  contentTo: number;
+  text: string;
+  strong: boolean;
+};
 
 function findItemCommandRange(
   value: string,
@@ -220,6 +244,85 @@ class RefWidget extends WidgetType {
   }
 }
 
+class EmphasisWidget extends WidgetType {
+  constructor(
+    readonly text: string,
+    readonly strong: boolean,
+    readonly sourceContentStart: number,
+    readonly sourceContentEnd: number,
+    readonly onClick: (sourceOffset: number) => void,
+  ) {
+    super();
+  }
+
+  eq(other: EmphasisWidget): boolean {
+    return (
+      this.text === other.text &&
+      this.strong === other.strong &&
+      this.sourceContentStart === other.sourceContentStart &&
+      this.sourceContentEnd === other.sourceContentEnd
+    );
+  }
+
+  toDOM(): HTMLElement {
+    const node = document.createElement(this.strong ? 'strong' : 'em');
+    node.className = this.strong
+      ? 'spaces-markdown-source__emphasis spaces-markdown-source__emphasis--strong'
+      : 'spaces-markdown-source__emphasis spaces-markdown-source__emphasis--em';
+    node.textContent = this.text || ' ';
+    node.addEventListener('mousedown', (event) => {
+      event.preventDefault();
+      const renderedOffset = renderedClickTextOffset(node, event);
+      this.onClick(this.sourceContentStart + renderedOffset);
+    });
+    return node;
+  }
+
+  ignoreEvent(): boolean {
+    return false;
+  }
+}
+
+function overlapsAny(from: number, to: number, ranges: Array<{ from: number; to: number }>): boolean {
+  return ranges.some((range) => from < range.to && to > range.from);
+}
+
+function findEmphasisMatches(line: string, lineStart: number): EmphasisMatch[] {
+  const matches: EmphasisMatch[] = [];
+  let index = 0;
+  while (index < line.length) {
+    const delimiter = EMPHASIS_DELIMITERS.find((candidate) => line.startsWith(candidate, index));
+    if (!delimiter) {
+      index += 1;
+      continue;
+    }
+
+    const contentStart = index + delimiter.length;
+    const close = line.indexOf(delimiter, contentStart);
+    if (close === -1) {
+      index += delimiter.length;
+      continue;
+    }
+
+    const text = line.slice(contentStart, close);
+    if (text.trim().length === 0) {
+      index += delimiter.length;
+      continue;
+    }
+
+    matches.push({
+      from: lineStart + index,
+      to: lineStart + close + delimiter.length,
+      contentFrom: lineStart + contentStart,
+      contentTo: lineStart + close,
+      text,
+      strong: delimiter.length === 2,
+    });
+    index = close + delimiter.length;
+  }
+  return matches;
+}
+
 function buildDecorations(
   view: EditorView,
   callbacksRef: { current: CallbackSet },
@@ -256,6 +359,9 @@ function buildDecorations(
 
     if (headingActive) continue;
 
+    const lineDecorations: InlineDecoration[] = [];
+    const protectedRanges: Array<{ from: number; to: number }> = [];
+
     BRACKET_REF_PATTERN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = BRACKET_REF_PATTERN.exec(line.text))) {
@@ -265,10 +371,11 @@ function buildDecorations(
       const from = line.from + match.index;
       const to = from + match[0].length;
       if (selectionIntersects(view, from, to)) continue;
-      builder.add(
+      protectedRanges.push({ from, to });
+      lineDecorations.push({
         from,
         to,
-        Decoration.replace({
+        decoration: Decoration.replace({
           widget: new RefWidget(
             parsed.canonical,
             displayResourceRef(parsed.canonical),
@@ -276,8 +383,37 @@ function buildDecorations(
             (canonical) => callbacksRef.current.onOpenReference(canonical),
           ),
         }),
-      );
+      });
     }
+
+    for (const emphasis of findEmphasisMatches(line.text, line.from)) {
+      if (selectionIntersects(view, emphasis.from, emphasis.to)) continue;
+      if (overlapsAny(emphasis.from, emphasis.to, protectedRanges)) continue;
+      lineDecorations.push({
+        from: emphasis.from,
+        to: emphasis.to,
+        decoration: Decoration.replace({
+          widget: new EmphasisWidget(
+            emphasis.text,
+            emphasis.strong,
+            emphasis.contentFrom,
+            emphasis.contentTo,
+            (sourceOffset) => {
+              const pos = Math.max(emphasis.contentFrom, Math.min(emphasis.contentTo, sourceOffset));
+              view.focus();
+              view.dispatch({
+                selection: EditorSelection.cursor(pos),
+                scrollIntoView: true,
+              });
+            },
+          ),
+        }),
+      });
+    }
+
+    lineDecorations
+      .sort((a, b) => a.from - b.from || a.to - b.to)
+      .forEach(({ from, to, decoration }) => builder.add(from, to, decoration));
   }
   return builder.finish();
 }
@@ -356,6 +492,27 @@ function openItemCommand(
   return true;
 }
 
+function handleBoundaryArrow(
+  view: EditorView,
+  blockId: string,
+  direction: MarkdownSourceBoundaryDirection,
+  callbacksRef: { current: CallbackSet },
+): boolean {
+  const callback = callbacksRef.current.onBoundaryArrow;
+  if (!callback) return false;
+  const range = view.state.selection.main;
+  if (!range.empty) return false;
+  const line = view.state.doc.lineAt(range.from);
+  if (direction === 'up' && (line.number !== 1 || range.from !== line.from)) return false;
+  if (
+    direction === 'down' &&
+    (line.number !== view.state.doc.lines || range.from !== line.to)
+  ) {
+    return false;
+  }
+  return callback(blockId, direction);
+}
+
 const editorTheme = EditorView.theme({
   '&': {
     background: 'transparent',
@@ -395,6 +552,7 @@ export function MarkdownSourceEditor({
   onSelectionChange,
   onItemCommand,
   onOpenReference,
+  onBoundaryArrow,
 }: MarkdownSourceEditorProps): JSX.Element {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -406,6 +564,7 @@ export function MarkdownSourceEditor({
     onSelectionChange,
     onItemCommand,
     onOpenReference,
+    onBoundaryArrow,
   });
   callbacksRef.current = {
     onChange,
@@ -414,6 +573,7 @@ export function MarkdownSourceEditor({
     onSelectionChange,
     onItemCommand,
     onOpenReference,
+    onBoundaryArrow,
   };
 
   useLayoutEffect(() => {
@@ -431,6 +591,14 @@ export function MarkdownSourceEditor({
           spellcheck: 'true',
         }),
         keymap.of([
+          {
+            key: 'ArrowUp',
+            run: (view) => handleBoundaryArrow(view, blockId, 'up', callbacksRef),
+          },
+          {
+            key: 'ArrowDown',
+            run: (view) => handleBoundaryArrow(view, blockId, 'down', callbacksRef),
+          },
           {
             key: 'Enter',
             run: (view) => openItemCommand(view, callbacksRef),

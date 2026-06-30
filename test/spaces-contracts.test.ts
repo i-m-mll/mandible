@@ -103,7 +103,7 @@ describe("spaces contract enums", () => {
   it("renderer/ref-type enum constants match their literal unions", () => {
     expect(SPACE_RENDERERS).toEqual(["canvas", "document", "board", "collection"]);
     expect(SPACE_OCCURRENCE_RENDERERS).toEqual(["canvas", "board", "collection"]);
-    expect(SPACE_ITEM_REF_TYPES).toEqual(["issue", "comment", "artifact", "external_ref"]);
+    expect(SPACE_ITEM_REF_TYPES).toEqual(["issue", "comment", "artifact", "external_ref", "space"]);
     // `document` is a Space-level renderer but NOT an occurrence renderer.
     expect(SPACE_OCCURRENCE_RENDERERS).not.toContain("document");
   });

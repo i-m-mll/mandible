@@ -13,6 +13,7 @@ import {
   SpaceItemPicker,
   issuesFromGraph,
   artifactsToCandidates,
+  spacesFromGroups,
   matchesQuery,
   type PickerCandidate,
 } from '../ui/src/views/spaces/SpaceItemPicker';
@@ -53,7 +54,10 @@ vi.mock('@xyflow/react', async () => {
   return { ReactFlow, Background, Controls, Handle, Position, MarkerType };
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 function candidate(over: Partial<PickerCandidate> = {}): PickerCandidate {
   return {
@@ -87,6 +91,49 @@ describe('SpaceItemPicker projection helpers', () => {
     const out = artifactsToCandidates(records);
     expect(out[0]).toMatchObject({ ref_type: 'artifact', ref_id: 'a1', title: 'Chart', projectLabel: 'figure' });
     expect(out[1]).toMatchObject({ ref_id: 'a2', title: 'artifact://a2' });
+  });
+
+  it('projects grouped Spaces with type and project metadata, ordering same-project first', () => {
+    const out = spacesFromGroups([
+      {
+        project_id: null,
+        project_key: null,
+        project_name: null,
+        spaces: [
+          { id: 'top', project_id: null, title: 'Top notes', default_renderer: 'collection', metadata: {} },
+        ],
+      },
+      {
+        project_id: 'other',
+        project_key: 'feedbax',
+        project_name: 'Feedbax',
+        spaces: [
+          { id: 'board-1', project_id: 'other', title: 'Board map', default_renderer: 'board', metadata: {} },
+        ],
+      },
+      {
+        project_id: 'prj1',
+        project_key: 'mandible',
+        project_name: 'Mandible',
+        spaces: [
+          { id: 'doc-1', project_id: 'prj1', title: 'Design doc', default_renderer: 'document', metadata: {} },
+        ],
+      },
+    ] as never, 'prj1');
+    expect(out[0]).toMatchObject({
+      ref_type: 'space',
+      ref_id: 'doc-1',
+      title: 'Design doc',
+      projectLabel: 'Mandible',
+      metadata: {
+        default_renderer: 'document',
+        primary_type: 'document',
+        primary_type_label: 'Document',
+        project_id: 'prj1',
+        project_label: 'Mandible',
+      },
+    });
+    expect(out.map((candidate) => candidate.ref_id)).toEqual(['doc-1', 'board-1', 'top']);
   });
 
   it('matches by title, ref id, and project label', () => {
@@ -195,6 +242,27 @@ describe('SpaceItemPicker component', () => {
     expect(addItem).not.toHaveBeenCalled();
   });
 
+  it('filters existing Space members by allowed ref types', async () => {
+    render(
+      h(SpaceItemPicker, {
+        spaceId: 'sp1',
+        projectId: 'prj1',
+        includeIssues: false,
+        includeArtifacts: false,
+        includeSpaces: false,
+        existingItemRefTypes: ['issue', 'comment', 'artifact', 'external_ref'],
+        existingItems: [
+          { id: 'm1', space_id: 'sp1', ref_type: 'issue', ref_id: 'i1', ref_uri: null, title: 'Visible issue' },
+          { id: 'm2', space_id: 'sp1', ref_type: 'space', ref_id: 'doc-1', ref_uri: null, title: 'Linked doc' },
+        ] as never,
+        addItem: vi.fn(),
+      }),
+    );
+
+    expect(await screen.findByText('Visible issue')).toBeTruthy();
+    expect(screen.queryByText('Linked doc')).toBeNull();
+  });
+
   it('surfaces an add failure without crashing', async () => {
     const addItem = vi.fn().mockRejectedValue(new Error('boom'));
     render(h(SpaceItemPicker, { spaceId: 'sp1', projectId: 'prj1', loadIssues, loadArtifacts, addItem }));
@@ -217,6 +285,75 @@ describe('SpaceItemPicker component', () => {
       }),
     );
     expect(await screen.findByText('Benchmark chart')).toBeTruthy();
+  });
+
+  it('links an existing Space with explicit type and project metadata', async () => {
+    const addItem = vi.fn().mockResolvedValue({
+      item: {
+        id: 'm-space',
+        space_id: 'sp1',
+        ref_type: 'space',
+        ref_id: 'target-doc',
+        ref_uri: null,
+        title: 'Design doc',
+        metadata: { default_renderer: 'document', project_label: 'Mandible' },
+        created_at: 0,
+        updated_at: 0,
+      },
+      created: true,
+      already_present: false,
+    });
+    const afterAdd = vi.fn().mockResolvedValue(undefined);
+    render(
+      h(SpaceItemPicker, {
+        spaceId: 'sp1',
+        projectId: 'prj1',
+        includeIssues: false,
+        includeArtifacts: false,
+        includeSpaces: true,
+        title: 'Link Space',
+        addButtonLabel: 'Link',
+        loadSpaces: async () => [
+          candidate({
+            key: 'space:target-doc',
+            ref_type: 'space',
+            ref_id: 'target-doc',
+            title: 'Design doc',
+            projectLabel: 'Mandible',
+            metadata: {
+              default_renderer: 'document',
+              primary_type: 'document',
+              primary_type_label: 'Document',
+              project_id: 'prj1',
+              project_label: 'Mandible',
+            },
+          }),
+          candidate({ key: 'space:sp1', ref_type: 'space', ref_id: 'sp1', title: 'Current', projectLabel: 'Mandible' }),
+        ],
+        addItem,
+        afterAdd,
+      }),
+    );
+    expect(await screen.findByText('Design doc')).toBeTruthy();
+    expect(screen.queryByText('Current')).toBeNull();
+    fireEvent.click(screen.getByText('Design doc'));
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
+
+    await waitFor(() => expect(addItem).toHaveBeenCalledTimes(1));
+    expect(addItem).toHaveBeenCalledWith('sp1', {
+      ref_type: 'space',
+      ref_id: 'target-doc',
+      ref_uri: null,
+      title: 'Design doc',
+      metadata: {
+        default_renderer: 'document',
+        primary_type: 'document',
+        primary_type_label: 'Document',
+        project_id: 'prj1',
+        project_label: 'Mandible',
+      },
+    });
+    await waitFor(() => expect(afterAdd).toHaveBeenCalledWith(expect.objectContaining({ ref_type: 'space' })));
   });
 });
 
@@ -311,6 +448,143 @@ describe('SpaceCanvas afterAdd placement round trip', () => {
     await waitFor(() => expect(screen.getByTestId('space-canvas-node')).toBeTruthy());
     expect(screen.getByText('Auth flow')).toBeTruthy();
     expect(screen.queryByTestId('space-canvas-shelf')).toBeNull();
+
+    vi.unstubAllGlobals();
+  });
+
+  it('links an existing Space from the canvas toolbar and places it as a node', async () => {
+    const { SpaceCanvas } = await import('../ui/src/views/spaces/SpaceCanvas');
+
+    const newOcc = {
+      id: 'occ-space', space_id: 'sp1', item_id: 'space-item', renderer: 'canvas', x: 0, y: 0,
+      parent_id: null, width: null, height: null, z_index: null, sort_key: null, section_id: null,
+      note: null, metadata: {}, created_at: 0, updated_at: 0,
+    };
+    const newItem = {
+      id: 'space-item',
+      space_id: 'sp1',
+      ref_type: 'space',
+      ref_id: 'target-doc',
+      ref_uri: null,
+      title: 'Design doc',
+      metadata: {
+        default_renderer: 'document',
+        primary_type: 'document',
+        primary_type_label: 'Document',
+        project_id: 'prj1',
+        project_label: 'Mandible',
+      },
+      created_at: 0,
+      updated_at: 0,
+    };
+
+    let itemPostBody: unknown = null;
+    const createOccurrenceCalls: unknown[] = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      if (method === 'GET' && /\/api\/spaces$/.test(url)) {
+        return new Response(
+          JSON.stringify({
+            groups: [
+              {
+                project_id: 'prj1',
+                project_key: 'mandible',
+                project_name: 'Mandible',
+                spaces: [
+                  {
+                    id: 'sp1',
+                    project_id: 'prj1',
+                    title: 'Current canvas',
+                    default_renderer: 'canvas',
+                    metadata: {},
+                    description: null,
+                    created_at: 0,
+                    updated_at: 0,
+                  },
+                  {
+                    id: 'target-doc',
+                    project_id: 'prj1',
+                    title: 'Design doc',
+                    default_renderer: 'document',
+                    metadata: {},
+                    description: null,
+                    created_at: 0,
+                    updated_at: 0,
+                  },
+                ],
+              },
+            ],
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      if (method === 'POST' && /\/api\/spaces\/sp1\/items$/.test(url)) {
+        itemPostBody = JSON.parse(String(init?.body ?? '{}'));
+        return new Response(JSON.stringify({ item: newItem, created: true, already_present: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (method === 'POST' && /\/api\/spaces\/sp1\/occurrences$/.test(url)) {
+        createOccurrenceCalls.push(JSON.parse(String(init?.body ?? '{}')));
+        return new Response(JSON.stringify({ occurrence: newOcc }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('{}', { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    let reloadCount = 0;
+    const loadModel = vi.fn().mockImplementation(async () => {
+      reloadCount += 1;
+      return reloadCount === 1
+        ? { occurrences: [], items: [] }
+        : { occurrences: [newOcc], items: [newItem] };
+    });
+    const fakeSse = {
+      connect: () => {},
+      close: () => {},
+      on: () => () => {},
+      off: () => {},
+    };
+
+    render(
+      h(SpaceCanvas, {
+        spaceId: 'sp1',
+        projectId: 'prj1',
+        renderer: 'canvas' as const,
+        loadModel,
+        createSse: () => fakeSse as never,
+      }),
+    );
+
+    fireEvent.click(await screen.findByTestId('space-canvas-link-space'));
+    fireEvent.click(await screen.findByText('Design doc'));
+    fireEvent.click(screen.getByTestId('space-item-picker-add'));
+
+    await waitFor(() =>
+      expect(itemPostBody).toMatchObject({
+        ref_type: 'space',
+        ref_id: 'target-doc',
+        title: 'Design doc',
+        metadata: {
+          default_renderer: 'document',
+          primary_type: 'document',
+          primary_type_label: 'Document',
+          project_id: 'prj1',
+          project_label: 'Mandible',
+        },
+      }),
+    );
+    await waitFor(() =>
+      expect(createOccurrenceCalls).toContainEqual({
+        item_id: 'space-item',
+        renderer: 'canvas',
+        x: 0,
+        y: 0,
+      }),
+    );
+    await waitFor(() => expect(screen.getByTestId('space-canvas-linked-space-open')).toBeTruthy());
+    expect(screen.getByText('Document')).toBeTruthy();
 
     vi.unstubAllGlobals();
   });

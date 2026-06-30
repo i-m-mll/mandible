@@ -162,9 +162,11 @@
   flex-direction: column;
 }
 
-/* Single name-only line, slightly indented under its header. */
+/* Single typed line, slightly indented under its header. */
 .spaces-tree__space {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
   width: 100%;
   text-align: left;
   padding: 0.28rem 0.75rem 0.28rem 2rem;
@@ -176,7 +178,6 @@
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .spaces-tree__space:hover {
@@ -191,6 +192,25 @@
 
 .spaces-tree__group--top .spaces-tree__space {
   padding-left: 1.2rem;
+}
+
+.spaces-tree__space-type {
+  flex: 0 0 auto;
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 0.95rem;
+  color: var(--text-muted);
+}
+
+.spaces-tree__space--active .spaces-tree__space-type {
+  color: var(--text-primary);
+}
+
+.spaces-tree__space-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* Create chooser popover. */
@@ -224,13 +244,65 @@
   color: var(--text-muted);
 }
 
-.spaces-tree__chooser-field input {
+.spaces-tree__chooser-field input,
+.spaces-tree__chooser-select {
   padding: 0.35rem 0.5rem;
   font-size: 0.8rem;
   color: var(--text-primary);
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: 4px;
+}
+
+.spaces-tree__type-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.3rem;
+}
+
+.spaces-tree__type-option {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.32rem 0.4rem;
+  font-size: 0.73rem;
+  text-align: left;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.spaces-tree__type-option:hover {
+  color: var(--text-primary);
+  border-color: var(--neutral-alpha-16);
+}
+
+.spaces-tree__type-option[data-active='true'] {
+  color: var(--text-primary);
+  background: var(--overlay-selected);
+  border-color: var(--accent-blue);
+}
+
+.spaces-tree__type-indicator {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.spaces-tree__seed-option {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  color: var(--text-primary);
+}
+
+.spaces-tree__seed-option[data-disabled='true'] {
+  color: var(--text-muted);
+  opacity: 0.65;
 }
 
 .spaces-tree__chooser-error {
@@ -264,7 +336,6 @@
   cursor: not-allowed;
 }
 
-/* Seed dialog overlay (mounts the otherwise-orphaned SpaceSeedDialog). */
 .spaces-tree__seed-overlay {
   position: fixed;
   inset: 0;
@@ -273,5 +344,6 @@
   align-items: center;
   justify-content: center;
   padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.45);
+  background: color-mix(in srgb, var(--bg-primary) 72%, transparent);
+  backdrop-filter: blur(2px);
 }

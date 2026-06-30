@@ -20,8 +20,22 @@ import type {
   LedgerIssueTimelineEntry,
 } from '../../api';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
+import { DetailPaneModal } from '../shared/DetailPaneModal';
+import { DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
+type IssueMetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
+type IssueMetadataSection = {
+  title: string;
+  rows: IssueMetadataRow[];
+};
+const ISSUE_METADATA_SCROLL_OWNER_SELECTORS = [
+  '.issues-detail',
+  '.graph-detail-pane',
+  '.space-canvas__inspector',
+  '.spaces-block-editor__inspector',
+  '.ledger-issue-detail',
+];
 type RenderTimelineEntry =
   | LedgerIssueTimelineEntry
   | {
@@ -69,9 +83,11 @@ export function LedgerIssueDetail({
   const [commentText, setCommentText] = useState('');
   const [showComposer, setShowComposer] = useState(false);
   const [actionsOpen, setActionsOpen] = useState(false);
+  const [metadataOpen, setMetadataOpen] = useState(false);
   const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
   const busy = actionInFlight || localBusy;
   const resolvingAuth = detail.auth_requests.find((auth) =>
     (auth.link_type === 'resolves' || auth.link_type === 'fixed_by') &&
@@ -86,15 +102,7 @@ export function LedgerIssueDetail({
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
-  const hasIssueActions = Boolean(
-    (!isInitialDetail && liveSession) ||
-    (!isInitialDetail && onStartAgent) ||
-    onSetStatus ||
-    onAddComment ||
-    onAddToSpace ||
-    detail.auth_requests.length > 0 ||
-    (detail.labels.includes('umbrella') && onShowChildren)
-  );
+  const hasIssueActions = true;
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
     : detail.sync.state === 'pending'
@@ -138,16 +146,21 @@ export function LedgerIssueDetail({
       className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}
       aria-busy={hydrating ? 'true' : 'false'}
     >
-      <header className="ledger-issue-detail__header">
+      <header className="ledger-issue-detail__header" ref={headerRef}>
         <div className="ledger-issue-detail__heading">
-          <div className="ledger-issue-detail__eyebrow">
-            <span>{detail.project.repo_name ?? detail.project.display_name}</span>
-            <code>{detail.display_id}</code>
-            <CopyIssueRefButton detail={detail} />
-            <MetadataDisclosure label="Issue metadata">
-              <MetadataRows rows={issueMetadataRows(detail)} />
-            </MetadataDisclosure>
-          </div>
+          <DetailHeaderIdentity
+            className="ledger-issue-detail__eyebrow"
+            contextLabel={detail.project.repo_name ?? detail.project.display_name}
+            shortId={detail.display_id}
+            copyValue={`${detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name}/${detail.display_id}`}
+          >
+            <StatusPill
+              status={detail.status}
+              resolution={detail.resolution}
+              linkedAuth={resolvingAuth}
+              onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
+            />
+          </DetailHeaderIdentity>
           <div className="ledger-issue-detail__title-row">
             <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
             {hasIssueActions && (
@@ -164,6 +177,7 @@ export function LedgerIssueDetail({
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
                 onAddToSpace={onAddToSpace}
+                onShowMetadata={() => setMetadataOpen(true)}
                 onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
                 onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
               />
@@ -184,18 +198,26 @@ export function LedgerIssueDetail({
             )}
           </div>
         </div>
-        <div className="ledger-issue-detail__header-actions">
-          <StatusPill
-            status={detail.status}
-            resolution={detail.resolution}
-            linkedAuth={resolvingAuth}
-            onOpenAuth={onOpenEntity ? (auth) => onOpenEntity('auth_request', auth.id) : undefined}
-          />
-          {detail.sync.state !== 'clean' && (
+        {detail.sync.state !== 'clean' && (
+          <div className="ledger-issue-detail__header-actions">
             <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
-          )}
-        </div>
+          </div>
+        )}
       </header>
+      <DetailPaneModal
+        open={metadataOpen}
+        onClose={() => setMetadataOpen(false)}
+        titleId="issue-metadata-title"
+        title="Issue metadata"
+        closeLabel="Close issue metadata"
+        excludeAboveRef={headerRef}
+        scrollOwnerSelector={ISSUE_METADATA_SCROLL_OWNER_SELECTORS}
+        scrollLockClassName="issues-detail--metadata-open"
+        className="ledger-issue-detail__metadata-modal"
+        panelClassName="ledger-issue-detail__metadata-panel"
+      >
+        <IssueMetadataContent detail={detail} />
+      </DetailPaneModal>
 
       <section className="ledger-issue-detail__section">
         <div className="ledger-comment-list ledger-timeline-list">
@@ -382,6 +404,7 @@ function IssueActionsMenu({
   onSetStatus,
   onAddComment,
   onAddToSpace,
+  onShowMetadata,
   onShowAuthEvidence,
   onShowChildren,
 }: {
@@ -397,6 +420,7 @@ function IssueActionsMenu({
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
   onAddToSpace?: () => void;
+  onShowMetadata: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
@@ -464,6 +488,14 @@ function IssueActionsMenu({
               Add to Space
             </button>
           )}
+          <button
+            type="button"
+            className="ledger-issue-actions-menu__item"
+            role="menuitem"
+            onClick={() => closeAfter(onShowMetadata)}
+          >
+            Show metadata
+          </button>
           {onShowChildren && (
             <button
               type="button"
@@ -500,32 +532,6 @@ function IssueActionsMenu({
         </div>
       )}
     </div>
-  );
-}
-
-function CopyIssueRefButton({ detail }: { detail: LedgerIssueDetailProjection }): JSX.Element {
-  const [copied, setCopied] = useState(false);
-  const project = detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name;
-  const value = `${project}/${detail.display_id}`;
-  const handleCopy = async () => {
-    try {
-      await copyText(value);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1200);
-    } catch {
-      setCopied(false);
-    }
-  };
-  return (
-    <button
-      type="button"
-      className="ledger-copy-ref-button"
-      title={copied ? 'Copied' : `Copy ${value}`}
-      aria-label={copied ? 'Copied issue reference' : `Copy ${value}`}
-      onClick={() => void handleCopy()}
-    >
-      {copied ? <CheckIcon /> : <CopyIcon />}
-    </button>
   );
 }
 
@@ -812,6 +818,44 @@ function MetadataRows({ rows }: { rows: Array<[string, string]> }): JSX.Element 
   );
 }
 
+function IssueMetadataContent({ detail }: { detail: LedgerIssueDetailProjection }): JSX.Element {
+  const sections = issueMetadataSections(detail);
+  return (
+    <>
+      {sections.map((section) => (
+        <section key={section.title} className="artifact-detail__section ledger-issue-detail__metadata-section">
+          <h3>{section.title}</h3>
+          <IssueMetadataKeyValue rows={section.rows} />
+        </section>
+      ))}
+    </>
+  );
+}
+
+function IssueMetadataKeyValue({ rows }: { rows: IssueMetadataRow[] }): JSX.Element {
+  return (
+    <div className="artifact-detail__kv ledger-issue-detail__metadata-kv">
+      {rows.filter(([, value]) => value).map(([key, value, copyable, copyValue]) => (
+        <div key={key}>
+          <span>{key}</span>
+          {copyable ? (
+            <button
+              type="button"
+              className="artifact-detail__copy-value"
+              onClick={() => void copyText(copyValue ?? value)}
+              title={`Copy ${key}`}
+            >
+              <code>{value}</code>
+            </button>
+          ) : (
+            <code>{value}</code>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function RelationshipList({
   relationships,
   onOpenEntity,
@@ -1035,6 +1079,29 @@ function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, 
   return rows.filter(([, value]) => Boolean(value));
 }
 
+function issueMetadataSections(detail: LedgerIssueDetailProjection): IssueMetadataSection[] {
+  const sourceRows = issueMetadataRows(detail);
+  const copyable = new Set(['Reference', 'Canonical ID', 'Alternate refs']);
+  const rowsByKey = new Map(sourceRows.map(([key, value]) => [
+    key,
+    [key, value, copyable.has(key), copyValueForIssueMetadata(key, value)] as IssueMetadataRow,
+  ]));
+  const pullRows = (keys: string[]) => keys
+    .map((key) => rowsByKey.get(key))
+    .filter((row): row is IssueMetadataRow => Boolean(row));
+  const sections: IssueMetadataSection[] = [
+    { title: 'Identity', rows: pullRows(['Reference', 'Canonical ID', 'Alternate refs', 'Project']) },
+    { title: 'Status', rows: pullRows(['Kind', 'Priority', 'Sync']) },
+    { title: 'Provenance', rows: pullRows(['Source', 'Created', 'Updated', 'Closed']) },
+  ];
+  return sections.filter((section) => section.rows.length > 0);
+}
+
+function copyValueForIssueMetadata(key: string, value: string): string {
+  if (key !== 'Alternate refs') return value;
+  return value.split(',')[0]?.trim() || value;
+}
+
 function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body' }>): Array<[string, string]> {
   return [
     ['Entry', '#0'],
@@ -1185,23 +1252,6 @@ function MetadataIcon(): JSX.Element {
       <circle cx="12" cy="12" r="9" />
       <path d="M12 17v-5" />
       <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-function CopyIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <rect x="9" y="9" width="10" height="10" rx="2" />
-      <path d="M5 15V7a2 2 0 0 1 2-2h8" />
-    </svg>
-  );
-}
-
-function CheckIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M20 6 9 17l-5-5" />
     </svg>
   );
 }

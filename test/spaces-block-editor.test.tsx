@@ -884,6 +884,41 @@ describe('DocumentBlockEditor (editable)', () => {
     await waitFor(() => expect(backend.blocks.get('b1')?.markdown).toBe('## Something\nbody'));
   });
 
+  it('renders inline Markdown emphasis visually while preserving source text', async () => {
+    const backend = makeBackend([
+      makeBlock({
+        id: 'b1',
+        block_type: 'paragraph',
+        sort_key: 'a',
+        markdown: '*one* _two_ **three** __four__',
+      }),
+    ]);
+    await renderEditor({ backend });
+
+    const emphasis = Array.from(sourceHost().querySelectorAll('.spaces-markdown-source__emphasis'));
+    expect(emphasis.map((node) => node.textContent)).toEqual(['one', 'two', 'three', 'four']);
+    expect(sourceHost().querySelectorAll('.spaces-markdown-source__emphasis--em')).toHaveLength(2);
+    expect(sourceHost().querySelectorAll('.spaces-markdown-source__emphasis--strong')).toHaveLength(2);
+    expect(sourceText()).toBe('*one* _two_ **three** __four__');
+  });
+
+  it('reveals raw Markdown emphasis source when the caret enters that span', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: 'A **bold** move' }),
+    ]);
+    await renderEditor({ backend });
+
+    expect(sourceHost().querySelector('.spaces-markdown-source__emphasis--strong')?.textContent)
+      .toBe('bold');
+    expect(sourceHost().textContent).not.toContain('**bold**');
+
+    setSourceSelection(0, 'A **b'.length, 'A **b'.length);
+
+    expect(sourceHost().querySelector('.spaces-markdown-source__emphasis--strong')).toBeNull();
+    expect(sourceHost().textContent).toContain('**bold**');
+    expect(sourceText()).toBe('A **bold** move');
+  });
+
   it('keeps prose Enter focused on an editable following line', async () => {
     const backend = makeBackend([
       makeBlock({ id: 'b1', block_type: 'paragraph', sort_key: 'a', markdown: '' }),
@@ -936,6 +971,79 @@ describe('DocumentBlockEditor (editable)', () => {
 
     expect(screen.queryByText('Write here…')).toBeNull();
     expect(sourceText()).toBe('');
+  });
+
+  it('focuses the final editable block at document end when blank space below content is clicked', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'First block' }),
+      makeBlock({ id: 'b2', sort_key: 'b', markdown: 'Final block' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceSelection(0, 0, 0);
+    const scroller = document.querySelector('.spaces-block-editor__scroller') as HTMLElement;
+    fireEvent.mouseDown(scroller, { button: 0, clientX: 16, clientY: 640 });
+
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(1).contentDOM));
+    expect(sourceView(1).state.selection.main.from).toBe('Final block'.length);
+  });
+
+  it('places the caret at line end when horizontal whitespace beside a line is clicked', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: 'alpha\nbeta' }),
+    ]);
+    await renderEditor({ backend });
+
+    const view = sourceView();
+    vi.spyOn(view, 'lineBlockAtHeight').mockReturnValue({
+      from: 0,
+      to: 'alpha'.length,
+    } as ReturnType<EditorView['lineBlockAtHeight']>);
+    vi.spyOn(view, 'coordsAtPos').mockReturnValue({
+      left: 48,
+      right: 52,
+      top: 0,
+      bottom: 20,
+    });
+
+    fireEvent.mouseDown(screen.getByTestId('spaces-block-editor-row'), {
+      button: 0,
+      clientX: 320,
+      clientY: 10,
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(view.contentDOM));
+    expect(view.state.selection.main.from).toBe('alpha'.length);
+  });
+
+  it('moves arrow focus through legacy empty blocks around headings', async () => {
+    const backend = makeBackend([
+      makeBlock({ id: 'b1', sort_key: 'a', markdown: '' }),
+      makeBlock({ id: 'b2', block_type: 'heading', sort_key: 'b', markdown: 'New heading' }),
+      makeBlock({ id: 'b3', sort_key: 'c', markdown: '' }),
+      makeBlock({ id: 'b4', block_type: 'heading', sort_key: 'd', markdown: '## gad' }),
+    ]);
+    await renderEditor({ backend });
+
+    setSourceSelection(0, 0, 0);
+    fireEvent.keyDown(sourceView(0).contentDOM, { key: 'ArrowDown', code: 'ArrowDown' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(1).contentDOM));
+    expect(sourceView(1).state.selection.main.from).toBe(0);
+
+    setSourceSelection(1, 0, 0);
+    fireEvent.keyDown(sourceView(1).contentDOM, { key: 'ArrowUp', code: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(0).contentDOM));
+    expect(sourceView(0).state.selection.main.from).toBe(0);
+
+    setSourceSelection(1, 'New heading'.length, 'New heading'.length);
+    fireEvent.keyDown(sourceView(1).contentDOM, { key: 'ArrowDown', code: 'ArrowDown' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(2).contentDOM));
+    expect(sourceView(2).state.selection.main.from).toBe(0);
+
+    setSourceSelection(3, 0, 0);
+    fireEvent.keyDown(sourceView(3).contentDOM, { key: 'ArrowUp', code: 'ArrowUp' });
+    await waitFor(() => expect(document.activeElement).toBe(sourceView(2).contentDOM));
+    expect(sourceView(2).state.selection.main.from).toBe(0);
   });
 
   it('opens the shared bottom detail panel for inline issue references', async () => {
@@ -1005,26 +1113,31 @@ describe('DocumentBlockEditor (editable)', () => {
     expect(handle.getAttribute('aria-orientation')).toBe('horizontal');
   });
 
-  it('creates the first prose block via POST /api/spaces/:id/blocks', async () => {
+  it('opens an empty document directly in a blank focused editor', async () => {
     const backend = makeBackend([]);
-    vi.stubGlobal('fetch', backend.fetchImpl);
-    render(
-      <DocumentBlockEditor
-        projectId="prj1"
-        spaceId="sp1"
-        renderer="document"
-        fetchImpl={backend.fetchImpl}
-      />,
-    );
+    await renderEditor({ backend });
 
-    await waitFor(() => expect(screen.getByTestId('spaces-block-editor-empty-author')).toBeTruthy());
-    fireEvent.click(screen.getByText('Start writing'));
+    expect(screen.queryByTestId('spaces-block-editor-empty-author')).toBeNull();
+    expect(screen.queryByText('Start writing')).toBeNull();
     await waitFor(() =>
       expect(backend.calls.some((c) => c.method === 'POST' && /\/blocks$/.test(c.url))).toBe(true),
     );
     const post = backend.calls.find((c) => c.method === 'POST');
     expect((post!.body as { block_type: string }).block_type).toBe('paragraph');
     expect(typeof (post!.body as { sort_key: string }).sort_key).toBe('string');
+    expect(sourceText()).toBe('');
+    await waitFor(() => expect(document.activeElement).toBe(sourceView().contentDOM));
+    expect(sourceView().state.selection.main.from).toBe(0);
+
+    sourceView().contentDOM.blur();
+    fireEvent.mouseDown(screen.getByTestId('spaces-block-editor-row'), {
+      button: 0,
+      clientX: 320,
+      clientY: 10,
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(sourceView().contentDOM));
+    expect(sourceView().state.selection.main.from).toBe(0);
   });
 
   it('edits a prose block and autosaves via PATCH on blur', async () => {

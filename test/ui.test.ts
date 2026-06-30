@@ -854,6 +854,184 @@ describe('AuthQueueView', () => {
     expect(screen.getByText('Force Dismiss')).toBeTruthy();
   });
 
+  it('renders the selected request as a structured detail surface', async () => {
+    stubFetch();
+    const writeText = vi.fn();
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
+    render(
+      h(AuthQueueView, {
+        queue: [
+          {
+            id: 'req-structured-detail',
+            title: 'Structured auth detail',
+            type: 'merge',
+            repo: 'mandible',
+            base_branch: 'main',
+            head_branch: 'feature/detail',
+            status: 'pending',
+            created_at: 1,
+            approval_source: 'manual',
+            approval_lease_id: 'lease-123',
+            stats: { files: 1, additions: 1, deletions: 1 },
+            commit_message: 'Structured auth detail commit',
+            spec_content: 'Structured auth detail specification',
+            diff_summary: [
+              'diff --git a/ui/src/views/auth.tsx b/ui/src/views/auth.tsx',
+              'index 1111111..2222222 100644',
+              '--- a/ui/src/views/auth.tsx',
+              '+++ b/ui/src/views/auth.tsx',
+              '@@ -1,2 +1,2 @@',
+              ' old line',
+              '-removed line',
+              '+added line',
+            ].join('\n'),
+          },
+        ],
+        outputs: {},
+        selectedAuthId: 'req-structured-detail',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+        onUpdateField: () => undefined,
+      }),
+    );
+
+    expect(screen.getByRole('heading', { name: 'Structured auth detail' })).toBeTruthy();
+    expect(document.querySelector('.auth-detail-pane')).toBeTruthy();
+    expect(document.querySelector('.auth-detail-surface')).toBeNull();
+    expect(document.querySelector('.auth-card--expanded')).toBeNull();
+    expect(document.querySelector('.auth-detail__summary-grid')).toBeNull();
+    expect(document.querySelector('.auth-detail__summary-label')).toBeNull();
+    expect(screen.queryByText('Branch flow')).toBeNull();
+    expect(screen.queryByText('Request')).toBeNull();
+    expect(screen.queryByText('Metadata')).toBeNull();
+    expect(document.querySelector('.auth-detail__repo')?.textContent).toBe('mandible');
+    expect(document.querySelector('.auth-detail__short-ref')?.textContent).toBe('req-stru');
+    expect(document.querySelector('.auth-detail__eyebrow .type-badge')).toBeNull();
+    expect(document.querySelector('.auth-detail-meta')).toBeNull();
+    expect(document.querySelector('.auth-detail__header-side')).toBeNull();
+    expect(screen.getByText('merge · feature/detail → main')).toBeTruthy();
+    expect(screen.getByText('Approve')).toBeTruthy();
+
+    const eyebrow = document.querySelector('.auth-detail__eyebrow') as HTMLElement | null;
+    const copyButton = screen.getByRole('button', { name: 'Copy auth:req-stru' });
+    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
+    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+    expect(statusPill?.textContent).toBe('Pending');
+    expect(copyButton.parentElement).toBe(eyebrow);
+    expect(statusPill?.parentElement).toBe(eyebrow);
+    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(document.querySelector('.auth-detail__aux-header .auth-detail__action-strip .auth-actions')).toBeTruthy();
+    const diffToggle = screen.getByRole('button', { name: 'Show changes diff' });
+    expect(diffToggle.closest('.auth-detail__aux-header')).toBeTruthy();
+    expect(diffToggle.getAttribute('aria-pressed')).toBe('false');
+    expect(diffToggle.className).not.toContain('auth-detail__diff-toggle--active');
+    expect(diffToggle.querySelector('rect')).toBeTruthy();
+    expect(diffToggle.querySelectorAll('path').length).toBe(1);
+    expect(document.querySelector('.auth-detail__aux-left')?.contains(diffToggle)).toBe(true);
+    expect(document.querySelector('.auth-detail__action-strip .auth-actions')).toBeTruthy();
+    expect(document.querySelector('.auth-detail__header-actions .auth-actions')).toBeNull();
+    expect(document.querySelector('.auth-detail__header-primary .auth-actions')).toBeNull();
+    const defaultPanels = document.querySelector('.auth-detail__panels') as HTMLElement | null;
+    expect(defaultPanels).toBeTruthy();
+    expect(defaultPanels?.className).toContain('auth-detail__panels--single');
+    expect(defaultPanels?.className).not.toContain('auth-detail__panels--with-actions');
+    expect(document.querySelector('.auth-detail__right-col')).toBeNull();
+    expect(screen.queryByLabelText('Auth request changes')).toBeNull();
+    expect(screen.queryByText('Changes')).toBeNull();
+    expect(screen.getByText('Structured auth detail specification')).toBeTruthy();
+    const commitPanel = screen.getByText('Commit Message').closest('.panel') as HTMLElement | null;
+    expect(commitPanel?.querySelector('.panel__header > .panel__toggle')?.textContent).toContain('Commit Message');
+    expect(commitPanel?.querySelector('.panel__header > .panel__edit-btn')?.textContent).toBe('edit');
+    expect(commitPanel?.querySelector('.panel__toggle .panel__edit-btn')).toBeNull();
+
+    fireEvent.click(copyButton);
+    expect(writeText).toHaveBeenCalledWith('auth:req-stru');
+
+    fireEvent.click(diffToggle);
+    const activeDiffToggle = screen.getByRole('button', { name: 'Hide changes diff' });
+    expect(activeDiffToggle.getAttribute('aria-pressed')).toBe('true');
+    expect(activeDiffToggle.className).toContain('auth-detail__diff-toggle--active');
+    expect(document.querySelector('.auth-detail__panels')).toBeNull();
+    const diffRegion = screen.getByLabelText('Auth request changes');
+    expect(diffRegion).toBeTruthy();
+    expect(diffRegion.getAttribute('data-diff-mode')).toBe('split');
+    expect(screen.getByRole('group', { name: 'Diff layout' })).toBeTruthy();
+    const unifiedMode = screen.getByRole('button', { name: 'Unified' });
+    const splitMode = screen.getByRole('button', { name: 'Split' });
+    expect(unifiedMode.getAttribute('aria-pressed')).toBe('false');
+    expect(splitMode.getAttribute('aria-pressed')).toBe('true');
+    expect(splitMode.className).toContain('auth-detail__diff-mode-button--active');
+    expect(diffRegion.querySelector('.d2h-files-diff')).toBeTruthy();
+    expect(diffRegion.querySelectorAll('.d2h-file-side-diff').length).toBeGreaterThanOrEqual(2);
+    expect(diffRegion.querySelector('.d2h-code-side-linenumber')).toBeTruthy();
+    expect(diffRegion.querySelector('.d2h-code-linenumber')).toBeNull();
+    expect(screen.getAllByText('ui/src/views/auth.tsx').length).toBeGreaterThan(0);
+    expect(diffRegion.textContent).toContain('added line');
+    expect(screen.queryByText('Commit Message')).toBeNull();
+
+    fireEvent.click(unifiedMode);
+    const unifiedDiffRegion = screen.getByLabelText('Auth request changes');
+    expect(unifiedDiffRegion.getAttribute('data-diff-mode')).toBe('unified');
+    expect(screen.getByRole('button', { name: 'Unified' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: 'Split' }).getAttribute('aria-pressed')).toBe('false');
+    expect(unifiedDiffRegion.querySelector('.d2h-file-diff')).toBeTruthy();
+    expect(unifiedDiffRegion.querySelector('.d2h-files-diff')).toBeNull();
+    expect(unifiedDiffRegion.querySelector('.d2h-code-linenumber')).toBeTruthy();
+    expect(unifiedDiffRegion.querySelector('.d2h-code-side-linenumber')).toBeNull();
+    expect(unifiedDiffRegion.querySelector('.line-num1')).toBeTruthy();
+    expect(unifiedDiffRegion.querySelector('.line-num2')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Split' }));
+    expect(screen.getByLabelText('Auth request changes').getAttribute('data-diff-mode')).toBe('split');
+    fireEvent.click(activeDiffToggle);
+    expect(screen.getByRole('button', { name: 'Show changes diff' })).toBeTruthy();
+    expect(document.querySelector('.auth-detail__panels')).toBeTruthy();
+
+    const detailScroller = document.querySelector('.auth-detail') as HTMLElement | null;
+    fireEvent.click(screen.getByRole('button', { name: 'Auth actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Auth metadata' });
+    await waitFor(() => expect(detailScroller?.className).toContain('auth-detail--metadata-open'));
+    expect(document.querySelector('.auth-detail__pane')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.auth-detail__body')?.contains(metadataDialog)).toBe(false);
+    expect(within(metadataDialog).getByText('Approval source')).toBeTruthy();
+    expect(within(metadataDialog).getByText('lease-123')).toBeTruthy();
+  });
+
+  it('shows a clear diff empty state when diff stats exist without diff text', () => {
+    render(
+      h(AuthQueueView, {
+        queue: [
+          {
+            id: 'req-empty-diff',
+            title: 'Empty diff auth',
+            type: 'merge',
+            repo: 'mandible',
+            base_branch: 'main',
+            head_branch: 'feature/empty-diff',
+            status: 'pending',
+            stats: { files: 1, additions: 0, deletions: 0 },
+            commit_message: 'Empty diff commit',
+            spec_content: 'Empty diff specification',
+          },
+        ],
+        outputs: {},
+        selectedAuthId: 'req-empty-diff',
+        onApprove: () => undefined,
+        onReject: () => undefined,
+      }),
+    );
+
+    expect(screen.queryByLabelText('Auth request changes')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Show changes diff' }));
+    expect(screen.getByLabelText('Auth request changes')).toBeTruthy();
+    expect(screen.getByText('No diff available for this request.')).toBeTruthy();
+    expect(document.querySelector('.auth-detail__panels')).toBeNull();
+  });
+
   it('renders deferred action badges and bundle details', async () => {
     const actions = [
       { id: 'act1', auth_request_id: 'req-actions', ordinal: 1, kind: 'issue_close', target_issue_ref: 'abc123', payload: { reason_comment: 'Done' }, state: 'staged', target_digest: null, staged_at: 1, updated_at: 1, applied_at: null, outcome_detail: null },
@@ -885,6 +1063,18 @@ describe('AuthQueueView', () => {
 
     expect(screen.getByTitle('4 deferred actions')).toBeTruthy();
     expect(screen.getByLabelText('Deferred auth actions')).toBeTruthy();
+    expect(screen.getByText('On merge...')).toBeTruthy();
+    expect(screen.queryByText('On merge, this request will also')).toBeNull();
+    const panels = document.querySelector('.auth-detail__panels') as HTMLElement | null;
+    const leftColumn = document.querySelector('.auth-detail__left-col') as HTMLElement | null;
+    const rightColumn = document.querySelector('.auth-detail__right-col') as HTMLElement | null;
+    expect(panels?.className).toContain('auth-detail__panels--with-actions');
+    expect(panels?.className).not.toContain('auth-detail__panels--single');
+    expect(leftColumn?.textContent).toContain('Commit Message');
+    expect(leftColumn?.textContent).toContain('Specification');
+    expect(rightColumn?.querySelector('.auth-action-bundle')).toBeTruthy();
+    expect(rightColumn?.textContent).toContain('On merge...');
+    expect(rightColumn?.textContent).not.toContain('Commit Message');
     expect(screen.getByText('Close issue')).toBeTruthy();
     expect(screen.getByText('Closeout comment body')).toBeTruthy();
     expect(screen.getByText('Add merged')).toBeTruthy();
@@ -1104,7 +1294,8 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
-    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByText('Loading full issue detail; more timeline entries may appear.')).toBeTruthy();
     expect(screen.queryByText('Loading...')).toBeNull();
 
@@ -1136,7 +1327,8 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
-    expect(screen.getByLabelText('Issue metadata')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     const card = document.querySelector('.ledger-comment-card.ledger-timeline-card');
     expect(card).toBeTruthy();
     expect(card?.getAttribute('id')).toBe('comment-0');
@@ -1505,6 +1697,28 @@ describe('API contract helpers', () => {
 });
 
 describe('LedgerIssueDetail', () => {
+  it('renders issue status in the top metadata row after the copy affordance', () => {
+    const detail = issueDetailProjection({
+      displayId: 'abc123',
+      title: 'Status placement',
+    });
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    const eyebrow = document.querySelector('.ledger-issue-detail__eyebrow') as HTMLElement | null;
+    const copyButton = screen.getByRole('button', { name: 'Copy mandible/abc123' });
+    const statusPill = eyebrow?.querySelector('.status-pill') as HTMLElement | null;
+    const eyebrowChildren = Array.from(eyebrow?.children ?? []);
+
+    expect(eyebrow).toBeTruthy();
+    expect(statusPill?.textContent).toBe('open');
+    expect(copyButton.parentElement).toBe(eyebrow);
+    expect(statusPill?.parentElement).toBe(eyebrow);
+    expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
+    expect(document.querySelector('.ledger-issue-detail__title-row .status-pill')).toBeNull();
+    expect(document.querySelector('.ledger-issue-detail__header-actions .status-pill')).toBeNull();
+  });
+
   it('renders ledger issue evidence and sanitizes Markdown HTML', () => {
     const detail = {
       id: 'issue_1',
@@ -1880,7 +2094,7 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
   });
 
-  it('keeps issue and comment provenance behind metadata controls', () => {
+  it('keeps issue and comment provenance behind metadata controls', async () => {
     const now = Date.now();
     const detail = {
       id: 'issue_1',
@@ -1936,7 +2150,81 @@ describe('LedgerIssueDetail', () => {
     expect(issueVisibleMeta).toContain('MLL');
     expect(issueVisibleMeta).not.toContain('git_bug');
     expect(issueVisibleMeta).not.toContain('umbrella');
-    expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeTruthy();
+    expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeNull();
+    const detailScroller = document.querySelector('.ledger-issue-detail') as HTMLElement | null;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 800, configurable: true });
+    const originalClosest = HTMLElement.prototype.closest;
+    const closestSpy = vi.spyOn(HTMLElement.prototype, 'closest').mockImplementation(function closestIssueOwner(selector: string) {
+      if (selector === '.issues-detail' && this.classList.contains('ledger-issue-detail__header')) {
+        return detailScroller;
+      }
+      return originalClosest.call(this, selector);
+    });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getIssueRect() {
+      if (this.classList.contains('ledger-issue-detail')) {
+        return {
+          x: 300,
+          y: 0,
+          top: 0,
+          right: 1180,
+          bottom: 800,
+          left: 300,
+          width: 880,
+          height: 800,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList.contains('ledger-issue-detail__header')) {
+        return {
+          x: 300,
+          y: 0,
+          top: 0,
+          right: 1180,
+          bottom: 176,
+          left: 300,
+          width: 880,
+          height: 176,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    if (detailScroller) detailScroller.scrollTop = 320;
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const issueMetadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
+    await waitFor(() => expect(detailScroller?.className).toContain('issues-detail--metadata-open'));
+    expect(detailScroller?.scrollTop).toBe(320);
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('176px');
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('300px');
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('100px');
+    expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('0px');
+    expect(within(issueMetadataDialog).getByText('Identity')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('Status')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('Provenance')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('abc123')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('umbrella')).toBeTruthy();
+    expect(within(issueMetadataDialog).getByText('git_bug')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
+    await waitFor(() => expect(detailScroller?.className).not.toContain('issues-detail--metadata-open'));
+    rectSpy.mockRestore();
+    closestSpy.mockRestore();
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
 
     const commentHeader = document.querySelectorAll('.ledger-comment-card__header')[1];
     const commentVisibleMeta = Array.from(commentHeader?.querySelectorAll(':scope > span, :scope > time') ?? [])
@@ -1946,6 +2234,80 @@ describe('LedgerIssueDetail', () => {
     expect(commentVisibleMeta).not.toContain('external adapter');
     expect(commentVisibleMeta).not.toContain('git_bug');
     expect(commentHeader?.querySelector('[aria-label="Comment metadata"]')).toBeTruthy();
+  });
+
+  it('scopes issue metadata to embedded graph detail panes', async () => {
+    const detail = issueDetailProjection({
+      displayId: 'embed123',
+      title: 'Embedded metadata',
+    });
+
+    render(h('div', { class: 'graph-detail-pane' }, h(LedgerIssueDetail, { detail })));
+
+    const graphPane = document.querySelector('.graph-detail-pane') as HTMLElement | null;
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { value: 1200, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 760, configurable: true });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getEmbeddedIssueRect() {
+      if (this.classList.contains('graph-detail-pane')) {
+        return {
+          x: 720,
+          y: 80,
+          top: 80,
+          right: 1180,
+          bottom: 740,
+          left: 720,
+          width: 460,
+          height: 660,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList.contains('ledger-issue-detail__header')) {
+        return {
+          x: 720,
+          y: 80,
+          top: 80,
+          right: 1180,
+          bottom: 196,
+          left: 720,
+          width: 460,
+          height: 116,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    if (graphPane) graphPane.scrollTop = 144;
+
+    fireEvent.click(screen.getByLabelText('Issue actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
+
+    await waitFor(() => expect(graphPane?.className).toContain('issues-detail--metadata-open'));
+    expect(graphPane?.scrollTop).toBe(144);
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('196px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('720px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('20px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('20px');
+    expect(within(metadataDialog).getByText('embed123')).toBeTruthy();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
+    await waitFor(() => expect(graphPane?.className).not.toContain('issues-detail--metadata-open'));
+    rectSpy.mockRestore();
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
   });
 
   it('keeps issue actions in the header overflow menu while preserving the comment composer button', () => {
@@ -2003,6 +2365,7 @@ describe('LedgerIssueDetail', () => {
 
     expect(screen.getByText('Start Agent')).toBeTruthy();
     expect(screen.getByText('Close Issue')).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getAllByText('Add Comment')).toHaveLength(2);
   });
 });
@@ -2244,6 +2607,8 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     });
     vi.stubGlobal('fetch', mockFetch);
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
 
     render(h(ArtifactsView, { initialArtifactId: artifact.id }));
 
@@ -2258,8 +2623,7 @@ describe('ArtifactsView', () => {
     expect(sidebarItem.textContent).not.toContain('pinned');
     expect(sidebarItem.querySelector('.artifacts-sidebar__badges')).toBeNull();
     const sidebarMeta = sidebarItem.querySelector('.artifacts-sidebar__meta');
-    expect(sidebarMeta?.textContent).toContain('mandible');
-    expect(sidebarMeta?.textContent).toContain('reports/demo-report.md');
+    expect(sidebarMeta?.textContent).toContain('demo-re');
     expect(sidebarMeta?.textContent).toContain('report');
     const filterButton = screen.getByLabelText('Artifact filters');
     expect(filterButton.textContent).not.toContain('⋯');
@@ -2268,14 +2632,106 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('claim')).toBeTruthy();
     expect(screen.getByText('indexed')).toBeTruthy();
     const sectionHeadings = Array.from(document.querySelectorAll('.artifact-detail__section h3')).map((node) => node.textContent);
-    expect(sectionHeadings.slice(0, 3)).toEqual(['Identity', 'Custody', 'Preview']);
-    expect(sectionHeadings.indexOf('Preview')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
+    expect(screen.queryByRole('heading', { name: 'Preview' })).toBeNull();
+    expect(sectionHeadings).not.toContain('Identity');
+    expect(sectionHeadings).not.toContain('Custody');
+    expect(sectionHeadings[0]).toBe('Links');
+    expect(sectionHeadings.indexOf('Links')).toBeLessThan(sectionHeadings.indexOf('Knowledge Backrefs'));
     expect(screen.getByLabelText('Artifact version')).toBeTruthy();
     expect(screen.queryByText('Version')).toBeNull();
+    expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
+    expect(detailHeader?.textContent).toContain('demo-rep');
+    expect(detailHeader?.textContent).toContain('managed · report');
+    expect(detailHeader?.textContent).toContain('Created:');
+    expect(detailHeader?.textContent).toContain('Updated:');
+    const seriesCopyButton = screen.getByLabelText('Copy artifact series ref');
+    fireEvent.click(seriesCopyButton);
+    fireEvent.pointerUp(seriesCopyButton);
+    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-re');
+    expect(seriesCopyButton.className).not.toContain('active');
+    expect(document.activeElement).not.toBe(seriesCopyButton);
+    const artifactCopyButton = screen.getByLabelText('Copy selected artifact ref');
+    fireEvent.click(artifactCopyButton);
+    fireEvent.pointerUp(artifactCopyButton);
+    expect(writeText).toHaveBeenCalledWith('artifact-series:demo-re@1');
+    expect(artifactCopyButton.className).not.toContain('active');
+    expect(document.activeElement).not.toBe(artifactCopyButton);
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     fireEvent.click(screen.getByLabelText('Artifact actions'));
+    const actionsMenu = screen.getByRole('menu');
+    expect(actionsMenu.className).toContain('artifact-detail__actions-menu');
+    expect((actionsMenu as HTMLElement).style.top).toBeTruthy();
+    expect((actionsMenu as HTMLElement).style.left).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Add to Space' })).toBeTruthy();
+    expect(screen.getByRole('menuitem', { name: 'Show metadata' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: 'Version history' })).toBeTruthy();
+    const detailScroller = document.querySelector('.artifacts-detail');
+    const originalInnerWidth = window.innerWidth;
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: 900, configurable: true });
+    const rectSpy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function getArtifactRect() {
+      if (this.classList.contains('artifacts-detail')) {
+        return {
+          x: 376,
+          y: 0,
+          top: 0,
+          right: 1123,
+          bottom: 900,
+          left: 376,
+          width: 747,
+          height: 900,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      if (this.classList.contains('artifact-detail__header')) {
+        return {
+          x: 376,
+          y: 0,
+          top: 0,
+          right: 1123,
+          bottom: 219,
+          left: 376,
+          width: 747,
+          height: 219,
+          toJSON: () => ({}),
+        } as DOMRect;
+      }
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+        left: 0,
+        width: 0,
+        height: 0,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    if (detailScroller) detailScroller.scrollTop = 480;
+    expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open');
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    await waitFor(() => expect(detailScroller?.className).toContain('artifacts-detail--metadata-open'));
+    expect(detailScroller?.scrollTop).toBe(480);
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('219px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('376px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('317px');
+    expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('0px');
+    expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
+    expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
+    expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
+    expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
+    fireEvent.click(within(metadataDialog).getByText('aaaaaaa').closest('button') as HTMLButtonElement);
+    expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaa');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
+    await waitFor(() => expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open'));
+    rectSpy.mockRestore();
+    Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
+    Object.defineProperty(window, 'innerHeight', { value: originalInnerHeight, configurable: true });
     const pinnedBadge = document.querySelector('a.artifact-link-badge--pinned') as HTMLAnchorElement | null;
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
@@ -2575,16 +3031,69 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(listUrl).toContain('summary=true'));
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
-    await waitFor(() => expect(screen.getByText('Loading preview...')).toBeTruthy());
-    expect(screen.getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
+    await waitFor(() => expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0));
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
 
-    resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
-      headers: { 'content-type': 'application/json' },
-    }));
+    await act(async () => {
+      resolveDetail(new Response(JSON.stringify({ artifact: fullArtifact }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    });
 
-    await waitFor(() => expect(screen.getByText('Locators')).toBeTruthy());
-    expect(screen.getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
-    expect(screen.getByText('Loading preview...')).toBeTruthy();
+    await waitFor(() => expect(screen.queryByText('Locators')).toBeNull());
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const hydratedMetadata = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    await waitFor(() => expect(within(hydratedMetadata).getByText('Locators')).toBeTruthy());
+    expect(within(hydratedMetadata).getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
+    expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0);
+  });
+
+  it('keeps artifact overlays scoped and layered by CSS contract', () => {
+    const css = readFileSync('ui/src/style.css', 'utf8');
+    expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
+    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.detail-pane-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--detail-pane-modal-top\);[^}]*right:\s*var\(--detail-pane-modal-right\);[^}]*bottom:\s*var\(--detail-pane-modal-bottom\);[^}]*left:\s*var\(--detail-pane-modal-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
+    expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
+    expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/\.artifact-detail__copy-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s);
+    expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);
+  });
+
+  it('keeps auth light detail surfaces visually separated by CSS contract', () => {
+    const css = readFileSync('ui/src/style.css', 'utf8');
+    expect(css).toMatch(/\.app-content::before\s*\{[^}]*z-index:\s*0;/s);
+    expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
+    expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
+    expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;/s);
+    expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
+    expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+    expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
+    expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
+    expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
+    expect(css).toMatch(/\.auth-detail__panels--single\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);/s);
+    expect(css).toMatch(/\.auth-detail__right-col\s*\{[^}]*align-self:\s*start;/s);
+    expect(css).toMatch(/\.auth-detail__right-col \.auth-action-bundle\s*\{[^}]*margin-top:\s*0;/s);
+    expect(css).toMatch(/\.auth-diff-file \.d2h-code-wrapper\s*\{[^}]*max-width:\s*100%;[^}]*overflow:\s*auto hidden;/s);
+    expect(css).toMatch(/\.auth-diff-file \.d2h-diff-table\s*\{[^}]*min-width:\s*100%;[^}]*width:\s*max-content;/s);
+    expect(css).toMatch(/\.auth-diff-file \.d2h-cntx,\s*\.auth-diff-file \.d2h-ins,\s*\.auth-diff-file \.d2h-del,\s*\.auth-diff-file \.d2h-info\s*\{[^}]*height:\s*18px;[^}]*padding-bottom:\s*0;[^}]*padding-top:\s*0;[^}]*white-space:\s*nowrap;/s);
+    expect(css).toMatch(/\.auth-diff-file \.d2h-code-line,\s*\.auth-diff-file \.d2h-code-side-line\s*\{[^}]*display:\s*flex;[^}]*height:\s*18px;[^}]*line-height:\s*18px;[^}]*overflow:\s*visible;[^}]*white-space:\s*normal;/s);
+    expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-ctn\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 auto;[^}]*overflow-wrap:\s*normal;[^}]*white-space:\s*pre;[^}]*word-break:\s*normal;/s);
+    expect(css).toMatch(/\.auth-diff-file \.d2h-code-line-prefix\s*\{[^}]*display:\s*inline-block;[^}]*flex:\s*0 0 12px;[^}]*line-height:\s*18px;/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__header\s*\{[^}]*background:\s*#ffffff;[^}]*box-shadow:\s*none;/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.panel,\s*:root\[data-theme='light'\]\s+\.auth-detail__body\s+\.auth-action-bundle\s*\{[^}]*background:\s*#ffffff;[^}]*border:\s*1px solid var\(--neutral-alpha-08\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.auth-action-row--staged\s*\{[^}]*border-color:\s*rgba\(148, 163, 184, 0\.24\);[^}]*background:\s*rgba\(248, 250, 252, 0\.92\);/s);
   });
 
   it('keeps artifact facet options available after selecting a facet value', async () => {
@@ -2784,7 +3293,9 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
     expect(screen.getByText('sidebar-first.md')).toBeTruthy();
-    expect(screen.getByText(ref)).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(ref)).toBeTruthy();
   });
 
   it('pins legacy artifact deep links to the exact resolved version', async () => {
@@ -2848,7 +3359,8 @@ describe('ArtifactsView', () => {
     expect(versionRefs).toContain(v1.id);
     await waitFor(() => expect(versionRefs).toContain(artifactSeries.summary.ref));
     expect(versionRefs).not.toContain(`artifact-series:${artifactSeries.summary.ref}`);
-    expect(screen.getByText(artifactSeries.summary.ref)).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(artifactSeries.summary.ref)).toBeTruthy();
   });
 
   it('keeps artifact-series @latest refs latest-tracking and shows the resolver warning badge', async () => {
@@ -2903,6 +3415,61 @@ describe('ArtifactsView', () => {
     expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
   });
 
+  it('keeps artifact detail mounted while switching versions', async () => {
+    const v1 = makeArtifactFixture('1', 'stable-v1.md');
+    const v2 = makeArtifactFixture('2', 'stable-v2.md');
+    const artifactSeries = makeArtifactSeries('stable-series', [v1, v2], 'stable-report.md');
+    let resolveV2Detail: (response: Response) => void = () => undefined;
+    const v2Detail = new Promise<Response>((resolve) => {
+      resolveV2Detail = resolve;
+    });
+    const contentCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        const artifact = url.includes(encodeURIComponent(v1.id)) ? v1 : v2;
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'text',
+            media_type: 'text/plain',
+            size_bytes: artifact.id.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: artifact.metadata.title, truncated: false },
+            download: { available: true, media_type: 'text/plain', size_bytes: artifact.id.length, filename: null },
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(v1.id))) return jsonResponse({ artifact: v1 });
+      if (url.includes(encodeURIComponent(v2.id))) return v2Detail;
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialSeriesRef: artifactSeries.summary.ref, initialVersionNo: 1 }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md'));
+    await waitFor(() => expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0));
+
+    changeSelect(screen.getByLabelText('Artifact version') as HTMLSelectElement, '2');
+
+    await waitFor(() => expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('2'));
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md');
+    expect(screen.queryByText('Loading artifact...')).toBeNull();
+    expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0);
+
+    resolveV2Detail(new Response(JSON.stringify({ artifact: v2 }), {
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v2.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(v2.id)))).toBe(true));
+  });
+
   it('keeps pinned version and open history stable when the series sidebar refetches with a newer latest', async () => {
     const v1 = makeArtifactFixture('c', 'pinned-v1.md');
     const v2 = makeArtifactFixture('d', 'pinned-v2.md');
@@ -2952,9 +3519,10 @@ describe('ArtifactsView', () => {
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('pinned-v1.md');
     expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('1');
     expect(screen.getAllByText('v1').length).toBeGreaterThan(0);
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: /pinned-report\.md/ }).textContent).toContain('v3');
-    });
+    const pinnedRow = screen.getByRole('button', { name: /pinned-report\.md/ });
+    expect(pinnedRow.textContent).toContain('pinned-');
+    expect(pinnedRow.textContent).toContain('report');
+    expect(pinnedRow.textContent).not.toContain('v3');
   });
 
   it('ignores self-written series hash updates but reconciles external series changes', async () => {

@@ -16,6 +16,12 @@ Prefix resolution must report `ambiguous` when multiple artifacts match and
 `unresolved` when none match; it must not guess or create a new hash-only
 artifact from a short prefix.
 
+Living logical artifact links should use `artifact-series:<prefix>` once the
+series prefix is long enough to resolve unambiguously. Pinned selected versions
+should use `artifact-series:<prefix>@<n>` when the version number is known, or
+`artifact-version:<prefix>` when the opaque version row is the available
+authority. Immutable byte references should use `artifact:<hash-prefix>`.
+
 ## Repo-Local Artifacts
 
 Tracked, clean repo files are recoverable from Git when the ref is immutable and

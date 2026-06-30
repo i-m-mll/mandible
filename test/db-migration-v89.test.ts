@@ -108,11 +108,11 @@ function indexNames(target: Db, table: string): Set<string> {
 }
 
 describe("migration v89: artifact_links typed-series columns", () => {
-  it("advances CURRENT_SCHEMA_VERSION to 89 with a valid contiguous sequence", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(89);
+  it("keeps v89 in the contiguous migration sequence", () => {
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(89);
     expect(() => assertMigrationSequence()).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toMatchObject({
-      value: "89",
+      value: String(CURRENT_SCHEMA_VERSION),
     });
   });
 
@@ -250,7 +250,7 @@ describe("migration v89: artifact_links typed-series columns", () => {
     }).sql;
     expect(sqlAfter).toBe(sqlBefore);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toMatchObject({
-      value: "89",
+      value: String(CURRENT_SCHEMA_VERSION),
     });
   });
 

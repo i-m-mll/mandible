@@ -1,9 +1,9 @@
 // Spaces home sidebar tests (umbrella de56ffa, child 6a4a69a).
 //
 // Covers the cohesive Spaces-home interaction the sidebar owns: grouped tree
-// render (top-level group above project headers, name-only space lines), live
-// filter, foldable headers, drag-reorder persistence, the bare "+" create flow
-// (blank + seeded → SpaceSeedDialog mount), selection navigation, and the
+// render (top-level group above project headers, typed space lines), live
+// filter, foldable headers, drag-reorder persistence, the bare "+" typed create
+// flow (including optional post-create seeding), selection navigation, and the
 // sidebarHidden contract.
 import { readFileSync } from 'node:fs';
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
@@ -25,12 +25,17 @@ import type { Space, SpaceGroup } from '../ui/src/api';
 
 const spacesSidebarStylesheet = readFileSync('ui/src/views/spaces/SpacesSidebar.css', 'utf8');
 
-function makeSpace(id: string, title: string, projectId: string | null): Space {
+function makeSpace(
+  id: string,
+  title: string,
+  projectId: string | null,
+  defaultRenderer: Space['default_renderer'] = 'collection',
+): Space {
   return {
     id,
     project_id: projectId,
     title,
-    default_renderer: 'collection',
+    default_renderer: defaultRenderer,
     description: null,
     metadata: {},
     created_at: 0,
@@ -40,18 +45,18 @@ function makeSpace(id: string, title: string, projectId: string | null): Space {
 
 function sampleGroups(): SpaceGroup[] {
   return [
-    { project_id: null, project_key: null, project_name: null, spaces: [makeSpace('t1', 'Global notes', null)] },
+    { project_id: null, project_key: null, project_name: null, spaces: [makeSpace('t1', 'Global notes', null, 'canvas')] },
     {
       project_id: 'proj-a',
       project_key: 'alpha',
       project_name: 'Alpha',
-      spaces: [makeSpace('a1', 'Roadmap', 'proj-a'), makeSpace('a2', 'Backlog', 'proj-a')],
+      spaces: [makeSpace('a1', 'Roadmap', 'proj-a', 'document'), makeSpace('a2', 'Backlog', 'proj-a')],
     },
     {
       project_id: 'proj-b',
       project_key: 'beta',
       project_name: 'Beta',
-      spaces: [makeSpace('b1', 'Beta board', 'proj-b')],
+      spaces: [makeSpace('b1', 'Beta board', 'proj-b', 'board')],
     },
   ];
 }
@@ -89,7 +94,7 @@ afterEach(() => {
 });
 
 describe('SpacesSidebar render + grouping', () => {
-  it('renders the top-level group above the project headers with name-only space lines', async () => {
+  it('renders the top-level group above the project headers with compact type indicators', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     render(<SpacesSidebar onSelectSpace={vi.fn()} loadGroups={loadGroups} />);
 
@@ -97,9 +102,15 @@ describe('SpacesSidebar render + grouping', () => {
     expect(screen.getByTestId('spaces-group-top-level')).toBeTruthy();
     expect(screen.getByText('Alpha')).toBeTruthy();
     expect(screen.getByText('Beta')).toBeTruthy();
-    // Space rows are single name-only lines.
+    // Space rows carry accessible primary-type icons, not abbreviation text.
     expect(screen.getByText('Roadmap')).toBeTruthy();
     expect(screen.getByText('Backlog')).toBeTruthy();
+    const canvasTypeIcon = screen.getByTestId('space-row-type-t1');
+    expect(canvasTypeIcon.getAttribute('aria-label')).toBe('Canvas space type');
+    expect(canvasTypeIcon.className).toContain('spaces-tree__space-type');
+    expect(screen.getByTestId('space-row-type-a1').getAttribute('aria-label')).toBe('Document space type');
+    expect(screen.getByTestId('space-row-type-b1').getAttribute('aria-label')).toBe('Board space type');
+    expect(canvasTypeIcon.textContent).toBe('');
 
     // Top-level group sits above the first project group in DOM order.
     const scroll = screen.getByTestId('spaces-tree-scroll');
@@ -215,9 +226,9 @@ describe('SpacesSidebar create flow', () => {
     );
   });
 
-  it('creates a blank space in a project and selects it', async () => {
+  it('creates a typed document space in a project and selects it canonically', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
-    const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('new1', 'New one', 'proj-a'));
+    const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('new1', 'New one', 'proj-a', 'document'));
     const onSelectSpace = vi.fn();
     render(
       <SpacesSidebar onSelectSpace={onSelectSpace} loadGroups={loadGroups} createSpaceFn={createSpaceFn} />,
@@ -226,21 +237,34 @@ describe('SpacesSidebar create flow', () => {
 
     fireEvent.click(screen.getByTestId('create-in-proj-a'));
     fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'New one' } });
-    fireEvent.click(screen.getByTestId('space-create-blank'));
+    expect(screen.queryByText('Blank space')).toBeNull();
+    expect(screen.getByTestId('space-create-type-canvas').textContent).toContain('Canvas');
+    expect(screen.getByTestId('space-create-type-document').textContent).toContain('Document');
+    expect((screen.getByTestId('space-create-seed-toggle') as HTMLInputElement).disabled).toBe(false);
+    fireEvent.click(screen.getByTestId('space-create-type-document'));
+    expect((screen.getByTestId('space-create-seed-toggle') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('space-create-type-board'));
+    expect((screen.getByTestId('space-create-seed-toggle') as HTMLInputElement).disabled).toBe(true);
+    fireEvent.click(screen.getByTestId('space-create-type-document'));
+    fireEvent.click(screen.getByTestId('space-create-submit'));
 
     await waitFor(() =>
-      expect(createSpaceFn).toHaveBeenCalledWith({ project_id: 'proj-a', title: 'New one' }),
+      expect(createSpaceFn).toHaveBeenCalledWith({
+        project_id: 'proj-a',
+        title: 'New one',
+        default_renderer: 'document',
+      }),
     );
     await waitFor(() =>
       expect(onSelectSpace).toHaveBeenCalledWith({
         projectId: 'proj-a',
         spaceId: 'new1',
-        renderer: 'collection',
+        renderer: null,
       }),
     );
   });
 
-  it('creates a top-level space from the search-bar + (project_id null)', async () => {
+  it('creates a top-level canvas space from the search-bar + (project_id null)', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('top9', 'Topper', null));
     const onSelectSpace = vi.fn();
@@ -251,10 +275,14 @@ describe('SpacesSidebar create flow', () => {
 
     fireEvent.click(screen.getByTestId('create-top-level'));
     fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'Topper' } });
-    fireEvent.click(screen.getByTestId('space-create-blank'));
+    fireEvent.click(screen.getByTestId('space-create-submit'));
 
     await waitFor(() =>
-      expect(createSpaceFn).toHaveBeenCalledWith({ project_id: null, title: 'Topper' }),
+      expect(createSpaceFn).toHaveBeenCalledWith({
+        project_id: null,
+        title: 'Topper',
+        default_renderer: 'canvas',
+      }),
     );
     await waitFor(() =>
       expect(onSelectSpace).toHaveBeenCalledWith(
@@ -263,9 +291,9 @@ describe('SpacesSidebar create flow', () => {
     );
   });
 
-  it('seed path creates the space then mounts SpaceSeedDialog; onSeeded selects it', async () => {
+  it('opens the second seed dialog after creating a compatible seeded type', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
-    const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('seed1', 'Seeded', 'proj-a'));
+    const createSpaceFn = vi.fn().mockResolvedValue(makeSpace('seed1', 'Seeded', 'proj-a', 'collection'));
     seedSpace.mockResolvedValue({ space_id: 'seed1', added: 0 });
     const onSelectSpace = vi.fn();
     render(
@@ -275,14 +303,21 @@ describe('SpacesSidebar create flow', () => {
 
     fireEvent.click(screen.getByTestId('create-in-proj-a'));
     fireEvent.input(screen.getByTestId('space-create-title'), { target: { value: 'Seeded' } });
-    fireEvent.click(screen.getByTestId('space-create-seed'));
+    fireEvent.click(screen.getByTestId('space-create-type-collection'));
+    fireEvent.click(screen.getByTestId('space-create-seed-toggle'));
+    fireEvent.click(screen.getByTestId('space-create-submit'));
 
     await waitFor(() =>
-      expect(createSpaceFn).toHaveBeenCalledWith({ project_id: 'proj-a', title: 'Seeded' }),
+      expect(createSpaceFn).toHaveBeenCalledWith({
+        project_id: 'proj-a',
+        title: 'Seeded',
+        default_renderer: 'collection',
+      }),
     );
-    // The orphaned dialog is now mounted with the created space id.
+    expect(await screen.findByTestId('space-create-seed-overlay')).toBeTruthy();
     const dialog = await screen.findByTestId('space-seed-dialog');
     expect(dialog).toBeTruthy();
+    expect(dialog.getAttribute('role')).toBe('dialog');
 
     // Submit the seed (filter source is default; add no chip → seed via the
     // dialog's own submit which calls seedSpace). We drive the seed through the
@@ -367,7 +402,7 @@ describe('SpacesSidebar create popover outside-click (containerRef)', () => {
 });
 
 describe('SpacesSidebar selection', () => {
-  it('marks the active space and navigates on click with project + renderer', async () => {
+  it('marks the active space and navigates on click without emitting renderer=', async () => {
     const loadGroups = vi.fn().mockResolvedValue(sampleGroups());
     const onSelectSpace = vi.fn();
     render(<SpacesSidebar selectedSpaceId="a1" onSelectSpace={onSelectSpace} loadGroups={loadGroups} />);
@@ -380,7 +415,7 @@ describe('SpacesSidebar selection', () => {
     expect(onSelectSpace).toHaveBeenCalledWith({
       projectId: 'proj-b',
       spaceId: 'b1',
-      renderer: 'collection',
+      renderer: null,
     });
   });
 
