@@ -3469,8 +3469,9 @@ tr:last-child td {
 
 .auth-diff-file .d2h-code-line,
 .auth-diff-file .d2h-code-side-line {
+  align-items: flex-start;
   box-sizing: border-box;
-  display: block;
+  display: flex;
   height: 18px;
   min-height: 18px;
   padding: 0 8px;
@@ -3478,11 +3479,12 @@ tr:last-child td {
   border: 0;
   line-height: 18px;
   overflow: visible;
-  white-space: pre;
+  white-space: normal;
 }
 
 .auth-diff-file .d2h-code-line-ctn {
-  display: inline;
+  display: inline-block;
+  flex: 0 0 auto;
   overflow-wrap: normal;
   vertical-align: top;
   white-space: pre;
@@ -3492,6 +3494,7 @@ tr:last-child td {
 
 .auth-diff-file .d2h-code-line-prefix {
   display: inline-block;
+  flex: 0 0 12px;
   line-height: 18px;
   vertical-align: top;
   width: 12px;
