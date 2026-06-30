@@ -2641,6 +2641,7 @@ describe('ArtifactsView', () => {
     expect(screen.queryByText('Version')).toBeNull();
     expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
     expect(detailHeader?.textContent).toContain('demo-rep');
+    expect(document.querySelector('.artifact-detail__repo')?.textContent).toBe('mandible');
     expect(detailHeader?.textContent).toContain('managed · report');
     expect(detailHeader?.textContent).toContain('Created:');
     expect(detailHeader?.textContent).toContain('Updated:');
@@ -2743,6 +2744,73 @@ describe('ArtifactsView', () => {
     expect(livingBadge?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Ademo-report');
     const entityLink = screen.getByText('issue:abc123').closest('a') as HTMLAnchorElement | null;
     expect(entityLink?.getAttribute('href')).toBe('#/issues?issue=abc123&repo=mandible');
+  });
+
+  it('auto-formats compact JSON-like text previews with a local raw toggle', async () => {
+    const artifact = makeArtifactFixture('9', 'metrics.txt', {
+      media_type: 'text/plain',
+      metadata: {
+        title: 'metrics.txt',
+        filename: 'metrics.txt',
+      },
+      home_repo_id: 'rlrmp',
+      repo_locator: { repo_id: 'rlrmp', path: 'results/metrics.txt' },
+    });
+    const artifactSeries = makeArtifactSeries('metrics-text', [artifact], 'metrics.txt');
+    const compact = '{"loss":0.125,"tags":["compact","json"]}';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [artifactSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: artifact.id,
+            scheme: 'artifact',
+            normalized_ref: artifact.id,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
+      }
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'text',
+            media_type: 'text/plain',
+            size_bytes: compact.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: compact, truncated: false },
+            download: { available: true, media_type: 'text/plain', size_bytes: compact.length, filename: 'metrics.txt' },
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(artifact.id))) return jsonResponse({ artifact });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(screen.getByText('Auto-formatted JSON-like text')).toBeTruthy());
+    expect(document.querySelector('.artifact-detail__repo')?.textContent).toBe('rlrmp');
+    const previewCode = document.querySelector('.artifact-preview code');
+    expect(previewCode?.textContent).toContain('\n  "loss": 0.125,');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+
+    expect(document.querySelector('.artifact-preview code')?.textContent).toBe(compact);
+    expect(screen.getByRole('button', { name: 'Format' })).toBeTruthy();
   });
 
   it('renders HTML artifact previews in a sandboxed iframe', async () => {
@@ -3066,6 +3134,7 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-detail__copy-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s);
     expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);

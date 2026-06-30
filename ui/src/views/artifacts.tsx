@@ -22,6 +22,7 @@ import { renderDocumentText } from './spaces/DocumentRenderer';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -64,7 +65,8 @@ type BundleMemberPreview = {
 type MetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
 
 type ArtifactPreview =
-  | { kind: 'json' | 'markdown' | 'text' | 'html' | 'empty'; value: string }
+  | { kind: 'json' | 'text'; value: string; rawValue: string; autoFormatted: boolean; formatLabel: string }
+  | { kind: 'markdown' | 'html' | 'empty'; value: string }
   | { kind: 'binary'; value: string }
   | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
 
@@ -643,6 +645,9 @@ export function ArtifactDetail({
     : selectedVersion?.id
       ? shortArtifactVersionRef(selectedVersion.id)
       : shortImmutableArtifactRef(artifact.id);
+  const homeRepoLabel = artifactHomeRepoLabel(artifact, series);
+  const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
+  const headerCopyValue = copyableSeriesRef || shortImmutableArtifactRef(artifact.id);
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
     ['Series', seriesRefValue, true, copyableSeriesRef || seriesRefValue],
@@ -735,10 +740,18 @@ export function ArtifactDetail({
     <article className="artifact-detail">
       <header className="artifact-detail__header" ref={headerRef}>
         <div className="artifact-detail__top-row">
-          <div className="artifact-detail__topline">
-            <span className="artifact-detail__series-id">{seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id)}</span>
-            <CopyButton value={copyableSeriesRef || shortImmutableArtifactRef(artifact.id)} label="Copy artifact series ref" />
-          </div>
+          <DetailHeaderIdentity
+            className="artifact-detail__eyebrow"
+            contextLabel={homeRepoLabel}
+            contextClassName="artifact-detail__repo"
+            shortId={headerShortId}
+            shortIdClassName="artifact-detail__short-ref"
+            copyValue={headerCopyValue}
+            copyLabel="Copy artifact series ref"
+          >
+            {artifact.custody_mode && <span>{artifact.custody_mode}</span>}
+            {artifact.role && <span>{artifact.role}</span>}
+          </DetailHeaderIdentity>
           <div className="artifact-detail__status">
             <label className="artifact-detail__version-control">
               <select
@@ -1012,6 +1025,22 @@ function PreviewSection({
   contentError: string | null;
 }): JSX.Element {
   const showPreview = !contentError && preview !== null;
+  const [autoFormatJson, setAutoFormatJson] = useState(true);
+  const formatToggleVisible = Boolean(
+    preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && preview.autoFormatted,
+  );
+  const previewValue = preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && preview.autoFormatted
+    ? (autoFormatJson ? preview.value : preview.rawValue)
+    : preview && (preview.kind === 'json' || preview.kind === 'text')
+      ? preview.value
+      : '';
+  useEffect(() => {
+    setAutoFormatJson(true);
+  }, [content?.artifact_id]);
   return (
     <section className="artifact-detail__section" aria-label="Preview">
       <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
@@ -1026,8 +1055,19 @@ function PreviewSection({
         <div key={warning} className="artifact-detail__warning">{warning}</div>
         ))}
         {showPreview && preview.kind === 'bundle' && <BundlePreview preview={preview} />}
-        {showPreview && preview.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {showPreview && preview.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+        {showPreview && formatToggleVisible && (
+          <div className="artifact-preview-toolbar">
+            <span>{preview.formatLabel}</span>
+            <button
+              type="button"
+              onClick={() => setAutoFormatJson((enabled) => !enabled)}
+            >
+              {autoFormatJson ? 'Show raw' : 'Format'}
+            </button>
+          </div>
+        )}
+        {showPreview && preview.kind === 'json' && <pre className="artifact-preview"><code>{previewValue}</code></pre>}
+        {showPreview && preview.kind === 'text' && <pre className="artifact-preview"><code>{previewValue}</code></pre>}
         {showPreview && preview.kind === 'html' && (
           <iframe
             className="artifact-preview artifact-preview--html"
@@ -1264,6 +1304,16 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
   return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
 }
 
+function artifactHomeRepoLabel(
+  artifact: ArtifactRecord,
+  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null,
+): string {
+  const seriesRepo = isRecord(series) ? stringValue(series.repo_id) : '';
+  return artifact.home_repo_id
+    || stringValue(artifact.repo_locator.repo_id)
+    || seriesRepo;
+}
+
 function artifactTitleCandidate(value: string): string {
   return value && displayResourceRef(value) === value ? value : '';
 }
@@ -1334,7 +1384,14 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
   if (content.kind === 'json' && content.preview) {
     const bundle = artifactBundlePreview(content.preview.text);
     if (bundle) return bundle;
-    return { kind: 'json', value: content.preview.text };
+    const rawValue = content.preview.raw_text ?? content.preview.text;
+    return {
+      kind: 'json',
+      value: content.preview.text,
+      rawValue,
+      autoFormatted: content.preview.formatted === 'json' && rawValue !== content.preview.text,
+      formatLabel: 'Auto-formatted JSON',
+    };
   }
   if (content.kind === 'html' && content.preview) {
     return { kind: 'html', value: content.preview.text };
@@ -1351,7 +1408,23 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
     return { kind: 'markdown', value: rendered.html };
   }
   if (content.kind === 'text' && content.preview) {
-    return { kind: 'text', value: content.preview.text };
+    const formattedJson = formatJsonLikePreview(content.preview.text, content.preview.truncated);
+    if (formattedJson) {
+      return {
+        kind: 'text',
+        value: formattedJson,
+        rawValue: content.preview.text,
+        autoFormatted: true,
+        formatLabel: 'Auto-formatted JSON-like text',
+      };
+    }
+    return {
+      kind: 'text',
+      value: content.preview.text,
+      rawValue: content.preview.text,
+      autoFormatted: false,
+      formatLabel: '',
+    };
   }
   if (content.kind === 'binary' && content.download.available) {
     return { kind: 'binary', value: content.download.media_type };
@@ -1360,6 +1433,20 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
     return { kind: 'empty', value: content.reason };
   }
   return { kind: 'empty', value: 'No inline preview is available for this artifact.' };
+}
+
+function formatJsonLikePreview(text: string, truncated: boolean): string | null {
+  if (truncated) return null;
+  const trimmed = text.trim();
+  if (!trimmed || !/^[\[{]/.test(trimmed)) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!Array.isArray(parsed) && !isRecord(parsed)) return null;
+    const formatted = JSON.stringify(parsed, null, 2);
+    return formatted !== trimmed ? formatted : null;
+  } catch {
+    return null;
+  }
 }
 
 function artifactBundlePreview(text: string): Extract<ArtifactPreview, { kind: 'bundle' }> | null {

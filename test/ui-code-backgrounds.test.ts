@@ -38,7 +38,7 @@ describe('inline code background styles', () => {
 
     expect(lightArtifactPreviewGrayRules).toEqual([]);
     expect(stylesheet).toMatch(
-      /:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*transparent/,
+      /:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\)/,
     );
   });
 });

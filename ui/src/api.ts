@@ -1822,7 +1822,7 @@ export type ArtifactVersionHistory = {
 export type ArtifactContentResult = {
   artifact_id: string;
   status: 'available' | 'unavailable';
-  kind: 'text' | 'markdown' | 'json' | 'binary' | 'unavailable';
+  kind: 'text' | 'markdown' | 'json' | 'html' | 'binary' | 'unavailable';
   media_type: string;
   size_bytes: number;
   source: {
@@ -1832,6 +1832,8 @@ export type ArtifactContentResult = {
   preview: {
     encoding: 'utf-8';
     text: string;
+    raw_text?: string;
+    formatted?: 'json';
     truncated: boolean;
   } | null;
   download: {

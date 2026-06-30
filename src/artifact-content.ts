@@ -17,6 +17,8 @@ export type ArtifactContentSourceKind = "managed_file" | "repo_locator" | "local
 export interface ArtifactContentPreview {
   encoding: "utf-8";
   text: string;
+  raw_text?: string;
+  formatted?: "json";
   truncated: boolean;
 }
 
@@ -223,13 +225,22 @@ export function getArtifactContent(
 
   const textPreviewBytes = kind === "html" ? Math.max(previewBytes, HTML_PREVIEW_BYTES) : previewBytes;
   const preview = readTextPreview(resolved.path, textPreviewBytes);
+  if (!preview) {
+    return {
+      ...base,
+      kind: "binary",
+      preview: null,
+    };
+  }
   if (kind === "json") {
+    const formatted = preview.truncated ? null : prettyJson(preview.text);
     return {
       ...base,
       kind,
       preview: {
         ...preview,
-        text: preview.truncated ? preview.text : prettyJson(preview.text),
+        ...(formatted && formatted !== preview.text ? { raw_text: preview.text, formatted: "json" as const } : {}),
+        text: formatted ?? preview.text,
       },
     };
   }
@@ -627,10 +638,11 @@ function previewKind(mediaType: string, filename: string | null): Exclude<Artifa
   if (lowerMediaType.startsWith("text/") || [".txt", ".log", ".csv", ".tsv"].some((ext) => lowerName.endsWith(ext))) {
     return "text";
   }
+  if (isSourceLikeFilename(lowerName)) return "text";
   return "binary";
 }
 
-function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPreview {
+function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPreview | null {
   const fd = fs.openSync(filePath, "r");
   try {
     const stat = fs.fstatSync(fd);
@@ -639,9 +651,12 @@ function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPre
     const buffer = Buffer.alloc(bytesToRead);
     const read = fs.readSync(fd, buffer, 0, bytesToRead, 0);
     const truncated = read > limit;
+    const previewBytes = buffer.subarray(0, truncated ? limit : read);
+    const decoded = decodeUtf8Preview(previewBytes, truncated);
+    if (decoded === null) return null;
     return {
       encoding: "utf-8",
-      text: buffer.subarray(0, truncated ? limit : read).toString("utf8"),
+      text: decoded,
       truncated,
     };
   } finally {
@@ -649,11 +664,11 @@ function readTextPreview(filePath: string, maxBytes: number): ArtifactContentPre
   }
 }
 
-function prettyJson(text: string): string {
+function prettyJson(text: string): string | null {
   try {
     return JSON.stringify(JSON.parse(text), null, 2);
   } catch {
-    return text;
+    return null;
   }
 }
 
@@ -663,8 +678,75 @@ function inferMediaType(artifact: ArtifactRecord): string {
   if (lowerName.endsWith(".json")) return "application/json";
   if (lowerName.endsWith(".html") || lowerName.endsWith(".htm")) return "text/html";
   if (lowerName.endsWith(".md") || lowerName.endsWith(".markdown")) return "text/markdown";
+  if (isSourceLikeFilename(lowerName)) return "text/plain";
   if (lowerName.endsWith(".txt") || lowerName.endsWith(".log")) return "text/plain";
   return "application/octet-stream";
+}
+
+const SOURCE_TEXT_EXTENSIONS = new Set([
+  ".bash",
+  ".c",
+  ".cc",
+  ".cfg",
+  ".conf",
+  ".cpp",
+  ".css",
+  ".env",
+  ".fish",
+  ".go",
+  ".h",
+  ".hpp",
+  ".ini",
+  ".java",
+  ".jl",
+  ".js",
+  ".jsx",
+  ".kt",
+  ".kts",
+  ".lua",
+  ".mjs",
+  ".php",
+  ".py",
+  ".r",
+  ".rb",
+  ".rs",
+  ".scss",
+  ".sh",
+  ".sql",
+  ".swift",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".yaml",
+  ".yml",
+  ".zsh",
+]);
+
+const SOURCE_TEXT_FILENAMES = new Set([
+  ".dockerignore",
+  ".env",
+  ".gitignore",
+  "dockerfile",
+  "makefile",
+]);
+
+function isSourceLikeFilename(lowerName: string): boolean {
+  const basename = lowerName.split(/[\\/]/).pop() ?? lowerName;
+  if (SOURCE_TEXT_FILENAMES.has(basename)) return true;
+  return SOURCE_TEXT_EXTENSIONS.has(path.extname(basename));
+}
+
+function decodeUtf8Preview(bytes: Buffer, allowTrim = false): string | null {
+  if (bytes.includes(0)) return null;
+  const minEnd = allowTrim ? Math.max(0, bytes.byteLength - 3) : bytes.byteLength;
+  for (let end = bytes.byteLength; end >= minEnd; end -= 1) {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, end));
+    } catch {
+      // A truncated preview may stop in the middle of one UTF-8 codepoint.
+    }
+  }
+  return null;
 }
 
 function artifactFilename(artifact: ArtifactRecord): string | null {
