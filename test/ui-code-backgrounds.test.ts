@@ -41,4 +41,10 @@ describe('inline code background styles', () => {
       /:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\)/,
     );
   });
+
+  it('keeps artifact code preview height stable for raw/formatted toggles', () => {
+    expect(stylesheet).toMatch(
+      /\.artifact-preview--code\s*\{[^}]*height:\s*clamp\(220px,\s*42vh,\s*520px\)/,
+    );
+  });
 });

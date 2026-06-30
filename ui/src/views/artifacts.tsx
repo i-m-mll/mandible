@@ -1,4 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import hljs from 'highlight.js/lib/core';
+import bash from 'highlight.js/lib/languages/bash';
+import cpp from 'highlight.js/lib/languages/cpp';
+import css from 'highlight.js/lib/languages/css';
+import go from 'highlight.js/lib/languages/go';
+import ini from 'highlight.js/lib/languages/ini';
+import java from 'highlight.js/lib/languages/java';
+import javascript from 'highlight.js/lib/languages/javascript';
+import json from 'highlight.js/lib/languages/json';
+import markdown from 'highlight.js/lib/languages/markdown';
+import python from 'highlight.js/lib/languages/python';
+import r from 'highlight.js/lib/languages/r';
+import ruby from 'highlight.js/lib/languages/ruby';
+import rust from 'highlight.js/lib/languages/rust';
+import sql from 'highlight.js/lib/languages/sql';
+import typescript from 'highlight.js/lib/languages/typescript';
+import xml from 'highlight.js/lib/languages/xml';
+import yaml from 'highlight.js/lib/languages/yaml';
 import {
   getArtifact,
   getArtifactContent,
@@ -65,7 +83,14 @@ type BundleMemberPreview = {
 type MetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
 
 type ArtifactPreview =
-  | { kind: 'json' | 'text'; value: string; rawValue: string; autoFormatted: boolean; formatLabel: string }
+  | {
+      kind: 'json' | 'text';
+      value: string;
+      rawValue: string;
+      autoFormatted: boolean;
+      formatLabel: string;
+      highlightLanguage: ArtifactHighlightLanguage | null;
+    }
   | { kind: 'markdown' | 'html' | 'empty'; value: string }
   | { kind: 'binary'; value: string }
   | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
@@ -749,10 +774,7 @@ export function ArtifactDetail({
             shortIdClassName="artifact-detail__short-ref"
             copyValue={headerCopyValue}
             copyLabel={headerCopyLabel}
-          >
-            {artifact.custody_mode && <span>{artifact.custody_mode}</span>}
-            {artifact.role && <span>{artifact.role}</span>}
-          </DetailHeaderIdentity>
+          />
           <div className="artifact-detail__status">
             <label className="artifact-detail__version-control">
               <select
@@ -1039,6 +1061,14 @@ function PreviewSection({
     : preview && (preview.kind === 'json' || preview.kind === 'text')
       ? preview.value
       : '';
+  const highlightedPreview = useMemo(() => (
+    preview && (preview.kind === 'json' || preview.kind === 'text')
+      ? highlightArtifactCode(previewValue, preview.highlightLanguage)
+      : null
+  ), [preview, previewValue]);
+  const codeClassName = highlightedPreview
+    ? `hljs language-${highlightedPreview.language}`
+    : undefined;
   useEffect(() => {
     setAutoFormatJson(true);
   }, [content?.artifact_id]);
@@ -1067,8 +1097,24 @@ function PreviewSection({
             </button>
           </div>
         )}
-        {showPreview && preview.kind === 'json' && <pre className="artifact-preview"><code>{previewValue}</code></pre>}
-        {showPreview && preview.kind === 'text' && <pre className="artifact-preview"><code>{previewValue}</code></pre>}
+        {showPreview && preview.kind === 'json' && (
+          <pre className="artifact-preview artifact-preview--code">
+            {highlightedPreview ? (
+              <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
+            ) : (
+              <code>{previewValue}</code>
+            )}
+          </pre>
+        )}
+        {showPreview && preview.kind === 'text' && (
+          <pre className="artifact-preview artifact-preview--code">
+            {highlightedPreview ? (
+              <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
+            ) : (
+              <code>{previewValue}</code>
+            )}
+          </pre>
+        )}
         {showPreview && preview.kind === 'html' && (
           <iframe
             className="artifact-preview artifact-preview--html"
@@ -1381,7 +1427,7 @@ async function copyText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
-function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
+export function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
   if (content.kind === 'json' && content.preview) {
     const bundle = artifactBundlePreview(content.preview.text);
     if (bundle) return bundle;
@@ -1392,6 +1438,7 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
       rawValue,
       autoFormatted: content.preview.formatted === 'json' && rawValue !== content.preview.text,
       formatLabel: 'Auto-formatted JSON',
+      highlightLanguage: 'json',
     };
   }
   if (content.kind === 'html' && content.preview) {
@@ -1417,6 +1464,7 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
         rawValue: content.preview.text,
         autoFormatted: true,
         formatLabel: 'Auto-formatted JSON-like text',
+        highlightLanguage: 'json',
       };
     }
     return {
@@ -1425,6 +1473,7 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
       rawValue: content.preview.text,
       autoFormatted: false,
       formatLabel: '',
+      highlightLanguage: artifactHighlightLanguage(content),
     };
   }
   if (content.kind === 'binary' && content.download.available) {
@@ -1434,6 +1483,99 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
     return { kind: 'empty', value: content.reason };
   }
   return { kind: 'empty', value: 'No inline preview is available for this artifact.' };
+}
+
+const ARTIFACT_HIGHLIGHT_LANGUAGES = {
+  bash,
+  cpp,
+  css,
+  go,
+  ini,
+  java,
+  javascript,
+  json,
+  markdown,
+  python,
+  r,
+  ruby,
+  rust,
+  sql,
+  typescript,
+  xml,
+  yaml,
+};
+
+type ArtifactHighlightLanguage = keyof typeof ARTIFACT_HIGHLIGHT_LANGUAGES;
+
+const REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES = new Set<ArtifactHighlightLanguage>();
+
+function ensureArtifactHighlightLanguage(language: ArtifactHighlightLanguage): void {
+  if (REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES.has(language)) return;
+  hljs.registerLanguage(language, ARTIFACT_HIGHLIGHT_LANGUAGES[language]);
+  REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES.add(language);
+}
+
+export function highlightArtifactCode(
+  code: string,
+  language: ArtifactHighlightLanguage | null,
+): { html: string; language: ArtifactHighlightLanguage } | null {
+  if (!language || !code) return null;
+  ensureArtifactHighlightLanguage(language);
+  return {
+    html: hljs.highlight(code, { language, ignoreIllegals: true }).value,
+    language,
+  };
+}
+
+export function artifactHighlightLanguage(content: ArtifactContentResult): ArtifactHighlightLanguage | null {
+  if (content.kind === 'json') return 'json';
+  const mediaType = content.media_type.toLowerCase();
+  if (mediaType.includes('json')) return 'json';
+  if (mediaType.includes('javascript')) return 'javascript';
+  if (mediaType.includes('typescript')) return 'typescript';
+  if (mediaType.includes('python')) return 'python';
+  if (mediaType.includes('x-sh') || mediaType.includes('shellscript')) return 'bash';
+  const filename = content.download.filename?.toLowerCase() ?? '';
+  return ARTIFACT_HIGHLIGHT_LANGUAGE_BY_EXTENSION[fileExtension(filename)] ?? null;
+}
+
+const ARTIFACT_HIGHLIGHT_LANGUAGE_BY_EXTENSION: Record<string, ArtifactHighlightLanguage> = {
+  '.bash': 'bash',
+  '.c': 'cpp',
+  '.cc': 'cpp',
+  '.cpp': 'cpp',
+  '.css': 'css',
+  '.go': 'go',
+  '.h': 'cpp',
+  '.hpp': 'cpp',
+  '.html': 'xml',
+  '.htm': 'xml',
+  '.ini': 'ini',
+  '.java': 'java',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.json': 'json',
+  '.mjs': 'javascript',
+  '.md': 'markdown',
+  '.markdown': 'markdown',
+  '.py': 'python',
+  '.r': 'r',
+  '.rb': 'ruby',
+  '.rs': 'rust',
+  '.sh': 'bash',
+  '.sql': 'sql',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.xml': 'xml',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.zsh': 'bash',
+};
+
+function fileExtension(filename: string): string {
+  const basename = filename.split(/[\\/]/).pop() ?? filename;
+  const index = basename.lastIndexOf('.');
+  return index > 0 ? basename.slice(index) : '';
 }
 
 function formatJsonLikePreview(text: string, truncated: boolean): string | null {
