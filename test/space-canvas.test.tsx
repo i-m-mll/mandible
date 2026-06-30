@@ -25,6 +25,7 @@ import type { SpaceItem, SpaceOccurrence } from '../ui/src/api';
 let lastOnNodesChange: ((changes: unknown[]) => void) | null = null;
 let lastOnConnect: ((connection: unknown) => void) | null = null;
 let lastOnEdgesChange: ((changes: unknown[]) => void) | null = null;
+let lastReactFlowProps: { fitView?: boolean; onInit?: (instance: unknown) => void } | null = null;
 
 vi.mock('@xyflow/react', () => {
   const ReactFlow = (props: {
@@ -40,11 +41,14 @@ vi.mock('@xyflow/react', () => {
     onNodesChange?: (changes: unknown[]) => void;
     onEdgesChange?: (changes: unknown[]) => void;
     onConnect?: (connection: unknown) => void;
+    onInit?: (instance: unknown) => void;
+    fitView?: boolean;
     children?: unknown;
   }) => {
     lastOnNodesChange = props.onNodesChange ?? null;
     lastOnConnect = props.onConnect ?? null;
     lastOnEdgesChange = props.onEdgesChange ?? null;
+    lastReactFlowProps = { fitView: props.fitView, onInit: props.onInit };
     return h('div', { 'data-testid': 'rf-mock' }, [
       ...props.nodes.map((node) =>
         h(
@@ -134,6 +138,7 @@ afterEach(() => {
   lastOnNodesChange = null;
   lastOnConnect = null;
   lastOnEdgesChange = null;
+  lastReactFlowProps = null;
   layoutCalls.count = 0;
   vi.useRealTimers();
 });
@@ -467,6 +472,28 @@ describe('SpaceCanvas rendering', () => {
 });
 
 describe('SpaceCanvas drag persistence + autosave', () => {
+  it('fits the viewport once on init without keeping React Flow fitView active during drag', () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha')],
+      occurrences: [occ('a', { x: 10, y: 20 })],
+    };
+    render(h(SpaceCanvas, { ...baseProps, spaceId: 'sp1', initialModel: model }));
+
+    expect(lastReactFlowProps?.fitView).toBeUndefined();
+    const fitView = vi.fn().mockResolvedValue(true);
+    act(() => {
+      lastReactFlowProps?.onInit?.({ fitView });
+      lastReactFlowProps?.onInit?.({ fitView });
+    });
+    expect(fitView).toHaveBeenCalledTimes(1);
+    expect(fitView).toHaveBeenCalledWith({ padding: 0.16, duration: 0 });
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+    });
+    expect(lastReactFlowProps?.fitView).toBeUndefined();
+  });
+
   it('keeps pointer-frame drag updates local until drag stop', async () => {
     vi.useFakeTimers();
     const model: SpaceCanvasModel = {

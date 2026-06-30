@@ -1202,6 +1202,10 @@ type SpaceCanvasFlowSurfaceProps = {
   onConnect: (connection: Connection) => void;
 };
 
+type FlowInitInstance = {
+  fitView: (options?: { padding?: number; duration?: number }) => Promise<boolean> | boolean;
+};
+
 function sameFlowNode(left: SpaceFlowNode, right: SpaceFlowNode): boolean {
   return (
     left.id === right.id &&
@@ -1256,6 +1260,7 @@ function SpaceCanvasFlowSurface({
 }: SpaceCanvasFlowSurfaceProps): JSX.Element {
   const [nodes, setNodes] = useState<SpaceFlowNode[]>(() => canonicalNodes);
   const activeDragIds = useRef<Set<string>>(new Set());
+  const didInitialFitView = useRef(false);
 
   useEffect(() => {
     setNodes((previous) => {
@@ -1295,13 +1300,19 @@ function SpaceCanvasFlowSurface({
     [onNodeDragStart, onNodeDragStop, onNodeSelectionChange],
   );
 
+  const onInit = useCallback((instance: FlowInitInstance) => {
+    if (didInitialFitView.current) return;
+    didInitialFitView.current = true;
+    void instance.fitView({ padding: 0.16, duration: 0 });
+  }, []);
+
   return (
     <ReactFlow
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
       proOptions={{ hideAttribution: true }}
-      fitView
+      onInit={onInit}
       minZoom={0.2}
       maxZoom={1.8}
       nodesDraggable
