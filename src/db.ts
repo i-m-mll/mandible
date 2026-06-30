@@ -2855,9 +2855,12 @@ export function migrate(db: Db): void {
   // associations from source repo identity, issue links, comments, bundles, or
   // Spaces; project_artifact_associations remains empty unless explicit legacy
   // association rows are added by a future migration.
-  if (shouldRunPostMigration(db, "v91_backfill_artifact_identity", pending, 91, () =>
-    hasArtifactIdentityBackfillWork(db)
-  )) {
+  if (
+    tableExists(db, "ledger_projects") &&
+    shouldRunPostMigration(db, "v91_backfill_artifact_identity", pending, 91, () =>
+      hasArtifactIdentityBackfillWork(db)
+    )
+  ) {
     runPostMigration(db, "v91_backfill_artifact_identity", () => {
       db.transaction(() => {
         backfillArtifactIdentityTables(db);
