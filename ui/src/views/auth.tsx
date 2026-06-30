@@ -2526,7 +2526,10 @@ export function AuthQueueView({
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
   const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
   const previewNotice = instanceMutationBlocked ? (
-    <PreviewDisabledNotice title={`${instanceLabel} instance`}>
+    <PreviewDisabledNotice
+      title={`${instanceLabel} instance`}
+      className="preview-disabled-notice--edge-to-edge"
+    >
       <>
         Auth actions are disabled for this copied preview queue
         {instanceDbLabel ? ` (${instanceDbLabel})` : ''}

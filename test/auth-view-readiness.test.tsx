@@ -128,6 +128,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     const requestHeader = document.querySelector('.auth-detail__header');
     expect(warning).toBeTruthy();
     expect(warning?.getAttribute('data-testid')).toBe('preview-disabled-notice');
+    expect(warning?.classList.contains('preview-disabled-notice--edge-to-edge')).toBe(true);
     expect(detail?.classList.contains('auth-detail--with-preview-notice')).toBe(true);
     expect(detail?.firstElementChild).toBe(warning);
     expect(warning?.nextElementSibling).toBe(requestPane);
@@ -149,6 +150,7 @@ describe('AuthQueueView daemon readiness gate', () => {
     const detail = warning.parentElement;
     const empty = screen.getByText('Select a request to view details').closest('.auth-detail__empty');
     expect(detail?.classList.contains('auth-detail')).toBe(true);
+    expect(warning.classList.contains('preview-disabled-notice--edge-to-edge')).toBe(true);
     expect(detail?.firstElementChild).toBe(warning);
     expect(warning.nextElementSibling).toBe(empty);
     expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
