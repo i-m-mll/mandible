@@ -1565,6 +1565,7 @@ function App(): JSX.Element {
             renderer={route.params.renderer}
             renderers={SPACE_RENDERERS_REGISTRY}
             sidebarHidden={viewSidebarHidden}
+            instance={instanceInfo}
             onNavigate={navigateToSpace}
           />
         )}
