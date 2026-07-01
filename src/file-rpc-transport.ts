@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { normalizeAmbientProviderIdentity } from "./ambient-provider-identity.js";
-import type { Logger } from "./types.js";
+import type { InstanceInfo, Logger } from "./types.js";
 import type { Router, RouterInvokeResponse } from "./server.js";
 
 const DEFAULT_FILE_RPC_DIR = path.join(os.homedir(), ".cache", "mandible", "agent-rpc");
@@ -39,6 +39,8 @@ export interface FileRpcTransportOptions {
   router: Router;
   dir?: string;
   logger?: Logger;
+  instance?: InstanceInfo;
+  env?: NodeJS.ProcessEnv;
   pollIntervalMs?: number;
   responseTtlMs?: number;
 }
@@ -55,7 +57,7 @@ export class FileRpcTransport {
 
   constructor(options: FileRpcTransportOptions) {
     this.router = options.router;
-    this.dir = options.dir ?? process.env.MANDIBLE_FILE_RPC_DIR ?? DEFAULT_FILE_RPC_DIR;
+    this.dir = options.dir ?? defaultFileRpcDirForInstance(options.instance, options.env ?? process.env);
     this.logger = options.logger;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
     this.responseTtlMs = options.responseTtlMs ?? DEFAULT_RESPONSE_TTL_MS;
@@ -236,6 +238,29 @@ export class FileRpcTransport {
       }
     }
   }
+}
+
+export function defaultFileRpcDirForInstance(
+  instance?: InstanceInfo,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
+  const configured = env.MANDIBLE_FILE_RPC_DIR;
+  const sharedDir = path.resolve(DEFAULT_FILE_RPC_DIR);
+  const configuredDir = configured ? path.resolve(configured) : null;
+  if (instance?.role && instance.role !== "main") {
+    if (configuredDir && configuredDir !== sharedDir) {
+      return configuredDir;
+    }
+    return previewScopedFileRpcDir(instance);
+  }
+  return configuredDir ?? sharedDir;
+}
+
+function previewScopedFileRpcDir(instance: InstanceInfo): string {
+  if (instance.db_path) {
+    return path.join(path.dirname(instance.db_path), "agent-rpc");
+  }
+  return path.join(os.homedir(), ".cache", "mandible", "previews", `instance-${process.pid}`, "agent-rpc");
 }
 
 function ensurePrivateDir(dir: string): void {

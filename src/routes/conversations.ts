@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
-import { decompressContent } from "../compression.js";
+import { decompressContent, decompressContentAsync } from "../compression.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
 import type { SessionManager } from "../session-manager.js";
@@ -603,7 +603,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // GET /api/conversations/:id/forks — Fork points in the conversation DAG
   // Bug: 40f0298 — DAG branching: identify points where the conversation branches
-  server.get("/api/conversations/:id/forks", (req, res) => {
+  server.get("/api/conversations/:id/forks", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -629,55 +629,75 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       )
       .all(id) as Array<{ dag_parent_uuid: string; branch_count: number }>;
 
-    const forks = forkPoints.map((fp) => {
-      // Get distinct child dag_uuids for this fork point
-      const childUuids = db
-        .prepare(
-          `SELECT DISTINCT dag_uuid
-           FROM conversation_blocks
-           WHERE conversation_id = ? AND dag_parent_uuid = ?`
-        )
-        .all(id, fp.dag_parent_uuid) as Array<{ dag_uuid: string }>;
+    const forkParentUuids = new Set(forkPoints.map((fp) => fp.dag_parent_uuid));
+    const childRows = db
+      .prepare(
+        `SELECT dag_parent_uuid, dag_uuid
+         FROM conversation_blocks
+         WHERE conversation_id = ? AND dag_parent_uuid IS NOT NULL AND dag_uuid IS NOT NULL
+         GROUP BY dag_parent_uuid, dag_uuid
+         ORDER BY MIN(position) ASC`,
+      )
+      .all(id) as Array<{ dag_parent_uuid: string; dag_uuid: string }>;
 
-      const branches = childUuids.map((child) => {
-        // Get first assistant_message or assistant-type block for preview text
-        const previewBlock = db
-          .prepare(
-            `SELECT content, compressed
+    const previewRows = db
+      .prepare(
+        `SELECT dag_parent_uuid, dag_uuid, content, compressed
+         FROM (
+           SELECT dag_parent_uuid, dag_uuid, content, compressed,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY dag_parent_uuid, dag_uuid
+                    ORDER BY position ASC
+                  ) AS rn
              FROM conversation_blocks
-             WHERE conversation_id = ? AND dag_uuid = ? AND type IN ('assistant_message', 'assistant')
-             ORDER BY position ASC
-             LIMIT 1`
-          )
-          .get(id, child.dag_uuid) as { content: Buffer | string; compressed: number } | undefined;
+            WHERE conversation_id = ?
+              AND dag_parent_uuid IS NOT NULL
+              AND dag_uuid IS NOT NULL
+              AND type IN ('assistant_message', 'assistant')
+         )
+         WHERE rn = 1`,
+      )
+      .all(id) as Array<{
+        dag_parent_uuid: string;
+        dag_uuid: string;
+        content: Buffer | string;
+        compressed: number;
+      }>;
 
-        let first_text = "";
-        if (previewBlock) {
-          const text = decompressContent(previewBlock.content, previewBlock.compressed === 1);
-          first_text = text.slice(0, 60);
-        }
+    const countRows = db
+      .prepare(
+        `SELECT dag_uuid, COUNT(*) as cnt
+         FROM conversation_blocks
+         WHERE conversation_id = ? AND dag_uuid IS NOT NULL
+         GROUP BY dag_uuid`,
+      )
+      .all(id) as Array<{ dag_uuid: string; cnt: number }>;
 
-        // Count blocks with this dag_uuid (simple approximation of branch size)
-        const countRow = db
-          .prepare(
-            `SELECT COUNT(*) as cnt
-             FROM conversation_blocks
-             WHERE conversation_id = ? AND dag_uuid = ?`
-          )
-          .get(id, child.dag_uuid) as { cnt: number };
+    const previews = new Map<string, string>();
+    await Promise.all(previewRows
+      .filter((row) => forkParentUuids.has(row.dag_parent_uuid))
+      .map(async (row) => {
+        const text = await decompressContentAsync(row.content, row.compressed === 1);
+        previews.set(`${row.dag_parent_uuid}\0${row.dag_uuid}`, text.slice(0, 60));
+      }));
 
-        return {
-          dag_uuid: child.dag_uuid,
-          first_text,
-          block_count: countRow.cnt,
-        };
-      });
+    const blockCounts = new Map(countRows.map((row) => [row.dag_uuid, row.cnt]));
+    const childUuidsByParent = new Map<string, string[]>();
+    for (const child of childRows) {
+      if (!forkParentUuids.has(child.dag_parent_uuid)) continue;
+      const children = childUuidsByParent.get(child.dag_parent_uuid) ?? [];
+      children.push(child.dag_uuid);
+      childUuidsByParent.set(child.dag_parent_uuid, children);
+    }
 
-      return {
-        parent_dag_uuid: fp.dag_parent_uuid,
-        branches,
-      };
-    });
+    const forks = forkPoints.map((fp) => ({
+      parent_dag_uuid: fp.dag_parent_uuid,
+      branches: (childUuidsByParent.get(fp.dag_parent_uuid) ?? []).map((dagUuid) => ({
+        dag_uuid: dagUuid,
+        first_text: previews.get(`${fp.dag_parent_uuid}\0${dagUuid}`) ?? "",
+        block_count: blockCounts.get(dagUuid) ?? 0,
+      })),
+    }));
 
     sendJson(res, 200, { forks });
   }, { fileRpc: "allow" });

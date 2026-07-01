@@ -122,7 +122,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
-  registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue);
+  registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
   registerConsoleRoutes(router, sessionManager);
   // Bug: 61bee4e — preset routes for convention management
   registerPresetRoutes(router);
@@ -174,7 +174,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     isReady: () => isDaemonReady(),
     instance,
   });
-  const fileRpcTransport = new FileRpcTransport({ router, logger });
+  const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
   fileRpcTransport.start();
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
@@ -239,34 +239,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     startIngestion(logger);
   } catch (error) {
     logger("warn", "ingestion_start_failed", { error: String(error) });
-  }
-
-  // Startup issue scan: populate IssueScanner cache for all repos so the
-  // Issues tab is ready immediately without waiting for a user request.
-  // Run after a short delay to avoid blocking server startup.
-  const issueStartupTimer = setTimeout(() => {
-    void issueScanner.scanAllAsync()
-      .then(() => {
-        logger("info", "startup_issue_scan_complete");
-      })
-      .catch((error) => {
-        logger("warn", "startup_issue_scan_failed", { error: String(error) });
-      });
-  }, 2_000);
-  if (typeof issueStartupTimer === "object" && "unref" in issueStartupTimer) {
-    issueStartupTimer.unref();
-  }
-
-  // Periodic issue rescan every 5 minutes to keep the cache fresh as
-  // Issue operations are routed through the Mandible ledger in the background.
-  const ISSUE_SCAN_INTERVAL_MS = 5 * 60 * 1_000;
-  const issueRescanTimer = setInterval(() => {
-    void issueScanner.scanAllAsync().catch((error) => {
-      logger("warn", "periodic_issue_scan_failed", { error: String(error) });
-    });
-  }, ISSUE_SCAN_INTERVAL_MS);
-  if (typeof issueRescanTimer === "object" && "unref" in issueRescanTimer) {
-    issueRescanTimer.unref();
   }
 
   // Startup reconciliation can shell out to inspect many local processes and
@@ -393,9 +365,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     navEnricher.stop();
     fileRpcTransport.stop();
     authQueue.dispose();
-    clearTimeout(issueStartupTimer);
     clearTimeout(startupDiscoveryTimer);
-    clearInterval(issueRescanTimer);
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for

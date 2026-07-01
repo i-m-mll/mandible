@@ -465,21 +465,13 @@ describe("ledger issue route gate", () => {
     expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: issue.short_id }]);
   });
 
-  it("guards dual writes and applies ledger writes only when explicitly configured", async () => {
+  it("returns a clear gone response for legacy git-bug mutation endpoints", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 
-    updateLedgerIssueMigrationConfig(db, { write_mode: "dual" });
     const guarded = await server.invoke("POST", "/api/issues/:repoId/:issueId/status", {
-      params: { repoId: repoInfo.id, issueId: "abc123" },
-      body: { status: "closed" },
-    });
-    expect(guarded.statusCode).toBe(409);
-
-    updateLedgerIssueMigrationConfig(db, { write_mode: "ledger" });
-    const closed = await server.invoke("POST", "/api/issues/:repoId/:issueId/status", {
       params: { repoId: repoInfo.id, issueId: "abc123" },
       body: { status: "closed" },
     });
@@ -492,13 +484,16 @@ describe("ledger issue route gate", () => {
       body: { action: "add", label: "reviewed" },
     });
 
-    expect(closed.body).toMatchObject({ ok: true, source: "ledger" });
-    expect(comment.body).toMatchObject({ ok: true, source: "ledger" });
-    expect(label.body).toMatchObject({ ok: true, source: "ledger" });
+    expect(guarded.statusCode).toBe(410);
+    expect(comment.statusCode).toBe(410);
+    expect(label.statusCode).toBe(410);
+    expect(guarded.body).toMatchObject({
+      error: expect.stringContaining("legacy git-bug issue endpoint is disabled"),
+    });
     const detail = new LedgerStore(db).getIssueDetail(issue.id);
-    expect(detail.status).toBe("closed");
-    expect(detail.comments.map((row) => row.body)).toContain("Mandible note");
-    expect(detail.labels.map((row) => row.label)).toContain("reviewed");
+    expect(detail.status).toBe("open");
+    expect(detail.comments.map((row) => row.body)).not.toContain("Mandible note");
+    expect(detail.labels.map((row) => row.label)).not.toContain("reviewed");
   });
 
   it("atomically reopens and comments through the ledger comment route", async () => {

@@ -623,41 +623,6 @@ export function repoCandidatesFromCwd(cwd: string | null): string[] {
   return uniqueStrings(candidates);
 }
 
-function getIssueNodes(
-  issueScanner: IssueScanner,
-  params: GraphQueryParams,
-): { nodes: Map<string, GraphNode>; issueNodeIds: Set<string>; issueNodeIdByLedgerId: Map<string, string> } {
-  const nodes = new Map<string, GraphNode>();
-  const issueNodeIds = new Set<string>();
-  const summaries = issueScanner.getRepoSummaries();
-
-  for (const summary of summaries) {
-    if (!matchesRepoFilter([summary.repo_name, summary.repo_id], params)) {
-      continue;
-    }
-    for (const issue of summary.issues) {
-      if (params.status === "open" && issue.status !== "open") continue;
-      const nodeId = `issue:${issue.repo_id}:${issue.id}`;
-      issueNodeIds.add(nodeId);
-      upsertNode(nodes, {
-        id: nodeId,
-        type: "issue",
-        label: issue.title,
-        status: issue.status,
-        labels: issue.labels,
-        repo: issue.repo_name,
-        repo_id: issue.repo_id,
-        created_at: issue.created_at,
-        summary: { author: issue.author },
-        detail: { parent_id: issue.parent_id },
-        actions: [{ id: "open-issue", label: "Open Issue", kind: "navigate", target: nodeId }],
-      });
-    }
-  }
-
-  return { nodes, issueNodeIds, issueNodeIdByLedgerId: new Map() };
-}
-
 function getLedgerIssueNodes(
   params: GraphQueryParams,
 ): {
@@ -674,30 +639,6 @@ function getLedgerIssueNodes(
     issueNodeIdByLedgerId: projection.issueNodeIdByLedgerId,
     edges: projection.edges,
   };
-}
-
-function addIssueEdges(
-  issueScanner: IssueScanner,
-  nodes: Map<string, GraphNode>,
-  edges: Map<string, GraphEdge>,
-): void {
-  for (const summary of issueScanner.getRepoSummaries()) {
-    for (const issue of summary.issues) {
-      if (!issue.parent_id) continue;
-      const childId = `issue:${issue.repo_id}:${issue.id}`;
-      const parentId = `issue:${issue.repo_id}:${issue.parent_id}`;
-      if (nodes.has(childId) && nodes.has(parentId)) {
-        upsertEdge(edges, {
-          id: `umbrella_child:${parentId}:${childId}`,
-          source: parentId,
-          target: childId,
-          type: "umbrella_child",
-          edge_class: "semantic",
-          provenance: "git-bug",
-        });
-      }
-    }
-  }
 }
 
 interface SessionRow {
@@ -1275,8 +1216,21 @@ function addWorkUnits(
   }
 }
 
+function emptyLedgerIssueProjection(): {
+  nodes: Map<string, GraphNode>;
+  issueNodeIds: Set<string>;
+  issueNodeIdByLedgerId: Map<string, string>;
+  edges: GraphEdge[];
+} {
+  return {
+    nodes: new Map(),
+    issueNodeIds: new Set(),
+    issueNodeIdByLedgerId: new Map(),
+    edges: [],
+  };
+}
+
 function buildOperationalGraph(
-  issueScanner: IssueScanner,
   params: GraphQueryParams,
 ): ReturnType<typeof selectGraphForDisplay> {
   const spec = params.spec ?? graphSpecForMode(params.mode ?? "issue");
@@ -1284,13 +1238,13 @@ function buildOperationalGraph(
   const sinceIso = sinceMs !== null ? msToIso(sinceMs) : null;
   const limit = spec.limit;
   const edges = new Map<string, GraphEdge>();
-  const ledgerProjection = ledgerGraphHasIssues(getDb()) ? getLedgerIssueNodes(params) : null;
+  const ledgerProjection = getLedgerIssueNodes(params) ?? emptyLedgerIssueProjection();
   const {
     nodes,
     issueNodeIds,
     issueNodeIdByLedgerId,
     edges: ledgerEdges,
-  } = ledgerProjection ?? { ...getIssueNodes(issueScanner, params), edges: [] as GraphEdge[] };
+  } = ledgerProjection;
   for (const edge of ledgerEdges) {
     upsertEdge(edges, edge);
   }
@@ -1301,9 +1255,6 @@ function buildOperationalGraph(
   const authRows = includeAuthRequests ? getAuthRows(params, sinceMs, limit) : [];
   const sessionNodeIds = addSessionNodesAndEdges(sessionRows, params, nodes, edges);
   addAuthNodesAndEdges(authRows, issueNodeIds, issueNodeIdByLedgerId, nodes, edges);
-  if (!ledgerProjection) {
-    addIssueEdges(issueScanner, nodes, edges);
-  }
   addSessionIssueEdges(issueNodeIds, issueNodeIdByLedgerId, sessionNodeIds, edges);
   if (includeWorkUnits) {
     addWorkUnits(params, nodes, edges, issueNodeIdByLedgerId, limit);
@@ -1346,7 +1297,7 @@ function normalizeRepoOption(value: string | null | undefined): string | undefin
   return basename;
 }
 
-function graphFilterOptions(issueScanner: IssueScanner): GraphPayload["filters"] {
+function graphFilterOptions(): GraphPayload["filters"] {
   const repos = new Set<string>();
   const branches = new Set<string>();
   const db = getDb();
@@ -1354,11 +1305,6 @@ function graphFilterOptions(issueScanner: IssueScanner): GraphPayload["filters"]
     const normalized = normalizeRepoOption(value);
     if (normalized) repos.add(normalized);
   };
-
-  for (const summary of issueScanner.getRepoSummaries()) {
-    if (summary.repo_name) addRepo(summary.repo_name);
-    else addRepo(summary.repo_id);
-  }
 
   const ledgerFilters = getLedgerGraphFilterOptions(db);
   for (const repo of ledgerFilters.repos) addRepo(repo);
@@ -1417,12 +1363,9 @@ function graphFilterOptions(issueScanner: IssueScanner): GraphPayload["filters"]
   };
 }
 
-function graphModeCounts(
-  issueScanner: IssueScanner,
-): Record<GraphMode, number> {
+function graphModeCounts(): Record<GraphMode, number> {
   const db = getDb();
-  const issueCount = countLedgerGraphIssues(db, "all")
-    ?? issueScanner.getRepoSummaries().reduce((sum, repo) => sum + repo.issues.length, 0);
+  const issueCount = countLedgerGraphIssues(db, "all") ?? 0;
   const sessionCount = countTableRows("sessions");
   const authCount = countTableRows("auth_requests");
   const workCount = countTableRows("work_units");
@@ -1467,7 +1410,7 @@ function countTableRows(table: string): number {
 
 export function registerGraphRoutes(
   app: RouteRegistrar,
-  issueScanner: IssueScanner,
+  _issueScanner: IssueScanner,
 ): void {
   app.get("/api/graph", (req, res) => {
     const query = req.query as Record<string, string | string[] | undefined>;
@@ -1487,10 +1430,10 @@ export function registerGraphRoutes(
       });
       selected = selectGraphForDisplay(indexed.nodes, indexed.edges, spec);
     } else {
-      selected = buildOperationalGraph(issueScanner, params);
+      selected = buildOperationalGraph(params);
     }
 
-    const counts = graphModeCounts(issueScanner);
+    const counts = graphModeCounts();
     const payload: GraphPayload = {
       version: 1,
       mode,
@@ -1520,7 +1463,7 @@ export function registerGraphRoutes(
           : undefined,
       },
       layers: graphLayers(selected.nodes, mode),
-      filters: graphFilterOptions(issueScanner),
+      filters: graphFilterOptions(),
       truncated: selected.truncated,
       limit: spec.limit,
       displayed_count: selected.counts.visible_nodes,
