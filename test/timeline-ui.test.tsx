@@ -1700,6 +1700,29 @@ describe('TimelineView', () => {
     expect(screen.queryByText('No selection')).toBeNull();
   });
 
+  it('keeps empty selection distinct from stale route selection', async () => {
+    stubTimelineFetch(projection());
+    const view = render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    expect(screen.getByText('No selection')).toBeTruthy();
+    expect(screen.queryByText('Selection is outside the current projection.')).toBeNull();
+
+    view.rerender(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible', row: 'row-no-longer-projected' },
+    }));
+
+    await waitFor(() => {
+      expect(screen.getByText('Selection is outside the current projection.')).toBeTruthy();
+    });
+    expect(screen.getByText('row-no-longer-projected')).toBeTruthy();
+    expect(screen.queryByText('No selection')).toBeNull();
+  });
+
   it('renders selected event bodies with ledger links and header actions', async () => {
     const base = projection();
     stubTimelineFetch(projection({
@@ -1843,6 +1866,7 @@ describe('TimelineView', () => {
     fireEvent.click(screen.getByText('Closed'));
 
     await waitFor(() => expect(screen.getByText('Selection is outside the current projection.')).toBeTruthy());
+    expect(screen.queryByText('No selection')).toBeNull();
     expect(screen.queryByText('Synced headline')).toBeNull();
   });
 

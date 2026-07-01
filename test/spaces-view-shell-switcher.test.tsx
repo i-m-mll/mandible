@@ -18,7 +18,7 @@ vi.mock('../ui/src/api', async (importActual) => {
 });
 
 import { SpacesViewShell, type SpaceRendererMountProps } from '../ui/src/views/spaces/SpacesViewShell';
-import type { Space } from '../ui/src/api';
+import type { InstanceInfo, Space } from '../ui/src/api';
 
 function Mount(props: SpaceRendererMountProps): JSX.Element {
   return <div data-testid="mount">{props.renderer}</div>;
@@ -36,6 +36,14 @@ function makeSpace(defaultRenderer: Space['default_renderer'] = 'document'): Spa
     updated_at: 0,
   };
 }
+
+const previewInstance: InstanceInfo = {
+  role: 'preview',
+  operational_mutations: 'reject',
+  operational_mutations_overridden: false,
+  db_path: '/tmp/mandible-preview.db',
+  db_path_source: 'iab-preview-copy',
+};
 
 afterEach(() => {
   cleanup();
@@ -109,6 +117,31 @@ describe('SpacesViewShell home polish', () => {
       />,
     );
     expect(screen.getByTestId('mount').textContent).toBe('canvas');
+  });
+
+  it('shows the shared preview-disabled notice above the active renderer', () => {
+    render(
+      <SpacesViewShell
+        projectId="p1"
+        spaceId="s1"
+        renderer="canvas"
+        instance={previewInstance}
+        onNavigate={vi.fn()}
+        renderers={{ canvas: Mount }}
+        loadSpace={vi.fn().mockResolvedValue(makeSpace('canvas'))}
+      />,
+    );
+
+    const notice = screen.getByTestId('preview-disabled-notice');
+    const main = notice.parentElement;
+    const header = document.querySelector('.spaces-shell__header');
+    const body = screen.getByTestId('spaces-shell-body');
+    expect(notice.classList.contains('preview-disabled-notice')).toBe(true);
+    expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
+    expect(main?.classList.contains('spaces-shell__main')).toBe(true);
+    expect(main?.firstElementChild).toBe(notice);
+    expect(notice.nextElementSibling).toBe(header);
+    expect(notice.compareDocumentPosition(body) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('hides the sidebar when sidebarHidden is true', () => {

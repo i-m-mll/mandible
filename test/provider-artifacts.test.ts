@@ -1912,6 +1912,91 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain('"accuracy": 0.95');
   });
 
+  it("keeps raw compact JSON available when the preview is auto-formatted", () => {
+    const compact = '{"accuracy":0.95,"tags":["fast","stable"]}';
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "metrics.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        raw_text: compact,
+        formatted: "json",
+      },
+    });
+    expect(content?.preview?.text).toContain('\n  "accuracy": 0.95,');
+  });
+
+  it("auto-formats compact JSON beyond the default text preview window", () => {
+    const compact = JSON.stringify({
+      adam_grid: {
+        initialization: "zero",
+        learning_rates: [1e-5, 5e-5, 1e-4],
+        steps: Array.from({ length: 40_000 }, (_value, index) => index),
+      },
+    });
+    expect(compact.length).toBeGreaterThan(128 * 1024);
+    expect(Buffer.byteLength(compact)).toBeLessThan(1024 * 1024);
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "adam_soft_lambda_redo.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        raw_text: compact,
+        formatted: "json",
+        truncated: false,
+      },
+    });
+    expect(content?.preview?.text).toContain('\n  "adam_grid": {');
+    expect(content?.preview?.text).toContain('\n      39999\n');
+  });
+
+  it("serves only a bounded initial slice for reported-size JSON previews", () => {
+    const targetBytes = 1_781_484;
+    const emptyJsonBytes = Buffer.byteLength(JSON.stringify({ payload: "" }));
+    const compact = JSON.stringify({ payload: "x".repeat(targetBytes - emptyJsonBytes) });
+    expect(Buffer.byteLength(compact)).toBe(targetBytes);
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "large-metrics.json",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      warnings: ["large artifact preview defers full sha256 validation"],
+      preview: {
+        truncated: true,
+        format_skipped: "partial_preview",
+      },
+    });
+    expect(content?.preview?.text).toBe(compact.slice(0, 256 * 1024));
+    expect(content?.preview?.raw_text).toBeUndefined();
+    expect(content?.preview?.formatted).toBeUndefined();
+    expect(content?.preview?.preview_bytes).toBe(256 * 1024);
+    expect(content?.preview?.total_bytes).toBe(Buffer.byteLength(compact));
+    expect(content?.preview?.omitted_bytes).toBe(Buffer.byteLength(compact) - (256 * 1024));
+  });
+
   it("returns binary download metadata without inline preview", () => {
     const payload = Buffer.from([0, 1, 2, 3, 4]);
     const artifact = ingestArtifact(db, {
@@ -1932,6 +2017,41 @@ describe("provider/artifact substrate", () => {
         size_bytes: payload.length,
         filename: "model.bin",
       },
+    });
+  });
+
+  it("previews source-like UTF-8 artifacts as text despite octet-stream media type", () => {
+    const source = "def train():\n    return 1\n";
+    const artifact = ingestArtifact(db, {
+      media_type: "application/octet-stream",
+      content: source,
+      filename: "train.py",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "text",
+      media_type: "application/octet-stream",
+      preview: { encoding: "utf-8", text: source, truncated: false },
+    });
+  });
+
+  it("keeps source-like filenames binary when bytes are not safe UTF-8", () => {
+    const payload = Buffer.from([0, 1, 2, 3, 4]);
+    const artifact = ingestArtifact(db, {
+      media_type: "application/octet-stream",
+      content_base64: payload.toString("base64"),
+      filename: "train.py",
+    }, 1000, tempDir);
+
+    const content = getArtifactContent(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "binary",
+      preview: null,
     });
   });
 

@@ -33,6 +33,7 @@
     "better-sqlite3": "^11.10.0",
     "chokidar": "^4.0.3",
     "diff2html": "^3.4.56",
+    "highlight.js": "^11.11.1",
     "marked": "^13.0.2",
     "node-pty": "^1.1.0",
     "remark-directive": "^3.0.0",

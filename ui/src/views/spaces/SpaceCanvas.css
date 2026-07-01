@@ -204,6 +204,10 @@
   background: var(--danger, #f85149);
 }
 
+.space-canvas__autosave[data-status='disabled'] .space-canvas__autosave-dot {
+  background: var(--warning, #d29922);
+}
+
 @keyframes space-canvas-pulse {
   0%,
   100% {

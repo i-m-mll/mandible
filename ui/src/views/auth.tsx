@@ -5,6 +5,7 @@ import { useSidebarResize } from '../hooks/useSidebarResize';
 import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import {
   disableAuthAutoApprove,
@@ -1380,7 +1381,9 @@ function AuthRequestDetail({
   };
 
   return (
-    <article className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}>
+    <article
+      className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}
+    >
       <header className="auth-detail__header" ref={headerRef}>
         <div className="auth-detail__header-primary">
           <div className="auth-detail__header-main">
@@ -2522,6 +2525,18 @@ export function AuthQueueView({
   const instanceLabel = instance?.role ?? 'main';
   const instanceDbLabel = instance?.db_path ? compactPath(instance.db_path) : null;
   const instanceSourceLabel = instance?.source_db_path ? compactPath(instance.source_db_path) : null;
+  const previewNotice = instanceMutationBlocked ? (
+    <PreviewDisabledNotice
+      title={`${instanceLabel} instance`}
+      className="preview-disabled-notice--edge-to-edge"
+    >
+      <>
+        Auth actions are disabled for this copied preview queue
+        {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
+        {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
+      </>
+    </PreviewDisabledNotice>
+  ) : null;
 
   const showToast = useCallback((message: string) => {
     setToastMessage(message);
@@ -3371,17 +3386,11 @@ export function AuthQueueView({
       ) : null}
 
       {/* RIGHT detail panel */}
-      <div className="auth-detail" style={{ position: 'relative' }}>
-        {instanceMutationBlocked && (
-          <div className="auth-instance-warning" role="status">
-            <strong>{instanceLabel} instance</strong>
-            <span>
-              Auth actions are disabled for this copied queue
-              {instanceDbLabel ? ` (${instanceDbLabel})` : ''}
-              {instanceSourceLabel ? ` from ${instanceSourceLabel}` : ''}.
-            </span>
-          </div>
-        )}
+      <div
+        className={`auth-detail${previewNotice ? ' auth-detail--with-preview-notice' : ''}`}
+        style={{ position: 'relative' }}
+      >
+        {previewNotice}
         {!selectedRequest ? (
           <div className="auth-detail__empty">
             <p className="text-muted">Select a request to view details</p>

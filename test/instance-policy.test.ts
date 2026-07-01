@@ -1,3 +1,4 @@
+import type http from "node:http";
 import { describe, expect, it } from "vitest";
 
 import { resolveInstanceInfo } from "../src/instance-policy.js";
@@ -54,6 +55,22 @@ describe("instance mutation policy", () => {
 
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ check: { status: "clean" } });
+  });
+
+  it("leaves Timeline projection queries available on preview instances", async () => {
+    const router = previewRouter();
+    router.post("/api/timeline/project", (_req, res) => {
+      res.status(200).json({ project: { id: "prj_mandible" }, rows: [], events: [] });
+    });
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/timeline/project",
+      body: { project_ref: "mandible" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ project: { id: "prj_mandible" }, rows: [], events: [] });
   });
 
   it("rejects representative ledger and work-unit mutations on preview instances", async () => {
@@ -167,6 +184,44 @@ describe("instance mutation policy", () => {
     expect(instanceResponse.body).toEqual({ instance });
   });
 
+  it("embeds instance metadata in the dashboard bootstrap payload", async () => {
+    const instance = resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
+      },
+      dbPath: "/tmp/mandible-preview.db",
+    });
+    const router = new Router({ instance });
+    const server = createServer({
+      db: {} as Db,
+      sse: new SseManager(),
+      logger: () => undefined,
+      version: "test",
+      router,
+      getStartupInfo: () => null,
+      instance,
+    });
+    const port = await listenOnEphemeralPort(server);
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/`);
+      const html = await response.text();
+      const match = html.match(/<script id="mandible-bootstrap" type="application\/json">([^<]+)<\/script>/);
+      expect(match).toBeTruthy();
+      expect(JSON.parse(match?.[1] ?? "{}")).toMatchObject({
+        instance: {
+          role: "preview",
+          operational_mutations: "reject",
+          db_path: "/tmp/mandible-preview.db",
+          db_path_source: "iab-preview-copy",
+        },
+      });
+      expect(html.indexOf('id="mandible-bootstrap"')).toBeLessThan(html.indexOf('src="./dist/app.js"'));
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("allows an explicit operational mutation override for test instances", async () => {
     const instance = resolveInstanceInfo({
       env: {
@@ -189,6 +244,33 @@ describe("instance mutation policy", () => {
     expect(response.body).toEqual({ id: "wu_test" });
   });
 });
+
+function listenOnEphemeralPort(server: http.Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.removeListener("error", reject);
+      const address = server.address();
+      if (typeof address === "object" && address) {
+        resolve(address.port);
+        return;
+      }
+      reject(new Error("server did not listen on an ephemeral TCP port"));
+    });
+  });
+}
+
+function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((error) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    });
+  });
+}
 
 function previewRouter(): Router {
   return new Router({

@@ -1,4 +1,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import hljs from 'highlight.js/lib/core';
+import bash from 'highlight.js/lib/languages/bash';
+import cpp from 'highlight.js/lib/languages/cpp';
+import css from 'highlight.js/lib/languages/css';
+import go from 'highlight.js/lib/languages/go';
+import ini from 'highlight.js/lib/languages/ini';
+import java from 'highlight.js/lib/languages/java';
+import javascript from 'highlight.js/lib/languages/javascript';
+import json from 'highlight.js/lib/languages/json';
+import markdown from 'highlight.js/lib/languages/markdown';
+import python from 'highlight.js/lib/languages/python';
+import r from 'highlight.js/lib/languages/r';
+import ruby from 'highlight.js/lib/languages/ruby';
+import rust from 'highlight.js/lib/languages/rust';
+import sql from 'highlight.js/lib/languages/sql';
+import typescript from 'highlight.js/lib/languages/typescript';
+import xml from 'highlight.js/lib/languages/xml';
+import yaml from 'highlight.js/lib/languages/yaml';
 import {
   getArtifact,
   getArtifactContent,
@@ -29,6 +47,7 @@ import { renderDocumentText } from './spaces/DocumentRenderer';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -71,13 +90,35 @@ type BundleMemberPreview = {
 type MetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
 
 type ArtifactPreview =
-  | { kind: 'json' | 'markdown' | 'text' | 'html' | 'empty'; value: string }
+  | {
+      kind: 'json' | 'text';
+      value: string;
+      rawValue: string;
+      autoFormatted: boolean;
+      formatLabel: string;
+      highlightLanguage: ArtifactHighlightLanguage | null;
+      partial: boolean;
+      previewBytes?: number;
+      totalBytes?: number;
+      omittedBytes?: number;
+      formatSkipped?: 'partial_preview';
+    }
+  | { kind: 'markdown' | 'html' | 'empty'; value: string }
   | { kind: 'binary'; value: string }
   | { kind: 'bundle'; manifestText: string; name: string; members: BundleMemberPreview[] };
 
 type LastWrittenHashRef = {
   current: { seriesRef: string; versionNo: number | null } | null;
 };
+
+function isAbortError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'name' in error
+    && error.name === 'AbortError',
+  );
+}
 
 export function ArtifactsView({
   initialArtifactId,
@@ -122,6 +163,9 @@ export function ArtifactsView({
   const listRequestIdRef = useRef(0);
   const facetRequestIdRef = useRef(0);
   const versionsRequestIdRef = useRef(0);
+  const artifactRequestIdRef = useRef(0);
+  const contentRequestIdRef = useRef(0);
+  const knowledgeRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
   const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
     initialSeriesRef ? { seriesRef: normalizeSeriesRef(initialSeriesRef), versionNo: initialVersionNo } : null,
@@ -338,27 +382,31 @@ export function ArtifactsView({
   useEffect(() => {
     if (!selectedArtifactId) return;
     if (selectedArtifact?.id === selectedArtifactId && resolution?.artifact?.id === selectedArtifactId) return;
-    let cancelled = false;
+    const requestId = artifactRequestIdRef.current + 1;
+    artifactRequestIdRef.current = requestId;
+    const controller = new AbortController();
     setDetailLoading(true);
     setError(null);
-    getArtifact(selectedArtifactId)
+    getArtifact(selectedArtifactId, { signal: controller.signal })
       .then((artifact) => {
-        if (cancelled) return;
+        if (artifactRequestIdRef.current !== requestId || artifact.id !== selectedArtifactId) return;
         setSelectedArtifact(artifact);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (isAbortError(err)) return;
+        if (artifactRequestIdRef.current === requestId) setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (artifactRequestIdRef.current === requestId) setDetailLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [resolution?.artifact?.id, selectedArtifact?.id, selectedArtifactId]);
 
   useEffect(() => {
-    if (!selectedArtifact) {
+    if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
+      contentRequestIdRef.current += 1;
       setArtifactContent(null);
       setKnowledgeBackrefs([]);
       setContentError(null);
@@ -367,49 +415,58 @@ export function ArtifactsView({
       setKnowledgeLoading(false);
       return;
     }
-    let cancelled = false;
+    const requestId = contentRequestIdRef.current + 1;
+    contentRequestIdRef.current = requestId;
+    const controller = new AbortController();
+    setArtifactContent(null);
     setContentLoading(true);
     setContentError(null);
-    getArtifactContent(selectedArtifact.id)
+    getArtifactContent(selectedArtifact.id, { signal: controller.signal })
       .then((content) => {
-        if (!cancelled) setArtifactContent(content);
+        if (contentRequestIdRef.current !== requestId || content.artifact_id !== selectedArtifact.id) return;
+        setArtifactContent(content);
       })
       .catch((err) => {
-        if (!cancelled) setContentError(err instanceof Error ? err.message : String(err));
+        if (isAbortError(err)) return;
+        if (contentRequestIdRef.current === requestId) setContentError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setContentLoading(false);
+        if (contentRequestIdRef.current === requestId) setContentLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [selectedArtifact?.id]);
+  }, [selectedArtifact?.id, selectedArtifactId]);
 
   useEffect(() => {
-    if (!selectedArtifact) {
+    if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
+      knowledgeRequestIdRef.current += 1;
       setKnowledgeBackrefs([]);
       setKnowledgeError(null);
       setKnowledgeLoading(false);
       return;
     }
-    let cancelled = false;
+    const requestId = knowledgeRequestIdRef.current + 1;
+    knowledgeRequestIdRef.current = requestId;
+    const controller = new AbortController();
     setKnowledgeLoading(true);
     setKnowledgeError(null);
     setKnowledgeBackrefs([]);
-    getArtifactKnowledgeBackrefs(selectedArtifact.id)
+    getArtifactKnowledgeBackrefs(selectedArtifact.id, { signal: controller.signal })
       .then((backrefs) => {
-        if (!cancelled) setKnowledgeBackrefs(backrefs);
+        if (knowledgeRequestIdRef.current === requestId) setKnowledgeBackrefs(backrefs);
       })
       .catch((err) => {
-        if (!cancelled) setKnowledgeError(err instanceof Error ? err.message : String(err));
+        if (isAbortError(err)) return;
+        if (knowledgeRequestIdRef.current === requestId) setKnowledgeError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setKnowledgeLoading(false);
+        if (knowledgeRequestIdRef.current === requestId) setKnowledgeLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [selectedArtifact?.id]);
+  }, [selectedArtifact?.id, selectedArtifactId]);
 
   const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
   const selectedVersion = useMemo(() => (
@@ -420,6 +477,14 @@ export function ArtifactsView({
   const selectedSeries = useMemo(() => (
     series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
   ), [selectedSeriesRef, series]);
+  const coherentSelectedArtifact = selectedArtifact?.id === selectedArtifactId ? selectedArtifact : null;
+  const coherentArtifactContent = artifactContent?.artifact_id === coherentSelectedArtifact?.id ? artifactContent : null;
+  const coherentContentLoading = Boolean(
+    coherentSelectedArtifact
+    && !contentError
+    && (contentLoading || !coherentArtifactContent)
+  );
+  const detailPending = Boolean(selectedArtifactId && !coherentSelectedArtifact);
 
   const selectSeries = (entry: ArtifactSeriesSummary) => {
     const ref = seriesRef(entry);
@@ -437,6 +502,7 @@ export function ArtifactsView({
       ? versionHistory?.versions[0] ?? null
       : versionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
     setSelectedArtifactId(version?.artifact_id ?? null);
+    setResolution(null);
     if (!selectedSeriesRef) return;
     writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
@@ -519,18 +585,20 @@ export function ArtifactsView({
           <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
         </>
       ) : null}
-      <main className={`artifacts-detail${selectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
+      <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {error && <div className="artifacts-error">{error}</div>}
-        {detailLoading && !selectedArtifact && !resolution && <div className="artifacts-empty">Loading artifact...</div>}
-        {!detailLoading && !selectedArtifact && !resolution && (
+        {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
+          <div className="artifacts-empty" role="status">Loading artifact...</div>
+        )}
+        {!detailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
         )}
-        {!detailLoading && resolution && !resolution.artifact && (
+        {!detailLoading && !detailPending && resolution && !resolution.artifact && (
           <UnresolvedArtifact resolution={resolution} />
         )}
-        {selectedArtifact && (
+        {coherentSelectedArtifact && (
           <ArtifactDetail
-            artifact={selectedArtifact}
+            artifact={coherentSelectedArtifact}
             resolution={resolution}
             series={versionHistory?.series ?? selectedSeries ?? null}
             versions={versionHistory?.versions ?? []}
@@ -541,8 +609,8 @@ export function ArtifactsView({
             onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
             onCloseVersionHistory={() => setVersionHistoryOpen(false)}
             onMetadataOpenChange={setDetailMetadataOpen}
-            content={artifactContent}
-            contentLoading={contentLoading}
+            content={coherentArtifactContent}
+            contentLoading={coherentContentLoading}
             contentError={contentError}
             knowledgeBackrefs={knowledgeBackrefs}
             knowledgeLoading={knowledgeLoading}
@@ -645,9 +713,15 @@ export function ArtifactDetail({
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const seriesRefValue = series ? seriesRecordRef(series) : '';
   const copyableSeriesRef = seriesRefValue ? shortArtifactSeriesRef(seriesRefValue) : '';
-  const selectedArtifactRef = selectedVersion?.id
-    ? shortArtifactVersionRef(selectedVersion.id)
-    : shortImmutableArtifactRef(artifact.content_hash || artifact.id);
+  const selectedArtifactRef = selectedVersion && copyableSeriesRef
+    ? `${copyableSeriesRef}@${selectedVersion.version_no}`
+    : selectedVersion?.id
+      ? shortArtifactVersionRef(selectedVersion.id)
+      : shortImmutableArtifactRef(artifact.content_hash || artifact.id);
+  const homeRepoLabel = artifactHomeRepoLabel(artifact, series);
+  const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
+  const headerCopyValue = copyableSeriesRef || shortImmutableArtifactRef(artifact.content_hash || artifact.id);
+  const headerCopyLabel = copyableSeriesRef ? 'Copy artifact series ref' : 'Copy artifact ref';
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
     ['Series', seriesRefValue, true, copyableSeriesRef || seriesRefValue],
@@ -740,10 +814,15 @@ export function ArtifactDetail({
     <article className="artifact-detail">
       <header className="artifact-detail__header" ref={headerRef}>
         <div className="artifact-detail__top-row">
-          <div className="artifact-detail__topline">
-            <span className="artifact-detail__series-id">{seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id)}</span>
-            <CopyButton value={copyableSeriesRef || shortImmutableArtifactRef(artifact.content_hash || artifact.id)} label="Copy artifact ref" />
-          </div>
+          <DetailHeaderIdentity
+            className="artifact-detail__eyebrow"
+            contextLabel={homeRepoLabel}
+            contextClassName="artifact-detail__repo"
+            shortId={headerShortId}
+            shortIdClassName="artifact-detail__short-ref"
+            copyValue={headerCopyValue}
+            copyLabel={headerCopyLabel}
+          />
           <div className="artifact-detail__status">
             <label className="artifact-detail__version-control">
               <select
@@ -1017,22 +1096,81 @@ function PreviewSection({
   contentError: string | null;
 }): JSX.Element {
   const showPreview = !contentError && preview !== null;
+  const [autoFormatJson, setAutoFormatJson] = useState(true);
+  const formatToggleVisible = Boolean(
+    preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && preview.autoFormatted,
+  );
+  const previewValue = preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && preview.autoFormatted
+    ? (autoFormatJson ? preview.value : preview.rawValue)
+    : preview && (preview.kind === 'json' || preview.kind === 'text')
+      ? preview.value
+      : '';
+  const highlightLanguage = preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && !preview.partial
+    && previewValue.length <= ARTIFACT_HIGHLIGHT_MAX_CHARS
+    ? preview.highlightLanguage
+    : null;
+  const highlightedPreview = useMemo(() => (
+    preview && (preview.kind === 'json' || preview.kind === 'text')
+      ? highlightArtifactCode(previewValue, highlightLanguage)
+      : null
+  ), [preview, previewValue, highlightLanguage]);
+  const codeClassName = highlightedPreview
+    ? `hljs language-${highlightedPreview.language}`
+    : undefined;
+  const codePreviewClassName = [
+    'artifact-preview',
+    'artifact-preview--code',
+    preview && (preview.kind === 'json' || preview.kind === 'text') && preview.partial
+      ? 'artifact-preview--partial'
+      : '',
+  ].filter(Boolean).join(' ');
+  useEffect(() => {
+    setAutoFormatJson(true);
+  }, [content?.artifact_id]);
   return (
     <section className="artifact-detail__section" aria-label="Preview">
       <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
-        {contentLoading && (
-          <div className="artifact-preview-frame__loading" role="status">
-            Loading preview...
-          </div>
-        )}
-        {!showPreview && contentLoading && <div className="artifacts-empty">Loading preview...</div>}
+        {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
         {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
         {showPreview && content?.warnings?.map((warning) => (
         <div key={warning} className="artifact-detail__warning">{warning}</div>
         ))}
         {showPreview && preview.kind === 'bundle' && <BundlePreview preview={preview} />}
-        {showPreview && preview.kind === 'json' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
-        {showPreview && preview.kind === 'text' && <pre className="artifact-preview"><code>{preview.value}</code></pre>}
+        {showPreview && formatToggleVisible && (
+          <div className="artifact-preview-toolbar">
+            <span>{preview.formatLabel}</span>
+            <button
+              type="button"
+              onClick={() => setAutoFormatJson((enabled) => !enabled)}
+            >
+              {autoFormatJson ? 'Show raw' : 'Format'}
+            </button>
+          </div>
+        )}
+        {showPreview && preview.kind === 'json' && (
+          <pre className={codePreviewClassName}>
+            {highlightedPreview ? (
+              <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
+            ) : (
+              <code>{previewValue}</code>
+            )}
+          </pre>
+        )}
+        {showPreview && preview.kind === 'text' && (
+          <pre className={codePreviewClassName}>
+            {highlightedPreview ? (
+              <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
+            ) : (
+              <code>{previewValue}</code>
+            )}
+          </pre>
+        )}
         {showPreview && preview.kind === 'html' && (
           <iframe
             className="artifact-preview artifact-preview--html"
@@ -1051,7 +1189,13 @@ function PreviewSection({
           </div>
         )}
         {showPreview && preview.kind === 'empty' && <div className="artifacts-empty">{preview.value}</div>}
-        {showPreview && content?.preview?.truncated && (
+        {showPreview && preview && (preview.kind === 'json' || preview.kind === 'text') && preview.partial && (
+          <div className="artifact-detail__hint">
+            Showing the first {formatBytes(preview.previewBytes ?? content?.preview?.preview_bytes ?? 0) || 'preview'} of {formatBytes(preview.totalBytes ?? content?.size_bytes ?? 0) || 'the artifact'}.
+            {preview.formatSkipped ? ' Formatting and highlighting are skipped for this partial preview.' : ''}
+          </div>
+        )}
+        {showPreview && content?.preview?.truncated && (!preview || preview.kind === 'markdown' || preview.kind === 'html') && (
           <div className="artifact-detail__hint">Preview truncated at the server limit.</div>
         )}
       </div>
@@ -1186,12 +1330,12 @@ function buildFacetOptions(series: ArtifactSeriesSummary[]): {
 }
 
 function seriesRef(series: ArtifactSeriesSummary): string {
-  return series.ref || logicalArtifactRefFromSeriesId(series.id);
+  return series.ref || canonicalArtifactSeriesRef(series.id);
 }
 
 function seriesRecordRef(series: ArtifactSeriesRecord | ArtifactSeriesSummary): string {
   if ('ref' in series && series.ref) return series.ref;
-  return logicalArtifactRefFromSeriesId(series.id);
+  return canonicalArtifactSeriesRef(series.id);
 }
 
 function artifactLinkKind(link: ArtifactLinkRecord): 'pinned' | 'living' {
@@ -1205,7 +1349,7 @@ function artifactLinkBadgeLabel(link: ArtifactLinkRecord): string {
 }
 
 function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {
-  const seriesRef = link.series_ref ? normalizeSeriesRef(link.series_ref) : link.series_id ? logicalArtifactRefFromSeriesId(link.series_id) : null;
+  const seriesRef = link.series_ref ? normalizeSeriesRef(link.series_ref) : link.series_id ? canonicalArtifactSeriesRef(link.series_id) : null;
   if (link.link_kind === 'living') {
     return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(link.artifact_id);
   }
@@ -1216,8 +1360,8 @@ function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {
 
 function normalizeSeriesRef(ref: string): string {
   const trimmed = ref.trim();
-  if (/^artifact:/i.test(trimmed)) return trimmed;
-  return logicalArtifactRefFromSeriesId(trimmed);
+  if (/^artifact-series:/i.test(trimmed)) return trimmed;
+  return canonicalArtifactSeriesRef(trimmed);
 }
 
 function sortedVersionHistory(history: ArtifactVersionHistory): ArtifactVersionHistory {
@@ -1270,6 +1414,16 @@ function artifactRepoLocator(artifact: ArtifactRecord): string {
   return `repo://${repoId}${ref ? `@${ref}` : ''}/${repoPath.replace(/^\/+/, '')}`;
 }
 
+function artifactHomeRepoLabel(
+  artifact: ArtifactRecord,
+  series: ArtifactSeriesRecord | ArtifactSeriesSummary | null,
+): string {
+  const seriesRepo = isRecord(series) ? stringValue(series.repo_id) : '';
+  return artifact.home_repo_id
+    || stringValue(artifact.repo_locator.repo_id)
+    || seriesRepo;
+}
+
 function artifactTitleCandidate(value: string): string {
   return value && displayResourceRef(value) === value ? value : '';
 }
@@ -1281,7 +1435,7 @@ function shortSeriesId(ref: string): string {
 function shortArtifactSeriesRef(ref: string): string {
   const trimmed = ref.trim();
   const bare = trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '');
-  return `artifact:${bare.slice(0, 7)}`;
+  return `artifact-series:${bare.slice(0, 7)}`;
 }
 
 function shortArtifactVersionRef(ref: string): string {
@@ -1298,11 +1452,10 @@ function shortArtifactId(ref: string): string {
   return ref.trim().replace(/^artifact:sha256:/i, '').replace(/^artifact-blob:/i, '').replace(/^artifact:/i, '').replace(/^sha256:/i, '').slice(0, 7).toLowerCase();
 }
 
-function logicalArtifactRefFromSeriesId(ref: string): string {
+function canonicalArtifactSeriesRef(ref: string): string {
   const trimmed = ref.trim();
-  if (/^artifact:/i.test(trimmed) && !/^artifact-series:/i.test(trimmed)) return trimmed;
   const bare = trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '');
-  return `artifact:${bare}`;
+  return `artifact-series:${bare}`;
 }
 
 function artifactCreatedUpdated(
@@ -1343,11 +1496,24 @@ async function copyText(value: string): Promise<void> {
   await navigator.clipboard.writeText(value);
 }
 
-function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
+export function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
   if (content.kind === 'json' && content.preview) {
-    const bundle = artifactBundlePreview(content.preview.text);
+    const bundle = content.preview.truncated ? null : artifactBundlePreview(content.preview.text);
     if (bundle) return bundle;
-    return { kind: 'json', value: content.preview.text };
+    const rawValue = content.preview.raw_text ?? content.preview.text;
+    return {
+      kind: 'json',
+      value: content.preview.text,
+      rawValue,
+      autoFormatted: content.preview.formatted === 'json' && rawValue !== content.preview.text,
+      formatLabel: 'Auto-formatted JSON',
+      highlightLanguage: content.preview.truncated ? null : 'json',
+      partial: content.preview.truncated,
+      previewBytes: content.preview.preview_bytes,
+      totalBytes: content.preview.total_bytes,
+      omittedBytes: content.preview.omitted_bytes,
+      formatSkipped: content.preview.format_skipped,
+    };
   }
   if (content.kind === 'html' && content.preview) {
     return { kind: 'html', value: content.preview.text };
@@ -1364,7 +1530,34 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
     return { kind: 'markdown', value: rendered.html };
   }
   if (content.kind === 'text' && content.preview) {
-    return { kind: 'text', value: content.preview.text };
+    const formattedJson = formatJsonLikePreview(content.preview.text, content.preview.truncated);
+    if (formattedJson) {
+      return {
+        kind: 'text',
+        value: formattedJson,
+        rawValue: content.preview.text,
+        autoFormatted: true,
+        formatLabel: 'Auto-formatted JSON-like text',
+        highlightLanguage: 'json',
+        partial: false,
+        previewBytes: content.preview.preview_bytes,
+        totalBytes: content.preview.total_bytes,
+        omittedBytes: content.preview.omitted_bytes,
+      };
+    }
+    return {
+      kind: 'text',
+      value: content.preview.text,
+      rawValue: content.preview.text,
+      autoFormatted: false,
+      formatLabel: '',
+      highlightLanguage: content.preview.truncated ? null : artifactHighlightLanguage(content),
+      partial: content.preview.truncated,
+      previewBytes: content.preview.preview_bytes,
+      totalBytes: content.preview.total_bytes,
+      omittedBytes: content.preview.omitted_bytes,
+      formatSkipped: content.preview.format_skipped,
+    };
   }
   if (content.kind === 'binary' && content.download.available) {
     return { kind: 'binary', value: content.download.media_type };
@@ -1373,6 +1566,115 @@ function artifactPreview(content: ArtifactContentResult): ArtifactPreview {
     return { kind: 'empty', value: content.reason };
   }
   return { kind: 'empty', value: 'No inline preview is available for this artifact.' };
+}
+
+const ARTIFACT_HIGHLIGHT_LANGUAGES = {
+  bash,
+  cpp,
+  css,
+  go,
+  ini,
+  java,
+  javascript,
+  json,
+  markdown,
+  python,
+  r,
+  ruby,
+  rust,
+  sql,
+  typescript,
+  xml,
+  yaml,
+};
+
+type ArtifactHighlightLanguage = keyof typeof ARTIFACT_HIGHLIGHT_LANGUAGES;
+const ARTIFACT_HIGHLIGHT_MAX_CHARS = 256 * 1024;
+
+const REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES = new Set<ArtifactHighlightLanguage>();
+
+function ensureArtifactHighlightLanguage(language: ArtifactHighlightLanguage): void {
+  if (REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES.has(language)) return;
+  hljs.registerLanguage(language, ARTIFACT_HIGHLIGHT_LANGUAGES[language]);
+  REGISTERED_ARTIFACT_HIGHLIGHT_LANGUAGES.add(language);
+}
+
+export function highlightArtifactCode(
+  code: string,
+  language: ArtifactHighlightLanguage | null,
+): { html: string; language: ArtifactHighlightLanguage } | null {
+  if (!language || !code) return null;
+  if (code.length > ARTIFACT_HIGHLIGHT_MAX_CHARS) return null;
+  ensureArtifactHighlightLanguage(language);
+  return {
+    html: hljs.highlight(code, { language, ignoreIllegals: true }).value,
+    language,
+  };
+}
+
+export function artifactHighlightLanguage(content: ArtifactContentResult): ArtifactHighlightLanguage | null {
+  if (content.kind === 'json') return 'json';
+  const mediaType = content.media_type.toLowerCase();
+  if (mediaType.includes('json')) return 'json';
+  if (mediaType.includes('javascript')) return 'javascript';
+  if (mediaType.includes('typescript')) return 'typescript';
+  if (mediaType.includes('python')) return 'python';
+  if (mediaType.includes('x-sh') || mediaType.includes('shellscript')) return 'bash';
+  const filename = content.download.filename?.toLowerCase() ?? '';
+  return ARTIFACT_HIGHLIGHT_LANGUAGE_BY_EXTENSION[fileExtension(filename)] ?? null;
+}
+
+const ARTIFACT_HIGHLIGHT_LANGUAGE_BY_EXTENSION: Record<string, ArtifactHighlightLanguage> = {
+  '.bash': 'bash',
+  '.c': 'cpp',
+  '.cc': 'cpp',
+  '.cpp': 'cpp',
+  '.css': 'css',
+  '.go': 'go',
+  '.h': 'cpp',
+  '.hpp': 'cpp',
+  '.html': 'xml',
+  '.htm': 'xml',
+  '.ini': 'ini',
+  '.java': 'java',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.json': 'json',
+  '.mjs': 'javascript',
+  '.md': 'markdown',
+  '.markdown': 'markdown',
+  '.py': 'python',
+  '.r': 'r',
+  '.rb': 'ruby',
+  '.rs': 'rust',
+  '.sh': 'bash',
+  '.sql': 'sql',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.xml': 'xml',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.zsh': 'bash',
+};
+
+function fileExtension(filename: string): string {
+  const basename = filename.split(/[\\/]/).pop() ?? filename;
+  const index = basename.lastIndexOf('.');
+  return index > 0 ? basename.slice(index) : '';
+}
+
+function formatJsonLikePreview(text: string, truncated: boolean): string | null {
+  if (truncated) return null;
+  const trimmed = text.trim();
+  if (!trimmed || !/^[\[{]/.test(trimmed)) return null;
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!Array.isArray(parsed) && !isRecord(parsed)) return null;
+    const formatted = JSON.stringify(parsed, null, 2);
+    return formatted !== trimmed ? formatted : null;
+  } catch {
+    return null;
+  }
 }
 
 function artifactBundlePreview(text: string): Extract<ArtifactPreview, { kind: 'bundle' }> | null {

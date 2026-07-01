@@ -79,7 +79,7 @@ import './SpaceCanvas.css';
 // ---------------------------------------------------------------------------
 
 /** Autosave indicator state for the debounced batch write. */
-export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error';
+export type AutosaveStatus = 'idle' | 'saving' | 'saved' | 'error' | 'disabled';
 
 /**
  * A canvas node: a placed occurrence joined to its backing item. `x`/`y` are
@@ -483,7 +483,15 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
   debounceMs?: number;
 };
 
-type PendingAckPosition = { x: number; y: number; savedAt: number | null; expiresAt: number };
+type PendingAckPosition = {
+  x: number;
+  y: number;
+  savedAt: number | null;
+  expiresAt: number;
+  previewDisabled?: boolean;
+};
+
+type InitialModelStatus = 'pending' | 'loaded' | 'error';
 
 const DEFAULT_DEBOUNCE_MS = 400;
 const POSITION_ACK_PROTECTION_MS = 10_000;
@@ -508,6 +516,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const {
     spaceId,
     projectId,
+    instance,
     initialModel,
     loadModel,
     batchWrite = batchWriteSpaceOccurrences,
@@ -527,6 +536,9 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // Authored `space_edges` rendered as lines on the canvas and edited through the
   // Canvas selection inspector.
   const [edges, setEdges] = useState<SpaceEdge[]>(() => initialModel?.edges ?? []);
+  const [initialModelStatus, setInitialModelStatus] = useState<InitialModelStatus>(() =>
+    !initialModel && spaceId && loadModel ? 'pending' : 'loaded',
+  );
   const [autosave, setAutosave] = useState<AutosaveStatus>('idle');
   const [edgeStatus, setEdgeStatus] = useState<AutosaveStatus>('idle');
   const [edgeStatusMessage, setEdgeStatusMessage] = useState('');
@@ -589,6 +601,10 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const incomingById = new Map(incoming.map((occurrence) => [occurrence.id, occurrence]));
     const protectedPositions: Record<string, { x: number; y: number }> = {};
     for (const [id, position] of Object.entries(pendingAckPositions.current)) {
+      if (position.previewDisabled) {
+        protectedPositions[id] = { x: position.x, y: position.y };
+        continue;
+      }
       if (position.expiresAt <= now) {
         delete pendingAckPositions.current[id];
         draggingIds.current.delete(id);
@@ -608,6 +624,22 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     return protectedPositions;
   }, []);
 
+  const previewMutationsDisabled = Boolean(instance && instance.operational_mutations === 'reject');
+
+  const markPositionsPreviewDisabled = useCallback((
+    positions: Record<string, { x: number; y: number }>,
+  ) => {
+    for (const [id, position] of Object.entries(positions)) {
+      pendingAckPositions.current[id] = {
+        ...position,
+        savedAt: null,
+        expiresAt: Number.POSITIVE_INFINITY,
+        previewDisabled: true,
+      };
+      draggingIds.current.delete(id);
+    }
+  }, []);
+
   const reconcileModel = useCallback(
     (model: SpaceCanvasModel) => {
       const protectedPositions = protectedPositionsForIncoming(model.occurrences);
@@ -622,14 +654,24 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
 
   // --- initial load (only when no initialModel was provided) ---
   useEffect(() => {
-    if (initialModel || !spaceId || !loadModel) return;
+    if (initialModel || !spaceId || !loadModel) {
+      setInitialModelStatus('loaded');
+      return;
+    }
     let cancelled = false;
-    void loadModel(spaceId).then((model) => {
-      if (cancelled) return;
-      setOccurrences(model.occurrences);
-      setItems(model.items);
-      setEdges(model.edges ?? []);
-    });
+    setInitialModelStatus('pending');
+    void loadModel(spaceId)
+      .then((model) => {
+        if (cancelled) return;
+        setOccurrences(model.occurrences);
+        setItems(model.items);
+        setEdges(model.edges ?? []);
+        setInitialModelStatus('loaded');
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setInitialModelStatus('error');
+      });
     return () => {
       cancelled = true;
     };
@@ -641,6 +683,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     const entries = buildBatchEntries(positions);
     if (entries.length === 0 || !spaceId) return;
     pendingPositions.current = {};
+    if (previewMutationsDisabled) {
+      markPositionsPreviewDisabled(positions);
+      setAutosave('disabled');
+      return;
+    }
     setAutosave('saving');
     try {
       const response = await batchWrite(spaceId, entries);
@@ -659,13 +706,18 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
         if (entry.id) draggingIds.current.delete(entry.id);
       }
       setAutosave('saved');
-    } catch {
+    } catch (error) {
+      if (isPreviewMutationRejected(error)) {
+        markPositionsPreviewDisabled(positions);
+        setAutosave('disabled');
+        return;
+      }
       // Graceful failure: surface the error state, re-queue the positions so a
       // later flush retries, and keep the optimistic positions on screen.
       pendingPositions.current = { ...positions, ...pendingPositions.current };
       setAutosave('error');
     }
-  }, [spaceId, batchWrite]);
+  }, [spaceId, batchWrite, previewMutationsDisabled, markPositionsPreviewDisabled]);
 
   const scheduleFlush = useCallback(() => {
     if (debounceTimer.current !== null) {
@@ -1099,7 +1151,15 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       </div>
       <div className="space-canvas__body" ref={bodyRef}>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
-          {placed.length === 0 ? (
+          {initialModelStatus === 'pending' && placed.length === 0 ? (
+            <div className="space-canvas__empty" data-testid="space-canvas-loading">
+              Loading canvas items...
+            </div>
+          ) : initialModelStatus === 'error' && placed.length === 0 ? (
+            <div className="space-canvas__empty" data-testid="space-canvas-load-error">
+              Unable to load canvas items.
+            </div>
+          ) : placed.length === 0 ? (
             <div className="space-canvas__empty" data-testid="space-canvas-empty">
               No canvas items yet.
             </div>
@@ -1156,6 +1216,10 @@ type SpaceCanvasFlowSurfaceProps = {
   onConnect: (connection: Connection) => void;
 };
 
+type FlowInitInstance = {
+  fitView: (options?: { padding?: number; duration?: number }) => Promise<boolean> | boolean;
+};
+
 function sameFlowNode(left: SpaceFlowNode, right: SpaceFlowNode): boolean {
   return (
     left.id === right.id &&
@@ -1210,9 +1274,24 @@ function SpaceCanvasFlowSurface({
 }: SpaceCanvasFlowSurfaceProps): JSX.Element {
   const [nodes, setNodes] = useState<SpaceFlowNode[]>(() => canonicalNodes);
   const activeDragIds = useRef<Set<string>>(new Set());
+  const didInitialFitView = useRef(false);
 
   useEffect(() => {
-    setNodes((previous) => reconcileFlowNodeState(previous, canonicalNodes, activeDragIds.current));
+    setNodes((previous) => {
+      const next = reconcileFlowNodeState(previous, canonicalNodes, activeDragIds.current);
+      const nextById = new Map(next.map((node) => [node.id, node]));
+      for (const canonicalNode of canonicalNodes) {
+        const localNode = nextById.get(canonicalNode.id);
+        if (
+          localNode &&
+          localNode.position.x === canonicalNode.position.x &&
+          localNode.position.y === canonicalNode.position.y
+        ) {
+          activeDragIds.current.delete(canonicalNode.id);
+        }
+      }
+      return next;
+    });
   }, [canonicalNodes]);
 
   const onNodesChange = useCallback(
@@ -1221,7 +1300,6 @@ function SpaceCanvasFlowSurface({
       for (const change of changes) {
         if (change.type === 'position' && change.position) {
           if (change.dragging === false) {
-            activeDragIds.current.delete(change.id);
             onNodeDragStop(change.id, { x: change.position.x, y: change.position.y });
           } else {
             activeDragIds.current.add(change.id);
@@ -1236,13 +1314,19 @@ function SpaceCanvasFlowSurface({
     [onNodeDragStart, onNodeDragStop, onNodeSelectionChange],
   );
 
+  const onInit = useCallback((instance: FlowInitInstance) => {
+    if (didInitialFitView.current) return;
+    didInitialFitView.current = true;
+    void instance.fitView({ padding: 0.16, duration: 0 });
+  }, []);
+
   return (
     <ReactFlow
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
       proOptions={{ hideAttribution: true }}
-      fitView
+      onInit={onInit}
       minZoom={0.2}
       maxZoom={1.8}
       nodesDraggable
@@ -1485,6 +1569,8 @@ function autosaveLabel(status: AutosaveStatus): string {
       return 'Saved';
     case 'error':
       return 'Save failed - will retry';
+    case 'disabled':
+      return 'Saving disabled';
     default:
       return 'Saved';
   }
@@ -1498,9 +1584,16 @@ function edgeStatusLabel(status: AutosaveStatus): string {
       return 'Saved';
     case 'error':
       return 'Error';
+    case 'disabled':
+      return 'Disabled';
     default:
       return 'Ready';
   }
+}
+
+function isPreviewMutationRejected(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes('instance_mutation_forbidden');
 }
 
 /** React Flow custom node for a Space occurrence. */

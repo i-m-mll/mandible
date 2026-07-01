@@ -122,8 +122,12 @@ const DEFAULT_HEADERS = {
   Accept: 'application/json',
 };
 
-async function apiGet(path: string): Promise<Response> {
-  const response = await fetch(path, { headers: DEFAULT_HEADERS });
+async function apiGet(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(DEFAULT_HEADERS);
+  if (init.headers) {
+    new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  }
+  const response = await fetch(path, { ...init, headers });
   if (!response.ok) {
     await throwOnError(response, 'GET', path);
   }
@@ -1822,7 +1826,7 @@ export type ArtifactVersionHistory = {
 export type ArtifactContentResult = {
   artifact_id: string;
   status: 'available' | 'unavailable';
-  kind: 'text' | 'markdown' | 'json' | 'binary' | 'unavailable';
+  kind: 'text' | 'markdown' | 'json' | 'html' | 'binary' | 'unavailable';
   media_type: string;
   size_bytes: number;
   source: {
@@ -1832,7 +1836,13 @@ export type ArtifactContentResult = {
   preview: {
     encoding: 'utf-8';
     text: string;
+    raw_text?: string;
+    formatted?: 'json';
     truncated: boolean;
+    preview_bytes?: number;
+    total_bytes?: number;
+    omitted_bytes?: number;
+    format_skipped?: 'partial_preview';
   } | null;
   download: {
     available: boolean;
@@ -1895,20 +1905,20 @@ export async function getArtifactVersions(ref: string): Promise<ArtifactVersionH
   return payload.history;
 }
 
-export async function getArtifact(id: string): Promise<ArtifactRecord> {
-  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}`);
+export async function getArtifact(id: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactRecord> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { artifact: ArtifactRecord };
   return payload.artifact;
 }
 
-export async function getArtifactContent(id: string): Promise<ArtifactContentResult> {
-  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/content`);
+export async function getArtifactContent(id: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactContentResult> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/content`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { content: ArtifactContentResult };
   return payload.content;
 }
 
-export async function getArtifactKnowledgeBackrefs(id: string): Promise<KnowledgeBackrefRecord[]> {
-  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`);
+export async function getArtifactKnowledgeBackrefs(id: string, options: { signal?: AbortSignal } = {}): Promise<KnowledgeBackrefRecord[]> {
+  const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { backrefs?: KnowledgeBackrefRecord[] };
   return payload.backrefs ?? [];
 }

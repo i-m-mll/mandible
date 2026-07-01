@@ -6,7 +6,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { App } from '../ui/src/app';
-import { getReviewSpec, patchSession, updateConversation } from '../ui/src/api';
+import { getReviewSpec, patchSession, updateConversation, type InstanceInfo } from '../ui/src/api';
 import {
   installTauriDeepLinkHandler,
   navigateToMandibleDeepLink,
@@ -148,6 +148,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.doUnmock('@tauri-apps/plugin-deep-link');
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
+  delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
 });
 
 function changeSelect(select: HTMLElement, value: string): void {
@@ -261,6 +262,16 @@ function stubAppShellFetch(): void {
     );
   }));
 }
+
+const previewInstance: InstanceInfo = {
+  role: 'preview',
+  operational_mutations: 'reject',
+  operational_mutations_overridden: true,
+  db_path: '/tmp/mandible-preview.db',
+  db_path_source: 'iab-preview-copy',
+  source_db_path: '/tmp/mandible-main.db',
+  source_db_path_source: 'env',
+};
 
 describe('SessionsView', () => {
   it('renders session data and triggers navigate', () => {
@@ -704,6 +715,50 @@ describe('app shell', () => {
       const spacesNav = within(nav).getByLabelText('Spaces');
       expect(spacesNav.getAttribute('aria-current')).toBe('page');
     });
+  });
+
+  it('renders the Spaces preview notice from boot instance data before health resolves', () => {
+    stubEventSource();
+    (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
+      instance: previewInstance,
+    };
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/health') {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url === '/api/spaces/s1') {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url === '/api/settings') {
+        return Promise.resolve(new Response(JSON.stringify({}), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/inbox/global') {
+        return Promise.resolve(new Response(JSON.stringify({
+          continuations: [],
+          auth_results: [],
+          open_issues: [],
+          total: 0,
+        }), { headers: { 'Content-Type': 'application/json' } }));
+      }
+      if (url.startsWith('/api/conversations')) {
+        return Promise.resolve(new Response(JSON.stringify({ conversations: [], total: 0 }), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+    window.history.replaceState(null, '', '#/spaces?project=p1&space=s1&renderer=collection');
+
+    render(h(App, {}));
+
+    const notice = screen.getByTestId('preview-disabled-notice');
+    expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
+    expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });
 });
 
@@ -2641,6 +2696,7 @@ describe('ArtifactsView', () => {
     expect(screen.queryByText('Version')).toBeNull();
     expect(detailHeader?.textContent).not.toContain('MANAGED ARTIFACT');
     expect(detailHeader?.textContent).toContain('demo-rep');
+    expect(document.querySelector('.artifact-detail__repo')?.textContent).toBe('mandible');
     expect(detailHeader?.textContent).toContain('managed · report');
     expect(detailHeader?.textContent).toContain('Created:');
     expect(detailHeader?.textContent).toContain('Updated:');
@@ -2725,7 +2781,7 @@ describe('ArtifactsView', () => {
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
     fireEvent.click(within(metadataDialog).getByText('aaaaaaa').closest('button') as HTMLButtonElement);
-    expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaa');
+    expect(writeText).toHaveBeenCalledWith('artifact-blob:aaaaaaa');
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
     await waitFor(() => expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open'));
@@ -2736,13 +2792,80 @@ describe('ArtifactsView', () => {
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
     expect(pinnedBadge?.getAttribute('href')).toBe(
-      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '#/artifacts?ref=artifact-blob%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
     const livingBadge = document.querySelector('a.artifact-link-badge--living') as HTMLAnchorElement | null;
     expect(livingBadge?.textContent).toBe('latest');
     expect(livingBadge?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Ademo-report');
     const entityLink = screen.getByText('issue:abc123').closest('a') as HTMLAnchorElement | null;
     expect(entityLink?.getAttribute('href')).toBe('#/issues?issue=abc123&repo=mandible');
+  });
+
+  it('auto-formats compact JSON-like text previews with a local raw toggle', async () => {
+    const artifact = makeArtifactFixture('9', 'metrics.txt', {
+      media_type: 'text/plain',
+      metadata: {
+        title: 'metrics.txt',
+        filename: 'metrics.txt',
+      },
+      home_repo_id: 'rlrmp',
+      repo_locator: { repo_id: 'rlrmp', path: 'results/metrics.txt' },
+    });
+    const artifactSeries = makeArtifactSeries('metrics-text', [artifact], 'metrics.txt');
+    const compact = '{"loss":0.125,"tags":["compact","json"]}';
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [artifactSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: artifact.id,
+            scheme: 'artifact',
+            normalized_ref: artifact.id,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
+      }
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'available',
+            kind: 'text',
+            media_type: 'text/plain',
+            size_bytes: compact.length,
+            source: { kind: 'managed_file', locator: 'artifact-storage' },
+            preview: { encoding: 'utf-8', text: compact, truncated: false },
+            download: { available: true, media_type: 'text/plain', size_bytes: compact.length, filename: 'metrics.txt' },
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(artifact.id))) return jsonResponse({ artifact });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => expect(screen.getByText('Auto-formatted JSON-like text')).toBeTruthy());
+    expect(document.querySelector('.artifact-detail__repo')?.textContent).toBe('rlrmp');
+    const previewCode = document.querySelector('.artifact-preview code');
+    expect(previewCode?.textContent).toContain('\n  "loss": 0.125,');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show raw' }));
+
+    expect(document.querySelector('.artifact-preview code')?.textContent).toBe(compact);
+    expect(screen.getByRole('button', { name: 'Format' })).toBeTruthy();
   });
 
   it('renders HTML artifact previews in a sandboxed iframe', async () => {
@@ -3031,7 +3154,7 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(listUrl).toContain('summary=true'));
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
-    await waitFor(() => expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Loading preview...')).toHaveLength(1));
     fireEvent.click(screen.getByLabelText('Artifact actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
@@ -3050,22 +3173,167 @@ describe('ArtifactsView', () => {
     const hydratedMetadata = screen.getByRole('dialog', { name: 'Artifact metadata' });
     await waitFor(() => expect(within(hydratedMetadata).getByText('Locators')).toBeTruthy());
     expect(within(hydratedMetadata).getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
-    expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Loading preview...')).toHaveLength(1);
+  });
+
+  it('renders the artifact list as soon as the list request resolves while preview content remains pending', async () => {
+    const artifact = makeArtifactFixture('6', 'cold-load-report.md', {
+      uri: 'repo://mandible@main/results/cold-load-report.md',
+      repo_locator: { repo_id: 'mandible', ref: 'main', path: 'results/cold-load-report.md' },
+      alias_schemes: ['artifact', 'repo'],
+    });
+    const artifactSeries = makeArtifactSeries('cold-load-report', [artifact], 'cold-load-report.md');
+    let resolveList: (response: Response) => void = () => undefined;
+    const listPromise = new Promise<Response>((resolve) => {
+      resolveList = resolve;
+    });
+    const contentCalls: string[] = [];
+    let listRequestSeen = false;
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        if (url.includes('limit=200')) {
+          listRequestSeen = true;
+          return listPromise;
+        }
+        return jsonResponse({ series: [] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: artifactSeries.history });
+      }
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        return new Promise<Response>(() => undefined);
+      }
+      if (url.endsWith('/knowledge-backrefs')) {
+        return jsonResponse({ backrefs: [] });
+      }
+      if (url.includes(encodeURIComponent(artifact.id))) {
+        return jsonResponse({ artifact });
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(listRequestSeen).toBe(true));
+    expect(contentCalls).toHaveLength(0);
+    expect(screen.getByText('Loading artifacts...')).toBeTruthy();
+
+    await act(async () => {
+      resolveList(new Response(JSON.stringify({ series: [artifactSeries.summary] }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    });
+
+    await waitFor(() => expect(screen.getByRole('button', { name: /cold-load-report\.md/ })).toBeTruthy());
+    expect(screen.queryByText('Loading artifacts...')).toBeNull();
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('cold-load-report.md'));
+    await waitFor(() => expect(contentCalls).toHaveLength(1));
+    await waitFor(() => expect(screen.getAllByText('Loading preview...')).toHaveLength(1));
+  });
+
+  it('ignores stale preview content when artifact selection changes early', async () => {
+    const firstArtifact = makeArtifactFixture('1', 'early-one.md');
+    const secondArtifact = makeArtifactFixture('2', 'early-two.md');
+    const firstSeries = makeArtifactSeries('early-one-series', [firstArtifact], 'early-one.md');
+    const secondSeries = makeArtifactSeries('early-two-series', [secondArtifact], 'early-two.md');
+    let resolveFirstContent: (response: Response) => void = () => undefined;
+    let resolveSecondContent: (response: Response) => void = () => undefined;
+    const firstContent = new Promise<Response>((resolve) => {
+      resolveFirstContent = resolve;
+    });
+    const secondContent = new Promise<Response>((resolve) => {
+      resolveSecondContent = resolve;
+    });
+    const contentCalls: string[] = [];
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [firstSeries.summary, secondSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: url.includes('early-two-series') ? secondSeries.history : firstSeries.history });
+      }
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        return url.includes(encodeURIComponent(secondArtifact.id)) ? secondContent : firstContent;
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(firstArtifact.id))) return jsonResponse({ artifact: firstArtifact });
+      if (url.includes(encodeURIComponent(secondArtifact.id))) return jsonResponse({ artifact: secondArtifact });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('early-one.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(firstArtifact.id)))).toBe(true));
+    expect(screen.getAllByText('Loading preview...')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /early-two\.md/ }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('early-two.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(secondArtifact.id)))).toBe(true));
+
+    resolveFirstContent(new Response(JSON.stringify({
+      content: {
+        artifact_id: firstArtifact.id,
+        status: 'available',
+        kind: 'text',
+        media_type: 'text/plain',
+        size_bytes: 16,
+        source: { kind: 'managed_file', locator: 'artifact-storage' },
+        preview: { encoding: 'utf-8', text: 'stale first preview', truncated: false },
+        download: { available: true, media_type: 'text/plain', size_bytes: 16, filename: 'early-one.md' },
+      },
+    }), { headers: { 'content-type': 'application/json' } }));
+    resolveSecondContent(new Response(JSON.stringify({
+      content: {
+        artifact_id: secondArtifact.id,
+        status: 'available',
+        kind: 'text',
+        media_type: 'text/plain',
+        size_bytes: 18,
+        source: { kind: 'managed_file', locator: 'artifact-storage' },
+        preview: { encoding: 'utf-8', text: 'current second preview', truncated: false },
+        download: { available: true, media_type: 'text/plain', size_bytes: 18, filename: 'early-two.md' },
+      },
+    }), { headers: { 'content-type': 'application/json' } }));
+
+    await waitFor(() => expect(screen.getByText('current second preview')).toBeTruthy());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText('stale first preview')).toBeNull();
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('early-two.md');
   });
 
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readFileSync('ui/src/style.css', 'utf8');
-    expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
-    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.artifact-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*8;/s);
+    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).not.toMatch(/\.artifact-detail__body\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.detail-pane-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--detail-pane-modal-top\);[^}]*right:\s*var\(--detail-pane-modal-right\);[^}]*bottom:\s*var\(--detail-pane-modal-bottom\);[^}]*left:\s*var\(--detail-pane-modal-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/\.artifact-preview-frame\s*\{[^}]*align-content:\s*start;/s);
+    expect(css).toMatch(/\.artifact-preview-frame--loading\s*\{[^}]*min-height:\s*96px;/s);
+    expect(css).not.toMatch(/\.artifact-preview-frame__loading\s*\{/);
+    expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
+    expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/\.artifact-detail__copy-button:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/s);
     expect(css).not.toMatch(/\.artifact-detail__copy-button:hover,\s*\.artifact-detail__copy-button:focus-visible\s*\{/);
@@ -3076,9 +3344,10 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.app-content::before\s*\{[^}]*z-index:\s*0;/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
-    expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;/s);
-    expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
+    expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;[^}]*flex:\s*1;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
+    expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;/s);
     expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
     expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
     expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);
@@ -3457,10 +3726,9 @@ describe('ArtifactsView', () => {
 
     changeSelect(screen.getByLabelText('Artifact version') as HTMLSelectElement, '2');
 
-    await waitFor(() => expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('2'));
-    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md');
-    expect(screen.queryByText('Loading artifact...')).toBeNull();
-    expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByRole('status')?.textContent).toBe('Loading artifact...'));
+    expect(document.querySelector('.artifact-detail h2')).toBeNull();
+    expect(screen.queryByText('Loading preview...')).toBeNull();
 
     resolveV2Detail(new Response(JSON.stringify({ artifact: v2 }), {
       headers: { 'content-type': 'application/json' },
@@ -3685,7 +3953,9 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText(memberId)).toBeTruthy());
     const memberLink = screen.getByText(memberId).closest('a') as HTMLAnchorElement | null;
-    expect(memberLink?.getAttribute('href')).toBe(`#/artifacts?artifact=${encodeURIComponent(memberId)}`);
+    expect(memberLink?.getAttribute('href')).toBe(
+      `#/artifacts?ref=${encodeURIComponent(memberId.replace(/^artifact:sha256:/, 'artifact-blob:'))}`,
+    );
     expect(screen.getByText('figure')).toBeTruthy();
     expect(screen.getByText('repo_commit')).toBeTruthy();
     expect(screen.getByText('Manifest JSON')).toBeTruthy();

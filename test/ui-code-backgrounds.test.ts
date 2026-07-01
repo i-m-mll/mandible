@@ -38,7 +38,16 @@ describe('inline code background styles', () => {
 
     expect(lightArtifactPreviewGrayRules).toEqual([]);
     expect(stylesheet).toMatch(
-      /:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*transparent/,
+      /:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\)/,
     );
+  });
+
+  it('lets artifact code previews size naturally inside the detail pane', () => {
+    const codePreviewRule = rules.find((rule) =>
+      rule.selectors.includes('.artifact-preview--code'),
+    );
+
+    expect(codePreviewRule?.body).not.toMatch(/height:\s*clamp\(220px,\s*42vh,\s*520px\)/);
+    expect(codePreviewRule?.body).toMatch(/min-height:\s*min\(520px,\s*calc\(100vh - 330px\)\)/);
   });
 });

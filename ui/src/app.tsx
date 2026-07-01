@@ -104,6 +104,46 @@ type SpacesLastView = {
   spaceId: string;
 };
 
+type MandibleBootstrapData = {
+  instance?: InstanceInfo | null;
+};
+
+declare global {
+  interface Window {
+    __MANDIBLE_BOOTSTRAP__?: MandibleBootstrapData;
+  }
+}
+
+function isInstanceInfo(value: unknown): value is InstanceInfo {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Partial<InstanceInfo>;
+  return (
+    (candidate.role === 'main' ||
+      candidate.role === 'preview' ||
+      candidate.role === 'dev' ||
+      candidate.role === 'test') &&
+    (candidate.operational_mutations === 'allow' || candidate.operational_mutations === 'reject') &&
+    typeof candidate.operational_mutations_overridden === 'boolean' &&
+    (typeof candidate.db_path === 'string' || candidate.db_path === null) &&
+    (typeof candidate.db_path_source === 'string' || candidate.db_path_source === null)
+  );
+}
+
+function readBootInstanceInfo(): InstanceInfo | null {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return null;
+  const globalInstance = window.__MANDIBLE_BOOTSTRAP__?.instance;
+  if (isInstanceInfo(globalInstance)) return globalInstance;
+  const script = document.getElementById('mandible-bootstrap');
+  const raw = script?.textContent?.trim();
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as MandibleBootstrapData;
+    return isInstanceInfo(parsed.instance) ? parsed.instance : null;
+  } catch {
+    return null;
+  }
+}
+
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -322,7 +362,7 @@ function App(): JSX.Element {
   // down/restarting) that detects a not-ready daemon via the mount probe / poll,
   // even though it never saw the mandible:rebuilding SSE event.
   const [daemonStarting, setDaemonStarting] = useState(false);
-  const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(null);
+  const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
@@ -1565,6 +1605,7 @@ function App(): JSX.Element {
             renderer={route.params.renderer}
             renderers={SPACE_RENDERERS_REGISTRY}
             sidebarHidden={viewSidebarHidden}
+            instance={instanceInfo}
             onNavigate={navigateToSpace}
           />
         )}
