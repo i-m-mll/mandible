@@ -164,6 +164,87 @@ function createSchema(database: Database.Database): void {
     );
     CREATE INDEX idx_artifact_versions_series
       ON artifact_versions(series_id, version_no DESC);
+    CREATE TABLE artifact_blob (
+      id TEXT PRIMARY KEY,
+      algorithm TEXT NOT NULL DEFAULT 'sha256',
+      content_hash TEXT NOT NULL,
+      storage_uri TEXT,
+      media_type TEXT,
+      role TEXT,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      provider_id TEXT,
+      manifest_id TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      custody_mode TEXT NOT NULL DEFAULT 'managed'
+        CHECK(custody_mode IN ('link','copy','managed','external')),
+      availability TEXT NOT NULL DEFAULT 'unchecked'
+        CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),
+      retention_json TEXT NOT NULL DEFAULT '{}',
+      reference_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      UNIQUE(algorithm, content_hash)
+    );
+    CREATE TABLE artifact (
+      id TEXT PRIMARY KEY,
+      identity_key TEXT NOT NULL,
+      source_kind TEXT NOT NULL DEFAULT 'managed'
+        CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),
+      title TEXT,
+      source_project_id TEXT,
+      source_repo_id TEXT,
+      logical_name TEXT,
+      source_path TEXT,
+      latest_version_id TEXT,
+      version_count INTEGER NOT NULL DEFAULT 0,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(identity_key)
+    );
+    CREATE TABLE artifact_version (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL,
+      version_no INTEGER NOT NULL,
+      blob_id TEXT NOT NULL,
+      source_kind TEXT NOT NULL
+        CHECK(source_kind IN ('tracked_repo','local_only','managed','external')),
+      content_hash TEXT NOT NULL,
+      source_project_id TEXT,
+      source_repo_id TEXT,
+      repo_path TEXT,
+      commit_sha TEXT,
+      observed_path TEXT,
+      source_locator_json TEXT NOT NULL DEFAULT '{}',
+      custody_mode TEXT
+        CHECK(custody_mode IS NULL OR custody_mode IN ('link','copy','managed','external')),
+      label TEXT,
+      note TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      UNIQUE(artifact_id, version_no)
+    );
+    CREATE TABLE project_artifact_associations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      target_type TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version')),
+      target_id TEXT NOT NULL,
+      association_kind TEXT NOT NULL DEFAULT 'associated'
+        CHECK(association_kind IN ('associated','canonical')),
+      role TEXT NOT NULL DEFAULT '',
+      title TEXT,
+      description TEXT,
+      rank INTEGER,
+      status TEXT NOT NULL DEFAULT 'active'
+        CHECK(status IN ('active','superseded','archived')),
+      source TEXT NOT NULL DEFAULT 'user'
+        CHECK(source IN ('user','agent_explicit','space_rule','migration','system')),
+      source_ref_type TEXT,
+      source_ref_id TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      UNIQUE(project_id, target_type, target_id, role)
+    );
     CREATE TABLE provider_manifests (
       id TEXT PRIMARY KEY,
       provider_id TEXT NOT NULL,
@@ -535,7 +616,7 @@ describe("provider/artifact substrate", () => {
 
     expect(byHash.map((item) => item.id)).toContain(artifact.id);
     expect(byQuery.map((item) => item.id)).toContain(artifact.id);
-    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`artifact:${artifact.content_hash}`);
+    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`artifact-blob:${artifact.content_hash}`);
     expect(detail?.aliases?.some((alias) => alias.scheme === "file")).toBe(true);
   });
 
@@ -571,14 +652,14 @@ describe("provider/artifact substrate", () => {
     expect(summary?.reference).toEqual({});
     expect(summary?.aliases).toBeUndefined();
     expect(summary?.links).toBeUndefined();
-    expect(summary?.alias_schemes).toEqual(expect.arrayContaining(["artifact", "file"]));
+    expect(summary?.alias_schemes).toEqual(expect.arrayContaining(["artifact-blob", "file"]));
     expect(detail?.metadata).toMatchObject({ nested: { expensive: expect.any(String) } });
     expect(detail?.reference).toMatchObject({ owner_system: "repo" });
     expect(detail?.aliases?.length).toBeGreaterThan(0);
     expect(detail?.links?.map((link) => link.entity_id)).toContain("mandible/419fa00");
   });
 
-  it("resolves compact artifact hash prefixes without changing canonical artifact identity", () => {
+  it("resolves compact artifact-blob hash prefixes without changing canonical artifact identity", () => {
     const hash = "1234567890abcdef".repeat(4);
     const artifact = ingestArtifact(db, {
       sha256: hash,
@@ -588,60 +669,59 @@ describe("provider/artifact substrate", () => {
       repo_locator: { repo_id: "mandible", ref: "main", path: "results/report.md" },
     }, 1000, tempDir);
 
-    const compact = resolveArtifactRef(db, "artifact:1234567890ab", 2000);
-    const canonicalColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
+    const compact = resolveArtifactRef(db, "artifact-blob:1234567890ab", 2000);
+    const canonicalBlob = resolveArtifactRef(db, `artifact-blob:${hash}`, 2000);
+    const legacyColon = resolveArtifactRef(db, `artifact:sha256:${hash}`, 2000);
     const unsupportedPlain = resolveArtifactRef(db, `sha256:${hash}`, 2000);
 
     expect(compact).toMatchObject({
       status: "resolved",
       artifact: { id: artifact.id, content_hash: hash },
-      alias: {
-        artifact_id: artifact.id,
-        normalized_ref: "artifact:1234567890ab",
-        locator: { algorithm: "sha256", prefix: "1234567890ab", resolved_hash: hash },
-      },
+      alias: null,
+      artifact_blob: { id: `artifact-blob:${hash}`, content_hash: hash },
     });
-    expect(canonicalColon).toMatchObject({
+    expect(canonicalBlob).toMatchObject({
       status: "resolved",
       artifact: { id: artifact.id, content_hash: hash },
-      alias: {
-        artifact_id: artifact.id,
-        normalized_ref: `artifact:${hash}`,
-        locator: { algorithm: "sha256", prefix: hash, hash },
-      },
+      alias: null,
+      artifact_blob: { id: `artifact-blob:${hash}`, content_hash: hash },
     });
+    expect(legacyColon).toMatchObject({ status: "unsupported", artifact: null, alias: null });
     expect(unsupportedPlain).toMatchObject({ status: "unsupported", artifact: null, alias: null });
     expect(getArtifact(db, artifact.id)?.id).toBe(`artifact:sha256:${hash}`);
   });
 
-  it("reports ambiguous, unresolved, and unsupported compact artifact hash refs explicitly", () => {
+  it("reports ambiguous, unresolved, and unsupported compact artifact-blob hash refs explicitly", () => {
     const firstHash = `abc1234${"0".repeat(57)}`;
     const secondHash = `abc1234${"1".repeat(57)}`;
-    ingestArtifact(db, { sha256: firstHash, uri: `artifact:${firstHash}` }, 1000, tempDir);
-    ingestArtifact(db, { sha256: secondHash, uri: `artifact:${secondHash}` }, 1001, tempDir);
+    ingestArtifact(db, { sha256: firstHash, uri: `artifact-blob:${firstHash}` }, 1000, tempDir);
+    ingestArtifact(db, { sha256: secondHash, uri: `artifact-blob:${secondHash}` }, 1001, tempDir);
 
-    const ambiguous = resolveArtifactRef(db, "artifact:abc1234", 2000);
-    const unresolved = resolveArtifactRef(db, "artifact:fffffff", 2001);
-    const unsupported = resolveArtifactRef(db, "artifact:abc123", 2002);
+    const ambiguous = resolveArtifactRef(db, "artifact-blob:abc1234", 2000);
+    const unresolved = resolveArtifactRef(db, "artifact-blob:fffffff", 2001);
+    const unsupported = resolveArtifactRef(db, "artifact-blob:abc", 2002);
 
     expect(ambiguous).toMatchObject({
       status: "ambiguous",
       artifact: null,
-      alias: { resolution_status: "ambiguous", artifact_id: null },
+      alias: null,
+      warnings: ["artifact_blob_ambiguous"],
     });
     expect(unresolved).toMatchObject({
       status: "unresolved",
       artifact: null,
-      alias: { resolution_status: "unresolved", artifact_id: null },
+      alias: null,
+      warnings: ["artifact_blob_unresolved"],
     });
     expect(unsupported).toMatchObject({
       status: "unsupported",
       artifact: null,
-      alias: { resolution_status: "unsupported", artifact_id: null },
+      alias: null,
+      warnings: ["artifact_blob_prefix_too_short"],
     });
   });
 
-  it("resolves artifact series and version prefixes with explicit ambiguity states", () => {
+  it("resolves logical artifact and version prefixes with explicit ambiguity states", () => {
     const first = recordArtifactVersion(db, {
       source_kind: "managed",
       series_key: "alpha-report",
@@ -675,47 +755,51 @@ describe("provider/artifact substrate", () => {
       role: "report",
     }, 4000, tempDir);
 
-    const seriesKeyPrefix = resolveArtifactRef(db, "artifact-series:alpha-r", 5000);
-    const seriesIdPrefix = resolveArtifactRef(
+    const logicalKeyPrefix = resolveArtifactRef(db, "artifact:alpha-r", 5000);
+    const logicalIdPrefix = resolveArtifactRef(
       db,
-      `artifact-series:${first.series.id.replace(/^artifact-series:/, "").slice(0, 7)}`,
+      `artifact:${first.series.id.replace(/^artifact-series:/, "").slice(0, 7)}`,
       5001,
     );
-    const latest = resolveArtifactRef(db, "artifact-series:alpha-r@latest", 5002);
-    const pinned = resolveArtifactRef(db, "artifact-series:alpha-r@1", 5003);
+    const latest = resolveArtifactRef(db, "artifact:alpha-r", 5002);
+    const pinned = resolveArtifactRef(
+      db,
+      `artifact-version:${first.version.id.replace(/^artifact-version:/, "").slice(0, 7)}`,
+      5003,
+    );
     const versionPrefix = resolveArtifactRef(
       db,
       `artifact-version:${second.version.id.replace(/^artifact-version:/, "").slice(0, 7)}`,
       5004,
     );
-    const ambiguous = resolveArtifactRef(db, "artifact-series:ambiguo", 5005);
-    const unresolved = resolveArtifactRef(db, "artifact-series:missing", 5006);
-    const tooShort = resolveArtifactRef(db, "artifact-series:alpha", 5007);
+    const ambiguous = resolveArtifactRef(db, "artifact:ambiguo", 5005);
+    const unresolved = resolveArtifactRef(db, "artifact:missing", 5006);
+    const tooShort = resolveArtifactRef(db, "artifact:alpha", 5007);
     const versionTooShort = resolveArtifactRef(db, "artifact-version:abc", 5008);
 
-    expect(seriesKeyPrefix).toMatchObject({
+    expect(logicalKeyPrefix).toMatchObject({
       status: "resolved",
       artifact: { id: second.artifact.id },
-      series: { id: first.series.id, series_key: "alpha-report" },
-      version: { id: second.version.id, version_no: 2 },
-      warnings: ["series_latest_not_pinned"],
+      logical_artifact: { id: `artifact:${first.series.id.replace(/^artifact-series:/, "")}`, identity_key: "alpha-report" },
+      artifact_version: { id: `artifact-version:${second.version.id.replace(/^artifact-version:/, "")}`, version_no: 2 },
+      warnings: [],
     });
-    expect(seriesIdPrefix).toMatchObject({
+    expect(logicalIdPrefix).toMatchObject({
       status: "resolved",
       artifact: { id: second.artifact.id },
-      series: { id: first.series.id },
-      version: { version_no: 2 },
+      logical_artifact: { id: `artifact:${first.series.id.replace(/^artifact-series:/, "")}` },
+      artifact_version: { version_no: 2 },
     });
     expect(latest).toMatchObject({
       status: "resolved",
       artifact: { id: second.artifact.id },
-      version: { version_no: 2 },
-      warnings: ["series_latest_not_pinned"],
+      artifact_version: { version_no: 2 },
+      warnings: [],
     });
     expect(pinned).toMatchObject({
       status: "resolved",
       artifact: { id: first.artifact.id },
-      version: { version_no: 1 },
+      artifact_version: { version_no: 1 },
       warnings: [],
     });
     expect(versionPrefix).toMatchObject({
@@ -729,19 +813,19 @@ describe("provider/artifact substrate", () => {
       status: "ambiguous",
       artifact: null,
       alias: null,
-      warnings: ["artifact_series_ambiguous"],
+      warnings: ["artifact_ambiguous"],
     });
     expect(unresolved).toMatchObject({
       status: "unresolved",
       artifact: null,
       alias: null,
-      warnings: ["artifact_series_unresolved"],
+      warnings: ["artifact_unresolved"],
     });
     expect(tooShort).toMatchObject({
       status: "unsupported",
       artifact: null,
       alias: null,
-      warnings: ["artifact_series_prefix_too_short"],
+      warnings: ["artifact_prefix_too_short"],
     });
     expect(versionTooShort).toMatchObject({
       status: "unsupported",
@@ -761,7 +845,7 @@ describe("provider/artifact substrate", () => {
       role: "report",
     }, 1000, tempDir);
 
-    const history = resolveArtifactVersionHistory(db, "artifact-series:history@latest");
+    const history = resolveArtifactVersionHistory(db, "artifact:history");
     const versionHistory = resolveArtifactVersionHistory(
       db,
       `artifact-version:${recorded.version.id.replace(/^artifact-version:/, "").slice(0, 7)}`,
@@ -893,22 +977,20 @@ describe("provider/artifact substrate", () => {
     ]);
   });
 
-  it("materializes missing content-hash refs as external hash records", () => {
+  it("does not materialize missing legacy content-hash refs as external records", () => {
     const hash = "a".repeat(64);
     const resolution = resolveArtifactRef(db, `artifact:${hash}`, 1000);
+    const legacy = resolveArtifactRef(db, `artifact:sha256:${hash}`, 1000);
+    const blob = resolveArtifactRef(db, `artifact-blob:${hash}`, 1000);
 
     expect(resolution).toMatchObject({
-      status: "resolved",
+      status: "unresolved",
       scheme: "artifact",
-      artifact: {
-        id: `artifact:sha256:${hash}`,
-        algorithm: "sha256",
-        content_hash: hash,
-        custody_mode: "external",
-        availability: "remote_only",
-      },
+      artifact: null,
     });
-    expect(getIndexedGraph(db, { mode: "artifact-lineage", limit: 20 }).nodes.map((node) => node.id)).toContain(
+    expect(legacy).toMatchObject({ status: "unsupported", artifact: null, alias: null });
+    expect(blob).toMatchObject({ status: "unresolved", artifact: null, alias: null });
+    expect(getIndexedGraph(db, { mode: "artifact-lineage", limit: 20 }).nodes.map((node) => node.id)).not.toContain(
       `artifact:sha256:${hash}`,
     );
   });
@@ -1139,7 +1221,13 @@ describe("provider/artifact substrate", () => {
       1000,
     );
     const hash = "b".repeat(64);
-    const hashResolution = resolveArtifactRef(db, `artifact:${hash}`, 1000);
+    ingestArtifact(db, {
+      sha256: hash,
+      uri: `artifact-blob:${hash}`,
+      custody_mode: "external",
+      availability: "remote_only",
+    }, 1000, tempDir);
+    const hashResolution = resolveArtifactRef(db, `artifact-blob:${hash}`, 1000);
 
     const repoLink = resolveAndLinkArtifact(db, {
       ref: repoResolution.normalized_ref,
@@ -1153,7 +1241,7 @@ describe("provider/artifact substrate", () => {
       metadata: { input_ref: repoResolution.normalized_ref },
     }, 2000).link;
     const hashLink = resolveAndLinkArtifact(db, {
-      ref: `artifact:${hash}`,
+      ref: `artifact-blob:${hash}`,
       entity_type: "issue",
       entity_id: issueId,
       link_type: "references",
@@ -1219,7 +1307,13 @@ describe("provider/artifact substrate", () => {
   it("promotes a hash-only external artifact when bytes are snapshotted into Mandible custody", () => {
     const content = "external bytes\n";
     const hash = sha256(content);
-    const external = resolveArtifactRef(db, `artifact:${hash}`, 1000);
+    ingestArtifact(db, {
+      sha256: hash,
+      uri: `artifact-blob:${hash}`,
+      custody_mode: "external",
+      availability: "remote_only",
+    }, 1000, tempDir);
+    const external = resolveArtifactRef(db, `artifact-blob:${hash}`, 1000);
 
     expect(external.artifact).toMatchObject({
       id: `artifact:sha256:${hash}`,
@@ -1228,7 +1322,7 @@ describe("provider/artifact substrate", () => {
     });
 
     const snapshotted = snapshotArtifactBytes(db, {
-      ref: `artifact:${hash}`,
+      ref: `artifact-blob:${hash}`,
       content,
       media_type: "text/plain",
       filename: "external.txt",
@@ -1318,12 +1412,17 @@ describe("provider/artifact substrate", () => {
     // Declared-hash integrity must survive the path/buffer transport: a snapshot
     // onto a ref whose registered sha differs from the bytes is rejected.
     const otherHash = sha256("registered-as-something-else");
-    resolveArtifactRef(db, `artifact:${otherHash}`, 1500); // mint a hash-only record
+    ingestArtifact(db, {
+      sha256: otherHash,
+      uri: `artifact-blob:${otherHash}`,
+      custody_mode: "external",
+      availability: "remote_only",
+    }, 1500, tempDir);
     const conflictPath = path.join(tempDir, "conflict.bin");
     fs.writeFileSync(conflictPath, crypto.randomBytes(1024 * 1024));
     expect(() =>
       snapshotArtifactBytes(db, {
-        ref: `artifact:${otherHash}`,
+        ref: `artifact-blob:${otherHash}`,
         content_path: conflictPath,
         custody_mode: "copy",
       }, 2000, tempDir),
@@ -1398,13 +1497,13 @@ describe("provider/artifact substrate", () => {
       name: "run-7 packet",
       role: "artifact_bundle",
       members: [
-        { ref: `artifact:${tracked.content_hash}`, role: "run_record" },
-        { ref: `artifact:${local.content_hash}`, role: "model_checkpoint", metadata: { warning_codes: ["local_only"] } },
+        { ref: `artifact-blob:${tracked.content_hash}`, role: "run_record" },
+        { ref: `artifact-blob:${local.content_hash}`, role: "model_checkpoint", metadata: { warning_codes: ["local_only"] } },
       ],
     }, 2000, tempDir);
     const bundle = bundleResult.bundle;
     const appended = addArtifactBundleMembers(db, bundle.id, [
-      { ref: `artifact:${figure.content_hash}`, role: "figure" },
+      { ref: `artifact-blob:${figure.content_hash}`, role: "figure" },
     ], 3000);
 
     const trackedDetail = getArtifact(db, tracked.id);

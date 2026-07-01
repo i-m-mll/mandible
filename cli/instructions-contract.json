@@ -188,6 +188,13 @@
     "`Closes-Mandible-Issue: <ref>` is an explicit closure signal.",
     "Commit trailers are optional interface metadata; commits without trailers are valid but unlinked."
   ],
+  "markdownReferences": [
+    "Authored ledger Markdown issue refs use `[issue:<id>]` or `[issue:<project>/<id>]`. These refs create normal text-reference relationships.",
+    "Authored ledger Markdown comment refs use `[comment:<issue>#<comment>]` or `[comment:<project>/<issue>#<comment>]`; `[comment:#<comment>]` is a local issue UI shortcut, not a relationship-ref form.",
+    "Relationship type names such as `references`, `resolves`, `fixed_by`, `blocks`, and `tests` are `mandible issue link --type` values, not authored Markdown tags. Do not write `[references:<id>]`, `[closes:<id>]`, or similar relationship-name bracket refs.",
+    "Resource-aware Markdown surfaces may link artifacts as `[artifact:<id-or-uri>]`, `[artifact-version:<id>]`, or `[artifact-blob:<hash>]`; do not use legacy `[artifact:sha256:<hash>]` for new artifact refs.",
+    "Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`. Link them through `mandible auth request`, auth issue links, or normal issue refs when describing the related work."
+  ],
   "authLifecycle": [
     "Protected-branch merges are asynchronous: submit an auth request, stop, and let the user approve in Mandible.",
     "Approval and merge execution are user actions. Agents do not approve, merge, or bypass the auth queue.",

@@ -244,6 +244,7 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/sessions/session-1/issues")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/system/logs")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/replay-codex-archives")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/actions")).toBe(true);
     expect(isAllowedFileRpcRoute("PUT", "/api/auth/request/abc/actions/def")).toBe(true);
@@ -257,8 +258,15 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("GET", "/api/artifacts/associations")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/associations")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/ingest")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/scan-repos")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/check")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/artifacts/snapshot")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1/content")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1/check")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/bundles")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/bundles/bundle-1")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/bundles/bundle-1/members")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/umbrella-status")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-adopt")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-reconcile")).toBe(true);
@@ -269,15 +277,68 @@ describe("file RPC transport", () => {
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/relationships")).toBe(true);
     expect(isAllowedFileRpcRoute("POST", "/api/ledger/relationships/unlink")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/inbox")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/inbox/global")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/inbox/undelivered")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/inbox/auth_result/auth-1/ack")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/inbox/delivered/auth-1")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/sessions/by-pid/1234")).toBe(true);
+    expect(isAllowedFileRpcRoute("POST", "/api/sessions/register")).toBe(true);
+    expect(isAllowedFileRpcRoute("PATCH", "/api/sessions/session-1")).toBe(true);
+    expect(isAllowedFileRpcRoute("PATCH", "/api/sessions/session-1/end")).toBe(true);
+    expect(isAllowedFileRpcRoute("GET", "/api/sessions/session-1/issues")).toBe(true);
     expect(isAllowedFileRpcRoute("GET", "/r/issue/abc")).toBe(false);
     expect(isAllowedFileRpcRoute("GET", "/r/auth/auth-1")).toBe(false);
     expect(isAllowedFileRpcRoute("GET", "/r/artifact/abcdef1")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
+    expect(isAllowedFileRpcRoute("GET", "/api/events")).toBe(false);
     expect(isAllowedFileRpcRoute("PATCH", "/api/conversations/conv-1")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/conversations/conv-1/fork")).toBe(false);
     expect(isAllowedFileRpcRoute("DELETE", "/api/sessions/session-1/issues")).toBe(false);
     expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
     expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
+  });
+
+  it("keeps the daemon-backed CLI route examples available over file RPC", () => {
+    const examples: Array<[string, string, string]> = [
+      ["GET", "/api/issues", "issue list/auth alias lookup"],
+      ["POST", "/api/issues/mandible", "issue new/inbox add"],
+      ["GET", "/api/ledger/issues/abc", "issue show/report/title"],
+      ["PATCH", "/api/ledger/issues/abc", "issue close/open/description edit"],
+      ["POST", "/api/ledger/issues/abc/comments", "issue comment add"],
+      ["PATCH", "/api/ledger/comments/comment-1", "issue comment edit"],
+      ["GET", "/api/ledger/comments/comment-1/revisions", "issue comment show/history"],
+      ["GET", "/api/ledger/body-revisions/rev-1", "issue revision show/diff"],
+      ["GET", "/api/projects", "project list"],
+      ["PATCH", "/api/projects/mandible", "project update"],
+      ["POST", "/api/projects/mandible/checkouts", "project add-checkout"],
+      ["POST", "/api/projects/checkouts", "project update-checkout"],
+      ["POST", "/api/auth/check", "auth check"],
+      ["POST", "/api/auth/request", "auth request --no-watch"],
+      ["POST", "/api/auth/request/auth-1/replay-codex-archives", "auth replay-archives"],
+      ["GET", "/api/artifacts/art-1", "artifact show"],
+      ["GET", "/api/artifacts/art-1/content", "artifact content"],
+      ["POST", "/api/artifacts/scan-repos", "artifact scan-repos"],
+      ["POST", "/api/artifacts/bundles", "artifact bundle create"],
+      ["GET", "/api/artifacts/bundles/bundle-1", "artifact bundle show/check"],
+      ["POST", "/api/artifacts/bundles/bundle-1/members", "artifact bundle add"],
+      ["GET", "/api/inbox", "inbox check/default"],
+      ["POST", "/api/inbox/auth_result/auth-1/ack", "inbox ack"],
+      ["GET", "/api/sessions/by-pid/1234", "task lookup"],
+      ["PATCH", "/api/sessions/session-1", "task update"],
+      ["POST", "/api/sessions/register", "wrap register"],
+      ["PATCH", "/api/sessions/session-1/end", "wrap end"],
+      ["GET", "/api/work-units", "work-unit find"],
+      ["PATCH", "/api/work-units/work-unit-1", "work-unit resolve"],
+      ["POST", "/api/sessions/session-1/issues", "session link-issue"],
+      ["GET", "/api/conversations/search", "search/conversations search"],
+      ["GET", "/api/system/logs", "logs/system log index"],
+      ["GET", "/api/work/repos", "repo lookup helpers"],
+    ];
+
+    for (const [method, pathname, label] of examples) {
+      expect(isAllowedFileRpcRoute(method, pathname), `${method} ${pathname} (${label})`).toBe(true);
+    }
   });
 
   it("allowlists the knowledge-backrefs return channel (read + write) but nothing else under it", () => {

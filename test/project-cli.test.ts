@@ -266,6 +266,90 @@ describe("project CLI write round-trips", () => {
     expect(result.seen[1].path).toBe("/api/projects/x/checkouts");
   });
 
+  it("updates a project via PATCH /api/projects/:ref", async () => {
+    const result = await runWithResponder(
+      ["project", "update", "feedbax", "--display", "Feedbax Lab", "--namespace", "upstream"],
+      (req) => {
+        expect(req.method).toBe("PATCH");
+        expect(req.path).toBe("/api/projects/feedbax");
+        expect(req.body).toMatchObject({ display: "Feedbax Lab", namespace: "upstream" });
+        return {
+          status: 200,
+          body: { project: { project_key: "feedbax", display_name: "Feedbax Lab" } },
+        };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("updated feedbax");
+  });
+
+  it("adds a checkout via POST /api/projects/:ref/checkouts", async () => {
+    const result = await runWithResponder(
+      [
+        "project",
+        "add-checkout",
+        "feedbax",
+        "--root",
+        "/tmp/feedbax",
+        "--work-repo-id",
+        "feedbax",
+        "--default-branch",
+        "main",
+      ],
+      (req) => {
+        expect(req.method).toBe("POST");
+        expect(req.path).toBe("/api/projects/feedbax/checkouts");
+        expect(req.body).toMatchObject({
+          root: "/tmp/feedbax",
+          work_repo_id: "feedbax",
+          default_branch: "main",
+        });
+        return {
+          status: 201,
+          body: {
+            project: { project_key: "feedbax" },
+            checkout: { root: "/tmp/feedbax" },
+          },
+        };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("added checkout /tmp/feedbax to feedbax");
+  });
+
+  it("updates a checkout via POST /api/projects/checkouts", async () => {
+    const result = await runWithResponder(
+      [
+        "project",
+        "update-checkout",
+        "--root",
+        "/tmp/feedbax",
+        "--project",
+        "feedbax",
+        "--work-repo-id",
+        "feedbax",
+      ],
+      (req) => {
+        expect(req.method).toBe("POST");
+        expect(req.path).toBe("/api/projects/checkouts");
+        expect(req.body).toMatchObject({
+          root: "/tmp/feedbax",
+          project: "feedbax",
+          work_repo_id: "feedbax",
+        });
+        return {
+          status: 200,
+          body: {
+            project: { project_key: "feedbax" },
+            checkout: { root: "/tmp/feedbax" },
+          },
+        };
+      },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("updated checkout /tmp/feedbax in feedbax");
+  });
+
   it("fetches the audit report via GET /api/projects/audit", async () => {
     const result = await runWithResponder(
       ["project", "audit"],

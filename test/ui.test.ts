@@ -2781,7 +2781,7 @@ describe('ArtifactsView', () => {
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
     expect(within(metadataDialog).getByText('Short ID')).toBeTruthy();
     fireEvent.click(within(metadataDialog).getByText('aaaaaaa').closest('button') as HTMLButtonElement);
-    expect(writeText).toHaveBeenCalledWith('artifact:aaaaaaa');
+    expect(writeText).toHaveBeenCalledWith('artifact-blob:aaaaaaa');
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Artifact metadata' })).toBeNull());
     await waitFor(() => expect(detailScroller?.className).not.toContain('artifacts-detail--metadata-open'));
@@ -2792,7 +2792,7 @@ describe('ArtifactsView', () => {
     expect(pinnedBadge?.textContent).toBe('pinned');
     expect(pinnedBadge?.textContent).not.toContain('latest');
     expect(pinnedBadge?.getAttribute('href')).toBe(
-      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '#/artifacts?ref=artifact-blob%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
     const livingBadge = document.querySelector('a.artifact-link-badge--living') as HTMLAnchorElement | null;
     expect(livingBadge?.textContent).toBe('latest');
@@ -3953,7 +3953,9 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText(memberId)).toBeTruthy());
     const memberLink = screen.getByText(memberId).closest('a') as HTMLAnchorElement | null;
-    expect(memberLink?.getAttribute('href')).toBe(`#/artifacts?artifact=${encodeURIComponent(memberId)}`);
+    expect(memberLink?.getAttribute('href')).toBe(
+      `#/artifacts?ref=${encodeURIComponent(memberId.replace(/^artifact:sha256:/, 'artifact-blob:'))}`,
+    );
     expect(screen.getByText('figure')).toBeTruthy();
     expect(screen.getByText('repo_commit')).toBeTruthy();
     expect(screen.getByText('Manifest JSON')).toBeTruthy();

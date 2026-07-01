@@ -15,6 +15,7 @@ interface InstructionsManifest {
   version: number;
   commands: CommandEntry[];
   trailers: string[];
+  markdownReferences: string[];
   authLifecycle: string[];
   coordination: string[];
   transports: string[];
@@ -49,6 +50,10 @@ export function renderMandibleInstructionsFragment(
     "## Commit Trailers",
     "",
     ...manifest.trailers.map((item) => `- ${item}`),
+    "",
+    "## Authored Markdown References",
+    "",
+    ...manifest.markdownReferences.map((item) => `- ${item}`),
     "",
     "## Auth Requests",
     "",

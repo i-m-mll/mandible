@@ -302,10 +302,18 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "GET" && /^\/api\/auth\/request\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && pathname === "/api/auth/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/auth/request") return true;
+  if (normalizedMethod === "POST" && /^\/api\/auth\/request\/[^/]+\/replay-codex-archives$/.test(pathname)) {
+    return true;
+  }
   if (normalizedMethod === "GET" && /^\/api\/auth\/request\/[^/]+\/actions$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/auth\/request\/[^/]+\/actions$/.test(pathname)) return true;
   if (normalizedMethod === "PUT" && /^\/api\/auth\/request\/[^/]+\/actions\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "DELETE" && /^\/api\/auth\/request\/[^/]+\/actions\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && pathname === "/api/inbox") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/inbox/global") return true;
+  if (normalizedMethod === "GET" && pathname === "/api/inbox/undelivered") return true;
+  if (normalizedMethod === "POST" && /^\/api\/inbox\/[^/]+\/[^/]+\/ack$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/inbox\/delivered\/[^/]+$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/artifacts") return true;
   if (normalizedMethod === "GET" && pathname === "/api/artifacts/resolve") return true;
   if (normalizedMethod === "GET" && pathname === "/api/artifacts/logical") return true;
@@ -314,9 +322,16 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/associations") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/ingest") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/plan") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/artifacts/scan-repos") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/link") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/check") return true;
   if (normalizedMethod === "POST" && pathname === "/api/artifacts/snapshot") return true;
+  if (normalizedMethod === "POST" && pathname === "/api/artifacts/bundles") return true;
+  if (normalizedMethod === "GET" && /^\/api\/artifacts\/bundles\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && /^\/api\/artifacts\/bundles\/[^/]+\/members$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/artifacts\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/artifacts\/[^/]+\/content$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/artifacts\/[^/]+\/check$/.test(pathname)) return true;
   // Artifact version identity (issue f7a994e): read-only version history + diff,
   // plus the EXPLICIT version record write. Narrow, non-privileged surfaces (no
   // approval/merge/admin/config authority), so they stay within the
@@ -397,7 +412,12 @@ export function isAllowedFileRpcRoute(method: string, pathname: string): boolean
   if (normalizedMethod === "POST" && pathname === "/api/work-units/release") return true;
   if (normalizedMethod === "GET" && pathname === "/api/work-units") return true;
   if (normalizedMethod === "PATCH" && /^\/api\/work-units\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/sessions\/by-pid\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "POST" && pathname === "/api/sessions/register") return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/sessions\/[^/]+$/.test(pathname)) return true;
+  if (normalizedMethod === "PATCH" && /^\/api\/sessions\/[^/]+\/end$/.test(pathname)) return true;
   if (normalizedMethod === "POST" && /^\/api\/sessions\/[^/]+\/issues$/.test(pathname)) return true;
+  if (normalizedMethod === "GET" && /^\/api\/sessions\/[^/]+\/issues$/.test(pathname)) return true;
   if (normalizedMethod === "GET" && pathname === "/api/work/repos") return true;
   return false;
 }

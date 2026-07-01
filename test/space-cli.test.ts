@@ -271,7 +271,9 @@ describe("space CLI add-item ref mapping", () => {
   const cases: Array<{ ref: string; expect: Record<string, unknown> }> = [
     { ref: "issue:abc123", expect: { ref_type: "issue", ref_id: "abc123" } },
     { ref: "comment:cmt-9", expect: { ref_type: "comment", ref_id: "cmt-9" } },
-    { ref: "artifact:sha256:deadbeef", expect: { ref_type: "artifact", ref_id: "artifact:sha256:deadbeef" } },
+    { ref: "artifact:logical", expect: { ref_type: "artifact", ref_id: "artifact:logical" } },
+    { ref: "artifact-version:version-1", expect: { ref_type: "artifact", ref_id: "artifact-version:version-1" } },
+    { ref: "artifact-blob:deadbeef", expect: { ref_type: "artifact", ref_id: "artifact-blob:deadbeef" } },
     { ref: "uri:https://example.com/x", expect: { ref_type: "external_ref", ref_id: "https://example.com/x", ref_uri: "https://example.com/x" } },
   ];
 
@@ -297,6 +299,16 @@ describe("space CLI add-item ref mapping", () => {
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("Unrecognized ref");
+    expect(result.seen).toHaveLength(0);
+  });
+
+  it("rejects legacy artifact refs without calling the route", async () => {
+    const result = await runWithResponder(
+      ["space", "add-item", "space-1", "artifact:sha256:deadbeef"],
+      () => ({ status: 200, body: {} }),
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Unsupported artifact ref");
     expect(result.seen).toHaveLength(0);
   });
 });
@@ -331,7 +343,7 @@ describe("space CLI promote-edge", () => {
 
   it("returns a not-promotable result for an artifact endpoint and never calls the route", async () => {
     const result = await runWithResponder(
-      ["space", "promote-edge", "--source", "issue:abc", "--target", "artifact:sha256:deadbeef", "--json"],
+      ["space", "promote-edge", "--source", "issue:abc", "--target", "artifact-blob:deadbeef", "--json"],
       () => ({ status: 200, body: {} }),
     );
     expect(result.status).toBe(3);

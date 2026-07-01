@@ -892,8 +892,8 @@ function diffSideMeta(artifact: ArtifactRecord | null, ref: string): ArtifactDif
 
 // Resolve a diff ref to its immutable artifact WITHOUT mutating the registry
 // (these GET endpoints must not materialize artifact rows/aliases/graph
-// entities). Accepts version/series refs, already-registered hash/URI refs, and
-// the canonical `artifact:sha256:<hash>` id form.
+// entities). Accepts canonical logical artifact, artifact-version,
+// artifact-blob, and URI-style refs already known to the registry.
 function resolveDiffArtifact(db: Db, ref: string): ArtifactRecord | null {
   return resolveArtifactRefReadonly(db, ref);
 }

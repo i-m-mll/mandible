@@ -1478,9 +1478,8 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
   };
 }
 
-const ARTIFACT_REF_PATTERN = /\[(?:artifact:([^\]\s]+)|(artifact-(?:series|version):[^\]\s]+))\]/gi;
+const ARTIFACT_REF_PATTERN = /\[((?:artifact|artifact-version):[^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
-const BARE_SHA_ARTIFACT_REF = /^[0-9a-f]{7,64}$/i;
 
 function extractArtifactRefs(sources: string[]): string[] {
   const refs: string[] = [];
@@ -1499,12 +1498,12 @@ function extractArtifactRefs(sources: string[]): string[] {
 }
 
 function isArtifactLikeRef(ref: string): boolean {
-  if (BARE_SHA_ARTIFACT_REF.test(ref)) return true;
   const scheme = schemeForRef(ref);
   if (scheme === "artifact") {
-    return /^artifact:[0-9a-f]{7,64}$/i.test(ref);
+    return !/^artifact:sha256:/i.test(ref) && !/^artifact:[a-f0-9]{7,64}$/i.test(ref);
   }
-  if (scheme === "artifact-series" || scheme === "artifact-version") return true;
+  if (scheme === "artifact-version") return true;
+  if (scheme === "artifact-blob") return true;
   return Boolean(scheme && ref.includes("://") && !DIRECT_NAV_SCHEMES.has(scheme));
 }
 

@@ -1,6 +1,6 @@
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
-import { getArtifact, resolveArtifactRef } from "../provider-artifacts.js";
+import { resolveArtifactRef } from "../provider-artifacts.js";
 import {
   addSpaceItem,
   createSpace,
@@ -254,8 +254,8 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
     if (prefix === "uri" && rest) return resolveArtifactResult(db, rest);
   }
 
-  // Bare artifact hash refs (sha256:...) and any other scheme the artifact
-  // resolver supports.
+  // Other URI-style artifact schemes are delegated to the artifact resolver so
+  // unsupported diagnostics are consistent.
   if (ref.startsWith("sha256:") || ref.includes("://")) {
     return resolveArtifactResult(db, ref);
   }
@@ -329,22 +329,7 @@ function resolveArtifactResult(
   kind: ResolverRefKind = "artifact",
   displayRef?: string,
 ): ResolverResult {
-  // Canonical artifact *ids* are `artifact:sha256:<hash>`, but the artifact
-  // resolver's resolvable *ref* form is `artifact:<hash>` / bare `<hash>`.
-  // Normalize the id form to the ref form before delegating, and fall back to a
-  // direct id lookup so a stored artifact id always resolves.
-  const trimmed = refValue.trim();
-  const idLookup = getArtifact(db, trimmed);
-  if (idLookup) {
-    return {
-      ref: displayRef ?? refValue,
-      kind,
-      resolved: true,
-      entity: idLookup as unknown as Record<string, unknown>,
-    };
-  }
-  const normalizedRef = trimmed.replace(/^artifact:sha256:/i, "artifact:").replace(/^sha256:/i, "");
-  const resolution = resolveArtifactRef(db, normalizedRef);
+  const resolution = resolveArtifactRef(db, refValue.trim());
   return {
     ref: displayRef ?? refValue,
     kind,
