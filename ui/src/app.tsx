@@ -1,4 +1,5 @@
-import { render } from 'preact';
+import { render, type ComponentChildren } from 'preact';
+import { lazy, Suspense } from 'preact/compat';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'preact/hooks';
 
 import {
@@ -19,6 +20,7 @@ import {
   getSessions,
   getSettings,
   getWorkRepos,
+  invalidateDashboardApiCacheForEvent,
   triggerWorkScan,
   rejectAuthRequest,
   retryAuthRequest,
@@ -46,25 +48,11 @@ import {
   type AppBottomPanelDescriptor,
   type AppShellContextValue,
 } from './app-shell';
-import { AuthQueueView } from './views/auth';
 import type { AuthRequest } from './views/auth';
-import { ArtifactsView } from './views/artifacts';
-import { InboxView } from './views/inbox';
-import { IssuesView } from './views/issues';
 import type { IssueRepoSummary } from './views/issues';
-import { ReviewView } from './views/review';
 import type { SessionRecord } from './views/sessions';
-import { ConversationsView } from './views/conversations';
-import { SettingsView } from './views/settings';
-import { WorkOverviewView } from './views/work';
 import type { WorkBranch, WorkRepo } from './views/work';
-import { LogsView } from './views/logs';
-import { GraphView } from './views/graph';
 import type { GraphNodeType } from './views/graph';
-import { TimelineView } from './views/timeline';
-import { PresetsView } from './views/presets';
-import { SpacesViewShell } from './views/spaces/SpacesViewShell';
-import { SPACE_RENDERERS_REGISTRY } from './views/spaces/renderers';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
 import type { BugRef, ConsoleSession } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
@@ -84,6 +72,25 @@ import {
   DiffIcon,
 } from './components/icons/TabIcons';
 
+import '@xterm/xterm/css/xterm.css';
+import '@xyflow/react/dist/style.css';
+import './components/shared/PreviewDisabledNotice.css';
+import './components/spaces/AddToSpace.css';
+import './views/filters/issue-predicate-filter.css';
+import './views/spaces/DocumentBlockEditor.css';
+import './views/spaces/DocumentRenderer.css';
+import './views/spaces/RepoFileRegisterDialog.css';
+import './views/spaces/renderers.css';
+import './views/spaces/space-board.css';
+import './views/spaces/SpaceCanvas.css';
+import './views/spaces/space-collection.css';
+import './views/spaces/SpaceEdgeLayer.css';
+import './views/spaces/SpaceExportDialog.css';
+import './views/spaces/SpaceItemPicker.css';
+import './views/spaces/SpaceSeedDialog.css';
+import './views/spaces/SpacesSidebar.css';
+import './views/spaces/SpacesViewShell.css';
+import './views/spaces/SpaceTypeIndicator.css';
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
@@ -98,6 +105,69 @@ const APP_THEME_MODE_LABELS: Record<AppThemeMode, string> = {
   dark: 'Dark',
 };
 const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
+
+type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
+
+const RENDERABLE_TABS: RenderableTab[] = [
+  'auth',
+  'artifacts',
+  'work',
+  'review',
+  'issues',
+  'settings',
+  'inbox',
+  'console',
+  'logs',
+  'graph',
+  'timeline',
+  'presets',
+  'spaces',
+];
+
+const LazyAuthQueueView = lazy(() =>
+  import('./views/auth').then((module) => ({ default: module.AuthQueueView })),
+);
+const LazyArtifactsView = lazy(() =>
+  import('./views/artifacts').then((module) => ({ default: module.ArtifactsView })),
+);
+const LazyInboxView = lazy(() =>
+  import('./views/inbox').then((module) => ({ default: module.InboxView })),
+);
+const LazyIssuesView = lazy(() =>
+  import('./views/issues').then((module) => ({ default: module.IssuesView })),
+);
+const LazyReviewView = lazy(() =>
+  import('./views/review').then((module) => ({ default: module.ReviewView })),
+);
+const LazyConversationsView = lazy(() =>
+  import('./views/conversations').then((module) => ({ default: module.ConversationsView })),
+);
+const LazySettingsView = lazy(() =>
+  import('./views/settings').then((module) => ({ default: module.SettingsView })),
+);
+const LazyWorkOverviewView = lazy(() =>
+  import('./views/work').then((module) => ({ default: module.WorkOverviewView })),
+);
+const LazyLogsView = lazy(() =>
+  import('./views/logs').then((module) => ({ default: module.LogsView })),
+);
+const LazyGraphView = lazy(() =>
+  import('./views/graph').then((module) => ({ default: module.GraphView })),
+);
+const LazyTimelineView = lazy(() =>
+  import('./views/timeline').then((module) => ({ default: module.TimelineView })),
+);
+const LazyPresetsView = lazy(() =>
+  import('./views/presets').then((module) => ({ default: module.PresetsView })),
+);
+const LazySpacesTab = lazy(() =>
+  import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab })),
+);
+
+const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
+  bottomPanel: null,
+  registerBottomPanel: () => () => undefined,
+};
 
 type SpacesLastView = {
   projectId: string | null;
@@ -315,6 +385,26 @@ function parseHashRoute(): Route {
   return parseRouteFromHash(window.location.hash || '#/spaces');
 }
 
+function isRenderableTab(tab: Route['tab']): tab is RenderableTab {
+  return RENDERABLE_TABS.includes(tab as RenderableTab);
+}
+
+function routeForTab(
+  tab: RenderableTab,
+  activeRoute: Route,
+  snapshots: Partial<Record<RenderableTab, Route>>,
+): Route {
+  return activeRoute.tab === tab ? activeRoute : snapshots[tab] ?? { tab, params: {} };
+}
+
+function TabChunkFallback(): JSX.Element {
+  return (
+    <div className="app-tab-loading" role="status" aria-live="polite">
+      Loading...
+    </div>
+  );
+}
+
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
 // Bug: 645f8a8 — also used as a generic "daemon starting" splash for pages
 // loaded mid-startup (the daemon is alive but not yet ready for mutations).
@@ -355,6 +445,15 @@ function App(): JSX.Element {
     ...loadCachedState(),
   }));
   const [route, setRoute] = useState<Route>(() => parseHashRoute());
+  const [visitedTabs, setVisitedTabs] = useState<Set<RenderableTab>>(() => {
+    const initial = parseHashRoute();
+    return new Set<RenderableTab>([isRenderableTab(initial.tab) ? initial.tab : 'spaces']);
+  });
+  const [tabRouteSnapshots, setTabRouteSnapshots] = useState<Partial<Record<RenderableTab, Route>>>(() => {
+    const initial = parseHashRoute();
+    const tab = isRenderableTab(initial.tab) ? initial.tab : 'spaces';
+    return { [tab]: initial };
+  });
   const settingsReturnHashRef = useRef<string | null>(null);
   // Bug: 326a3e2 — rebuilding splash triggered by mandible:rebuilding SSE event
   const [rebuilding, setRebuilding] = useState(false);
@@ -380,6 +479,17 @@ function App(): JSX.Element {
   }), [bottomPanel, registerBottomPanel]);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
+
+  useEffect(() => {
+    if (!isRenderableTab(route.tab)) return;
+    setVisitedTabs((current) => {
+      if (current.has(route.tab)) return current;
+      const next = new Set(current);
+      next.add(route.tab);
+      return next;
+    });
+    setTabRouteSnapshots((current) => ({ ...current, [route.tab]: route }));
+  }, [route]);
 
   const navigateToHash = useCallback((hash: string) => {
     if (typeof window === 'undefined') {
@@ -656,6 +766,7 @@ function App(): JSX.Element {
   useEffect(() => {
     const client = createSSEClient();
     const handler = (payload: SSEPayload) => {
+      invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
     };
     const daemonHandler = (payload: SSEPayload) => {
@@ -713,6 +824,7 @@ function App(): JSX.Element {
 
     // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
     const pushEventHandler = (payload: SSEPayload) => {
+      invalidateDashboardApiCacheForEvent(payload.type);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
       window.dispatchEvent(
         new CustomEvent('work:push', { detail: { type: payload.type, data } }),
@@ -724,7 +836,8 @@ function App(): JSX.Element {
       setRebuilding(true);
     };
 
-    const graphRefreshHandler = (_payload: SSEPayload) => {
+    const graphRefreshHandler = (payload: SSEPayload) => {
+      invalidateDashboardApiCacheForEvent(payload.type);
       setGraphRefreshToken((n) => n + 1);
     };
 
@@ -1359,6 +1472,25 @@ function App(): JSX.Element {
     window.addEventListener('mouseup', handleUp);
   }, [bottomPanel]);
 
+  const renderTabPanel = (tab: RenderableTab, children: ComponentChildren): JSX.Element | null => {
+    if (!visitedTabs.has(tab)) return null;
+    const active = route.tab === tab;
+    return (
+      <AppShellProvider key={tab} value={active ? appShellContext : INACTIVE_APP_SHELL_CONTEXT}>
+        <section
+          className={`app-tab-panel app-tab-panel--${tab}`}
+          hidden={!active}
+          aria-hidden={active ? undefined : 'true'}
+          data-tab={tab}
+        >
+          <Suspense fallback={<TabChunkFallback />}>
+            {children}
+          </Suspense>
+        </section>
+      </AppShellProvider>
+    );
+  };
+
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
   if (splashActive) {
@@ -1483,132 +1615,156 @@ function App(): JSX.Element {
         <main
           className={`app-content${route.tab === 'console' ? ' app-content--console' : ''}${route.tab === 'graph' ? ' app-content--graph' : ''}${route.tab === 'timeline' ? ' app-content--timeline' : ''}${route.tab === 'spaces' ? ' app-content--spaces' : ''}${RESIZE_RAIL_TABS.has(route.tab) ? ' app-content--view-sidebar' : ''}`}
         >
-        {route.tab === 'auth' && (
-          <AuthQueueView
-            queue={state.authQueue}
-            historyQueue={state.authHistory}
-            outputs={state.authOutputs}
-            branchesByRepo={authBranchesByRepo}
-            selectedAuthId={state.selectedAuthId}
-            initialRequestId={route.params.request}
-            sidebarHidden={viewSidebarHidden}
-            daemonReady={daemonReady}
-            instance={instanceInfo}
-            onSelectAuth={handleSelectAuth}
-            onApprove={handleApprove}
-            onReject={handleReject}
-            onRetry={handleRetry}
-            onDismiss={handleDismiss}
-            onUpdateField={handleUpdateAuthField}
-          />
-        )}
-        {route.tab === 'work' && (
-          <WorkOverviewView
+        {renderTabPanel('auth', (() => {
+          const tabRoute = routeForTab('auth', route, tabRouteSnapshots);
+          return (
+            <LazyAuthQueueView
+              queue={state.authQueue}
+              historyQueue={state.authHistory}
+              outputs={state.authOutputs}
+              branchesByRepo={authBranchesByRepo}
+              selectedAuthId={state.selectedAuthId}
+              initialRequestId={tabRoute.params.request}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+              daemonReady={daemonReady}
+              instance={instanceInfo}
+              onSelectAuth={handleSelectAuth}
+              onApprove={handleApprove}
+              onReject={handleReject}
+              onRetry={handleRetry}
+              onDismiss={handleDismiss}
+              onUpdateField={handleUpdateAuthField}
+            />
+          );
+        })())}
+        {renderTabPanel('work', (
+          <LazyWorkOverviewView
             repos={state.workRepos}
             branchesByRepo={state.workBranches}
             onRescan={handleRescan}
           />
-        )}
-        {route.tab === 'issues' && (
-          <IssuesView
-            repos={state.issueRepos}
-            onRescan={handleIssueRescan}
-            initialRepoId={route.params.repo}
-            initialIssueId={route.params.issue}
-            initialCommentId={route.params.comment}
-            defaultFilter={state.settings['issues.default_filter']}
-            sidebarHidden={viewSidebarHidden}
-          />
-        )}
-        {route.tab === 'artifacts' && (
-          <ArtifactsView
-            initialArtifactId={route.params.artifact}
-            initialRef={route.params.ref}
-            initialSeriesRef={route.params.series}
-            initialVersionNo={parseArtifactVersionParam(route.params.version)}
-            initialRepo={route.params.repo}
-            sidebarHidden={viewSidebarHidden}
-          />
-        )}
-        {route.tab === 'review' && (
-          <ReviewView
-            params={{
-              repo: route.params.repo,
-              base: route.params.base,
-              head: route.params.head,
-            }}
-          />
-        )}
-        {route.tab === 'inbox' && (
-          <InboxView
-            data={state.inboxData}
-            loading={state.inboxLoading}
-            selectedItemId={state.selectedInboxItemId}
-            sidebarHidden={viewSidebarHidden}
-            onSelectItem={handleSelectInboxItem}
-            onAckContinuation={handleAckContinuation}
-            onAckAuthResult={handleAckAuthResult}
-            onAckAll={handleAckAll}
-            onRefresh={handleInboxRefresh}
-          />
-        )}
-        {route.tab === 'console' && (
-          <ConversationsView
-            conversations={state.conversations}
-            consoleSessions={state.consoleSessions}
-            workRepos={state.workRepos}
-            initialConversationId={route.params.conversation ?? null}
-            initialSessionId={route.params.session ?? null}
-            initialPresetId={route.params.preset ?? null}
-            sidebarHidden={viewSidebarHidden}
-            onSelectSession={handleConsoleSelectSession}
-            onNewSession={handleConsoleNewSession}
-          />
-        )}
-        {route.tab === 'settings' && (
-          <SettingsView
+        ))}
+        {renderTabPanel('issues', (() => {
+          const tabRoute = routeForTab('issues', route, tabRouteSnapshots);
+          return (
+            <LazyIssuesView
+              repos={state.issueRepos}
+              onRescan={handleIssueRescan}
+              initialRepoId={tabRoute.params.repo}
+              initialIssueId={tabRoute.params.issue}
+              initialCommentId={tabRoute.params.comment}
+              defaultFilter={state.settings['issues.default_filter']}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+            />
+          );
+        })())}
+        {renderTabPanel('artifacts', (() => {
+          const tabRoute = routeForTab('artifacts', route, tabRouteSnapshots);
+          return (
+            <LazyArtifactsView
+              initialArtifactId={tabRoute.params.artifact}
+              initialRef={tabRoute.params.ref}
+              initialSeriesRef={tabRoute.params.series}
+              initialVersionNo={parseArtifactVersionParam(tabRoute.params.version)}
+              initialRepo={tabRoute.params.repo}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+            />
+          );
+        })())}
+        {renderTabPanel('review', (() => {
+          const tabRoute = routeForTab('review', route, tabRouteSnapshots);
+          return (
+            <LazyReviewView
+              params={{
+                repo: tabRoute.params.repo,
+                base: tabRoute.params.base,
+                head: tabRoute.params.head,
+              }}
+            />
+          );
+        })())}
+        {renderTabPanel('inbox', (() => {
+          const tabRoute = routeForTab('inbox', route, tabRouteSnapshots);
+          return (
+            <LazyInboxView
+              data={state.inboxData}
+              loading={state.inboxLoading}
+              selectedItemId={state.selectedInboxItemId}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+              onSelectItem={handleSelectInboxItem}
+              onAckContinuation={handleAckContinuation}
+              onAckAuthResult={handleAckAuthResult}
+              onAckAll={handleAckAll}
+              onRefresh={handleInboxRefresh}
+            />
+          );
+        })())}
+        {renderTabPanel('console', (() => {
+          const tabRoute = routeForTab('console', route, tabRouteSnapshots);
+          return (
+            <LazyConversationsView
+              conversations={state.conversations}
+              consoleSessions={state.consoleSessions}
+              workRepos={state.workRepos}
+              initialConversationId={tabRoute.params.conversation ?? null}
+              initialSessionId={tabRoute.params.session ?? null}
+              initialPresetId={tabRoute.params.preset ?? null}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+              onSelectSession={handleConsoleSelectSession}
+              onNewSession={handleConsoleNewSession}
+            />
+          );
+        })())}
+        {renderTabPanel('settings', (
+          <LazySettingsView
             settings={state.settings}
             onSave={handleSettingsSave}
             onClose={handleSettingsClose}
             instance={instanceInfo}
           />
-        )}
-        {route.tab === 'logs' && (
-          <LogsView />
-        )}
-        {route.tab === 'graph' && (
-          <GraphView
-            onNavigate={handleGraphNavigate}
-            refreshToken={graphRefreshToken}
-            initialMode={route.params.mode}
-            initialFocus={route.params.focus}
-            sidebarHidden={viewSidebarHidden}
-          />
-        )}
-        {route.tab === 'timeline' && (
-          <TimelineView
-            repos={state.workRepos}
-            params={route.params}
-            sidebarHidden={viewSidebarHidden}
-          />
-        )}
-        {route.tab === 'presets' && (
-          <PresetsView
+        ))}
+        {renderTabPanel('logs', <LazyLogsView />)}
+        {renderTabPanel('graph', (() => {
+          const tabRoute = routeForTab('graph', route, tabRouteSnapshots);
+          return (
+            <LazyGraphView
+              onNavigate={handleGraphNavigate}
+              refreshToken={graphRefreshToken}
+              initialMode={tabRoute.params.mode}
+              initialFocus={tabRoute.params.focus}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+            />
+          );
+        })())}
+        {renderTabPanel('timeline', (() => {
+          const tabRoute = routeForTab('timeline', route, tabRouteSnapshots);
+          return (
+            <LazyTimelineView
+              repos={state.workRepos}
+              params={tabRoute.params}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+            />
+          );
+        })())}
+        {renderTabPanel('presets', (
+          <LazyPresetsView
             presetsState={state.presetsState}
             dispatch={dispatch}
           />
-        )}
-        {route.tab === 'spaces' && (
-          <SpacesViewShell
-            projectId={route.params.project ?? ''}
-            spaceId={route.params.space ?? null}
-            renderer={route.params.renderer}
-            renderers={SPACE_RENDERERS_REGISTRY}
-            sidebarHidden={viewSidebarHidden}
-            instance={instanceInfo}
-            onNavigate={navigateToSpace}
-          />
-        )}
+        ))}
+        {renderTabPanel('spaces', (() => {
+          const tabRoute = routeForTab('spaces', route, tabRouteSnapshots);
+          return (
+            <LazySpacesTab
+              projectId={tabRoute.params.project ?? ''}
+              spaceId={tabRoute.params.space ?? null}
+              renderer={tabRoute.params.renderer}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+              instance={instanceInfo}
+              onNavigate={navigateToSpace}
+            />
+          );
+        })())}
         </main>
           {bottomPanelOpen && bottomPanel ? (
             <aside
