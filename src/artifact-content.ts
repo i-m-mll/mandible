@@ -5,6 +5,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
 import { checkoutRootForCanonicalArtifactRepo } from "./artifact-repo-resolution.js";
+import {
+  ARTIFACT_CONTENT_WORKER_MIN_BYTES,
+  formatJsonPreviewOffThread,
+  hashFileSha256OffThread,
+} from "./artifact-content-worker.js";
 import { artifactCasPath, getArtifact, resolveArtifactRefReadonly } from "./provider-artifacts.js";
 import type { ArtifactMaterializationCheck, ArtifactRecord, ArtifactRecoverability } from "./types.js";
 
@@ -252,6 +257,119 @@ export function getArtifactContent(
   }
   if (kind === "json") {
     const formatted = preview.truncated ? null : prettyJson(preview.text);
+    return {
+      ...base,
+      kind,
+      preview: {
+        ...preview,
+        ...(formatted && formatted !== preview.text ? { raw_text: preview.text, formatted: "json" as const } : {}),
+        ...(preview.truncated ? { format_skipped: "partial_preview" as const } : {}),
+        text: formatted ?? preview.text,
+      },
+    };
+  }
+
+  return {
+    ...base,
+    kind,
+    preview,
+  };
+}
+
+export async function getArtifactContentAsync(
+  db: Db,
+  id: string,
+  options: { previewBytes?: number } = {},
+): Promise<ArtifactContentResult | null> {
+  const artifact = getArtifact(db, id);
+  if (!artifact) return null;
+
+  const previewBytes = options.previewBytes ?? DEFAULT_PREVIEW_BYTES;
+  const mediaType = artifact.media_type ?? inferMediaType(artifact);
+  const filename = artifactFilename(artifact);
+  const unresolvedDownload = (reason: string): ArtifactContentResult => ({
+    artifact_id: artifact.id,
+    status: "unavailable",
+    kind: "unavailable",
+    media_type: mediaType,
+    size_bytes: artifact.size_bytes,
+    source: null,
+    preview: null,
+    download: {
+      available: false,
+      media_type: mediaType,
+      size_bytes: artifact.size_bytes,
+      filename,
+      reason,
+    },
+    reason,
+  });
+
+  const resolved = resolveRegisteredArtifactPath(db, artifact);
+  if (!resolved.ok) {
+    return unresolvedDownload(resolved.reason);
+  }
+
+  const stat = safeStat(resolved.path);
+  if (!stat) {
+    return unresolvedDownload("artifact bytes are not available on disk");
+  }
+  if (!stat.isFile()) {
+    return unresolvedDownload("artifact locator does not point to a regular file");
+  }
+
+  const sizeBytes = stat.size;
+  const hashCheck = await validateContentHashAsync(
+    artifact,
+    resolved.path,
+    recoverabilityForArtifact(artifact),
+    sizeBytes,
+  );
+  if (!hashCheck.ok) {
+    return unresolvedDownload(hashCheck.reason);
+  }
+
+  const base = {
+    artifact_id: artifact.id,
+    status: "available" as const,
+    media_type: mediaType,
+    size_bytes: sizeBytes,
+    source: resolved.source,
+    download: {
+      available: true,
+      media_type: mediaType,
+      size_bytes: sizeBytes,
+      filename,
+    },
+    warnings: hashCheck.warnings,
+  };
+
+  const kind = previewKind(mediaType, filename);
+  if (kind === "binary") {
+    return {
+      ...base,
+      kind,
+      preview: null,
+    };
+  }
+
+  const textPreviewBytes = kind === "html"
+    ? Math.max(previewBytes, HTML_PREVIEW_BYTES)
+    : kind === "json"
+      ? sizeBytes <= JSON_COMPLETE_PREVIEW_BYTES
+        ? Math.max(previewBytes, JSON_COMPLETE_PREVIEW_BYTES)
+        : Math.max(previewBytes, JSON_PARTIAL_PREVIEW_BYTES)
+      : previewBytes;
+  const preview = readTextPreview(resolved.path, textPreviewBytes);
+  if (!preview) {
+    return {
+      ...base,
+      kind: "binary",
+      preview: null,
+    };
+  }
+  if (kind === "json") {
+    const formatted = preview.truncated ? null : await prettyJsonAsync(preview.text);
     return {
       ...base,
       kind,
@@ -628,6 +746,40 @@ function validateContentHash(
   return { ok: false, reason: "artifact bytes do not match registered sha256" };
 }
 
+async function validateContentHashAsync(
+  artifact: ArtifactRecord,
+  filePath: string,
+  recoverability: ArtifactRecoverability | null,
+  sizeBytes: number,
+): Promise<{ ok: true; warnings: string[] } | { ok: false; reason: string }> {
+  if (artifact.algorithm !== "sha256" || !/^[a-f0-9]{64}$/i.test(artifact.content_hash)) {
+    return { ok: true, warnings: [] };
+  }
+  if (sizeBytes > EAGER_HASH_VALIDATION_BYTES) {
+    return {
+      ok: true,
+      warnings: ["large artifact preview defers full sha256 validation"],
+    };
+  }
+  const actual = sizeBytes >= ARTIFACT_CONTENT_WORKER_MIN_BYTES
+    ? await hashFileSha256OffThread(filePath).catch(() => hashFileSha256(filePath))
+    : hashFileSha256(filePath);
+  if (actual === artifact.content_hash.toLowerCase()) {
+    return { ok: true, warnings: [] };
+  }
+  if (isMutableLocalDrift(recoverability)) {
+    return {
+      ok: true,
+      warnings: ["local_only artifact bytes differ from the registered sha256; previewing current local bytes"],
+    };
+  }
+  return { ok: false, reason: "artifact bytes do not match registered sha256" };
+}
+
+function hashFileSha256(filePath: string): string {
+  return crypto.createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+}
+
 function isMutableLocalDrift(recoverability: ArtifactRecoverability | null): boolean {
   return recoverability === "local_only";
 }
@@ -699,6 +851,13 @@ function prettyJson(text: string): string | null {
   } catch {
     return null;
   }
+}
+
+async function prettyJsonAsync(text: string): Promise<string | null> {
+  if (Buffer.byteLength(text, "utf8") < ARTIFACT_CONTENT_WORKER_MIN_BYTES) {
+    return prettyJson(text);
+  }
+  return await formatJsonPreviewOffThread(text).catch(() => prettyJson(text));
 }
 
 function inferMediaType(artifact: ArtifactRecord): string {
