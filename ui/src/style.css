@@ -2960,9 +2960,11 @@ tr:last-child td {
 .auth-detail-pane {
   position: relative;
   z-index: 1;
-  min-height: 100%;
+  min-height: 0;
+  flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 .auth-detail__header {
@@ -3225,10 +3227,18 @@ tr:last-child td {
   overflow: hidden;
 }
 
+.auth-detail--metadata-open .auth-detail__body {
+  overflow: hidden;
+}
+
 .auth-detail__body {
   display: flex;
   flex-direction: column;
+  flex: 1;
   gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   padding-top: 20px;
 }
 
@@ -5083,8 +5093,11 @@ tr:last-child td {
   z-index: 3;
   --preview-disabled-notice-edge-inset-top: 24px;
   --preview-disabled-notice-edge-inset-x: 24px;
+  display: flex;
+  flex-direction: column;
   flex: 1;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 24px;
   background: var(--issues-detail-bg);
 }
@@ -5093,7 +5106,8 @@ tr:last-child td {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
 }
 
 /* Toast in sidebar layout - float at top of page */
@@ -6656,9 +6670,12 @@ tr:hover .work-actions__trigger {
 }
 
 .artifacts-detail {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-width: 0;
-  overflow-y: auto;
+  min-height: 0;
+  overflow: hidden;
   padding: 24px;
   background: var(--issues-detail-bg);
 }
@@ -6669,18 +6686,19 @@ tr:hover .work-actions__trigger {
 }
 
 .artifact-detail {
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  min-height: calc(100% + 24px);
   position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .artifact-detail__header {
   display: grid;
   align-items: stretch;
   gap: 6px;
-  position: sticky;
-  top: -24px;
+  position: relative;
   z-index: 8;
   margin: -24px -24px 0;
   padding: 24px 24px 14px;
@@ -6974,9 +6992,12 @@ tr:hover .work-actions__trigger {
   --artifact-detail-pane-max-height: calc(100vh - 190px);
   position: relative;
   display: grid;
+  flex: 1;
   gap: 18px;
   align-content: start;
-  min-height: min(560px, var(--artifact-detail-pane-max-height));
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
   margin: 0 -24px -24px;
   padding: 18px 24px 24px;
   background: var(--issues-detail-bg);

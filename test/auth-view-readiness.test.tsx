@@ -126,6 +126,8 @@ describe('AuthQueueView daemon readiness gate', () => {
     const detail = warning?.parentElement;
     const requestPane = document.querySelector('.auth-detail-pane');
     const requestHeader = document.querySelector('.auth-detail__header');
+    const requestBody = document.querySelector('.auth-detail__body');
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(warning).toBeTruthy();
     expect(warning?.getAttribute('data-testid')).toBe('preview-disabled-notice');
     expect(warning?.classList.contains('preview-disabled-notice--edge-to-edge')).toBe(true);
@@ -133,9 +135,12 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(detail?.firstElementChild).toBe(warning);
     expect(warning?.nextElementSibling).toBe(requestPane);
     expect(requestHeader && warning?.compareDocumentPosition(requestHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(requestBody?.contains(warning as Node)).toBe(false);
+    expect(requestBody?.contains(requestHeader as Node)).toBe(false);
+    expect(requestBody?.contains(approve)).toBe(false);
+    expect(requestHeader?.contains(approve)).toBe(true);
     expect(screen.getByText(/Auth actions are disabled for this copied preview queue/)).toBeTruthy();
 
-    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve.disabled).toBe(true);
 
     fireEvent.click(approve);
