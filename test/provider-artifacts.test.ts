@@ -1346,6 +1346,61 @@ describe("provider/artifact substrate", () => {
     });
   });
 
+  it("promotes a present local-only link artifact when bytes are snapshotted into Mandible custody", () => {
+    const content = "local-only bytes\n";
+    const hash = sha256(content);
+    const localPath = path.join(tempDir, "run-output.txt");
+    fs.writeFileSync(localPath, content, "utf8");
+    const linked = ingestArtifact(db, {
+      sha256: hash,
+      uri: `file://${localPath}`,
+      custody_mode: "link",
+      availability: "present",
+      media_type: "text/plain",
+      filename: "run-output.txt",
+      reference: { recoverability: "local_only", warnings: ["local_only"] },
+      metadata: { recoverability: "local_only", warning_codes: ["local_only"] },
+    }, 1000, tempDir);
+
+    expect(linked).toMatchObject({
+      custody_mode: "link",
+      availability: "present",
+      reference: expect.objectContaining({ recoverability: "local_only" }),
+      metadata: expect.objectContaining({ recoverability: "local_only" }),
+    });
+
+    const snapshotted = snapshotArtifactBytes(db, {
+      ref: `artifact-blob:${hash}`,
+      content,
+      media_type: "text/plain",
+      filename: "run-output.txt",
+      custody_mode: "copy",
+    }, 2000, tempDir);
+    fs.rmSync(localPath);
+    const detail = getArtifact(db, linked.id);
+    const contentResult = getArtifactContent(db, linked.id);
+    const materialization = checkArtifactMaterialization(db, linked.id);
+
+    expect(snapshotted.id).toBe(linked.id);
+    expect(detail).toMatchObject({
+      custody_mode: "copy",
+      availability: "present",
+      metadata: expect.objectContaining({ recoverability: "mandible_cas" }),
+      reference: expect.objectContaining({ recoverability: "mandible_cas" }),
+    });
+    expect(detail?.aliases?.map((alias) => alias.normalized_ref)).toContain(`file://${localPath}`);
+    expect(contentResult).toMatchObject({
+      status: "available",
+      source: { kind: "managed_file" },
+      download: { available: true, filename: "run-output.txt" },
+    });
+    expect(materialization).toMatchObject({
+      materializable: true,
+      hash_matches: true,
+      recoverability: "mandible_cas",
+    });
+  });
+
   it("ingests multi-MiB bytes from a daemon-visible content_path without inline base64 (issue 833e972)", () => {
     const big = crypto.randomBytes(3 * 1024 * 1024); // 3 MiB, well over OS ARG_MAX
     const srcPath = path.join(tempDir, "big-ingest.bin");
