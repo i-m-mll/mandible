@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ArtifactContentResult,
@@ -274,5 +274,37 @@ describe('ArtifactDetail artifact preview rendering', () => {
     expect(container.querySelector('.artifact-preview')?.textContent).toContain('{"items":[1,2,3');
     expect(screen.getByText(/Showing the first 15 B of 1\.0 MB/)).toBeTruthy();
     expect(screen.getByText(/Formatting and highlighting are skipped/)).toBeTruthy();
+  });
+
+  it('windows large code previews and offers full-preview copy', () => {
+    const largePreview = Array.from({ length: 900 }, (_, index) => `line-${index.toString().padStart(4, '0')} ${'x'.repeat(140)}`).join('\n');
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
+    const { container } = renderArtifactDetail(content({
+      kind: 'text',
+      media_type: 'text/plain',
+      size_bytes: largePreview.length,
+      preview: {
+        encoding: 'utf-8',
+        text: largePreview,
+        truncated: false,
+        preview_bytes: largePreview.length,
+        total_bytes: largePreview.length,
+      },
+      download: {
+        available: true,
+        media_type: 'text/plain',
+        size_bytes: largePreview.length,
+        filename: 'large.log',
+      },
+    }));
+
+    expect(container.querySelector('.artifact-preview--virtualized')).toBeTruthy();
+    expect(container.querySelectorAll('.artifact-preview__virtual-line').length).toBeLessThan(900);
+    expect(screen.getByText(/Large preview windowed/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy full preview' }));
+
+    expect(writeText).toHaveBeenCalledWith(largePreview);
   });
 });
