@@ -173,6 +173,8 @@ export function registerAuthRoutes(
       repo: request.repo ?? null,
       base_branch: request.base_branch ?? null,
       head_branch: request.head_branch ?? null,
+      merge_preflight_base_sha: request.merge_preflight_base_sha ?? null,
+      merge_preflight_queue_fingerprint: request.merge_preflight_queue_fingerprint ?? null,
       files_changed: request.files_changed ?? 0,
       additions: request.additions ?? 0,
       deletions: request.deletions ?? 0,

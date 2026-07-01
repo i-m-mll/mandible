@@ -2564,6 +2564,14 @@ const MIGRATIONS: Migration[] = [
         ON project_artifact_associations(source_ref_type, source_ref_id)
         WHERE source_ref_type IS NOT NULL AND source_ref_id IS NOT NULL`
     ]
+  },
+  {
+    version: 92,
+    name: "auth_merge_preflight_reuse_metadata",
+    // Issue: aea35e5 — record the submit-time target head and queue fingerprint
+    // used by the merge simulation so approve can skip the shell-side merge-tree
+    // re-check only when the target and queued context are unchanged.
+    statements: []
   }
 ];
 
@@ -2659,6 +2667,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 91) {
           ensureArtifactLinkTargetColumns(db);
+        }
+        if (migration.version === 92) {
+          ensureAuthRequestPreflightReuseColumns(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -4899,6 +4910,8 @@ function ensureAuthRequestActionPrerequisites(db: Db): void {
       repo TEXT,
       base_branch TEXT,
       head_branch TEXT,
+      merge_preflight_base_sha TEXT,
+      merge_preflight_queue_fingerprint TEXT,
       files_changed INTEGER DEFAULT 0,
       additions INTEGER DEFAULT 0,
       deletions INTEGER DEFAULT 0,
@@ -4943,6 +4956,8 @@ function ensureAuthRequestActionPrerequisites(db: Db): void {
     ["repo", "TEXT"],
     ["base_branch", "TEXT"],
     ["head_branch", "TEXT"],
+    ["merge_preflight_base_sha", "TEXT"],
+    ["merge_preflight_queue_fingerprint", "TEXT"],
     ["files_changed", "INTEGER DEFAULT 0"],
     ["additions", "INTEGER DEFAULT 0"],
     ["deletions", "INTEGER DEFAULT 0"],
@@ -4987,6 +5002,17 @@ function ensureAuthRequestMergeFinalizerColumns(db: Db): void {
   }
   if (!columns.has("merge_finalized_at")) {
     db.exec("ALTER TABLE auth_requests ADD COLUMN merge_finalized_at INTEGER");
+  }
+}
+
+function ensureAuthRequestPreflightReuseColumns(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("merge_preflight_base_sha")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_preflight_base_sha TEXT");
+  }
+  if (!columns.has("merge_preflight_queue_fingerprint")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_preflight_queue_fingerprint TEXT");
   }
 }
 

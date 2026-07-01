@@ -212,6 +212,64 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("commit.gpgsign is set to false");
   });
 
+  it("skips the daemon merge preflight when recorded target head still matches", async () => {
+    const authCheck = await listenForAuthCheck();
+    const baseSha = git(["rev-parse", "main"]);
+
+    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
+      MANDIBLE_PORT: String(authCheck.port),
+      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
+      MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
+      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: baseSha,
+    });
+
+    expect(result.status).toBe(1);
+    expect(authCheck.bodies).toHaveLength(0);
+    expect(result.stderr).toContain("reusing submit-time merge preflight");
+    expect(result.stderr).toContain("commit.gpgsign is set to false");
+  });
+
+  it("runs the daemon merge preflight when recorded target head is stale", async () => {
+    const authCheck = await listenForAuthCheck();
+
+    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
+      MANDIBLE_PORT: String(authCheck.port),
+      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
+      MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
+      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: "0000000000000000000000000000000000000000",
+    });
+
+    expect(result.status).toBe(1);
+    expect(authCheck.bodies).toHaveLength(1);
+    expect(result.stderr).toContain("target main moved since submit");
+    expect(result.stderr).toContain("commit.gpgsign is set to false");
+  });
+
+  it("preserves delegated signing git config overrides from the executor", async () => {
+    const authCheck = await listenForAuthCheck();
+    const baseSha = git(["rev-parse", "main"]);
+
+    const result = await runAsync(["auth", "merge", "feature/demo"], tempDir, {
+      MANDIBLE_PORT: String(authCheck.port),
+      MANDIBLE_BASE: `http://127.0.0.1:${authCheck.port}`,
+      MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
+      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: baseSha,
+      MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
+      AUTH_MERGE_AUTO_CONFIRM: "1",
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "commit.gpgsign",
+      GIT_CONFIG_VALUE_0: "true",
+      GIT_CONFIG_KEY_1: "user.signingkey",
+      GIT_CONFIG_VALUE_1: "/tmp/mandible-delegated.pub",
+    });
+
+    expect(result.status).toBe(1);
+    expect(authCheck.bodies).toHaveLength(0);
+    expect(result.stderr).not.toContain("commit.gpgsign is set to false");
+    expect(result.stderr).not.toContain("No signing key configured");
+    expect(result.stderr).toContain("creating signed merge commit");
+  });
+
   it("blocks staged changes through Mandible auth check", async () => {
     const authCheck = await listenForAuthCheck({
       status: "error",

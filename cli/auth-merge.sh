@@ -25,6 +25,10 @@ err() {
   printf "%b\n" "$*" >&2
 }
 
+auth_phase() {
+  err "Auth phase: $1"
+}
+
 die() {
   local message=$1
   local code=${2:-1}
@@ -133,7 +137,13 @@ git_lock_files() {
   local root
   git_lock_roots | sort -u | while IFS= read -r root; do
     if [[ -n "$root" && -d "$root" ]]; then
-      find "$root" -type f -name "*.lock" -print 2>/dev/null
+      find "$root" -maxdepth 3 -type f \( \
+        -name "index.lock" -o \
+        -name "HEAD.lock" -o \
+        -name "config.lock" -o \
+        -name "packed-refs.lock" -o \
+        -name "shallow.lock" \
+      \) -print 2>/dev/null
     fi
   done | sort -u
 }
@@ -163,6 +173,7 @@ lock_owner_pids() {
 }
 
 preflight_git_locks() {
+  auth_phase "checking git locks..."
   local locks
   locks=$(git_lock_files)
   if [[ -z "$locks" ]]; then
@@ -401,6 +412,7 @@ verify_merge_not_empty() {
 }
 
 preflight_signing_check() {
+  auth_phase "checking signing configuration..."
   local effective
   effective=$(git config --get commit.gpgsign 2>/dev/null || true)
   if [[ "$effective" == "false" ]]; then
@@ -423,6 +435,31 @@ preflight_signing_check() {
     err ""
     die "Aborting. No signing key." 1
   fi
+}
+
+current_branch_sha() {
+  local branch="$1"
+  git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true
+}
+
+run_merge_preflight() {
+  local cwd="$1"
+  local head_branch="$2"
+  local base_branch="$3"
+
+  if [[ "${MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT:-}" == "1" && -n "${MANDIBLE_AUTH_PREFLIGHT_BASE_SHA:-}" ]]; then
+    local current_base_sha
+    current_base_sha=$(current_branch_sha "$base_branch")
+    if [[ -n "$current_base_sha" && "$current_base_sha" == "$MANDIBLE_AUTH_PREFLIGHT_BASE_SHA" ]]; then
+      auth_phase "reusing submit-time merge preflight; target ${base_branch} is still ${current_base_sha}."
+      return 0
+    fi
+    auth_phase "target ${base_branch} moved since submit; running merge preflight checks..."
+  else
+    auth_phase "running merge preflight checks..."
+  fi
+
+  mandible_auth_merge_preflight "$cwd" "$head_branch" "$base_branch"
 }
 
 # Resolve the on-disk worktree path linked to a branch, if any.
@@ -591,12 +628,14 @@ main() {
   fi
 
   # Strip agent-injected git config overrides (e.g., GIT_CONFIG_COUNT from
-  # CLAUDECODE=1). This is a USER operation — signing must use the user's
-  # configured key (e.g., YubiKey), not the agent's.
-  local var
-  for var in $(env | grep '^GIT_CONFIG_' | cut -d= -f1); do
-    unset "$var"
-  done
+  # CLAUDECODE=1). Trusted delegated-signing approvals deliberately pass
+  # GIT_CONFIG_* overrides from the daemon so git signs with the short-lived key.
+  if [[ "${MANDIBLE_AUTH_DELEGATED_SIGNING:-}" != "1" ]]; then
+    local var
+    for var in $(env | grep '^GIT_CONFIG_' | cut -d= -f1); do
+      unset "$var"
+    done
+  fi
 
   local hierarchical=false
   local target=""
@@ -733,7 +772,7 @@ main() {
   # Pre-flight: ensure tracked worktree state and the candidate merge are clean.
   # The definition lives behind `mandible auth check`; this path does not call
   # user dotfiles policy scripts or weaker local fallbacks.
-  if ! mandible_auth_merge_preflight "$(pwd)" "${sources[0]}" "$target"; then
+  if ! run_merge_preflight "$(pwd)" "${sources[0]}" "$target"; then
     exit 1
   fi
 
@@ -807,7 +846,9 @@ main() {
     source=${sources[0]}
     local pre_merge_head
     pre_merge_head=$(git rev-parse HEAD)
+    auth_phase "creating signed merge commit..."
     if git merge --no-ff --no-edit -S "$source"; then
+      auth_phase "signed merge complete; running follow-up actions..."
       verify_merge_not_empty
       record_auth_merge_result "$pre_merge_head"
       cleanup_merged_worktrees "$source" "$preserve_head"
@@ -820,7 +861,9 @@ main() {
       err "Merge conflict detected."
       if auto_resolve_dist_conflicts; then
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
+        auth_phase "creating signed merge commit after generated-file conflict resolution..."
         if git -c commit.gpgsign=true merge --continue; then
+          auth_phase "signed merge complete; running follow-up actions..."
           verify_merge_not_empty
           record_auth_merge_result "$pre_merge_head"
           cleanup_merged_worktrees "$source" "$preserve_head"
@@ -840,6 +883,7 @@ main() {
   pre_merge_head=$(git rev-parse HEAD)
   local -a succeeded=()
   for source in "${sources[@]}"; do
+    auth_phase "creating signed merge commit for ${source}..."
     if git merge --no-ff --no-edit -S "$source"; then
       verify_merge_not_empty
       succeeded+=("$source")
@@ -851,6 +895,7 @@ main() {
       err "Merge conflict detected while merging $source."
       if auto_resolve_dist_conflicts; then
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
+        auth_phase "creating signed merge commit after generated-file conflict resolution..."
         if git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
           succeeded+=("$source")
