@@ -84,7 +84,10 @@ function content(overrides: Partial<ArtifactContentResult> = {}): ArtifactConten
   };
 }
 
-function renderArtifactDetail(nextContent: ArtifactContentResult | null = content()) {
+function renderArtifactDetail(
+  nextContent: ArtifactContentResult | null = content(),
+  options: { contentLoading?: boolean } = {},
+) {
   return render(
     <ArtifactDetail
       artifact={artifact()}
@@ -98,7 +101,7 @@ function renderArtifactDetail(nextContent: ArtifactContentResult | null = conten
       onToggleVersionHistory={() => undefined}
       onCloseVersionHistory={() => undefined}
       content={nextContent}
-      contentLoading={false}
+      contentLoading={options.contentLoading ?? false}
       contentError={null}
       knowledgeBackrefs={[]}
       knowledgeLoading={false}
@@ -182,6 +185,15 @@ describe('artifact preview helpers', () => {
 });
 
 describe('ArtifactDetail artifact preview rendering', () => {
+  it('shows one clean preview loading affordance while content is pending', () => {
+    const { container } = renderArtifactDetail(null, { contentLoading: true });
+
+    expect(screen.getAllByText('Loading preview...')).toHaveLength(1);
+    expect(screen.getByRole('status')?.textContent).toBe('Loading preview...');
+    expect(container.querySelector('.artifact-preview-frame__loading')).toBeNull();
+    expect(container.querySelector('.artifact-preview')).toBeNull();
+  });
+
   it('keeps custody and role metadata out of the header eyebrow', () => {
     const { container } = renderArtifactDetail(null);
     const eyebrow = container.querySelector('.artifact-detail__eyebrow');
@@ -258,6 +270,7 @@ describe('ArtifactDetail artifact preview rendering', () => {
     }));
 
     expect(container.querySelector('code.language-json')).toBeNull();
+    expect(container.querySelector('.artifact-preview--partial')).toBeTruthy();
     expect(container.querySelector('.artifact-preview')?.textContent).toContain('{"items":[1,2,3');
     expect(screen.getByText(/Showing the first 15 B of 1\.0 MB/)).toBeTruthy();
     expect(screen.getByText(/Formatting and highlighting are skipped/)).toBeTruthy();
