@@ -169,7 +169,7 @@ describe("artifact CLI", () => {
     expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
   });
 
-  it("prints canonical resolve targets and repair warnings", async () => {
+  it("prints canonical resolve targets", async () => {
     const recorder = await startHttpRecorder((req) => {
       if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
         return {
@@ -181,7 +181,37 @@ describe("artifact CLI", () => {
               target_id: "artifact-blob:abc123",
               normalized_ref: "artifact-blob:abc123",
               artifact: { id: "artifact:sha256:abc123" },
-              warnings: ["legacy_artifact_ref_read_only", "repair_to_artifact_blob_ref"],
+              warnings: [],
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "resolve", "artifact-blob:abc123"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("resolved artifact_blob artifact-blob:abc123 artifact-blob:abc123");
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("prints unsupported diagnostics for legacy resolve refs", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "unsupported",
+              target_id: null,
+              normalized_ref: "artifact:sha256:abc123",
+              artifact: null,
+              warnings: ["legacy_artifact_ref_unsupported", "repair_to_artifact_blob_ref"],
             },
           },
         };
@@ -194,8 +224,8 @@ describe("artifact CLI", () => {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain("resolved artifact_blob artifact-blob:abc123 artifact-blob:abc123");
-      expect(result.stdout).toContain("warning: legacy_artifact_ref_read_only");
+      expect(result.stdout).toContain("unsupported legacy_artifact - artifact:sha256:abc123");
+      expect(result.stdout).toContain("warning: legacy_artifact_ref_unsupported");
       expect(result.stdout).toContain("warning: repair_to_artifact_blob_ref");
     } finally {
       await recorder.close();
@@ -370,10 +400,11 @@ describe("artifact CLI", () => {
     }
   });
 
-  it("links snapshot-from-ref results using canonical artifact ids", async () => {
+  it("links snapshot-from-ref results using canonical artifact-blob refs", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
-    const sourceRef = `artifact:sha256:${"a".repeat(64)}`;
+    const sourceRef = "artifact:logical-source";
+    const newHash = "b".repeat(64);
     const newRef = `artifact:sha256:${"b".repeat(64)}`;
     const seen: Array<Record<string, unknown>> = [];
     const timer = startFileRpcResponder(spoolDir, (request) => {
@@ -390,6 +421,7 @@ describe("artifact CLI", () => {
           body: {
             artifact: {
               id: newRef,
+              content_hash: newHash,
               custody_mode: "copy",
               availability: "present",
             },
@@ -434,7 +466,7 @@ describe("artifact CLI", () => {
       ]);
       expect(seen[1].body).toMatchObject({ ref: sourceRef, custody_mode: "copy" });
       expect(seen[2].body).toMatchObject({
-        ref: newRef,
+        ref: `artifact-blob:${newHash}`,
         entity_type: "issue",
         entity_id: "issue-1",
         link_type: "references",
@@ -512,7 +544,7 @@ describe("artifact CLI", () => {
     const payload = JSON.parse(result.stdout);
     const planned = payload.registered[0].planned_payload;
     expect(planned.uri).toMatch(/^file:\/\//);
-    expect(planned.canonical_ref).toMatch(/^artifact:[a-f0-9]{64}$/);
+    expect(planned.canonical_ref).toMatch(/^artifact-blob:[a-f0-9]{64}$/);
     expect(planned.metadata.recoverability).toBe("local_only");
     expect(planned.metadata.git.untracked).toBe(true);
     expect(planned.metadata.warnings.map((warning: { code: string }) => warning.code)).toContain("untracked_local_only");

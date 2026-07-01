@@ -541,12 +541,12 @@ function hashFromArtifactRef(input: ArtifactInput): string | undefined {
     return input.sha256.toLowerCase();
   }
   if (!input.artifact_id) return undefined;
-  const match = /^(?:artifact:sha256:|artifact:)([a-f0-9]{64})$/i.exec(input.artifact_id.trim());
+  const match = /^artifact-blob:([a-f0-9]{64})$/i.exec(input.artifact_id.trim());
   return match?.[1]?.toLowerCase();
 }
 
 function artifactHashFromRef(ref: string): string | undefined {
-  const match = /^(?:artifact:sha256:|artifact:)([a-f0-9]{64})$/i.exec(ref.trim());
+  const match = /^artifact-blob:([a-f0-9]{64})$/i.exec(ref.trim());
   return match?.[1]?.toLowerCase();
 }
 
@@ -586,10 +586,11 @@ function schemeFromRef(ref: string): string {
 
 function isRegisterableArtifactRef(ref: string): boolean {
   const trimmed = ref.trim();
-  const artifactHashRef = artifactHashRefFromRef(trimmed);
-  if (artifactHashRef) {
-    return artifactHashRef.kind === "full" || artifactHashRef.kind === "prefix";
-  }
+  if (/^artifact-series:/i.test(trimmed)) return false;
+  if (/^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed)) return false;
+  if (/^[a-f0-9]{7,64}$/i.test(trimmed)) return false;
+  if (/^artifact:[a-f0-9]{7,64}$/i.test(trimmed)) return false;
+  if (/^artifact(?:-version|-blob)?:/i.test(trimmed)) return true;
   return schemeFromRef(trimmed) !== "unknown" && trimmed.includes("://");
 }
 
@@ -1917,7 +1918,7 @@ export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): Lo
   const hash = hashBuffer(fs.readFileSync(core.resolvedPath));
   const canonicalRef = core.recoverability === "repo_commit" && core.uri.startsWith("repo://")
     ? core.uri
-    : `artifact:${hash}`;
+    : `artifact-blob:${hash}`;
   return {
     ok: true,
     input_path: core.lexicalPath,
@@ -2289,7 +2290,7 @@ export function createArtifactBundle(
       ref: input.members[index].ref
         ?? input.members[index].artifact_ref
         ?? artifact.uri
-        ?? `artifact:${artifact.content_hash}`,
+        ?? `artifact-blob:${artifact.content_hash}`,
       ...(input.members[index].path ? { input_path: input.members[index].path } : {}),
       role: input.members[index].role ?? artifact.role ?? null,
       order: index,
@@ -2335,7 +2336,7 @@ export function createArtifactBundle(
   );
   if (input.issue) {
     resolveAndLinkArtifact(db, {
-      artifact_ref: `artifact:${bundle.content_hash}`,
+      artifact_ref: `artifact-blob:${bundle.content_hash}`,
       entity_type: "issue",
       entity_id: input.issue,
       issue_project: input.issue_project,
@@ -2412,26 +2413,6 @@ function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
       WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
   return row ? artifactLinkFromRow(row) : null;
-}
-
-function registerHashPrefixAlias(
-  db: Db,
-  ref: string,
-  prefix: string,
-  status: "unresolved" | "ambiguous" | "unsupported",
-  now: number,
-): ArtifactAliasRecord {
-  return registerArtifactAlias(db, {
-    ref,
-    locator: {
-      algorithm: "sha256",
-      prefix,
-      min_prefix_length: MIN_ARTIFACT_HASH_PREFIX_LENGTH,
-    },
-    resolutionStatus: status,
-    source: "artifact_resolver",
-    now,
-  });
 }
 
 function materializeReferenceArtifact(
@@ -2551,104 +2532,6 @@ function materializeReferenceArtifact(
   return { artifact: getArtifact(db, id) as ArtifactRecord, alias };
 }
 
-function materializeHashArtifact(
-  db: Db,
-  ref: string,
-  hash: string,
-  now = Date.now(),
-): { artifact: ArtifactRecord; alias: ArtifactAliasRecord } {
-  const id = `artifact:sha256:${hash}`;
-  const normalizedRef = `artifact:${hash}`;
-  const metadata = {
-    title: normalizedRef,
-    source_ref: ref,
-    normalized_ref: normalizedRef,
-    scheme: "artifact",
-    identity_kind: "content_hash",
-  };
-  const reference = {
-    owner_system: "artifact",
-    identity_kind: "content_hash",
-    normalized_ref: normalizedRef,
-    content_identity: {
-      algorithm: "sha256",
-      hash,
-      artifact_uri: id,
-    },
-  };
-
-  db.prepare(
-    `INSERT INTO artifacts (
-      id, algorithm, content_hash, uri, media_type, role, size_bytes,
-      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
-      repo_locator_json, availability, retention_json, reference_json, created_at
-    ) VALUES (
-      @id, 'sha256', @content_hash, @uri, NULL, 'content_reference', 0,
-      NULL, NULL, @metadata_json, 0, 'external', NULL,
-      '{}', 'remote_only', @retention_json, @reference_json, @created_at
-    )
-    ON CONFLICT(algorithm, content_hash) DO UPDATE SET
-      uri = COALESCE(artifacts.uri, excluded.uri),
-      reference_json = CASE
-        WHEN artifacts.reference_json = '{}' THEN excluded.reference_json
-        ELSE artifacts.reference_json
-      END`
-  ).run({
-    id,
-    content_hash: hash,
-    uri: normalizedRef,
-    metadata_json: jsonStringify(metadata),
-    retention_json: jsonStringify({ pinned: false }),
-    reference_json: jsonStringify(reference),
-    created_at: now,
-  });
-
-  upsertGraphEntity(db, {
-    id,
-    entity_type: "artifact",
-    external_id: hash,
-    title: normalizedRef,
-    status: "remote_only",
-    summary: {
-      role: "content_reference",
-      media_type: null,
-      size_bytes: 0,
-      custody_mode: "external",
-      availability: "remote_only",
-      scheme: "artifact",
-      identity_kind: "content_hash",
-    },
-    detail: {
-      uri: normalizedRef,
-      content_hash: hash,
-      metadata,
-      artifact_id: id,
-      custody: {
-        mode: "external",
-        home_repo_id: null,
-        repo_locator: {},
-        availability: "remote_only",
-        retention: { pinned: false },
-        reference,
-      },
-    },
-    visual: { icon: "artifact", shape: "document" },
-    created_at: now,
-    updated_at: now,
-    observed_at: now,
-    source: "artifact_references",
-  });
-
-  const alias = registerArtifactAlias(db, {
-    artifactId: id,
-    ref,
-    locator: { algorithm: "sha256", hash },
-    source: "artifact_resolver",
-    now,
-  });
-  return { artifact: getArtifact(db, id) as ArtifactRecord, alias };
-}
-
 export function registerProvider(db: Db, input: ProviderInput, now = Date.now()): ProviderRecord {
   const id = assertProviderId(input.id ?? input.provider_id);
   const displayName = input.display_name ?? input.name ?? id;
@@ -2740,7 +2623,7 @@ export function ingestArtifact(
   }
   const id = `artifact:sha256:${hash}`;
   const filePath = artifactPathForHash(hash, artifactRoot);
-  let uri = input.uri ?? input.artifact_id ?? `artifact:${hash}`;
+  let uri = input.uri ?? input.artifact_id ?? `artifact-blob:${hash}`;
   let sizeBytes = input.size_bytes ?? uriSizeBytes(uri) ?? 0;
   if (bytes) {
     ensureDir(path.dirname(filePath));
@@ -2908,7 +2791,7 @@ export function ingestArtifact(
   if (artifactAliasTablesExist(db)) {
     registerArtifactAlias(db, {
       artifactId: id,
-      ref: `artifact:${hash}`,
+      ref: `artifact-blob:${hash}`,
       source: "artifact_identity",
       now,
     });
@@ -3759,24 +3642,6 @@ function artifactBlobIdFromHash(hash: string): string {
   return `artifact-blob:${hash.toLowerCase()}`;
 }
 
-function isLegacyHashRef(ref: string): boolean {
-  const trimmed = ref.trim();
-  return (
-    /^artifact:sha256:[a-f0-9]+$/i.test(trimmed) ||
-    /^sha256:[a-f0-9]+$/i.test(trimmed) ||
-    /^[a-f0-9]{7,64}$/i.test(trimmed)
-  );
-}
-
-function legacyHashPrefixFromRef(ref: string): string | null {
-  const trimmed = ref.trim();
-  const match =
-    /^artifact:sha256:([a-f0-9]+)$/i.exec(trimmed) ??
-    /^sha256:([a-f0-9]+)$/i.exec(trimmed) ??
-    /^([a-f0-9]{7,64})$/i.exec(trimmed);
-  return match?.[1]?.toLowerCase() ?? null;
-}
-
 function canonicalArtifactKey(ref: string): string | null {
   const trimmed = ref.trim();
   if (!/^artifact:/i.test(trimmed) || /^artifact:sha256:/i.test(trimmed)) return null;
@@ -3833,7 +3698,7 @@ function getArtifactBlobPrefix(db: Db, ref: string): PrefixLookupResult<Artifact
   if (!artifactIdentityTablesExist(db)) return { status: "unsupported", value: null };
   const trimmed = ref.trim();
   const explicit = /^artifact-blob:/i.test(trimmed);
-  const key = explicit ? trimmed.replace(/^artifact-blob:/i, "") : (legacyHashPrefixFromRef(trimmed) ?? "");
+  const key = explicit ? trimmed.replace(/^artifact-blob:/i, "") : "";
   if (!key) return { status: "unsupported", value: null };
   const fullRef = explicit ? `artifact-blob:${key}` : artifactBlobIdFromHash(key);
   const exact = getArtifactBlob(db, fullRef) ?? (isSha256(key) ? getArtifactBlob(db, artifactBlobIdFromHash(key)) : null);
@@ -3991,27 +3856,55 @@ function resolutionForArtifactBlob(
   };
 }
 
+function unsupportedLegacyArtifactRef(ref: string, warning: string, repairWarning?: string): ArtifactResolveResult {
+  const trimmed = ref.trim();
+  return {
+    status: "unsupported",
+    ref,
+    scheme: schemeFromRef(trimmed),
+    normalized_ref: trimmed,
+    target_id: null,
+    artifact: null,
+    alias: null,
+    logical_artifact: null,
+    artifact_version: null,
+    artifact_blob: null,
+    version: null,
+    series: null,
+    warnings: repairWarning ? [warning, repairWarning] : [warning],
+  };
+}
+
 function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactResolveResult | null {
   const trimmed = ref.trim();
-  if (!artifactIdentityTablesExist(db)) return null;
+  if (/^artifact-series:/i.test(trimmed)) {
+    return unsupportedLegacyArtifactRef(
+      ref,
+      "artifact_series_ref_unsupported",
+      "repair_to_artifact_or_artifact_version_ref",
+    );
+  }
+  if (/^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
+    return unsupportedLegacyArtifactRef(
+      ref,
+      "legacy_artifact_ref_unsupported",
+      "repair_to_artifact_blob_ref",
+    );
+  }
+  if (!artifactIdentityTablesExist(db)) {
+    if (/^artifact(?:-version|-blob)?:/i.test(trimmed)) {
+      return unsupportedLegacyArtifactRef(ref, "artifact_identity_tables_unavailable");
+    }
+    return null;
+  }
   if (/^artifact-version:/i.test(trimmed)) {
     return resolutionForCanonicalVersion(db, ref, getCanonicalArtifactVersionPrefix(db, trimmed));
   }
   if (/^artifact-blob:/i.test(trimmed)) {
     return resolutionForArtifactBlob(db, ref, getArtifactBlobPrefix(db, trimmed), false);
   }
-  if (/^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
-    return resolutionForArtifactBlob(db, ref, getArtifactBlobPrefix(db, trimmed), true);
-  }
   if (/^artifact:/i.test(trimmed)) {
     const logical = getLogicalArtifactPrefix(db, trimmed);
-    if (logical.status === "resolved" || logical.status === "ambiguous" || logical.status === "unsupported") {
-      return resolutionForLogicalArtifact(db, ref, logical);
-    }
-    const hashPrefix = /^artifact:([a-f0-9]{7,64})$/i.exec(trimmed);
-    if (hashPrefix) {
-      return resolutionForArtifactBlob(db, ref, getArtifactBlobPrefix(db, hashPrefix[1]), true);
-    }
     return resolutionForLogicalArtifact(db, ref, logical);
   }
   return null;
@@ -4548,7 +4441,7 @@ function artifactSeriesSummaryFromRow(
   const id = String(row.series_id);
   return {
     id,
-    ref: id,
+    ref: logicalArtifactIdFromLegacySeries(id),
     series_key: String(row.series_key),
     source_kind: String(row.series_source_kind) as ArtifactSeriesSourceKind,
     title: row.series_title === null || row.series_title === undefined ? null : String(row.series_title),
@@ -5037,7 +4930,7 @@ export function recordArtifactVersion(
     // for a `ref` — resolving a ref alone could pin a link/repo/external artifact
     // whose bytes later drift or disappear, defeating managed durability.
     if (input.ref) {
-      const resolved = resolveArtifactRef(db, input.ref, now).artifact ?? getArtifact(db, input.ref);
+      const resolved = resolveArtifactRef(db, input.ref, now).artifact;
       if (!resolved) throw new Error(`managed version ref did not resolve: ${input.ref}`);
       const bytes = readArtifactBytesFull(db, resolved.id);
       if (!bytes.ok) {
@@ -5126,26 +5019,27 @@ export function recordArtifactVersion(
   };
 }
 
-// Flexible series resolver for read surfaces. Accepts a series id, a series_key,
-// a version id (-> its series), or any artifact ref (-> the most recent series
-// that pins that immutable artifact).
+// Flexible history resolver for read surfaces. Public callers use canonical
+// logical artifact refs, artifact-version refs, or another non-legacy artifact
+// ref that resolves to an already-registered immutable artifact. Old
+// artifact-series/hash refs are repair inputs only and are not accepted here.
 export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVersionHistory | null {
   if (!artifactVersioningTablesExist(db)) return null;
   const trimmed = ref.trim();
   let series: ArtifactSeriesRecord | null = null;
-  if (/^artifact-version:/i.test(trimmed) || /^artifact-series:/i.test(trimmed)) {
+  if (/^artifact-series:/i.test(trimmed) || /^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
+    return null;
+  }
+  if (/^artifact-version:/i.test(trimmed)) {
     const resolved = resolveArtifactVersionRef(db, trimmed, Date.now());
     if (resolved.series) {
       series = resolved.series;
     } else if (resolved.version) {
       series = getArtifactSeries(db, resolved.version.series_id);
     }
-  } else {
-    series = getArtifactSeries(db, trimmed);
   }
   if (!series) {
-    // Accept any artifact ref, including the canonical `artifact:sha256:<hash>`
-    // id form. Read-only: this GET endpoint must not materialize registry rows.
+    // Read-only: this GET endpoint must not materialize registry rows.
     const resolved = resolveArtifactRefReadonly(db, trimmed);
     if (resolved) {
       series = primarySeriesForArtifact(db, resolved.id);
@@ -5167,9 +5061,7 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
   const trimmed = ref.trim();
   const identityResolution = resolveArtifactIdentityRef(db, trimmed);
   if (identityResolution) return identityResolution;
-  if (/^artifact-version:/i.test(trimmed) || /^artifact-series:/i.test(trimmed)) {
-    const fast = resolveLatestSeriesRefReadonly(db, trimmed);
-    if (fast) return fast;
+  if (/^artifact-version:/i.test(trimmed)) {
     return resolveArtifactVersionRef(db, trimmed, Date.now());
   }
   const normalized = normalizeRef(trimmed, { db, validateRepo: true });
@@ -5230,32 +5122,7 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
   };
 }
 
-function resolveLatestSeriesRefReadonly(db: Db, ref: string): ArtifactResolveResult | null {
-  const match = /^(artifact-series:[^@#\s]+)$/i.exec(ref);
-  if (!match || !artifactVersioningTablesExist(db)) return null;
-  const seriesLookup = resolveArtifactSeriesPrefix(db, match[1]);
-  const series = seriesLookup.status === "resolved" ? seriesLookup.value : null;
-  if (!series?.latest_version_id) return null;
-  const version = getArtifactVersion(db, series.latest_version_id);
-  if (!version) return null;
-  const artifact = getArtifact(db, version.artifact_id);
-  return {
-    status: artifact ? "resolved" : "unresolved",
-    ref,
-    scheme: schemeFromRef(ref),
-    normalized_ref: version.id,
-    artifact,
-    alias: null,
-    series,
-    version,
-    warnings: ["series_latest_not_pinned"],
-  };
-}
-
-// Resolve artifact-version:/artifact-series: refs to their pinned immutable
-// artifact. Series-latest refs return a warning so a UI/CLI can flag that they
-// are not pinned. Issue links still pin the concrete artifact at link time, so
-// recording a newer version never silently retargets an existing link.
+// Resolve artifact-version: refs to their pinned immutable artifact.
 function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactResolveResult {
   const base: Omit<ArtifactResolveResult, "status" | "artifact" | "warnings"> = {
     ref,
@@ -5269,79 +5136,19 @@ function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactR
     return { ...base, status: "unsupported", artifact: null, warnings: ["artifact_versioning_unavailable"] };
   }
 
-  if (/^artifact-version:/i.test(ref)) {
-    const versionLookup = resolveArtifactVersionPrefix(db, ref);
-    if (versionLookup.status !== "resolved") {
-      const warnings = versionLookup.status === "unsupported"
-        ? ["artifact_version_prefix_too_short"]
-        : [`artifact_version_${versionLookup.status}`];
-      return { ...base, status: versionLookup.status, artifact: null, warnings };
-    }
-    const version = versionLookup.value;
-    const artifact = getArtifact(db, version.artifact_id);
-    const series = getArtifactSeries(db, version.series_id);
-    return {
-      ...base,
-      normalized_ref: version.id,
-      status: artifact ? "resolved" : "unresolved",
-      artifact,
-      series,
-      version,
-      warnings: [],
-    };
+  if (!/^artifact-version:/i.test(ref)) {
+    return { ...base, status: "unsupported", artifact: null, warnings: ["invalid_artifact_version_ref"] };
   }
-
-  // artifact-series:<id>[@<sel>|#<sel>]
-  const match = /^(artifact-series:[^@#\s]+)(?:[@#](.+))?$/i.exec(ref);
-  if (!match) {
-    return { ...base, status: "unsupported", artifact: null, warnings: ["invalid_series_ref"] };
+  const versionLookup = resolveArtifactVersionPrefix(db, ref);
+  if (versionLookup.status !== "resolved") {
+    const warnings = versionLookup.status === "unsupported"
+      ? ["artifact_version_prefix_too_short"]
+      : [`artifact_version_${versionLookup.status}`];
+    return { ...base, status: versionLookup.status, artifact: null, warnings };
   }
-  const seriesRef = match[1];
-  const selector = match[2]?.trim().toLowerCase();
-  const seriesLookup = resolveArtifactSeriesPrefix(db, seriesRef);
-  if (seriesLookup.status !== "resolved") {
-    const warnings = seriesLookup.status === "unsupported"
-      ? ["artifact_series_prefix_too_short"]
-      : [`artifact_series_${seriesLookup.status}`];
-    return { ...base, status: seriesLookup.status, artifact: null, series: null, warnings };
-  }
-  const series = seriesLookup.value;
-  const versions = listArtifactVersions(db, series.id);
-  if (versions.length === 0) {
-    return { ...base, normalized_ref: series.id, status: "unresolved", artifact: null, series, warnings: ["artifact_series_empty"] };
-  }
-  let selected: ArtifactVersionRecord | undefined;
-  const warnings: string[] = [];
-  if (!selector || selector === "latest") {
-    selected = versions[versions.length - 1];
-    warnings.push("series_latest_not_pinned");
-  } else {
-    // A pinned selector must be an exact positive integer — reject `2abc`, `2.5`,
-    // `0`, etc. so `@<n>` means "exactly version n" and never silently truncates.
-    if (!/^[1-9][0-9]*$/.test(selector)) {
-      return {
-        ...base,
-        normalized_ref: series.id,
-        status: "unsupported",
-        artifact: null,
-        series,
-        warnings: ["invalid_series_version_selector"],
-      };
-    }
-    const versionNo = Number.parseInt(selector, 10);
-    selected = versions.find((v) => v.version_no === versionNo);
-    if (!selected) {
-      return {
-        ...base,
-        normalized_ref: series.id,
-        status: "unresolved",
-        artifact: null,
-        series,
-        warnings: ["artifact_series_version_not_found"],
-      };
-    }
-  }
+  const selected = versionLookup.value;
   const artifact = getArtifact(db, selected.artifact_id);
+  const series = getArtifactSeries(db, selected.series_id);
   return {
     ...base,
     normalized_ref: selected.id,
@@ -5349,7 +5156,7 @@ function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactR
     artifact,
     series,
     version: selected,
-    warnings,
+    warnings: [],
   };
 }
 
@@ -5357,103 +5164,10 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
   const trimmedRef = ref.trim();
   const identityResolution = resolveArtifactIdentityRef(db, trimmedRef);
   if (identityResolution) return identityResolution;
-  if (/^artifact-version:/i.test(trimmedRef) || /^artifact-series:/i.test(trimmedRef)) {
+  if (/^artifact-version:/i.test(trimmedRef)) {
     return resolveArtifactVersionRef(db, trimmedRef, now);
   }
   const normalized = normalizeRef(ref, { db, validateRepo: true });
-  const hashRef = artifactHashRefFromRef(ref);
-  if (hashRef) {
-    if (hashRef.kind === "invalid") {
-      return {
-        status: "unsupported",
-        ref,
-        scheme: normalized.scheme,
-        normalized_ref: normalized.normalizedRef,
-        artifact: null,
-        alias: null,
-      };
-    }
-    if (hashRef.kind === "too_short") {
-      const alias = registerHashPrefixAlias(db, ref, hashRef.prefix, "unsupported", now);
-      return {
-        status: "unsupported",
-        ref,
-        scheme: normalized.scheme,
-        normalized_ref: normalized.normalizedRef,
-        artifact: null,
-        alias,
-      };
-    }
-
-    const hash = hashRef.kind === "full" ? hashRef.hash : null;
-    if (hash) {
-      let artifact = getArtifact(db, `artifact:sha256:${hash}`);
-      if (!artifact) {
-        const materialized = materializeHashArtifact(db, ref, hash, now);
-        artifact = materialized.artifact;
-        return {
-          status: materialized.alias.resolution_status,
-          ref,
-          scheme: normalized.scheme,
-          normalized_ref: normalized.normalizedRef,
-          artifact,
-          alias: materialized.alias,
-        };
-      }
-      const alias = registerArtifactAlias(db, {
-        artifactId: artifact.id,
-        ref,
-        source: "artifact_resolver",
-        now,
-      });
-      return {
-        status: alias.resolution_status,
-        ref,
-        scheme: normalized.scheme,
-        normalized_ref: normalized.normalizedRef,
-        artifact,
-        alias,
-      };
-    }
-
-    const matches = listArtifacts(db, { hashPrefix: hashRef.prefix, limit: 2 });
-    if (matches.length === 1) {
-      const alias = registerArtifactAlias(db, {
-        artifactId: matches[0].id,
-        ref,
-        locator: {
-          algorithm: "sha256",
-          prefix: hashRef.prefix,
-          resolved_hash: matches[0].content_hash,
-        },
-        source: "artifact_resolver",
-        now,
-      });
-      return {
-        status: alias.resolution_status,
-        ref,
-        scheme: normalized.scheme,
-        normalized_ref: normalized.normalizedRef,
-        artifact: matches[0],
-        alias,
-      };
-    }
-    const alias = registerHashPrefixAlias(
-      db,
-      ref,
-      hashRef.prefix,
-      matches.length > 1 ? "ambiguous" : "unresolved",
-      now,
-    );
-    return {
-      status: alias.resolution_status,
-      ref,
-      scheme: normalized.scheme,
-      normalized_ref: normalized.normalizedRef,
-      artifact: null,
-      alias,
-    };
-  }
 
   if (normalized.invalidReason || !isRegisterableArtifactRef(ref)) {
     return {

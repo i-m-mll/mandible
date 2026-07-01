@@ -81,7 +81,6 @@ Artifact refs:
   artifact:<id>             logical artifact.
   artifact-version:<id>     specific artifact version.
   artifact-blob:<hash>      immutable artifact bytes.
-  artifact:sha256:<hash>    legacy read/repair input; new output uses artifact-blob:<hash>.
 EOF
 }
 
@@ -387,7 +386,7 @@ classify_path() {
       recoverability="local_only"
       # Durable realpath, not the possibly-disposable input path.
       uri="file://${real}"
-      canonical_ref="artifact:${sha}"
+      canonical_ref="artifact-blob:${sha}"
       repo_locator="$(jq -n --arg repo_id "$repo_id" --arg ref "$branch" --arg path "$rel" \
         '{repo_id:$repo_id, ref:$ref, path:$path, local_only:true}')"
       if [[ "$ignored" == true ]]; then
@@ -405,7 +404,7 @@ classify_path() {
     rel="$filename"
     repo_id=""
     uri="file://${real}"
-    canonical_ref="artifact:${sha}"
+    canonical_ref="artifact-blob:${sha}"
     repo_locator='{}'
     recoverability="local_only"
     warnings="$(jq -n '[{code:"outside_repo", message:"outside-repo paths require --copy or --managed for durable registration"}]')"
@@ -446,7 +445,7 @@ classify_path() {
       size_bytes:$size_bytes,
       uri:$uri,
       input_path:$path_decision.input_path,
-      canonical_ref:(if $recoverability == "local_only" then "artifact:" + $sha256 else $uri end),
+      canonical_ref:(if $recoverability == "local_only" then "artifact-blob:" + $sha256 else $uri end),
       recoverability:$recoverability,
       availability:$availability,
       custody_mode:"link",
@@ -495,7 +494,7 @@ payload_for_path() {
     # file-RPC (issue 833e972). This keeps large files off argv/JSON entirely.
     classified="$(printf '%s' "$classified" | jq \
       --arg custody "$mode" \
-      '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact:" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
+      '.custody_mode=$custody | .recoverability="mandible_cas" | .canonical_ref=("artifact-blob:" + .sha256) | .warnings=(.warnings + [{code:"snapshot_custody", message:"bytes will be stored in Mandible artifact storage"}])')"
     printf '%s' "$classified" | jq \
       --argjson links "$links" \
       '{
@@ -875,6 +874,14 @@ artifact_id_for_ref() {
   api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" | jq -r '.resolution.artifact.id'
 }
 
+canonical_ref_for_artifact_json() {
+  jq -r '
+    if (.content_hash // "") != "" then "artifact-blob:" + .content_hash
+    elif (.id // "" | test("^artifact:sha256:")) then (.id | sub("^artifact:sha256:"; "artifact-blob:"))
+    else .id
+    end'
+}
+
 cmd_show() {
   local ref="" json=0
   while (( $# > 0 )); do
@@ -966,15 +973,16 @@ cmd_versions() {
   else
     printf '%s\n' "$response" | jq -r '
       .history.series as $s
-      | "artifact \($s.id) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
+      | ($s.ref // ($s.id | sub("^artifact-series:"; "artifact:"))) as $artifact_ref
+      | "artifact \($artifact_ref) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
       (.history.versions[]
         | "  v\(.version_no) \(.source_kind) \(.artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
   fi
 }
 
 # Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
-# bytes (issue f7a994e). Refs may be hashes, artifact-version:/artifact-series:
-# refs, or any resolvable artifact ref.
+# bytes (issue f7a994e). Refs use canonical artifact:, artifact-version:, or
+# artifact-blob: forms accepted by the resolver.
 cmd_diff() {
   local refs=() json=0
   while (( $# > 0 )); do
@@ -1137,7 +1145,7 @@ cmd_snapshot() {
   require_tools
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
-  local ref="${args[1]}" payload response artifact link_response result abs_from
+  local ref="${args[1]}" payload response artifact link_response result abs_from link_ref
   abs_from="$(python_path abs "$from_path")"
   if api_is_file_rpc; then
     # Sandbox transport: bytes ride as a spool attachment, never inline base64
@@ -1179,7 +1187,8 @@ cmd_snapshot() {
   fi
   artifact="$(printf '%s' "$response" | jq '.artifact')"
   if [[ -n "$issue_id" ]]; then
-    link_response="$(api_post "/api/artifacts/link" "$(jq -n --arg ref "$(printf '%s' "$artifact" | jq -r '.id')" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg role "$role" \
+    link_ref="$(printf '%s' "$artifact" | canonical_ref_for_artifact_json)"
+    link_response="$(api_post "/api/artifacts/link" "$(jq -n --arg ref "$link_ref" --arg entity_id "$issue_id" --arg repo_id "$issue_repo" --arg role "$role" \
       '{ref:$ref, entity_type:"issue", entity_id:$entity_id, link_type:"references", role:(if $role == "" then null else $role end), repo_id:(if $repo_id == "" then null else $repo_id end), source:"artifact_cli"}')")" \
       || die "${RED}Snapshot succeeded but issue link failed.${RESET}" 1
     result="$(jq -n --argjson artifact "$artifact" --argjson link "$(printf '%s' "$link_response" | jq '.link')" '{artifact:$artifact, link:$link}')"
@@ -1256,7 +1265,7 @@ bundle_create() {
         continue
       fi
       if (( dry_run )); then
-        artifact="$(printf '%s' "$payload" | jq '{id:("artifact:" + .sha256), role, custody_mode, recoverability:.metadata.recoverability, uri}')"
+        artifact="$(printf '%s' "$payload" | jq '{id:("artifact-blob:" + .sha256), role, custody_mode, recoverability:.metadata.recoverability, uri}')"
       else
         if ! response=$(api_post "/api/artifacts/ingest" "$payload"); then
           failed="$(printf '%s' "$failed" | jq --arg ref "$member" '. + [{ref:$ref, error:"api_ingest_failed"}]')"

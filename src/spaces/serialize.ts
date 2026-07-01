@@ -26,8 +26,8 @@
  * The grammar version string is {@link SPACES_DOC_VERSION} (`spaces-doc.v1`).
  * The block-identity directive carries the four C11 attributes — `id`, `parent`,
  * `sort`, `type` — and the optional `item` embed pointer. Reference/embed
- * directive nodes carry a canonical resource ref (`artifact:sha256:…`,
- * `repo://…`, `mandible://…`). The recognizer for those ref/embed directive
+ * directive nodes carry a canonical resource ref (`artifact:…`,
+ * `artifact-version:…`, `artifact-blob:…`, `repo://…`, `mandible://…`). The recognizer for those ref/embed directive
  * nodes is exported as {@link parseSpacesDocDirectiveRef} and wired into the C6
  * shared resource-ref parser by `ui/src/spaces-doc-refs.ts`.
  *
@@ -133,7 +133,7 @@ const CONTAINER_EMBED_DIRECTIVE =
 
 function classifyRefKind(canonical: string): SpacesDocDirectiveRef['kind'] {
   const c = canonical.trim();
-  if (/^artifact:/i.test(c) || /^sha256:[0-9a-f]{64}$/i.test(c) || /^[0-9a-f]{7,64}$/i.test(c)) {
+  if (/^artifact:(?!sha256:)/i.test(c) || /^artifact-(?:version|blob):/i.test(c)) {
     return 'artifact';
   }
   if (c.startsWith('repo://')) return 'repo';
