@@ -185,11 +185,16 @@ describe('ArtifactDetail artifact preview rendering', () => {
   it('keeps custody and role metadata out of the header eyebrow', () => {
     const { container } = renderArtifactDetail(null);
     const eyebrow = container.querySelector('.artifact-detail__eyebrow');
+    const header = container.querySelector('.artifact-detail__header');
+    const pane = container.querySelector('.artifact-detail__pane');
+    const body = container.querySelector('.artifact-detail__body');
 
     expect(eyebrow?.textContent).toContain('rlrmp');
     expect(eyebrow?.textContent).toContain('156f240');
     expect(eyebrow?.textContent).not.toContain('link');
     expect(eyebrow?.textContent).not.toContain('script');
+    expect(pane?.contains(header as Node)).toBe(false);
+    expect(pane?.contains(body as Node)).toBe(true);
   });
 
   it('shows compact raw JSON after toggling without changing the code preview surface', () => {
