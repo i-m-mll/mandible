@@ -13,6 +13,7 @@ export interface CoworkCliCacheOptions {
   targetDir?: string;
   version?: string;
   logger?: Logger;
+  generatedFiles?: CoworkCliCacheGeneratedFile[];
 }
 
 export interface CoworkCliCacheFile {
@@ -20,6 +21,12 @@ export interface CoworkCliCacheFile {
   path: string;
   sha256: string;
   size: number;
+}
+
+export interface CoworkCliCacheGeneratedFile {
+  path: string;
+  contents: string;
+  mode?: number;
 }
 
 export interface CoworkCliCacheManifest {
@@ -59,6 +66,20 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
       size: bytes.length,
     });
   }
+  for (const file of options.generatedFiles ?? []) {
+    const normalizedPath = normalizeGeneratedFilePath(file.path);
+    const destinationPath = path.join(targetDir, normalizedPath);
+    fs.mkdirSync(path.dirname(destinationPath), { recursive: true, mode: 0o700 });
+    const mode = file.mode ?? 0o644;
+    const bytes = Buffer.from(file.contents, "utf8");
+    writeFileAtomically(destinationPath, bytes, mode);
+    manifestFiles.push({
+      source: `generated:${normalizedPath}`,
+      path: normalizedPath,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex"),
+      size: bytes.length,
+    });
+  }
 
   const manifest: CoworkCliCacheManifest = {
     version: options.version ?? "0.0.0",
@@ -77,6 +98,14 @@ export function materializeCoworkCliCache(options: CoworkCliCacheOptions): Cowor
     version: manifest.version,
   });
   return manifest;
+}
+
+function normalizeGeneratedFilePath(input: string): string {
+  const normalized = input.replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!normalized || normalized.split("/").some((part) => !part || part === "." || part === "..")) {
+    throw new Error(`invalid generated CLI cache path: ${input}`);
+  }
+  return normalized;
 }
 
 function copyFileAtomically(sourcePath: string, destinationPath: string, mode: number): Buffer {

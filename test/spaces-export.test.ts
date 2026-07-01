@@ -21,7 +21,6 @@ import { spawnSync } from 'node:child_process';
 import { migrate, setDb, type Db } from '../src/db.js';
 import { registerSpacesRoutes } from '../src/routes/spaces.js';
 import { Router } from '../src/server.js';
-import { isAllowedFileRpcRoute } from '../src/file-rpc-transport.js';
 import { SPACE_EVENTS, SPACE_EVENT_VALUES } from '../src/spaces/events.js';
 import {
   defaultExportGitRunner,
@@ -52,6 +51,10 @@ function seedProjectAndCheckout(root: string): void {
 
 async function call(method: string, url: string, body?: unknown) {
   return router.invoke({ method, url, body });
+}
+
+function allowsFileRpcRoute(method: string, url: string): boolean {
+  return router.resolveFileRpcPolicy(method, url);
 }
 
 async function makeSpaceWithBlocks(): Promise<string> {
@@ -312,13 +315,13 @@ describe('export routes + events + allowlist', () => {
   });
 
   it('export routes are self-allowlisted on the file transport, with no blanket allow', () => {
-    expect(isAllowedFileRpcRoute('GET', '/api/spaces/abc/exports')).toBe(true);
-    expect(isAllowedFileRpcRoute('POST', '/api/spaces/abc/exports')).toBe(true);
-    expect(isAllowedFileRpcRoute('POST', '/api/spaces/abc/exports/untracked')).toBe(true);
-    expect(isAllowedFileRpcRoute('POST', '/api/spaces/exports/settings')).toBe(true);
+    expect(allowsFileRpcRoute('GET', '/api/spaces/abc/exports')).toBe(true);
+    expect(allowsFileRpcRoute('POST', '/api/spaces/abc/exports')).toBe(true);
+    expect(allowsFileRpcRoute('POST', '/api/spaces/abc/exports/untracked')).toBe(true);
+    expect(allowsFileRpcRoute('POST', '/api/spaces/exports/settings')).toBe(true);
     // No approval/merge/admin authority leaks through, and there is no blanket
     // `/api/spaces*` allow.
-    expect(isAllowedFileRpcRoute('DELETE', '/api/spaces/abc/exports')).toBe(false);
-    expect(isAllowedFileRpcRoute('POST', '/api/spaces/abc/exports/promote')).toBe(false);
+    expect(allowsFileRpcRoute('DELETE', '/api/spaces/abc/exports')).toBe(false);
+    expect(allowsFileRpcRoute('POST', '/api/spaces/abc/exports/promote')).toBe(false);
   });
 });

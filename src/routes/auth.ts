@@ -34,7 +34,7 @@ export function registerAuthRoutes(
     }
     const report = authQueue.checkMergeIndependence(resolveAuthCheckPayload(payload));
     res.status(200).json({ check: report });
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/auth/request", async (req, res) => {
     const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
@@ -133,7 +133,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/auth/request/:id", (req, res) => {
     const request = authQueue.getRequest(req.params.id);
@@ -195,7 +195,7 @@ export function registerAuthRoutes(
       target_session_id: request.target_session_id ?? null,
       delivered_at: request.delivered_at ?? null
     });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/auth/request/:id/actions", (req, res) => {
     try {
@@ -203,7 +203,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/actions", (req, res) => {
     try {
@@ -212,7 +212,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.put("/api/auth/request/:id/actions/:actionId", (req, res) => {
     try {
@@ -225,7 +225,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.delete("/api/auth/request/:id/actions/:actionId", (req, res) => {
     try {
@@ -234,7 +234,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/auth/request/:id/actions/:actionId/veto", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -248,7 +248,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.put("/api/auth/request/:id", (req, res) => {
     const result = parseAuthRequestUpdatePayload(readBody<Record<string, unknown>>(req));
@@ -267,7 +267,7 @@ export function registerAuthRoutes(
       }
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.delete("/api/auth/request/:id", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -281,7 +281,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/replay-codex-archives", (req, res) => {
     try {
@@ -290,7 +290,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/auth/queue", (req, res) => {
     const query = req.query ?? {};
@@ -312,7 +312,7 @@ export function registerAuthRoutes(
       };
     });
     res.json({ requests: enriched });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/auth/history", (req, res) => {
     const query = req.query ?? {};
@@ -335,7 +335,7 @@ export function registerAuthRoutes(
         action_count: authQueue.countActions(r.id),
       })),
     });
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/approve", (req, res) => {
     try {
@@ -344,7 +344,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/reject", (req, res) => {
     try {
@@ -358,7 +358,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/skip", (req, res) => {
     try {
@@ -367,7 +367,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/retry", (req, res) => {
     try {
@@ -376,7 +376,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/requeue", (req, res) => {
     try {
@@ -385,7 +385,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/dismiss", (req, res) => {
     try {
@@ -394,7 +394,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/output", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -408,7 +408,7 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/result", (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -428,11 +428,11 @@ export function registerAuthRoutes(
     } catch (error) {
       handleQueueError(error, res);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.get("/api/auth/auto-approve", (_req, res) => {
     res.json(autoApproveManager.getStatus());
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/auto-approve/setup", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -447,7 +447,7 @@ export function registerAuthRoutes(
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/auto-approve/enable", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
@@ -461,11 +461,11 @@ export function registerAuthRoutes(
     } catch (error) {
       res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/auth/auto-approve/disable", (_req, res) => {
     res.json(autoApproveManager.disable());
-  });
+  }, { fileRpc: "deny" });
 
   return authQueue;
 }

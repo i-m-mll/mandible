@@ -6,7 +6,6 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
 import { SPACE_EVENT_VALUES, SPACE_EVENTS, isSpaceEvent } from "../src/spaces/events.js";
-import { isAllowedFileRpcRoute } from "../src/file-rpc-transport.js";
 
 // Issue f108bba (umbrella de56ffa): Spaces REST API — CRUD, batch occurrences,
 // backend-evaluated seed, unified ref resolver, and the frozen space:* event enum.
@@ -63,6 +62,10 @@ function linkArtifactToIssue(artifactId: string, issueId: string): void {
 
 async function call(method: string, url: string, body?: unknown) {
   return router.invoke({ method, url, body });
+}
+
+function allowsFileRpcRoute(method: string, url: string): boolean {
+  return router.resolveFileRpcPolicy(method, url);
 }
 
 beforeEach(() => {
@@ -533,21 +536,21 @@ describe("event enum (frozen contract)", () => {
 
 describe("file-rpc allowlist (self-allowlisted routes)", () => {
   it("allows the spaces read/write routes including batch and resolver", () => {
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces/abc")).toBe(true);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/spaces/abc")).toBe(true);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/spaces/abc")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces/abc/items")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces/abc/occurrences/batch")).toBe(true);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/spaces/abc/edges/e1")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces/abc/seed")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces/resolve")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/refs/resolve")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/spaces")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/spaces")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/spaces/abc")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/spaces/abc")).toBe(true);
+    expect(allowsFileRpcRoute("DELETE", "/api/spaces/abc")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/spaces/abc/items")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/spaces/abc/occurrences/batch")).toBe(true);
+    expect(allowsFileRpcRoute("DELETE", "/api/spaces/abc/edges/e1")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/spaces/abc/seed")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/spaces/resolve")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/refs/resolve")).toBe(true);
   });
 
   it("denies unrelated/unknown methods on spaces routes", () => {
-    expect(isAllowedFileRpcRoute("PUT", "/api/spaces/abc")).toBe(false);
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces/abc/items")).toBe(false);
+    expect(allowsFileRpcRoute("PUT", "/api/spaces/abc")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/api/spaces/abc/items")).toBe(false);
   });
 });

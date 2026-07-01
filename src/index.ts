@@ -86,11 +86,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   const sse = new SseManager();
   const version = resolveVersion();
-  try {
-    materializeCoworkCliCache({ sourceRoot: MANDIBLE_ROOT, version, logger });
-  } catch (error) {
-    logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
-  }
 
   // Set singletons so partition code can use broadcast() and getDb()
   setDb(db);
@@ -145,10 +140,26 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);
 
+  try {
+    materializeCoworkCliCache({
+      sourceRoot: MANDIBLE_ROOT,
+      version,
+      logger,
+      generatedFiles: [
+        {
+          path: "route-mutation-categories.json",
+          contents: routeMutationCategoriesJson(router),
+        },
+      ],
+    });
+  } catch (error) {
+    logger("warn", "cowork_cli_cache_materialize_failed", { error: String(error) });
+  }
+
   // GET /api/reaper/status — expose reaper state (last run, sessions reaped, etc.)
   router.get("/api/reaper/status", (_req, res) => {
     res.json(reaperTimer.getStatus());
-  });
+  }, { fileRpc: "deny" });
 
   const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
   navEnricher.start();
@@ -471,6 +482,22 @@ function resolveMandibleRoot(): string {
 }
 
 const MANDIBLE_ROOT = resolveMandibleRoot();
+
+function routeMutationCategoriesJson(router: Router): string {
+  const routes = router.listRoutePolicies()
+    .filter((route) => route.operationalMutationCategory)
+    .map((route) => ({
+      method: route.method,
+      path: route.path,
+      category: route.operationalMutationCategory,
+    }));
+  return `${JSON.stringify({
+    schema: 1,
+    source: "Router.listRoutePolicies",
+    routes,
+    fallbackCategory: "api",
+  }, null, 2)}\n`;
+}
 
 function readStartupCommit(logger: Logger): StartupCommitInfo {
   try {

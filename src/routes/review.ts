@@ -1,6 +1,7 @@
 import { getCommitLog, getDiff, getSpec } from "../review.js";
 import { WorkScanner } from "../work-scanner.js";
 import type { ReviewSpecResponse } from "../contracts.js";
+import type { RouteOptions } from "../server.js";
 
 type QuerySource = Record<string, string | string[] | undefined> | undefined;
 
@@ -17,7 +18,7 @@ type ResponseLike = {
 type RouteHandler = (req: RequestLike, res?: ResponseLike) => Promise<unknown> | unknown;
 
 type RouteRegistrar = {
-  get: (path: string, handler: RouteHandler) => void;
+  get: (path: string, handler: RouteHandler, options: RouteOptions) => void;
 };
 
 const getQueryValue = (req: RequestLike, key: string): string | undefined => {
@@ -96,7 +97,7 @@ export const registerReviewRoutes = (
       const message = error instanceof Error ? error.message : "Failed to load diff";
       return jsonResponse(res, { error: message }, 400);
     }
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/review/spec", async (req, res) => {
     try {
@@ -113,7 +114,7 @@ export const registerReviewRoutes = (
       const message = error instanceof Error ? error.message : "Failed to load spec";
       return jsonResponse(res, { error: message }, 400);
     }
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/review/log", async (req, res) => {
     try {
@@ -126,5 +127,5 @@ export const registerReviewRoutes = (
       const message = error instanceof Error ? error.message : "Failed to load log";
       return jsonResponse(res, { error: message }, 400);
     }
-  });
+  }, { fileRpc: "deny" });
 };

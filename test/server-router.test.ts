@@ -9,7 +9,7 @@ describe("Router error handling", () => {
 
     router.get("/api/fails", () => {
       throw new Error("private details");
-    });
+    }, { fileRpc: "deny" });
 
     const response = await router.invoke({ method: "GET", url: "/api/fails" });
 
@@ -26,5 +26,39 @@ describe("Router error handling", () => {
         error: "Error: private details",
       }),
     );
+  });
+});
+
+describe("Router route policies", () => {
+  it("lists file-RPC policy and operational mutation categories from route registration", () => {
+    const router = new Router();
+    router.post("/api/ledger/issues/:issueId/comments", (_req, res) => res.json({ ok: true }), {
+      fileRpc: "allow",
+    });
+    router.post("/api/auth/check", (_req, res) => res.json({ ok: true }), {
+      fileRpc: "allow",
+    });
+    router.get("/api/projects", (_req, res) => res.json({ ok: true }), {
+      fileRpc: "allow",
+    });
+
+    expect(router.listRoutePolicies()).toEqual([
+      {
+        method: "POST",
+        path: "/api/ledger/issues/:issueId/comments",
+        fileRpc: "allow",
+        operationalMutationCategory: "ledger",
+      },
+      {
+        method: "POST",
+        path: "/api/auth/check",
+        fileRpc: "allow",
+      },
+      {
+        method: "GET",
+        path: "/api/projects",
+        fileRpc: "allow",
+      },
+    ]);
   });
 });

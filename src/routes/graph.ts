@@ -1528,5 +1528,5 @@ export function registerGraphRoutes(
     };
 
     res.json(payload);
-  });
+  }, { fileRpc: "deny" });
 }

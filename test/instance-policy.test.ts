@@ -23,7 +23,7 @@ describe("instance mutation policy", () => {
     const router = previewRouter();
     router.post("/api/auth/request", (_req, res) => {
       res.status(201).json({ request_id: "req_preview" });
-    });
+    }, { fileRpc: "allow" });
 
     const response = await router.invoke({
       method: "POST",
@@ -44,7 +44,7 @@ describe("instance mutation policy", () => {
     const router = previewRouter();
     router.post("/api/auth/check", (_req, res) => {
       res.status(200).json({ check: { status: "clean" } });
-    });
+    }, { fileRpc: "allow" });
 
     const response = await router.invoke({
       method: "POST",
@@ -94,7 +94,7 @@ describe("instance mutation policy", () => {
     const router = previewRouter();
     router.post("/api/sessions/register", (_req, res) => {
       res.status(200).json({ ok: true });
-    });
+    }, { fileRpc: "allow" });
 
     const response = await router.invoke({
       method: "POST",
@@ -113,7 +113,7 @@ describe("instance mutation policy", () => {
     const router = previewRouter();
     router.post("/api/new-control-plane/write", (_req, res) => {
       res.status(200).json({ ok: true });
-    });
+    }, { fileRpc: "deny" });
 
     const response = await router.invoke({
       method: "POST",
@@ -177,7 +177,7 @@ describe("instance mutation policy", () => {
     const router = new Router({ instance });
     router.post("/api/work-units/claim", (_req, res) => {
       res.status(201).json({ id: "wu_test" });
-    });
+    }, { fileRpc: "allow" });
 
     const response = await router.invoke({
       method: "POST",

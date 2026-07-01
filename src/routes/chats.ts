@@ -70,7 +70,7 @@ export function registerChatRoutes(server: RouteRegistrar): void {
       .prepare("SELECT * FROM starred_chats ORDER BY created_at DESC")
       .all() as Record<string, unknown>[];
     sendJson(res, 200, rows.map(mapRow));
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/chats/star", (req, res) => {
     const payload = readBody<StarredChatInput>(req);
@@ -119,7 +119,7 @@ export function registerChatRoutes(server: RouteRegistrar): void {
     ).run(entry);
 
     sendJson(res, 201, { id });
-  });
+  }, { fileRpc: "deny" });
 
   server.delete("/api/chats/starred/:id", (req, res) => {
     const id = req.params.id;
@@ -135,7 +135,7 @@ export function registerChatRoutes(server: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   server.patch("/api/chats/starred/:id", (req, res) => {
     const id = req.params.id;
@@ -187,5 +187,5 @@ export function registerChatRoutes(server: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 }

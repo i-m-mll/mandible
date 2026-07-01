@@ -22,7 +22,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
   app.get("/api/auth/hooks", (_req, res) => {
     const hooks = hookManager.list();
     res.json({ hooks });
-  });
+  }, { fileRpc: "deny" });
 
   // Get a single hook
   app.get("/api/auth/hooks/:id", (req, res) => {
@@ -32,7 +32,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       return;
     }
     res.json(hook);
-  });
+  }, { fileRpc: "deny" });
 
   // Create a new hook
   app.post("/api/auth/hooks", (req, res) => {
@@ -44,7 +44,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
     }
     const hook = hookManager.create(parsed.input);
     res.status(201).json(hook);
-  });
+  }, { fileRpc: "deny" });
 
   // Update an existing hook
   app.put("/api/auth/hooks/:id", (req, res) => {
@@ -57,7 +57,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       return;
     }
     res.json(updated);
-  });
+  }, { fileRpc: "deny" });
 
   // Delete a hook (built-in hooks cannot be deleted)
   app.delete("/api/auth/hooks/:id", (req, res) => {
@@ -75,7 +75,7 @@ export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookMa
       }
       res.status(500).json({ error: "Unexpected error." });
     }
-  });
+  }, { fileRpc: "deny" });
 
   return hookManager;
 }

@@ -36,5 +36,5 @@ export function registerTimelineRoutes(router: RouteRegistrar): void {
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : String(error) });
     }
-  });
+  }, { fileRpc: "deny" });
 }

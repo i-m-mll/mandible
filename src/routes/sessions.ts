@@ -154,7 +154,7 @@ export function registerSessionRoutes(
     }
     const result = discovery.discoverSessions();
     sendJson(res, 200, result);
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/sessions/register", (req, res) => {
     const payload = readBody<SessionInput>(req);
@@ -164,7 +164,7 @@ export function registerSessionRoutes(
     }
     const session = registry.registerSession(payload);
     sendJson(res, 200, session);
-  });
+  }, { fileRpc: "allow" });
 
   server.patch("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -185,7 +185,7 @@ export function registerSessionRoutes(
       syncPinnedPanesTsv(updated.nav_pane_id, Boolean(payload.pinned));
     }
     sendJson(res, 200, updated);
-  });
+  }, { fileRpc: "allow" });
 
   server.patch("/api/sessions/:id/end", (req, res) => {
     const rawId = req.params.id;
@@ -203,7 +203,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, ended);
-  });
+  }, { fileRpc: "allow" });
 
   server.post("/api/sessions/:id/children", (req, res) => {
     const parentId = req.params.id;
@@ -218,7 +218,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, child);
-  });
+  }, { fileRpc: "deny" });
 
   server.patch("/api/sessions/:id/children/:childId", (req, res) => {
     const parentId = req.params.id;
@@ -235,7 +235,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, updated);
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/sessions", (req, res) => {
     const query = req.query ?? {};
@@ -297,13 +297,13 @@ export function registerSessionRoutes(
     }
 
     sendJson(res, 200, sessions);
-  });
+  }, { fileRpc: "deny" });
 
   // Bug: 568eca7 — lightweight endpoint returning just pinned session IDs
   server.get("/api/sessions/pinned", (_req, res) => {
     const ids = registry.getPinnedSessionIds();
     sendJson(res, 200, { ids });
-  });
+  }, { fileRpc: "deny" });
 
   // Bug: 0b454df — list channel-connected sessions
   server.get("/api/sessions/channel-connected", (_req, res) => {
@@ -343,7 +343,7 @@ export function registerSessionRoutes(
     }
 
     sendJson(res, 200, { sessions: combined });
-  });
+  }, { fileRpc: "deny" });
 
   // Bug: 0b454df — record a channel tool call for liveness tracking
   server.post("/api/sessions/:id/channel-tool-call", (req, res) => {
@@ -367,7 +367,7 @@ export function registerSessionRoutes(
     channelRegistry.recordToolCall(id, toolName, body.tool_input, body.tool_output);
 
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
     const pidStr = req.params.pid;
@@ -382,7 +382,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, session);
-  });
+  }, { fileRpc: "allow" });
 
   server.get("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -398,7 +398,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, session);
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/sessions/:id/tree", (req, res) => {
     const rawId = req.params.id;
@@ -414,7 +414,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, tree);
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/sessions/:id/navigate", (req, res) => {
     const rawId = req.params.id;
@@ -431,7 +431,7 @@ export function registerSessionRoutes(
     }
     const result = navigateToSession(session);
     sendJson(res, result.ok ? 200 : 500, result);
-  });
+  }, { fileRpc: "deny" });
 
   // Bug: 14e1e63 — write Reaper Notice before killing so it appears before pane-loop restarts
   server.post("/api/sessions/:id/kill", (req, res) => {
@@ -478,7 +478,7 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/sessions/:id/issues — link a session to an issue
   server.post("/api/sessions/:id/issues", (req, res) => {
@@ -527,7 +527,7 @@ export function registerSessionRoutes(
       created_at: now,
       ledger_issue_id: ledgerIssueId,
     });
-  });
+  }, { fileRpc: "allow" });
 
   // GET /api/sessions/:id/issues — get linked issues for a session
   server.get("/api/sessions/:id/issues", (req, res) => {
@@ -546,6 +546,6 @@ export function registerSessionRoutes(
        ORDER BY created_at ASC`
     ).all(sessionId);
     sendJson(res, 200, links);
-  });
+  }, { fileRpc: "allow" });
 
 }

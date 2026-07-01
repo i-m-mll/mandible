@@ -53,6 +53,27 @@ export interface ResponseLike {
 
 export type RouteHandler = (req: RequestLike, res: ResponseLike) => unknown;
 
+export interface FileRpcPolicyContext {
+  method: string;
+  pathname: string;
+  params: Record<string, string>;
+}
+
+export type FileRpcPolicy = "allow" | "deny" | {
+  allowWhen(context: FileRpcPolicyContext): boolean;
+};
+
+export interface RouteOptions {
+  fileRpc: FileRpcPolicy;
+}
+
+export interface RoutePolicyEntry {
+  method: string;
+  path: string;
+  fileRpc: "allow" | "deny" | "conditional";
+  operationalMutationCategory?: string;
+}
+
 export interface RouterOptions {
   logger?: Logger;
   instance?: InstanceInfo;
@@ -71,20 +92,27 @@ export interface RouterInvokeResponse {
 }
 
 export interface RouteRegistrar {
-  get(path: string, handler: RouteHandler): void;
-  post(path: string, handler: RouteHandler): void;
-  put(path: string, handler: RouteHandler): void;
-  patch(path: string, handler: RouteHandler): void;
-  delete(path: string, handler: RouteHandler): void;
+  get(path: string, handler: RouteHandler, options: RouteOptions): void;
+  post(path: string, handler: RouteHandler, options: RouteOptions): void;
+  put(path: string, handler: RouteHandler, options: RouteOptions): void;
+  patch(path: string, handler: RouteHandler, options: RouteOptions): void;
+  delete(path: string, handler: RouteHandler, options: RouteOptions): void;
 }
 
 // --- Router implementation ---
 
 interface CompiledRoute {
   method: string;
+  path: string;
   regex: RegExp;
   paramNames: string[];
   handler: RouteHandler;
+  options: RouteOptions;
+}
+
+interface RouteMatch {
+  route: CompiledRoute;
+  params: Record<string, string>;
 }
 
 function compileRoute(pattern: string): { regex: RegExp; paramNames: string[] } {
@@ -161,29 +189,62 @@ export class Router implements RouteRegistrar {
     this.instance = options.instance ?? resolveInstanceInfo();
   }
 
-  get(path: string, handler: RouteHandler): void {
-    this.addRoute("GET", path, handler);
+  get(path: string, handler: RouteHandler, options: RouteOptions): void {
+    this.addRoute("GET", path, handler, options);
   }
 
-  post(path: string, handler: RouteHandler): void {
-    this.addRoute("POST", path, handler);
+  post(path: string, handler: RouteHandler, options: RouteOptions): void {
+    this.addRoute("POST", path, handler, options);
   }
 
-  put(path: string, handler: RouteHandler): void {
-    this.addRoute("PUT", path, handler);
+  put(path: string, handler: RouteHandler, options: RouteOptions): void {
+    this.addRoute("PUT", path, handler, options);
   }
 
-  patch(path: string, handler: RouteHandler): void {
-    this.addRoute("PATCH", path, handler);
+  patch(path: string, handler: RouteHandler, options: RouteOptions): void {
+    this.addRoute("PATCH", path, handler, options);
   }
 
-  delete(path: string, handler: RouteHandler): void {
-    this.addRoute("DELETE", path, handler);
+  delete(path: string, handler: RouteHandler, options: RouteOptions): void {
+    this.addRoute("DELETE", path, handler, options);
   }
 
-  private addRoute(method: string, path: string, handler: RouteHandler): void {
+  private addRoute(method: string, path: string, handler: RouteHandler, options: RouteOptions): void {
     const { regex, paramNames } = compileRoute(path);
-    this.routes.push({ method, regex, paramNames, handler });
+    this.routes.push({ method, path, regex, paramNames, handler, options });
+  }
+
+  resolveFileRpcPolicy(method: string, requestUrl: string): boolean {
+    const normalizedMethod = method.toUpperCase();
+    const url = new URL(requestUrl, "http://localhost");
+    const match = this.matchRoute(normalizedMethod, url.pathname);
+    if (!match) {
+      return false;
+    }
+    const policy = match.route.options.fileRpc;
+    if (policy === "allow") {
+      return true;
+    }
+    if (policy === "deny") {
+      return false;
+    }
+    return policy.allowWhen({
+      method: normalizedMethod,
+      pathname: url.pathname,
+      params: match.params,
+    });
+  }
+
+  listRoutePolicies(): RoutePolicyEntry[] {
+    return this.routes.map((route) => {
+      const operationalMutationCategory = operationalMutationCategoryForRoute(route.method, route.path);
+      return {
+        method: route.method,
+        path: route.path,
+        fileRpc: serializeFileRpcPolicy(route.options.fileRpc),
+        ...(operationalMutationCategory ? { operationalMutationCategory } : {}),
+      };
+    });
   }
 
   async invoke(input: RouterInvokeRequest): Promise<RouterInvokeResponse> {
@@ -230,15 +291,9 @@ export class Router implements RouteRegistrar {
       ? normalizeAmbientProviderIdentity(ambientIdentity)
       : null;
 
-    for (const route of this.routes) {
-      if (route.method !== normalizedMethod) continue;
-      const match = pathname.match(route.regex);
-      if (!match) continue;
-
-      const params: Record<string, string> = {};
-      route.paramNames.forEach((name, i) => {
-        params[name] = decodeURIComponent(match[i + 1]);
-      });
+    const match = this.matchRoute(normalizedMethod, pathname);
+    if (match) {
+      const { route, params } = match;
 
       const mutationDecision = evaluateInstanceMutation(this.instance, normalizedMethod, pathname);
       if (!mutationDecision.allowed) {
@@ -275,6 +330,70 @@ export class Router implements RouteRegistrar {
 
     return false;
   }
+
+  private matchRoute(method: string, pathname: string): RouteMatch | null {
+    for (const route of this.routes) {
+      if (route.method !== method) continue;
+      const match = pathname.match(route.regex);
+      if (!match) continue;
+
+      const params: Record<string, string> = {};
+      route.paramNames.forEach((name, i) => {
+        params[name] = decodeURIComponent(match[i + 1]);
+      });
+      return { route, params };
+    }
+    return null;
+  }
+}
+
+function serializeFileRpcPolicy(policy: FileRpcPolicy): "allow" | "deny" | "conditional" {
+  if (policy === "allow" || policy === "deny") {
+    return policy;
+  }
+  return "conditional";
+}
+
+function operationalMutationCategoryForRoute(method: string, pathPattern: string): string | null {
+  if (!UNSAFE_METHODS.has(method)) {
+    return null;
+  }
+  if (pathPattern === "/api/auth/check") {
+    return null;
+  }
+  const pathPrefixes: Array<[string, string]> = [
+    ["/api/knowledge-backrefs", "artifacts"],
+    ["/api/work-units", "work_units"],
+    ["/api/admin", "system"],
+    ["/api/artifacts", "artifacts"],
+    ["/api/auth", "auth"],
+    ["/api/backup", "backup"],
+    ["/api/chats", "chats"],
+    ["/api/console", "console"],
+    ["/api/conversations", "conversations"],
+    ["/api/inbox", "inbox"],
+    ["/api/ledger", "ledger"],
+    ["/api/issues", "issues"],
+    ["/api/presets", "presets"],
+    ["/api/projects", "projects"],
+    ["/api/provider-manifests", "providers"],
+    ["/api/providers", "providers"],
+    ["/api/runtime", "runtime"],
+    ["/api/settings", "settings"],
+    ["/api/sessions", "sessions"],
+    ["/api/spaces", "spaces"],
+    ["/api/system", "system"],
+    ["/api/timeline", "timeline"],
+    ["/api/webhooks", "webhooks"],
+    ["/api/work", "work"],
+    ["/api", "api"],
+  ];
+  for (const [prefix, category] of pathPrefixes) {
+    if (pathPattern === prefix || pathPattern.startsWith(`${prefix}/`)) {
+      return category;
+    }
+  }
+  return null;
 }
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {
@@ -337,11 +456,11 @@ export function createServer(options: ServerOptions): http.Server {
       ...(rebuilding ? { rebuilding: true } : {})
     };
     res.json(payload);
-  });
+  }, { fileRpc: "deny" });
 
   router.get("/api/instance", (_req, res) => {
     res.json({ instance });
-  });
+  }, { fileRpc: "deny" });
 
   return http.createServer(async (req, res) => {
     const method = req.method ?? "GET";

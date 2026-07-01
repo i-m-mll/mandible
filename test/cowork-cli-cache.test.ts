@@ -40,4 +40,33 @@ describe("Cowork CLI cache materializer", () => {
     ]);
     expect(JSON.parse(fs.readFileSync(path.join(targetDir, "manifest.json"), "utf8")).files).toHaveLength(3);
   });
+
+  it("materializes generated route metadata into the cache manifest", () => {
+    const sourceRoot = path.join(tempDir, "source");
+    const targetDir = path.join(tempDir, "cache", "cli");
+    fs.mkdirSync(path.join(sourceRoot, "cli"), { recursive: true });
+    fs.writeFileSync(path.join(sourceRoot, "cli", "api.sh"), "#!/usr/bin/env bash\n", "utf8");
+
+    const manifest = materializeCoworkCliCache({
+      sourceRoot,
+      targetDir,
+      version: "test-version",
+      generatedFiles: [
+        {
+          path: "route-mutation-categories.json",
+          contents: "{\"schema\":1,\"routes\":[]}\n",
+        },
+      ],
+    });
+
+    expect(fs.readFileSync(path.join(targetDir, "route-mutation-categories.json"), "utf8")).toBe(
+      "{\"schema\":1,\"routes\":[]}\n",
+    );
+    expect(manifest.files.map((file) => file.path)).toEqual([
+      "api.sh",
+      "route-mutation-categories.json",
+    ]);
+    expect(manifest.files.at(-1)?.source).toBe("generated:route-mutation-categories.json");
+    expect(JSON.parse(fs.readFileSync(path.join(targetDir, "manifest.json"), "utf8")).files).toHaveLength(2);
+  });
 });

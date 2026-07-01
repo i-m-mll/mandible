@@ -75,7 +75,7 @@ export function registerRedirectRoutes(
         label: config.label,
         target: buildMandibleTarget(config.targetPath, config.targetParam, ref),
       });
-    });
+    }, { fileRpc: "deny" });
   }
 }
 

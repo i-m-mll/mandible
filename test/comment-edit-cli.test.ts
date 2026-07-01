@@ -4,13 +4,21 @@ import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { isAllowedFileRpcRoute } from "../src/file-rpc-transport.js";
+import { Router } from "../src/server.js";
 
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
 let requestBodies: Array<{ path: string; method: string; body: unknown }> = [];
 let tempRoots: string[] = [];
+
+function allowsFileRpcRoute(method: string, url: string): boolean {
+  const router = new Router();
+  router.patch("/api/ledger/comments/:commentId", (_req, res) => res.json({ ok: true }), {
+    fileRpc: "allow",
+  });
+  return router.resolveFileRpcPolicy(method, url);
+}
 
 const issueWithComments = {
   id: "issue-1",
@@ -89,6 +97,11 @@ function listen(opts: { staleConflict?: boolean } = {}): Promise<number> {
         const raw = Buffer.concat(chunks).toString("utf8");
         return raw ? JSON.parse(raw) : null;
       };
+
+      if (req.method === "GET" && req.url === "/api/instance") {
+        res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+        return;
+      }
 
       if (req.url?.startsWith("/api/issues?")) {
         res.end(JSON.stringify([{ repo_name: "mandible", issues: [{ id: "abc", status: "open" }] }]));
@@ -285,17 +298,17 @@ describe("comment edit CLI", () => {
 
 describe("comment edit file-RPC allowlist", () => {
   it("allows PATCH /api/ledger/comments/:commentId", () => {
-    expect(isAllowedFileRpcRoute("PATCH", "/api/ledger/comments/comment-abc")).toBe(true);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/ledger/comments/any-id-here")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/ledger/comments/comment-abc")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/ledger/comments/any-id-here")).toBe(true);
   });
 
   it("does not allow PATCH on comment revisions sub-path", () => {
-    expect(isAllowedFileRpcRoute("PATCH", "/api/ledger/comments/comment-abc/revisions")).toBe(false);
+    expect(allowsFileRpcRoute("PATCH", "/api/ledger/comments/comment-abc/revisions")).toBe(false);
   });
 
   it("does not allow other methods on comment path beyond existing GET revisions", () => {
-    expect(isAllowedFileRpcRoute("DELETE", "/api/ledger/comments/comment-abc")).toBe(false);
-    expect(isAllowedFileRpcRoute("PUT", "/api/ledger/comments/comment-abc")).toBe(false);
+    expect(allowsFileRpcRoute("DELETE", "/api/ledger/comments/comment-abc")).toBe(false);
+    expect(allowsFileRpcRoute("PUT", "/api/ledger/comments/comment-abc")).toBe(false);
   });
 });
 

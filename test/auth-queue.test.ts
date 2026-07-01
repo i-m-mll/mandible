@@ -1304,6 +1304,25 @@ describe("auth queue", () => {
     expect(updated.status).toBe("completed"); // Status unchanged
   });
 
+  it("allows updating merge head sha on a pending request", () => {
+    const queue = createQueue();
+
+    const request = queue.submit({
+      command: "mandible auth merge feature/foo --into main",
+      title: "Merge foo",
+      merge_head_sha: "1111111111111111111111111111111111111111",
+    });
+
+    const updated = queue.update(request.id, {
+      merge_head_sha: "2222222222222222222222222222222222222222",
+    });
+
+    expect(updated.merge_head_sha).toBe("2222222222222222222222222222222222222222");
+    expect(queue.getRequest(request.id)?.merge_head_sha).toBe(
+      "2222222222222222222222222222222222222222",
+    );
+  });
+
   it("allows updating fields and resetting failed request to pending", () => {
     const events: SseEvent[] = [];
     const queue = createQueue({
