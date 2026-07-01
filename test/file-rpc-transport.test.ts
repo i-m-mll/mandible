@@ -1,12 +1,18 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawn } from "node:child_process";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FileRpcTransport, isAllowedFileRpcRoute } from "../src/file-rpc-transport.js";
-import { Router } from "../src/server.js";
-import { readFileSync } from "node:fs";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { addProject } from "../src/ledger/project-registry.js";
+import { registerProjectRoutes } from "../src/routes/projects.js";
+import { Router, type RouteHandler } from "../src/server.js";
 
 let tempDir = "";
+let policyRouter: Router | null = null;
+const CLI = path.join(process.cwd(), "bin", "mandible");
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-"));
@@ -16,6 +22,162 @@ afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
+const noop: RouteHandler = (_req, res) => {
+  res.json({ ok: true });
+};
+
+const legacyAllowedRoutes: Array<[method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE", path: string]> = [
+  ["GET", "/api/conversations"],
+  ["GET", "/api/conversations/sources"],
+  ["GET", "/api/conversations/search"],
+  ["GET", "/api/conversations/:id"],
+  ["GET", "/api/conversations/:id/blocks"],
+  ["GET", "/api/conversations/:id/forks"],
+  ["GET", "/api/issues"],
+  ["POST", "/api/issues/resolutions"],
+  ["GET", "/api/ledger/issues/:issueId"],
+  ["PATCH", "/api/ledger/issues/:issueId"],
+  ["GET", "/api/ledger/issues/:issueId/umbrella-status"],
+  ["POST", "/api/ledger/issues/:issueId/umbrella-adopt"],
+  ["POST", "/api/ledger/issues/:issueId/umbrella-reconcile"],
+  ["POST", "/api/ledger/issues/:issueId/umbrella-manifest-refresh"],
+  ["GET", "/api/ledger/issues/:issueId/parent-role"],
+  ["POST", "/api/ledger/issues/:issueId/parent-role"],
+  ["GET", "/api/ledger/issues/:issueId/head"],
+  ["GET", "/api/ledger/issues/:issueId/body/revisions"],
+  ["POST", "/api/ledger/issues/:issueId/comments"],
+  ["GET", "/api/ledger/issues/:issueId/checkpoints"],
+  ["POST", "/api/ledger/issues/:issueId/checkpoints"],
+  ["POST", "/api/ledger/relationships"],
+  ["POST", "/api/ledger/relationships/unlink"],
+  ["POST", "/api/ledger/issues/:issueId/worker-status"],
+  ["POST", "/api/ledger/issues/:issueId/branches"],
+  ["POST", "/api/ledger/issues/:issueId/labels"],
+  ["GET", "/api/ledger/comments/:commentId/revisions"],
+  ["PATCH", "/api/ledger/comments/:commentId"],
+  ["GET", "/api/ledger/body-revisions/:revisionId"],
+  ["GET", "/api/auth/queue"],
+  ["GET", "/api/auth/request/:id"],
+  ["POST", "/api/auth/check"],
+  ["POST", "/api/auth/request"],
+  ["POST", "/api/auth/request/:id/replay-codex-archives"],
+  ["GET", "/api/auth/request/:id/actions"],
+  ["POST", "/api/auth/request/:id/actions"],
+  ["PUT", "/api/auth/request/:id/actions/:actionId"],
+  ["DELETE", "/api/auth/request/:id/actions/:actionId"],
+  ["GET", "/api/inbox"],
+  ["GET", "/api/inbox/global"],
+  ["GET", "/api/inbox/undelivered"],
+  ["POST", "/api/inbox/:type/:id/ack"],
+  ["POST", "/api/inbox/delivered/:id"],
+  ["GET", "/api/artifacts"],
+  ["GET", "/api/artifacts/resolve"],
+  ["GET", "/api/artifacts/logical"],
+  ["GET", "/api/artifacts/blobs"],
+  ["GET", "/api/artifacts/associations"],
+  ["POST", "/api/artifacts/associations"],
+  ["POST", "/api/artifacts/ingest"],
+  ["POST", "/api/artifacts/plan"],
+  ["POST", "/api/artifacts/scan-repos"],
+  ["POST", "/api/artifacts/link"],
+  ["POST", "/api/artifacts/check"],
+  ["POST", "/api/artifacts/snapshot"],
+  ["POST", "/api/artifacts/bundles"],
+  ["GET", "/api/artifacts/bundles/:id"],
+  ["POST", "/api/artifacts/bundles/:id/members"],
+  ["GET", "/api/artifacts/:id"],
+  ["GET", "/api/artifacts/:id/content"],
+  ["GET", "/api/artifacts/:id/check"],
+  ["GET", "/api/artifacts/versions"],
+  ["GET", "/api/artifacts/diff"],
+  ["POST", "/api/artifacts/versions"],
+  ["GET", "/api/knowledge-backrefs"],
+  ["POST", "/api/knowledge-backrefs"],
+  ["GET", "/api/projects"],
+  ["POST", "/api/projects"],
+  ["GET", "/api/projects/audit"],
+  ["POST", "/api/projects/repair"],
+  ["POST", "/api/projects/checkouts"],
+  ["GET", "/api/projects/:ref"],
+  ["PATCH", "/api/projects/:ref"],
+  ["POST", "/api/projects/:ref/checkouts"],
+  ["GET", "/api/system/logs"],
+  ["POST", "/api/work-units/claim"],
+  ["POST", "/api/work-units/activate"],
+  ["POST", "/api/work-units/release"],
+  ["GET", "/api/work-units"],
+  ["PATCH", "/api/work-units/:id"],
+  ["GET", "/api/sessions/by-pid/:pid"],
+  ["POST", "/api/sessions/register"],
+  ["PATCH", "/api/sessions/:id"],
+  ["PATCH", "/api/sessions/:id/end"],
+  ["POST", "/api/sessions/:id/issues"],
+  ["GET", "/api/sessions/:id/issues"],
+  ["GET", "/api/work/repos"],
+];
+
+function buildPolicyRouter(): Router {
+  const router = new Router();
+  for (const [method, routePath] of legacyAllowedRoutes) {
+    router[method.toLowerCase() as "get" | "post" | "patch" | "put" | "delete"](
+      routePath,
+      noop,
+      { fileRpc: "allow" },
+    );
+  }
+  router.post(
+    "/api/issues/:repoId",
+    noop,
+    { fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } },
+  );
+  return router;
+}
+
+function allowsFileRpcRoute(method: string, pathname: string): boolean {
+  policyRouter ??= buildPolicyRouter();
+  return policyRouter.resolveFileRpcPolicy(method, pathname);
+}
+
+async function runCliWithTransport(
+  args: string[],
+  transport: FileRpcTransport,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  let stopped = false;
+  const pump = async () => {
+    if (stopped) return;
+    await transport.processOnce();
+  };
+  await pump();
+  const timer = setInterval(() => {
+    void pump();
+  }, 10);
+
+  return await new Promise((resolve) => {
+    const child = spawn(CLI, args, {
+      env: {
+        ...process.env,
+        MANDIBLE_BASE: `file://${transport.dir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (status) => {
+      stopped = true;
+      clearInterval(timer);
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
+
 describe("file RPC transport", () => {
   it("dispatches allowed requests through the router and writes response JSON", async () => {
     const router = new Router();
@@ -24,7 +186,7 @@ describe("file RPC transport", () => {
         issue_id: req.params.issueId,
         include: req.query.include,
       });
-    });
+    }, { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -55,10 +217,10 @@ describe("file RPC transport", () => {
     const router = new Router();
     router.post("/api/work-units/claim", (req, res) => {
       res.json({ ambient_identity: req.ambient_identity });
-    });
+    }, { fileRpc: "allow" });
     router.post("/api/work-units/release", (req, res) => {
       res.json({ ambient_identity: req.ambient_identity, body: req.body });
-    });
+    }, { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -108,7 +270,7 @@ describe("file RPC transport", () => {
       const contentPath = (req.body as Record<string, unknown>).content_path as string;
       attachmentBytes = fs.readFileSync(contentPath, "utf8");
       res.json({ artifact: { id: "artifact:sha256:abc", availability: "present", custody_mode: "copy" } });
-    });
+    }, { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(path.join(tempDir, "req-art.attach-content_path"), "PK big zip bytes", "utf8");
@@ -144,7 +306,7 @@ describe("file RPC transport", () => {
     router.post("/api/artifacts/ingest", (req, res) => {
       seenBody = req.body as Record<string, unknown>;
       res.json({ ok: true });
-    });
+    }, { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -167,7 +329,7 @@ describe("file RPC transport", () => {
 
   it("rejects attachment names that escape the spool dir or target non-allowlisted fields (issue 833e972)", async () => {
     const router = new Router();
-    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }));
+    router.post("/api/artifacts/ingest", (_req, res) => res.json({ ok: true }), { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -208,7 +370,7 @@ describe("file RPC transport", () => {
     const router = new Router();
     router.post("/api/auth/request/:id/approve", (_req, res) => {
       res.json({ ok: true });
-    });
+    }, { fileRpc: "deny" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
     fs.writeFileSync(
@@ -228,75 +390,110 @@ describe("file RPC transport", () => {
     expect(response.body).toMatchObject({ error: "file_rpc_route_denied" });
   });
 
+  it("serves the real mandible CLI through file RPC and registered project routes", async () => {
+    const db: Db = new Database(":memory:");
+    try {
+      migrate(db);
+      setDb(db);
+      addProject(db, {
+        project_key: "feedbax",
+        display_name: "Feedbax",
+        remote_identity: "git@github.com:mll/feedbax.git",
+      });
+
+      const router = new Router();
+      registerProjectRoutes(router);
+      expect(router.resolveFileRpcPolicy("GET", "/api/projects")).toBe(true);
+
+      const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
+      const result = await runCliWithTransport(["project", "list", "--json"], transport);
+
+      expect(result.status, result.stderr).toBe(0);
+      const body = JSON.parse(result.stdout) as {
+        projects: Array<{ project_key: string; display_name: string; remote_identity: string }>;
+      };
+      expect(body.projects).toEqual([
+        expect.objectContaining({
+          project_key: "feedbax",
+          display_name: "Feedbax",
+          remote_identity: "github.com/mll/feedbax",
+        }),
+      ]);
+      expect(fs.readdirSync(tempDir).filter((file) => file.endsWith(".request.json"))).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("keeps auth approval and admin endpoints out of the allowlist", () => {
-    expect(isAllowedFileRpcRoute("GET", "/api/conversations")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/conversations/sources")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/conversations/search")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/blocks")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/conversations/conv-1/forks")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/work/repos")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/work-units")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/work-units/claim")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/work-units/activate")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/work-units/release")).toBe(true);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/work-units/wu-1")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/sessions/session-1/issues")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/system/logs")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/auth/request")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/replay-codex-archives")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/actions")).toBe(true);
-    expect(isAllowedFileRpcRoute("PUT", "/api/auth/request/abc/actions/def")).toBe(true);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/auth/request/abc/actions/def")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/actions/def/veto")).toBe(false);
-    expect(isAllowedFileRpcRoute("POST", "/api/auth/check")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/auth/queue")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/resolve")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/logical")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/blobs")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/associations")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/associations")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/ingest")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/scan-repos")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/check")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/snapshot")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1/content")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1/check")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/bundles")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/bundles/bundle-1")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/artifacts/bundles/bundle-1/members")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/umbrella-status")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-adopt")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-reconcile")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-manifest-refresh")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/parent-role")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/parent-role")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/relationships")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/ledger/relationships/unlink")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/inbox")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/inbox/global")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/inbox/undelivered")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/inbox/auth_result/auth-1/ack")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/inbox/delivered/auth-1")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/sessions/by-pid/1234")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/sessions/register")).toBe(true);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/sessions/session-1")).toBe(true);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/sessions/session-1/end")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/api/sessions/session-1/issues")).toBe(true);
-    expect(isAllowedFileRpcRoute("GET", "/r/issue/abc")).toBe(false);
-    expect(isAllowedFileRpcRoute("GET", "/r/auth/auth-1")).toBe(false);
-    expect(isAllowedFileRpcRoute("GET", "/r/artifact/abcdef1")).toBe(false);
-    expect(isAllowedFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
-    expect(isAllowedFileRpcRoute("GET", "/api/events")).toBe(false);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/conversations/conv-1")).toBe(false);
-    expect(isAllowedFileRpcRoute("POST", "/api/conversations/conv-1/fork")).toBe(false);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/sessions/session-1/issues")).toBe(false);
-    expect(isAllowedFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
-    expect(isAllowedFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/api/conversations")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/conversations/sources")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/conversations/search")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/conversations/conv-1")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/conversations/conv-1/blocks")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/conversations/conv-1/forks")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/work/repos")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/work-units")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/work-units/claim")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/work-units/activate")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/work-units/release")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/work-units/wu-1")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/sessions/session-1/issues")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/system/logs")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/replay-codex-archives")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/auth/request/abc/actions")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/actions")).toBe(true);
+    expect(allowsFileRpcRoute("PUT", "/api/auth/request/abc/actions/def")).toBe(true);
+    expect(allowsFileRpcRoute("DELETE", "/api/auth/request/abc/actions/def")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/actions/def/veto")).toBe(false);
+    expect(allowsFileRpcRoute("POST", "/api/auth/check")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/auth/queue")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/resolve")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/logical")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/blobs")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/associations")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/associations")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/ingest")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/scan-repos")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/check")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/snapshot")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/art-1")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/art-1/content")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/art-1/check")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/bundles")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/bundles/bundle-1")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/artifacts/bundles/bundle-1/members")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/ledger/issues/abc/umbrella-status")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-adopt")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-reconcile")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/umbrella-manifest-refresh")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/ledger/issues/abc/parent-role")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/parent-role")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/ledger/issues/abc/checkpoints")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/issues/abc/checkpoints")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/relationships")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/ledger/relationships/unlink")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/inbox")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/inbox/global")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/inbox/undelivered")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/inbox/auth_result/auth-1/ack")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/inbox/delivered/auth-1")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/sessions/by-pid/1234")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/sessions/register")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/sessions/session-1")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/sessions/session-1/end")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/sessions/session-1/issues")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/r/issue/abc")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/r/auth/auth-1")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/r/artifact/abcdef1")).toBe(false);
+    expect(allowsFileRpcRoute("POST", "/api/auth/request/abc/approve")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/api/events")).toBe(false);
+    expect(allowsFileRpcRoute("PATCH", "/api/conversations/conv-1")).toBe(false);
+    expect(allowsFileRpcRoute("POST", "/api/conversations/conv-1/fork")).toBe(false);
+    expect(allowsFileRpcRoute("DELETE", "/api/sessions/session-1/issues")).toBe(false);
+    expect(allowsFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
+    expect(allowsFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
   });
 
   it("keeps the daemon-backed CLI route examples available over file RPC", () => {
@@ -337,25 +534,25 @@ describe("file RPC transport", () => {
     ];
 
     for (const [method, pathname, label] of examples) {
-      expect(isAllowedFileRpcRoute(method, pathname), `${method} ${pathname} (${label})`).toBe(true);
+      expect(allowsFileRpcRoute(method, pathname), `${method} ${pathname} (${label})`).toBe(true);
     }
   });
 
   it("allowlists the knowledge-backrefs return channel (read + write) but nothing else under it", () => {
-    expect(isAllowedFileRpcRoute("GET", "/api/knowledge-backrefs")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/knowledge-backrefs")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/knowledge-backrefs")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/knowledge-backrefs")).toBe(true);
     // Per-route, not prefix-wide: parameterized / unrelated shapes stay denied
     // until their owner enumerates them.
-    expect(isAllowedFileRpcRoute("GET", "/api/artifacts/art-1/knowledge-backrefs")).toBe(false);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/knowledge-backrefs")).toBe(false);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/knowledge-backrefs")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/api/artifacts/art-1/knowledge-backrefs")).toBe(false);
+    expect(allowsFileRpcRoute("DELETE", "/api/knowledge-backrefs")).toBe(false);
+    expect(allowsFileRpcRoute("PATCH", "/api/knowledge-backrefs")).toBe(false);
   });
 
   it("denies the knowledge-backrefs return channel through the transport when method differs", async () => {
     const router = new Router();
     router.put("/api/knowledge-backrefs", (_req, res) => {
       res.json({ ok: true });
-    });
+    }, { fileRpc: "deny" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
     fs.writeFileSync(
       path.join(tempDir, "req-kb.request.json"),
@@ -370,30 +567,24 @@ describe("file RPC transport", () => {
 });
 
 describe("file RPC per-route allowlist convention", () => {
-  const source = readFileSync(
-    path.join(process.cwd(), "src", "file-rpc-transport.ts"),
-    "utf8",
-  );
-
   it("never blanket-allows the /api/spaces prefix (each route is enumerated by its owner)", () => {
     // A space route that nobody has enumerated must be rejected — proves there
     // is no catch-all prefix match.
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces/spc-1/not-a-real-route")).toBe(false);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces/spc-1/unknown")).toBe(false);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/spaces")).toBe(false);
-
-    // And the allowlist body must not contain a blanket prefix construct: no
-    // `startsWith("/api/spaces"...)` and no unanchored `/^\/api\/spaces/` catch-all
-    // (every enumerated spaces regex is anchored with a trailing `$`).
-    const allowFn = source.slice(source.indexOf("export function isAllowedFileRpcRoute"));
-    expect(allowFn).not.toMatch(/startsWith\(\s*["'`]\/api\/spaces/);
-    expect(allowFn).not.toMatch(/\/\^\\\/api\\\/spaces\\\/\.\*\//);
-    expect(allowFn).not.toMatch(/\/\^\\\/api\\\/spaces\/\.test/);
+    const router = new Router();
+    router.get("/api/spaces/:id", noop, { fileRpc: "allow" });
+    expect(router.resolveFileRpcPolicy("GET", "/api/spaces/spc-1")).toBe(true);
+    expect(router.resolveFileRpcPolicy("GET", "/api/spaces/spc-1/not-a-real-route")).toBe(false);
+    expect(router.resolveFileRpcPolicy("POST", "/api/spaces/spc-1/unknown")).toBe(false);
+    expect(router.resolveFileRpcPolicy("DELETE", "/api/spaces")).toBe(false);
   });
 
-  it("documents the per-route self-allowlist convention", () => {
-    expect(source).toMatch(/per-route file-RPC allowlist/i);
-    expect(source).toMatch(/self-allowlist/i);
-    expect(source).toMatch(/does NOT blanket-allow/);
+  it("exposes per-route policy metadata from the router", () => {
+    const router = new Router();
+    router.get("/api/spaces/:id", noop, { fileRpc: "allow" });
+    router.get("/api/spaces/:id/items", noop, { fileRpc: "deny" });
+    expect(router.listRoutePolicies()).toEqual([
+      { method: "GET", path: "/api/spaces/:id", fileRpc: "allow" },
+      { method: "GET", path: "/api/spaces/:id/items", fileRpc: "deny" },
+    ]);
   });
 });

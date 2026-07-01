@@ -324,7 +324,7 @@ export function registerWebhookRoutes(
         message: "Webhook queued — no active session for target",
       });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // GET /api/webhooks — list webhook events with optional status filter
   server.get("/api/webhooks", (req, res) => {
@@ -365,7 +365,7 @@ export function registerWebhookRoutes(
       })),
       total: rows.length,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/webhooks/:id/deliver — manually deliver a queued webhook to a session
   server.post("/api/webhooks/:id/deliver", (req, res) => {
@@ -426,7 +426,7 @@ export function registerWebhookRoutes(
       delivered_to: targetSessionId,
       message: result.message,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/webhooks/:id/dismiss — dismiss a queued webhook
   server.post("/api/webhooks/:id/dismiss", (req, res) => {
@@ -446,5 +446,5 @@ export function registerWebhookRoutes(
 
     broadcast("webhook:dismissed", { id: webhookId });
     sendJson(res, 200, { ok: true, id: webhookId });
-  });
+  }, { fileRpc: "deny" });
 }

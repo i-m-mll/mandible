@@ -248,7 +248,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       }>;
 
     sendJson(res, 200, { sources });
-  });
+  }, { fileRpc: "allow" });
 
   // POST /api/conversations/ingest — Manually trigger re-ingestion
   server.post("/api/conversations/ingest", async (_req, res) => {
@@ -261,7 +261,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/conversations/export/transform — AI transform via Claude CLI
   server.post("/api/conversations/export/transform", async (req, res) => {
@@ -289,7 +289,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // --- Parameterized routes ---
 
@@ -406,7 +406,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       limit,
       pages: Math.ceil(countRow.total / limit),
     });
-  });
+  }, { fileRpc: "allow" });
 
   // GET /api/conversations/search — Search the normalized conversation index.
   server.get("/api/conversations/search", (req, res) => {
@@ -488,7 +488,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     }
 
     sendJson(res, 200, { results, total: results.length, limit });
-  });
+  }, { fileRpc: "allow" });
 
   // GET /api/conversations/:id — Full conversation with blocks + children summary
   // Bug: 40f0298 — optional ?leaf=<dag_uuid> param for DAG path resolution
@@ -599,7 +599,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       blocks: blocks.map(mapBlock),
       children: childrenWithDuration,
     });
-  });
+  }, { fileRpc: "allow" });
 
   // GET /api/conversations/:id/forks — Fork points in the conversation DAG
   // Bug: 40f0298 — DAG branching: identify points where the conversation branches
@@ -680,7 +680,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     });
 
     sendJson(res, 200, { forks });
-  });
+  }, { fileRpc: "allow" });
 
   // POST /api/conversations/:id/fork — Fork a conversation at a specific message
   // Bug: 40f0298 — DAG branching: create a new session by forking at a message
@@ -725,7 +725,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/conversations/:id/resume — Resume a conversation from a specific message
   // Bug: 40f0298 — DAG branching: create a Console session resuming at a message
@@ -794,7 +794,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
   server.get("/api/conversations/:id/blocks", (req, res) => {
@@ -849,7 +849,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       limit,
       pages: Math.ceil(countRow.total / limit),
     });
-  });
+  }, { fileRpc: "allow" });
 
   // PATCH /api/conversations/:id — Update starred/label/notes
   server.patch("/api/conversations/:id", (req, res) => {
@@ -915,7 +915,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     broadcast("conversation:updated", { id, updates: Object.keys(body) });
 
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/conversations/:id/export — Export selected blocks to markdown/MDX/JSON
   server.post("/api/conversations/:id/export", (req, res) => {
@@ -975,6 +975,6 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         ? blocks.filter((b) => blockTypes.has(b.type)).length
         : blocks.length,
     });
-  });
+  }, { fileRpc: "deny" });
 
 }

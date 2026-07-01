@@ -19,7 +19,6 @@ import {
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
 import { SPACE_EVENTS, isSpaceEvent } from "../src/spaces/events.js";
-import { isAllowedFileRpcRoute } from "../src/file-rpc-transport.js";
 import { exportDocument, importDocument, type DocBlock } from "../src/spaces/serialize.js";
 
 // Issue d2a8e77 (umbrella de56ffa): Spaces document/canvas blocks — the
@@ -29,6 +28,12 @@ import { exportDocument, importDocument, type DocBlock } from "../src/spaces/ser
 
 function now(): number {
   return Date.now();
+}
+
+function allowsFileRpcRoute(method: string, url: string): boolean {
+  const router = new Router();
+  registerSpacesRoutes(router);
+  return router.resolveFileRpcPolicy(method, url);
 }
 
 // ============================================================================
@@ -580,18 +585,18 @@ describe("blocks routes (issue d2a8e77)", () => {
 
 describe("blocks file-RPC allowlist (issue d2a8e77, standing AC #1)", () => {
   it("allowlists exactly the block read/write routes (method+path specific)", () => {
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces/s1/blocks")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces/s1/blocks")).toBe(true);
-    expect(isAllowedFileRpcRoute("PATCH", "/api/spaces/s1/blocks/b1")).toBe(true);
-    expect(isAllowedFileRpcRoute("DELETE", "/api/spaces/s1/blocks/b1")).toBe(true);
-    expect(isAllowedFileRpcRoute("POST", "/api/spaces/s1/items/i1/detach-blocks")).toBe(true);
+    expect(allowsFileRpcRoute("GET", "/api/spaces/s1/blocks")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/spaces/s1/blocks")).toBe(true);
+    expect(allowsFileRpcRoute("PATCH", "/api/spaces/s1/blocks/b1")).toBe(true);
+    expect(allowsFileRpcRoute("DELETE", "/api/spaces/s1/blocks/b1")).toBe(true);
+    expect(allowsFileRpcRoute("POST", "/api/spaces/s1/items/i1/detach-blocks")).toBe(true);
   });
 
   it("does NOT blanket-allow other methods/shapes", () => {
     // No catch-all: an unrelated verb on the blocks collection stays denied.
-    expect(isAllowedFileRpcRoute("PUT", "/api/spaces/s1/blocks")).toBe(false);
+    expect(allowsFileRpcRoute("PUT", "/api/spaces/s1/blocks")).toBe(false);
     // Nested unknown sub-path is not allowed.
-    expect(isAllowedFileRpcRoute("GET", "/api/spaces/s1/blocks/b1/extra")).toBe(false);
+    expect(allowsFileRpcRoute("GET", "/api/spaces/s1/blocks/b1/extra")).toBe(false);
   });
 });
 

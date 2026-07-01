@@ -46,7 +46,7 @@ export function registerConsoleRoutes(
   server.get("/api/console/sessions", (_req, res) => {
     const sessions = manager.getAll().map((s) => enrichWithProcessing(s));
     res.status(200).json({ sessions });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions — create a new session
@@ -98,7 +98,7 @@ export function registerConsoleRoutes(
     }
     const ptySession = manager.get(session.id);
     res.status(201).json({ session: ptySession?.meta ?? session });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id — single session
@@ -110,7 +110,7 @@ export function registerConsoleRoutes(
       return;
     }
     res.status(200).json({ session: enrichWithProcessing(ptySession) });
-  });
+  }, { fileRpc: "deny" });
 
   server.patch("/api/console/sessions/:id", (req, res) => {
     const id = req.params.id;
@@ -136,7 +136,7 @@ export function registerConsoleRoutes(
 
     const session = manager.updateConfig(id, patch);
     res.status(200).json({ session });
-  });
+  }, { fileRpc: "deny" });
 
   server.patch("/api/console/sessions/:id/options", (req, res) => {
     const id = req.params.id;
@@ -172,7 +172,7 @@ export function registerConsoleRoutes(
 
     const nextSession = manager.updateOptions(id, body);
     res.status(200).json({ session: nextSession });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // DELETE /api/console/sessions/:id — stop and delete
@@ -190,7 +190,7 @@ export function registerConsoleRoutes(
     }
     manager.delete(id);
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/start — start a stopped session
@@ -208,7 +208,7 @@ export function registerConsoleRoutes(
     }
     manager.start(id);
     res.status(200).json({ session: ptySession.meta });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/stop — stop a running session
@@ -227,7 +227,7 @@ export function registerConsoleRoutes(
     const body = (req.body ?? {}) as { signal?: string };
     manager.stop(id, typeof body.signal === "string" ? body.signal : undefined);
     res.status(200).json({ session: ptySession.meta });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/restart — stop + start
@@ -246,7 +246,7 @@ export function registerConsoleRoutes(
     ptySession.clear();
     manager.start(id);
     res.status(200).json({ session: ptySession.meta });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/events — historical stream events
@@ -266,7 +266,7 @@ export function registerConsoleRoutes(
     res.status(200).json({
       events: sliced,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/params — per-message parameter snapshot
@@ -304,7 +304,7 @@ export function registerConsoleRoutes(
       ).all(id);
       res.status(200).json({ params: rows });
     }
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/permissions", (req, res) => {
     const id = req.params.id;
@@ -314,7 +314,7 @@ export function registerConsoleRoutes(
       return;
     }
     res.status(200).json({ requests: manager.getPermissions(id) });
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/console/sessions/:id/permission/:requestId", (req, res) => {
     const id = req.params.id;
@@ -344,7 +344,7 @@ export function registerConsoleRoutes(
       return;
     }
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/console/sessions/:id/usage", (req, res) => {
     const id = req.params.id;
@@ -354,7 +354,7 @@ export function registerConsoleRoutes(
       return;
     }
     res.status(200).json({ usage: manager.getUsage(id) });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions/:id/resize — resize PTY
@@ -375,7 +375,7 @@ export function registerConsoleRoutes(
     }
     manager.resize(id, cols, rows);
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id/buffer — ring buffer snapshot
@@ -392,7 +392,7 @@ export function registerConsoleRoutes(
       data: buf.toString("base64"),
       bytes: buf.length,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   server.post("/api/console/sessions/:id/prompt", (req, res) => {
@@ -421,7 +421,7 @@ export function registerConsoleRoutes(
     }
 
     res.status(202).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/pinned — ordered list of pinned session IDs
@@ -438,7 +438,7 @@ export function registerConsoleRoutes(
       ids = [];
     }
     res.status(200).json({ ids });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // PUT /api/console/pinned — replace pinned session list
@@ -456,7 +456,7 @@ export function registerConsoleRoutes(
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
     ).run("console_pinned_sessions", JSON.stringify(ids), Date.now());
     res.status(200).json({ ids });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/operator — operator session details
@@ -464,7 +464,7 @@ export function registerConsoleRoutes(
   server.get("/api/console/operator", (_req, res) => {
     const operatorSession = manager.getAll().find((s) => s.meta.is_operator);
     res.status(200).json({ session: operatorSession?.meta ?? null });
-  });
+  }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/operator/restart — kill and restart operator
@@ -480,5 +480,5 @@ export function registerConsoleRoutes(
     }
     manager.start(operatorSession.id);
     res.status(200).json({ session: operatorSession.meta });
-  });
+  }, { fileRpc: "deny" });
 }

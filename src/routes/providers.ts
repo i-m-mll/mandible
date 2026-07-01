@@ -106,7 +106,7 @@ function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
 export function registerProviderRoutes(app: RouteRegistrar): void {
   app.get("/api/providers", (_req, res) => {
     sendJson(res, 200, { providers: listProviders(getDb()) });
-  });
+  }, { fileRpc: "deny" });
 
   app.get("/api/providers/:id/capabilities", (req, res) => {
     const capabilities = getProviderCapabilities(getDb(), req.params.id);
@@ -115,7 +115,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, capabilities);
-  });
+  }, { fileRpc: "deny" });
 
   app.get("/api/providers/:id/health", (req, res) => {
     const health = getProviderHealth(getDb(), req.params.id);
@@ -124,7 +124,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, health);
-  });
+  }, { fileRpc: "deny" });
 
   app.get("/api/providers/:id", (req, res) => {
     const detail = getProviderDetail(getDb(), req.params.id);
@@ -133,7 +133,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, detail);
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/providers/register", (req, res) => {
     try {
@@ -142,7 +142,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/providers/register-manifest", (req, res) => {
     try {
@@ -157,7 +157,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/artifacts/ingest", (req, res) => {
     try {
@@ -177,7 +177,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/plan", (req, res) => {
     try {
@@ -196,7 +196,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/scan-repos", (req, res) => {
     try {
@@ -214,7 +214,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts", (req, res) => {
     const linked = linkedEntityQuery(req);
@@ -235,7 +235,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       summary: queryBoolean(req, "summary"),
     });
     sendJson(res, 200, { artifacts });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/resolve", (req, res) => {
     try {
@@ -248,7 +248,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/logical", (req, res) => {
     const artifacts = listLogicalArtifacts(getDb(), {
@@ -260,7 +260,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, { artifacts });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/blobs", (req, res) => {
     const blobs = listArtifactBlobs(getDb(), {
@@ -272,7 +272,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, { blobs });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/associations", (req, res) => {
     const targetType = queryString(req, "target_type");
@@ -288,7 +288,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, { associations });
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/associations", (req, res) => {
     try {
@@ -300,7 +300,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/series", (req, res) => {
     const linked = linkedEntityQuery(req);
@@ -320,7 +320,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, { series });
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/artifacts/link", (req, res) => {
     try {
@@ -346,7 +346,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/check", (req, res) => {
     try {
@@ -369,7 +369,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/snapshot", (req, res) => {
     try {
@@ -378,7 +378,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   // Read-only version history for a logical artifact series. `ref` may be a
   // series id, series_key, version id, or any artifact ref (resolves to the
@@ -399,7 +399,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   // Read-only text/JSON/Markdown diff derived from two artifacts' full snapshot
   // bytes. Accepts any resolvable refs (hash, version, or series selectors).
@@ -415,7 +415,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   // EXPLICIT version recording — the only write path into the version tables.
   app.post("/api/artifacts/versions", (req, res) => {
@@ -434,7 +434,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/bundles", (req, res) => {
     try {
@@ -443,7 +443,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/bundles/:id/members", (req, res) => {
     try {
@@ -454,7 +454,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/bundles/:id", (req, res) => {
     const bundle = getArtifactBundle(getDb(), req.params.id);
@@ -463,7 +463,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, bundle);
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/knowledge-backrefs", (req, res) => {
     const backrefs = listKnowledgeBackrefs(getDb(), {
@@ -476,7 +476,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, { backrefs });
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/knowledge-backrefs", (req, res) => {
     try {
@@ -485,7 +485,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/content", (req, res) => {
     const content = getArtifactContent(getDb(), req.params.id);
@@ -494,7 +494,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { content });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/check", (req, res) => {
     const check = checkArtifactMaterialization(getDb(), req.params.id);
@@ -503,7 +503,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { check });
-  });
+  }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     const backrefs = listKnowledgeBackrefs(getDb(), {
@@ -515,7 +515,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
     });
     sendJson(res, 200, { backrefs });
-  });
+  }, { fileRpc: "deny" });
 
   app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     try {
@@ -528,7 +528,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "deny" });
 
   app.get("/api/artifacts/:id", (req, res) => {
     const artifact = getArtifact(getDb(), req.params.id);
@@ -537,7 +537,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { artifact });
-  });
+  }, { fileRpc: "allow" });
 
   app.post("/api/provider-manifests/ingest", (req, res) => {
     try {
@@ -546,5 +546,5 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "deny" });
 }

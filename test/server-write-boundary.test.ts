@@ -16,10 +16,10 @@ beforeEach(async () => {
   const router = new Router();
   router.post("/api/write", (req, res) => {
     res.json({ ok: true, body: req.body });
-  });
+  }, { fileRpc: "deny" });
   router.get("/api/read", (_req, res) => {
     res.json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   const server = createServer({
     db: {} as Db,

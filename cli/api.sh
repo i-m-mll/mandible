@@ -44,10 +44,62 @@ api_curl_ambient_headers() {
     '-H' "X-Mandible-Ambient-Provider-Session-Id: ${session_id}"
 }
 
+api_route_mutation_category_file() {
+  if [[ -n "${MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE:-}" ]]; then
+    printf '%s' "$MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE"
+    return 0
+  fi
+  printf '%s/route-mutation-categories.json' "${MANDIBLE_CLI_CACHE_DIR:-${HOME}/.cache/mandible/cli}"
+}
+
+api_route_template_matches() {
+  local route_template="$1"
+  local pathname="$2"
+  local template_parts path_parts template_part path_part
+
+  IFS='/' read -r -a template_parts <<< "$route_template"
+  IFS='/' read -r -a path_parts <<< "$pathname"
+  [[ "${#template_parts[@]}" -eq "${#path_parts[@]}" ]] || return 1
+
+  for i in "${!template_parts[@]}"; do
+    template_part="${template_parts[$i]}"
+    path_part="${path_parts[$i]}"
+    if [[ "$template_part" == :* ]]; then
+      [[ -n "$path_part" ]] || return 1
+      continue
+    fi
+    [[ "$template_part" == "$path_part" ]] || return 1
+  done
+}
+
+api_generated_operational_mutation_category() {
+  local method="$1"
+  local pathname="$2"
+  local category_file route_method route_path route_category
+
+  category_file="$(api_route_mutation_category_file)"
+  [[ -f "$category_file" ]] || return 1
+
+  while IFS=$'\t' read -r route_method route_path route_category; do
+    [[ -n "$route_method" && -n "$route_path" && -n "$route_category" ]] || continue
+    [[ "$route_method" == "$method" ]] || continue
+    if api_route_template_matches "$route_path" "$pathname"; then
+      printf '%s' "$route_category"
+      return 0
+    fi
+  done < <(
+    jq -r '.routes[]? | select(.method and .path and .category) | [.method, .path, .category] | @tsv' \
+      "$category_file" 2>/dev/null
+  )
+
+  return 1
+}
+
 api_operational_mutation_category() {
   local method="$1"
   local request_path="$2"
   local pathname="${request_path%%\?*}"
+  local generated_category
   method="$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')"
 
   case "$method" in
@@ -56,6 +108,11 @@ api_operational_mutation_category() {
   esac
 
   [[ "$pathname" != "/api/auth/check" ]] || return 1
+
+  if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
+    printf '%s' "$generated_category"
+    return 0
+  fi
 
   case "$pathname" in
     /api/admin|/api/admin/*) printf 'system'; return 0 ;;

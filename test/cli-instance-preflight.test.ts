@@ -1,4 +1,7 @@
 import http from "node:http";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -9,6 +12,7 @@ type RecordedRequest = {
 };
 
 let server: http.Server | null = null;
+let tempRoots: string[] = [];
 
 function runBash(script: string, port: number, extraEnv: Record<string, string> = {}) {
   return new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
@@ -176,9 +180,70 @@ afterEach(async () => {
     await new Promise<void>((resolve) => server!.close(() => resolve()));
     server = null;
   }
+  for (const root of tempRoots) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+  tempRoots = [];
 });
 
+function writeRouteMutationCategories(payload: unknown): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-"));
+  tempRoots.push(root);
+  const file = path.join(root, "route-mutation-categories.json");
+  fs.writeFileSync(file, `${JSON.stringify(payload)}\n`, "utf8");
+  return file;
+}
+
 describe("CLI instance mutation preflight", () => {
+  it("uses generated route mutation categories before the fallback table", async () => {
+    const categoryFile = writeRouteMutationCategories({
+      schema: 1,
+      routes: [
+        { method: "POST", path: "/api/custom/:id/reconcile", category: "custom_generated" },
+      ],
+    });
+    const result = await runBash([
+      "set -euo pipefail",
+      "source cli/api.sh",
+      "api_operational_mutation_category POST /api/custom/abc/reconcile",
+    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("custom_generated");
+  });
+
+  it("falls back to the built-in category table when generated data is malformed", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-"));
+    tempRoots.push(root);
+    const categoryFile = path.join(root, "route-mutation-categories.json");
+    fs.writeFileSync(categoryFile, "{not-json\n", "utf8");
+    const result = await runBash([
+      "set -euo pipefail",
+      "source cli/api.sh",
+      "api_operational_mutation_category POST /api/projects",
+    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("projects");
+  });
+
+  it("keeps auth check out of operational preflight even if generated data lists it", async () => {
+    const categoryFile = writeRouteMutationCategories({
+      schema: 1,
+      routes: [
+        { method: "POST", path: "/api/auth/check", category: "auth" },
+      ],
+    });
+    const result = await runBash([
+      "set -euo pipefail",
+      "source cli/api.sh",
+      "if api_operational_mutation_category POST /api/auth/check; then printf bad; else printf bypass; fi",
+    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("bypass");
+  });
+
   it("refuses operational mutations against preview instances before sending POST", async () => {
     const target = await listenForInstancePreflight();
     try {

@@ -67,7 +67,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     const result = computePresetUnion(presetIds, db);
 
     res.status(200).json(result);
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Convention Library (must be before :id routes)
@@ -140,7 +140,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     });
 
     res.status(200).json({ nodes: nodesWithBreadcrumb });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Preset Diffs (must be before :id routes)
@@ -162,7 +162,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       .all(sessionId) as PresetDiff[];
 
     res.status(200).json({ diffs });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/presets/diffs — create a diff (from workflow violation agent)
   server.post("/api/presets/diffs", (req, res) => {
@@ -221,7 +221,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:diff:created", diff);
     res.status(201).json({ diff });
-  });
+  }, { fileRpc: "deny" });
 
   // PUT /api/presets/diffs/:id — update diff status
   server.put("/api/presets/diffs/:id", (req, res) => {
@@ -260,7 +260,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     const updated = { ...diff, status: body.status as PresetDiffStatus };
     broadcast("preset:diff:resolved", updated);
     res.status(200).json({ diff: updated });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Export/Import (must be before :id routes for POST /api/presets/import)
@@ -343,7 +343,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:created", preset);
     res.status(201).json({ preset });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/presets/import-claudemd — import CLAUDE.md from known safe paths only.
   // Bug: 61bee4e — Controlled file-based import that only reads from known safe locations,
@@ -402,7 +402,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     } catch (error) {
       sendJson(res, 400, { error: `Failed to import: ${String(error)}` });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Workflow Violation Hook (must be before :id routes)
@@ -493,7 +493,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       diff,
       routing: routeResult,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Convention-Setting Links (must be before :id routes)
@@ -521,7 +521,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       .all(settingKey) as Array<ConventionSettingLink & { node_title: string; preset_id: string; preset_name: string }>;
 
     res.status(200).json({ links });
-  });
+  }, { fileRpc: "deny" });
 
   // GET /api/presets/validate-session?session_id=X — check for unsatisfied requires links
   server.get("/api/presets/validate-session", (req, res) => {
@@ -597,7 +597,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       valid: dedupedWarnings.length === 0,
       warnings: dedupedWarnings,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/presets/validate-preset-ids — validate preset IDs before session creation
   // Bug: 8baedeb — backend validation for pre-creation flows (NewSessionDialog, etc.)
@@ -672,7 +672,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       valid: dedupedWarnings.length === 0,
       warnings: dedupedWarnings,
     });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Preset CRUD
@@ -703,7 +703,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       .all() as Array<Preset & { node_count: number; token_estimate: number }>;
 
     res.status(200).json({ presets: enriched });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/presets — create preset
   server.post("/api/presets", (req, res) => {
@@ -782,7 +782,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:created", preset);
     res.status(201).json({ preset });
-  });
+  }, { fileRpc: "deny" });
 
   // GET /api/presets/:id — get preset with full node tree
   server.get("/api/presets/:id", (req, res) => {
@@ -803,7 +803,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       .all(preset.id) as PresetNode[];
 
     res.status(200).json({ preset, nodes });
-  });
+  }, { fileRpc: "deny" });
 
   // PUT /api/presets/:id — update preset metadata
   server.put("/api/presets/:id", (req, res) => {
@@ -833,7 +833,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     const updated = { ...preset, name, description, updated_at: now };
     broadcast("preset:updated", updated);
     res.status(200).json({ preset: updated });
-  });
+  }, { fileRpc: "deny" });
 
   // DELETE /api/presets/:id — delete preset (cascade deletes nodes)
   server.delete("/api/presets/:id", (req, res) => {
@@ -859,7 +859,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:deleted", { id: preset.id });
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Node Operations
@@ -884,7 +884,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       .all(preset.id) as PresetNode[];
 
     res.status(200).json({ nodes });
-  });
+  }, { fileRpc: "deny" });
 
   // PUT /api/presets/:id/nodes — bulk replace entire node tree
   server.put("/api/presets/:id/nodes", (req, res) => {
@@ -964,7 +964,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:updated", { id: preset.id });
     res.status(200).json({ nodes });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/presets/:id/nodes — add a single node
   server.post("/api/presets/:id/nodes", (req, res) => {
@@ -1019,7 +1019,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:updated", { id: preset.id });
     res.status(201).json({ node });
-  });
+  }, { fileRpc: "deny" });
 
   // PUT /api/presets/:id/nodes/:nodeId — update a single node
   server.put("/api/presets/:id/nodes/:nodeId", (req, res) => {
@@ -1082,7 +1082,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:updated", { id: req.params.id });
     res.status(200).json({ node: updated });
-  });
+  }, { fileRpc: "deny" });
 
   // DELETE /api/presets/:id/nodes/:nodeId — delete a node (cascade children)
   server.delete("/api/presets/:id/nodes/:nodeId", (req, res) => {
@@ -1119,7 +1119,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:updated", { id: req.params.id });
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // PATCH /api/presets/:id/nodes/reorder — reorder a node
   server.patch("/api/presets/:id/nodes/reorder", (req, res) => {
@@ -1176,7 +1176,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     broadcast("preset:updated", { id: preset.id });
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Node Setting Links
@@ -1193,7 +1193,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       .all(req.params.nodeId) as ConventionSettingLink[];
 
     res.status(200).json({ links });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/presets/nodes/:nodeId/links — create a manual link
   server.post("/api/presets/nodes/:nodeId/links", (req, res) => {
@@ -1247,7 +1247,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     };
 
     res.status(201).json({ link });
-  });
+  }, { fileRpc: "deny" });
 
   // DELETE /api/presets/links/:id — remove a link
   server.delete("/api/presets/links/:id", (req, res) => {
@@ -1262,7 +1262,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // ================================================================
   // Session-Preset Association
@@ -1284,7 +1284,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     >;
 
     res.status(200).json({ presets: rows });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/console/sessions/:id/presets — add preset(s) to session
   server.post("/api/console/sessions/:id/presets", (req, res) => {
@@ -1323,7 +1323,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     addAll();
 
     res.status(200).json({ ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // DELETE /api/console/sessions/:id/presets/:presetId — remove preset from session
   server.delete(
@@ -1334,7 +1334,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
         "DELETE FROM session_presets WHERE session_id = ? AND preset_id = ?",
       ).run(req.params.id, req.params.presetId);
       res.status(200).json({ ok: true });
-    },
+    }, { fileRpc: "deny" },
   );
 
   // ================================================================
@@ -1371,5 +1371,5 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     ].join("\n");
 
     res.status(200).json({ markdown: frontMatter + markdown });
-  });
+  }, { fileRpc: "deny" });
 }

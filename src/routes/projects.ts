@@ -77,7 +77,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   router.post("/api/projects/repair", (req, res) => {
     try {
@@ -97,7 +97,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   // PATCH a checkout by root (registered under /checkouts to avoid the :ref
   // param route shadowing it).
@@ -119,7 +119,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   router.get("/api/projects", (_req, res) => {
     try {
@@ -127,7 +127,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   router.post("/api/projects", (req, res) => {
     try {
@@ -137,7 +137,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   router.get("/api/projects/:ref", (req, res) => {
     try {
@@ -160,7 +160,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   router.patch("/api/projects/:ref", (req, res) => {
     try {
@@ -169,7 +169,7 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 
   router.post("/api/projects/:ref/checkouts", (req, res) => {
     try {
@@ -187,5 +187,5 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
     } catch (error) {
       handleError(res, error);
     }
-  });
+  }, { fileRpc: "allow" });
 }

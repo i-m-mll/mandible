@@ -4,6 +4,7 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
+import type { RouteOptions } from "../server.js";
 import type { AuthRequestOutcome, AuthRequestStatus, WebhookEventRow } from "../types.js";
 import { getIntSetting } from "./settings.js";
 import {
@@ -17,8 +18,8 @@ import {
 // primary "needs attention" signal. Auth results and continuations remain.
 
 export interface InboxRouteServer {
-  get(path: string, handler: (req: unknown, res: unknown) => void): void;
-  post(path: string, handler: (req: unknown, res: unknown) => void): void;
+  get(path: string, handler: (req: unknown, res: unknown) => void, options: RouteOptions): void;
+  post(path: string, handler: (req: unknown, res: unknown) => void, options: RouteOptions): void;
 }
 
 function getQueryParam(req: unknown, key: string): string | undefined {
@@ -458,7 +459,7 @@ export function registerInboxRoutes(
       })),
       total,
     });
-  });
+  }, { fileRpc: "allow" });
 
   // GET /api/inbox/global — all unacknowledged items across all branches and repos
   server.get("/api/inbox/global", (req, res) => {
@@ -547,7 +548,7 @@ export function registerInboxRoutes(
       })),
       total,
     });
-  });
+  }, { fileRpc: "allow" });
 
   // Bug: 4e32923 — GET /api/inbox/undelivered?target_session_id=<id> returns
   // the set of resolved auth_requests owned by <id> that have not yet been
@@ -626,7 +627,7 @@ export function registerInboxRoutes(
         action_outcomes: authActionOutcomes(row.id),
       })),
     });
-  });
+  }, { fileRpc: "allow" });
 
   // Bug: 4e32923 — POST /api/inbox/delivered/:id marks an auth_request as
   // delivered to its owner session via the MCP channel server. Idempotent:
@@ -663,7 +664,7 @@ export function registerInboxRoutes(
       return;
     }
     sendJson(res, 204, null);
-  });
+  }, { fileRpc: "allow" });
 
   // POST /api/inbox/ack-all — acknowledge all unacknowledged continuations and auth results
   server.post("/api/inbox/ack-all", (_req, res) => {
@@ -674,7 +675,7 @@ export function registerInboxRoutes(
       "UPDATE auth_requests SET acknowledged_by = 'bulk' WHERE status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
     ).run();
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/inbox/:type/:id/ack — acknowledge an inbox item
   server.post("/api/inbox/:type/:id/ack", (req, res) => {
@@ -737,5 +738,5 @@ export function registerInboxRoutes(
     } else {
       sendJson(res, 400, { error: "type must be 'continuation' or 'auth_result'" });
     }
-  });
+  }, { fileRpc: "allow" });
 }

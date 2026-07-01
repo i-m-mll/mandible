@@ -81,7 +81,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const repos = workScanner.getRepos();
     const filtered = includeExcluded ? repos : repos.filter((r) => !r.excluded);
     sendJson(res, 200, filtered);
-  });
+  }, { fileRpc: "allow" });
 
   server.put("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;
@@ -90,7 +90,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const updated = workScanner.updateRepo(id, body ?? {});
     if (!updated) { sendJson(res, 404, { error: "repo not found" }); return; }
     sendJson(res, 200, updated);
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/work/repos/add", async (req, res) => {
     const body = req.body as { root?: string; name?: string } | undefined;
@@ -102,14 +102,14 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     } catch (e) {
       sendJson(res, 400, { error: (e as Error).message });
     }
-  });
+  }, { fileRpc: "deny" });
 
   server.delete("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;
     const ok = workScanner.removeRepo(id ?? "");
     if (!ok) { sendJson(res, 404, { error: "repo not found" }); return; }
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches", (req, res) => {
     ensureScan();
@@ -127,7 +127,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const filter = queryString(req, "filter");
     const branches = workScanner.getBranches(repo.root);
     sendJson(res, 200, filterAndSortBranches(branches, { sort, filter }));
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {
     ensureScan();
@@ -142,7 +142,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     sendJson(res, 200, workScanner.getWorktrees(repo.root));
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branch/:name", (req, res) => {
     ensureScan();
@@ -163,12 +163,12 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       return;
     }
     sendJson(res, 200, branch);
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/work/scan", async (_req, res) => {
     const summary = await workScanner.scanAll();
     sendJson(res, 200, summary);
-  });
+  }, { fileRpc: "deny" });
 
   // --- Push routes (Bug: ea3102a) ---
 
@@ -191,7 +191,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     } catch (err) {
       sendJson(res, 409, { error: (err as Error).message });
     }
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/work/repos/:id/push", async (req, res) => {
     const repoId = req.params.id;
@@ -213,11 +213,11 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     } catch (err) {
       sendJson(res, 500, { error: (err as Error).message });
     }
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/work/push/status", (_req, res) => {
     sendJson(res, 200, getPushStatus());
-  });
+  }, { fileRpc: "deny" });
 
   return workScanner;
 }

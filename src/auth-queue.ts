@@ -798,6 +798,7 @@ export class AuthQueue {
       "repo",
       "base_branch",
       "head_branch",
+      "merge_head_sha",
       "files_changed",
       "additions",
       "deletions",

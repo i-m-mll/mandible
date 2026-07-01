@@ -275,11 +275,11 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       result[row.key] = row.value;
     }
     sendJson(res, 200, result);
-  });
+  }, { fileRpc: "deny" });
 
   server.get("/api/settings/instructions-delivery", (_req, res) => {
     sendJson(res, 200, instructionDeliverySnapshot());
-  });
+  }, { fileRpc: "deny" });
 
   server.put("/api/settings/instructions-delivery", (req, res) => {
     const body = readBody<{
@@ -346,7 +346,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, snapshot);
-  });
+  }, { fileRpc: "deny" });
 
   // GET /api/settings/:key — returns single setting value
   server.get("/api/settings/:key", (req, res) => {
@@ -363,7 +363,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, { key, value: row.value });
-  });
+  }, { fileRpc: "deny" });
 
   // PUT /api/settings/:key — update a setting
   server.put("/api/settings/:key", (req, res) => {
@@ -399,5 +399,5 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       value: body.value,
       deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
     });
-  });
+  }, { fileRpc: "deny" });
 }

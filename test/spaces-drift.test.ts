@@ -19,7 +19,6 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrate, setDb, type Db } from '../src/db.js';
 import { registerSpacesRoutes } from '../src/routes/spaces.js';
 import { Router } from '../src/server.js';
-import { isAllowedFileRpcRoute } from '../src/file-rpc-transport.js';
 import {
   defaultExportGitRunner,
   exportAndTrack,
@@ -59,6 +58,10 @@ function seedProjectAndCheckout(root: string): void {
 
 async function call(method: string, url: string, body?: unknown) {
   return router.invoke({ method, url, body });
+}
+
+function allowsFileRpcRoute(method: string, url: string): boolean {
+  return router.resolveFileRpcPolicy(method, url);
 }
 
 async function makeSpaceWithBlocks(title = 'Doc'): Promise<string> {
@@ -370,11 +373,11 @@ describe('drift read routes + allowlist', () => {
   });
 
   it('drift reads are self-allowlisted on the file transport, with no write authority', () => {
-    expect(isAllowedFileRpcRoute('GET', '/api/spaces/abc/exports/drift')).toBe(true);
-    expect(isAllowedFileRpcRoute('GET', '/api/spaces/abc/exports/xyz/drift')).toBe(true);
+    expect(allowsFileRpcRoute('GET', '/api/spaces/abc/exports/drift')).toBe(true);
+    expect(allowsFileRpcRoute('GET', '/api/spaces/abc/exports/xyz/drift')).toBe(true);
     // Read-only: no write verb opens through the drift surface, and there is no
     // blanket `/api/spaces*` allow.
-    expect(isAllowedFileRpcRoute('POST', '/api/spaces/abc/exports/drift')).toBe(false);
-    expect(isAllowedFileRpcRoute('DELETE', '/api/spaces/abc/exports/xyz/drift')).toBe(false);
+    expect(allowsFileRpcRoute('POST', '/api/spaces/abc/exports/drift')).toBe(false);
+    expect(allowsFileRpcRoute('DELETE', '/api/spaces/abc/exports/xyz/drift')).toBe(false);
   });
 });

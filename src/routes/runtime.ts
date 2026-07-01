@@ -14,7 +14,7 @@ export function registerRuntimeRoutes(router: RouteRegistrar): void {
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // GET /api/runtime/patches — list recorded patches
   router.get("/api/runtime/patches", async (_req, res) => {
@@ -24,7 +24,7 @@ export function registerRuntimeRoutes(router: RouteRegistrar): void {
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/runtime/bootstrap — trigger Zone 2 clone (async)
   router.post("/api/runtime/bootstrap", (_req, res) => {
@@ -35,7 +35,7 @@ export function registerRuntimeRoutes(router: RouteRegistrar): void {
       // Best-effort: the status endpoint will show the result
       console.error(`[runtime] bootstrap failed: ${err}`);
     });
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/runtime/update — check + apply upstream update
   router.post("/api/runtime/update", async (_req, res) => {
@@ -52,7 +52,7 @@ export function registerRuntimeRoutes(router: RouteRegistrar): void {
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/runtime/rollback — revert last patch
   router.post("/api/runtime/rollback", async (_req, res) => {
@@ -63,7 +63,7 @@ export function registerRuntimeRoutes(router: RouteRegistrar): void {
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
-  });
+  }, { fileRpc: "deny" });
 
   // POST /api/runtime/reset — reset to upstream main
   router.post("/api/runtime/reset", async (_req, res) => {
@@ -74,5 +74,5 @@ export function registerRuntimeRoutes(router: RouteRegistrar): void {
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
-  });
+  }, { fileRpc: "deny" });
 }

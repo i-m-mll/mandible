@@ -144,7 +144,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       log_file: LOG_FILE_PATH,
       exists: true,
     });
-  });
+  }, { fileRpc: "allow" });
 
   // POST /api/admin/rebuilding — broadcast a mandible:rebuilding SSE event to all
   // connected clients, then return 200. Called by the post-merge hook immediately
@@ -153,7 +153,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
   server.post("/api/admin/rebuilding", (_req, res) => {
     broadcast("mandible:rebuilding", {});
     sendJson(res, 200, { ok: true });
-  });
+  }, { fileRpc: "deny" });
 
   server.post("/api/system/open-path", (req, res) => {
     const body = readBody<{ path?: string }>(req);
@@ -202,5 +202,5 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       }
       sendJson(res, 200, { ok: true });
     });
-  });
+  }, { fileRpc: "deny" });
 }
