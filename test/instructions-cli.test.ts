@@ -75,6 +75,9 @@ describe("instructions CLI", () => {
     const installed = fs.readFileSync(target, "utf8");
     expect(installed).toContain("<!-- BEGIN MANDIBLE MANAGED INSTRUCTIONS -->");
     expect(installed).toContain("mandible auth request <branch>");
+    expect(installed).toContain("Authored ledger Markdown issue refs use `[issue:<id>]`");
+    expect(installed).toContain("Do not write `[references:<id>]`, `[closes:<id>]`");
+    expect(installed).toContain("Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`");
     expect(installed).toContain("User policy stays here.");
 
     const cleanDiff = await run(["instructions", "diff", "--target", target]);

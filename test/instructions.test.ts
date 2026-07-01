@@ -17,6 +17,12 @@ describe("Mandible instructions fragment", () => {
     expect(fragment).toContain("mandible issue heads <id>...");
     expect(fragment).toContain("mandible umbrella manifest refresh <umbrella>");
     expect(fragment).toContain("Mandible-Issue: <ref>");
+    expect(fragment).toContain("## Authored Markdown References");
+    expect(fragment).toContain("Authored ledger Markdown issue refs use `[issue:<id>]`");
+    expect(fragment).toContain("Authored ledger Markdown comment refs use `[comment:<issue>#<comment>]`");
+    expect(fragment).toContain("Do not write `[references:<id>]`, `[closes:<id>]`");
+    expect(fragment).toContain("`[artifact:<id-or-uri>]`, `[artifact-version:<id>]`, or `[artifact-blob:<hash>]`");
+    expect(fragment).toContain("Auth requests have no authored Markdown bracket tag such as `[auth:<id>]`");
     expect(fragment).toContain("worker_status");
     expect(fragment).toContain("MANDIBLE_BASE=file:///path/to/spool");
     expect(fragment).not.toContain("YubiKey");
