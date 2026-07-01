@@ -103,6 +103,10 @@ export function LedgerIssueDetail({
   const displayLabels = detail.labels.filter((label) => !isMetadataLabel(label));
   const timelineEntries = buildTimelineEntries(timeline, detail.auth_requests);
   const isInitialDetail = detail.detail_stage === 'initial';
+  const shouldShowFullDetailLoading = (
+    fullLoadFailed ||
+    (isInitialDetail && detail.timeline_partial === true)
+  );
   const hasIssueActions = true;
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
@@ -226,7 +230,7 @@ export function LedgerIssueDetail({
             <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
           ))}
         </div>
-        {(isInitialDetail || hydrating || fullLoadFailed) && (
+        {shouldShowFullDetailLoading && (
           <p className="text-muted">
             {fullLoadFailed
               ? 'Full issue detail failed to load.'
