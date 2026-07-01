@@ -126,7 +126,7 @@ afterEach(() => {
 });
 
 describe("artifact link CLI", () => {
-  it("documents typed link flags and series-as-artifact refs", () => {
+  it("documents typed link flags and canonical artifact refs", () => {
     const result = run(["artifact", "--help"]);
 
     expect(result.status).toBe(0);
@@ -134,7 +134,7 @@ describe("artifact link CLI", () => {
     expect(result.stdout).toContain("artifact:<id>             logical artifact");
     expect(result.stdout).toContain("artifact-version:<id>     specific artifact version");
     expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
-    expect(result.stdout).toContain("artifact:sha256:<hash>    legacy read/repair input");
+    expect(result.stdout).not.toContain("artifact:sha256:<hash>");
   });
 
   it("omits link_kind when no typed-link flag is supplied and prints a pinned badge", async () => {
@@ -149,7 +149,7 @@ describe("artifact link CLI", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "link", "artifact-series:series-1", "--issue", "abc"], {
+      const result = await runAsync(["artifact", "link", "artifact:series-1", "--issue", "abc"], {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
@@ -159,7 +159,7 @@ describe("artifact link CLI", () => {
       );
       const linkRequest = recorder.requests.find((request) => request.url === "/api/artifacts/link")!;
       expect(linkRequest.body).toMatchObject({
-        ref: "artifact-series:series-1",
+        ref: "artifact:series-1",
         entity_type: "issue",
         entity_id: "issue-1234567890",
         link_type: "references",
@@ -186,11 +186,11 @@ describe("artifact link CLI", () => {
     try {
       const env = { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` };
       const living = await runAsync(
-        ["artifact", "link", "artifact-series:series-1", "--issue", "abc", "--living"],
+        ["artifact", "link", "artifact:series-1", "--issue", "abc", "--living"],
         env,
       );
       const pinned = await runAsync(
-        ["artifact", "link", "artifact-series:series-1", "--issue", "abc", "--pinned"],
+        ["artifact", "link", "artifact:series-1", "--issue", "abc", "--pinned"],
         env,
       );
 
@@ -216,7 +216,7 @@ describe("artifact link CLI", () => {
     const result = run([
       "artifact",
       "link",
-      "artifact-series:series-1",
+      "artifact:series-1",
       "--issue",
       "abc",
       "--pinned",
@@ -243,7 +243,7 @@ describe("artifact link CLI", () => {
         [
           "artifact",
           "link",
-          "artifact-series:series-1",
+          "artifact:series-1",
           "--issue",
           "abc",
           "--relation",
@@ -285,14 +285,14 @@ describe("artifact link CLI", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "ref", "artifact:sha256:resolved", "--issue", "abc", "--json"], {
+      const result = await runAsync(["artifact", "ref", "artifact-blob:resolved", "--issue", "abc", "--json"], {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
       expect(result.status).toBe(0);
       const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
       expect(body).toMatchObject({
-        ref: "artifact:sha256:resolved",
+        ref: "artifact-blob:resolved",
         entity_type: "issue",
         entity_id: "issue-1234567890",
         link_type: "references",
@@ -329,14 +329,14 @@ describe("artifact link CLI", () => {
 
     try {
       const result = await runAsync(
-        ["artifact", "snapshot", "artifact:sha256:old", "--from", "report.md", "--issue", "abc", "--json"],
+        ["artifact", "snapshot", "artifact:old", "--from", "report.md", "--issue", "abc", "--json"],
         { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
       );
 
       expect(result.status).toBe(0);
       const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
       expect(body).toMatchObject({
-        ref: "artifact:sha256:snapshot",
+        ref: "artifact-blob:snapshot",
         entity_type: "issue",
         entity_id: "issue-1234567890",
         link_type: "references",
@@ -385,13 +385,13 @@ describe("artifact versions CLI display", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "versions", "artifact-series:series-1"], {
+      const result = await runAsync(["artifact", "versions", "artifact:series-1"], {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain("artifact artifact-series:series-1 [managed] 2 version(s)");
-      expect(result.stdout).not.toContain("series artifact-series:series-1");
+      expect(result.stdout).toContain("artifact artifact:series-1 [managed] 2 version(s)");
+      expect(result.stdout).not.toContain("artifact-series:series-1");
       expect(result.stdout).toContain("v1 managed artifact:sha256:one (draft)");
       expect(result.stdout).toContain("v2 managed artifact:sha256:two");
     } finally {
@@ -417,7 +417,7 @@ describe("artifact versions CLI display", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "versions", "artifact-series:series-1", "--json"], {
+      const result = await runAsync(["artifact", "versions", "artifact:series-1", "--json"], {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
 

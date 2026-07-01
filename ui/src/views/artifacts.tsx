@@ -17,7 +17,14 @@ import {
   type ArtifactVersionRecord,
   type KnowledgeBackrefRecord,
 } from '../api';
-import { artifactDetailHref, compactArtifactRef, displayResourceRef, seriesDetailHref, versionDetailHref } from '../resource-refs';
+import {
+  artifactDetailHref,
+  compactArtifactBlobRef,
+  compactArtifactRef,
+  displayResourceRef,
+  seriesDetailHref,
+  versionDetailHref,
+} from '../resource-refs';
 import { renderDocumentText } from './spaces/DocumentRenderer';
 import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
@@ -638,18 +645,16 @@ export function ArtifactDetail({
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const seriesRefValue = series ? seriesRecordRef(series) : '';
   const copyableSeriesRef = seriesRefValue ? shortArtifactSeriesRef(seriesRefValue) : '';
-  const selectedArtifactRef = selectedVersion && copyableSeriesRef
-    ? `${copyableSeriesRef}@${selectedVersion.version_no}`
-    : selectedVersion?.id
-      ? shortArtifactVersionRef(selectedVersion.id)
-      : shortImmutableArtifactRef(artifact.id);
+  const selectedArtifactRef = selectedVersion?.id
+    ? shortArtifactVersionRef(selectedVersion.id)
+    : shortImmutableArtifactRef(artifact.content_hash || artifact.id);
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
     ['Series', seriesRefValue, true, copyableSeriesRef || seriesRefValue],
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
     ['URI', artifact.uri, true],
     ['Content hash', artifact.content_hash, true],
-    ['Short ID', shortArtifactId(artifact.id), true, shortImmutableArtifactRef(artifact.id)],
+    ['Short ID', shortArtifactId(artifact.id), true, shortImmutableArtifactRef(artifact.content_hash || artifact.id)],
     ['Home repo', artifact.home_repo_id],
     ['Provider', artifact.provider_id],
     ['Manifest', artifact.manifest_id],
@@ -737,7 +742,7 @@ export function ArtifactDetail({
         <div className="artifact-detail__top-row">
           <div className="artifact-detail__topline">
             <span className="artifact-detail__series-id">{seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id)}</span>
-            <CopyButton value={copyableSeriesRef || shortImmutableArtifactRef(artifact.id)} label="Copy artifact series ref" />
+            <CopyButton value={copyableSeriesRef || shortImmutableArtifactRef(artifact.content_hash || artifact.id)} label="Copy artifact ref" />
           </div>
           <div className="artifact-detail__status">
             <label className="artifact-detail__version-control">
@@ -1181,12 +1186,12 @@ function buildFacetOptions(series: ArtifactSeriesSummary[]): {
 }
 
 function seriesRef(series: ArtifactSeriesSummary): string {
-  return series.ref || (series.id.startsWith('artifact-series:') ? series.id : `artifact-series:${series.id}`);
+  return series.ref || logicalArtifactRefFromSeriesId(series.id);
 }
 
 function seriesRecordRef(series: ArtifactSeriesRecord | ArtifactSeriesSummary): string {
   if ('ref' in series && series.ref) return series.ref;
-  return series.id.startsWith('artifact-series:') ? series.id : `artifact-series:${series.id}`;
+  return logicalArtifactRefFromSeriesId(series.id);
 }
 
 function artifactLinkKind(link: ArtifactLinkRecord): 'pinned' | 'living' {
@@ -1200,7 +1205,7 @@ function artifactLinkBadgeLabel(link: ArtifactLinkRecord): string {
 }
 
 function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {
-  const seriesRef = link.series_ref ?? link.series_id;
+  const seriesRef = link.series_ref ? normalizeSeriesRef(link.series_ref) : link.series_id ? logicalArtifactRefFromSeriesId(link.series_id) : null;
   if (link.link_kind === 'living') {
     return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(link.artifact_id);
   }
@@ -1211,7 +1216,8 @@ function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {
 
 function normalizeSeriesRef(ref: string): string {
   const trimmed = ref.trim();
-  return trimmed.startsWith('artifact-series:') ? trimmed : `artifact-series:${trimmed}`;
+  if (/^artifact:/i.test(trimmed)) return trimmed;
+  return logicalArtifactRefFromSeriesId(trimmed);
 }
 
 function sortedVersionHistory(history: ArtifactVersionHistory): ArtifactVersionHistory {
@@ -1253,7 +1259,7 @@ function artifactTitle(artifact: ArtifactRecord): string {
     || filename
     || repoLocator
     || artifact.role
-    || compactArtifactRef(artifact.content_hash);
+    || compactArtifactBlobRef(`artifact-blob:${artifact.content_hash}`);
 }
 
 function artifactRepoLocator(artifact: ArtifactRecord): string {
@@ -1269,13 +1275,13 @@ function artifactTitleCandidate(value: string): string {
 }
 
 function shortSeriesId(ref: string): string {
-  return ref.trim().replace(/^artifact-series:/i, '').slice(0, 7);
+  return ref.trim().replace(/^artifact-series:/i, '').replace(/^artifact:/i, '').slice(0, 7);
 }
 
 function shortArtifactSeriesRef(ref: string): string {
   const trimmed = ref.trim();
-  const bare = trimmed.replace(/^artifact-series:/i, '');
-  return `artifact-series:${bare.slice(0, 7)}`;
+  const bare = trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '');
+  return `artifact:${bare.slice(0, 7)}`;
 }
 
 function shortArtifactVersionRef(ref: string): string {
@@ -1285,11 +1291,18 @@ function shortArtifactVersionRef(ref: string): string {
 }
 
 function shortImmutableArtifactRef(ref: string): string {
-  return `artifact:${shortArtifactId(ref)}`;
+  return `artifact-blob:${shortArtifactId(ref)}`;
 }
 
 function shortArtifactId(ref: string): string {
-  return ref.trim().replace(/^artifact:/i, '').replace(/^sha256:/i, '').slice(0, 7).toLowerCase();
+  return ref.trim().replace(/^artifact:sha256:/i, '').replace(/^artifact-blob:/i, '').replace(/^artifact:/i, '').replace(/^sha256:/i, '').slice(0, 7).toLowerCase();
+}
+
+function logicalArtifactRefFromSeriesId(ref: string): string {
+  const trimmed = ref.trim();
+  if (/^artifact:/i.test(trimmed) && !/^artifact-series:/i.test(trimmed)) return trimmed;
+  const bare = trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '');
+  return `artifact:${bare}`;
 }
 
 function artifactCreatedUpdated(

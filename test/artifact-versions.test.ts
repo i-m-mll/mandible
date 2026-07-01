@@ -220,20 +220,20 @@ describe("diff derivation", () => {
   it("normalizes JSON before diffing and reports identical content", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":2}', media_type: "application/json", logical_name: "cfg" }, 1000);
     const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: '{"a":1,"b":3}', media_type: "application/json", logical_name: "cfg" }, 2000);
-    const diff = diffArtifacts(db, r1.version.artifact_id, r2.version.artifact_id);
+    const diff = diffArtifacts(db, r1.version.id, r2.version.id);
     expect(diff.kind).toBe("json");
     expect(diff.diffable).toBe(true);
     expect(diff.unified).toContain('"b": 2');
     expect(diff.unified).toContain('"b": 3');
 
-    const same = diffArtifacts(db, r1.version.artifact_id, r1.version.artifact_id);
+    const same = diffArtifacts(db, r1.version.id, r1.version.id);
     expect(same.identical).toBe(true);
     expect(same.stats).toEqual({ added: 0, removed: 0 });
   });
 });
 
-describe("ref resolution backward-compat and no silent retarget", () => {
-  it("resolves new canonical logical/version/blob refs and warns for legacy hash refs", () => {
+describe("canonical ref resolution and no silent retarget", () => {
+  it("resolves new canonical logical/version/blob refs and rejects legacy hash refs", () => {
     const r1 = recordArtifactVersion(db, {
       source_kind: "managed",
       provider_id: "test",
@@ -264,11 +264,13 @@ describe("ref resolution backward-compat and no silent retarget", () => {
     expect(blob.target_type).toBe("artifact_blob");
     expect(blob.target_id).toBe(blobRef);
 
-    const legacy = resolveArtifactRef(db, `artifact:sha256:${r1.artifact.content_hash}`);
-    expect(legacy.status).toBe("resolved");
-    expect(legacy.target_type).toBe("artifact_blob");
-    expect(legacy.target_id).toBe(blobRef);
-    expect(legacy.warnings).toEqual(["legacy_artifact_ref_read_only", "repair_to_artifact_blob_ref"]);
+    for (const oldRef of [`artifact:sha256:${r1.artifact.content_hash}`, `sha256:${r1.artifact.content_hash}`, r1.artifact.content_hash]) {
+      const legacy = resolveArtifactRef(db, oldRef);
+      expect(legacy.status).toBe("unsupported");
+      expect(legacy.artifact).toBeNull();
+      expect(legacy.target_id).toBeNull();
+      expect(legacy.warnings).toEqual(["legacy_artifact_ref_unsupported", "repair_to_artifact_blob_ref"]);
+    }
   });
 
   it("records explicit project associations without inferring them from source repo", () => {
@@ -320,14 +322,20 @@ describe("ref resolution backward-compat and no silent retarget", () => {
     ).toThrow(/not blobs/);
   });
 
-  it("keeps artifact:sha256 refs immutable and resolves version/series refs", () => {
+  it("treats artifact:<hex> as a logical artifact ref and does not fall back to blob resolution", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
     const fullId = r1.artifact.id; // artifact:sha256:<hash>
-    // The documented registerable hash ref still resolves to the immutable row.
     const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
-    expect(resolved.status).toBe("resolved");
-    expect(resolved.artifact?.id).toBe(fullId);
-    expect(resolved.series ?? null).toBeNull(); // hash ref carries no series context
+    expect(resolved.status).toBe("unresolved");
+    expect(resolved.target_type).toBe("artifact");
+    expect(resolved.artifact).toBeNull();
+    expect(resolved.target_id).toBeNull();
+    expect(resolved.warnings).toEqual(["artifact_unresolved"]);
+
+    const blob = resolveArtifactRef(db, `artifact-blob:${r1.artifact.content_hash}`);
+    expect(blob.status).toBe("resolved");
+    expect(blob.target_type).toBe("artifact_blob");
+    expect(blob.artifact?.id).toBe(fullId);
 
     const versionResolved = resolveArtifactRef(db, r1.version.id);
     expect(versionResolved.artifact?.id).toBe(fullId);
@@ -361,29 +369,39 @@ describe("ref resolution backward-compat and no silent retarget", () => {
     expect(linkRows).toHaveLength(1);
     expect(linkRows[0].artifact_id).toBe(artifactA);
 
-    // Series-latest resolution floats to B but warns it is not pinned.
-    const latest = resolveArtifactRef(db, r1.series.id);
+    // Logical artifact resolution floats to B without accepting artifact-series refs.
+    const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
+    const latest = resolveArtifactRef(db, logicalRef);
     expect(latest.artifact?.id).toBe(artifactB);
-    expect(latest.warnings).toContain("series_latest_not_pinned");
+    expect(latest.target_type).toBe("artifact");
 
-    // A pinned version-2 selector resolves to B with no warning.
-    const pinned2 = resolveArtifactRef(db, `${r1.series.id}@2`);
+    const oldSeries = resolveArtifactRef(db, r1.series.id);
+    expect(oldSeries.status).toBe("unsupported");
+    expect(oldSeries.warnings).toEqual([
+      "artifact_series_ref_unsupported",
+      "repair_to_artifact_or_artifact_version_ref",
+    ]);
+
+    // A pinned version ref resolves to B with no warning.
+    const pinned2 = resolveArtifactRef(db, r2.version.id);
     expect(pinned2.artifact?.id).toBe(artifactB);
     expect(pinned2.warnings ?? []).toEqual([]);
   });
 });
 
 describe("version history query", () => {
-  it("resolves history from a series id, version id, or artifact ref", () => {
+  it("resolves history from a logical artifact ref, version id, or blob ref", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h1\n", media_type: "text/plain", logical_name: "hist" }, 1000);
     recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "h2\n", media_type: "text/plain", logical_name: "hist" }, 2000);
 
-    const bySeries = resolveArtifactVersionHistory(db, r1.series.id);
-    expect(bySeries?.versions).toHaveLength(2);
+    const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
+    const byLogical = resolveArtifactVersionHistory(db, logicalRef);
+    expect(byLogical?.versions).toHaveLength(2);
     const byVersion = resolveArtifactVersionHistory(db, r1.version.id);
     expect(byVersion?.series.id).toBe(r1.series.id);
-    const byArtifact = resolveArtifactVersionHistory(db, r1.artifact.id);
+    const byArtifact = resolveArtifactVersionHistory(db, `artifact-blob:${r1.artifact.content_hash}`);
     expect(byArtifact?.series.id).toBe(r1.series.id);
+    expect(resolveArtifactVersionHistory(db, r1.series.id)).toBeNull();
   });
 });
 
@@ -501,7 +519,7 @@ describe("codex review fixes", () => {
 
     const rec = recordArtifactVersion(db, {
       source_kind: "managed",
-      ref: link.artifact.id,
+      ref: `artifact-blob:${link.artifact.content_hash}`,
       logical_name: "src",
       provider_id: "test",
       media_type: "text/plain",
@@ -542,14 +560,16 @@ describe("codex review fixes", () => {
     expect(counts()).toEqual(before);
   });
 
-  it("LOW-7: series version selector requires an exact positive integer", () => {
+  it("LOW-7: artifact-series selectors are no longer accepted by the normal resolver", () => {
     const r = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "s\n", media_type: "text/plain", logical_name: "sel" }, 1000);
-    expect(resolveArtifactRef(db, `${r.series.id}@1`).artifact?.id).toBe(r.artifact.id);
-    for (const bad of ["2abc", "1.5", "0", "-1", "01"]) {
-      const res = resolveArtifactRef(db, `${r.series.id}@${bad}`);
-      expect(res.artifact).toBeNull();
-      expect(res.status).not.toBe("resolved");
-    }
+    expect(resolveArtifactRef(db, r.version.id).artifact?.id).toBe(r.artifact.id);
+    const res = resolveArtifactRef(db, `${r.series.id}@1`);
+    expect(res.artifact).toBeNull();
+    expect(res.status).toBe("unsupported");
+    expect(res.warnings).toEqual([
+      "artifact_series_ref_unsupported",
+      "repair_to_artifact_or_artifact_version_ref",
+    ]);
   });
 
   it("LOW-8/HIGH-3: latest_version_id and version_count stay consistent and survive backup", () => {
@@ -597,7 +617,7 @@ describe("codex re-review hardening", () => {
     const link = registerLocalArtifactPath(db, { path: src, custody_mode: "link", allow_local_only: true }, 1000);
     const rec = recordArtifactVersion(db, {
       source_kind: "managed",
-      ref: link.artifact.id,
+      ref: `artifact-blob:${link.artifact.content_hash}`,
       logical_name: "src",
       provider_id: "test",
       media_type: "text/plain",
@@ -617,8 +637,9 @@ describe("codex re-review hardening", () => {
 
     // A managed re-snapshot of the same (now-corrupt) ref must refuse, not
     // silently re-snapshot wrong bytes.
+    const canonicalBlobRef = `artifact-blob:${rec.version.content_hash}`;
     expect(() =>
-      recordArtifactVersion(db, { source_kind: "managed", ref: rec.version.artifact_id, logical_name: "src", provider_id: "test" }, 3000),
+      recordArtifactVersion(db, { source_kind: "managed", ref: canonicalBlobRef, logical_name: "src", provider_id: "test" }, 3000),
     ).toThrow(/not materializable|hash mismatch/i);
   });
 

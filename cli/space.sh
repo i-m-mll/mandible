@@ -62,8 +62,9 @@ Block types (block add|edit --type):
 Refs (add-item, promote-edge):
   issue:<id>                  ref_type=issue
   comment:<id>                ref_type=comment
-  artifact:sha256:<hash>      ref_type=artifact   (not ledger-promotable)
-  artifact:<hash>             ref_type=artifact   (not ledger-promotable)
+  artifact:<id>               ref_type=artifact   (not ledger-promotable)
+  artifact-version:<id>       ref_type=artifact   (not ledger-promotable)
+  artifact-blob:<hash>        ref_type=artifact   (not ledger-promotable)
   uri:<...>                   ref_type=external_ref (not ledger-promotable)
 
 Link types (promote-edge --link-type, default references):
@@ -108,10 +109,12 @@ parse_item_ref() {
       [[ -n "$rest" ]] || die "comment ref requires an id: comment:<id>" 2
       jq -n --arg id "$rest" '{ref_type:"comment", ref_id:$id, ref_uri:null}'
       ;;
-    artifact:*)
-      rest="${ref#artifact:}"
-      [[ -n "$rest" ]] || die "artifact ref requires a hash: artifact:sha256:<hash>" 2
-      # Preserve the canonical artifact id form as ref_id.
+    artifact:sha256:*|sha256:*|artifact-series:*)
+      die "Unsupported artifact ref '${ref}'. Use artifact:<id>, artifact-version:<id>, or artifact-blob:<hash>." 2
+      ;;
+    artifact:*|artifact-version:*|artifact-blob:*)
+      rest="${ref#*:}"
+      [[ -n "$rest" ]] || die "artifact ref requires a target: artifact:<id>, artifact-version:<id>, or artifact-blob:<hash>" 2
       jq -n --arg id "$ref" '{ref_type:"artifact", ref_id:$id, ref_uri:null}'
       ;;
     uri:*)
@@ -120,7 +123,7 @@ parse_item_ref() {
       jq -n --arg uri "$rest" '{ref_type:"external_ref", ref_id:$uri, ref_uri:$uri}'
       ;;
     *)
-      die "Unrecognized ref '${ref}'. Use issue:<id>, comment:<id>, artifact:sha256:<hash>, or uri:<...>." 2
+      die "Unrecognized ref '${ref}'. Use issue:<id>, comment:<id>, artifact:<id>, artifact-version:<id>, artifact-blob:<hash>, or uri:<...>." 2
       ;;
   esac
 }
@@ -131,7 +134,7 @@ ref_kind() {
   case "$1" in
     issue:*) printf 'issue' ;;
     comment:*) printf 'comment' ;;
-    artifact:*) printf 'artifact' ;;
+    artifact:*|artifact-version:*|artifact-blob:*) printf 'artifact' ;;
     uri:*) printf 'external_ref' ;;
     *) printf 'unknown' ;;
   esac

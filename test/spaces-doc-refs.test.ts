@@ -19,23 +19,23 @@ afterEach(() => {
 describe('C6 shared parser: spaces-doc.v1 directive extension', () => {
   it('without the extension, the C6 parser does NOT recognize a directive node', () => {
     __resetResourceRefRecognizers();
-    expect(parseResourceRef(':ref[abc]{href="artifact:sha256:' + HASH64 + '"}')).toBeNull();
+    expect(parseResourceRef(':ref[abc]{href="artifact:logical"}')).toBeNull();
   });
 
-  it('after installing the extension, the C6 parser recognizes a directive ref node', () => {
+  it('after installing the extension, the C6 parser recognizes a canonical directive ref node', () => {
     installSpacesDocRefRecognizer();
-    const parsed = parseResourceRef(':ref[abc]{href="artifact:sha256:' + HASH64 + '"}');
+    const parsed = parseResourceRef(':ref[abc]{href="artifact-blob:' + HASH64 + '"}');
     expect(parsed).not.toBeNull();
     expect(parsed!.kind).toBe('artifact');
-    expect(parsed!.canonical).toBe(`artifact:sha256:${HASH64}`);
+    expect(parsed!.canonical).toBe(`artifact-blob:${HASH64}`);
     expect(parsed!.display).toBe('abc');
   });
 
   it('the C6 parser STILL recognizes refs as markdown-link/bare forms after extension', () => {
     installSpacesDocRefRecognizer();
-    // Built-in bare/canonical artifact ref still works (extension runs first,
+    // Built-in canonical artifact ref still works (extension runs first,
     // declines, built-in claims it).
-    const bare = parseResourceRef(`artifact:sha256:${HASH64}`);
+    const bare = parseResourceRef(`artifact-blob:${HASH64}`);
     expect(bare).not.toBeNull();
     expect(bare!.kind).toBe('artifact');
     // A repo:// scheme ref still resolves via built-in recognition.
@@ -45,7 +45,7 @@ describe('C6 shared parser: spaces-doc.v1 directive extension', () => {
   it('directive recognition does not break markdown-link linkification', () => {
     installSpacesDocRefRecognizer();
     const html = linkifyResourceRefs(
-      `<p><a href="artifact:sha256:${HASH64}">fig</a></p>`,
+      `<p><a href="artifact-blob:${HASH64}">fig</a></p>`,
     );
     expect(html).toContain('resource-ref');
     expect(html).toContain('data-resource-ref');
@@ -65,6 +65,13 @@ describe('C6 shared parser: spaces-doc.v1 directive extension', () => {
     expect(off1).toBe(off2);
     off1();
     // After unregister, recognition falls back to built-in (declines directive).
+    expect(parseResourceRef(':ref[x]{href="artifact:logical"}')).toBeNull();
+  });
+
+  it('declines legacy artifact directive hrefs', () => {
+    installSpacesDocRefRecognizer();
     expect(parseResourceRef(':ref[x]{href="artifact:sha256:' + HASH64 + '"}')).toBeNull();
+    expect(parseResourceRef(':ref[x]{href="sha256:' + HASH64 + '"}')).toBeNull();
+    expect(parseResourceRef(':ref[x]{href="artifact-series:abc"}')).toBeNull();
   });
 });

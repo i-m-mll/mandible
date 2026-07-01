@@ -47,6 +47,10 @@ function insertArtifact(_id: string, hash: string): string {
     `INSERT INTO artifacts (id, algorithm, content_hash, uri, created_at)
      VALUES (?, 'sha256', ?, ?, ?)`,
   ).run(id, hash, id, Date.now());
+  db.prepare(
+    `INSERT INTO artifact_blob (id, algorithm, content_hash, storage_uri, custody_mode, availability, created_at)
+     VALUES (?, 'sha256', ?, ?, 'managed', 'present', ?)`,
+  ).run(`artifact-blob:${hash}`, hash, id, Date.now());
   return id;
 }
 
@@ -481,10 +485,16 @@ describe("unified ref resolver", () => {
       resolved: true,
     });
 
-    const artifactRes = await call("GET", `/api/spaces/resolve?ref=artifact:sha256:${artifactHash}`);
+    const artifactRes = await call("GET", `/api/spaces/resolve?ref=artifact-blob:${artifactHash}`);
     expect((artifactRes.body as { resolution: { kind: string; resolved: boolean } }).resolution).toMatchObject({
       kind: "artifact",
       resolved: true,
+    });
+
+    const legacyArtifactRes = await call("GET", `/api/spaces/resolve?ref=artifact:sha256:${artifactHash}`);
+    expect((legacyArtifactRes.body as { resolution: { kind: string; resolved: boolean; detail?: { resolution?: { status?: string } } } }).resolution).toMatchObject({
+      kind: "artifact",
+      resolved: false,
     });
 
     const mandibleRes = await call(

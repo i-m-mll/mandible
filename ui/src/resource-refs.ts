@@ -4,11 +4,9 @@
 // auth review surfaces. It recognizes the canonical Mandible resource-ref forms
 // as plain text and as markdown-link hrefs:
 //
-//   - artifact:sha256:<64hex>       (canonical artifact id form)
-//   - artifact:<7-64hex>            (compact artifact ref form)
-//   - artifact-series:<id-or-prefix>[@<version>|@latest]
+//   - artifact:<id-or-prefix>       (logical artifact)
 //   - artifact-version:<id-or-prefix>
-//   - <7-64hex> / sha256:<64hex>    (bare hash forms)
+//   - artifact-blob:<hash-or-prefix>
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
 //   - issue:<id>                    (Mandible issue refs)
 //   - comment:<issue>#<comment>     (Mandible comment refs)
@@ -18,11 +16,6 @@
 // visible placeholder and a resolve affordance instead of being silently
 // dropped, resolving against the C2 unified resolver endpoint
 // (`/api/spaces/resolve`).
-//
-// HISTORICAL BUG (fixed here): the previous `COMPACT_SHA_ARTIFACT_REF =
-// /^artifact:([0-9a-f]{7,64})$/i` could not match `artifact:sha256:<hash>` —
-// the `sha256:` prefix fails the `[0-9a-f]` character class — so canonical
-// artifact ids were never linkified. The parser below recognizes both forms.
 //
 // C12 (the `spaces-doc.v1` directive grammar) extends recognition through the
 // `registerResourceRefRecognizer` extension point; this module deliberately
@@ -45,13 +38,9 @@ export interface ParsedResourceRef {
 
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
 
-// `artifact:sha256:<hash>` (canonical id) OR compact `artifact:<7-64hex>`.
-const ARTIFACT_SHA256_REF = /^artifact:sha256:([0-9a-f]{64})$/i;
-const COMPACT_ARTIFACT_REF = /^artifact:([0-9a-f]{7,64})$/i;
-const ARTIFACT_SERIES_REF = /^artifact-series:([^@#\s]+)(?:([@#])([^\s]+))?$/i;
+const LOGICAL_ARTIFACT_REF = /^artifact:(?!sha256:)([^\s]+)$/i;
 const ARTIFACT_VERSION_REF = /^artifact-version:([^\s]+)$/i;
-const BARE_SHA_REF = /^[0-9a-f]{7,64}$/i;
-const BARE_SHA256_REF = /^sha256:([0-9a-f]{64})$/i;
+const ARTIFACT_BLOB_REF = /^artifact-blob:([0-9a-f]{7,64})$/i;
 const ISSUE_REF = /^issue:([^\s\]]+)$/i;
 const COMMENT_REF = /^comment:([^\s\]]+)$/i;
 
@@ -92,22 +81,9 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   const raw = candidate.trim();
   if (!raw) return null;
 
-  // artifact:sha256:<64hex> — canonical artifact id form (the historically
-  // unmatched case). Canonical href authority is the full id.
-  const sha256 = ARTIFACT_SHA256_REF.exec(raw);
-  if (sha256) {
-    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(sha256[1]) };
-  }
-
-  // artifact:<7-64hex> — compact artifact ref form.
-  const compact = COMPACT_ARTIFACT_REF.exec(raw);
-  if (compact) {
-    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(compact[1]) };
-  }
-
-  const artifactSeries = ARTIFACT_SERIES_REF.exec(raw);
-  if (artifactSeries) {
-    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactSeriesRef(raw) };
+  const logical = LOGICAL_ARTIFACT_REF.exec(raw);
+  if (logical) {
+    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(raw) };
   }
 
   const artifactVersion = ARTIFACT_VERSION_REF.exec(raw);
@@ -115,15 +91,9 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
     return { raw, canonical: raw, kind: 'artifact', display: compactArtifactVersionRef(raw) };
   }
 
-  // sha256:<64hex> bare-hash form — normalize display, keep canonical authority.
-  const bareSha256 = BARE_SHA256_REF.exec(raw);
-  if (bareSha256) {
-    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(bareSha256[1]) };
-  }
-
-  // bare <7-64hex> hash.
-  if (BARE_SHA_REF.test(raw)) {
-    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(raw) };
+  const artifactBlob = ARTIFACT_BLOB_REF.exec(raw);
+  if (artifactBlob) {
+    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactBlobRef(raw) };
   }
 
   // repo://<repo>@<ref>/<path>
@@ -183,18 +153,17 @@ export function compactArtifactRef(hash: string, length = 12): string {
   return `artifact:${clipped}`;
 }
 
-export function compactArtifactSeriesRef(ref: string, length = 7): string {
-  return ref.replace(
-    /^artifact-series:([^@#\s]+)(.*)$/i,
-    (_match, id: string, selector: string) =>
-      `artifact-series:${compactLongIdSegments(id, length)}${selector ?? ''}`,
-  );
-}
-
 export function compactArtifactVersionRef(ref: string, length = 7): string {
   return ref.replace(
     /^artifact-version:(.+)$/i,
     (_match, id: string) => `artifact-version:${compactLongIdSegments(id, length)}`,
+  );
+}
+
+export function compactArtifactBlobRef(ref: string, length = 12): string {
+  return ref.replace(
+    /^artifact-blob:(.+)$/i,
+    (_match, id: string) => `artifact-blob:${compactLongIdSegments(id, length)}`,
   );
 }
 
@@ -227,26 +196,15 @@ export function displayResourceRef(ref: string): string {
 // --- nav hrefs ---------------------------------------------------------------
 
 export function resourceRefHref(ref: string): string {
-  // The artifacts route resolves a compact `artifact:<7-64hex>` ref by its bare
-  // hash (the historical `#/artifacts?ref=<hash>` contract). Canonical id and
-  // scheme forms (`artifact:sha256:<hash>`, `repo://…`, `mandible://…`) keep
-  // their full ref as the resolver authority.
-  const compact = COMPACT_ARTIFACT_REF.exec(ref.trim());
-  const series = ARTIFACT_SERIES_REF.exec(ref.trim());
-  if (series) {
-    const base = `artifact-series:${series[1]}`;
-    const selector = series[3]?.toLowerCase();
-    if (selector && /^[1-9][0-9]*$/.test(selector)) {
-      return versionDetailHref(base, Number.parseInt(selector, 10));
-    }
-    return seriesDetailHref(selector === 'latest' ? ref.trim() : base);
-  }
-  const navRef = compact ? compact[1] : ref;
-  return `#/artifacts?ref=${encodeURIComponent(navRef)}`;
+  return `#/artifacts?ref=${encodeURIComponent(ref)}`;
 }
 
 export function artifactDetailHref(id: string): string {
-  return `#/artifacts?artifact=${encodeURIComponent(id)}`;
+  const trimmed = id.trim();
+  const oldHash = /^artifact:sha256:([0-9a-f]{64})$/i.exec(trimmed)?.[1];
+  if (oldHash) return resourceRefHref(`artifact-blob:${oldHash}`);
+  if (/^artifact(?:-version|-blob)?:/i.test(trimmed)) return resourceRefHref(trimmed);
+  return `#/artifacts?artifact=${encodeURIComponent(trimmed)}`;
 }
 
 export function seriesDetailHref(ref: string): string {
@@ -298,7 +256,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-version|artifact-blob|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');
@@ -308,9 +266,9 @@ function trimTrailingPunctuation(value: string): string {
 // bracket wrapper, not part of the ref, when `<inner>` is itself a non-artifact
 // `scheme://` URI (e.g. `[artifact:repo://…]`, `[artifact:feedbax://…]`). The
 // ref is the unwrapped inner so the display label and href match the canonical
-// resource form rather than the doubly-prefixed `artifact:repo://…`. Compact /
-// canonical artifact refs (`[artifact:<hex>]`, `[artifact:sha256:<hex>]`) are
-// left intact for the built-in grammar, which keeps the `artifact:` authority.
+// resource form rather than the doubly-prefixed `artifact:repo://…`. Logical
+// artifact refs (`[artifact:<id>]`) are left intact for the built-in grammar,
+// which keeps the `artifact:` authority.
 function unwrapBracketRef(ref: string): string {
   const inner = ref.replace(/^artifact:/i, '');
   if (inner === ref) return ref;

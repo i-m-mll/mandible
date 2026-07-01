@@ -21,6 +21,7 @@ import {
 } from '../../src/spaces/serialize';
 import {
   registerResourceRefRecognizer,
+  compactArtifactBlobRef,
   compactArtifactRef,
   type ParsedResourceRef,
   type ResourceRefKind,
@@ -28,11 +29,19 @@ import {
 
 function directiveDisplay(parsed: SpacesDocDirectiveRef): string {
   if (parsed.label) return parsed.label;
-  if (parsed.kind === 'artifact') return compactArtifactRef(parsed.canonical);
+  if (/^artifact-blob:/i.test(parsed.canonical)) return compactArtifactBlobRef(parsed.canonical);
+  if (supportedArtifactDirectiveRef(parsed.canonical)) return compactArtifactRef(parsed.canonical);
   return parsed.canonical;
 }
 
+function supportedArtifactDirectiveRef(ref: string): boolean {
+  return /^artifact:(?!sha256:)[^\s]+$/i.test(ref)
+    || /^artifact-version:[^\s]+$/i.test(ref)
+    || /^artifact-blob:[0-9a-f]{7,64}$/i.test(ref);
+}
+
 function directiveKind(parsed: SpacesDocDirectiveRef): ResourceRefKind {
+  if (supportedArtifactDirectiveRef(parsed.canonical)) return 'artifact';
   // The directive kinds are a superset-compatible projection of C6's kinds.
   switch (parsed.kind) {
     case 'artifact':
@@ -54,6 +63,14 @@ function directiveKind(parsed: SpacesDocDirectiveRef): ResourceRefKind {
 export function recognizeSpacesDocDirectiveRef(candidate: string): ParsedResourceRef | null {
   const parsed = parseSpacesDocDirectiveRef(candidate);
   if (!parsed) return null;
+  if (
+    /^artifact:sha256:/i.test(parsed.canonical)
+    || /^sha256:/i.test(parsed.canonical)
+    || /^[0-9a-f]{7,64}$/i.test(parsed.canonical)
+    || /^artifact-series:/i.test(parsed.canonical)
+  ) {
+    return null;
+  }
   return {
     raw: parsed.raw,
     canonical: parsed.canonical,

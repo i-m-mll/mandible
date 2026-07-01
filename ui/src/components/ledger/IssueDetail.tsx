@@ -3,6 +3,7 @@ import { marked } from 'marked';
 import { sanitizeHtml } from '../../sanitize';
 import {
   artifactDetailHref,
+  compactArtifactBlobRef,
   compactArtifactRef,
   displayResourceRef,
   seriesDetailHref,
@@ -346,7 +347,11 @@ function artifactLinkHref(
 ): string {
   if (!link) return artifactDetailHref(artifact.id);
 
-  const seriesRef = link.series_ref ?? link.series_id;
+  const seriesRef = link.series_ref
+    ? logicalArtifactRefFromSeriesId(link.series_ref)
+    : link.series_id
+      ? logicalArtifactRefFromSeriesId(link.series_id)
+      : null;
   if (link.link_kind === 'living') {
     return seriesRef ? seriesDetailHref(seriesRef) : artifactDetailHref(artifact.id);
   }
@@ -354,6 +359,12 @@ function artifactLinkHref(
   return seriesRef && typeof link.resolved_version_no === 'number'
     ? versionDetailHref(seriesRef, link.resolved_version_no)
     : artifactDetailHref(artifact.id);
+}
+
+function logicalArtifactRefFromSeriesId(ref: string): string {
+  const trimmed = ref.trim();
+  if (/^artifact:/i.test(trimmed) && !/^artifact-series:/i.test(trimmed)) return trimmed;
+  return `artifact:${trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '')}`;
 }
 
 function artifactLinkBadgeLabel(link: LedgerIssueDetailArtifactLink): string {
@@ -371,7 +382,9 @@ function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): str
 function artifactTitle(artifact: LedgerIssueDetailAssociatedArtifact): string {
   const ref = artifact.refs[0];
   if (ref) return displayResourceRef(ref);
-  return artifactFileLabel(artifact.uri) || displayResourceRef(artifact.uri) || compactArtifactRef(artifact.content_hash);
+  return artifactFileLabel(artifact.uri)
+    || displayResourceRef(artifact.uri)
+    || compactArtifactBlobRef(`artifact-blob:${artifact.content_hash}`);
 }
 
 function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
