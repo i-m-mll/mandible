@@ -18,13 +18,15 @@ const DEFAULT_DURATION_MINUTES = 60;
 const PROVIDER = "yubikey-age";
 
 export interface AuthApprovalContext {
-  source: "auto_lease";
+  source: "auto_lease" | "presence_challenge";
   leaseId: string;
   env: NodeJS.ProcessEnv;
 }
 
 export interface AuthAutoApprover {
   getActiveApprovalContext(): AuthApprovalContext | null;
+  getDelegatedSigningStatus?(): DelegatedSigningStatus;
+  presenceChallenge?(ttlSeconds?: number): Promise<AuthApprovalContext>;
 }
 
 export interface DelegatedSigningStatus {
@@ -107,6 +109,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       leaseId: this.activeLease.id,
       env: {
         SSH_AUTH_SOCK: this.activeLease.sshAuthSock,
+        MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
         GIT_CONFIG_COUNT: "1",
         GIT_CONFIG_KEY_0: "user.signingkey",
         GIT_CONFIG_VALUE_0: this.activeLease.publicKeyPath,
@@ -169,6 +172,44 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   }
 
   async enable(durationMinutes?: number): Promise<AuthAutoApproveStatus> {
+    const minutes = this.normalizeDurationMinutes(durationMinutes ?? this.getDurationMinutes());
+    const durationSeconds = Math.max(60, Math.round(minutes * 60));
+    this.disable("replaced");
+
+    const lease = await this.createDelegatedSigningLease(durationSeconds);
+    lease.timer = setTimeout(() => this.disable("expired"), durationSeconds * 1000);
+    lease.timer.unref();
+    this.activeLease = lease;
+    this.broadcastStatus("enabled");
+    return this.getStatus();
+  }
+
+  async presenceChallenge(ttlSeconds = 60): Promise<AuthApprovalContext> {
+    this.expireIfNeeded();
+    const active = this.getActiveApprovalContext();
+    if (active) return active;
+
+    const durationSeconds = Math.min(300, Math.max(30, Math.round(ttlSeconds)));
+    const lease = await this.createDelegatedSigningLease(durationSeconds);
+    const timer = setTimeout(() => {
+      void stopSshAgent(lease.sshAgentPid).catch(() => undefined);
+    }, durationSeconds * 1000);
+    timer.unref();
+
+    return {
+      source: "presence_challenge",
+      leaseId: lease.id,
+      env: {
+        SSH_AUTH_SOCK: lease.sshAuthSock,
+        MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "user.signingkey",
+        GIT_CONFIG_VALUE_0: lease.publicKeyPath,
+      },
+    };
+  }
+
+  private async createDelegatedSigningLease(durationSeconds: number): Promise<ActiveLease> {
     const status = this.getDelegatedSigningStatus();
     if (!status.configured) {
       throw new Error("Delegated signing is not configured.");
@@ -176,8 +217,6 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     if (status.missing_tools.length > 0) {
       throw new Error(`Missing required tools: ${status.missing_tools.join(", ")}`);
     }
-
-    this.disable("replaced");
 
     const paths = this.paths();
     const identity = await execFileText("age-plugin-yubikey", ["--identity"]);
@@ -190,8 +229,6 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       identity,
     );
     const agent = await startSshAgent();
-    const minutes = this.normalizeDurationMinutes(durationMinutes ?? this.getDurationMinutes());
-    const durationSeconds = Math.max(60, Math.round(minutes * 60));
 
     try {
       await runWithInput(
@@ -206,7 +243,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     }
 
     const enabledUntil = this.now() + durationSeconds * 1000;
-    const lease: ActiveLease = {
+    return {
       id: randomUUID(),
       enabledUntil,
       sshAgentPid: agent.sshAgentPid,
@@ -214,11 +251,6 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       timer: null,
       publicKeyPath: paths.publicKey,
     };
-    lease.timer = setTimeout(() => this.disable("expired"), durationSeconds * 1000);
-    lease.timer.unref();
-    this.activeLease = lease;
-    this.broadcastStatus("enabled");
-    return this.getStatus();
   }
 
   disable(reason = "disabled"): AuthAutoApproveStatus {
@@ -245,7 +277,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     return Math.min(480, Math.max(1, Math.round(parsed)));
   }
 
-  private getDelegatedSigningStatus(): DelegatedSigningStatus {
+  getDelegatedSigningStatus(): DelegatedSigningStatus {
     const paths = this.paths();
     const publicKey = fs.existsSync(paths.publicKey)
       ? fs.readFileSync(paths.publicKey, "utf8").trim()

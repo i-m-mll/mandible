@@ -45,6 +45,8 @@ export type AuthRequest = {
   head?: string;
   base_branch?: string;
   head_branch?: string;
+  merge_preflight_base_sha?: string | null;
+  merge_preflight_queue_fingerprint?: string | null;
   status?: string;
   state?: string;
   exit_code?: number | null;
@@ -257,6 +259,44 @@ function isHistoryStatus(status: string, exitCode?: number | null): boolean {
   }
   if (status !== 'completed') return false;
   return exitCode == null || exitCode === 0;
+}
+
+type AuthExecutionCallout = {
+  text: string;
+  spinner: boolean;
+};
+
+function getAuthExecutionCallout(status: string, consoleText: string): AuthExecutionCallout | null {
+  if (status !== 'approved' && status !== 'executing') return null;
+  const text = consoleText.toLowerCase();
+  if (text.includes('merge conflict') || text.includes('conflicts remain') || text.includes('manual resolution')) {
+    return { text: 'Merge needs attention in the terminal', spinner: false };
+  }
+  if (text.includes('waiting for yubikey touch')) {
+    return { text: 'Touch your YubiKey now', spinner: true };
+  }
+  if (text.includes('delegated signing key ready')) {
+    return { text: 'Authentication complete; starting git work', spinner: true };
+  }
+  if (text.includes('reusing submit-time merge preflight')) {
+    return { text: 'Using submit-time merge check', spinner: true };
+  }
+  if (text.includes('running merge preflight')) {
+    return { text: 'Running merge preflight checks', spinner: true };
+  }
+  if (text.includes('checking git locks')) {
+    return { text: 'Checking git lock state', spinner: true };
+  }
+  if (text.includes('checking signing configuration')) {
+    return { text: 'Checking signing configuration', spinner: true };
+  }
+  if (text.includes('creating signed merge commit')) {
+    return { text: 'Creating signed merge commit', spinner: true };
+  }
+  if (text.includes('signed merge complete') || text.includes('[hook:')) {
+    return { text: 'Signed merge complete; running follow-up actions', spinner: true };
+  }
+  return { text: 'Preparing auth merge', spinner: true };
 }
 
 function getStatusLabel(request: AuthRequest): string {
@@ -789,9 +829,9 @@ function AuthCard({
     `${dragging ? ' auth-card--dragging' : ''}`;
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
 
-  // Bug: 816476e — show YubiKey warning and auto-open output for approved/executing state
+  // Bug: 816476e — show execution callout and auto-open output for approved/executing state
   const isApproved = status === 'approved' || status === 'executing';
-  const showYubikeyWarning = expanded && isApproved;
+  const executionCallout = expanded ? getAuthExecutionCallout(status, consoleText) : null;
 
   // Show console toggle for executing, completed, or failed statuses — also show
   // when approved even before output arrives so the panel is visible immediately.
@@ -992,12 +1032,13 @@ function AuthCard({
             </div>
           )}
 
-          {/* Bug: 816476e — YubiKey warning banner when execution is queued/running */}
-          {showYubikeyWarning && (
+          {executionCallout && (
             <div className="auth-yubikey-warning">
-              <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+              {executionCallout.spinner && (
+                <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+              )}
               <span className="auth-yubikey-warning__text">
-                Executing — touch your YubiKey when it lights up
+                {executionCallout.text}
               </span>
             </div>
           )}
@@ -1264,7 +1305,7 @@ function AuthRequestDetail({
   const statusClass = getStatusClass(request);
   const failedLike = isFailedLikeStatus(status, request.exit_code ?? null);
   const isApproved = status === 'approved' || status === 'executing';
-  const showYubikeyWarning = isApproved;
+  const executionCallout = getAuthExecutionCallout(status, consoleText);
   const showConsoleToggle = isApproved || (hasConsoleOutput && (status === 'completed' || failedLike));
   const showFailure = failedLike;
   const attemptLabel = attemptCount && attemptCount > 1 ? `Attempt ${attemptCount}` : null;
@@ -1514,11 +1555,13 @@ function AuthRequestDetail({
           </div>
         )}
 
-        {showYubikeyWarning && (
+        {executionCallout && (
           <div className="auth-yubikey-warning">
-            <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+            {executionCallout.spinner && (
+              <span className="auth-yubikey-warning__spinner" aria-hidden="true" />
+            )}
             <span className="auth-yubikey-warning__text">
-              Executing — touch your YubiKey when it lights up
+              {executionCallout.text}
             </span>
           </div>
         )}
@@ -3076,7 +3119,7 @@ export function AuthQueueView({
     }
 
     // Once status becomes 'approved' (optimistic or via SSE), hide Approve/Reject
-    // and let the YubiKey warning banner in the card body carry status.
+    // and let the phase-aware callout in the card body carry status.
     if (isExecuting) {
       return (
         <div className="auth-actions">

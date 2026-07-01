@@ -43,6 +43,13 @@ const pendingRequest: AuthRequest = {
   actions: [],
 };
 
+const executingRequest: AuthRequest = {
+  ...pendingRequest,
+  id: 'req-executing',
+  status: 'executing',
+  approved_at: 2,
+};
+
 const previewInstance: InstanceInfo = {
   role: 'preview',
   operational_mutations: 'reject',
@@ -79,6 +86,7 @@ function renderView(
 
 beforeEach(() => {
   installMemoryLocalStorage();
+  Element.prototype.scrollIntoView = vi.fn();
   // Keep the auto-approve status / action probes hermetic and offline.
   vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('no network in test'))));
 });
@@ -168,6 +176,28 @@ describe('AuthQueueView daemon readiness gate', () => {
 
     expect(screen.getByText('Commit Message')).toBeTruthy();
     expect(screen.queryByText('edit')).toBeNull();
+  });
+
+  it('maps auth output phases to the execution callout', () => {
+    const onApprove = vi.fn();
+    render(
+      <AuthQueueView
+        queue={[executingRequest]}
+        historyQueue={[]}
+        outputs={{
+          'req-executing': 'Auth phase: running merge preflight checks...\n',
+        }}
+        selectedAuthId="req-executing"
+        daemonReady={true}
+        onApprove={onApprove}
+        onReject={() => undefined}
+        onRetry={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    );
+
+    expect(screen.getByText('Running merge preflight checks')).toBeTruthy();
+    expect(screen.queryByText(/touch your YubiKey when it lights up/i)).toBeNull();
   });
 
   it('disables auth hook mutation controls on preview instances', async () => {

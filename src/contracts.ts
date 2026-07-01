@@ -170,6 +170,8 @@ export type AuthRequest = {
   base_branch?: string;
   head_branch?: string;
   merge_head_sha?: string | null;
+  merge_preflight_base_sha?: string | null;
+  merge_preflight_queue_fingerprint?: string | null;
   merge_finalized_at?: number | null;
   files_changed?: number;
   additions?: number;

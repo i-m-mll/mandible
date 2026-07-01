@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -113,6 +113,8 @@ export interface AuthMergeCheckReport {
   head_branch: string | null;
   checked_requests: number;
   conflicts: AuthMergeConflict[];
+  target_head_sha?: string | null;
+  queue_fingerprint?: string | null;
   reason?: string;
 }
 
@@ -402,6 +404,8 @@ export class AuthQueue {
       base_branch: payload.base_branch,
       head_branch: payload.head_branch,
       merge_head_sha: payload.merge_head_sha ?? null,
+      merge_preflight_base_sha: mergeCheck.status === "clean" ? mergeCheck.target_head_sha ?? null : null,
+      merge_preflight_queue_fingerprint: mergeCheck.status === "clean" ? mergeCheck.queue_fingerprint ?? null : null,
       merge_finalized_at: null,
       files_changed: payload.files_changed ?? 0,
       additions: payload.additions ?? 0,
@@ -451,6 +455,8 @@ export class AuthQueue {
         base_branch,
         head_branch,
         merge_head_sha,
+        merge_preflight_base_sha,
+        merge_preflight_queue_fingerprint,
         merge_finalized_at,
         files_changed,
         additions,
@@ -494,6 +500,8 @@ export class AuthQueue {
         @base_branch,
         @head_branch,
         @merge_head_sha,
+        @merge_preflight_base_sha,
+        @merge_preflight_queue_fingerprint,
         @merge_finalized_at,
         @files_changed,
         @additions,
@@ -534,6 +542,8 @@ export class AuthQueue {
         base_branch: request.base_branch ?? null,
         head_branch: request.head_branch ?? null,
         merge_head_sha: request.merge_head_sha ?? null,
+        merge_preflight_base_sha: request.merge_preflight_base_sha ?? null,
+        merge_preflight_queue_fingerprint: request.merge_preflight_queue_fingerprint ?? null,
         merge_finalized_at: request.merge_finalized_at,
         post_merge_handoff: request.post_merge_handoff ?? null,
         issue_references: request.issue_references ? JSON.stringify(request.issue_references) : null,
@@ -636,6 +646,26 @@ export class AuthQueue {
       };
     }
 
+    const targetHeadSha = this.resolveBranchHeadForCheck(cwd, baseBranch);
+    if (!targetHeadSha) {
+      return {
+        status: "error",
+        repo,
+        base_branch: baseBranch,
+        head_branch: headBranch,
+        checked_requests: 0,
+        conflicts: [],
+        reason: `could not resolve target branch head for ${baseBranch}`
+      };
+    }
+
+    const pending = this.pendingMergeRequestsForCheck({
+      repo,
+      baseBranch,
+      excludeId: input.request_id ?? null,
+    });
+    const queueFingerprint = this.mergeQueueFingerprint(pending);
+
     const candidateTarget = this.mergeTree(cwd, baseBranch, headBranch);
     if (candidateTarget.status === "error") {
       return {
@@ -645,6 +675,8 @@ export class AuthQueue {
         head_branch: headBranch,
         checked_requests: 0,
         conflicts: [],
+        target_head_sha: targetHeadSha,
+        queue_fingerprint: queueFingerprint,
         reason: candidateTarget.message
       };
     }
@@ -661,17 +693,14 @@ export class AuthQueue {
           head_branch: headBranch,
           files: candidateTarget.files,
           message: candidateTarget.message
-        }]
+        }],
+        target_head_sha: targetHeadSha,
+        queue_fingerprint: queueFingerprint
       };
     }
 
     let simulatedBase = baseBranch;
     let checked = 0;
-    const pending = this.pendingMergeRequestsForCheck({
-      repo,
-      baseBranch,
-      excludeId: input.request_id ?? null,
-    });
 
     for (const request of pending) {
       if (!request.head_branch) {
@@ -687,6 +716,8 @@ export class AuthQueue {
           head_branch: headBranch,
           checked_requests: checked,
           conflicts: [],
+          target_head_sha: targetHeadSha,
+          queue_fingerprint: queueFingerprint,
           reason: pendingResult.message
         };
       }
@@ -703,7 +734,9 @@ export class AuthQueue {
             head_branch: request.head_branch,
             files: pendingResult.files,
             message: pendingResult.message
-          }]
+          }],
+          target_head_sha: targetHeadSha,
+          queue_fingerprint: queueFingerprint
         };
       }
       simulatedBase = this.createSyntheticMergeCommit(
@@ -721,6 +754,8 @@ export class AuthQueue {
           head_branch: headBranch,
           checked_requests: checked,
           conflicts: [],
+          target_head_sha: targetHeadSha,
+          queue_fingerprint: queueFingerprint,
           reason: candidateAfterPending.message
         };
       }
@@ -737,7 +772,9 @@ export class AuthQueue {
             head_branch: request.head_branch,
             files: candidateAfterPending.files,
             message: candidateAfterPending.message
-          }]
+          }],
+          target_head_sha: targetHeadSha,
+          queue_fingerprint: queueFingerprint
         };
       }
     }
@@ -748,7 +785,9 @@ export class AuthQueue {
       base_branch: baseBranch,
       head_branch: headBranch,
       checked_requests: checked,
-      conflicts: []
+      conflicts: [],
+      target_head_sha: targetHeadSha,
+      queue_fingerprint: queueFingerprint
     };
   }
 
@@ -815,6 +854,10 @@ export class AuthQueue {
         updates.push(`${field} = ?`);
         values.push(payload[field]);
       }
+    }
+    if (["repo", "base_branch", "head_branch", "merge_head_sha", "cwd"].some((field) => field in payload)) {
+      updates.push("merge_preflight_base_sha = NULL");
+      updates.push("merge_preflight_queue_fingerprint = NULL");
     }
 
     if ("issue_references" in payload) {
@@ -1087,15 +1130,21 @@ export class AuthQueue {
       request = this.requireRequest(id);
     }
 
+    const effectiveApproval = approval ?? this.autoApprover?.getActiveApprovalContext() ?? undefined;
+
     this.db
       .prepare(
         "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?"
       )
-      .run(now, now, approval?.source ?? "manual", approval?.leaseId ?? null, id);
+      .run(now, now, effectiveApproval?.source ?? "manual", effectiveApproval?.leaseId ?? null, id);
 
     const executing = this.requireRequest(id);
-    if (approval?.env) {
-      this.executionEnvs.set(executing.id, approval.env);
+    const executionEnv = {
+      ...(effectiveApproval?.env ?? {}),
+      ...this.approveTimePreflightEnv(executing),
+    };
+    if (Object.keys(executionEnv).length > 0) {
+      this.executionEnvs.set(executing.id, executionEnv);
     }
     this.executeInBackground(executing);
     return executing;
@@ -1122,6 +1171,78 @@ export class AuthQueue {
         `Auth merge request cannot be approved: ${message}`
       );
     }
+  }
+
+  private approveTimePreflightEnv(request: AuthRequest): NodeJS.ProcessEnv {
+    if (!this.canReuseSubmitPreflight(request)) {
+      return {};
+    }
+    return {
+      MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT: "1",
+      MANDIBLE_AUTH_PREFLIGHT_BASE_SHA: request.merge_preflight_base_sha!,
+      MANDIBLE_AUTH_PREFLIGHT_QUEUE_FINGERPRINT: request.merge_preflight_queue_fingerprint ?? "",
+    };
+  }
+
+  private canReuseSubmitPreflight(request: AuthRequest): boolean {
+    if (!isAuthMergeCommand(request) || !request.cwd || !request.base_branch) {
+      return false;
+    }
+    if (!request.merge_preflight_base_sha || !request.merge_preflight_queue_fingerprint) {
+      return false;
+    }
+    const currentBaseSha = this.resolveBranchHeadForCheck(request.cwd, request.base_branch);
+    if (currentBaseSha !== request.merge_preflight_base_sha) {
+      return false;
+    }
+    const currentQueueFingerprint = this.mergeQueueFingerprint(this.pendingMergeRequestsForCheck({
+      repo: request.repo ?? null,
+      baseBranch: request.base_branch,
+      excludeId: request.id,
+    }));
+    return currentQueueFingerprint === request.merge_preflight_queue_fingerprint;
+  }
+
+  private async prepareAuthExecution(request: AuthRequest): Promise<void> {
+    if (!this.needsPresenceChallenge(request)) {
+      return;
+    }
+    this.handleOutput({
+      request_id: request.id,
+      stream: "stderr",
+      text: "Auth phase: waiting for YubiKey touch for delegated signing...\n",
+      timestamp: Date.now(),
+    });
+    const approval = await this.autoApprover!.presenceChallenge!(60);
+    this.executionEnvs.set(request.id, {
+      ...(this.executionEnvs.get(request.id) ?? {}),
+      ...approval.env,
+    });
+    const now = this.now();
+    this.db
+      .prepare("UPDATE auth_requests SET approval_source = ?, approval_lease_id = ?, updated_at = ? WHERE id = ?")
+      .run(approval.source, approval.leaseId, now, request.id);
+    this.handleOutput({
+      request_id: request.id,
+      stream: "stderr",
+      text: "Auth phase: delegated signing key ready; starting git work...\n",
+      timestamp: Date.now(),
+    });
+  }
+
+  private needsPresenceChallenge(request: AuthRequest): boolean {
+    if (!isAuthMergeCommand(request)) {
+      return false;
+    }
+    const existingEnv = this.executionEnvs.get(request.id);
+    if (existingEnv?.SSH_AUTH_SOCK) {
+      return false;
+    }
+    const status = this.autoApprover?.getDelegatedSigningStatus?.();
+    return Boolean(
+      status?.configured &&
+      this.autoApprover?.presenceChallenge
+    );
   }
 
   autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {
@@ -1342,6 +1463,7 @@ export class AuthQueue {
       .catch(() => undefined)
       .then(async () => {
         try {
+          await this.prepareAuthExecution(request);
           const executedAt = Date.now();
           this.db
             .prepare(
@@ -1549,6 +1671,26 @@ export class AuthQueue {
       )
       .all(...args) as Record<string, unknown>[];
     return rows.map((row) => mapRow(row));
+  }
+
+  private mergeQueueFingerprint(requests: AuthRequest[]): string {
+    const payload = requests.map((request) => ({
+      id: request.id,
+      status: request.status,
+      head_branch: request.head_branch ?? null,
+      merge_head_sha: request.merge_head_sha ?? null,
+      skipped_at: request.skipped_at ?? null,
+      created_at: request.created_at,
+    }));
+    return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+  }
+
+  private resolveBranchHeadForCheck(cwd: string, branch: string): string | null {
+    try {
+      return resolveBranchHeadSha(cwd, branch);
+    } catch {
+      return null;
+    }
   }
 
   private mergeTree(
@@ -2717,6 +2859,10 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     base_branch: row.base_branch == null ? undefined : String(row.base_branch),
     head_branch: row.head_branch == null ? undefined : String(row.head_branch),
     merge_head_sha: row.merge_head_sha == null ? null : String(row.merge_head_sha),
+    merge_preflight_base_sha: row.merge_preflight_base_sha == null ? null : String(row.merge_preflight_base_sha),
+    merge_preflight_queue_fingerprint: row.merge_preflight_queue_fingerprint == null
+      ? null
+      : String(row.merge_preflight_queue_fingerprint),
     merge_finalized_at: row.merge_finalized_at == null ? null : Number(row.merge_finalized_at),
     files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
     additions: row.additions == null ? undefined : Number(row.additions),
