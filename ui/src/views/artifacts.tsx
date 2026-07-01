@@ -104,6 +104,15 @@ type LastWrittenHashRef = {
   current: { seriesRef: string; versionNo: number | null } | null;
 };
 
+function isAbortError(error: unknown): boolean {
+  return Boolean(
+    error
+    && typeof error === 'object'
+    && 'name' in error
+    && error.name === 'AbortError',
+  );
+}
+
 export function ArtifactsView({
   initialArtifactId,
   initialRef,
@@ -147,6 +156,9 @@ export function ArtifactsView({
   const listRequestIdRef = useRef(0);
   const facetRequestIdRef = useRef(0);
   const versionsRequestIdRef = useRef(0);
+  const artifactRequestIdRef = useRef(0);
+  const contentRequestIdRef = useRef(0);
+  const knowledgeRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
   const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
     initialSeriesRef ? { seriesRef: normalizeSeriesRef(initialSeriesRef), versionNo: initialVersionNo } : null,
@@ -363,27 +375,31 @@ export function ArtifactsView({
   useEffect(() => {
     if (!selectedArtifactId) return;
     if (selectedArtifact?.id === selectedArtifactId && resolution?.artifact?.id === selectedArtifactId) return;
-    let cancelled = false;
+    const requestId = artifactRequestIdRef.current + 1;
+    artifactRequestIdRef.current = requestId;
+    const controller = new AbortController();
     setDetailLoading(true);
     setError(null);
-    getArtifact(selectedArtifactId)
+    getArtifact(selectedArtifactId, { signal: controller.signal })
       .then((artifact) => {
-        if (cancelled) return;
+        if (artifactRequestIdRef.current !== requestId || artifact.id !== selectedArtifactId) return;
         setSelectedArtifact(artifact);
       })
       .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (isAbortError(err)) return;
+        if (artifactRequestIdRef.current === requestId) setError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setDetailLoading(false);
+        if (artifactRequestIdRef.current === requestId) setDetailLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [resolution?.artifact?.id, selectedArtifact?.id, selectedArtifactId]);
 
   useEffect(() => {
-    if (!selectedArtifact) {
+    if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
+      contentRequestIdRef.current += 1;
       setArtifactContent(null);
       setKnowledgeBackrefs([]);
       setContentError(null);
@@ -392,49 +408,58 @@ export function ArtifactsView({
       setKnowledgeLoading(false);
       return;
     }
-    let cancelled = false;
+    const requestId = contentRequestIdRef.current + 1;
+    contentRequestIdRef.current = requestId;
+    const controller = new AbortController();
+    setArtifactContent(null);
     setContentLoading(true);
     setContentError(null);
-    getArtifactContent(selectedArtifact.id)
+    getArtifactContent(selectedArtifact.id, { signal: controller.signal })
       .then((content) => {
-        if (!cancelled) setArtifactContent(content);
+        if (contentRequestIdRef.current !== requestId || content.artifact_id !== selectedArtifact.id) return;
+        setArtifactContent(content);
       })
       .catch((err) => {
-        if (!cancelled) setContentError(err instanceof Error ? err.message : String(err));
+        if (isAbortError(err)) return;
+        if (contentRequestIdRef.current === requestId) setContentError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setContentLoading(false);
+        if (contentRequestIdRef.current === requestId) setContentLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [selectedArtifact?.id]);
+  }, [selectedArtifact?.id, selectedArtifactId]);
 
   useEffect(() => {
-    if (!selectedArtifact) {
+    if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
+      knowledgeRequestIdRef.current += 1;
       setKnowledgeBackrefs([]);
       setKnowledgeError(null);
       setKnowledgeLoading(false);
       return;
     }
-    let cancelled = false;
+    const requestId = knowledgeRequestIdRef.current + 1;
+    knowledgeRequestIdRef.current = requestId;
+    const controller = new AbortController();
     setKnowledgeLoading(true);
     setKnowledgeError(null);
     setKnowledgeBackrefs([]);
-    getArtifactKnowledgeBackrefs(selectedArtifact.id)
+    getArtifactKnowledgeBackrefs(selectedArtifact.id, { signal: controller.signal })
       .then((backrefs) => {
-        if (!cancelled) setKnowledgeBackrefs(backrefs);
+        if (knowledgeRequestIdRef.current === requestId) setKnowledgeBackrefs(backrefs);
       })
       .catch((err) => {
-        if (!cancelled) setKnowledgeError(err instanceof Error ? err.message : String(err));
+        if (isAbortError(err)) return;
+        if (knowledgeRequestIdRef.current === requestId) setKnowledgeError(err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
-        if (!cancelled) setKnowledgeLoading(false);
+        if (knowledgeRequestIdRef.current === requestId) setKnowledgeLoading(false);
       });
     return () => {
-      cancelled = true;
+      controller.abort();
     };
-  }, [selectedArtifact?.id]);
+  }, [selectedArtifact?.id, selectedArtifactId]);
 
   const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
   const selectedVersion = useMemo(() => (
@@ -445,6 +470,14 @@ export function ArtifactsView({
   const selectedSeries = useMemo(() => (
     series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
   ), [selectedSeriesRef, series]);
+  const coherentSelectedArtifact = selectedArtifact?.id === selectedArtifactId ? selectedArtifact : null;
+  const coherentArtifactContent = artifactContent?.artifact_id === coherentSelectedArtifact?.id ? artifactContent : null;
+  const coherentContentLoading = Boolean(
+    coherentSelectedArtifact
+    && !contentError
+    && (contentLoading || !coherentArtifactContent)
+  );
+  const detailPending = Boolean(selectedArtifactId && !coherentSelectedArtifact);
 
   const selectSeries = (entry: ArtifactSeriesSummary) => {
     const ref = seriesRef(entry);
@@ -462,6 +495,7 @@ export function ArtifactsView({
       ? versionHistory?.versions[0] ?? null
       : versionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
     setSelectedArtifactId(version?.artifact_id ?? null);
+    setResolution(null);
     if (!selectedSeriesRef) return;
     writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
@@ -544,18 +578,20 @@ export function ArtifactsView({
           <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
         </>
       ) : null}
-      <main className={`artifacts-detail${selectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
+      <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {error && <div className="artifacts-error">{error}</div>}
-        {detailLoading && !selectedArtifact && !resolution && <div className="artifacts-empty">Loading artifact...</div>}
-        {!detailLoading && !selectedArtifact && !resolution && (
+        {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
+          <div className="artifacts-empty" role="status">Loading artifact...</div>
+        )}
+        {!detailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
         )}
-        {!detailLoading && resolution && !resolution.artifact && (
+        {!detailLoading && !detailPending && resolution && !resolution.artifact && (
           <UnresolvedArtifact resolution={resolution} />
         )}
-        {selectedArtifact && (
+        {coherentSelectedArtifact && (
           <ArtifactDetail
-            artifact={selectedArtifact}
+            artifact={coherentSelectedArtifact}
             resolution={resolution}
             series={versionHistory?.series ?? selectedSeries ?? null}
             versions={versionHistory?.versions ?? []}
@@ -566,8 +602,8 @@ export function ArtifactsView({
             onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
             onCloseVersionHistory={() => setVersionHistoryOpen(false)}
             onMetadataOpenChange={setDetailMetadataOpen}
-            content={artifactContent}
-            contentLoading={contentLoading}
+            content={coherentArtifactContent}
+            contentLoading={coherentContentLoading}
             contentError={contentError}
             knowledgeBackrefs={knowledgeBackrefs}
             knowledgeLoading={knowledgeLoading}
@@ -1080,18 +1116,20 @@ function PreviewSection({
   const codeClassName = highlightedPreview
     ? `hljs language-${highlightedPreview.language}`
     : undefined;
+  const codePreviewClassName = [
+    'artifact-preview',
+    'artifact-preview--code',
+    preview && (preview.kind === 'json' || preview.kind === 'text') && preview.partial
+      ? 'artifact-preview--partial'
+      : '',
+  ].filter(Boolean).join(' ');
   useEffect(() => {
     setAutoFormatJson(true);
   }, [content?.artifact_id]);
   return (
     <section className="artifact-detail__section" aria-label="Preview">
       <div className={`artifact-preview-frame${contentLoading ? ' artifact-preview-frame--loading' : ''}`}>
-        {contentLoading && (
-          <div className="artifact-preview-frame__loading" role="status">
-            Loading preview...
-          </div>
-        )}
-        {!showPreview && contentLoading && <div className="artifacts-empty">Loading preview...</div>}
+        {!showPreview && contentLoading && <div className="artifacts-empty" role="status">Loading preview...</div>}
         {!contentLoading && contentError && <div className="artifacts-error">{contentError}</div>}
         {showPreview && content?.warnings?.map((warning) => (
         <div key={warning} className="artifact-detail__warning">{warning}</div>
@@ -1109,7 +1147,7 @@ function PreviewSection({
           </div>
         )}
         {showPreview && preview.kind === 'json' && (
-          <pre className="artifact-preview artifact-preview--code">
+          <pre className={codePreviewClassName}>
             {highlightedPreview ? (
               <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
             ) : (
@@ -1118,7 +1156,7 @@ function PreviewSection({
           </pre>
         )}
         {showPreview && preview.kind === 'text' && (
-          <pre className="artifact-preview artifact-preview--code">
+          <pre className={codePreviewClassName}>
             {highlightedPreview ? (
               <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
             ) : (

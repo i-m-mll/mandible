@@ -3154,7 +3154,7 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(listUrl).toContain('summary=true'));
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('fast-summary.md'));
-    await waitFor(() => expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Loading preview...')).toHaveLength(1));
     fireEvent.click(screen.getByLabelText('Artifact actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText('repo://mandible@main/results/fast-summary.md')).toBeTruthy();
@@ -3173,7 +3173,7 @@ describe('ArtifactsView', () => {
     const hydratedMetadata = screen.getByRole('dialog', { name: 'Artifact metadata' });
     await waitFor(() => expect(within(hydratedMetadata).getByText('Locators')).toBeTruthy());
     expect(within(hydratedMetadata).getAllByText(summaryArtifact.uri).length).toBeGreaterThan(1);
-    expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Loading preview...')).toHaveLength(1);
   });
 
   it('renders the artifact list as soon as the list request resolves while preview content remains pending', async () => {
@@ -3231,7 +3231,85 @@ describe('ArtifactsView', () => {
     expect(screen.queryByText('Loading artifacts...')).toBeNull();
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('cold-load-report.md'));
     await waitFor(() => expect(contentCalls).toHaveLength(1));
-    await waitFor(() => expect(screen.getAllByText('Loading preview...').length).toBeGreaterThan(0));
+    await waitFor(() => expect(screen.getAllByText('Loading preview...')).toHaveLength(1));
+  });
+
+  it('ignores stale preview content when artifact selection changes early', async () => {
+    const firstArtifact = makeArtifactFixture('1', 'early-one.md');
+    const secondArtifact = makeArtifactFixture('2', 'early-two.md');
+    const firstSeries = makeArtifactSeries('early-one-series', [firstArtifact], 'early-one.md');
+    const secondSeries = makeArtifactSeries('early-two-series', [secondArtifact], 'early-two.md');
+    let resolveFirstContent: (response: Response) => void = () => undefined;
+    let resolveSecondContent: (response: Response) => void = () => undefined;
+    const firstContent = new Promise<Response>((resolve) => {
+      resolveFirstContent = resolve;
+    });
+    const secondContent = new Promise<Response>((resolve) => {
+      resolveSecondContent = resolve;
+    });
+    const contentCalls: string[] = [];
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) {
+        return jsonResponse({ series: [firstSeries.summary, secondSeries.summary] });
+      }
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return jsonResponse({ history: url.includes('early-two-series') ? secondSeries.history : firstSeries.history });
+      }
+      if (url.endsWith('/content')) {
+        contentCalls.push(url);
+        return url.includes(encodeURIComponent(secondArtifact.id)) ? secondContent : firstContent;
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(firstArtifact.id))) return jsonResponse({ artifact: firstArtifact });
+      if (url.includes(encodeURIComponent(secondArtifact.id))) return jsonResponse({ artifact: secondArtifact });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('early-one.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(firstArtifact.id)))).toBe(true));
+    expect(screen.getAllByText('Loading preview...')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /early-two\.md/ }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('early-two.md'));
+    await waitFor(() => expect(contentCalls.some((url) => url.includes(encodeURIComponent(secondArtifact.id)))).toBe(true));
+
+    resolveFirstContent(new Response(JSON.stringify({
+      content: {
+        artifact_id: firstArtifact.id,
+        status: 'available',
+        kind: 'text',
+        media_type: 'text/plain',
+        size_bytes: 16,
+        source: { kind: 'managed_file', locator: 'artifact-storage' },
+        preview: { encoding: 'utf-8', text: 'stale first preview', truncated: false },
+        download: { available: true, media_type: 'text/plain', size_bytes: 16, filename: 'early-one.md' },
+      },
+    }), { headers: { 'content-type': 'application/json' } }));
+    resolveSecondContent(new Response(JSON.stringify({
+      content: {
+        artifact_id: secondArtifact.id,
+        status: 'available',
+        kind: 'text',
+        media_type: 'text/plain',
+        size_bytes: 18,
+        source: { kind: 'managed_file', locator: 'artifact-storage' },
+        preview: { encoding: 'utf-8', text: 'current second preview', truncated: false },
+        download: { available: true, media_type: 'text/plain', size_bytes: 18, filename: 'early-two.md' },
+      },
+    }), { headers: { 'content-type': 'application/json' } }));
+
+    await waitFor(() => expect(screen.getByText('current second preview')).toBeTruthy());
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(screen.queryByText('stale first preview')).toBeNull();
+    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('early-two.md');
   });
 
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
@@ -3245,9 +3323,15 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).not.toMatch(/\.artifact-detail__body\s*\{[^}]*min-height:/s);
     expect(css).toMatch(/\.detail-pane-modal\s*\{[^}]*position:\s*fixed;[^}]*top:\s*var\(--detail-pane-modal-top\);[^}]*right:\s*var\(--detail-pane-modal-right\);[^}]*bottom:\s*var\(--detail-pane-modal-bottom\);[^}]*left:\s*var\(--detail-pane-modal-left\);[^}]*background:\s*rgba\(5,10,14,0\.32\);/s);
     expect(css).toMatch(/\.detail-pane-modal__panel,\s*\.artifact-detail__metadata-panel\s*\{[^}]*max-height:\s*min\(100%, var\(--artifact-detail-pane-max-height\)\);[^}]*overflow:\s*auto;/s);
     expect(css).toMatch(/\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
+    expect(css).toMatch(/\.artifact-preview-frame\s*\{[^}]*align-content:\s*start;/s);
+    expect(css).toMatch(/\.artifact-preview-frame--loading\s*\{[^}]*min-height:\s*96px;/s);
+    expect(css).not.toMatch(/\.artifact-preview-frame__loading\s*\{/);
+    expect(css).not.toMatch(/\.artifact-preview--code\s*\{[^}]*min-height:/s);
+    expect(css).toMatch(/\.artifact-preview--partial\s*\{[^}]*max-height:\s*min\(720px, calc\(100vh - 330px\)\);/s);
     expect(css).toMatch(/\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\s*\{[^}]*background:\s*var\(--bg-card\);/s);
     expect(css).toMatch(/:root\[data-theme='light'\]\s+\.artifact-preview\.spec-panel\s*\{[^}]*background:\s*var\(--bg-card\);/s);
@@ -3642,10 +3726,9 @@ describe('ArtifactsView', () => {
 
     changeSelect(screen.getByLabelText('Artifact version') as HTMLSelectElement, '2');
 
-    await waitFor(() => expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('2'));
-    expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('stable-v1.md');
-    expect(screen.queryByText('Loading artifact...')).toBeNull();
-    expect(screen.getAllByText('stable-v1.md').length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByRole('status')?.textContent).toBe('Loading artifact...'));
+    expect(document.querySelector('.artifact-detail h2')).toBeNull();
+    expect(screen.queryByText('Loading preview...')).toBeNull();
 
     resolveV2Detail(new Response(JSON.stringify({ artifact: v2 }), {
       headers: { 'content-type': 'application/json' },

@@ -7012,7 +7012,6 @@ tr:hover .work-actions__trigger {
   display: grid;
   gap: 18px;
   width: min(1120px, 100%);
-  min-height: min(560px, var(--artifact-detail-pane-max-height));
   border-radius: 8px;
   background: var(--issues-detail-bg);
   transition: filter 160ms ease, opacity 160ms ease;
@@ -7156,12 +7155,12 @@ tr:hover .work-actions__trigger {
   position: relative;
   display: grid;
   gap: 10px;
-  min-height: 180px;
+  align-content: start;
   transition: opacity 160ms ease;
 }
 
 .artifact-preview-frame--loading {
-  min-height: 220px;
+  min-height: 96px;
 }
 
 .artifact-preview-frame--loading .artifact-preview,
@@ -7169,20 +7168,6 @@ tr:hover .work-actions__trigger {
 .artifact-preview-frame--loading .artifacts-empty {
   opacity: 0.72;
   transition: opacity 160ms ease;
-}
-
-.artifact-preview-frame__loading {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  z-index: 2;
-  padding: 5px 8px;
-  border: 1px solid var(--neutral-alpha-10);
-  border-radius: 999px;
-  background: var(--bg-card);
-  color: var(--text-muted);
-  font-size: 11px;
-  box-shadow: 0 8px 18px rgba(0,0,0,0.22);
 }
 
 .artifact-preview-toolbar {
@@ -7229,9 +7214,12 @@ code.inbox-detail__meta-value {
 }
 
 .artifact-preview--code {
-  min-height: min(520px, calc(100vh - 330px));
   color: #24292f;
   white-space: pre;
+}
+
+.artifact-preview--partial {
+  max-height: min(720px, calc(100vh - 330px));
 }
 
 .artifact-preview--code .hljs {
