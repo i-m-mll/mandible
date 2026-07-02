@@ -2,12 +2,15 @@ import { readFileSync } from "node:fs";
 import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 
-const stylesheet = readFileSync("ui/src/style.css", "utf8");
+import { readResolvedStylesheet } from "./helpers/css-manifest";
+
+const stylesheet = readResolvedStylesheet();
 const tokensStylesheet = readFileSync("ui/src/styles/tokens.css", "utf8");
 
 function cssRuleBodyIn(css: string, selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = css.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
+  const searchableCss = css.replace(/\/\*[\s\S]*?\*\//g, "");
+  const match = searchableCss.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
   return match?.[1] ?? "";
 }
 

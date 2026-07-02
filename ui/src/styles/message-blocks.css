@@ -1,0 +1,277 @@
+/* Shared chat message block components */
+
+/* ── Shared message-block components — Bug: bce7370 ── */
+
+/* TurnGroup — shared two-column turn layout (used by both Chat and History) */
+.turn-group {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  margin-bottom: 16px;
+}
+
+.turn-group--no-speaker {
+  display: flex;
+  width: 100%;
+  margin-bottom: 14px;
+}
+
+.turn-group--no-speaker .turn-group__body {
+  width: 100%;
+}
+
+.turn-group--no-speaker.turn-group--user .turn-group__body {
+  align-items: flex-end;
+}
+
+.turn-group--no-speaker.turn-group--assistant .turn-group__body,
+.turn-group--no-speaker.turn-group--system .turn-group__body {
+  align-items: flex-start;
+}
+
+.turn-group--no-speaker .transcript-item {
+  width: fit-content;
+  max-width: min(760px, 100%);
+}
+
+.turn-group--no-speaker.turn-group--user .transcript-item {
+  max-width: min(760px, 78%);
+}
+
+.turn-group__speaker {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  position: sticky;
+  top: 0;
+  align-self: start;
+  z-index: 2;
+}
+
+.turn-group__badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--neutral-alpha-05);
+  color: var(--text-muted);
+}
+
+.turn-group--user .turn-group__badge {
+  background: rgba(77, 163, 255, 0.16);
+  color: var(--accent-blue);
+}
+
+.turn-group--assistant .turn-group__badge {
+  background: var(--neutral-alpha-08);
+  color: var(--text-primary);
+}
+
+.turn-group--system .turn-group__badge {
+  background: rgba(245, 194, 92, 0.14);
+  color: var(--accent-yellow);
+}
+
+.turn-group__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  overflow: visible;
+  position: relative;
+}
+
+.turn-group--short .turn-group__speaker {
+  position: static;
+}
+
+/* msg-text-block — unified markdown text block (replaces .stream-text-block + .block-markdown) */
+.msg-text-block {
+  line-height: 1.6;
+  font-size: 14px;
+  color: var(--text-primary);
+}
+
+.msg-text-block h1,
+.msg-text-block h2,
+.msg-text-block h3,
+.msg-text-block h4,
+.msg-text-block h5,
+.msg-text-block h6 {
+  font-size: 15px;
+  font-weight: 600;
+  margin: 12px 0 6px;
+  color: var(--text-primary);
+}
+
+.msg-text-block p {
+  margin: 0 0 8px;
+}
+
+.msg-text-block p:last-child {
+  margin-bottom: 0;
+}
+
+.msg-text-block code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  background: var(--neutral-alpha-06);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+.msg-text-block pre {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 8px;
+  padding: 12px 14px;
+  overflow-x: auto;
+  margin: 8px 0;
+}
+
+.msg-text-block pre code {
+  background: none;
+  padding: 0;
+  font-size: 13px;
+}
+
+.msg-text-block ul,
+.msg-text-block ol {
+  padding-left: 20px;
+  margin: 4px 0 8px;
+}
+
+.msg-text-block li {
+  margin-bottom: 2px;
+}
+
+.msg-text-block a {
+  color: var(--accent-blue);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.msg-text-block blockquote {
+  border-left: 3px solid var(--neutral-alpha-20);
+  margin: 0.5em 0;
+  padding: 4px 12px;
+  color: var(--text-muted);
+}
+
+.msg-text-block table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+  margin: 0.5em 0;
+}
+
+.msg-text-block th,
+.msg-text-block td {
+  padding: 6px 10px;
+  border: 1px solid var(--neutral-alpha-10);
+  text-align: left;
+}
+
+.msg-text-block th {
+  background: var(--neutral-alpha-04);
+  font-weight: 600;
+}
+
+.msg-text-block hr {
+  border: none;
+  border-top: 1px solid var(--neutral-alpha-10);
+  margin: 1em 0;
+}
+
+/* user-bubble — unified user message bubble (replaces .user-prompt-bubble) */
+.user-bubble {
+  display: flex;
+  flex-direction: column;
+}
+
+.user-bubble__text {
+  background: rgba(77, 163, 255, 0.1);
+  border: 1px solid rgba(77, 163, 255, 0.2);
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: var(--fg-default);
+  word-break: break-word;
+}
+
+.user-bubble__text p {
+  margin: 0 0 8px;
+}
+
+.user-bubble__text p:last-child {
+  margin-bottom: 0;
+}
+
+/* ThinkingBlock — label + chevron for collapsed/expanded state */
+.thinking-block__chevron {
+  font-size: 10px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.thinking-block__label {
+  font-size: 12px;
+  color: var(--text-muted);
+  letter-spacing: 0.03em;
+}
+
+.thinking-block__expanded-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 4px;
+}
+
+/* ToolUseBlock — compact mode for History */
+.tool-use-block--compact {
+  background: rgba(50, 210, 150, 0.05);
+  border: 1px solid rgba(50, 210, 150, 0.14);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 4px 0;
+}
+
+.tool-use-block--compact .tool-use-card__header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+}
+
+.tool-use-block--compact__body {
+  border-top: 1px solid var(--neutral-alpha-05);
+}
+
+.tool-use-block--compact__summary {
+  padding: 2px 12px 8px;
+}
+
+.tool-use-block--compact__summary-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  opacity: 0.7;
+  line-height: 1.4;
+}
+
+/* Responsive: collapse turn-group to single column on narrow viewports */
+@media (max-width: 720px) {
+  .turn-group {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+
+  .turn-group__speaker {
+    justify-content: flex-start;
+    padding-top: 0;
+  }
+}
