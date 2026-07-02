@@ -85,7 +85,7 @@ export function registerConsoleRoutes(
         || body.backend_type === "spawn"
         || body.backend_type === "acp"
         ? body.backend_type
-        : (body.command === "claude" ? "sdk" : body.command === "gemini" ? "acp" : "spawn"),
+        : (body.command === "claude" ? "sdk" : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
       // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
       channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
       // Bug: 61bee4e — Accept presetIds for convention presets

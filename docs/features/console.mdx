@@ -4,7 +4,7 @@ The Console is Mandible's built-in agent management surface. It spawns, controls
 
 ## Backends
 
-Console sessions use one of three backend types, chosen at creation time based on the command and configuration.
+Console sessions use one of four backend types, chosen at creation time based on the command and configuration.
 
 ### SDK Backend
 
@@ -26,7 +26,7 @@ When you send a prompt, the SDK backend communicates with Claude, normalizes the
 
 The PTY backend spawns the agent as a pseudo-terminal process via `node-pty`. This provides raw terminal I/O — the same experience as running the command in a terminal emulator.
 
-**When it's used:** Sessions with `command: "codex"`, `command: "gemini"`, or any non-Claude command. Also used when the `backend_type` is explicitly set to `"pty"`.
+**When it's used:** Shell commands and sessions where `backend_type` is explicitly set to `"pty"`.
 
 **Key capabilities:**
 - Full terminal emulation (colors, cursor movement, screen clearing).
@@ -35,6 +35,33 @@ The PTY backend spawns the agent as a pseudo-terminal process via `node-pty`. Th
 - Process management: auto-restart on crash (up to 5 attempts with exponential backoff), SIGHUP for clean restarts.
 
 **Trade-offs vs. SDK:** The PTY backend has no visibility into individual tool calls, token usage, or permission requests. It's process-level control — start, stop, signal, read output. Use it when the SDK backend isn't available for the agent type.
+
+### ACP Backend
+
+The ACP backend communicates with agents over stdio using the Agent Client Protocol.
+
+**When it's used:** New Codex and Gemini console sessions default to `backend_type: "acp"`.
+
+**Key capabilities:**
+- Structured message, plan, tool-call, terminal-output, permission, and usage updates.
+- Runtime capability discovery from the adapter's `initialize` response.
+- Session resume through `session/load` when the adapter advertises `loadSession`.
+- File-mirror suppression for ACP-originated transcripts so native provider logs do not create duplicate conversation rows.
+
+Codex is launched through the pinned adapter package:
+
+```bash
+npx -y @agentclientprotocol/codex-acp@1.0.2
+```
+
+Observed for `@agentclientprotocol/codex-acp@1.0.2`:
+
+- Auth method IDs: `api-key`, `chat-gpt`, and optional `gateway`.
+- `NO_BROWSER=1` hides the browser ChatGPT method.
+- `CODEX_API_KEY` is preferred over `OPENAI_API_KEY` for API-key auth.
+- `CODEX_PATH` can point the adapter at a different Codex binary while keeping Mandible's adapter invocation pinned.
+- Capabilities include `loadSession: true`, `sessionCapabilities.resume`, `sessionCapabilities.list`, `sessionCapabilities.close`, `sessionCapabilities.delete`, and `sessionCapabilities.additionalDirectories`.
+- Session config options include `mode`, `model`, `reasoning_effort` when supported by the selected model, and `fast-mode` when supported.
 
 ### Spawn Backend
 
@@ -58,11 +85,11 @@ Key optional fields:
 - `args` — Command-line arguments (array of strings).
 - `cwd` — Working directory for the process.
 - `env` — Additional environment variables (merged with the daemon's environment).
-- `backend_type` — Override the default backend selection: `"sdk"`, `"pty"`, or `"spawn"`.
+- `backend_type` — Override the default backend selection: `"sdk"`, `"acp"`, `"pty"`, or `"spawn"`.
 - `auto_restart` — Whether to restart the process automatically on crash (default: false, except for the operator session).
 - `is_operator` — Marks this as the system operator session (there can be only one).
 - `interaction_mode` — Controls how the session receives input: `"direct"` (prompts only), `"inbox_only"` (webhook events only), or `"both"`.
-- `allowed_tools` — An array of tool names pre-approved for automatic use (SDK backend only).
+- `allowed_tools` — An array of tool names pre-approved for automatic use (SDK and ACP permission-aware backends).
 - `presetIds` — Preset IDs whose convention content is computed into the system prompt (SDK backend only).
 - `provider_session_id` and `resume_at_message` — For resuming an existing Claude conversation at a specific point in its DAG.
 
@@ -85,7 +112,7 @@ How a session appears in the dashboard depends on its backend type.
 
 **PTY sessions** render as a terminal emulator. You see the full terminal output, including ANSI colors, cursor movement, and interactive prompts. Input goes through the terminal — type and press Enter, just like a local terminal.
 
-**SDK sessions** render as a structured conversation. Messages are displayed as distinct blocks:
+**SDK and ACP sessions** render as a structured conversation. Messages are displayed as distinct blocks:
 - **User messages** — Your prompts, with the input text.
 - **Assistant messages** — Claude's responses, with full Markdown rendering.
 - **Thinking blocks** — Extended thinking content, shown in collapsible sections.
@@ -103,7 +130,7 @@ The dashboard caches events locally so that navigating away from a session and b
 
 ## Permissions
 
-SDK backend sessions support granular tool-use permissions. When Claude wants to use a tool that isn't in the `allowed_tools` list and the permission mode is not `bypassPermissions`, the backend pauses execution and surfaces a permission request.
+SDK and ACP backend sessions support granular tool-use permissions. When an agent wants to use a tool that isn't in the `allowed_tools` list and the permission mode is not `bypassPermissions`, the backend pauses execution and surfaces a permission request.
 
 Permission requests appear in the dashboard and via the API (`GET /api/console/sessions/:id/permissions`). Each request includes:
 - The tool name and input parameters.
@@ -112,10 +139,11 @@ Permission requests appear in the dashboard and via the API (`GET /api/console/s
 - The reason the tool was blocked.
 - Suggestions for permission updates.
 
-The user can respond with one of three decisions:
+The user can respond with one of four decisions when the provider advertises them:
 - **Allow** — Permit this specific tool call. Execution resumes.
-- **Deny** — Block the tool call. The SDK receives a denial message and continues with that context.
+- **Deny** — Block the tool call. The agent receives a denial message and continues with that context.
 - **Allow Always** — Permit this tool call and add the tool to the session's `allowed_tools` list so future uses don't need approval.
+- **Reject Always** — Reject this class of request when the provider supports a persistent rejection option.
 
 Permissions time out after 2 minutes if no decision is made (the tool call is denied by default).
 
@@ -129,7 +157,7 @@ Sessions can run in one of three permission modes:
 
 ## Cost Tracking
 
-SDK backend sessions track token usage and cost per turn. After each Claude response, a usage record is stored with:
+SDK and ACP backend sessions track token usage where the provider emits it. After each response, a usage record is stored with:
 - Input, output, and cache tokens (creation and read).
 - Cumulative cost in USD.
 - Turn duration and count.
@@ -142,7 +170,7 @@ Usage data is available via `GET /api/console/sessions/:id/usage` and displayed 
 
 Sessions follow a simple lifecycle:
 
-1. **Created** — Session metadata is stored. For SDK/spawn backends, the session starts immediately (they wait for the first prompt rather than allocating a process upfront). For PTY backends, an explicit start is needed.
+1. **Created** — Session metadata is stored. For SDK, ACP, and spawn backends, the session starts immediately (they wait for the first prompt rather than allocating a process upfront). For PTY backends, an explicit start is needed.
 2. **Running** — The backend is active and processing or waiting for input.
 3. **Stopped** — The backend has stopped. SDK sessions auto-stop when the prompt queue drains. PTY sessions stop when the process exits.
 4. **Crashed** — The process exited unexpectedly. If `auto_restart` is enabled, the backend attempts to restart (up to 5 times with exponential backoff).
@@ -158,7 +186,7 @@ Console sessions are automatically linked to Mandible's session registry. This c
 
 ## Sending Prompts
 
-For SDK and spawn backends, you can send prompts programmatically:
+For SDK, ACP, and spawn backends, you can send prompts programmatically:
 
 ```
 POST /api/console/sessions/:id/prompt

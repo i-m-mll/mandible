@@ -1374,7 +1374,7 @@ export async function createConsoleSession(
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
-    body.backend_type = 'spawn';
+    body.backend_type = backendType ?? 'acp';
   } else if (backend === 'gemini') {
     body.command = 'gemini';
     body.args = [];

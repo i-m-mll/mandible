@@ -32,6 +32,13 @@ export interface AcpMapperState {
 export interface AcpPermissionEnvelope {
   responseId: JsonRpcId;
   request: PermissionRequest;
+  options: AcpPermissionOption[];
+}
+
+export interface AcpPermissionOption {
+  optionId: string;
+  kind: string;
+  name?: string;
 }
 
 export interface AcpNormalizeResult {
@@ -161,15 +168,18 @@ function normalizePermissionRequest(
   consoleSessionId: string,
   now: number,
 ): AcpPermissionEnvelope {
-  const tool = asRecord(params.tool) ?? params;
+  const tool = asRecord(params.toolCall) ?? asRecord(params.tool) ?? params;
   const toolName =
     stringValue(tool.name)
+    ?? stringValue(tool.title)
+    ?? stringValue(tool.kind)
     ?? stringValue(tool.toolName)
     ?? stringValue(params.toolName)
     ?? stringValue(params.name)
     ?? "tool";
   const toolInput =
     tool.input
+    ?? tool.rawInput
     ?? tool.arguments
     ?? params.input
     ?? params.arguments
@@ -177,11 +187,14 @@ function normalizePermissionRequest(
   const id =
     stringValue(params.permissionId)
     ?? stringValue(params.requestId)
+    ?? stringValue(tool.toolCallId)
     ?? stringValue(responseId)
     ?? randomUUID();
+  const options = normalizePermissionOptions(params.options);
 
   return {
     responseId,
+    options,
     request: {
       id,
       session_id: consoleSessionId,
@@ -266,10 +279,32 @@ function normalizeSingleUpdate(
     return [];
   }
 
-  if (kind.includes("plan") || update.plan !== undefined) {
+  if (kind === "config_option_update" || Array.isArray(update.configOptions)) {
+    return [{
+      type: "system",
+      subtype: "acp_config_options",
+      session_id: sessionId,
+      config_options: Array.isArray(update.configOptions) ? update.configOptions : [],
+      event: update,
+    }];
+  }
+
+  const terminalOutput = extractTerminalOutput(update);
+  if (terminalOutput) {
+    return [{
+      type: "tool_result",
+      session_id: sessionId,
+      tool_use_id: terminalOutput.terminalId,
+      is_error: false,
+      content: terminalOutput.output,
+      event: update,
+    }];
+  }
+
+  if (kind.includes("plan") || update.plan !== undefined || Array.isArray(update.entries)) {
     return [makeAssistantContentEvent(
       sessionId,
-      [{ type: "plan", text: stringifyContent(update.plan ?? update.content ?? update.text ?? "") }],
+      [{ type: "plan", text: stringifyPlan(update.plan ?? update.entries ?? update.content ?? update.text ?? "") }],
       state.model,
       update,
     )];
@@ -361,18 +396,22 @@ function normalizeToolCall(
     id: toolCallId,
     name:
       stringValue(update.name)
+      ?? stringValue(update.title)
       ?? stringValue(update.toolName)
       ?? stringValue(update.tool_name)
+      ?? stringValue(update.kind)
       ?? existing?.name
       ?? "tool",
     input:
       update.input
+      ?? update.rawInput
       ?? update.arguments
       ?? update.args
       ?? existing?.input
       ?? {},
     output:
       update.output
+      ?? update.rawOutput
       ?? update.result
       ?? update.content
       ?? existing?.output
@@ -436,6 +475,17 @@ function normalizeRpcResult(result: unknown, state: AcpMapperState): ConsoleStre
       subtype: "init",
       session_id: sessionId,
       ...(state.model ? { model: state.model } : {}),
+      ...(Array.isArray(record.configOptions) ? { config_options: record.configOptions } : {}),
+      ...(record.sessionCapabilities ? { session_capabilities: record.sessionCapabilities } : {}),
+      event: record,
+    }];
+  }
+  if (Array.isArray(record.configOptions)) {
+    return [{
+      type: "system",
+      subtype: "acp_config_options",
+      session_id: state.sessionId ?? "",
+      config_options: record.configOptions,
       event: record,
     }];
   }
@@ -501,6 +551,78 @@ function isTerminalToolStatus(status: string | null): boolean {
     || status === "error"
     || status === "cancelled"
     || status === "canceled";
+}
+
+function normalizePermissionOptions(value: unknown): AcpPermissionOption[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((option) => {
+    const record = asRecord(option);
+    const optionId = stringValue(record?.optionId);
+    const kind = stringValue(record?.kind);
+    if (!optionId || !kind) {
+      return [];
+    }
+    return [{
+      optionId,
+      kind,
+      ...(stringValue(record?.name) ? { name: stringValue(record?.name)! } : {}),
+    }];
+  });
+}
+
+function stringifyPlan(value: unknown): string {
+  const record = asRecord(value);
+  if (Array.isArray(value)) {
+    return value.map(formatPlanEntry).filter(Boolean).join("\n");
+  }
+  if (Array.isArray(record?.entries)) {
+    return record.entries.map(formatPlanEntry).filter(Boolean).join("\n");
+  }
+  if (typeof record?.content === "string") {
+    return record.content;
+  }
+  return stringifyContent(value);
+}
+
+function formatPlanEntry(value: unknown): string {
+  const record = asRecord(value);
+  if (!record) {
+    return stringifyContent(value);
+  }
+  const status = stringValue(record.status);
+  const content = stringValue(record.content) ?? stringifyContent(record);
+  return status ? `[${status}] ${content}` : content;
+}
+
+function extractTerminalOutput(update: Record<string, unknown>): { terminalId: string; output: string } | null {
+  const meta = asRecord(update._meta);
+  const terminalOutput =
+    asRecord(meta?.terminal_output)
+    ?? asRecord(meta?.terminal_output_delta)
+    ?? asRecord(update.terminal_output)
+    ?? asRecord(update.terminalOutput);
+  if (!terminalOutput) {
+    return null;
+  }
+  const output =
+    rawStringValue(terminalOutput.output)
+    ?? rawStringValue(terminalOutput.data);
+  if (output === null) {
+    return null;
+  }
+  const terminalId =
+    stringValue(terminalOutput?.terminal_id)
+    ?? stringValue(terminalOutput?.terminalId)
+    ?? stringValue(update.terminalId)
+    ?? stringValue(update.toolCallId)
+    ?? "terminal";
+  return { terminalId, output };
+}
+
+function rawStringValue(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
 }
 
 function extractText(update: Record<string, unknown>): string {
