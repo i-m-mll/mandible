@@ -18,6 +18,7 @@ type ConsoleViewProps = {
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;

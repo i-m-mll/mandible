@@ -29,10 +29,13 @@ function makeMeta(overrides: Partial<ConsoleSession> = {}): ConsoleSession {
     started_at: null,
     stopped_at: null,
     backend_type: "spawn",
+    transport_lane: "spawn",
+    transport_badge: { label: "Spawn", title: "Spawned process transport" },
     allowed_tools: null,
     mandible_session_id: null,
     resume_at_message: null,
     agent_type: "codex",
+    channel_enabled: false,
     ...overrides,
   };
 }

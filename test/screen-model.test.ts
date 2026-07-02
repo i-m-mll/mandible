@@ -44,6 +44,8 @@ function makeSession(overrides: Partial<ConsoleSession> = {}): ConsoleSession {
     started_at: null,
     stopped_at: null,
     backend_type: "pty",
+    transport_lane: "pty",
+    transport_badge: { label: "PTY", title: "Mandible-owned PTY transport" },
     allowed_tools: null,
     mandible_session_id: null,
     resume_at_message: null,
