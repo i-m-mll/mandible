@@ -835,6 +835,13 @@ function App(): JSX.Element {
       );
     };
 
+    const consoleTelemetryHandler = (payload: SSEPayload) => {
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
+      window.dispatchEvent(
+        new CustomEvent('console:telemetry', { detail: data }),
+      );
+    };
+
     // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
     const pushEventHandler = (payload: SSEPayload) => {
       invalidateDashboardApiCacheForEvent(payload.type);
@@ -875,6 +882,7 @@ function App(): JSX.Element {
       client.on('console:session:deleted', handler),
       client.on('console:inbox:badge', handler),
       client.on('console:stream_event', consoleStreamHandler),
+      client.on('console:telemetry', consoleTelemetryHandler),
       client.on('console:permission:request', consolePermissionHandler),
       client.on('console:permission:cleared', consolePermissionHandler),
       client.on('session:registered', graphRefreshHandler),

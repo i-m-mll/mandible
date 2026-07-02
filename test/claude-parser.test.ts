@@ -29,6 +29,12 @@ async function makeClaudeSession(): Promise<string> {
       message: {
         role: "assistant",
         model: "claude-opus",
+        usage: {
+          input_tokens: 1000,
+          cache_read_input_tokens: 250,
+          cache_creation_input_tokens: 750,
+          output_tokens: 100,
+        },
         content: [
           { type: "text", text: "I will inspect." },
           { type: "tool_use", id: "tool-1", name: "Bash", input: { command: "ls" } },
@@ -150,6 +156,24 @@ describe("ClaudeParser", () => {
       type: "assistant_message",
       position: 3,
       content: "Incremental Claude answer.",
+    });
+  });
+
+  it("computes approximate context from Claude effective input tokens", async () => {
+    const parser = new ClaudeParser();
+    const sessionPath = await makeClaudeSession();
+
+    const result = await parser.parse(sessionPath);
+    const assistant = result?.blocks.find((block) => block.type === "assistant_message");
+
+    expect(assistant?.metadata.context_usage).toMatchObject({
+      source: "mirror_approx",
+      used_tokens: 2000,
+      total_tokens: 2100,
+      window_tokens: 200_000,
+      percent: 1,
+      approximate: true,
+      model: "claude-opus",
     });
   });
 });

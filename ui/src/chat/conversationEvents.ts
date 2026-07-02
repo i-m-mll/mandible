@@ -89,6 +89,7 @@ export function conversationBlocksToStreamEvents(
   const events: StreamEvent[] = [];
   let assistantBlocks: Array<Record<string, unknown>> = [];
   let assistantTurnStartId: string | null = null;
+  let assistantUsage: Record<string, unknown> | undefined;
 
   const flushAssistant = () => {
     if (assistantBlocks.length === 0) return;
@@ -101,10 +102,12 @@ export function conversationBlocksToStreamEvents(
         id: assistantTurnStartId ?? undefined,
         role: 'assistant',
         content: assistantBlocks as Array<{ type: string; [key: string]: unknown }>,
+        usage: assistantUsage,
       },
     });
     assistantBlocks = [];
     assistantTurnStartId = null;
+    assistantUsage = undefined;
   };
 
   const pushAssistantBlock = (blockId: string, contentBlock: Record<string, unknown>) => {
@@ -133,6 +136,15 @@ export function conversationBlocksToStreamEvents(
     }
 
     if (block.type === 'assistant_message') {
+      if (!assistantUsage && metadata.token_usage && typeof metadata.token_usage === 'object') {
+        const tokenUsage = metadata.token_usage as Record<string, unknown>;
+        assistantUsage = {
+          input_tokens: tokenUsage.input ?? tokenUsage.input_tokens,
+          output_tokens: tokenUsage.output ?? tokenUsage.output_tokens,
+          cache_read_input_tokens: tokenUsage.cache_read ?? tokenUsage.cache_read_input_tokens,
+          cache_creation_input_tokens: tokenUsage.cache_creation ?? tokenUsage.cache_creation_input_tokens,
+        };
+      }
       pushAssistantBlock(block.id, { type: 'text', text: block.content });
       continue;
     }

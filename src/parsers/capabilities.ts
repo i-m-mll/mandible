@@ -37,6 +37,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool uses come from function_call/custom_tool_call response items.",
       "Tool names are stored in metadata.tool_name.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
+      "Hidden token_count event blocks may carry exact metadata.context_usage from total_token_usage and model_context_window.",
     ],
   },
   {
@@ -57,6 +58,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool results come from user content blocks with type tool_result.",
       "Task subagent transcripts under subagents/agent-*.jsonl are marked as sidechain conversations.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
+      "Assistant usage blocks may carry approximate metadata.context_usage from input plus prompt-cache tokens.",
     ],
   },
   {

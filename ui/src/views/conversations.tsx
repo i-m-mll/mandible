@@ -13,6 +13,7 @@ import type {
 import {
   exportConversationBlocks,
   forkConversation,
+  getConsoleSessionUsage,
   getConversation,
   getConversations,
   getSessionIssues,
@@ -30,7 +31,17 @@ import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
-import { ChatSurface, conversationBlocksToStreamEvents, Shelf, type ShelfItem } from '../chat';
+import {
+  ChatOverlay,
+  ChatSurface,
+  ContextUsageRing,
+  Shelf,
+  UsageModal,
+  conversationBlocksToStreamEvents,
+  deriveChatUsageSummary,
+  useStatuslineTelemetry,
+  type ShelfItem,
+} from '../chat';
 import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
@@ -1128,6 +1139,8 @@ function ConversationDetail({
   const [showMessageFilters, setShowMessageFilters] = useState(false);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerModel, setComposerModel] = useState('');
+  const [usageModalOpen, setUsageModalOpen] = useState(false);
+  const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1533,6 +1546,38 @@ function ConversationDetail({
 
   const attachPresentation = attachState ? getConversationAttachPresentation(attachState) : null;
 
+  const telemetry = useStatuslineTelemetry({
+    sessionRef: linkedConsoleSession?.id ?? conversation?.session_id ?? null,
+    transcriptPath: conversation?.source_path ?? null,
+  });
+
+  useEffect(() => {
+    if (!linkedConsoleSession) {
+      setUsageRows([]);
+      return undefined;
+    }
+    let active = true;
+    void getConsoleSessionUsage<Record<string, unknown>>(linkedConsoleSession.id)
+      .then((rows) => {
+        if (active) setUsageRows(rows);
+      })
+      .catch(() => {
+        if (active) setUsageRows([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [linkedConsoleSession?.id]);
+
+  const usageSummary = useMemo(() => deriveChatUsageSummary({
+    telemetry,
+    events: chatEvents,
+    blocks,
+    usageRows,
+  }), [blocks, chatEvents, telemetry, usageRows]);
+
+  const openUsage = useCallback(() => setUsageModalOpen(true), []);
+
   const latestDagUuid = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
       const dagUuid = blocks[index].dag_uuid;
@@ -1745,7 +1790,7 @@ function ConversationDetail({
   }
 
   return (
-    <div className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
+    <div className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
       {/* Parent link for sub-agent conversations */}
       {conversation.parent_conversation_id && (
         <div className="conv-parent-link">
@@ -1811,6 +1856,7 @@ function ConversationDetail({
           </div>
         </div>
         <div className="conv-detail__header-right">
+          <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
           <button
             type="button"
             className="conv-info-button"
@@ -1926,6 +1972,8 @@ function ConversationDetail({
               backend: conversation.source,
               model: conversation.model ?? undefined,
             }}
+            usageSummary={usageSummary}
+            onUsageOpen={openUsage}
           />
         </div>
       ) : (
@@ -1976,6 +2024,18 @@ function ConversationDetail({
           )}
         </div>
       )}
+
+      <ChatOverlay
+        open={usageModalOpen}
+        titleId="conversation-usage-modal-title"
+        onClose={() => setUsageModalOpen(false)}
+      >
+        <UsageModal
+          usage={usageSummary}
+          titleId="conversation-usage-modal-title"
+          onClose={() => setUsageModalOpen(false)}
+        />
+      </ChatOverlay>
 
       <Shelf
         conversationId={conversation.id}
