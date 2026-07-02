@@ -50,6 +50,41 @@ async function makeClaudeSession(): Promise<string> {
   return sessionPath;
 }
 
+async function makeClaudeSubagentSession(): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-claude-subagent-parser-"));
+  tempRoots.push(root);
+  const dir = path.join(
+    root,
+    ".claude",
+    "projects",
+    "-tmp-project",
+    "22222222-2222-4222-8222-222222222222",
+    "subagents",
+  );
+  await fs.mkdir(dir, { recursive: true });
+  const sessionPath = path.join(dir, "agent-alpha.jsonl");
+  const rows = [
+    {
+      uuid: "s1",
+      type: "user",
+      timestamp: "2026-05-16T00:00:00.000Z",
+      sessionId: "child-session",
+      cwd: "/tmp/project",
+      isSidechain: true,
+      message: { role: "user", content: "You are a subagent." },
+    },
+    {
+      uuid: "s2",
+      type: "assistant",
+      timestamp: "2026-05-16T00:00:01.000Z",
+      isSidechain: true,
+      message: { role: "assistant", model: "claude-opus", content: [{ type: "text", text: "Done." }] },
+    },
+  ];
+  await fs.writeFile(sessionPath, `${rows.map((row) => JSON.stringify(row)).join("\n")}\n`, "utf8");
+  return sessionPath;
+}
+
 afterEach(async () => {
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
@@ -73,5 +108,16 @@ describe("ClaudeParser", () => {
       tool_kind: "claude_tool_result",
       tool_output: "README.md",
     });
+  });
+
+  it("marks Claude Code subagent paths as sidechain conversations", async () => {
+    const parser = new ClaudeParser();
+    const sessionPath = await makeClaudeSubagentSession();
+
+    const result = await parser.parse(sessionPath);
+
+    expect(result?.conversation.is_sidechain).toBe(true);
+    expect(result?.conversation.agent_id).toBe("alpha");
+    expect(result?.conversation.project_path).toBe("-tmp-project");
   });
 });

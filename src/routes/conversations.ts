@@ -41,6 +41,8 @@ interface ConversationRow {
   label: string | null;
   notes: string | null;
   parent_conversation_id: string | null;
+  is_sidechain: number;
+  agent_id: string | null;
   children_count?: number;
   created_at: string;
   updated_at: string;
@@ -66,6 +68,8 @@ function mapConversation(row: ConversationRow, sessionManager?: SessionManager) 
     ...row,
     starred: row.starred === 1,
     parent_conversation_id: row.parent_conversation_id ?? null,
+    is_sidechain: row.is_sidechain === 1,
+    agent_id: row.agent_id ?? null,
     children_count: row.children_count ?? 0,
     attach_state: deriveConversationAttachState(row, getDb(), sessionManager),
   };
@@ -565,7 +569,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     // Fetch sub-agent (child) conversations — Bug: d0759d1
     const children = db
       .prepare(
-        `SELECT id, title, block_count, started_at, ended_at, source, model
+        `SELECT id, title, block_count, started_at, ended_at, source, model,
+                agent_id, is_sidechain, source_mtime, updated_at
          FROM conversations
          WHERE parent_conversation_id = ?
          ORDER BY started_at ASC`
@@ -578,6 +583,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         ended_at: string | null;
         source: string;
         model: string | null;
+        agent_id: string | null;
+        is_sidechain: number;
+        source_mtime: number;
+        updated_at: string;
       }>;
 
     // Compute duration for each child
@@ -590,8 +599,27 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
           duration_seconds = Math.round((end - start) / 1000);
         }
       }
-      return { ...child, duration_seconds };
+      const activeCutoff = Date.now() - 30_000;
+      return {
+        id: child.id,
+        title: child.title,
+        block_count: child.block_count,
+        started_at: child.started_at,
+        ended_at: child.ended_at,
+        source: child.source,
+        model: child.model,
+        agent_id: child.agent_id ?? null,
+        is_sidechain: child.is_sidechain === 1,
+        status: child.source_mtime >= activeCutoff ? "active" : "finished",
+        duration_seconds,
+      };
     });
+
+    const parent = conv.parent_conversation_id
+      ? db
+        .prepare("SELECT id, title FROM conversations WHERE id = ?")
+        .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
+      : undefined;
 
     const mapped = mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
@@ -600,6 +628,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       conversation: mapped,
       blocks: blocks.map(mapBlock),
       children: childrenWithDuration,
+      parent: parent ?? null,
     });
   }, { fileRpc: "allow" });
 

@@ -478,6 +478,8 @@ export class GeminiParser implements ConversationParser {
         branch: null,
         model,
         cli_version: null,
+        is_sidechain: false,
+        agent_id: null,
       },
       blocks,
     };

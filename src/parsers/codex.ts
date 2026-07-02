@@ -476,6 +476,8 @@ export class CodexParser implements ConversationParser {
         branch,
         model: model || (modelProvider ? `${modelProvider}` : null),
         cli_version: cliVersion,
+        is_sidechain: false,
+        agent_id: null,
       },
       blocks,
     };
