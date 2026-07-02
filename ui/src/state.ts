@@ -62,6 +62,18 @@ type ConsoleSession = {
     cleared_at?: number;
     cleared_by?: 'screen_changed' | 'structured_stream_activity' | 'process_exit' | 'manual_clear';
   } | null;
+  prompt_queue?: {
+    pending_count: number;
+    items: Array<{
+      id: string;
+      text: string;
+      queued_at: number;
+      blocked_by: 'permission_menu' | 'running_output' | 'unknown' | 'no_attention_state';
+    }>;
+    fallback_enabled: boolean;
+    fallback_quiet_ms: number;
+    last_flushed_at: number | null;
+  } | null;
 };
 
 export type { ConsoleSession };

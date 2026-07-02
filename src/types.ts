@@ -561,6 +561,26 @@ export type ConsoleSessionStatus = 'running' | 'stopped' | 'crashed';
 export type ConsoleInteractionMode = 'inbox_only' | 'direct' | 'both';
 export type ConsoleAttentionKind = 'input_prompt' | 'running_output' | 'permission_menu' | 'unknown';
 export type ConsoleAttentionSource = 'pty_screen' | 'pty_screen_fallback';
+export type ConsolePromptQueueBlockedBy =
+  | 'permission_menu'
+  | 'running_output'
+  | 'unknown'
+  | 'no_attention_state';
+
+export interface ConsolePromptQueueItem {
+  id: string;
+  text: string;
+  queued_at: number;
+  blocked_by: ConsolePromptQueueBlockedBy;
+}
+
+export interface ConsolePromptQueueState {
+  pending_count: number;
+  items: ConsolePromptQueueItem[];
+  fallback_enabled: boolean;
+  fallback_quiet_ms: number;
+  last_flushed_at: number | null;
+}
 
 export interface ConsoleAttentionState {
   session_id: string;
@@ -613,6 +633,8 @@ export interface ConsoleSession {
   is_processing?: boolean;
   /** Derived from PTY screen state. Not stored in DB. */
   attention?: ConsoleAttentionState | null;
+  /** Derived PTY composer prompt queue state. Not stored in DB. */
+  prompt_queue?: ConsolePromptQueueState | null;
 }
 
 export interface ConsoleSessionInput {
