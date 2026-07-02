@@ -2586,9 +2586,7 @@ const MIGRATIONS: Migration[] = [
     name: "message_params_thinking_effort",
     // Issue: 3da19be — include SDK reasoning effort in the existing
     // per-message parameter keyframes.
-    statements: [
-      `ALTER TABLE message_params ADD COLUMN thinking_effort TEXT`,
-    ]
+    statements: []
   }
 ];
 
@@ -2690,6 +2688,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 93) {
           ensureConsoleTransportLaneColumn(db);
+        }
+        if (migration.version === 94) {
+          ensureMessageParamsThinkingEffortColumn(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -5054,6 +5055,14 @@ function ensureConsoleTransportLaneColumn(db: Db): void {
   );
 }
 
+function ensureMessageParamsThinkingEffortColumn(db: Db): void {
+  if (!tableExists(db, "message_params")) return;
+  const columns = tableColumnNames(db, "message_params");
+  if (columns.has("thinking_effort")) return;
+
+  db.exec("ALTER TABLE message_params ADD COLUMN thinking_effort TEXT");
+}
+
 function tableExists(db: Db, table: string): boolean {
   const row = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -5074,6 +5083,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "conversations",
     "ledger_comments",
     "ledger_issues",
+    "message_params",
     "project_artifact_associations",
     "session_projects",
     "sessions",
