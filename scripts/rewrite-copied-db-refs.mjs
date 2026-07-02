@@ -14,6 +14,30 @@ const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), ".cache", "mandible", "db-ref-cleanup");
 const LEGACY_ISS_REF_PATTERN = /\biss_[A-Za-z0-9_-]{4,}\b/g;
 const LEGACY_ISS_EXACT_PATTERN = /^iss_[A-Za-z0-9_-]{4,}$/;
+const INVALID_ISSUE_TAGS = new Set([
+  "reference",
+  "references",
+  "refs",
+  "close",
+  "closes",
+  "closed",
+  "closing",
+  "resolve",
+  "resolves",
+  "resolved",
+  "fix",
+  "fixes",
+  "fixed",
+  "fixed_by",
+  "block",
+  "blocks",
+  "blocked",
+  "implements",
+  "tests",
+  "related",
+  "duplicate_of",
+  "caused_by",
+]);
 
 const TEXT_TARGETS = [
   { table: "ledger_issues", key: "id", columns: [{ name: "body", kind: "markdown" }] },
@@ -90,7 +114,11 @@ export async function runCopiedDbRefCleanup(options = {}) {
       legacy_issue_aliases_removed: 0,
       legacy_issue_metadata_cleaned: 0,
       artifact_refs_rewritten: 0,
+      encoded_artifact_refs_rewritten: 0,
+      markdown_artifact_links_rewritten: 0,
       naked_typed_refs_bracketed: 0,
+      invalid_issue_tags_rewritten: 0,
+      invalid_issue_tags_refused: 0,
       malformed_artifact_aliases_removed: 0,
       malformed_artifacts_removed: 0,
       refused: 0,
@@ -103,6 +131,7 @@ export async function runCopiedDbRefCleanup(options = {}) {
     legacy_issue_metadata_updates: [],
     removed_artifacts: [],
     skipped_targets: [],
+    verification: null,
     integrity_check: null,
   };
 
@@ -143,7 +172,11 @@ export async function runCopiedDbRefCleanup(options = {}) {
             .filter((replacement) => replacement.legacy_kind === "legacy_id")
             .length;
           report.summary.artifact_refs_rewritten += rewritten.counts.artifact;
+          report.summary.encoded_artifact_refs_rewritten += rewritten.counts.encodedArtifact;
+          report.summary.markdown_artifact_links_rewritten += rewritten.counts.markdownArtifactLink;
           report.summary.naked_typed_refs_bracketed += rewritten.counts.typed;
+          report.summary.invalid_issue_tags_rewritten += rewritten.counts.invalidIssueTag;
+          report.summary.invalid_issue_tags_refused += rewritten.counts.invalidIssueTagRefused;
           cellMutations.push({
             column: column.name,
             replacements: rewritten.replacements,
@@ -218,6 +251,7 @@ export async function runCopiedDbRefCleanup(options = {}) {
     report.summary.malformed_artifacts_removed = artifactDeletes.length;
     report.summary.refused = report.refused.length;
     report.integrity_check = db.pragma("integrity_check", { simple: true });
+    report.verification = verificationForCleanupReport(report.summary, apply);
   } finally {
     db.close();
   }
@@ -660,9 +694,21 @@ function rewriteText(value, context, source, options) {
   const refused = [];
   const counts = zeroCounts();
 
+  if (options.includeIssueRefs) {
+    const invalidIssueTagPass = rewriteInvalidIssueTags(text, context, source);
+    text = invalidIssueTagPass.text;
+    counts.issue += invalidIssueTagPass.counts.issue;
+    counts.invalidIssueTag += invalidIssueTagPass.counts.invalidIssueTag;
+    counts.invalidIssueTagRefused += invalidIssueTagPass.counts.invalidIssueTagRefused;
+    replacements.push(...invalidIssueTagPass.replacements);
+    refused.push(...invalidIssueTagPass.refused);
+  }
+
   const artifactPass = rewriteArtifacts(text, context, source);
   text = artifactPass.text;
   counts.artifact += artifactPass.counts.artifact;
+  counts.encodedArtifact += artifactPass.counts.encodedArtifact;
+  counts.markdownArtifactLink += artifactPass.counts.markdownArtifactLink;
   counts.typed += artifactPass.counts.typed;
   replacements.push(...artifactPass.replacements);
   refused.push(...artifactPass.refused);
@@ -684,11 +730,44 @@ function rewriteText(value, context, source, options) {
   };
 }
 
+function rewriteInvalidIssueTags(value, context, source) {
+  const replacements = [];
+  const refused = [];
+  const counts = zeroCounts();
+  const text = replaceOutsideCodeSpans(value, /\[([a-z][a-z0-9_-]*):([^\]\n]+)\]/gi, (match, tag, ref) => {
+    const normalizedTag = tag.toLowerCase();
+    if (!INVALID_ISSUE_TAGS.has(normalizedTag)) return match;
+    const target = ref.trim();
+    const resolved = context.issueResolver.resolve(target);
+    if (!resolved.ok) {
+      if (looksLikeIssueRefCandidate(target)) {
+        counts.invalidIssueTagRefused += 1;
+        refused.push(refusal(source, `issue_${resolved.reason}`, `Invalid issue tag '${match}' was not rewritten`, match));
+      }
+      return match;
+    }
+    counts.issue += 1;
+    counts.invalidIssueTag += 1;
+    const next = `[issue:${context.issueResolver.display(resolved.issue)}]`;
+    replacements.push({ kind: "issue", legacy_kind: "invalid_typed_tag", before: match, after: next });
+    return next;
+  });
+  return { text, counts, replacements, refused };
+}
+
 function rewriteArtifacts(value, context, source) {
   let text = value;
   const replacements = [];
   const refused = [];
   const counts = zeroCounts();
+
+  text = replaceOutsideCodeSpans(text, /\[([^\]\n]+)\]\(([^)\n]+)\)/g, (match, label, href) => {
+    const rewritten = rewriteMarkdownArtifactLink(match, label, href, context, source);
+    appendCounts(counts, rewritten.counts);
+    replacements.push(...rewritten.replacements);
+    refused.push(...rewritten.refused);
+    return rewritten.text;
+  });
 
   text = text.replace(/`((?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)[a-f0-9]{7,64})`/gi, (match, ref) => {
     const resolved = resolveArtifactRef(ref, context);
@@ -788,6 +867,70 @@ function rewriteArtifacts(value, context, source) {
   });
 
   return { text, counts, replacements, refused };
+}
+
+function rewriteMarkdownArtifactLink(match, label, href, context, source) {
+  const replacements = [];
+  const refused = [];
+  const counts = zeroCounts();
+  let nextLabel = label;
+  let nextHref = href;
+  let resolvedForLabel = null;
+
+  nextHref = replaceLegacyArtifactRefsInHref(href, context, source, counts, replacements, refused, (resolved) => {
+    resolvedForLabel ??= resolved;
+  });
+
+  const labelResolved = resolveArtifactRef(label, context);
+  if (labelResolved.ok) {
+    resolvedForLabel = labelResolved;
+    nextLabel = `artifact:${labelResolved.prefix}`;
+    counts.artifact += 1;
+    counts.markdownArtifactLink += 1;
+    replacements.push({ kind: "artifact", before: label, after: nextLabel });
+  } else if (isLegacyArtifactLabel(label) && resolvedForLabel) {
+    nextLabel = `artifact:${resolvedForLabel.prefix}`;
+    counts.artifact += 1;
+    counts.markdownArtifactLink += 1;
+    replacements.push({ kind: "artifact", before: label, after: nextLabel });
+  } else if (isLegacyArtifactLabel(label)) {
+    refused.push(refusal(source, `artifact_${labelResolved.reason}`, `Markdown artifact label '${label}' was not rewritten`, label));
+  }
+
+  if (nextLabel === label && nextHref === href) return { text: match, counts, replacements, refused };
+  return { text: `[${nextLabel}](${nextHref})`, counts, replacements, refused };
+}
+
+function replaceLegacyArtifactRefsInHref(href, context, source, counts, replacements, refused, onResolved) {
+  return href
+    .replace(/(?:artifact%3Asha256%3A|sha256%3A|artifact%3A)([a-f0-9]{7,64})/gi, (encoded) => {
+      const decoded = decodeLegacyArtifactRef(encoded);
+      const resolved = resolveArtifactRef(decoded, context);
+      if (!resolved.ok) {
+        refused.push(refusal(source, `artifact_${resolved.reason}`, `Encoded artifact ref '${encoded}' was not rewritten`, encoded));
+        return encoded;
+      }
+      onResolved(resolved);
+      counts.artifact += 1;
+      counts.encodedArtifact += 1;
+      counts.markdownArtifactLink += 1;
+      const next = encodeURIComponent(`artifact:${resolved.prefix}`);
+      replacements.push({ kind: "artifact", before: encoded, after: next, encoded: true });
+      return next;
+    })
+    .replace(/(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:)([a-f0-9]{7,64})/gi, (plain) => {
+      const resolved = resolveArtifactRef(plain, context);
+      if (!resolved.ok) {
+        refused.push(refusal(source, `artifact_${resolved.reason}`, `Markdown artifact href '${plain}' was not rewritten`, plain));
+        return plain;
+      }
+      onResolved(resolved);
+      counts.artifact += 1;
+      counts.markdownArtifactLink += 1;
+      const next = `artifact:${resolved.prefix}`;
+      replacements.push({ kind: "artifact", before: plain, after: next });
+      return next;
+    });
 }
 
 function rewriteIssues(value, context, source) {
@@ -1045,13 +1188,30 @@ function replaceOutsideProtected(value, pattern, replace) {
   });
 }
 
+function replaceOutsideCodeSpans(value, pattern, replace) {
+  const protectedSpans = buildCodeSpans(value);
+  return value.replace(pattern, (...args) => {
+    const match = args[0];
+    const index = args[args.length - 2];
+    const fullText = args[args.length - 1];
+    if (isInsideSpan(index, protectedSpans)) return match;
+    return replace(match, ...args.slice(1, -2), index, fullText);
+  });
+}
+
 function buildProtectedSpans(text) {
   const spans = [];
-  collectRegexSpans(spans, text, /```[\s\S]*?```|~~~[\s\S]*?~~~/g);
-  collectRegexSpans(spans, text, /`[^`\n]*`/g);
+  spans.push(...buildCodeSpans(text));
   collectRegexSpans(spans, text, /\[[a-z][a-z0-9_-]*:[^\]\n]+\]/gi);
   collectRegexSpans(spans, text, /\[[^\]\n]+\]\([^)]+\)/g);
   collectRegexSpans(spans, text, /(?:https?|file):\/\/[^\s)\]]+/gi);
+  return mergeSpans(spans);
+}
+
+function buildCodeSpans(text) {
+  const spans = [];
+  collectRegexSpans(spans, text, /```[\s\S]*?```|~~~[\s\S]*?~~~/g);
+  collectRegexSpans(spans, text, /`[^`\n]*`/g);
   return mergeSpans(spans);
 }
 
@@ -1170,6 +1330,23 @@ function isLikelyArtifactOrShaContext(text, index, length) {
   if (/\b(commit|commits|sha|hash|tree|blob|object|merge|auth|request|branch)\b/.test(before)) return true;
   if (/^\.(?:patch|diff)\b/.test(after)) return true;
   return false;
+}
+
+function isLegacyArtifactLabel(value) {
+  return /^(?:artifact:\/\/sha256\/|artifact:sha256:|sha256:|artifact:)[a-f0-9]{7,64}$/i.test(value.trim());
+}
+
+function decodeLegacyArtifactRef(value) {
+  return String(value)
+    .replace(/%3A/gi, ":")
+    .replace(/%2F/gi, "/");
+}
+
+function looksLikeIssueRefCandidate(value) {
+  const trimmed = value.trim();
+  return LEGACY_ISS_EXACT_PATTERN.test(trimmed)
+    || /^(?:[A-Za-z0-9_.-]+\/)?[a-f0-9]{7,64}$/i.test(trimmed)
+    || looksLikeInternalRef(trimmed);
 }
 
 function planMalformedAliasDeletes(db, report) {
@@ -1331,13 +1508,35 @@ function quoteIdent(value) {
 }
 
 function zeroCounts() {
-  return { issue: 0, artifact: 0, typed: 0 };
+  return {
+    issue: 0,
+    artifact: 0,
+    encodedArtifact: 0,
+    markdownArtifactLink: 0,
+    typed: 0,
+    invalidIssueTag: 0,
+    invalidIssueTagRefused: 0,
+  };
 }
 
 function appendCounts(target, source) {
   target.issue += source.issue;
   target.artifact += source.artifact;
+  target.encodedArtifact += source.encodedArtifact;
+  target.markdownArtifactLink += source.markdownArtifactLink;
   target.typed += source.typed;
+  target.invalidIssueTag += source.invalidIssueTag;
+  target.invalidIssueTagRefused += source.invalidIssueTagRefused;
+}
+
+function verificationForCleanupReport(summary, apply) {
+  const actionable = summary.refused + (apply ? 0 : summary.rows_updated + summary.malformed_artifact_aliases_removed + summary.malformed_artifacts_removed);
+  return {
+    mode: apply ? "candidate_after_apply" : "dry_run_planned",
+    remaining_actionable_refs: actionable,
+    zero_legacy_actionable_refs: actionable === 0,
+    refused: summary.refused,
+  };
 }
 
 function appendRefusals(report, refusals) {

@@ -105,9 +105,12 @@ beforeEach(() => {
     "prj_mandible",
     [
       "See #abcdef0 and issue abcdef0.",
+      "Invalid [references:abcdef0] and [closes:abcdef0] change.",
+      "Protected `[references:abcdef0]` and [references:not-an-issue] stay.",
       "Commit abcdef0 should stay bare.",
       "Already [issue:abcdef0] and code `#abcdef0` stay.",
       "Link [#abcdef0](https://example.test) stays.",
+      `Short link [artifact:sha256:aaaaaaa](http://localhost:19420/#/artifacts?artifact=artifact%3Asha256%3A${artifactHash}&sidebar=hidden) changes.`,
       `Artifact artifact://sha256/${artifactHash} changes.`,
       "Naked artifact:aaaaaaa changes.",
       "Repo locator repo://mandible@main/results/report.md changes.",
@@ -238,6 +241,10 @@ describe("copied DB ref cleanup", () => {
     expect(report.summary.legacy_issue_aliases_removed).toBe(1);
     expect(report.summary.legacy_issue_metadata_cleaned).toBe(2);
     expect(report.summary.artifact_refs_rewritten).toBeGreaterThanOrEqual(6);
+    expect(report.summary.encoded_artifact_refs_rewritten).toBe(1);
+    expect(report.summary.markdown_artifact_links_rewritten).toBeGreaterThanOrEqual(1);
+    expect(report.summary.invalid_issue_tags_rewritten).toBe(2);
+    expect(report.summary.invalid_issue_tags_refused).toBe(0);
     expect(report.summary.naked_typed_refs_bracketed).toBeGreaterThanOrEqual(1);
     expect(report.summary.malformed_artifact_aliases_removed).toBe(1);
     expect(report.summary.malformed_artifacts_removed).toBe(1);
@@ -258,9 +265,14 @@ describe("copied DB ref cleanup", () => {
     try {
       const issue = candidate.prepare("SELECT body FROM ledger_issues WHERE id = ?").get(issueId) as { body: string };
       expect(issue.body).toContain("[issue:abcdef0]");
+      expect(issue.body).toContain("Invalid [issue:abcdef0] and [issue:abcdef0] change.");
+      expect(issue.body).toContain("Protected `[references:abcdef0]` and [references:not-an-issue] stay.");
       expect(issue.body).toContain("Commit abcdef0 should stay bare.");
       expect(issue.body).toContain("`#abcdef0`");
       expect(issue.body).toContain("[#abcdef0](https://example.test)");
+      expect(issue.body).toContain(
+        "[artifact:aaaaaaaa](http://localhost:19420/#/artifacts?artifact=artifact%3Aaaaaaaaa&sidebar=hidden)",
+      );
       expect(issue.body).toContain("[artifact:aaaaaaaa]");
       expect(issue.body).toContain("[artifact:repo://mandible@main/results/report.md]");
       expect(issue.body).toContain("Naked artifact:aaaaaaa changes.");
