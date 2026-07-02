@@ -1837,6 +1837,45 @@ describe("provider/artifact substrate", () => {
     }));
   });
 
+  it("resolves provider issue refs by project_key and keeps checkout ids out of graph identity", () => {
+    const issueId = createLedgerIssue("feedbax", "fbx1234", "Feedbax provider ref");
+    db.prepare("UPDATE ledger_project_checkouts SET work_repo_id = ? WHERE project_id = ?")
+      .run("20-feedbax-feedbax", "prj_feedbax");
+
+    ingestProviderManifest(db, {
+      manifest: {
+        kind: "TrainingRunManifest",
+        schema_version: "feedbax.manifest.v1",
+        id: "run-with-feedbax-key",
+        status: "completed",
+        provenance: {
+          issues: ["feedbax/fbx1234"],
+        },
+      },
+    }, 1000, tempDir);
+
+    const graph = getIndexedGraph(db, { mode: "provider-lineage", limit: 100 });
+    const issueNode = graph.nodes.find((node) => node.id === "issue:feedbax:fbx1234");
+    expect(issueNode).toMatchObject({
+      type: "issue",
+      repo_id: "feedbax",
+      detail: expect.objectContaining({
+        ledger_issue_id: issueId,
+        project_key: "feedbax",
+      }),
+    });
+    expect(graph.nodes.some((node) => node.id === "issue:20-feedbax-feedbax:fbx1234")).toBe(false);
+    expect(graph.edges).toContainEqual(expect.objectContaining({
+      source: "issue:feedbax:fbx1234",
+      target: "run:feedbax:run-with-feedbax-key",
+      type: "requested_by",
+      metadata: expect.objectContaining({
+        project_key: "feedbax",
+        resolution_status: "resolved",
+      }),
+    }));
+  });
+
   it("keeps provider-scoped issue refs when ledger resolution is unresolved or ambiguous", () => {
     createLedgerIssue("alpha", "dupe123", "Alpha duplicate");
     createLedgerIssue("beta", "dupe123", "Beta duplicate");

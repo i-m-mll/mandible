@@ -424,6 +424,11 @@ function tableExists(db: Db, table: string): boolean {
   return Boolean(row);
 }
 
+function columnExists(db: Db, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === column);
+}
+
 function artifactRootFromSettings(db?: Db): string | undefined {
   if (!db || !tableExists(db, "settings")) return undefined;
   const row = db.prepare(
@@ -918,6 +923,8 @@ function splitProviderIssueRef(rawRef: string): { projectRef?: string; issueRef:
 function projectIdForRef(db: Db, projectRef: string | undefined): string | null {
   const ref = projectRef?.trim();
   if (!ref || !tableExists(db, "ledger_projects")) return null;
+  const hasProjectKey = columnExists(db, "ledger_projects", "project_key");
+  const projectKeyPredicate = hasProjectKey ? "OR lower(project_key) = lower(@ref)" : "";
   const checkoutPredicate = tableExists(db, "ledger_project_checkouts")
     ? `UNION
        SELECT project_id AS id FROM ledger_project_checkouts
@@ -926,6 +933,7 @@ function projectIdForRef(db: Db, projectRef: string | undefined): string | null 
   const rows = db.prepare(
     `SELECT id FROM ledger_projects
       WHERE lower(display_name) = lower(@ref)
+         ${projectKeyPredicate}
          OR id = @ref
          OR remote_identity = @ref
      ${checkoutPredicate}`
@@ -989,9 +997,10 @@ function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRe
   metadata: JsonRecord;
 } | null {
   if (!tableExists(db, "ledger_issues") || !tableExists(db, "ledger_projects")) return null;
+  const projectKeyExpr = columnExists(db, "ledger_projects", "project_key") ? "p.project_key" : "''";
   const row = db.prepare(
     `SELECT i.id, i.short_id, i.project_id, i.title, i.status, i.kind, i.priority,
-            p.display_name, c.work_repo_id, c.root, c.name AS checkout_name
+            ${projectKeyExpr} AS project_key, p.display_name, c.work_repo_id, c.root, c.name AS checkout_name
        FROM ledger_issues i
        JOIN ledger_projects p ON p.id = i.project_id
        LEFT JOIN ledger_project_checkouts c ON c.project_id = i.project_id
@@ -1006,6 +1015,7 @@ function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRe
     status: string;
     kind: string;
     priority: string;
+    project_key: string;
     display_name: string;
     work_repo_id: string | null;
     root: string | null;
@@ -1013,7 +1023,7 @@ function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRe
   } | undefined;
   if (!row) return null;
   const displayId = row.short_id || row.id.slice(0, 7);
-  const repoId = row.work_repo_id ?? (row.root ? path.basename(row.root) : row.project_id);
+  const repoId = row.project_key || row.work_repo_id || (row.root ? path.basename(row.root) : row.project_id);
   const nodeId = `issue:${repoId}:${displayId}`;
   upsertGraphEntity(db, {
     id: nodeId,
@@ -1036,6 +1046,7 @@ function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRe
     detail: {
       ledger_issue_id: row.id,
       project_id: row.project_id,
+      project_key: row.project_key || null,
       repo_root: row.root,
       repo_name: row.checkout_name ?? row.display_name,
       display_id: displayId,
@@ -1053,6 +1064,7 @@ function ledgerIssueGraphInfo(db: Db, issueId: string, providerId: string, rawRe
       issue_ref: rawRef,
       ledger_issue_id: row.id,
       project_id: row.project_id,
+      project_key: row.project_key || null,
       display_id: displayId,
       resolution_status: "resolved",
       resolution_source: "ledger",

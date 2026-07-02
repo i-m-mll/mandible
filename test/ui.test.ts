@@ -1399,6 +1399,41 @@ describe('issue deep links', () => {
     expect(card?.querySelector('.ledger-comment-card__body.spec-panel')?.textContent).toContain('Pending issue body');
   });
 
+  it('uses the canonical project key for synthesized issue detail copy refs', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const checkoutRepos: IssueRepoSummary[] = [{
+      repo_id: '20-feedbax-feedbax',
+      project_key: 'feedbax',
+      repo_name: 'Feedbax',
+      repo_root: '/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax',
+      open_count: 1,
+      merged_count: 0,
+      closed_count: 0,
+      issues: [{
+        id: 'fbx1234',
+        repo_id: '20-feedbax-feedbax',
+        repo_name: 'Feedbax',
+        title: 'Feedbax synthesized issue',
+        status: 'open',
+        labels: ['error'],
+        author: 'MLL',
+        created_at: '2026-05-30T12:00:00.000Z',
+        description: 'Pending issue body',
+      }],
+    }];
+
+    render(h(IssuesView, {
+      repos: checkoutRepos,
+      onRescan: async () => undefined,
+      initialRepoId: '20-feedbax-feedbax',
+      initialIssueId: 'fbx1234',
+    }));
+
+    expect(await screen.findByRole('heading', { name: 'Feedbax synthesized issue' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Copy feedbax/fbx1234' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copy 20-feedbax-feedbax/fbx1234' })).toBeNull();
+  });
+
   it('renders initial-stage comments before full ledger detail resolves', async () => {
     let resolveFullDetail: (response: Response) => void = () => undefined;
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
@@ -1711,15 +1746,23 @@ describe('issue deep links', () => {
 function issueDetailProjection({
   displayId,
   title,
+  body = 'Hydrated body',
   comments = [],
   stage = 'full',
   timelinePartial,
+  projectKey = 'mandible',
+  repoId = 'mandible',
+  repoName = 'mandible',
 }: {
   displayId: string;
   title: string;
+  body?: string;
   comments?: string[];
   stage?: 'initial' | 'full';
   timelinePartial?: boolean;
+  projectKey?: string | null;
+  repoId?: string | null;
+  repoName?: string | null;
 }) {
   const now = Date.now();
   const author = { id: null, type: 'mandible_user', display: 'MLL' };
@@ -1737,16 +1780,17 @@ function issueDetailProjection({
     display_id: displayId,
     project: {
       id: 'proj_1',
+      project_key: projectKey,
       display_name: 'mandible',
       remote_identity: '',
       upstream_identity: '',
-      repo_id: 'mandible',
-      repo_name: 'mandible',
+      repo_id: repoId,
+      repo_name: repoName,
       repo_root: '/repo',
       default_branch: 'main',
     },
     title,
-    body: 'Hydrated body',
+    body,
     status: 'open',
     resolution: null,
     kind: 'bug',
@@ -1765,7 +1809,7 @@ function issueDetailProjection({
         id: `${displayId}:body`,
         kind: 'body',
         ordinal: 0,
-        body: 'Hydrated body',
+        body,
         author,
         source: 'mandible',
         created_at: now,
@@ -1934,6 +1978,48 @@ describe('LedgerIssueDetail', () => {
     expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
     expect(document.querySelector('.ledger-issue-detail__title-row .status-pill')).toBeNull();
     expect(document.querySelector('.ledger-issue-detail__header-actions .status-pill')).toBeNull();
+  });
+
+  it('prefers canonical project keys over checkout repo ids in copy refs', () => {
+    const detail = issueDetailProjection({
+      displayId: 'fbx1234',
+      title: 'Feedbax ref',
+      projectKey: 'feedbax',
+      repoId: '20-feedbax-feedbax',
+      repoName: 'Feedbax',
+    });
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    expect(screen.getByRole('button', { name: 'Copy feedbax/fbx1234' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Copy 20-feedbax-feedbax/fbx1234' })).toBeNull();
+  });
+
+  it('uses canonical project keys for local rendered issue and comment links', () => {
+    const detail = issueDetailProjection({
+      displayId: 'fbx1234',
+      title: 'Feedbax rendered refs',
+      body: 'See [issue:def456] and [comment:#com_1].',
+      projectKey: 'feedbax',
+      repoId: '20-feedbax-feedbax',
+      repoName: 'Feedbax',
+    });
+
+    render(h(LedgerIssueDetail, { detail }));
+
+    const issueLinks = Array.from(document.querySelectorAll('a.ledger-xref')).map((node) => ({
+      text: node.textContent,
+      href: (node as HTMLAnchorElement).getAttribute('href'),
+    }));
+    expect(issueLinks).toContainEqual({
+      text: 'def456',
+      href: '#/issues?repo=feedbax&issue=def456',
+    });
+    expect(issueLinks).toContainEqual({
+      text: 'fbx1234#com_1',
+      href: '#/issues?repo=feedbax&issue=fbx1234&comment=com_1',
+    });
+    expect(issueLinks.some((link) => link.href?.includes('20-feedbax-feedbax'))).toBe(false);
   });
 
   it('renders ledger issue evidence and sanitizes Markdown HTML', () => {

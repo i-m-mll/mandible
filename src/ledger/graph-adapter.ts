@@ -7,6 +7,7 @@ interface ProjectInfo {
   repo_id: string;
   repo_name: string;
   repo_root: string;
+  project_key?: string;
   candidates: string[];
 }
 
@@ -71,6 +72,15 @@ function tableExists(db: Db, table: string): boolean {
       .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
       .get(table);
     return Boolean(row);
+  } catch {
+    return false;
+  }
+}
+
+function columnExists(db: Db, table: string, column: string): boolean {
+  try {
+    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    return columns.some((entry) => entry.name === column);
   } catch {
     return false;
   }
@@ -166,8 +176,9 @@ function getProjectInfos(db: Db): Map<string, ProjectInfo> {
   if (!tableExists(db, "ledger_projects") || !tableExists(db, "ledger_project_checkouts")) {
     return new Map();
   }
+  const projectKeyExpr = columnExists(db, "ledger_projects", "project_key") ? "p.project_key" : "''";
   const rows = db.prepare(
-    `SELECT p.id AS project_id, p.display_name, p.remote_identity,
+    `SELECT p.id AS project_id, ${projectKeyExpr} AS project_key, p.display_name, p.remote_identity,
             c.work_repo_id, c.root, c.name AS checkout_name, c.default_branch,
             c.updated_at AS checkout_updated_at
        FROM ledger_projects p
@@ -175,6 +186,7 @@ function getProjectInfos(db: Db): Map<string, ProjectInfo> {
       ORDER BY p.display_name, c.updated_at DESC`,
   ).all() as Array<{
     project_id: string;
+    project_key: string;
     display_name: string;
     remote_identity: string;
     work_repo_id: string | null;
@@ -189,6 +201,7 @@ function getProjectInfos(db: Db): Map<string, ProjectInfo> {
     const existing = byProject.get(row.project_id);
     const candidates = uniqueStrings([
       row.project_id,
+      row.project_key,
       row.display_name,
       row.remote_identity,
       row.work_repo_id,
@@ -200,9 +213,10 @@ function getProjectInfos(db: Db): Map<string, ProjectInfo> {
     if (!existing) {
       byProject.set(row.project_id, {
         project_id: row.project_id,
-        repo_id: row.work_repo_id ?? row.root ?? row.project_id,
+        repo_id: row.project_key || row.work_repo_id || row.root || row.project_id,
         repo_name: row.checkout_name ?? row.display_name ?? basename(row.root) ?? row.project_id,
         repo_root: row.root ?? "",
+        project_key: row.project_key || undefined,
         candidates,
       });
       continue;
@@ -558,12 +572,14 @@ export function getLedgerGraphFilterOptions(db: Db): { repos: string[]; branches
   if (!tableExists(db, "ledger_project_checkouts") || !tableExists(db, "ledger_projects")) {
     return { repos: [], branches: [] };
   }
+  const projectKeyExpr = columnExists(db, "ledger_projects", "project_key") ? "p.project_key" : "''";
   const rows = db.prepare(
-    `SELECT p.display_name, p.remote_identity,
+    `SELECT ${projectKeyExpr} AS project_key, p.display_name, p.remote_identity,
             c.work_repo_id, c.root, c.name, c.default_branch
        FROM ledger_projects p
        LEFT JOIN ledger_project_checkouts c ON c.project_id = p.id`,
   ).all() as Array<{
+    project_key: string;
     display_name: string;
     remote_identity: string;
     work_repo_id: string | null;
@@ -574,6 +590,7 @@ export function getLedgerGraphFilterOptions(db: Db): { repos: string[]; branches
   for (const row of rows) {
     for (const repo of uniqueStrings([
       row.name,
+      row.project_key,
       row.display_name,
       row.work_repo_id,
       basename(row.root),
