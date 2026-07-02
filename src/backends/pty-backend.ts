@@ -2,7 +2,14 @@ import { EventEmitter } from "node:events";
 import type { IPty, IDisposable } from "node-pty";
 import pty from "node-pty";
 import type { WebSocket } from "ws";
-import type { AgenticBackend, BackendMetaUpdate, BackendStatusEvent } from "../agentic-backend.js";
+import type {
+  AgenticBackend,
+  BackendMetaUpdate,
+  BackendStatusEvent,
+  PermissionAwareBackend,
+  PermissionDecision,
+  PermissionRequest,
+} from "../agentic-backend.js";
 import { RingBuffer } from "../ring-buffer.js";
 import { computePresetUnion } from "../presets.js";
 import { getDb } from "../db.js";
@@ -10,7 +17,12 @@ import {
   extractSettingsPath,
   injectMandibleClaudeHookSettingsArgs,
 } from "../claude-hook-settings.js";
-import { PtyScreenObserver, shouldEnablePtyScreenModel } from "../screen-model.js";
+import { detectClaudePermissionPrompt } from "../claude-permission-patterns.js";
+import {
+  PtyScreenObserver,
+  shouldEnablePtyScreenModel,
+  type ScreenClassification,
+} from "../screen-model.js";
 import type {
   ConsoleAttentionState,
   ConsolePromptQueueBlockedBy,
@@ -35,7 +47,15 @@ const POLLUTED_ENV_KEYS_EXACT = new Set([
   "GIT_CONFIG_COUNT",
 ]);
 
-export class PTYBackend extends EventEmitter implements AgenticBackend {
+type PendingPtyPermission = {
+  request: PermissionRequest;
+  screenHash: string;
+  identity: string;
+};
+
+const PTY_PERMISSION_TTL_MS = 24 * 60 * 60 * 1_000;
+
+export class PTYBackend extends EventEmitter implements AgenticBackend, PermissionAwareBackend {
   readonly id: string;
   meta: ConsoleSession;
 
@@ -54,6 +74,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   private restartTimer: NodeJS.Timeout | null = null;
   private promptQuietFallbackTimer: NodeJS.Timeout | null = null;
   private screenObserver: PtyScreenObserver | null = null;
+  private pendingPtyPermission: PendingPtyPermission | null = null;
   private lastPtyOutputAt = 0;
   private lastPromptFlushedAt: number | null = null;
   private destroyed = false;
@@ -70,7 +91,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
         provider: meta.agent_type,
         cols: meta.cols,
         rows: meta.rows,
-        onAttentionChange: (attention) => this.publishAttention(attention),
+        onAttentionChange: (attention, classification) => this.publishAttention(attention, classification),
       });
     }
   }
@@ -242,6 +263,36 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
 
     this.flushPromptToPty(prompt);
     this.publishPromptQueueState();
+  }
+
+  getPendingPermissions(): PermissionRequest[] {
+    return this.pendingPtyPermission ? [{ ...this.pendingPtyPermission.request }] : [];
+  }
+
+  resolvePermission(requestId: string, decision: PermissionDecision): boolean {
+    const pending = this.pendingPtyPermission;
+    if (!pending || pending.request.id !== requestId) {
+      return false;
+    }
+    const optionKey = this.resolvePtyPermissionOptionKey(pending.request, decision);
+    if (!optionKey) {
+      return false;
+    }
+
+    const currentPrompt = this.currentClaudePermissionPrompt();
+    if (
+      !currentPrompt ||
+      currentPrompt.detect_only ||
+      currentPrompt.identity !== pending.identity ||
+      currentPrompt.screen_hash !== pending.screenHash
+    ) {
+      this.clearPtyPermission();
+      return false;
+    }
+
+    this.write(optionKey);
+    this.clearPtyPermission();
+    return true;
   }
 
   addWsClient(ws: WebSocket): void {
@@ -502,16 +553,136 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.emit("status", event);
   }
 
-  private publishAttention(attention: ConsoleAttentionState | null): void {
+  private publishAttention(
+    attention: ConsoleAttentionState | null,
+    classification?: ScreenClassification,
+  ): void {
     this.meta = {
       ...this.meta,
       attention: attention?.active ? attention : null,
       updated_at: Date.now(),
     };
     this.emit("attention", attention);
+    this.syncPtyPermission(attention, classification);
     if (attention?.active && attention.kind === "input_prompt") {
       this.flushQueuedPrompts();
     }
+  }
+
+  private syncPtyPermission(
+    attention: ConsoleAttentionState | null,
+    classification?: ScreenClassification,
+  ): void {
+    if (!attention?.active || attention.kind !== "permission_menu") {
+      this.clearPtyPermission();
+      return;
+    }
+
+    const prompt = classification?.claude_permission;
+    if (!prompt || prompt.detect_only || prompt.options.length === 0) {
+      this.clearPtyPermission();
+      return;
+    }
+
+    const id = `pty:${prompt.identity.slice(0, 24)}`;
+    if (this.pendingPtyPermission?.request.id === id) {
+      this.pendingPtyPermission = {
+        ...this.pendingPtyPermission,
+        screenHash: prompt.screen_hash,
+        request: {
+          ...this.pendingPtyPermission.request,
+          tool_input: {
+            ...(typeof this.pendingPtyPermission.request.tool_input === "object" &&
+            this.pendingPtyPermission.request.tool_input !== null
+              ? this.pendingPtyPermission.request.tool_input
+              : {}),
+            screen_hash: prompt.screen_hash,
+          },
+        },
+      };
+      return;
+    }
+
+    const createdAt = Date.now();
+    const request: PermissionRequest = {
+      id,
+      session_id: this.id,
+      tool_name: this.permissionToolName(prompt.kind, prompt.subject),
+      tool_input: {
+        question: prompt.question,
+        subject: prompt.subject,
+        prompt_kind: prompt.kind,
+        screen_hash: prompt.screen_hash,
+      },
+      created_at: createdAt,
+      expires_at: createdAt + PTY_PERMISSION_TTL_MS,
+      title: prompt.question,
+      display_name: prompt.subject,
+      description: prompt.subject,
+      decision_reason: "Claude is waiting for a numbered terminal permission response.",
+      options: prompt.options,
+    };
+
+    this.pendingPtyPermission = {
+      request,
+      screenHash: prompt.screen_hash,
+      identity: prompt.identity,
+    };
+    this.emit("permission", request);
+  }
+
+  private clearPtyPermission(): void {
+    const cleared = this.pendingPtyPermission;
+    this.pendingPtyPermission = null;
+    if (cleared) {
+      this.emit("permission_cleared", { request_id: cleared.request.id });
+    }
+  }
+
+  private resolvePtyPermissionOptionKey(
+    request: PermissionRequest,
+    decision: PermissionDecision,
+  ): string | null {
+    if (decision.startsWith("option:")) {
+      const key = decision.slice("option:".length);
+      return request.options?.some((option) => option.key === key) ? key : null;
+    }
+
+    const fallback = request.options?.find((option) => {
+      const label = option.label.toLowerCase();
+      if (decision === "allow_always") {
+        return label.includes("don't ask") || label.includes("always");
+      }
+      if (decision === "allow") {
+        return /^(yes|allow|approve|proceed|continue)\b/.test(label);
+      }
+      if (decision === "deny" || decision === "reject_once" || decision === "reject_always") {
+        return /^(no|deny|reject)\b/.test(label);
+      }
+      return false;
+    });
+    return fallback?.key ?? null;
+  }
+
+  private currentClaudePermissionPrompt() {
+    const snapshot = this.screenObserver?.snapshot();
+    if (!snapshot) {
+      return null;
+    }
+    return detectClaudePermissionPrompt(snapshot.text);
+  }
+
+  private permissionToolName(kind: string, subject: string): string {
+    if (kind === "bash_command") {
+      return "Bash";
+    }
+    if (kind === "file_edit") {
+      return "Edit";
+    }
+    if (kind === "mcp_tool") {
+      return subject;
+    }
+    return "Claude";
   }
 
   private extractModel(args: string[]): string | null {

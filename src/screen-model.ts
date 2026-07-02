@@ -1,4 +1,8 @@
 import type { ConsoleAttentionKind, ConsoleAttentionState, ConsoleSession } from "./types.js";
+import {
+  detectClaudePermissionPrompt,
+  type ClaudePermissionPrompt,
+} from "./claude-permission-patterns.js";
 
 const DEFAULT_SETTLE_MS = 125;
 const DEFAULT_UNKNOWN_QUIET_MS = 1_000;
@@ -24,6 +28,7 @@ export interface ScreenClassification {
   confidence: ConsoleAttentionState["detail"]["confidence"];
   reason: string;
   matched?: string;
+  claude_permission?: ClaudePermissionPrompt;
 }
 
 export interface PtyScreenObserverOptions {
@@ -34,7 +39,7 @@ export interface PtyScreenObserverOptions {
   settleMs?: number;
   unknownQuietMs?: number;
   now?: () => number;
-  onAttentionChange?: (state: ConsoleAttentionState | null) => void;
+  onAttentionChange?: (state: ConsoleAttentionState | null, classification?: ScreenClassification) => void;
 }
 
 export function shouldEnablePtyScreenModel(meta: ConsoleSession): boolean {
@@ -103,7 +108,7 @@ export class PtyScreenObserver {
   private readonly settleMs: number;
   private readonly unknownQuietMs: number;
   private readonly now: () => number;
-  private readonly onAttentionChange?: (state: ConsoleAttentionState | null) => void;
+  private readonly onAttentionChange?: (state: ConsoleAttentionState | null, classification?: ScreenClassification) => void;
   private readonly terminal: SimpleHeadlessTerminal;
   private settleTimer: NodeJS.Timeout | null = null;
   private lastSignature: string | null = null;
@@ -224,7 +229,7 @@ export class PtyScreenObserver {
       return;
     }
     this.currentAttention = next;
-    this.onAttentionChange?.(next);
+    this.onAttentionChange?.(next, classification);
   }
 
   private scheduleSettle(): void {
@@ -398,6 +403,21 @@ class SimpleHeadlessTerminal {
 
 function detectPermissionMenu(text: string, provider: Provider): ScreenClassification | null {
   const lower = text.toLowerCase();
+  const claudePrompt = provider === "claude" ? detectClaudePermissionPrompt(text) : null;
+  if (claudePrompt) {
+    return {
+      kind: "permission_menu",
+      source: "pty_screen",
+      requires_attention: true,
+      confidence: claudePrompt.detect_only ? "medium" : "high",
+      reason: claudePrompt.detect_only
+        ? "screen matches a Claude attention prompt without structured options"
+        : "screen matches a Claude permission prompt",
+      matched: claudePrompt.matched,
+      claude_permission: claudePrompt,
+    };
+  }
+
   const claudePermission =
     provider === "claude" &&
     (

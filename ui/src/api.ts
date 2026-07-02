@@ -1293,7 +1293,13 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
 }
 
 export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn' | 'acp';
-export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always' | 'reject_once' | 'reject_always';
+export type ConsolePermissionDecision =
+  | 'deny'
+  | 'allow'
+  | 'allow_always'
+  | 'reject_once'
+  | 'reject_always'
+  | `option:${string}`;
 
 export type ConsolePermissionRequest = {
   id: string;
@@ -1308,6 +1314,11 @@ export type ConsolePermissionRequest = {
   blocked_path?: string;
   decision_reason?: string;
   agent_id?: string;
+  options?: Array<{
+    key: string;
+    label: string;
+    decision?: ConsolePermissionDecision;
+  }>;
 };
 
 export type ConsoleSessionOptions = {

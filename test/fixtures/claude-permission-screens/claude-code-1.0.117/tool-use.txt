@@ -1,0 +1,9 @@
+Claude is requesting permission to use the Read tool
+
+Tool: Read
+Path: /tmp/mandible-fixture/README.md
+
+Do you want to allow this tool use?
+> 1. Yes
+  2. Yes, and don't ask again for Read
+  3. No, and tell Claude what to do differently

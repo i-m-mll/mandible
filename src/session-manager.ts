@@ -663,6 +663,13 @@ export class SessionManager {
       });
     });
 
+    backend.on("permission_cleared", (event: { request_id: string }) => {
+      broadcast("console:permission:cleared", {
+        console_session_id: backend.id,
+        request_id: event.request_id,
+      });
+    });
+
     // Bug: 7ab2f3e — Wire channel event bridge for PTY backends with a
     // mandible_session_id. The bridge listens for ChannelRegistry events
     // and injects them into the backend's stream. Handles late registration

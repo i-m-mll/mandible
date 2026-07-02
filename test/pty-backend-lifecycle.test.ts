@@ -263,4 +263,82 @@ describe("PTYBackend lifecycle", () => {
     expect(() => backend.sendPrompt("echo no")).toThrow("unsupported_prompt_backend");
     expect(activePtyWrite()).not.toHaveBeenCalled();
   });
+
+  it("turns Claude permission screens into option-key PTY writes", async () => {
+    const backend = new PTYBackend(
+      makeMeta({ command: "claude", agent_type: "claude", status: "stopped" }),
+      makeLogger(),
+    );
+    const requests: unknown[] = [];
+    backend.on("permission", (request) => requests.push(request));
+
+    backend.start();
+    (backend as unknown as { handleData(data: string): void }).handleData(
+      "\x1b[2J\x1b[HClaude needs your permission to use Bash\r\n\r\n" +
+        "Bash command:\r\nnpm test\r\n\r\n" +
+        "Do you want to allow this command?\r\n" +
+        "> 1. Yes\r\n  2. Yes, and don't ask again\r\n  3. No, and tell Claude what to do differently",
+    );
+    await vi.advanceTimersByTimeAsync(130);
+
+    const pending = backend.getPendingPermissions();
+    expect(requests).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      tool_name: "Bash",
+      display_name: "npm test",
+      options: [
+        { key: "1", label: "Yes", decision: "option:1" },
+        { key: "2", label: "Yes, and don't ask again", decision: "option:2" },
+        { key: "3", label: "No, and tell Claude what to do differently", decision: "option:3" },
+      ],
+    });
+
+    expect(backend.resolvePermission(pending[0].id, "option:2")).toBe(true);
+
+    expect(activePtyWrite()).toHaveBeenCalledWith("2");
+    expect(backend.getPendingPermissions()).toEqual([]);
+  });
+
+  it("does not write a PTY permission answer when the settled screen hash changed", async () => {
+    const backend = new PTYBackend(
+      makeMeta({ command: "claude", agent_type: "claude", status: "stopped" }),
+      makeLogger(),
+    );
+    const cleared: unknown[] = [];
+    backend.on("permission_cleared", (event) => cleared.push(event));
+
+    backend.start();
+    (backend as unknown as { handleData(data: string): void }).handleData(
+      "\x1b[2J\x1b[HClaude needs your permission to use Bash\r\n\r\n" +
+        "Bash command:\r\nnpm test\r\n\r\n" +
+        "Do you want to allow this command?\r\n" +
+        "> 1. Yes\r\n  2. Yes, and don't ask again\r\n  3. No",
+    );
+    await vi.advanceTimersByTimeAsync(130);
+    const [pending] = backend.getPendingPermissions();
+
+    (backend as unknown as { handleData(data: string): void }).handleData(
+      "\x1b[2J\x1b[HWhat would you like to do?\n> ",
+    );
+    await vi.advanceTimersByTimeAsync(130);
+
+    expect(backend.resolvePermission(pending.id, "option:1")).toBe(false);
+    expect(activePtyWrite()).not.toHaveBeenCalled();
+    expect(cleared).toHaveLength(1);
+    expect(backend.getPendingPermissions()).toEqual([]);
+  });
+
+  it("does not inject from generic unclassified permission attention", () => {
+    const backend = new PTYBackend(
+      makeMeta({ command: "claude", agent_type: "claude", status: "stopped" }),
+      makeLogger(),
+    );
+
+    backend.start();
+    publishAttention(backend, "permission_menu");
+
+    expect(backend.getPendingPermissions()).toEqual([]);
+    expect(backend.resolvePermission("missing", "option:1")).toBe(false);
+    expect(activePtyWrite()).not.toHaveBeenCalled();
+  });
 });
