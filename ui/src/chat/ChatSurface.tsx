@@ -15,6 +15,8 @@ import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
 import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
+import { ContextUsageRing } from './ContextUsageRing';
+import type { ChatUsageSummary } from './contextUsage';
 import {
   deriveLiveLabel,
   deriveTokenCount,
@@ -30,6 +32,8 @@ export type ChatSurfaceProps = StreamRendererProps & {
   activePermissionRequest?: ConsolePermissionRequest | null;
   permissionBackendType?: ConsoleBackendType;
   onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
+  usageSummary?: ChatUsageSummary;
+  onUsageOpen?: () => void;
 };
 
 const ESTIMATED_ROW_HEIGHT = 168;
@@ -176,6 +180,8 @@ export function ChatSurface({
   activePermissionRequest,
   permissionBackendType = 'sdk',
   onPermissionRespond,
+  usageSummary,
+  onUsageOpen,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -401,6 +407,7 @@ export function ChatSurface({
   return (
     <div className="stream-renderer">
       <div className="stream-renderer__toolbar" aria-label="Conversation export actions">
+        <ContextUsageRing usage={usageSummary} size="sm" onClick={onUsageOpen} />
         <button
           type="button"
           className="stream-renderer__toolbar-btn"

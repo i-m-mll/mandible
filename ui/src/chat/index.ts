@@ -1,5 +1,22 @@
 export { ChatSurface } from './ChatSurface';
 export type { ChatSurfaceProps } from './ChatSurface';
+export { ChatOverlay } from './ChatOverlay';
+export type { ChatOverlayProps } from './ChatOverlay';
+export { ContextUsageRing } from './ContextUsageRing';
+export { UsageModal } from './UsageModal';
+export { useStatuslineTelemetry } from './useStatuslineTelemetry';
+export {
+  deriveChatUsageSummary,
+  effectiveClaudeInputTokens,
+  getContextSeverity,
+  selectContextUsage,
+} from './contextUsage';
+export type {
+  ChatUsageSummary,
+  ContextUsage,
+  ContextUsageSeverity,
+  StatuslineTelemetry,
+} from './contextUsage';
 export {
   buildStreamState,
   boundToolResultBlock,

@@ -1530,6 +1530,18 @@ export async function getConsoleSessionUsage<T = Record<string, unknown>>(
   return payload.usage ?? [];
 }
 
+export async function getStatuslineTelemetry<T = Record<string, unknown>>(params: {
+  sessionRef?: string | null;
+  transcriptPath?: string | null;
+}): Promise<T | null> {
+  const query = new URLSearchParams();
+  if (params.sessionRef) query.set('sessionRef', params.sessionRef);
+  if (params.transcriptPath) query.set('transcriptPath', params.transcriptPath);
+  const response = await apiGet(`/api/hooks/statusline?${query.toString()}`);
+  const payload = await parseMaybeJson(response) as { telemetry?: T | null };
+  return payload.telemetry ?? null;
+}
+
 // ── Message params API (Bug: 790433d) ──
 
 export type MessageParams = {

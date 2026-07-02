@@ -223,6 +223,38 @@ describe("Claude hook routes", () => {
       },
     });
   });
+
+  it("returns last-known statusline telemetry by session ref", async () => {
+    db.prepare(`
+      INSERT INTO console_session_telemetry (
+        telemetry_key, console_session_id, provider_session_id, transcript_path,
+        model, context_used_percentage, context_window_size,
+        raw_payload_json, received_at
+      ) VALUES (
+        'provider:external-claude-read', NULL, 'external-claude-read', NULL,
+        'Claude', 64, 200000,
+        '{}', 12345
+      )
+    `).run();
+
+    const response = await router.invoke({
+      method: "GET",
+      url: "/api/hooks/statusline?sessionRef=external-claude-read",
+    });
+
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      telemetry: {
+        telemetry_key: "provider:external-claude-read",
+        provider_session_id: "external-claude-read",
+        context_window: {
+          used_percentage: 64,
+          context_window_size: 200000,
+        },
+        received_at: 12345,
+      },
+    });
+  });
 });
 
 describe("Claude hook settings", () => {

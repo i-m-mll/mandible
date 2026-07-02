@@ -43,6 +43,22 @@ interface StatuslineTelemetry {
 }
 
 export function registerHookRoutes(server: RouteRegistrar): void {
+  server.get("/api/hooks/statusline", (req, res) => {
+    const sessionRef =
+      normalizeText(req.query.sessionRef) ??
+      normalizeText(req.query.session_id) ??
+      normalizeText(req.query.sessionId);
+    const transcriptPath =
+      normalizeText(req.query.transcriptPath) ??
+      normalizeText(req.query.transcript_path);
+    if (!sessionRef && !transcriptPath) {
+      sendJson(res, 400, { error: "sessionRef_or_transcriptPath_required" });
+      return;
+    }
+    const telemetry = readLatestStatuslineTelemetry(sessionRef, transcriptPath);
+    sendJson(res, 200, { telemetry: telemetry ? serializeTelemetry(telemetry) : null });
+  }, { fileRpc: "allow" });
+
   server.post("/api/hooks/ingest-nudge", async (req, res) => {
     const payload = parseHookPayload(req);
     if (!payload.sessionRef && !payload.transcriptPath) {
@@ -196,6 +212,68 @@ function persistStatuslineTelemetry(input: {
       received_at = excluded.received_at
   `).run(telemetry);
   return telemetry;
+}
+
+function readLatestStatuslineTelemetry(
+  sessionRef: string | null,
+  transcriptPath: string | null,
+): StatuslineTelemetry | null {
+  const resolved = resolveHookSession(sessionRef, transcriptPath);
+  const keys = [
+    resolved.consoleSessionId ? `console:${resolved.consoleSessionId}` : null,
+    resolved.providerSessionId ? `provider:${resolved.providerSessionId}` : null,
+    sessionRef ? `provider:${sessionRef}` : null,
+    transcriptPath ? `transcript:${transcriptPath}` : null,
+  ].filter((key): key is string => Boolean(key));
+  const db = getDb();
+  const row = keys.length > 0
+    ? db.prepare(`
+        SELECT *
+        FROM console_session_telemetry
+        WHERE telemetry_key IN (${keys.map(() => "?").join(",")})
+           OR console_session_id = ?
+           OR provider_session_id = ?
+           OR transcript_path = ?
+        ORDER BY received_at DESC
+        LIMIT 1
+      `).get(
+        ...keys,
+        resolved.consoleSessionId ?? sessionRef,
+        resolved.providerSessionId ?? sessionRef,
+        transcriptPath,
+      )
+    : db.prepare(`
+        SELECT *
+        FROM console_session_telemetry
+        WHERE console_session_id = ?
+           OR provider_session_id = ?
+           OR transcript_path = ?
+        ORDER BY received_at DESC
+        LIMIT 1
+      `).get(resolved.consoleSessionId ?? sessionRef, resolved.providerSessionId ?? sessionRef, transcriptPath);
+  return row ? telemetryFromRow(row as Record<string, unknown>) : null;
+}
+
+function telemetryFromRow(row: Record<string, unknown>): StatuslineTelemetry {
+  return {
+    telemetryKey: String(row.telemetry_key ?? ""),
+    consoleSessionId: normalizeText(row.console_session_id),
+    providerSessionId: normalizeText(row.provider_session_id),
+    transcriptPath: normalizeText(row.transcript_path),
+    model: normalizeText(row.model),
+    contextUsedPercentage: numberOrNull(row.context_used_percentage),
+    contextWindowSize: integerOrNull(row.context_window_size),
+    contextInputTokens: integerOrNull(row.context_input_tokens),
+    contextOutputTokens: integerOrNull(row.context_output_tokens),
+    contextCacheCreationInputTokens: integerOrNull(row.context_cache_creation_input_tokens),
+    contextCacheReadInputTokens: integerOrNull(row.context_cache_read_input_tokens),
+    rateLimitFiveHourUsedPercentage: numberOrNull(row.rate_limit_five_hour_used_percentage),
+    rateLimitFiveHourResetsAt: normalizeText(row.rate_limit_five_hour_resets_at),
+    rateLimitSevenDayUsedPercentage: numberOrNull(row.rate_limit_seven_day_used_percentage),
+    rateLimitSevenDayResetsAt: normalizeText(row.rate_limit_seven_day_resets_at),
+    rawPayloadJson: typeof row.raw_payload_json === "string" ? row.raw_payload_json : "{}",
+    receivedAt: integerOrNull(row.received_at) ?? 0,
+  };
 }
 
 function resolveHookSession(sessionRef: string | null, transcriptPath: string | null): ResolvedHookSession {

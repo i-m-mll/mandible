@@ -15,6 +15,7 @@ import type {
   ConversationParser,
   ParseResult,
 } from "./types.js";
+import { extractCodexTokenCountContextUsage } from "./context-usage.js";
 
 // --- Raw record shapes ---
 
@@ -436,7 +437,26 @@ export class CodexParser implements ConversationParser {
           });
         }
       } else if (rec.type === "event_msg") {
-        // token_count, agent_reasoning, context_compacted, turn_aborted — skip
+        const evt = rec.payload as CodexEventMsg;
+        if (evt.type === "token_count") {
+          const contextUsage = extractCodexTokenCountContextUsage(evt);
+          if (contextUsage) {
+            blocks.push({
+              type: "event",
+              role: "system",
+              content: "token_count",
+              position: position++,
+              timestamp: ts,
+              parent_id: null,
+              metadata: {
+                source_event_type: "token_count",
+                visibility: "default_hidden",
+                context_usage: contextUsage,
+              },
+            });
+          }
+        }
+        // agent_reasoning, context_compacted, turn_aborted — skip
         // user_message events are duplicates of response_item user messages
       }
     }
