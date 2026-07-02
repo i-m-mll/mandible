@@ -1176,6 +1176,17 @@ describe('edgesToFlowEdges (pure)', () => {
     });
   });
 
+  it('keeps the Flow edge array stable when no-op echoes include still-unplaced edges', () => {
+    const placed = new Set(['a', 'b']);
+    const modelEdges = [edge('visible', 'a', 'b'), edge('hidden', 'a', 'shelf')];
+    const first = reconcileFlowEdges(modelEdges, placed, null);
+    const second = reconcileFlowEdges(modelEdges, placed, null, first);
+
+    expect(first).toHaveLength(1);
+    expect(second).toBe(first);
+    expect(second[0].id).toBe('visible');
+  });
+
   it('reuses model edge objects across no-op SSE echoes', () => {
     const previous = [edge('e1', 'a', 'b', 'blocks')];
     const incoming = [edge('e1', 'a', 'b', 'blocks')];

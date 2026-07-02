@@ -273,7 +273,7 @@ export function reconcileFlowEdges(
   previous: FlowEdge[] = [],
 ): FlowEdge[] {
   const previousById = new Map(previous.map((edge) => [edge.id, edge]));
-  let changed = previous.length !== edges.length;
+  let changed = false;
   const next = edgesToFlowEdges(edges, placedIds, selectedEdgeId).map((edge, index) => {
     const previousEdge = previousById.get(edge.id);
     if (previousEdge && sameFlowEdge(previousEdge, edge)) {
