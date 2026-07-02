@@ -46,6 +46,7 @@ import {
   resolveIssueRepoDeepLink,
   type IssueRepoSummary,
 } from '../ui/src/views/issues';
+import { readResolvedStylesheet } from './helpers/css-manifest';
 
 type ReactFlowMockNode = {
   id: string
@@ -3525,7 +3526,7 @@ describe('ArtifactsView', () => {
   });
 
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
-    const css = readFileSync('ui/src/style.css', 'utf8');
+    const css = readResolvedStylesheet();
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
@@ -3552,7 +3553,7 @@ describe('ArtifactsView', () => {
   });
 
   it('keeps auth light detail surfaces visually separated by CSS contract', () => {
-    const css = readFileSync('ui/src/style.css', 'utf8');
+    const css = readResolvedStylesheet();
     expect(css).toMatch(/\.app-content::before\s*\{[^}]*z-index:\s*0;/s);
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);

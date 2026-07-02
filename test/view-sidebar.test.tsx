@@ -7,10 +7,9 @@
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRef } from 'preact';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 
 import { ViewSidebar } from '../ui/src/components/ViewSidebar';
+import { readResolvedStylesheet } from './helpers/css-manifest';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so width persistence round-trips.
@@ -168,7 +167,7 @@ describe('ViewSidebar', () => {
   // guards the selector SHAPE; CDP (headless Chrome getComputedStyle +
   // getBoundingClientRect) is the real verification — see the issue's CDP run.
   it('uses a higher-specificity two-class selector for the resize handle (cascade guard)', () => {
-    const css = readFileSync(join(process.cwd(), 'ui/src/style.css'), 'utf8');
+    const css = readResolvedStylesheet();
     // The winning rule must be the two-class form, pinned to the right edge.
     expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*position:\s*absolute/);
     expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*right:\s*0/);

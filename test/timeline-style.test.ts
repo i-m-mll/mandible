@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const stylesheet = readFileSync('ui/src/style.css', 'utf8');
+import { readResolvedStylesheet } from './helpers/css-manifest';
+
+const stylesheet = readResolvedStylesheet();
 
 function cssRuleBody(selector: string): string {
   const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
