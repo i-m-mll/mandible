@@ -6,7 +6,13 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { App } from '../ui/src/app';
-import { getReviewSpec, patchSession, updateConversation, type InstanceInfo } from '../ui/src/api';
+import {
+  getReviewSpec,
+  invalidateApiGetCache,
+  patchSession,
+  updateConversation,
+  type InstanceInfo,
+} from '../ui/src/api';
 import {
   installTauriDeepLinkHandler,
   navigateToMandibleDeepLink,
@@ -142,6 +148,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
   cleanup();
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
@@ -3209,6 +3216,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: firstArtifact.id }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('one.md'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /one\.md/ })).toBeTruthy());
     expect(listCalls).toBe(1);
     expect(screen.queryByText('Loading artifacts...')).toBeNull();
 
@@ -3765,7 +3773,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialRef: ref }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
-    expect(screen.getByText('sidebar-first.md')).toBeTruthy();
+    expect(await screen.findByText('sidebar-first.md')).toBeTruthy();
     fireEvent.click(screen.getByLabelText('Artifact actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(ref)).toBeTruthy();
