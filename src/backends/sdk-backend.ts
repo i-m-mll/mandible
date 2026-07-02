@@ -390,6 +390,29 @@ implements
     return [...this.usageLog];
   }
 
+  cancelActivePrompt(): boolean {
+    const hadWork = this.processing || this.promptQueue.length > 0 || this.activeQuery !== null || this.abortController !== null;
+    this.promptQueue = [];
+    this.resolveAllPendingPermissions("deny");
+    void this.cancelActiveQuery();
+
+    if (hadWork) {
+      this.storeAndBroadcast({
+        type: "result",
+        subtype: "cancelled",
+        session_id: this.meta.provider_session_id ?? this.id,
+        duration_ms: 0,
+        num_turns: 0,
+        total_cost_usd: 0,
+        is_error: true,
+        errors: ["cancelled"],
+        stopReason: "cancelled",
+      });
+    }
+
+    return hadWork;
+  }
+
   getActiveSubagents(): SubagentInfo[] {
     return Array.from(this.subagentTree.values());
   }

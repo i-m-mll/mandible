@@ -4,10 +4,10 @@ import type { StreamEvent } from '../stream-renderer/types';
 import { ChatSurface } from '../../chat';
 import { ContextIndicator } from '../presets/ContextIndicator';
 import { PtyBanner } from './PtyBanner';
-import { SessionControls } from './SessionControls';
+import { SessionControls, SessionModelControl } from './SessionControls';
 import { LivePresetPills } from './LivePresetPills';
 import { MessageInfoPanel } from './MessageInfoPanel';
-import { Composer } from './Composer';
+import { Composer, type ComposerUsage, type QueuedPrompt } from './Composer';
 
 type ActiveSubagent = {
   agent_id: string;
@@ -32,12 +32,21 @@ export function RichChatPane({
   selectedMessageId,
   onSelectMessageInfo,
   presetTokenCount,
+  usage,
+  queuedPrompts,
+  transportLabel,
+  transportTitle,
+  canStop,
+  stopBusy,
+  attentionSlot,
   onModelSaved,
   onPresetTokenCount,
   prompt,
   interactionMode,
   onPromptChange,
   onPromptSubmit,
+  onQueuedPromptRemove,
+  onStop,
   sidebarOpen,
   workspaceMode,
   sidebarTab,
@@ -59,12 +68,21 @@ export function RichChatPane({
   selectedMessageId: string | null;
   onSelectMessageInfo: (turnId: string) => void;
   presetTokenCount: number;
+  usage?: ComposerUsage;
+  queuedPrompts: QueuedPrompt[];
+  transportLabel: string;
+  transportTitle?: string;
+  canStop: boolean;
+  stopBusy?: boolean;
+  attentionSlot?: JSX.Element | null;
   onModelSaved: (model: string | undefined) => void;
   onPresetTokenCount: (value: number) => void;
   prompt: string;
   interactionMode: ConsoleSession['interaction_mode'];
   onPromptChange: (value: string) => void;
   onPromptSubmit: (event: JSX.TargetedEvent<HTMLFormElement, Event>) => void;
+  onQueuedPromptRemove: (id: string) => void;
+  onStop: () => void;
   sidebarOpen: boolean;
   workspaceMode: boolean;
   sidebarTab: 'settings' | 'info';
@@ -115,8 +133,28 @@ export function RichChatPane({
         <Composer
           prompt={prompt}
           disabled={interactionMode === 'inbox_only'}
+          streaming={streaming}
+          queuedPrompts={queuedPrompts}
+          transportLabel={transportLabel}
+          transportTitle={transportTitle}
+          usage={usage}
+          modelSlot={backendType === 'sdk' ? (
+            <SessionModelControl
+              sessionId={sessionId}
+              backendType={backendType}
+              model={model}
+              modelOptions={modelOptions}
+              onModelSaved={onModelSaved}
+              compact
+            />
+          ) : null}
+          attentionSlot={attentionSlot}
+          canStop={canStop}
+          stopBusy={stopBusy}
           onPromptChange={onPromptChange}
+          onQueuedPromptRemove={onQueuedPromptRemove}
           onSubmit={onPromptSubmit}
+          onStop={onStop}
         />
       </div>
 
@@ -160,6 +198,7 @@ export function RichChatPane({
                 allowedTools={allowedTools}
                 availableTools={availableTools}
                 onModelSaved={onModelSaved}
+                hideModel={backendType === 'sdk'}
               />
               {(backendType === 'sdk' || backendType === 'pty') && (
                 <LivePresetPills

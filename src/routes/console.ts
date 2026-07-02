@@ -446,6 +446,23 @@ export function registerConsoleRoutes(
     res.status(202).json({ ok: true });
   }, { fileRpc: "deny" });
 
+  server.post("/api/console/sessions/:id/cancel", (req, res) => {
+    const id = req.params.id;
+    const session = manager.get(id);
+    if (!session) {
+      sendJson(res, 404, { error: "not_found" });
+      return;
+    }
+
+    const cancelled = manager.cancelPrompt(id);
+    if (!cancelled) {
+      sendJson(res, 409, { error: "cancel_not_supported_or_idle" });
+      return;
+    }
+
+    res.status(202).json({ ok: true });
+  }, { fileRpc: "deny" });
+
   // ------------------------------------------------------------------
   // GET /api/console/pinned — ordered list of pinned session IDs
   // ------------------------------------------------------------------

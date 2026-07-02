@@ -1470,6 +1470,12 @@ export async function sendConsolePrompt(
   );
 }
 
+export async function cancelConsolePrompt(
+  sessionId: string,
+): Promise<void> {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/cancel`);
+}
+
 export async function updateConsoleSession(
   sessionId: string,
   body: { model?: string; label?: string },

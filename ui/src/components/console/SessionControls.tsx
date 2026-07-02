@@ -13,7 +13,74 @@ type SessionControlsProps = {
   allowedTools?: string[] | null;
   availableTools?: string[];
   onModelSaved?: (model: string | undefined) => void;
+  hideModel?: boolean;
 };
+
+type SessionModelControlProps = Pick<
+  SessionControlsProps,
+  'sessionId' | 'backendType' | 'model' | 'modelOptions' | 'onModelSaved'
+> & {
+  compact?: boolean;
+};
+
+export function SessionModelControl({
+  sessionId,
+  backendType,
+  model,
+  modelOptions,
+  onModelSaved,
+  compact = false,
+}: SessionModelControlProps): JSX.Element {
+  const [draftModel, setDraftModel] = useState(model ?? '');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDraftModel(model ?? '');
+  }, [model]);
+
+  const handleModelOnlySave = async (nextModel: string) => {
+    setSaving(true);
+    setError(null);
+    try {
+      if (backendType === 'sdk') {
+        await updateConsoleSessionOptions(sessionId, { model: nextModel || undefined });
+      } else {
+        await updateConsoleSession(sessionId, { model: nextModel || undefined });
+      }
+      onModelSaved?.(nextModel || undefined);
+    } catch (nextError) {
+      setError(nextError instanceof Error ? nextError.message : 'Unable to save model');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <label className={compact ? 'session-controls__field session-controls__field--compact' : 'session-controls__field'}>
+      <span className="session-controls__label">Model</span>
+      <select
+        className={compact ? 'session-controls__select session-controls__select--compact' : 'session-controls__select'}
+        value={draftModel}
+        disabled={saving}
+        aria-label="Model"
+        onChange={(event) => {
+          const nextModel = event.currentTarget.value;
+          setDraftModel(nextModel);
+          if (compact || backendType === 'pty' || backendType === 'acp') {
+            void handleModelOnlySave(nextModel);
+          }
+        }}
+      >
+        <option value="">default</option>
+        {modelOptions.map((option) => (
+          <option key={option} value={option}>{option}</option>
+        ))}
+      </select>
+      {error && <span className="session-controls__error">{error}</span>}
+    </label>
+  );
+}
 
 export function SessionControls({
   sessionId,
@@ -23,6 +90,7 @@ export function SessionControls({
   allowedTools,
   availableTools = [],
   onModelSaved,
+  hideModel = false,
 }: SessionControlsProps): JSX.Element {
   const [draftModel, setDraftModel] = useState(model ?? '');
   const [permissionMode, setPermissionMode] = useState<'default' | 'acceptEdits' | 'bypassPermissions'>('default');
@@ -39,19 +107,6 @@ export function SessionControls({
   useEffect(() => {
     setDraftAllowedTools(allowedTools ?? []);
   }, [allowedTools]);
-
-  const handleModelOnlySave = async (nextModel: string) => {
-    setSaving(true);
-    setError(null);
-    try {
-      await updateConsoleSession(sessionId, { model: nextModel || undefined });
-      onModelSaved?.(nextModel || undefined);
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : 'Unable to save model');
-    } finally {
-      setSaving(false);
-    }
-  };
 
   const handleSdkSave = async () => {
     setSaving(true);
@@ -75,26 +130,15 @@ export function SessionControls({
   return (
     <div className="session-controls">
       <div className="session-controls__row">
-        <label className="session-controls__field">
-          <span className="session-controls__label">Model</span>
-          <select
-            className="session-controls__select"
-            value={draftModel}
-            disabled={saving}
-            onChange={(event) => {
-              const nextModel = event.currentTarget.value;
-              setDraftModel(nextModel);
-              if (backendType === 'pty' || backendType === 'acp') {
-                void handleModelOnlySave(nextModel);
-              }
-            }}
-          >
-            <option value="">default</option>
-            {modelOptions.map((option) => (
-              <option key={option} value={option}>{option}</option>
-            ))}
-          </select>
-        </label>
+        {!hideModel && (
+          <SessionModelControl
+            sessionId={sessionId}
+            backendType={backendType}
+            model={model}
+            modelOptions={modelOptions}
+            onModelSaved={onModelSaved}
+          />
+        )}
 
         {backendType === 'sdk' && (
           <label className="session-controls__field">
