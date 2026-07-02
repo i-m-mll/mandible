@@ -16,6 +16,7 @@ import type {
   BlockType as ContractBlockType,
   Conversation as ContractConversation,
   ConversationChild as ContractConversationChild,
+  ConversationParent as ContractConversationParent,
   ConversationSource as ContractConversationSource,
   ReviewSpecResponse,
   Role as ContractRole,
@@ -25,6 +26,12 @@ import type {
   WorkUnitLiveness as ContractWorkUnitLiveness,
   WorkUnitState as ContractWorkUnitState,
   WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
+  WorkflowRun as ContractWorkflowRun,
+  WorkflowPhase as ContractWorkflowPhase,
+  WorkflowWorker as ContractWorkflowWorker,
+  WorkflowRunStatus as ContractWorkflowRunStatus,
+  WorkflowWorkerStatus as ContractWorkflowWorkerStatus,
+  WorkflowWarning as ContractWorkflowWarning,
   Space as ContractSpace,
   SpaceGroup as ContractSpaceGroup,
   SpaceItem as ContractSpaceItem,
@@ -40,6 +47,7 @@ import type {
   UpdateSpaceOccurrenceRequest,
   BatchSpaceOccurrenceEntry,
   BatchSpaceOccurrenceResponse,
+  ConversationAttachState as ContractConversationAttachState,
   CreateSpaceEdgeRequest,
   UpdateSpaceEdgeRequest,
   AddSpaceItemResponse,
@@ -1530,6 +1538,18 @@ export async function getConsoleSessionUsage<T = Record<string, unknown>>(
   return payload.usage ?? [];
 }
 
+export async function getStatuslineTelemetry<T = Record<string, unknown>>(params: {
+  sessionRef?: string | null;
+  transcriptPath?: string | null;
+}): Promise<T | null> {
+  const query = new URLSearchParams();
+  if (params.sessionRef) query.set('sessionRef', params.sessionRef);
+  if (params.transcriptPath) query.set('transcriptPath', params.transcriptPath);
+  const response = await apiGet(`/api/hooks/statusline?${query.toString()}`);
+  const payload = await parseMaybeJson(response) as { telemetry?: T | null };
+  return payload.telemetry ?? null;
+}
+
 // ── Message params API (Bug: 790433d) ──
 
 export type MessageParams = {
@@ -1647,20 +1667,22 @@ export async function getConversations(params?: {
   );
 }
 
-export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }> {
+export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null }> {
   const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
   const payload = (await parseMaybeJson(resp)) as {
     conversation?: Conversation;
     blocks?: ConversationBlock[];
     children?: ConversationChild[];
+    parent?: ConversationParent | null;
   };
   // Flatten: merge top-level conversation fields with blocks/children arrays
   return {
     ...(payload.conversation ?? {} as Conversation),
     blocks: payload.blocks ?? [],
     children: payload.children ?? [],
-  } as Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
+    parent: payload.parent ?? null,
+  } as Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null };
 }
 
 export async function getConversationBlocks(id: string, params?: {
@@ -1740,13 +1762,43 @@ export async function resumeConversation(
   messageDagUuid: string,
   label?: string,
   model?: string,
-): Promise<{ console_session_id: string }> {
-  const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/resume`, {
-    message_dag_uuid: messageDagUuid,
-    label,
-    ...(model ? { model } : {}),
+  options: { force?: boolean; fork?: boolean } = {},
+): Promise<{ console_session_id?: string; session_id?: string; attach_state?: ConversationAttachState }> {
+  const path = `/api/conversations/${encodeURIComponent(conversationId)}/resume`;
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message_dag_uuid: messageDagUuid,
+      label,
+      ...(model ? { model } : {}),
+      ...(options.force ? { force: true } : {}),
+      ...(options.fork ? { fork: true } : {}),
+    }),
   });
-  return (await parseMaybeJson(resp)) as { console_session_id: string };
+  const payload = await parseMaybeJson(response) as {
+    console_session_id?: string;
+    session_id?: string;
+    attach_state?: ConversationAttachState;
+    error?: string;
+    reason?: string;
+    message?: string;
+    details?: string;
+  };
+  if (!response.ok) {
+    const message = payload.message || payload.error || `POST ${path} failed: ${response.status}`;
+    const error = new Error(message) as Error & {
+      status?: number;
+      body?: typeof payload;
+    };
+    error.status = response.status;
+    error.body = payload;
+    throw error;
+  }
+  return payload;
 }
 
 // ── Work Units API — Bug: 8a281b3 ──
@@ -1898,11 +1950,42 @@ export type BlockType = ContractBlockType;
 export type Role = ContractRole;
 export type ConversationSource = ContractConversationSource;
 
+export type ConversationAttachState = ContractConversationAttachState;
+
 export type ConversationBlock = ContractConversationBlock;
 
 export type Conversation = ContractConversation;
 
 export type ConversationChild = ContractConversationChild;
+export type ConversationParent = ContractConversationParent;
+export type WorkflowRun = ContractWorkflowRun;
+export type WorkflowPhase = ContractWorkflowPhase;
+export type WorkflowWorker = ContractWorkflowWorker;
+export type WorkflowRunStatus = ContractWorkflowRunStatus;
+export type WorkflowWorkerStatus = ContractWorkflowWorkerStatus;
+export type WorkflowWarning = ContractWorkflowWarning;
+
+export async function listWorkflows(params: {
+  session_id?: string | null;
+} = {}): Promise<WorkflowRun[]> {
+  const query = new URLSearchParams();
+  if (params.session_id) query.set('session_id', params.session_id);
+  const qs = query.toString();
+  const payload = await cachedApiGetJson<{ workflows?: WorkflowRun[] }>(
+    `/api/workflows${qs ? '?' + qs : ''}`,
+  );
+  return Array.isArray(payload.workflows) ? payload.workflows : [];
+}
+
+export async function getWorkflow(id: string): Promise<WorkflowRun> {
+  const payload = await cachedApiGetJson<{ workflow?: WorkflowRun }>(
+    `/api/workflows/${encodeURIComponent(id)}`,
+  );
+  if (!payload.workflow) {
+    throw new Error('Workflow run not found');
+  }
+  return payload.workflow;
+}
 
 // ── Graph API ──
 

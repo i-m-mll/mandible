@@ -8,8 +8,10 @@ import type {
   BlockMetadata,
   ConversationBlock,
   ConversationParser,
+  IncrementalParseInput,
   ParseResult,
 } from "./types.js";
+import { buildClaudeApproxContextUsage } from "./context-usage.js";
 
 // --- Raw JSONL record shapes ---
 
@@ -74,6 +76,11 @@ interface SessionsIndex {
   entries: SessionsIndexEntry[];
 }
 
+export interface ClaudeSubagentPathInfo {
+  parentSessionId: string;
+  agentId: string;
+}
+
 // --- Helpers ---
 
 function extractTextFromContent(content: string | ClaudeContentBlock[] | undefined): string {
@@ -104,6 +111,23 @@ function tryReadSessionsIndex(jsonlPath: string): SessionsIndexEntry | null {
   }
 }
 
+export function parseClaudeSubagentPath(filePath: string): ClaudeSubagentPathInfo | null {
+  const normalized = filePath.replace(/\\/g, "/");
+  const workflowMatch = normalized.match(/\/([^/]+)\/subagents\/workflows\/wf_[^/]+\/agent-([^/]+)\.jsonl$/);
+  if (workflowMatch) {
+    return {
+      parentSessionId: workflowMatch[1],
+      agentId: workflowMatch[2],
+    };
+  }
+  const match = normalized.match(/\/([^/]+)\/subagents\/agent-([^/]+)\.jsonl$/);
+  if (!match) return null;
+  return {
+    parentSessionId: match[1],
+    agentId: match[2],
+  };
+}
+
 // --- Parser ---
 
 export class ClaudeParser implements ConversationParser {
@@ -116,16 +140,49 @@ export class ClaudeParser implements ConversationParser {
 
   async parse(filePath: string): Promise<ParseResult | null> {
     const raw = await fs.promises.readFile(filePath, "utf8");
+    let sourceMtime = 0;
+    try {
+      const stat = await fs.promises.stat(filePath);
+      sourceMtime = stat.mtimeMs;
+    } catch {
+      // ignore
+    }
+    return this.parseRaw(filePath, raw, {
+      baseBlockCount: 0,
+      sourceHash: crypto.createHash("sha256").update(raw).digest("hex"),
+      sourceMtime,
+    });
+  }
+
+  async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
+    return this.parseRaw(input.filePath, input.raw, {
+      baseBlockCount: input.baseBlockCount,
+      sourceHash: input.sourceHash,
+      sourceMtime: input.sourceMtime,
+    });
+  }
+
+  private async parseRaw(
+    filePath: string,
+    raw: string,
+    options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
+  ): Promise<ParseResult | null> {
     const lines = raw.split("\n").filter((line) => line.trim().length > 0);
 
     const records: ClaudeRecord[] = [];
+    let hasSidechainRecord = false;
     for (const line of lines) {
       try {
-        records.push(JSON.parse(line) as ClaudeRecord);
+        const record = JSON.parse(line) as ClaudeRecord;
+        if (record.isSidechain) {
+          hasSidechainRecord = true;
+        }
+        records.push(record);
       } catch {
         // Skip malformed lines
       }
     }
+    const subagentPath = parseClaudeSubagentPath(filePath);
 
     // Extract metadata from first non-snapshot record
     let sessionId = "";
@@ -181,7 +238,7 @@ export class ClaudeParser implements ConversationParser {
     if (!projectPath) {
       // Path structure: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
       // encoded-path uses - for /
-      const dir = path.dirname(filePath);
+      const dir = subagentPath ? path.dirname(path.dirname(path.dirname(filePath))) : path.dirname(filePath);
       const dirName = path.basename(dir);
       // Decode: "-Users-mll--dotfiles" → "/Users/mll/.dotfiles"
       // The encoding replaces / with - and . with - (first char only)
@@ -190,7 +247,7 @@ export class ClaudeParser implements ConversationParser {
 
     // Parse blocks
     const blocks: Omit<ConversationBlock, "id" | "conversation_id">[] = [];
-    let position = 0;
+    let position = options.baseBlockCount;
     // Map tool_use UUIDs to block positions for parent_id linking
     const toolUseMap = new Map<string, number>();
     const toolNameMap = new Map<string, string>();
@@ -376,32 +433,25 @@ export class ClaudeParser implements ConversationParser {
     }
 
     // Compute source hash
-    const sourceHash = crypto.createHash("sha256").update(raw).digest("hex");
-    let sourceMtime = 0;
-    try {
-      const stat = await fs.promises.stat(filePath);
-      sourceMtime = stat.mtimeMs;
-    } catch {
-      // ignore
-    }
-
     return {
       conversation: {
         source: "claude_code",
         source_path: filePath,
-        source_hash: sourceHash,
-        source_mtime: sourceMtime,
+        source_hash: options.sourceHash,
+        source_mtime: options.sourceMtime,
         title,
         summary,
         started_at: startedAt || new Date().toISOString(),
         ended_at: endedAt,
-        block_count: blocks.length,
+        block_count: options.baseBlockCount + blocks.length,
         session_id: sessionId,
         project_path: projectPath,
         cwd,
         branch,
         model,
         cli_version: cliVersion,
+        is_sidechain: Boolean(subagentPath || hasSidechainRecord || indexEntry?.isSidechain),
+        agent_id: subagentPath?.agentId ?? null,
       },
       blocks,
     };
@@ -420,6 +470,7 @@ function buildAssistantMetadata(rec: ClaudeRecord): BlockMetadata {
       output: u.output_tokens ?? 0,
       cache_read: u.cache_read_input_tokens,
     };
+    meta.context_usage = buildClaudeApproxContextUsage(u, rec.message.model);
   }
   return meta;
 }

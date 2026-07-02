@@ -12,22 +12,31 @@ import { broadcast } from "./sse.js";
 import { compressContent, compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
+import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
+import {
+  ingestClaudeWorkflowArtifact,
+  isClaudeWorkflowJournalPath,
+  isClaudeWorkflowSummaryPath,
+  isClaudeWorkflowTranscriptPath,
+} from "./workflows.js";
 import type { Logger } from "./types.js";
-import type { ParseResult } from "./parsers/types.js";
+import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 
 // --- Watch configuration ---
 
 const WATCH_CONFIGS = [
   { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/*.jsonl" },
+  { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
   { base: path.join(os.homedir(), ".codex", "sessions"), glob: "**/*.jsonl" },
   { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.json" },
   { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
 ];
 
-const DEBOUNCE_MS = 2000;
+const DEBOUNCE_MS = 200;
 const RECONCILE_INTERVAL_MS = 60_000;
+const INGEST_TAIL_HASH_BYTES = 4096;
 
 // --- State ---
 
@@ -38,6 +47,69 @@ let logger: Logger = () => {};
 let ingestionActive = false;
 let ingestionRunToken = 0;
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function resolveParentConversationId(
+  db: ReturnType<typeof getDb>,
+  sessionId: string,
+  filePath: string,
+  currentConversationId?: string,
+): string | null {
+  const subagentPath = parseClaudeSubagentPath(filePath);
+  if (subagentPath) {
+    const row = db.prepare(`
+      SELECT id
+      FROM conversations
+      WHERE source = 'claude_code'
+        AND session_id = ?
+        AND id != ?
+        AND LOWER(source_path) NOT LIKE '%/subagents/%'
+      ORDER BY started_at ASC, created_at ASC
+      LIMIT 1
+    `).get(subagentPath.parentSessionId, currentConversationId ?? "") as { id: string } | undefined;
+    if (row) {
+      return row.id;
+    }
+  }
+
+  const parentRow = db.prepare(`
+    SELECT c.id FROM sessions s
+    JOIN conversations c ON c.session_id = s.parent_id
+    WHERE s.id = ?
+    LIMIT 1
+  `).get(sessionId) as { id: string } | undefined;
+  return parentRow?.id ?? null;
+}
+
+function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSessionId: string, parentConversationId: string): void {
+  const parentPattern = `%/${parentSessionId}/subagents/agent-%.jsonl`;
+  const workflowPattern = `%/${parentSessionId}/subagents/workflows/%/agent-%.jsonl`;
+  db.prepare(`
+    UPDATE conversations
+    SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+        is_sidechain = 1,
+        agent_id = COALESCE(
+          NULLIF(agent_id, ''),
+          substr(source_path, instr(source_path, '/subagents/agent-') + length('/subagents/agent-'),
+            length(source_path) - instr(source_path, '/subagents/agent-') - length('/subagents/agent-') - length('.jsonl') + 1)
+        )
+    WHERE source = 'claude_code'
+      AND LOWER(source_path) LIKE LOWER(?)
+      AND id != ?
+  `).run(parentConversationId, parentPattern, parentConversationId);
+  db.prepare(`
+    UPDATE conversations
+    SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+        is_sidechain = 1,
+        agent_id = COALESCE(
+          NULLIF(agent_id, ''),
+          substr(source_path, instr(source_path, '/agent-') + length('/agent-'),
+            length(source_path) - instr(source_path, '/agent-') - length('/agent-') - length('.jsonl') + 1)
+        )
+    WHERE source = 'claude_code'
+      AND LOWER(source_path) LIKE LOWER(?)
+      AND id != ?
+  `).run(parentConversationId, workflowPattern, parentConversationId);
+}
 const ingestQueue: string[] = [];
 const queuedIngestPaths = new Set<string>();
 let ingestDrainRunning = false;
@@ -46,6 +118,53 @@ const targetedIngestLastRun = new Map<string, number>();
 const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
 const acpSuppressedSessions = new Map<string, number>();
 const ACP_SUPPRESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+type ExistingConversationRow = {
+  id: string;
+  source: string;
+  source_hash: string;
+  source_mtime: number;
+  session_id: string;
+  title: string;
+  summary: string | null;
+  started_at: string;
+  ended_at: string | null;
+  block_count: number;
+  project_path: string | null;
+  cwd: string | null;
+  branch: string | null;
+  model: string | null;
+  cli_version: string | null;
+  actual_count: number;
+};
+
+type IngestAppendState = {
+  file_path: string;
+  byte_offset: number;
+  line_count: number;
+  tail_hash: string;
+  partial_line: string;
+};
+
+type IngestMode = "full" | "append";
+
+type AppendReadResult =
+  | {
+      kind: "append";
+      raw: string;
+      completeLineCount: number;
+      appendedBytes: number;
+      nextPartialLine: string;
+      sourceHash: string;
+      tailHash: string;
+    }
+  | {
+      kind: "buffered";
+      appendedBytes: number;
+      nextPartialLine: string;
+      tailHash: string;
+    }
+  | { kind: "fallback"; reason: string };
 
 // --- Public API ---
 
@@ -66,7 +185,6 @@ export function startIngestion(log: Logger): void {
     const watchPattern = path.join(config.base, config.glob);
     const watcher = chokidar.watch(watchPattern, {
       ignoreInitial: true,
-      awaitWriteFinish: { stabilityThreshold: 1000, pollInterval: 200 },
       ignorePermissionErrors: true,
     });
 
@@ -128,7 +246,7 @@ export async function triggerFullIngest(): Promise<{ processed: number; errors: 
     if (!fs.existsSync(config.base)) continue;
     for await (const filePath of walkFiles(config.base, config.glob)) {
       try {
-        await ingestFile(filePath);
+        await ingestFile(filePath, { forceFull: true });
         processed++;
       } catch (error) {
         errors++;
@@ -325,6 +443,225 @@ function acpSuppressionKey(source: string, sessionId: string): string {
   return `${source.trim().toLowerCase()}:${sessionId.trim()}`;
 }
 
+async function hashFileTailAt(filePath: string, offset: number): Promise<string> {
+  if (offset <= 0) {
+    return "";
+  }
+  const length = Math.min(INGEST_TAIL_HASH_BYTES, offset);
+  const buffer = Buffer.alloc(length);
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    await handle.read(buffer, 0, length, offset - length);
+  } finally {
+    await handle.close();
+  }
+  return crypto.createHash("sha256").update(buffer).digest("hex");
+}
+
+async function readFileRange(filePath: string, start: number, end: number): Promise<string> {
+  if (end <= start) {
+    return "";
+  }
+  const length = end - start;
+  const buffer = Buffer.alloc(length);
+  const handle = await fs.promises.open(filePath, "r");
+  try {
+    await handle.read(buffer, 0, length, start);
+  } finally {
+    await handle.close();
+  }
+  return buffer.toString("utf8");
+}
+
+async function readTrailingPartialLine(filePath: string, size: number): Promise<string> {
+  if (size <= 0) {
+    return "";
+  }
+  const length = Math.min(64 * 1024, size);
+  const tail = await readFileRange(filePath, size - length, size);
+  if (tail.endsWith("\n") || tail.endsWith("\r")) {
+    return "";
+  }
+  const lastLf = tail.lastIndexOf("\n");
+  const trailing = lastLf >= 0 ? tail.slice(lastLf + 1) : tail;
+  if (!trailing.trim()) {
+    return "";
+  }
+  try {
+    JSON.parse(trailing);
+    return "";
+  } catch {
+    return trailing;
+  }
+}
+
+async function countCompleteLines(filePath: string): Promise<number> {
+  const raw = await fs.promises.readFile(filePath, "utf8");
+  return raw.length === 0 ? 0 : (raw.match(/\n/g) ?? []).length;
+}
+
+function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestAppendState | null {
+  const row = db.prepare(`
+    SELECT file_path, byte_offset, line_count, tail_hash, partial_line
+    FROM conversation_ingest_state
+    WHERE file_path = ?
+  `).get(filePath) as IngestAppendState | undefined;
+  return row ?? null;
+}
+
+function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void {
+  db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(filePath);
+}
+
+function writeAppendState(
+  db: ReturnType<typeof getDb>,
+  state: IngestAppendState,
+): void {
+  db.prepare(`
+    INSERT INTO conversation_ingest_state (
+      file_path, byte_offset, line_count, tail_hash, partial_line, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(file_path) DO UPDATE SET
+      byte_offset = excluded.byte_offset,
+      line_count = excluded.line_count,
+      tail_hash = excluded.tail_hash,
+      partial_line = excluded.partial_line,
+      updated_at = excluded.updated_at
+  `).run(
+    state.file_path,
+    state.byte_offset,
+    state.line_count,
+    state.tail_hash,
+    state.partial_line,
+    Date.now(),
+  );
+}
+
+async function refreshAppendState(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  stat: fs.Stats,
+  lineCount: number,
+  partialLine?: string,
+  tailHash?: string,
+): Promise<void> {
+  writeAppendState(db, {
+    file_path: filePath,
+    byte_offset: stat.size,
+    line_count: lineCount,
+    tail_hash: tailHash ?? await hashFileTailAt(filePath, stat.size),
+    partial_line: partialLine ?? await readTrailingPartialLine(filePath, stat.size),
+  });
+}
+
+async function readAppend(
+  filePath: string,
+  stat: fs.Stats,
+  state: IngestAppendState | null,
+): Promise<AppendReadResult> {
+  if (!state) {
+    return { kind: "fallback", reason: "missing_append_state" };
+  }
+  if (state.byte_offset > stat.size) {
+    return { kind: "fallback", reason: "file_truncated" };
+  }
+  const currentTailHash = await hashFileTailAt(filePath, state.byte_offset);
+  if (currentTailHash !== state.tail_hash) {
+    return { kind: "fallback", reason: "tail_hash_mismatch" };
+  }
+  const appendedBytes = stat.size - state.byte_offset;
+  if (appendedBytes <= 0) {
+    return { kind: "buffered", appendedBytes: 0, nextPartialLine: state.partial_line, tailHash: currentTailHash };
+  }
+
+  const appended = await readFileRange(filePath, state.byte_offset, stat.size);
+  const combined = `${state.partial_line}${appended}`;
+  const endedWithLineBreak = combined.endsWith("\n") || combined.endsWith("\r");
+  const parts = combined.split(/\r?\n/);
+  const completeLines = endedWithLineBreak ? parts.slice(0, -1) : parts.slice(0, -1);
+  const nextPartialLine = endedWithLineBreak ? "" : parts.at(-1) ?? "";
+  const rawLines = completeLines.filter((line) => line.trim().length > 0);
+  const tailHash = await hashFileTailAt(filePath, stat.size);
+  if (rawLines.length === 0) {
+    return { kind: "buffered", appendedBytes, nextPartialLine, tailHash };
+  }
+  return {
+    kind: "append",
+    raw: `${rawLines.join("\n")}\n`,
+    completeLineCount: completeLines.length,
+    appendedBytes,
+    nextPartialLine,
+    sourceHash: `append:${stat.size}:${tailHash}`,
+    tailHash,
+  };
+}
+
+function mergeAppendConversationMetadata(
+  result: ParseResult,
+  existing: ExistingConversationRow,
+): ParseResult {
+  return {
+    conversation: {
+      ...result.conversation,
+      title: existing.title,
+      summary: existing.summary,
+      started_at: existing.started_at,
+      session_id: existing.session_id || result.conversation.session_id,
+      project_path: existing.project_path ?? result.conversation.project_path,
+      cwd: existing.cwd ?? result.conversation.cwd,
+      branch: existing.branch ?? result.conversation.branch,
+      model: result.conversation.model ?? existing.model,
+      cli_version: result.conversation.cli_version ?? existing.cli_version,
+    },
+    blocks: result.blocks,
+  };
+}
+
+function incrementalParseAnomaly(
+  result: ParseResult,
+  baseBlockCount: number,
+  newBlockCount: number,
+): string | null {
+  for (const block of result.blocks) {
+    if (block.position < baseBlockCount || block.position >= baseBlockCount + newBlockCount) {
+      return "position_out_of_range";
+    }
+    if (
+      block.type === "tool_result"
+      && block.parent_id == null
+      && typeof block.metadata.tool_id === "string"
+      && block.metadata.tool_id.trim()
+    ) {
+      return "tool_result_parent_missing";
+    }
+  }
+  return null;
+}
+
+function insertedBlockPayload(
+  conversationId: string,
+  block: Omit<ConversationBlock, "id" | "conversation_id">,
+): Omit<ConversationBlock, "metadata"> & { metadata_json: string } {
+  const id = crypto
+    .createHash("sha256")
+    .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
+    .digest("hex")
+    .slice(0, 16);
+  return {
+    id,
+    conversation_id: conversationId,
+    type: block.type,
+    role: block.role,
+    content: block.content,
+    position: block.position,
+    timestamp: block.timestamp,
+    parent_id: block.parent_id,
+    metadata_json: JSON.stringify(block.metadata),
+    dag_uuid: block.dag_uuid ?? null,
+    dag_parent_uuid: block.dag_parent_uuid ?? null,
+  };
+}
+
 async function syncCodexIndexedTitle(
   filePath: string,
   existing: {
@@ -456,7 +793,16 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
   }
 }
 
-async function ingestFile(filePath: string): Promise<void> {
+async function ingestFile(
+  filePath: string,
+  options: { forceFull?: boolean; fallbackReason?: string } = {},
+): Promise<void> {
+  const ingestStartedAt = Date.now();
+  if (isClaudeWorkflowSummaryPath(filePath) || isClaudeWorkflowJournalPath(filePath)) {
+    await ingestWorkflowArtifact(filePath);
+    return;
+  }
+
   const parser = getParserForFile(filePath);
   if (!parser) {
     logger("debug", "ingestion_no_parser", { file: filePath });
@@ -469,6 +815,11 @@ async function ingestFile(filePath: string): Promise<void> {
     stat = await fs.promises.stat(filePath);
   } catch {
     logger("debug", "ingestion_file_gone", { file: filePath });
+    try {
+      deleteAppendState(getDb(), filePath);
+    } catch {
+      // Best effort cleanup only.
+    }
     return;
   }
 
@@ -479,24 +830,25 @@ async function ingestFile(filePath: string): Promise<void> {
       c.id,
       c.source_hash,
       c.source_mtime,
+      c.source,
       c.session_id,
       c.title,
+      c.summary,
+      c.started_at,
+      c.ended_at,
       c.block_count,
+      c.project_path,
+      c.cwd,
+      c.branch,
+      c.model,
+      c.cli_version,
       COALESCE((
         SELECT COUNT(*) FROM conversation_blocks b WHERE b.conversation_id = c.id
       ), 0) AS actual_count
     FROM conversations c
     WHERE c.source_path = ?
     ORDER BY actual_count DESC, c.updated_at DESC
-  `).all(filePath) as Array<{
-    id: string;
-    source_hash: string;
-    source_mtime: number;
-    session_id: string;
-    title: string;
-    block_count: number;
-    actual_count: number;
-  }>;
+  `).all(filePath) as ExistingConversationRow[];
   const existing = existingRows[0];
   if (existingRows.length > 1 && existing) {
     logger("warn", "ingestion_duplicate_conversation_rows", {
@@ -511,13 +863,116 @@ async function ingestFile(filePath: string): Promise<void> {
     if (parser.source === "codex") {
       await syncCodexIndexedTitle(filePath, existing);
     }
+    if (isClaudeWorkflowTranscriptPath(filePath)) {
+      await ingestWorkflowArtifact(filePath);
+    }
     return;
   }
+
+  let alreadyIngestedCount = 0;
+  if (existing) {
+    const actualCount = existing.actual_count ?? 0;
+    const expectedCount = existing.block_count ?? 0;
+    alreadyIngestedCount = Math.max(actualCount, expectedCount);
+    if (actualCount === 0 && expectedCount > 0) {
+      logger("warn", "ingestion_count_mismatch", {
+        file: filePath,
+        conversation_id: existing.id,
+        expected_count: expectedCount,
+        actual_count: actualCount,
+      });
+    }
+  }
+
+  const appendState = getAppendState(db, filePath);
+  let ingestMode: IngestMode = "full";
+  let appendInfo: {
+    completeLineCount: number;
+    appendedBytes: number;
+    nextPartialLine: string;
+    tailHash: string;
+  } | null = null;
+  let forceFullReingest = options.forceFull === true;
 
   // Parse the file
   let result: ParseResult | null;
   try {
-    result = await parser.parse(filePath);
+    if (
+      !options.forceFull
+      && existing
+      && alreadyIngestedCount > 0
+      && parser.parseIncremental
+      && (parser.source !== "gemini" || filePath.endsWith(".jsonl"))
+    ) {
+      const append = await readAppend(filePath, stat, appendState);
+      if (append.kind === "append") {
+        result = await parser.parseIncremental({
+          filePath,
+          raw: append.raw,
+          baseBlockCount: alreadyIngestedCount,
+          sourceHash: append.sourceHash,
+          sourceMtime: stat.mtimeMs,
+        });
+        if (!result) {
+          await refreshAppendState(
+            db,
+            filePath,
+            stat,
+            (appendState?.line_count ?? alreadyIngestedCount) + append.completeLineCount,
+            append.nextPartialLine,
+            append.tailHash,
+          );
+          logger("debug", "ingestion_append_metadata_only", {
+            file: filePath,
+            appended_bytes: append.appendedBytes,
+          });
+          return;
+        } else {
+          const anomaly = incrementalParseAnomaly(result, alreadyIngestedCount, result.blocks.length);
+          if (anomaly) {
+            logger("warn", "ingestion_append_fallback", {
+              file: filePath,
+              reason: anomaly,
+              appended_bytes: append.appendedBytes,
+            });
+            forceFullReingest = true;
+            result = await parser.parse(filePath);
+          } else {
+            result = mergeAppendConversationMetadata(result, existing);
+            ingestMode = "append";
+            appendInfo = {
+              completeLineCount: append.completeLineCount,
+              appendedBytes: append.appendedBytes,
+              nextPartialLine: append.nextPartialLine,
+              tailHash: append.tailHash,
+            };
+          }
+        }
+      } else if (append.kind === "buffered") {
+        await refreshAppendState(
+          db,
+          filePath,
+          stat,
+          appendState?.line_count ?? alreadyIngestedCount,
+          append.nextPartialLine,
+          append.tailHash,
+        );
+        logger("debug", "ingestion_append_buffered", {
+          file: filePath,
+          appended_bytes: append.appendedBytes,
+        });
+        return;
+      } else {
+        logger("debug", "ingestion_append_fallback", {
+          file: filePath,
+          reason: append.reason,
+        });
+        forceFullReingest = true;
+        result = await parser.parse(filePath);
+      }
+    } else {
+      result = await parser.parse(filePath);
+    }
   } catch (error) {
     logger("warn", "ingestion_parse_error", {
       file: filePath,
@@ -551,12 +1006,23 @@ async function ingestFile(filePath: string): Promise<void> {
         if (!isStarred || isStarred.starred === 0) {
           db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(convId);
           db.prepare("DELETE FROM conversations WHERE id = ?").run(convId);
+          deleteAppendState(db, filePath);
           logger("info", "ingestion_removed_empty", { file: filePath, id: convId });
         }
       }
     }
     return;
   }
+
+  const subagentPath = parseClaudeSubagentPath(filePath);
+  const isSidechain = result.conversation.is_sidechain || Boolean(subagentPath);
+  const agentId = result.conversation.agent_id ?? subagentPath?.agentId ?? null;
+  const parentConversationId = resolveParentConversationId(
+    db,
+    result.conversation.session_id,
+    filePath,
+    existing?.id,
+  );
 
   // Check hash — if same content, just update mtime
   if (existing && existing.source_hash === result.conversation.source_hash) {
@@ -569,6 +1035,9 @@ async function ingestFile(filePath: string): Promise<void> {
         block_count = ?,
         model = ?,
         cli_version = ?,
+        parent_conversation_id = COALESCE(?, parent_conversation_id),
+        is_sidechain = ?,
+        agent_id = ?,
         updated_at = datetime('now')
       WHERE source_path = ?
     `).run(
@@ -579,14 +1048,24 @@ async function ingestFile(filePath: string): Promise<void> {
       result.conversation.block_count,
       result.conversation.model,
       result.conversation.cli_version,
+      parentConversationId,
+      isSidechain ? 1 : 0,
+      agentId,
       filePath,
     );
+    if (!isSidechain && result.conversation.source === "claude_code") {
+      linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
+    }
     broadcast("conversation:updated", {
       id: existing.id,
       source: result.conversation.source,
       title: result.conversation.title,
       block_count: result.conversation.block_count,
     });
+    await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
+    if (isClaudeWorkflowTranscriptPath(filePath)) {
+      await ingestWorkflowArtifact(filePath);
+    }
     return;
   }
 
@@ -604,42 +1083,18 @@ async function ingestFile(filePath: string): Promise<void> {
     return;
   }
 
-  // Resolve parent conversation: if this session has a parent session,
-  // find the conversation belonging to that parent session.
-  // Bug: d0759d1 — sub-agent conversations should be linked to their parent
-  let parentConversationId: string | null = null;
-  const parentRow = db.prepare(`
-    SELECT c.id FROM sessions s
-    JOIN conversations c ON c.session_id = s.parent_id
-    WHERE s.id = ?
-    LIMIT 1
-  `).get(result.conversation.session_id) as { id: string } | undefined;
-  if (parentRow) {
-    parentConversationId = parentRow.id;
-  }
-
   // Bug: 871765b — Delta ingestion: for existing conversations, only insert
   // blocks that haven't been ingested yet. JSONL files are append-only, so if
   // the new parse has at least as many blocks as already in the DB, we can
   // skip re-compressing and re-inserting the already-persisted blocks.
   // Fall back to full re-ingest if block count shrank (truncation/modification).
-  let alreadyIngestedCount = 0;
-  if (!isNew) {
-    const actualCount = existing?.actual_count ?? 0;
-    const expectedCount = existing?.block_count ?? 0;
-    alreadyIngestedCount = Math.max(actualCount, expectedCount);
-    if (actualCount === 0 && expectedCount > 0) {
-      logger("warn", "ingestion_count_mismatch", {
-        file: filePath,
-        conversation_id: conversationId,
-        expected_count: expectedCount,
-        actual_count: actualCount,
-      });
-    }
-  }
-
-  const isDeltaAppend = !isNew && result.blocks.length >= alreadyIngestedCount && alreadyIngestedCount > 0;
-  const newBlocks = isDeltaAppend ? result.blocks.slice(alreadyIngestedCount) : result.blocks;
+  const isDeltaAppend = ingestMode === "append"
+    || (!forceFullReingest && !isNew && result.blocks.length >= alreadyIngestedCount && alreadyIngestedCount > 0);
+  const newBlocks = ingestMode === "append"
+    ? result.blocks
+    : isDeltaAppend
+      ? result.blocks.slice(alreadyIngestedCount)
+      : result.blocks;
 
   if (isDeltaAppend && newBlocks.length === 0) {
     // Hash changed but no new blocks — metadata-only change (title, timestamps, etc.)
@@ -649,6 +1104,9 @@ async function ingestFile(filePath: string): Promise<void> {
         source_hash = ?, source_mtime = ?,
         title = ?, summary = ?, ended_at = ?,
         block_count = ?, model = ?, cli_version = ?,
+        parent_conversation_id = COALESCE(?, parent_conversation_id),
+        is_sidechain = ?,
+        agent_id = ?,
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -660,8 +1118,27 @@ async function ingestFile(filePath: string): Promise<void> {
       result.conversation.block_count,
       result.conversation.model,
       result.conversation.cli_version,
+      parentConversationId,
+      isSidechain ? 1 : 0,
+      agentId,
       conversationId,
     );
+    if (!isSidechain && result.conversation.source === "claude_code") {
+      linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
+    }
+    await refreshAppendState(
+      db,
+      filePath,
+      stat,
+      ingestMode === "append"
+        ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
+        : await countCompleteLines(filePath),
+      appendInfo?.nextPartialLine,
+      appendInfo?.tailHash,
+    );
+    if (isClaudeWorkflowTranscriptPath(filePath)) {
+      await ingestWorkflowArtifact(filePath);
+    }
     return;
   }
 
@@ -694,13 +1171,13 @@ async function ingestFile(filePath: string): Promise<void> {
           id, source, source_path, source_hash, source_mtime,
           title, summary, started_at, ended_at, block_count,
           session_id, project_path, cwd, branch, model, cli_version,
-          starred, label, notes, parent_conversation_id,
+          starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
           created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?,
-          0, NULL, NULL, ?,
+          0, NULL, NULL, ?, ?, ?,
           datetime('now'), datetime('now')
         )
       `).run(
@@ -721,6 +1198,8 @@ async function ingestFile(filePath: string): Promise<void> {
         result.conversation.model,
         result.conversation.cli_version,
         parentConversationId,
+        isSidechain ? 1 : 0,
+        agentId,
       );
     } else {
       // Delta append path: update conversation metadata only, no block deletion
@@ -729,6 +1208,9 @@ async function ingestFile(filePath: string): Promise<void> {
           source_hash = ?, source_mtime = ?,
           title = ?, summary = ?, ended_at = ?,
           block_count = ?, model = ?, cli_version = ?,
+          parent_conversation_id = COALESCE(?, parent_conversation_id),
+          is_sidechain = ?,
+          agent_id = ?,
           updated_at = datetime('now')
         WHERE id = ?
       `).run(
@@ -740,6 +1222,9 @@ async function ingestFile(filePath: string): Promise<void> {
         result.conversation.block_count,
         result.conversation.model,
         result.conversation.cli_version,
+        parentConversationId,
+        isSidechain ? 1 : 0,
+        agentId,
         conversationId,
       );
     }
@@ -794,6 +1279,15 @@ async function ingestFile(filePath: string): Promise<void> {
     // row was deleted but blocks were not cleaned up due to FK being disabled).
     // Recovery: force-delete all blocks for this conversation, then retry as full re-ingest.
     if (errStr.includes("UNIQUE constraint failed: conversation_blocks.id")) {
+      if (ingestMode === "append") {
+        deleteAppendState(db, filePath);
+        logger("warn", "ingestion_append_fallback", {
+          file: filePath,
+          reason: "append_unique_conflict",
+        });
+        await ingestFile(filePath, { forceFull: true, fallbackReason: "append_unique_conflict" });
+        return;
+      }
       try {
         // Pre-compress all blocks async before the recovery transaction.
         const recoveryCompressedContents = await Promise.all(
@@ -825,13 +1319,13 @@ async function ingestFile(filePath: string): Promise<void> {
               id, source, source_path, source_hash, source_mtime,
               title, summary, started_at, ended_at, block_count,
               session_id, project_path, cwd, branch, model, cli_version,
-              starred, label, notes, parent_conversation_id,
+              starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
               created_at, updated_at
             ) VALUES (
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?, ?,
-              0, NULL, NULL, ?,
+              0, NULL, NULL, ?, ?, ?,
               datetime('now'), datetime('now')
             )
           `).run(
@@ -852,6 +1346,8 @@ async function ingestFile(filePath: string): Promise<void> {
             result.conversation.model,
             result.conversation.cli_version,
             parentConversationId,
+            isSidechain ? 1 : 0,
+            agentId,
           );
           // Re-insert all blocks using pre-compressed buffers.
           const insertBlock2 = db.prepare(`
@@ -898,6 +1394,17 @@ async function ingestFile(filePath: string): Promise<void> {
     }
   }
 
+  await refreshAppendState(
+    db,
+    filePath,
+    stat,
+    ingestMode === "append"
+      ? (appendState?.line_count ?? alreadyIngestedCount) + (appendInfo?.completeLineCount ?? 0)
+      : await countCompleteLines(filePath),
+    appendInfo?.nextPartialLine,
+    appendInfo?.tailHash,
+  );
+
   // Bug: e01653d — update last_active on the matching session so the
   // Sessions tab shows real user activity time rather than updated_at.
   // The JSONL mtime is a reliable proxy for "last message written".
@@ -909,14 +1416,28 @@ async function ingestFile(filePath: string): Promise<void> {
     ).run(activeAt, result.conversation.session_id, activeAt);
   }
 
+  if (!isSidechain && result.conversation.source === "claude_code") {
+    linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
+  }
+
   // Broadcast SSE event
   const eventType = isNew ? "conversation:new" : "conversation:updated";
+  const insertedBlocks = newBlocks.map((block) => insertedBlockPayload(conversationId, block));
   broadcast(eventType, {
     id: conversationId,
     source: result.conversation.source,
     title: result.conversation.title,
     block_count: result.conversation.block_count,
+    append: !isNew && isDeltaAppend && insertedBlocks.length > 0
+      ? {
+          blocks: insertedBlocks,
+          from_position: insertedBlocks[0]?.position ?? alreadyIngestedCount,
+        }
+      : undefined,
   });
+  if (isClaudeWorkflowTranscriptPath(filePath)) {
+    await ingestWorkflowArtifact(filePath);
+  }
 
   logger("info", "ingestion_complete", {
     file: filePath,
@@ -924,8 +1445,39 @@ async function ingestFile(filePath: string): Promise<void> {
     blocks: newBlocks.length,
     total_blocks: result.conversation.block_count,
     delta: isDeltaAppend,
+    ingest_mode: ingestMode,
+    appended_bytes: appendInfo?.appendedBytes ?? null,
+    append_to_ingest_latency_ms: Math.max(0, Date.now() - stat.mtimeMs),
+    ingest_duration_ms: Date.now() - ingestStartedAt,
+    fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+async function ingestWorkflowArtifact(filePath: string): Promise<void> {
+  try {
+    const workflow = await ingestClaudeWorkflowArtifact(getDb(), filePath);
+    if (!workflow) return;
+    broadcast("workflow:updated", {
+      id: workflow.id,
+      session_id: workflow.session_id,
+      provider_run_id: workflow.provider_run_id,
+      status: workflow.status,
+      completed_workers: workflow.completed_workers,
+      total_workers: workflow.total_workers,
+    });
+    logger("info", "workflow_ingestion_complete", {
+      file: filePath,
+      workflow_id: workflow.id,
+      provider_run_id: workflow.provider_run_id,
+      status: workflow.status,
+    });
+  } catch (error) {
+    logger("warn", "workflow_ingestion_error", {
+      file: filePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 let reconciling = false;

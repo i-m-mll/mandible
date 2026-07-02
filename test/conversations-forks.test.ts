@@ -36,6 +36,23 @@ function insertConversation(): void {
   ).run(now, now, now);
 }
 
+function insertConversationWithSource(id: string, sourcePath: string, sourceMtime: number): void {
+  const now = "2026-07-01T12:00:00.000Z";
+  db.prepare(
+    `INSERT INTO conversations (
+      id, source, source_path, source_hash, source_mtime, title, started_at,
+      session_id, created_at, updated_at
+    ) VALUES (?, 'claude_code', ?, 'hash', ?, 'Conversation lifecycle', ?, 'provider-1', ?, ?)`,
+  ).run(id, sourcePath, sourceMtime, now, now, now);
+
+  db.prepare(
+    `INSERT INTO conversation_blocks (
+      id, conversation_id, type, role, content, compressed, position, timestamp,
+      dag_uuid, dag_parent_uuid, metadata_json
+    ) VALUES (?, ?, 'assistant_message', 'assistant', 'hello', 0, 1, ?, 'dag-1', NULL, '{}')`,
+  ).run(`${id}-block`, id, now);
+}
+
 function insertBlock(id: string, dagUuid: string, position: number, content: Buffer | string, compressed: number): void {
   db.prepare(
     `INSERT INTO conversation_blocks (
@@ -75,5 +92,78 @@ describe("conversation fork routes", () => {
       .map(([sql]) => String(sql))
       .filter((sql) => sql.includes("conversation_blocks"));
     expect(conversationBlockQueries.length).toBeLessThanOrEqual(4);
+  });
+
+  it("does not spawn while browsing conversation details", async () => {
+    insertConversationWithSource("conv-browse", "/tmp/missing-mandible-transcript.jsonl", 0);
+    const router = new Router();
+    const manager = { create: vi.fn(), getAll: vi.fn(() => []) };
+    registerConversationRoutes(router, manager as never);
+
+    const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-browse" });
+
+    expect(response.status).toBe(200);
+    expect(manager.create).not.toHaveBeenCalled();
+    expect(response.body).toMatchObject({
+      conversation: {
+        id: "conv-browse",
+        attach_state: { kind: "resumable" },
+      },
+    });
+  });
+
+  it("guards resume when the transcript was recently modified", async () => {
+    const transcriptPath = path.join(tempDir, "live.jsonl");
+    fs.writeFileSync(transcriptPath, "{}\n");
+    const now = Date.now();
+    fs.utimesSync(transcriptPath, new Date(now), new Date(now));
+    insertConversationWithSource("conv-live", transcriptPath, now);
+
+    const router = new Router();
+    const manager = { create: vi.fn(), getAll: vi.fn(() => []) };
+    registerConversationRoutes(router, manager as never);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/conversations/conv-live/resume",
+      body: { message_dag_uuid: "dag-1" },
+    });
+
+    expect(response.status).toBe(409);
+    expect(manager.create).not.toHaveBeenCalled();
+    expect(response.body).toMatchObject({
+      error: "resume_conflict",
+      reason: "transcript-recent",
+      attach_state: { kind: "live-external" },
+    });
+  });
+
+  it("reuses an owned live session instead of spawning another resume", async () => {
+    insertConversationWithSource("conv-owned", "/tmp/missing-mandible-transcript.jsonl", 0);
+    const router = new Router();
+    const manager = {
+      create: vi.fn(),
+      getAll: vi.fn(() => [{
+        meta: {
+          id: "console-owned",
+          provider_session_id: "provider-1",
+          status: "running",
+        },
+      }]),
+    };
+    registerConversationRoutes(router, manager as never);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/conversations/conv-owned/resume",
+      body: { message_dag_uuid: "dag-1" },
+    });
+
+    expect(response.status).toBe(200);
+    expect(manager.create).not.toHaveBeenCalled();
+    expect(response.body).toMatchObject({
+      console_session_id: "console-owned",
+      attach_state: { kind: "live-owned" },
+    });
   });
 });

@@ -2587,6 +2587,151 @@ const MIGRATIONS: Migration[] = [
     // Issue: 3da19be — include SDK reasoning effort in the existing
     // per-message parameter keyframes.
     statements: []
+  },
+  {
+    version: 95,
+    name: "claude_statusline_telemetry",
+    // Issue: ad10160 — persist the latest Claude Code statusline telemetry
+    // pushed by the no-network statusline hook bridge.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS console_session_telemetry (
+        telemetry_key TEXT PRIMARY KEY,
+        console_session_id TEXT REFERENCES console_sessions(id) ON DELETE CASCADE,
+        provider_session_id TEXT,
+        transcript_path TEXT,
+        model TEXT,
+        context_used_percentage REAL,
+        context_window_size INTEGER,
+        context_input_tokens INTEGER,
+        context_output_tokens INTEGER,
+        context_cache_creation_input_tokens INTEGER,
+        context_cache_read_input_tokens INTEGER,
+        rate_limit_five_hour_used_percentage REAL,
+        rate_limit_five_hour_resets_at TEXT,
+        rate_limit_seven_day_used_percentage REAL,
+        rate_limit_seven_day_resets_at TEXT,
+        raw_payload_json TEXT NOT NULL,
+        received_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_console_session_telemetry_console
+        ON console_session_telemetry(console_session_id)
+        WHERE console_session_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_console_session_telemetry_provider
+        ON console_session_telemetry(provider_session_id)
+        WHERE provider_session_id IS NOT NULL`
+    ]
+  },
+  {
+    version: 96,
+    name: "conversation_sidechain_metadata",
+    // Issue: 84fcd4a — mark provider child/sidechain transcripts without
+    // depending on live sessions rows.
+    statements: []
+  },
+  {
+    version: 97,
+    name: "conversation_ingest_append_state",
+    // Issue: f894229 — durable append cursors for incremental transcript ingestion.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS conversation_ingest_state (
+        file_path TEXT PRIMARY KEY,
+        byte_offset INTEGER NOT NULL DEFAULT 0,
+        line_count INTEGER NOT NULL DEFAULT 0,
+        tail_hash TEXT NOT NULL DEFAULT '',
+        partial_line TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_conversation_ingest_state_updated
+        ON conversation_ingest_state(updated_at)`
+    ]
+  },
+  {
+    version: 98,
+    name: "workflow_run_browser",
+    // Issue: e909c99 — persist read-only Claude Code workflow summaries from
+    // file artifacts. Runs are keyed by summary_path so reruns from different
+    // sessions remain distinct; worker transcript links are nullable because
+    // transcript JSONL ingestion can lag behind the workflow summary watcher.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS workflow_runs (
+        id                TEXT PRIMARY KEY,
+        provider          TEXT NOT NULL DEFAULT 'claude_code'
+          CHECK(provider IN ('claude_code')),
+        provider_run_id   TEXT NOT NULL,
+        session_id        TEXT NOT NULL,
+        project_path      TEXT,
+        summary_path      TEXT NOT NULL UNIQUE,
+        summary_mtime     REAL NOT NULL DEFAULT 0,
+        summary_hash      TEXT NOT NULL DEFAULT '',
+        workflow_name     TEXT NOT NULL,
+        status            TEXT NOT NULL
+          CHECK(status IN ('pending','running','completed','failed','warning')),
+        started_at        INTEGER,
+        updated_at        INTEGER,
+        completed_at      INTEGER,
+        duration_ms       INTEGER,
+        total_tokens      INTEGER,
+        total_tool_calls  INTEGER,
+        agent_count       INTEGER NOT NULL DEFAULT 0,
+        completed_workers INTEGER NOT NULL DEFAULT 0,
+        total_workers     INTEGER NOT NULL DEFAULT 0,
+        format_version    TEXT NOT NULL,
+        script_path       TEXT,
+        warnings_json     TEXT NOT NULL DEFAULT '[]',
+        created_at        INTEGER NOT NULL,
+        ingested_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_runs_session
+        ON workflow_runs(session_id, updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_runs_status
+        ON workflow_runs(status, updated_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS workflow_phases (
+        id              TEXT PRIMARY KEY,
+        workflow_id     TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        phase_index     INTEGER NOT NULL,
+        title           TEXT NOT NULL,
+        status          TEXT NOT NULL
+          CHECK(status IN ('pending','running','completed','failed','warning')),
+        worker_count    INTEGER NOT NULL DEFAULT 0,
+        completed_count INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(workflow_id, phase_index)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_phases_run
+        ON workflow_phases(workflow_id, phase_index)`,
+      `CREATE TABLE IF NOT EXISTS workflow_workers (
+        id                TEXT PRIMARY KEY,
+        workflow_id       TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        phase_id          TEXT REFERENCES workflow_phases(id) ON DELETE SET NULL,
+        worker_index      INTEGER NOT NULL,
+        agent_id          TEXT,
+        label             TEXT NOT NULL,
+        status            TEXT NOT NULL
+          CHECK(status IN ('pending','running','completed','failed','warning')),
+        model             TEXT,
+        queued_at         INTEGER,
+        started_at        INTEGER,
+        last_progress_at  INTEGER,
+        completed_at      INTEGER,
+        duration_ms       INTEGER,
+        tokens            INTEGER,
+        tool_calls        INTEGER,
+        last_tool_name    TEXT,
+        last_tool_summary TEXT,
+        prompt_preview    TEXT,
+        result_preview    TEXT,
+        transcript_path   TEXT,
+        conversation_id   TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+        warnings_json     TEXT NOT NULL DEFAULT '[]',
+        UNIQUE(workflow_id, agent_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_workers_run
+        ON workflow_workers(workflow_id, worker_index)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_workers_phase
+        ON workflow_workers(phase_id, worker_index)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_workers_conversation
+        ON workflow_workers(conversation_id)
+        WHERE conversation_id IS NOT NULL`
+    ]
   }
 ];
 
@@ -2691,6 +2836,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 94) {
           ensureMessageParamsThinkingEffortColumn(db);
+        }
+        if (migration.version === 95) {
+          ensureConversationSidechainColumns(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -2828,6 +2976,14 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v74_ensure_conversation_integer_timestamps", () => {
       ensureConversationIntegerTimestampColumns(db);
+    });
+  }
+  if (shouldRunPostMigration(db, "v95_backfill_conversation_sidechains", pending, 95, () =>
+    needsConversationSidechainWork(db)
+  )) {
+    runPostMigration(db, "v95_backfill_conversation_sidechains", () => {
+      ensureConversationSidechainColumns(db);
+      backfillConversationSidechains(db);
     });
   }
   // Issue: 812df41 — make spaces.project_id nullable (top-level Spaces). Runs as a
@@ -3125,6 +3281,123 @@ function needsConversationIntegerTimestampWork(db: Db): boolean {
   }
 
   return false;
+}
+
+function parseClaudeSubagentSourcePath(sourcePath: string | null): { parentSessionId: string; agentId: string } | null {
+  if (!sourcePath) return null;
+  const normalized = sourcePath.replace(/\\/g, "/");
+  const match = normalized.match(/\/([^/]+)\/subagents\/agent-([^/]+)\.jsonl$/);
+  if (!match) return null;
+  return {
+    parentSessionId: match[1],
+    agentId: match[2],
+  };
+}
+
+function ensureConversationSidechainColumns(db: Db): void {
+  if (!tableExists(db, "conversations")) return;
+  const names = tableColumnNames(db, "conversations");
+  if (!names.has("is_sidechain")) {
+    db.exec("ALTER TABLE conversations ADD COLUMN is_sidechain INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("agent_id")) {
+    db.exec("ALTER TABLE conversations ADD COLUMN agent_id TEXT");
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_conv_sidechain_parent
+      ON conversations(parent_conversation_id, is_sidechain)
+      WHERE is_sidechain = 1`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_conv_agent
+      ON conversations(agent_id)
+      WHERE agent_id IS NOT NULL`
+  );
+}
+
+function backfillConversationSidechains(db: Db): void {
+  if (!tableExists(db, "conversations")) return;
+  ensureConversationSidechainColumns(db);
+
+  const rows = db.prepare(
+    `SELECT id, source_path
+     FROM conversations
+     WHERE source = 'claude_code'
+       AND LOWER(source_path) LIKE '%/subagents/agent-%.jsonl'`
+  ).all() as Array<{ id: string; source_path: string }>;
+  if (rows.length === 0) return;
+
+  const findParent = db.prepare(
+    `SELECT id
+     FROM conversations
+     WHERE session_id = ?
+       AND id != ?
+       AND LOWER(source_path) NOT LIKE '%/subagents/agent-%.jsonl'
+     ORDER BY started_at ASC, created_at ASC
+     LIMIT 1`
+  );
+  const update = db.prepare(
+    `UPDATE conversations
+     SET is_sidechain = 1,
+         agent_id = COALESCE(NULLIF(agent_id, ''), ?),
+         parent_conversation_id = COALESCE(parent_conversation_id, ?)
+     WHERE id = ?`
+  );
+
+  const apply = db.transaction(() => {
+    for (const row of rows) {
+      const parsed = parseClaudeSubagentSourcePath(row.source_path);
+      if (!parsed) continue;
+      const parent = findParent.get(parsed.parentSessionId, row.id) as { id: string } | undefined;
+      update.run(parsed.agentId, parent?.id ?? null, row.id);
+    }
+  });
+  apply();
+}
+
+function needsConversationSidechainWork(db: Db): boolean {
+  if (!tableExists(db, "conversations")) return false;
+  const names = tableColumnNames(db, "conversations");
+  if (
+    !names.has("is_sidechain")
+    || !names.has("agent_id")
+    || !indexExists(db, "idx_conv_sidechain_parent")
+    || !indexExists(db, "idx_conv_agent")
+  ) {
+    return true;
+  }
+  const row = db.prepare(
+    `SELECT id, source_path, parent_conversation_id, is_sidechain, agent_id
+     FROM conversations
+     WHERE source = 'claude_code'
+       AND LOWER(source_path) LIKE '%/subagents/agent-%.jsonl'
+       AND (is_sidechain != 1 OR agent_id IS NULL OR agent_id = '' OR parent_conversation_id IS NULL)`
+  ).all() as Array<{
+    id: string;
+    source_path: string;
+    parent_conversation_id: string | null;
+    is_sidechain: number;
+    agent_id: string | null;
+  }>;
+  if (row.length === 0) return false;
+  const parentExists = db.prepare(
+    `SELECT 1
+     FROM conversations
+     WHERE session_id = ?
+       AND id != ?
+       AND LOWER(source_path) NOT LIKE '%/subagents/agent-%.jsonl'
+     LIMIT 1`
+  );
+  return row.some((candidate) => {
+    if (candidate.is_sidechain !== 1 || !candidate.agent_id) {
+      return true;
+    }
+    if (!candidate.parent_conversation_id) {
+      const parsed = parseClaudeSubagentSourcePath(candidate.source_path);
+      return !parsed || Boolean(parentExists.get(parsed.parentSessionId, candidate.id));
+    }
+    return true;
+  });
 }
 
 function ensureWorkUnitLedgerIssueColumn(db: Db): void {
@@ -5080,6 +5353,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "auth_requests",
     "console_sessions",
     "conversation_blocks",
+    "conversation_ingest_state",
     "conversations",
     "ledger_comments",
     "ledger_issues",

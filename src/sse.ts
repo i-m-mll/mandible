@@ -204,6 +204,10 @@ export function broadcast(eventOrType: string | SseEvent, data?: unknown): void 
   });
 }
 
+export function broadcastConsoleTelemetry(data: unknown): void {
+  broadcast("console:telemetry", data);
+}
+
 /**
  * Broadcast a frozen `space:*` SSE event over the existing {@link broadcast}
  * helper. Space-mutating routes (C2 `src/routes/spaces.ts` and later

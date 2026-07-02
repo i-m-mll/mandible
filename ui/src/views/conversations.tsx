@@ -4,18 +4,24 @@ import type { ConsoleSession } from '../state';
 import type {
   BlockType,
   Conversation,
+  ConversationAttachState,
   ConversationBlock,
   ConversationChild,
+  ConversationParent,
   ConversationSource,
+  WorkflowRun,
+  WorkflowWorker,
 } from '../api.js';
 import {
   exportConversationBlocks,
   forkConversation,
+  getConsoleSessionUsage,
   getConversation,
   getConversations,
   getSessionIssues,
   getSessionPresets,
-  getSettings,
+  listWorkflows,
+  navigateSession,
   resumeConversation,
   sendConsolePrompt,
   updateConsoleSession,
@@ -28,7 +34,18 @@ import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
-import { ChatSurface, conversationBlocksToStreamEvents } from '../chat';
+import {
+  ChatOverlay,
+  ChatSurface,
+  ContextUsageRing,
+  Shelf,
+  UsageModal,
+  conversationBlocksToStreamEvents,
+  deriveChatUsageSummary,
+  useStatuslineTelemetry,
+  type ShelfItem,
+} from '../chat';
+import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -41,62 +58,73 @@ import {
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
+type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
+
+export function getConversationAttachPresentation(
+  state: ConversationAttachState,
+): { label: string; title: string; composer: AttachComposerMode; hint: string | null } {
+  if (state.kind === 'live-owned') {
+    return {
+      label: 'Live',
+      title: 'Mandible owns the live process for this conversation.',
+      composer: 'enabled',
+      hint: null,
+    };
+  }
+  if (state.kind === 'live-external') {
+    return {
+      label: 'External',
+      title: 'This conversation appears live outside Mandible.',
+      composer: 'disabled',
+      hint: 'Live in your terminal.',
+    };
+  }
+  if (state.kind === 'resumable') {
+    return {
+      label: 'Resumable',
+      title: 'Sending a message will resume this conversation.',
+      composer: 'enabled',
+      hint: 'Sending will resume this session.',
+    };
+  }
+  return {
+    label: 'History',
+    title: 'This conversation is read-only.',
+    composer: 'hidden',
+    hint: null,
+  };
+}
+
+type ResumeApiError = Error & {
+  status?: number;
+  body?: {
+    error?: string;
+    reason?: string;
+    message?: string;
+    details?: string;
+    attach_state?: ConversationAttachState;
+  };
+};
+
+function formatResumeApiError(err: unknown): { message: string; details: string | null; state: ConversationAttachState | null } {
+  if (err instanceof Error) {
+    const apiError = err as ResumeApiError;
+    const reason = apiError.body?.reason ? ` (${apiError.body.reason})` : '';
+    const message = apiError.body?.message || apiError.message;
+    return {
+      message: `${message}${reason}`,
+      details: apiError.body?.details ?? (apiError.body ? JSON.stringify(apiError.body, null, 2) : null),
+      state: apiError.body?.attach_state ?? null,
+    };
+  }
+  return { message: String(err), details: null, state: null };
+}
+
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
   if (!toast) return null;
   return (
     <div className={`conv-toast conv-toast--${toast.type}`} onClick={onDismiss}>
       {toast.message}
-    </div>
-  );
-}
-
-// ── Resume conflict dialog ──
-
-type ResumeConflictPolicy = 'auto_fork' | 'prompt' | 'allow_concurrent';
-
-function ResumeConflictDialog({
-  onBranch,
-  onFork,
-  onCancel,
-}: {
-  onBranch: (remember: boolean) => void;
-  onFork: (remember: boolean) => void;
-  onCancel: () => void;
-}): JSX.Element {
-  const [remember, setRemember] = useState(false);
-
-  return (
-    <div className="conv-dialog-overlay" onClick={onCancel}>
-      <div className="conv-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3 className="conv-dialog__title">This conversation is active in Console.</h3>
-        <div className="conv-dialog__options">
-          <button
-            type="button"
-            className="btn btn--active"
-            onClick={() => onBranch(remember)}
-          >
-            Branch &mdash; Continue in the same session (creates a branch point)
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => onFork(remember)}
-          >
-            Fork &mdash; Create a new conversation (clean copy up to here)
-          </button>
-        </div>
-        <label className="conv-dialog__remember">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember((e.target as HTMLInputElement).checked)}
-          />
-          Remember my choice
-        </label>
-        <button type="button" className="btn btn--ghost btn--sm conv-dialog__cancel" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
     </div>
   );
 }
@@ -461,9 +489,14 @@ type ChatSidebarSections = {
 type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
   children: ConversationChild[];
+  parent: ConversationParent | null;
+};
+type ConversationAppendSseDetail = {
+  type: string;
+  data?: ConversationAppendPayload;
 };
 function conversationShell(conversation: Conversation): ConversationWithDetails {
-  return { ...conversation, blocks: [], children: [] };
+  return { ...conversation, blocks: [], children: [], parent: null };
 }
 
 function getEntryTitle(entry: ChatEntry): string {
@@ -930,54 +963,263 @@ function ExportPanel({
 
 // ── Detail View ──
 
-function SubAgentsList({
-  children,
+function formatShelfDuration(seconds: number | null): string | null {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+function taskLabelFromBlock(block: ConversationBlock): string | null {
+  const metadata = parseMetadata(block.metadata_json);
+  if (metadata.tool_name !== 'Task') return null;
+  const input = metadata.tool_input;
+  if (!input || typeof input !== 'object') return null;
+  const record = input as Record<string, unknown>;
+  const description = typeof record.description === 'string' ? record.description.trim() : '';
+  const subagentType = typeof record.subagent_type === 'string' ? record.subagent_type.trim() : '';
+  return description || subagentType || null;
+}
+
+function buildSubagentShelfItems(
+  children: ConversationChild[],
+  parentBlocks: ConversationBlock[],
+  onNavigate: (id: string) => void,
+): ShelfItem[] {
+  const taskLabels = parentBlocks
+    .filter((block) => block.type === 'tool_use')
+    .map(taskLabelFromBlock)
+    .filter((label): label is string => Boolean(label));
+
+  return children.map((child, index) => {
+    const duration = formatShelfDuration(child.duration_seconds);
+    const meta = [
+      `${child.block_count} blocks`,
+      duration,
+      child.model,
+    ].filter((value): value is string => Boolean(value));
+    const fallbackLabel = child.agent_id ? `agent-${child.agent_id}` : stripMarkdownText(child.title) || 'Subagent';
+    return {
+      id: child.id,
+      icon: '↳',
+      label: truncate(taskLabels[index] ?? fallbackLabel, 80),
+      status: child.status,
+      meta,
+      onActivate: () => onNavigate(child.id),
+    };
+  });
+}
+
+function formatCompactNumber(value: number | null | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (value >= 1000) return `${Math.round(value / 1000)}k`;
+  return String(value);
+}
+
+function workflowShelfStatus(workflow: WorkflowRun): ShelfItem['status'] {
+  if (workflow.warnings.length > 0 || workflow.status === 'warning') return 'error';
+  if (workflow.status === 'failed') return 'error';
+  if (workflow.status === 'completed') return 'finished';
+  if (workflow.status === 'running') return 'active';
+  return 'waiting';
+}
+
+function buildWorkflowShelfItems(
+  workflows: WorkflowRun[],
+  onOpen: (id: string) => void,
+): ShelfItem[] {
+  return workflows.map((workflow) => {
+    const progress = `${workflow.completed_workers}/${workflow.total_workers}`;
+    const tokens = formatCompactNumber(workflow.total_tokens);
+    return {
+      id: workflow.id,
+      icon: '◇',
+      label: truncate(workflow.workflow_name || workflow.provider_run_id, 80),
+      status: workflowShelfStatus(workflow),
+      meta: [
+        progress,
+        tokens ? `${tokens} tok` : null,
+        workflow.warnings.length > 0 ? 'warning' : null,
+      ].filter((value): value is string => Boolean(value)),
+      onActivate: () => onOpen(workflow.id),
+    };
+  });
+}
+
+function statusClass(status: string): string {
+  return status.replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'pending';
+}
+
+function WorkflowRunDialog({
+  workflow,
+  onClose,
   onNavigate,
 }: {
-  children: ConversationChild[];
+  workflow: WorkflowRun;
+  onClose: () => void;
   onNavigate: (id: string) => void;
 }): JSX.Element {
-  const [expanded, setExpanded] = useState(true);
+  const [selectedPhaseIndex, setSelectedPhaseIndex] = useState(0);
+  const [selectedWorkerIndex, setSelectedWorkerIndex] = useState(0);
+  const [focusColumn, setFocusColumn] = useState<'phases' | 'workers'>('phases');
+  const panelRef = useRef<HTMLDivElement>(null);
 
-  if (children.length === 0) return <></>;
+  const phases = workflow.phases.length > 0
+    ? workflow.phases
+    : [{
+        id: `${workflow.id}:phase:0`,
+        workflow_id: workflow.id,
+        phase_index: 1,
+        title: 'Workflow',
+        status: workflow.status,
+        worker_count: workflow.total_workers,
+        completed_count: workflow.completed_workers,
+      }];
+  const selectedPhase = phases[Math.min(selectedPhaseIndex, phases.length - 1)] ?? phases[0];
+  const phaseWorkers = workflow.workers.filter((worker) => (
+    worker.phase_id === selectedPhase.id
+      || (selectedPhase.phase_index === 1 && !worker.phase_id && phases.length === 1)
+  ));
+  const selectedWorker = phaseWorkers[Math.min(selectedWorkerIndex, Math.max(0, phaseWorkers.length - 1))] ?? null;
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, [workflow.id]);
+
+  useEffect(() => {
+    setSelectedPhaseIndex((index) => Math.min(index, Math.max(0, phases.length - 1)));
+  }, [phases.length, workflow.id]);
+
+  useEffect(() => {
+    setSelectedWorkerIndex((index) => Math.min(index, Math.max(0, phaseWorkers.length - 1)));
+  }, [phaseWorkers.length, selectedPhase.id]);
+
+  const openSelectedWorker = (): void => {
+    if (selectedWorker?.conversation_id) {
+      onNavigate(selectedWorker.conversation_id);
+    }
+  };
+
+  const handleKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setFocusColumn('phases');
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setFocusColumn('workers');
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (focusColumn === 'phases') {
+        setSelectedPhaseIndex((index) => Math.max(0, index - 1));
+        setSelectedWorkerIndex(0);
+      } else {
+        setSelectedWorkerIndex((index) => Math.max(0, index - 1));
+      }
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (focusColumn === 'phases') {
+        setSelectedPhaseIndex((index) => Math.min(phases.length - 1, index + 1));
+        setSelectedWorkerIndex(0);
+      } else {
+        setSelectedWorkerIndex((index) => Math.min(Math.max(0, phaseWorkers.length - 1), index + 1));
+      }
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      openSelectedWorker();
+    }
+  };
 
   return (
-    <div className="conv-subagents">
-      <button
-        type="button"
-        className="conv-subagents__header"
-        onClick={() => setExpanded((prev) => !prev)}
+    <div className="workflow-modal-overlay" onClick={onClose}>
+      <div
+        className="workflow-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="workflow-modal-title"
+        tabIndex={-1}
+        ref={panelRef}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleKeyDown}
       >
-        <span className="conv-subagents__toggle">{expanded ? '\u25BE' : '\u25B8'}</span>
-        <span className="conv-subagents__title">Sub-agents ({children.length})</span>
-      </button>
-      {expanded && (
-        <div className="conv-subagents__list">
-          {children.map((child) => {
-            const durationStr = child.duration_seconds != null
-              ? child.duration_seconds < 60
-                ? `${child.duration_seconds}s`
-                : `${Math.floor(child.duration_seconds / 60)}m ${child.duration_seconds % 60}s`
-              : null;
-            return (
-              <div
-                key={child.id}
-                className="conv-subagent-card"
-                onClick={() => onNavigate(child.id)}
-              >
-                <div className="conv-subagent-card__title">
-                  {truncate(child.title || 'Untitled', 60)}
-                </div>
-                <div className="conv-subagent-card__meta">
-                  <span>{child.block_count} blocks</span>
-                  {durationStr && <span>{durationStr}</span>}
-                  {child.model && <span className="conv-subagent-card__model">{child.model}</span>}
-                </div>
-              </div>
-            );
-          })}
+        <div className="workflow-modal__header">
+          <div>
+            <h3 id="workflow-modal-title" className="workflow-modal__title">{workflow.workflow_name}</h3>
+            <div className="workflow-modal__meta">
+              <span>{workflow.completed_workers}/{workflow.total_workers}</span>
+              <span className={`workflow-status workflow-status--${statusClass(workflow.status)}`}>{workflow.status}</span>
+              {workflow.total_tokens != null && <span>{workflow.total_tokens.toLocaleString()} tokens</span>}
+            </div>
+          </div>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close workflow">
+            &times;
+          </button>
         </div>
-      )}
+
+        {workflow.warnings.length > 0 && (
+          <div className="workflow-warning" role="status">
+            {workflow.warnings[0].message || "Can't parse this run. The workflow format may have changed."}
+          </div>
+        )}
+
+        <div className="workflow-modal__grid">
+          <div className={`workflow-phase-list${focusColumn === 'phases' ? ' workflow-phase-list--active' : ''}`}>
+            {phases.map((phase, index) => (
+              <button
+                key={phase.id}
+                type="button"
+                className={`workflow-phase${index === selectedPhaseIndex ? ' workflow-phase--selected' : ''}`}
+                onClick={() => {
+                  setSelectedPhaseIndex(index);
+                  setSelectedWorkerIndex(0);
+                  setFocusColumn('phases');
+                }}
+              >
+                <span className="workflow-phase__title">{phase.title}</span>
+                <span className="workflow-phase__meta">
+                  {phase.completed_count}/{phase.worker_count}
+                  <span className={`workflow-status workflow-status--${statusClass(phase.status)}`}>{phase.status}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className={`workflow-worker-list${focusColumn === 'workers' ? ' workflow-worker-list--active' : ''}`}>
+            {phaseWorkers.length === 0 ? (
+              <div className="workflow-worker-list__empty">No workers recorded</div>
+            ) : phaseWorkers.map((worker, index) => (
+              <button
+                key={worker.id}
+                type="button"
+                className={`workflow-worker workflow-worker--${statusClass(worker.status)}${index === selectedWorkerIndex ? ' workflow-worker--selected' : ''}`}
+                onClick={() => {
+                  setSelectedWorkerIndex(index);
+                  setFocusColumn('workers');
+                }}
+                onDblClick={() => {
+                  if (worker.conversation_id) onNavigate(worker.conversation_id);
+                }}
+              >
+                <span className="workflow-worker__top">
+                  <span className="workflow-worker__label">{worker.label}</span>
+                  <span className={`workflow-status workflow-status--${statusClass(worker.status)}`}>{worker.status}</span>
+                </span>
+                <span className="workflow-worker__meta">
+                  {worker.model && <span>{worker.model}</span>}
+                  {worker.tokens != null && <span>{worker.tokens.toLocaleString()} tokens</span>}
+                  {worker.duration_ms != null && <span>{formatShelfDuration(Math.round(worker.duration_ms / 1000))}</span>}
+                </span>
+                {(worker.last_tool_summary || worker.result_preview || worker.warnings[0]?.message) && (
+                  <span className="workflow-worker__preview">
+                    {worker.warnings[0]?.message ?? worker.last_tool_summary ?? worker.result_preview}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1112,9 +1354,14 @@ function ConversationDetail({
   const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
+  const [workflowNonce, setWorkflowNonce] = useState(0);
   const [showMessageFilters, setShowMessageFilters] = useState(false);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerModel, setComposerModel] = useState('');
+  const [usageModalOpen, setUsageModalOpen] = useState(false);
+  const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
 
   // Bug: 84cd5ae — linked issue pills in conversation detail
   const [sessionIssueLinks, setSessionIssueLinks] = useState<Array<{ issue_id: string; repo_id: string }>>([]);
@@ -1126,7 +1373,7 @@ function ConversationDetail({
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
-  const [conflictDialog, setConflictDialog] = useState<{ dagUuid: string } | null>(null);
+  const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
   const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
 
   // Virtual scroll state
@@ -1161,6 +1408,61 @@ function ConversationDetail({
       });
     return () => { active = false; };
   }, [conversationId, initialConversation, loadNonce]);
+
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return undefined;
+    let refreshTimer: number | null = null;
+    const source = new EventSource('/api/events');
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      refreshTimer = window.setTimeout(() => {
+        setLoadNonce((prev) => prev + 1);
+      }, 150);
+    };
+    const onMessage = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as { type?: string };
+        if (payload.type === 'conversation:new' || payload.type === 'conversation:updated') {
+          scheduleRefresh();
+        } else if (payload.type === 'workflow:updated') {
+          setWorkflowNonce((prev) => prev + 1);
+        }
+      } catch {
+        // Ignore malformed SSE payloads.
+      }
+    };
+    source.addEventListener('message', onMessage);
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      source.removeEventListener('message', onMessage);
+      source.close();
+    };
+  }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversation?.session_id) {
+      setWorkflows([]);
+      setActiveWorkflowId(null);
+      return undefined;
+    }
+    let active = true;
+    listWorkflows({ session_id: conversation.session_id })
+      .then((runs) => {
+        if (!active) return;
+        setWorkflows(runs);
+        if (activeWorkflowId && !runs.some((run) => run.id === activeWorkflowId)) {
+          setActiveWorkflowId(null);
+        }
+      })
+      .catch(() => {
+        if (active) setWorkflows([]);
+      });
+    return () => { active = false; };
+  }, [activeWorkflowId, conversation?.session_id, workflowNonce]);
 
   // Bug: 84cd5ae — fetch linked issues for the conversation's session
   useEffect(() => {
@@ -1220,6 +1522,38 @@ function ConversationDetail({
     return () => { active = false; };
   }, [conversationId, selectedLeaf]);
 
+  useEffect(() => {
+    const handleConversationSse = (event: Event) => {
+      const detail = (event as CustomEvent<ConversationAppendSseDetail>).detail;
+      const data = detail?.data;
+      if (!data || data.id !== conversationId) return;
+
+      if (selectedLeaf) {
+        setLoadNonce((prev) => prev + 1);
+        return;
+      }
+
+      const appendBlocks = data.append?.blocks ?? [];
+      if (appendBlocks.length === 0) {
+        setConversation((prev) => prev ? applyConversationAppendPayload(prev, data) ?? prev : prev);
+        return;
+      }
+
+      setConversation((prev) => {
+        if (!prev) return prev;
+        const next = applyConversationAppendPayload(prev, data);
+        if (!next) {
+          window.setTimeout(() => setLoadNonce((nonce) => nonce + 1), 0);
+          return prev;
+        }
+        return next;
+      });
+    };
+
+    window.addEventListener('conversation:sse', handleConversationSse);
+    return () => window.removeEventListener('conversation:sse', handleConversationSse);
+  }, [conversationId, selectedLeaf]);
+
   // Toast auto-dismiss
   useEffect(() => {
     if (!toast) return;
@@ -1241,88 +1575,26 @@ function ConversationDetail({
   }, [conversationId]);
 
   const handleResume = useCallback(async (dagUuid: string) => {
-    // Check conflict: is this conversation active in Console?
-    const activeSession = consoleSessions.find(
-      (s) => s.provider_session_id === conversation?.session_id && s.status !== 'stopped' && s.status !== 'crashed'
-    );
-
-    if (activeSession) {
-      // Check auto-fork policy
-      let policy: ResumeConflictPolicy = 'prompt';
-      try {
-        const settings = await getSettings();
-        const stored = settings.resume_conflict_policy;
-        if (stored === 'auto_fork' || stored === 'prompt' || stored === 'allow_concurrent') {
-          policy = stored;
-        }
-      } catch {
-        // Default to prompt if settings unavailable
-      }
-
-      if (policy === 'auto_fork') {
-        // Fork first, then resume the fork
-        try {
-          await forkConversation(conversationId, dagUuid);
-          setToast({ message: 'Auto-forked due to active session — it will appear in History shortly.', type: 'info' });
-        } catch (err) {
-          setToast({ message: `Auto-fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-        }
-        return;
-      }
-
-      if (policy === 'prompt') {
-        setConflictDialog({ dagUuid });
-        return;
-      }
-      // allow_concurrent — fall through to resume directly
-    }
-
-    // No conflict or allow_concurrent — resume directly
     try {
       const result = await resumeConversation(conversationId, dagUuid);
+      if (result.attach_state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
+      }
+      if (!result.console_session_id) {
+        throw new Error('Resume did not return a console session.');
+      }
       setToast({ message: 'Resuming conversation in Console...', type: 'info' });
       window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
     } catch (err) {
-      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+      const formatted = formatResumeApiError(err);
+      if (formatted.state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      }
+      setContinueError(formatted.message);
+      setResumeErrorDetails(formatted.details);
+      setToast({ message: `Resume failed: ${formatted.message}`, type: 'error' });
     }
-  }, [conversationId, consoleSessions, conversation?.session_id]);
-
-  const handleConflictBranch = useCallback(async (remember: boolean) => {
-    if (!conflictDialog) return;
-    const dagUuid = conflictDialog.dagUuid;
-    setConflictDialog(null);
-    if (remember) {
-      try {
-        const { updateSetting } = await import('../api.js');
-        await updateSetting('resume_conflict_policy', 'allow_concurrent');
-      } catch { /* non-critical */ }
-    }
-    try {
-      const result = await resumeConversation(conversationId, dagUuid);
-      setToast({ message: 'Resuming conversation in Console...', type: 'info' });
-      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-    } catch (err) {
-      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-    }
-  }, [conflictDialog, conversationId]);
-
-  const handleConflictFork = useCallback(async (remember: boolean) => {
-    if (!conflictDialog) return;
-    const dagUuid = conflictDialog.dagUuid;
-    setConflictDialog(null);
-    if (remember) {
-      try {
-        const { updateSetting } = await import('../api.js');
-        await updateSetting('resume_conflict_policy', 'auto_fork');
-      } catch { /* non-critical */ }
-    }
-    try {
-      await forkConversation(conversationId, dagUuid);
-      setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
-    } catch (err) {
-      setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-    }
-  }, [conflictDialog, conversationId]);
+  }, [conversationId]);
 
   // Observe container resize
   useEffect(() => {
@@ -1347,6 +1619,30 @@ function ConversationDetail({
     () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
     [conversation?.session_id, conversationId, visibleBlocks],
   );
+  const shelfItems = useMemo(
+    () => [
+      ...buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
+      ...buildWorkflowShelfItems(workflows, setActiveWorkflowId),
+    ],
+    [blocks, conversation?.children, onNavigate, workflows],
+  );
+  const isReadOnlyChild = Boolean(conversation?.is_sidechain || conversation?.parent_conversation_id);
+  const activeWorkflow = useMemo(
+    () => workflows.find((workflow) => workflow.id === activeWorkflowId) ?? null,
+    [activeWorkflowId, workflows],
+  );
+
+  useEffect(() => {
+    if (!conversation?.parent_conversation_id) return undefined;
+    const parentId = conversation.parent_conversation_id;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onNavigate(parentId);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [conversation?.parent_conversation_id, onNavigate]);
 
   const exportableBlocks = useMemo(
     () => visibleBlocks.filter((b) => selected.has(b.id)),
@@ -1485,6 +1781,54 @@ function ConversationDetail({
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
   }, [consoleSessions, conversation?.session_id]);
 
+  const attachState = useMemo<ConversationAttachState | null>(() => {
+    if (!conversation) return null;
+    if (linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)) {
+      return {
+        ...conversation.attach_state,
+        kind: 'live-owned',
+        reason: 'mandible-owned',
+        resumable: true,
+        console_session_id: linkedConsoleSession.id,
+      };
+    }
+    return conversation.attach_state;
+  }, [conversation, linkedConsoleSession]);
+
+  const attachPresentation = attachState ? getConversationAttachPresentation(attachState) : null;
+
+  const telemetry = useStatuslineTelemetry({
+    sessionRef: linkedConsoleSession?.id ?? conversation?.session_id ?? null,
+    transcriptPath: conversation?.source_path ?? null,
+  });
+
+  useEffect(() => {
+    if (!linkedConsoleSession) {
+      setUsageRows([]);
+      return undefined;
+    }
+    let active = true;
+    void getConsoleSessionUsage<Record<string, unknown>>(linkedConsoleSession.id)
+      .then((rows) => {
+        if (active) setUsageRows(rows);
+      })
+      .catch(() => {
+        if (active) setUsageRows([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [linkedConsoleSession?.id]);
+
+  const usageSummary = useMemo(() => deriveChatUsageSummary({
+    telemetry,
+    events: chatEvents,
+    blocks,
+    usageRows,
+  }), [blocks, chatEvents, telemetry, usageRows]);
+
+  const openUsage = useCallback(() => setUsageModalOpen(true), []);
+
   const latestDagUuid = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
       const dagUuid = blocks[index].dag_uuid;
@@ -1496,6 +1840,12 @@ function ConversationDetail({
   }, [blocks]);
 
   const continueDisabledReason = useMemo(() => {
+    if (attachState?.kind === 'live-external') {
+      return 'Live in your terminal.';
+    }
+    if (attachState?.kind === 'historical') {
+      return 'This conversation is read-only.';
+    }
     if (linkedConsoleSession?.interaction_mode === 'inbox_only' && isLiveConsoleSession(linkedConsoleSession)) {
       return 'Direct input is disabled for this session.';
     }
@@ -1503,7 +1853,7 @@ function ConversationDetail({
       return 'No resumable message is available.';
     }
     return null;
-  }, [latestDagUuid, linkedConsoleSession]);
+  }, [attachState?.kind, latestDagUuid, linkedConsoleSession]);
 
   const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : (
     conversation?.source === 'gemini' ? 'gemini' :
@@ -1538,6 +1888,7 @@ function ConversationDetail({
     }
     setContinueBusy(true);
     setContinueError(null);
+    setResumeErrorDetails(null);
     try {
       let targetSessionId = linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)
         ? linkedConsoleSession.id
@@ -1547,6 +1898,12 @@ function ConversationDetail({
           throw new Error('No resumable message is available.');
         }
         const result = await resumeConversation(conversationId, latestDagUuid, undefined, composerModel || undefined);
+        if (result.attach_state) {
+          setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
+        }
+        if (!result.console_session_id) {
+          throw new Error('Resume did not return a console session.');
+        }
         targetSessionId = result.console_session_id;
       }
       await sendConsolePrompt(targetSessionId, prompt);
@@ -1554,18 +1911,31 @@ function ConversationDetail({
       setToast({ message: 'Message sent.', type: 'info' });
       setLoadNonce((prev) => prev + 1);
     } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err));
+      const formatted = formatResumeApiError(err);
+      if (formatted.state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      }
+      setContinueError(formatted.message);
+      setResumeErrorDetails(formatted.details);
     } finally {
       setContinueBusy(false);
     }
   }, [composerModel, continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'ArrowUp' && shelfItems.length > 0 && event.currentTarget.selectionStart === 0) {
+      const firstRow = document.querySelector<HTMLButtonElement>('.chat-shelf-row');
+      if (firstRow) {
+        event.preventDefault();
+        firstRow.focus();
+        return;
+      }
+    }
     if (event.key !== 'Enter') return;
     if (event.shiftKey && !event.metaKey && !event.ctrlKey) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
-  }, []);
+  }, [shelfItems.length]);
 
   const handleComposerModelChange = useCallback(async (value: string) => {
     setComposerModel(value);
@@ -1581,6 +1951,54 @@ function ConversationDetail({
       setContinueError(err instanceof Error ? err.message : String(err));
     }
   }, [canSaveComposerModel, linkedConsoleSession]);
+
+  const handleFocusExternalSession = useCallback(async () => {
+    const sessionId = attachState?.external_session_id;
+    if (!sessionId) return;
+    setContinueError(null);
+    setResumeErrorDetails(null);
+    try {
+      await navigateSession(sessionId);
+      setToast({ message: 'Terminal focus requested.', type: 'info' });
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    }
+  }, [attachState?.external_session_id]);
+
+  const handleForkHere = useCallback(async () => {
+    if (!latestDagUuid) {
+      setContinueError('No fork point is available.');
+      return;
+    }
+    setContinueBusy(true);
+    setContinueError(null);
+    setResumeErrorDetails(null);
+    try {
+      const result = await resumeConversation(
+        conversationId,
+        latestDagUuid,
+        undefined,
+        composerModel || undefined,
+        { fork: true },
+      );
+      setToast({
+        message: result.session_id
+          ? 'Forked conversation — it will appear in History shortly.'
+          : 'Fork requested.',
+        type: 'info',
+      });
+    } catch (err) {
+      const formatted = formatResumeApiError(err);
+      if (formatted.state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      }
+      setContinueError(formatted.message);
+      setResumeErrorDetails(formatted.details);
+    } finally {
+      setContinueBusy(false);
+    }
+  }, [composerModel, conversationId, latestDagUuid]);
+
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
     const focus = sessionId ? `session:${sessionId}` : undefined;
@@ -1623,7 +2041,7 @@ function ConversationDetail({
   }
 
   return (
-    <div className={`conv-detail${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
+    <div className={`conv-detail chat-usage-host${sidebarCollapsed ? ' conv-detail--shelf-collapsed' : ''}`}>
       {/* Parent link for sub-agent conversations */}
       {conversation.parent_conversation_id && (
         <div className="conv-parent-link">
@@ -1632,7 +2050,7 @@ function ConversationDetail({
             className="btn btn--ghost btn--sm"
             onClick={() => onNavigate(conversation.parent_conversation_id!)}
           >
-            &uarr; Parent conversation
+            Subagent of {conversation.parent?.title ? truncate(stripMarkdownText(conversation.parent.title), 80) : 'parent conversation'}
           </button>
         </div>
       )}
@@ -1646,6 +2064,14 @@ function ConversationDetail({
               )}
               <span>{getConversationTitle(conversation)}</span>
             </h2>
+            {attachPresentation && attachState && (
+              <span
+                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+                title={attachPresentation.title}
+              >
+                {attachPresentation.label}
+              </span>
+            )}
             <div className="conv-actions">
               <button
                 type="button"
@@ -1681,6 +2107,7 @@ function ConversationDetail({
           </div>
         </div>
         <div className="conv-detail__header-right">
+          <ContextUsageRing usage={usageSummary} size="sm" onClick={openUsage} />
           <button
             type="button"
             className="conv-info-button"
@@ -1704,11 +2131,6 @@ function ConversationDetail({
             Retry
           </button>
         </div>
-      )}
-
-      {/* Sub-agents section */}
-      {conversation.children && conversation.children.length > 0 && (
-        <SubAgentsList children={conversation.children} onNavigate={onNavigate} />
       )}
 
       {showMessageFilters && (
@@ -1801,6 +2223,8 @@ function ConversationDetail({
               backend: conversation.source,
               model: conversation.model ?? undefined,
             }}
+            usageSummary={usageSummary}
+            onUsageOpen={openUsage}
           />
         </div>
       ) : (
@@ -1852,27 +2276,85 @@ function ConversationDetail({
         </div>
       )}
 
+      <ChatOverlay
+        open={usageModalOpen}
+        titleId="conversation-usage-modal-title"
+        onClose={() => setUsageModalOpen(false)}
+      >
+        <UsageModal
+          usage={usageSummary}
+          titleId="conversation-usage-modal-title"
+          onClose={() => setUsageModalOpen(false)}
+        />
+      </ChatOverlay>
+
+      <Shelf
+        conversationId={conversation.id}
+        title="Activity"
+        items={shelfItems}
+        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
+      />
+
+      {activeWorkflow && (
+        <WorkflowRunDialog
+          workflow={activeWorkflow}
+          onClose={() => setActiveWorkflowId(null)}
+          onNavigate={onNavigate}
+        />
+      )}
+
+      {isReadOnlyChild ? (
+        <div className="conv-compose conv-compose--readonly">
+          <span>Read-only subagent transcript</span>
+        </div>
+      ) : attachPresentation?.composer !== 'hidden' ? (
       <div className="conv-compose">
+        {attachPresentation?.hint && (
+          <div className="conv-compose__hint">{attachPresentation.hint}</div>
+        )}
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder="Message..."
-            disabled={continueBusy}
+            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
+            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
             rows={3}
           />
           <button
             type="submit"
             className="conv-compose__send"
-            disabled={continueBusy || !continueDraft.trim()}
+            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
             title="Send message"
             aria-label="Send message"
           >
             {continueBusy ? '...' : '↑'}
           </button>
         </form>
+        {attachState?.kind === 'live-external' && (
+          <div className="conv-compose__actions">
+            {attachState.external_session_id && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => { void handleFocusExternalSession(); }}
+              >
+                Go to terminal
+              </button>
+            )}
+            {attachState.can_fork && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={continueBusy || !latestDagUuid}
+                onClick={() => { void handleForkHere(); }}
+              >
+                Fork here
+              </button>
+            )}
+          </div>
+        )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
             <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
@@ -1926,19 +2408,18 @@ function ConversationDetail({
             {continueError ?? continueDisabledReason}
           </div>
         )}
+        {resumeErrorDetails && (
+          <details className="conv-compose__details">
+            <summary>Details</summary>
+            <pre>{resumeErrorDetails}</pre>
+          </details>
+        )}
       </div>
+      ) : null}
 
       {/* Toast notification */}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-      {/* Resume conflict dialog */}
-      {conflictDialog && (
-        <ResumeConflictDialog
-          onBranch={handleConflictBranch}
-          onFork={handleConflictFork}
-          onCancel={() => setConflictDialog(null)}
-        />
-      )}
       {infoOpen && (
         <ConversationInfoDialog
           conversation={conversation}

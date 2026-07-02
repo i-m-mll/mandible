@@ -768,6 +768,13 @@ function App(): JSX.Element {
       invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
     };
+    const conversationHandler = (payload: SSEPayload) => {
+      handler(payload);
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
+      window.dispatchEvent(
+        new CustomEvent('conversation:sse', { detail: { type: payload.type, data } }),
+      );
+    };
     const daemonHandler = (payload: SSEPayload) => {
       const data = payload.data && typeof payload.data === 'object' ? payload.data : null;
       const record = data as Record<string, unknown> | null;
@@ -828,6 +835,13 @@ function App(): JSX.Element {
       );
     };
 
+    const consoleTelemetryHandler = (payload: SSEPayload) => {
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
+      window.dispatchEvent(
+        new CustomEvent('console:telemetry', { detail: data }),
+      );
+    };
+
     // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
     const pushEventHandler = (payload: SSEPayload) => {
       invalidateDashboardApiCacheForEvent(payload.type);
@@ -856,8 +870,8 @@ function App(): JSX.Element {
       client.on('auth:output', handler),
       client.on('auth:resolved', handler),
       client.on('work:branch:updated', handler),
-      client.on('conversation:new', handler),
-      client.on('conversation:updated', handler),
+      client.on('conversation:new', conversationHandler),
+      client.on('conversation:updated', conversationHandler),
       client.on('daemon:reloaded', daemonHandler),
       client.on('console:session:created', handler),
       client.on('console:session:updated', handler),
@@ -868,6 +882,7 @@ function App(): JSX.Element {
       client.on('console:session:deleted', handler),
       client.on('console:inbox:badge', handler),
       client.on('console:stream_event', consoleStreamHandler),
+      client.on('console:telemetry', consoleTelemetryHandler),
       client.on('console:permission:request', consolePermissionHandler),
       client.on('console:permission:cleared', consolePermissionHandler),
       client.on('session:registered', graphRefreshHandler),

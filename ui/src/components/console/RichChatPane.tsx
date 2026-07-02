@@ -1,8 +1,16 @@
 import type { JSX } from 'preact/jsx-runtime';
-import type { ConsolePermissionDecision, ConsolePermissionRequest } from '../../api';
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { getConsoleSessionUsage, type ConsolePermissionDecision, type ConsolePermissionRequest } from '../../api';
 import type { ConsoleSession } from '../../state';
 import type { StreamEvent } from '../stream-renderer/types';
-import { ChatSurface } from '../../chat';
+import {
+  ChatOverlay,
+  ChatSurface,
+  ContextUsageRing,
+  UsageModal,
+  deriveChatUsageSummary,
+  useStatuslineTelemetry,
+} from '../../chat';
 import { ContextIndicator } from '../presets/ContextIndicator';
 import { PtyBanner } from './PtyBanner';
 import { SessionControls, SessionModelControl } from './SessionControls';
@@ -96,10 +104,35 @@ export function RichChatPane({
   onSidebarTabChange: (tab: 'settings' | 'info') => void;
   onSidebarOpenChange: (open: boolean) => void;
 }): JSX.Element {
+  const [usageModalOpen, setUsageModalOpen] = useState(false);
+  const [usageRows, setUsageRows] = useState<Array<Record<string, unknown>>>([]);
+  const telemetry = useStatuslineTelemetry({ sessionRef: sessionId });
+  const usageSummary = useMemo(() => deriveChatUsageSummary({
+    telemetry,
+    events: streamEvents,
+    usageRows,
+  }), [streamEvents, telemetry, usageRows]);
+
+  useEffect(() => {
+    let active = true;
+    void getConsoleSessionUsage<Record<string, unknown>>(sessionId)
+      .then((rows) => {
+        if (active) setUsageRows(rows);
+      })
+      .catch(() => {
+        if (active) setUsageRows([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [sessionId, streamEvents.length]);
+
+  const openUsage = () => setUsageModalOpen(true);
+
   return (
     <div className="terminal-pane__rich-wrapper">
       <div className="terminal-pane__rich-main">
-        <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
+        <div className="chat-usage-host" style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {backendType === 'pty' && <PtyBanner />}
           {(backendType === 'sdk' || backendType === 'acp') && (
             <div className="terminal-pane__policy-row">
@@ -144,7 +177,20 @@ export function RichChatPane({
             activePermissionRequest={permissionRequest}
             permissionBackendType={backendType}
             onPermissionRespond={onPermissionRespond}
+            usageSummary={usageSummary}
+            onUsageOpen={openUsage}
           />
+          <ChatOverlay
+            open={usageModalOpen}
+            titleId="chat-usage-modal-title"
+            onClose={() => setUsageModalOpen(false)}
+          >
+            <UsageModal
+              usage={usageSummary}
+              titleId="chat-usage-modal-title"
+              onClose={() => setUsageModalOpen(false)}
+            />
+          </ChatOverlay>
         </div>
         {backendType === 'sdk' && (
           <div style={{ padding: '0 16px', flexShrink: 0 }}>
@@ -159,6 +205,7 @@ export function RichChatPane({
           transportLabel={transportLabel}
           transportTitle={transportTitle}
           usage={usage}
+          contextSlot={<ContextUsageRing usage={usageSummary} onClick={openUsage} />}
           modelSlot={backendType === 'sdk' ? (
             <SessionModelControl
               sessionId={sessionId}

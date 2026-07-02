@@ -61,6 +61,21 @@ async function makeCodexSession(
       },
     },
     {
+      type: "event_msg",
+      timestamp: "2026-05-16T00:00:03.500Z",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: 1200,
+            cached_input_tokens: 300,
+            output_tokens: 500,
+          },
+          model_context_window: 10_000,
+        },
+      },
+    },
+    {
       type: "response_item",
       timestamp: "2026-05-16T00:00:04.000Z",
       payload: {
@@ -98,7 +113,7 @@ describe("CodexParser", () => {
     const result = await parser.parse(sessionPath);
 
     expect(result?.conversation.title).toBe("Find Apple Music to Spotify tool");
-    expect(result?.conversation.block_count).toBe(4);
+    expect(result?.conversation.block_count).toBe(5);
   });
 
   it("falls back to the first user_message event when session_index has no title", async () => {
@@ -127,6 +142,52 @@ describe("CodexParser", () => {
       tool_name: "exec_command",
       tool_kind: "function_call_output",
       tool_output: "today",
+    });
+  });
+
+  it("parses appended records at the requested base position", async () => {
+    const parser = new CodexParser();
+    const sessionPath = await makeCodexSession("session-incremental");
+
+    const result = await parser.parseIncremental?.({
+      filePath: sessionPath,
+      raw: `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:06.000Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Incremental answer." }],
+        },
+      })}\n`,
+      baseBlockCount: 4,
+      sourceHash: "append:hash",
+      sourceMtime: 42,
+    });
+
+    expect(result?.conversation.block_count).toBe(5);
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "assistant_message",
+      position: 4,
+      content: "Incremental answer.",
+    });
+  });
+
+  it("surfaces exact context metadata from token_count events", async () => {
+    const parser = new CodexParser();
+    const sessionPath = await makeCodexSession("session-context");
+
+    const result = await parser.parse(sessionPath);
+    const tokenCount = result?.blocks.find((block) => block.metadata.source_event_type === "token_count");
+
+    expect(tokenCount?.metadata.context_usage).toMatchObject({
+      source: "mirror_exact",
+      used_tokens: 2000,
+      total_tokens: 2000,
+      window_tokens: 10_000,
+      percent: 20,
+      approximate: false,
     });
   });
 });

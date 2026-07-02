@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
+import { deriveConversationAttachState } from "../conversation-attach-state.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
 import type { SessionManager } from "../session-manager.js";
@@ -40,6 +41,8 @@ interface ConversationRow {
   label: string | null;
   notes: string | null;
   parent_conversation_id: string | null;
+  is_sidechain: number;
+  agent_id: string | null;
   children_count?: number;
   created_at: string;
   updated_at: string;
@@ -60,12 +63,15 @@ interface BlockRow {
   dag_parent_uuid: string | null;
 }
 
-function mapConversation(row: ConversationRow) {
+function mapConversation(row: ConversationRow, sessionManager?: SessionManager) {
   return {
     ...row,
     starred: row.starred === 1,
     parent_conversation_id: row.parent_conversation_id ?? null,
+    is_sidechain: row.is_sidechain === 1,
+    agent_id: row.agent_id ?? null,
     children_count: row.children_count ?? 0,
+    attach_state: deriveConversationAttachState(row, getDb(), sessionManager),
   };
 }
 
@@ -400,7 +406,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       .all(...params, limit, offset) as ConversationRow[];
 
     sendJson(res, 200, {
-      conversations: rows.map(mapConversation),
+      conversations: rows.map((row) => mapConversation(row, sessionManager)),
       total: countRow.total,
       page,
       limit,
@@ -460,7 +466,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       if (titleOnly) {
         const snippet = makeSnippet(conversation.title || "");
         if (snippet) {
-          results.push({ conversation: mapConversation(conversation), block: null, snippet });
+          results.push({ conversation: mapConversation(conversation, sessionManager), block: null, snippet });
         }
         continue;
       }
@@ -481,7 +487,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         const mapped = mapBlock(block);
         const snippet = makeSnippet(mapped.content);
         if (snippet) {
-          results.push({ conversation: mapConversation(conversation), block: mapped, snippet });
+          results.push({ conversation: mapConversation(conversation, sessionManager), block: mapped, snippet });
           break;
         }
       }
@@ -563,7 +569,8 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     // Fetch sub-agent (child) conversations — Bug: d0759d1
     const children = db
       .prepare(
-        `SELECT id, title, block_count, started_at, ended_at, source, model
+        `SELECT id, title, block_count, started_at, ended_at, source, model,
+                agent_id, is_sidechain, source_mtime, updated_at
          FROM conversations
          WHERE parent_conversation_id = ?
          ORDER BY started_at ASC`
@@ -576,6 +583,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         ended_at: string | null;
         source: string;
         model: string | null;
+        agent_id: string | null;
+        is_sidechain: number;
+        source_mtime: number;
+        updated_at: string;
       }>;
 
     // Compute duration for each child
@@ -588,16 +599,36 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
           duration_seconds = Math.round((end - start) / 1000);
         }
       }
-      return { ...child, duration_seconds };
+      const activeCutoff = Date.now() - 30_000;
+      return {
+        id: child.id,
+        title: child.title,
+        block_count: child.block_count,
+        started_at: child.started_at,
+        ended_at: child.ended_at,
+        source: child.source,
+        model: child.model,
+        agent_id: child.agent_id ?? null,
+        is_sidechain: child.is_sidechain === 1,
+        status: child.source_mtime >= activeCutoff ? "active" : "finished",
+        duration_seconds,
+      };
     });
 
-    const mapped = mapConversation(conv);
+    const parent = conv.parent_conversation_id
+      ? db
+        .prepare("SELECT id, title FROM conversations WHERE id = ?")
+        .get(conv.parent_conversation_id) as { id: string; title: string } | undefined
+      : undefined;
+
+    const mapped = mapConversation(conv, sessionManager);
     mapped.children_count = children.length;
 
     sendJson(res, 200, {
       conversation: mapped,
       blocks: blocks.map(mapBlock),
       children: childrenWithDuration,
+      parent: parent ?? null,
     });
   }, { fileRpc: "allow" });
 
@@ -749,28 +780,28 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // POST /api/conversations/:id/resume — Resume a conversation from a specific message
   // Bug: 40f0298 — DAG branching: create a Console session resuming at a message
-  server.post("/api/conversations/:id/resume", (req, res) => {
+  server.post("/api/conversations/:id/resume", async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
       return;
     }
 
-    const body = readBody<{ message_dag_uuid: string; label?: string; model?: string }>(req);
+    const body = readBody<{
+      message_dag_uuid: string;
+      label?: string;
+      model?: string;
+      force?: boolean;
+      fork?: boolean;
+    }>(req);
     if (!body.message_dag_uuid) {
       sendJson(res, 400, { error: "Missing message_dag_uuid" });
       return;
     }
 
     const conv = db
-      .prepare("SELECT session_id, title, source, cwd, model FROM conversations WHERE id = ?")
-      .get(id) as {
-        session_id: string;
-        title: string;
-        source: string;
-        cwd: string | null;
-        model: string | null;
-      } | undefined;
+      .prepare("SELECT * FROM conversations WHERE id = ?")
+      .get(id) as ConversationRow | undefined;
     if (!conv) {
       sendJson(res, 404, { error: "Conversation not found" });
       return;
@@ -779,6 +810,60 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     try {
       if (!sessionManager) {
         sendJson(res, 501, { error: "SessionManager not available" });
+        return;
+      }
+
+      const attachState = deriveConversationAttachState(conv, db, sessionManager);
+      if (body.fork === true) {
+        if (conv.source !== "claude_code") {
+          sendJson(res, 501, {
+            error: "fork_unsupported",
+            message: "Fork is not supported for this provider.",
+            attach_state: attachState,
+          });
+          return;
+        }
+        const sdk = await import("@anthropic-ai/claude-agent-sdk");
+        if (typeof sdk.forkSession !== "function") {
+          sendJson(res, 501, {
+            error: "fork_unsupported",
+            message: "SDK does not support forkSession.",
+            attach_state: attachState,
+          });
+          return;
+        }
+        const result = await sdk.forkSession(conv.session_id, {
+          upToMessageId: body.message_dag_uuid,
+        });
+        sendJson(res, 200, { session_id: result.sessionId, attach_state: attachState });
+        return;
+      }
+
+      if (attachState.kind === "live-owned" && attachState.console_session_id) {
+        sendJson(res, 200, {
+          console_session_id: attachState.console_session_id,
+          attach_state: attachState,
+        });
+        return;
+      }
+
+      if (attachState.kind === "live-external" && body.force !== true) {
+        sendJson(res, 409, {
+          error: "resume_conflict",
+          reason: attachState.reason,
+          message: "This conversation appears live outside Mandible; resume is blocked to avoid interleaving transcripts.",
+          attach_state: attachState,
+        });
+        return;
+      }
+
+      if (attachState.kind === "historical") {
+        sendJson(res, 409, {
+          error: "resume_unavailable",
+          reason: attachState.reason,
+          message: "This conversation is historical and cannot be resumed by the current provider.",
+          attach_state: attachState,
+        });
         return;
       }
 
@@ -807,11 +892,22 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         cwd: conv.cwd ?? undefined,
       });
 
-      sendJson(res, 200, { console_session_id: newSession.id });
+      sendJson(res, 200, {
+        console_session_id: newSession.id,
+        attach_state: {
+          ...attachState,
+          kind: "live-owned",
+          reason: "mandible-owned",
+          resumable: true,
+          console_session_id: newSession.id,
+          checked_at: Date.now(),
+        },
+      });
     } catch (error) {
       sendJson(res, 500, {
         error: "Resume failed",
         message: error instanceof Error ? error.message : String(error),
+        details: error instanceof Error ? error.message : String(error),
       });
     }
   }, { fileRpc: "deny" });

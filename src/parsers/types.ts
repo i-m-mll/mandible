@@ -22,6 +22,15 @@ export interface BlockMetadata {
   tool_output?: unknown;
   model?: string;
   token_usage?: { input: number; output: number; cache_read?: number };
+  context_usage?: {
+    source: "statusline" | "mirror_exact" | "mirror_approx";
+    used_tokens?: number;
+    total_tokens?: number;
+    window_tokens?: number;
+    percent?: number;
+    approximate?: boolean;
+    model?: string;
+  };
   source_event_type?: string;
   visibility?: "default_hidden" | "default_visible";
   truncated?: boolean;
@@ -59,6 +68,8 @@ export interface Conversation {
   branch: string | null;
   model: string | null;
   cli_version: string | null;
+  is_sidechain: boolean;
+  agent_id: string | null;
   starred: boolean;
   label: string | null;
   notes: string | null;
@@ -71,8 +82,17 @@ export interface ParseResult {
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
 }
 
+export interface IncrementalParseInput {
+  filePath: string;
+  raw: string;
+  baseBlockCount: number;
+  sourceHash: string;
+  sourceMtime: number;
+}
+
 export interface ConversationParser {
   source: ConversationSource;
   canParse(filePath: string): boolean;
   parse(filePath: string): Promise<ParseResult | null>;
+  parseIncremental?(input: IncrementalParseInput): Promise<ParseResult | null>;
 }

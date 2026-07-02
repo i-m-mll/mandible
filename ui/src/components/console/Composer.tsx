@@ -24,6 +24,7 @@ type ComposerProps = {
   transportTitle?: string;
   usage?: ComposerUsage;
   modelSlot?: JSX.Element | null;
+  contextSlot?: JSX.Element | null;
   attentionSlot?: JSX.Element | null;
   canStop: boolean;
   stopBusy?: boolean;
@@ -64,6 +65,7 @@ export function Composer({
   transportTitle,
   usage,
   modelSlot,
+  contextSlot,
   attentionSlot,
   canStop,
   stopBusy = false,
@@ -118,6 +120,7 @@ export function Composer({
             </span>
           </div>
           <div className="composer__meta-right">
+            {contextSlot}
             {summary && (
               <details className="composer__usage">
                 <summary>{summary}</summary>
