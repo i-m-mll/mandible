@@ -26,13 +26,17 @@ let lastOnNodesChange: ((changes: unknown[]) => void) | null = null;
 let lastOnConnect: ((connection: unknown) => void) | null = null;
 let lastOnEdgesChange: ((changes: unknown[]) => void) | null = null;
 let lastReactFlowProps: { fitView?: boolean; onInit?: (instance: unknown) => void } | null = null;
+let reactFlowEdgeSnapshots: unknown[][] = [];
 
-vi.mock('@xyflow/react', () => {
+vi.mock('@xyflow/react', async () => {
+  const actual = await vi.importActual<typeof import('@xyflow/react')>('@xyflow/react');
   const ReactFlow = (props: {
     nodes: Array<{
       id: string;
       position: { x: number; y: number };
       selected?: boolean;
+      dragging?: boolean;
+      measured?: { width?: number; height?: number };
       data?: { label: string; kind: string };
       type?: string;
     }>;
@@ -49,6 +53,7 @@ vi.mock('@xyflow/react', () => {
     lastOnConnect = props.onConnect ?? null;
     lastOnEdgesChange = props.onEdgesChange ?? null;
     lastReactFlowProps = { fitView: props.fitView, onInit: props.onInit };
+    reactFlowEdgeSnapshots.push(props.edges ?? []);
     return h('div', { 'data-testid': 'rf-mock' }, [
       ...props.nodes.map((node) =>
         h(
@@ -60,6 +65,9 @@ vi.mock('@xyflow/react', () => {
             'data-x': String(node.position.x),
             'data-y': String(node.position.y),
             'data-selected': node.selected ? 'true' : 'false',
+            'data-dragging': node.dragging ? 'true' : 'false',
+            'data-measured-width': String(node.measured?.width ?? ''),
+            'data-measured-height': String(node.measured?.height ?? ''),
           },
           props.nodeTypes?.[node.type ?? ''] && node.data
             ? h(props.nodeTypes[node.type ?? '']!, { data: node.data, selected: node.selected })
@@ -91,9 +99,7 @@ vi.mock('@xyflow/react', () => {
       'data-position': props.position ?? '',
       className: props.className ?? '',
     });
-  const Position = { Left: 'left', Right: 'right', Top: 'top', Bottom: 'bottom' };
-  const MarkerType = { ArrowClosed: 'arrowclosed', Arrow: 'arrow' };
-  return { ReactFlow, Background, Controls, Handle, Position, MarkerType };
+  return { ...actual, ReactFlow, Background, Controls, Handle };
 });
 
 // --- layoutGraph spy ----------------------------------------------------------
@@ -115,6 +121,7 @@ vi.mock('../ui/src/graph/layout', async () => {
 
 import {
   SpaceCanvas,
+  SpaceCanvasFlowSurface,
   partitionOccurrences,
   isPlaced,
   indexItems,
@@ -125,12 +132,14 @@ import {
   nextAddedItemPosition,
   occurrencesToGraph,
   edgesToFlowEdges,
+  reconcileFlowEdges,
   connectionToEdgeRequest,
   canvasNodesToFlowNodes,
   applyLocalNodeChanges,
   type SpaceCanvasModel,
 } from '../ui/src/views/spaces/SpaceCanvas';
 import type { SpaceEdge } from '../ui/src/api';
+import { reconcileEdges } from '../ui/src/views/spaces/edgeModel';
 import type { SSEClient, SSEHandler } from '../ui/src/sse-client';
 
 afterEach(() => {
@@ -139,6 +148,7 @@ afterEach(() => {
   lastOnConnect = null;
   lastOnEdgesChange = null;
   lastReactFlowProps = null;
+  reactFlowEdgeSnapshots = [];
   layoutCalls.count = 0;
   vi.useRealTimers();
 });
@@ -343,6 +353,43 @@ describe('React Flow local node helpers', () => {
     ]);
     expect(next[0].position).toEqual({ x: 25, y: 30 });
   });
+
+  it('uses React Flow controlled-mode semantics for drag, dimensions, add, remove, and replace', () => {
+    const nodes = canvasNodesToFlowNodes(
+      partitionOccurrences([occ('a', { x: 10, y: 20 }), occ('b', { x: 40, y: 50 })], {}).placed,
+      new Set(),
+    );
+    const replacement = {
+      id: 'b',
+      position: { x: 70, y: 80 },
+      data: { label: 'Bravo replacement', kind: 'issue' },
+      type: 'spaceOccurrence',
+    } as const;
+    const added = {
+      id: 'c',
+      position: { x: 90, y: 100 },
+      data: { label: 'Charlie', kind: 'issue' },
+      type: 'spaceOccurrence',
+    } as const;
+
+    const next = applyLocalNodeChanges(nodes, [
+      { type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true },
+      { type: 'dimensions', id: 'a', dimensions: { width: 240, height: 120 }, setAttributes: true },
+      { type: 'remove', id: 'b' },
+      { type: 'replace', id: 'b', item: replacement },
+      { type: 'add', item: added },
+    ]);
+
+    expect(next.find((node) => node.id === 'a')).toMatchObject({
+      position: { x: 25, y: 30 },
+      dragging: true,
+      measured: { width: 240, height: 120 },
+      width: 240,
+      height: 120,
+    });
+    expect(next.find((node) => node.id === 'b')).toEqual(replacement);
+    expect(next.find((node) => node.id === 'c')).toEqual(added);
+  });
 });
 
 // ============================================================================
@@ -525,6 +572,49 @@ describe('SpaceCanvas rendering', () => {
 });
 
 describe('SpaceCanvas drag persistence + autosave', () => {
+  it('announces drag start once per active drag id while still applying every position frame', () => {
+    const nodes = canvasNodesToFlowNodes(
+      partitionOccurrences([occ('a', { x: 10, y: 20 })], {}).placed,
+      new Set(),
+    );
+    const onNodeDragStart = vi.fn();
+    const onNodeDragStop = vi.fn();
+    render(
+      h(SpaceCanvasFlowSurface as any, {
+        nodes,
+        edges: [],
+        nodeTypes: { spaceOccurrence: () => h('div') },
+        onNodeDragStart,
+        onNodeDragStop,
+        onNodeSelectionChange: vi.fn(),
+        onEdgesChange: vi.fn(),
+        onConnect: vi.fn(),
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([
+        { type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true },
+      ]);
+      lastOnNodesChange?.([
+        { type: 'position', id: 'a', position: { x: 35, y: 40 }, dragging: true },
+      ]);
+    });
+
+    expect(onNodeDragStart).toHaveBeenCalledTimes(1);
+    expect(onNodeDragStart).toHaveBeenCalledWith('a');
+    expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('35');
+    expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('40');
+
+    act(() => {
+      lastOnNodesChange?.([
+        { type: 'position', id: 'a', position: { x: 55, y: 66 }, dragging: false },
+      ]);
+    });
+    expect(onNodeDragStop).toHaveBeenCalledTimes(1);
+    expect(onNodeDragStop).toHaveBeenCalledWith('a', { x: 55, y: 66 });
+  });
+
   it('fits the viewport once on init without keeping React Flow fitView active during drag', () => {
     const model: SpaceCanvasModel = {
       items: [item('a', 'Alpha')],
@@ -766,9 +856,14 @@ describe('SpaceCanvas SSE reconciliation', () => {
     );
 
     act(() => {
-      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+      lastOnNodesChange?.([
+        { type: 'dimensions', id: 'a', dimensions: { width: 240, height: 120 }, setAttributes: true },
+        { type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true },
+      ]);
     });
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
+    expect(screen.getByTestId('rf-node').getAttribute('data-dragging')).toBe('true');
+    expect(screen.getByTestId('rf-node').getAttribute('data-measured-width')).toBe('240');
 
     await act(async () => {
       emit('space:occurrence:moved', { space_id: 'sp1' });
@@ -779,6 +874,8 @@ describe('SpaceCanvas SSE reconciliation', () => {
     await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
     expect(screen.getByTestId('rf-node').getAttribute('data-x')).toBe('25');
     expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('30');
+    expect(screen.getByTestId('rf-node').getAttribute('data-dragging')).toBe('true');
+    expect(screen.getByTestId('rf-node').getAttribute('data-measured-width')).toBe('240');
   });
 
   it('ignores an out-of-order refetch that started before a drag stop', async () => {
@@ -1060,6 +1157,33 @@ describe('edgesToFlowEdges (pure)', () => {
     expect(flow[0].selected).toBe(true);
     expect(flow[0].markerEnd).toMatchObject({ color: 'var(--accent-blue)' });
   });
+
+  it('reuses Flow edge objects across no-op echoes and replaces them when selected styling changes', () => {
+    const placed = new Set(['a', 'b']);
+    const first = reconcileFlowEdges([edge('e1', 'a', 'b', 'blocks')], placed, null);
+    const second = reconcileFlowEdges([edge('e1', 'a', 'b', 'blocks')], placed, null, first);
+
+    expect(second).toBe(first);
+    expect(second[0]).toBe(first[0]);
+
+    const selected = reconcileFlowEdges([edge('e1', 'a', 'b', 'blocks')], placed, 'e1', second);
+    expect(selected).not.toBe(second);
+    expect(selected[0]).not.toBe(second[0]);
+    expect(selected[0]).toMatchObject({
+      selected: true,
+      className: 'space-canvas__edge',
+      markerEnd: { color: 'var(--accent-blue)' },
+    });
+  });
+
+  it('reuses model edge objects across no-op SSE echoes', () => {
+    const previous = [edge('e1', 'a', 'b', 'blocks')];
+    const incoming = [edge('e1', 'a', 'b', 'blocks')];
+    const next = reconcileEdges(incoming, new Set(), previous);
+
+    expect(next).toBe(previous);
+    expect(next[0]).toBe(previous[0]);
+  });
 });
 
 describe('connectionToEdgeRequest (pure)', () => {
@@ -1231,6 +1355,40 @@ describe('SpaceCanvas onConnect (drag-to-create)', () => {
     });
     await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
     expect(screen.getAllByTestId('rf-edge')).toHaveLength(1);
+  });
+
+  it('keeps the React Flow edge object stable when an SSE echo returns equivalent data', async () => {
+    const existing = edge('e1', 'a', 'b', 'blocks');
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 30, y: 40 })],
+      edges: [existing],
+    };
+    const { client, emit } = makeFakeSse();
+    const loadModel = vi.fn().mockResolvedValue({
+      ...model,
+      edges: [edge('e1', 'a', 'b', 'blocks')],
+    });
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    const firstEdge = reactFlowEdgeSnapshots.at(-1)?.[0];
+    await act(async () => {
+      emit('space:edge:updated', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+
+    expect(reactFlowEdgeSnapshots.at(-1)?.[0]).toBe(firstEdge);
   });
 
   it('reconciles a dropdown-created edge (SSE) onto the canvas without resetting selection', async () => {
