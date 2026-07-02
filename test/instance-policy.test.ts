@@ -165,6 +165,7 @@ describe("instance mutation policy", () => {
       router,
       getStartupInfo: () => null,
       instance,
+      fileRpcDir: "/tmp/mandible-preview-agent-rpc",
     });
 
     const health = await router.invoke({ method: "GET", url: "/api/health" });
@@ -179,6 +180,7 @@ describe("instance mutation policy", () => {
         source_db_path: "/tmp/mandible-main.db",
         source_db_path_source: "env",
       },
+      file_rpc_dir: "/tmp/mandible-preview-agent-rpc",
     });
 
     const instanceResponse = await router.invoke({ method: "GET", url: "/api/instance" });

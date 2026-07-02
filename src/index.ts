@@ -168,6 +168,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Bug: 4db692a — expose auth queue's rebuilding state to the health endpoint
   // so the UI doesn't reload while the daemon is still alive but about to restart.
+  const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
   const server = createServer({
     db, sse, logger, version, router,
     getStartupInfo: () => startupInfo,
@@ -175,8 +176,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
     instance,
+    fileRpcDir: fileRpcTransport.dir,
   });
-  const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
   fileRpcTransport.start();
 
   // Attach WebSocket upgrade handler for console backend sessions (Bug: e980dd8)
