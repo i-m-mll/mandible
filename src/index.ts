@@ -26,6 +26,7 @@ import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
+import { registerHookRoutes } from "./routes/hooks.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { registerWorkUnitRoutes } from "./routes/work-units.js";
 import { registerWebhookRoutes } from "./routes/webhooks.js";
@@ -124,6 +125,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
   registerConsoleRoutes(router, sessionManager);
+  registerHookRoutes(router);
   // Bug: 61bee4e — preset routes for convention management
   registerPresetRoutes(router);
   // Bug: 4afab83 — auth hooks CRUD routes
