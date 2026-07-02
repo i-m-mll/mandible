@@ -983,6 +983,7 @@ export type LedgerIssueDetailProjection = {
   display_id: string;
   project: {
     id: string;
+    project_key?: string | null;
     display_name: string;
     remote_identity: string;
     upstream_identity: string;

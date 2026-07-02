@@ -32,6 +32,7 @@ export type IssueSummary = {
 
 export type IssueRepoSummary = {
   repo_id: string;
+  project_key?: string | null;
   repo_name: string;
   repo_root?: string | null;
   open_count: number;
@@ -226,6 +227,7 @@ function ledgerDetailMatchesSelection(
   if (!detail || !issueId) return false;
   if (repoId) {
     const repoMatches =
+      detail.project.project_key === repoId ||
       detail.project.repo_id === repoId ||
       detail.project.repo_name === repoId ||
       detail.project.display_name === repoId;
@@ -341,6 +343,7 @@ function synthesizeLedgerIssueDetail(
     display_id: issue.id,
     project: {
       id: repo.repo_id,
+      project_key: repo.project_key ?? null,
       display_name: repo.repo_name,
       remote_identity: '',
       upstream_identity: '',
@@ -1105,7 +1108,8 @@ export function IssuesView({
               onStartAgent={handleStartAgent}
               onOpenEntity={handleOpenLedgerEntity}
               onShowChildren={(detail) => {
-                if (detail.project.repo_id) setRepoFilter(detail.project.repo_id);
+                const projectRef = detail.project.project_key ?? detail.project.repo_id;
+                if (projectRef) setRepoFilter(projectRef);
                 setParentFilter(detail.display_id);
               }}
               onResolveConflict={async (conflictId, resolution, status) => {

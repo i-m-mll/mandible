@@ -255,6 +255,36 @@ describe("ledger legacy issue projection", () => {
     expect(detail.ok && detail.detail.comments).toHaveLength(1);
   });
 
+  it("keeps canonical project keys on list summaries while preserving legacy checkout refs", async () => {
+    const repoInfo = repo("20-feedbax-feedbax", "Feedbax");
+    const { issue } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "fbx1234",
+      title: "Feedbax synthesized issue",
+    });
+    db.prepare("UPDATE ledger_projects SET project_key = ? WHERE id = ?").run("feedbax", issue.project_id);
+    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger" });
+    const workScanner = fakeWorkScanner([repoInfo]);
+
+    const summaries = listLedgerIssueSummaries(db, workScanner);
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, workScanner as never);
+    const byKey = await server.invoke("GET", "/api/issues", { query: { repo: "feedbax" } });
+    const byLegacy = await server.invoke("GET", "/api/issues", { query: { repo: "20-feedbax-feedbax" } });
+
+    expect(summaries).toMatchObject([{
+      repo_id: "20-feedbax-feedbax",
+      project_key: "feedbax",
+      issues: [{ id: issue.short_id, repo_id: "20-feedbax-feedbax" }],
+    }]);
+    expect(byKey.body).toMatchObject([{
+      repo_id: "20-feedbax-feedbax",
+      project_key: "feedbax",
+      issues: [{ id: issue.short_id }],
+    }]);
+    expect(byLegacy.body).toMatchObject([{ project_key: "feedbax", issues: [{ id: issue.short_id }] }]);
+  });
+
   it("reports global alias ambiguity instead of choosing the first match", () => {
     const first = repo("repo-1", "one");
     const second = repo("repo-2", "two");

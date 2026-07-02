@@ -184,6 +184,39 @@ describe("ledger graph projection", () => {
     expect(getLedgerGraphFilterOptions(db).repos).toEqual(expect.arrayContaining(["alpha", "beta"]));
   });
 
+  it("uses project_key for issue node identity while accepting legacy checkout filters", () => {
+    const checkout = createProject("Feedbax");
+    db.prepare("UPDATE ledger_projects SET project_key = ? WHERE id = ?")
+      .run("feedbax", checkout.project.id);
+    db.prepare("UPDATE ledger_project_checkouts SET work_repo_id = ? WHERE project_id = ?")
+      .run("20-feedbax-feedbax", checkout.project.id);
+    const store = new LedgerStore(db);
+    const issue = createIssue(store, checkout.project.id, "fbx1234", "Feedbax issue");
+    const expectedNodeId = `issue:feedbax:${issue.short_id}`;
+
+    const byKey = buildLedgerIssueProjection(db, {
+      mode: "issue",
+      status: "all",
+      repos: ["feedbax"],
+    });
+    const byLegacy = buildLedgerIssueProjection(db, {
+      mode: "issue",
+      status: "all",
+      repos: ["20-feedbax-feedbax"],
+    });
+
+    expect(byKey?.nodes).toHaveLength(1);
+    expect(byKey?.nodes[0]).toMatchObject({
+      id: expectedNodeId,
+      repo_id: "feedbax",
+      detail: expect.objectContaining({ project_id: checkout.project.id }),
+    });
+    expect(byLegacy?.nodes.map((node) => node.id)).toEqual([expectedNodeId]);
+    expect(getLedgerGraphFilterOptions(db).repos).toEqual(
+      expect.arrayContaining(["feedbax", "20-feedbax-feedbax", "Feedbax"]),
+    );
+  });
+
   it("applies issue since filters before deriving visible relationship edges", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);

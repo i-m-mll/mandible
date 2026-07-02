@@ -436,7 +436,8 @@ function findCheckoutByRepoRef(
   // routes that now carry the key (rather than the path-derived work_repo_id)
   // resolve to the right checkout.
   const row = db.prepare(
-    `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name, p.display_name
+    `SELECT c.id AS checkout_id, c.project_id, c.work_repo_id, c.root, c.name,
+            p.display_name, COALESCE(p.project_key, '') AS project_key
      FROM ledger_project_checkouts c
      JOIN ledger_projects p ON p.id = c.project_id
      WHERE c.work_repo_id IN (${placeholders})
@@ -454,6 +455,7 @@ function findCheckoutByRepoRef(
     root: string;
     name: string;
     display_name: string;
+    project_key: string;
   } | undefined;
   return row ? checkoutFromRow(row, repo) : null;
 }
@@ -479,6 +481,7 @@ function collapseSummariesToProjects(
     checkoutByRepo.set(checkout.repo_id, checkout);
     checkoutByRepo.set(checkout.repo_name, checkout);
     checkoutByRepo.set(checkout.repo_root, checkout);
+    if (checkout.project_key) checkoutByRepo.set(checkout.project_key, checkout);
   }
   const representatives = new Map(
     representativeCheckouts(checkouts).map((checkout) => [checkout.project_id, checkout]),
@@ -507,6 +510,7 @@ function collapseSummariesToProjects(
       repo_id: representative?.repo_id ?? key,
       repo_name: representative?.repo_name ?? key,
       repo_root: representative?.repo_root ?? "",
+      project_key: representative?.project_key || undefined,
       open_count: issueList.filter((issue) => issue.status === "open").length,
       merged_count: issueList.filter((issue) => issue.status === "closed" && issue.labels.includes("merged")).length,
       closed_count: issueList.filter((issue) => issue.status === "closed" && !issue.labels.includes("merged")).length,

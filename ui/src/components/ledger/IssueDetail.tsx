@@ -131,6 +131,7 @@ export function LedgerIssueDetail({
       : detail.sync.state === 'conflicted'
         ? 'conflicted'
         : 'failed';
+  const projectRef = issueProjectRef(detail);
 
   useEffect(() => {
     if (!actionsOpen) return undefined;
@@ -173,7 +174,7 @@ export function LedgerIssueDetail({
             className="ledger-issue-detail__eyebrow"
             contextLabel={detail.project.repo_name ?? detail.project.display_name}
             shortId={detail.display_id}
-            copyValue={`${detail.project.repo_id ?? detail.project.repo_name ?? detail.project.display_name}/${detail.display_id}`}
+            copyValue={`${projectRef}/${detail.display_id}`}
           >
             <StatusPill
               status={detail.status}
@@ -320,6 +321,16 @@ export function LedgerIssueDetail({
         </section>
       )}
     </article>
+  );
+}
+
+function issueProjectRef(detail: LedgerIssueDetailProjection): string {
+  return (
+    detail.project.project_key?.trim() ||
+    detail.project.repo_id?.trim() ||
+    detail.project.repo_name?.trim() ||
+    detail.project.display_name?.trim() ||
+    detail.project.id
   );
 }
 
