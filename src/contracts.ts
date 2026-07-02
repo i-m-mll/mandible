@@ -339,6 +339,78 @@ export type ConversationParent = {
   title: string;
 };
 
+export type WorkflowRunStatus = "pending" | "running" | "completed" | "failed" | "warning";
+export type WorkflowWorkerStatus = "pending" | "running" | "completed" | "failed" | "warning";
+
+export type WorkflowWarning = {
+  code: string;
+  message: string;
+  path?: string;
+};
+
+export type WorkflowPhase = {
+  id: string;
+  workflow_id: string;
+  phase_index: number;
+  title: string;
+  status: WorkflowRunStatus;
+  worker_count: number;
+  completed_count: number;
+};
+
+export type WorkflowWorker = {
+  id: string;
+  workflow_id: string;
+  phase_id: string | null;
+  worker_index: number;
+  agent_id: string | null;
+  label: string;
+  status: WorkflowWorkerStatus;
+  model: string | null;
+  queued_at: number | null;
+  started_at: number | null;
+  last_progress_at: number | null;
+  completed_at: number | null;
+  duration_ms: number | null;
+  tokens: number | null;
+  tool_calls: number | null;
+  last_tool_name: string | null;
+  last_tool_summary: string | null;
+  prompt_preview: string | null;
+  result_preview: string | null;
+  transcript_path: string | null;
+  conversation_id: string | null;
+  warnings: WorkflowWarning[];
+};
+
+export type WorkflowRun = {
+  id: string;
+  provider: "claude_code";
+  provider_run_id: string;
+  session_id: string;
+  project_path: string | null;
+  summary_path: string;
+  script_path: string | null;
+  workflow_name: string;
+  status: WorkflowRunStatus;
+  started_at: number | null;
+  updated_at: number | null;
+  completed_at: number | null;
+  duration_ms: number | null;
+  total_tokens: number | null;
+  total_tool_calls: number | null;
+  agent_count: number;
+  completed_workers: number;
+  total_workers: number;
+  format_version: string;
+  warnings: WorkflowWarning[];
+  phases: WorkflowPhase[];
+  workers: WorkflowWorker[];
+};
+
+export type WorkflowListResponse = { workflows: WorkflowRun[] };
+export type WorkflowResponse = { workflow: WorkflowRun };
+
 export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguous" | "unsupported";
 
 export type ArtifactAliasRecord = {

@@ -15,6 +15,12 @@ import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
+import {
+  ingestClaudeWorkflowArtifact,
+  isClaudeWorkflowJournalPath,
+  isClaudeWorkflowSummaryPath,
+  isClaudeWorkflowTranscriptPath,
+} from "./workflows.js";
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 
@@ -22,6 +28,7 @@ import type { ConversationBlock, ParseResult } from "./parsers/types.js";
 
 const WATCH_CONFIGS = [
   { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/*.jsonl" },
+  { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
   { base: path.join(os.homedir(), ".codex", "sessions"), glob: "**/*.jsonl" },
   { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.json" },
   { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
@@ -55,7 +62,7 @@ function resolveParentConversationId(
       WHERE source = 'claude_code'
         AND session_id = ?
         AND id != ?
-        AND LOWER(source_path) NOT LIKE '%/subagents/agent-%.jsonl'
+        AND LOWER(source_path) NOT LIKE '%/subagents/%'
       ORDER BY started_at ASC, created_at ASC
       LIMIT 1
     `).get(subagentPath.parentSessionId, currentConversationId ?? "") as { id: string } | undefined;
@@ -75,6 +82,7 @@ function resolveParentConversationId(
 
 function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSessionId: string, parentConversationId: string): void {
   const parentPattern = `%/${parentSessionId}/subagents/agent-%.jsonl`;
+  const workflowPattern = `%/${parentSessionId}/subagents/workflows/%/agent-%.jsonl`;
   db.prepare(`
     UPDATE conversations
     SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
@@ -88,6 +96,19 @@ function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSession
       AND LOWER(source_path) LIKE LOWER(?)
       AND id != ?
   `).run(parentConversationId, parentPattern, parentConversationId);
+  db.prepare(`
+    UPDATE conversations
+    SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+        is_sidechain = 1,
+        agent_id = COALESCE(
+          NULLIF(agent_id, ''),
+          substr(source_path, instr(source_path, '/agent-') + length('/agent-'),
+            length(source_path) - instr(source_path, '/agent-') - length('/agent-') - length('.jsonl') + 1)
+        )
+    WHERE source = 'claude_code'
+      AND LOWER(source_path) LIKE LOWER(?)
+      AND id != ?
+  `).run(parentConversationId, workflowPattern, parentConversationId);
 }
 const ingestQueue: string[] = [];
 const queuedIngestPaths = new Set<string>();
@@ -777,6 +798,11 @@ async function ingestFile(
   options: { forceFull?: boolean; fallbackReason?: string } = {},
 ): Promise<void> {
   const ingestStartedAt = Date.now();
+  if (isClaudeWorkflowSummaryPath(filePath) || isClaudeWorkflowJournalPath(filePath)) {
+    await ingestWorkflowArtifact(filePath);
+    return;
+  }
+
   const parser = getParserForFile(filePath);
   if (!parser) {
     logger("debug", "ingestion_no_parser", { file: filePath });
@@ -836,6 +862,9 @@ async function ingestFile(
   if (existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100) {
     if (parser.source === "codex") {
       await syncCodexIndexedTitle(filePath, existing);
+    }
+    if (isClaudeWorkflowTranscriptPath(filePath)) {
+      await ingestWorkflowArtifact(filePath);
     }
     return;
   }
@@ -1034,6 +1063,9 @@ async function ingestFile(
       block_count: result.conversation.block_count,
     });
     await refreshAppendState(db, filePath, stat, await countCompleteLines(filePath));
+    if (isClaudeWorkflowTranscriptPath(filePath)) {
+      await ingestWorkflowArtifact(filePath);
+    }
     return;
   }
 
@@ -1104,6 +1136,9 @@ async function ingestFile(
       appendInfo?.nextPartialLine,
       appendInfo?.tailHash,
     );
+    if (isClaudeWorkflowTranscriptPath(filePath)) {
+      await ingestWorkflowArtifact(filePath);
+    }
     return;
   }
 
@@ -1400,6 +1435,9 @@ async function ingestFile(
         }
       : undefined,
   });
+  if (isClaudeWorkflowTranscriptPath(filePath)) {
+    await ingestWorkflowArtifact(filePath);
+  }
 
   logger("info", "ingestion_complete", {
     file: filePath,
@@ -1414,6 +1452,32 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+async function ingestWorkflowArtifact(filePath: string): Promise<void> {
+  try {
+    const workflow = await ingestClaudeWorkflowArtifact(getDb(), filePath);
+    if (!workflow) return;
+    broadcast("workflow:updated", {
+      id: workflow.id,
+      session_id: workflow.session_id,
+      provider_run_id: workflow.provider_run_id,
+      status: workflow.status,
+      completed_workers: workflow.completed_workers,
+      total_workers: workflow.total_workers,
+    });
+    logger("info", "workflow_ingestion_complete", {
+      file: filePath,
+      workflow_id: workflow.id,
+      provider_run_id: workflow.provider_run_id,
+      status: workflow.status,
+    });
+  } catch (error) {
+    logger("warn", "workflow_ingestion_error", {
+      file: filePath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 let reconciling = false;

@@ -39,6 +39,7 @@ import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
+import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -138,6 +139,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerSpacesRoutes(router);
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
+  registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
   registerConversationRoutes(router, sessionManager);

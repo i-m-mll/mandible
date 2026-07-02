@@ -2644,6 +2644,94 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_conversation_ingest_state_updated
         ON conversation_ingest_state(updated_at)`
     ]
+  },
+  {
+    version: 98,
+    name: "workflow_run_browser",
+    // Issue: e909c99 — persist read-only Claude Code workflow summaries from
+    // file artifacts. Runs are keyed by summary_path so reruns from different
+    // sessions remain distinct; worker transcript links are nullable because
+    // transcript JSONL ingestion can lag behind the workflow summary watcher.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS workflow_runs (
+        id                TEXT PRIMARY KEY,
+        provider          TEXT NOT NULL DEFAULT 'claude_code'
+          CHECK(provider IN ('claude_code')),
+        provider_run_id   TEXT NOT NULL,
+        session_id        TEXT NOT NULL,
+        project_path      TEXT,
+        summary_path      TEXT NOT NULL UNIQUE,
+        summary_mtime     REAL NOT NULL DEFAULT 0,
+        summary_hash      TEXT NOT NULL DEFAULT '',
+        workflow_name     TEXT NOT NULL,
+        status            TEXT NOT NULL
+          CHECK(status IN ('pending','running','completed','failed','warning')),
+        started_at        INTEGER,
+        updated_at        INTEGER,
+        completed_at      INTEGER,
+        duration_ms       INTEGER,
+        total_tokens      INTEGER,
+        total_tool_calls  INTEGER,
+        agent_count       INTEGER NOT NULL DEFAULT 0,
+        completed_workers INTEGER NOT NULL DEFAULT 0,
+        total_workers     INTEGER NOT NULL DEFAULT 0,
+        format_version    TEXT NOT NULL,
+        script_path       TEXT,
+        warnings_json     TEXT NOT NULL DEFAULT '[]',
+        created_at        INTEGER NOT NULL,
+        ingested_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_runs_session
+        ON workflow_runs(session_id, updated_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_runs_status
+        ON workflow_runs(status, updated_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS workflow_phases (
+        id              TEXT PRIMARY KEY,
+        workflow_id     TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        phase_index     INTEGER NOT NULL,
+        title           TEXT NOT NULL,
+        status          TEXT NOT NULL
+          CHECK(status IN ('pending','running','completed','failed','warning')),
+        worker_count    INTEGER NOT NULL DEFAULT 0,
+        completed_count INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(workflow_id, phase_index)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_phases_run
+        ON workflow_phases(workflow_id, phase_index)`,
+      `CREATE TABLE IF NOT EXISTS workflow_workers (
+        id                TEXT PRIMARY KEY,
+        workflow_id       TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        phase_id          TEXT REFERENCES workflow_phases(id) ON DELETE SET NULL,
+        worker_index      INTEGER NOT NULL,
+        agent_id          TEXT,
+        label             TEXT NOT NULL,
+        status            TEXT NOT NULL
+          CHECK(status IN ('pending','running','completed','failed','warning')),
+        model             TEXT,
+        queued_at         INTEGER,
+        started_at        INTEGER,
+        last_progress_at  INTEGER,
+        completed_at      INTEGER,
+        duration_ms       INTEGER,
+        tokens            INTEGER,
+        tool_calls        INTEGER,
+        last_tool_name    TEXT,
+        last_tool_summary TEXT,
+        prompt_preview    TEXT,
+        result_preview    TEXT,
+        transcript_path   TEXT,
+        conversation_id   TEXT REFERENCES conversations(id) ON DELETE SET NULL,
+        warnings_json     TEXT NOT NULL DEFAULT '[]',
+        UNIQUE(workflow_id, agent_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_workers_run
+        ON workflow_workers(workflow_id, worker_index)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_workers_phase
+        ON workflow_workers(phase_id, worker_index)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_workers_conversation
+        ON workflow_workers(conversation_id)
+        WHERE conversation_id IS NOT NULL`
+    ]
   }
 ];
 

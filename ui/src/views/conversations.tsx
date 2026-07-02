@@ -9,6 +9,8 @@ import type {
   ConversationChild,
   ConversationParent,
   ConversationSource,
+  WorkflowRun,
+  WorkflowWorker,
 } from '../api.js';
 import {
   exportConversationBlocks,
@@ -18,6 +20,7 @@ import {
   getConversations,
   getSessionIssues,
   getSessionPresets,
+  listWorkflows,
   navigateSession,
   resumeConversation,
   sendConsolePrompt,
@@ -1006,6 +1009,221 @@ function buildSubagentShelfItems(
   });
 }
 
+function formatCompactNumber(value: number | null | undefined): string | null {
+  if (value == null || !Number.isFinite(value)) return null;
+  if (value >= 1000) return `${Math.round(value / 1000)}k`;
+  return String(value);
+}
+
+function workflowShelfStatus(workflow: WorkflowRun): ShelfItem['status'] {
+  if (workflow.warnings.length > 0 || workflow.status === 'warning') return 'error';
+  if (workflow.status === 'failed') return 'error';
+  if (workflow.status === 'completed') return 'finished';
+  if (workflow.status === 'running') return 'active';
+  return 'waiting';
+}
+
+function buildWorkflowShelfItems(
+  workflows: WorkflowRun[],
+  onOpen: (id: string) => void,
+): ShelfItem[] {
+  return workflows.map((workflow) => {
+    const progress = `${workflow.completed_workers}/${workflow.total_workers}`;
+    const tokens = formatCompactNumber(workflow.total_tokens);
+    return {
+      id: workflow.id,
+      icon: '◇',
+      label: truncate(workflow.workflow_name || workflow.provider_run_id, 80),
+      status: workflowShelfStatus(workflow),
+      meta: [
+        progress,
+        tokens ? `${tokens} tok` : null,
+        workflow.warnings.length > 0 ? 'warning' : null,
+      ].filter((value): value is string => Boolean(value)),
+      onActivate: () => onOpen(workflow.id),
+    };
+  });
+}
+
+function statusClass(status: string): string {
+  return status.replace(/[^a-z0-9_-]/gi, '').toLowerCase() || 'pending';
+}
+
+function WorkflowRunDialog({
+  workflow,
+  onClose,
+  onNavigate,
+}: {
+  workflow: WorkflowRun;
+  onClose: () => void;
+  onNavigate: (id: string) => void;
+}): JSX.Element {
+  const [selectedPhaseIndex, setSelectedPhaseIndex] = useState(0);
+  const [selectedWorkerIndex, setSelectedWorkerIndex] = useState(0);
+  const [focusColumn, setFocusColumn] = useState<'phases' | 'workers'>('phases');
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  const phases = workflow.phases.length > 0
+    ? workflow.phases
+    : [{
+        id: `${workflow.id}:phase:0`,
+        workflow_id: workflow.id,
+        phase_index: 1,
+        title: 'Workflow',
+        status: workflow.status,
+        worker_count: workflow.total_workers,
+        completed_count: workflow.completed_workers,
+      }];
+  const selectedPhase = phases[Math.min(selectedPhaseIndex, phases.length - 1)] ?? phases[0];
+  const phaseWorkers = workflow.workers.filter((worker) => (
+    worker.phase_id === selectedPhase.id
+      || (selectedPhase.phase_index === 1 && !worker.phase_id && phases.length === 1)
+  ));
+  const selectedWorker = phaseWorkers[Math.min(selectedWorkerIndex, Math.max(0, phaseWorkers.length - 1))] ?? null;
+
+  useEffect(() => {
+    panelRef.current?.focus();
+  }, [workflow.id]);
+
+  useEffect(() => {
+    setSelectedPhaseIndex((index) => Math.min(index, Math.max(0, phases.length - 1)));
+  }, [phases.length, workflow.id]);
+
+  useEffect(() => {
+    setSelectedWorkerIndex((index) => Math.min(index, Math.max(0, phaseWorkers.length - 1)));
+  }, [phaseWorkers.length, selectedPhase.id]);
+
+  const openSelectedWorker = (): void => {
+    if (selectedWorker?.conversation_id) {
+      onNavigate(selectedWorker.conversation_id);
+    }
+  };
+
+  const handleKeyDown = (event: JSX.TargetedKeyboardEvent<HTMLDivElement>): void => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      onClose();
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      setFocusColumn('phases');
+    } else if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      setFocusColumn('workers');
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (focusColumn === 'phases') {
+        setSelectedPhaseIndex((index) => Math.max(0, index - 1));
+        setSelectedWorkerIndex(0);
+      } else {
+        setSelectedWorkerIndex((index) => Math.max(0, index - 1));
+      }
+    } else if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      if (focusColumn === 'phases') {
+        setSelectedPhaseIndex((index) => Math.min(phases.length - 1, index + 1));
+        setSelectedWorkerIndex(0);
+      } else {
+        setSelectedWorkerIndex((index) => Math.min(Math.max(0, phaseWorkers.length - 1), index + 1));
+      }
+    } else if (event.key === 'Enter') {
+      event.preventDefault();
+      openSelectedWorker();
+    }
+  };
+
+  return (
+    <div className="workflow-modal-overlay" onClick={onClose}>
+      <div
+        className="workflow-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="workflow-modal-title"
+        tabIndex={-1}
+        ref={panelRef}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleKeyDown}
+      >
+        <div className="workflow-modal__header">
+          <div>
+            <h3 id="workflow-modal-title" className="workflow-modal__title">{workflow.workflow_name}</h3>
+            <div className="workflow-modal__meta">
+              <span>{workflow.completed_workers}/{workflow.total_workers}</span>
+              <span className={`workflow-status workflow-status--${statusClass(workflow.status)}`}>{workflow.status}</span>
+              {workflow.total_tokens != null && <span>{workflow.total_tokens.toLocaleString()} tokens</span>}
+            </div>
+          </div>
+          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close workflow">
+            &times;
+          </button>
+        </div>
+
+        {workflow.warnings.length > 0 && (
+          <div className="workflow-warning" role="status">
+            {workflow.warnings[0].message || "Can't parse this run. The workflow format may have changed."}
+          </div>
+        )}
+
+        <div className="workflow-modal__grid">
+          <div className={`workflow-phase-list${focusColumn === 'phases' ? ' workflow-phase-list--active' : ''}`}>
+            {phases.map((phase, index) => (
+              <button
+                key={phase.id}
+                type="button"
+                className={`workflow-phase${index === selectedPhaseIndex ? ' workflow-phase--selected' : ''}`}
+                onClick={() => {
+                  setSelectedPhaseIndex(index);
+                  setSelectedWorkerIndex(0);
+                  setFocusColumn('phases');
+                }}
+              >
+                <span className="workflow-phase__title">{phase.title}</span>
+                <span className="workflow-phase__meta">
+                  {phase.completed_count}/{phase.worker_count}
+                  <span className={`workflow-status workflow-status--${statusClass(phase.status)}`}>{phase.status}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+
+          <div className={`workflow-worker-list${focusColumn === 'workers' ? ' workflow-worker-list--active' : ''}`}>
+            {phaseWorkers.length === 0 ? (
+              <div className="workflow-worker-list__empty">No workers recorded</div>
+            ) : phaseWorkers.map((worker, index) => (
+              <button
+                key={worker.id}
+                type="button"
+                className={`workflow-worker workflow-worker--${statusClass(worker.status)}${index === selectedWorkerIndex ? ' workflow-worker--selected' : ''}`}
+                onClick={() => {
+                  setSelectedWorkerIndex(index);
+                  setFocusColumn('workers');
+                }}
+                onDblClick={() => {
+                  if (worker.conversation_id) onNavigate(worker.conversation_id);
+                }}
+              >
+                <span className="workflow-worker__top">
+                  <span className="workflow-worker__label">{worker.label}</span>
+                  <span className={`workflow-status workflow-status--${statusClass(worker.status)}`}>{worker.status}</span>
+                </span>
+                <span className="workflow-worker__meta">
+                  {worker.model && <span>{worker.model}</span>}
+                  {worker.tokens != null && <span>{worker.tokens.toLocaleString()} tokens</span>}
+                  {worker.duration_ms != null && <span>{formatShelfDuration(Math.round(worker.duration_ms / 1000))}</span>}
+                </span>
+                {(worker.last_tool_summary || worker.result_preview || worker.warnings[0]?.message) && (
+                  <span className="workflow-worker__preview">
+                    {worker.warnings[0]?.message ?? worker.last_tool_summary ?? worker.result_preview}
+                  </span>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ConversationInfoDialog({
   conversation,
   linkedConsoleSession,
@@ -1136,6 +1354,9 @@ function ConversationDetail({
   const [renderMode, setRenderMode] = useState<'transcript' | 'raw'>('transcript');
   const [actionsOpen, setActionsOpen] = useState(false);
   const [infoOpen, setInfoOpen] = useState(false);
+  const [activeWorkflowId, setActiveWorkflowId] = useState<string | null>(null);
+  const [workflows, setWorkflows] = useState<WorkflowRun[]>([]);
+  const [workflowNonce, setWorkflowNonce] = useState(0);
   const [showMessageFilters, setShowMessageFilters] = useState(false);
   const [composerControlsOpen, setComposerControlsOpen] = useState(false);
   const [composerModel, setComposerModel] = useState('');
@@ -1205,6 +1426,8 @@ function ConversationDetail({
         const payload = JSON.parse(event.data) as { type?: string };
         if (payload.type === 'conversation:new' || payload.type === 'conversation:updated') {
           scheduleRefresh();
+        } else if (payload.type === 'workflow:updated') {
+          setWorkflowNonce((prev) => prev + 1);
         }
       } catch {
         // Ignore malformed SSE payloads.
@@ -1219,6 +1442,27 @@ function ConversationDetail({
       source.close();
     };
   }, [conversationId]);
+
+  useEffect(() => {
+    if (!conversation?.session_id) {
+      setWorkflows([]);
+      setActiveWorkflowId(null);
+      return undefined;
+    }
+    let active = true;
+    listWorkflows({ session_id: conversation.session_id })
+      .then((runs) => {
+        if (!active) return;
+        setWorkflows(runs);
+        if (activeWorkflowId && !runs.some((run) => run.id === activeWorkflowId)) {
+          setActiveWorkflowId(null);
+        }
+      })
+      .catch(() => {
+        if (active) setWorkflows([]);
+      });
+    return () => { active = false; };
+  }, [activeWorkflowId, conversation?.session_id, workflowNonce]);
 
   // Bug: 84cd5ae — fetch linked issues for the conversation's session
   useEffect(() => {
@@ -1376,10 +1620,17 @@ function ConversationDetail({
     [conversation?.session_id, conversationId, visibleBlocks],
   );
   const shelfItems = useMemo(
-    () => buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
-    [blocks, conversation?.children, onNavigate],
+    () => [
+      ...buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
+      ...buildWorkflowShelfItems(workflows, setActiveWorkflowId),
+    ],
+    [blocks, conversation?.children, onNavigate, workflows],
   );
   const isReadOnlyChild = Boolean(conversation?.is_sidechain || conversation?.parent_conversation_id);
+  const activeWorkflow = useMemo(
+    () => workflows.find((workflow) => workflow.id === activeWorkflowId) ?? null,
+    [activeWorkflowId, workflows],
+  );
 
   useEffect(() => {
     if (!conversation?.parent_conversation_id) return undefined;
@@ -2039,10 +2290,18 @@ function ConversationDetail({
 
       <Shelf
         conversationId={conversation.id}
-        title="Subagents"
+        title="Activity"
         items={shelfItems}
         onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
       />
+
+      {activeWorkflow && (
+        <WorkflowRunDialog
+          workflow={activeWorkflow}
+          onClose={() => setActiveWorkflowId(null)}
+          onNavigate={onNavigate}
+        />
+      )}
 
       {isReadOnlyChild ? (
         <div className="conv-compose conv-compose--readonly">
