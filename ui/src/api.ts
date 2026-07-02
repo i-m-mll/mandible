@@ -1301,6 +1301,7 @@ export type ConsolePermissionDecision =
   | 'reject_once'
   | 'reject_always'
   | `option:${string}`;
+export type ConsoleThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ConsolePermissionRequest = {
   id: string;
@@ -1324,6 +1325,7 @@ export type ConsolePermissionRequest = {
 
 export type ConsoleSessionOptions = {
   model?: string;
+  thinkingEffort?: ConsoleThinkingEffort;
   systemPrompt?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions';
   allowedTools?: string[];
@@ -1534,6 +1536,7 @@ export type MessageParams = {
   session_id: string;
   message_index: number;
   model: string | null;
+  thinking_effort: string | null;
   permission_mode: string | null;
   max_turns: number | null;
   max_cost_usd: number | null;

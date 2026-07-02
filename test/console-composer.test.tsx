@@ -1,10 +1,23 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/preact";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/preact";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+const apiMocks = vi.hoisted(() => ({
+  updateConsoleSession: vi.fn(),
+  updateConsoleSessionOptions: vi.fn(),
+}));
+
+vi.mock("../ui/src/api", () => ({
+  updateConsoleSession: apiMocks.updateConsoleSession,
+  updateConsoleSessionOptions: apiMocks.updateConsoleSessionOptions,
+}));
+
 import { Composer } from "../ui/src/components/console/Composer";
+import { SessionControls } from "../ui/src/components/console/SessionControls";
 
 afterEach(() => {
   cleanup();
+  apiMocks.updateConsoleSession.mockReset();
+  apiMocks.updateConsoleSessionOptions.mockReset();
 });
 
 function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
@@ -23,6 +36,14 @@ function renderComposer(overrides: Partial<Parameters<typeof Composer>[0]> = {})
   };
   render(<Composer {...props} />);
   return props;
+}
+
+function changeSelect(select: HTMLElement, value: string): void {
+  act(() => {
+    (select as HTMLSelectElement).value = value;
+    select.dispatchEvent(new Event("input", { bubbles: true }));
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
 }
 
 describe("Composer", () => {
@@ -56,5 +77,54 @@ describe("Composer", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Remove queued message 1" }));
     expect(onQueuedPromptRemove).toHaveBeenCalledWith("queued-1");
+  });
+});
+
+describe("SessionControls", () => {
+  it("saves SDK thinking effort through session options", async () => {
+    apiMocks.updateConsoleSessionOptions.mockResolvedValue({});
+    render(
+      <SessionControls
+        sessionId="sdk-1"
+        backendType="sdk"
+        model="claude-sonnet-4-6"
+        modelOptions={["claude-sonnet-4-6"]}
+        allowedTools={["Read"]}
+        availableTools={["Read"]}
+      />,
+    );
+
+    changeSelect(screen.getByLabelText("Thinking effort"), "high");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() => expect(apiMocks.updateConsoleSessionOptions).toHaveBeenCalledWith("sdk-1", {
+      allowedTools: ["Read"],
+      model: "claude-sonnet-4-6",
+      thinkingEffort: "high",
+      permissionMode: "default",
+      maxTurns: undefined,
+      maxCostUsd: undefined,
+    }));
+  });
+
+  it("does not render or send SDK-only thinking effort for ACP sessions", async () => {
+    apiMocks.updateConsoleSessionOptions.mockResolvedValue({});
+    render(
+      <SessionControls
+        sessionId="acp-1"
+        backendType="acp"
+        model="gpt-5.3-codex"
+        modelOptions={["gpt-5.3-codex"]}
+        allowedTools={["Read"]}
+        availableTools={["Read"]}
+      />,
+    );
+
+    expect(screen.queryByLabelText("Thinking effort")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await vi.waitFor(() => expect(apiMocks.updateConsoleSessionOptions).toHaveBeenCalledWith("acp-1", {
+      allowedTools: ["Read"],
+    }));
   });
 });
