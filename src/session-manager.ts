@@ -24,6 +24,7 @@ import {
   type CodexThreadArchiver,
 } from "./codex-thread-archive.js";
 import type {
+  ConsoleAttentionState,
   ConsoleInteractionMode,
   ConsoleSession,
   ConsoleSessionInput,
@@ -618,6 +619,18 @@ export class SessionManager {
         this.recordUsage(backend.id, event);
         broadcast("console:inbox:badge", { count: 1 });
       }
+    });
+
+    backend.on("attention", (attention: ConsoleAttentionState | null) => {
+      backend.meta = {
+        ...backend.meta,
+        attention: attention?.active ? attention : null,
+      };
+      broadcast("console:attention", {
+        console_session_id: backend.id,
+        attention,
+      });
+      broadcast("console:session:updated", { session: backend.meta });
     });
 
     backend.on("meta_update", (fields: BackendMetaUpdate) => {

@@ -559,6 +559,26 @@ export interface SseEvent {
 
 export type ConsoleSessionStatus = 'running' | 'stopped' | 'crashed';
 export type ConsoleInteractionMode = 'inbox_only' | 'direct' | 'both';
+export type ConsoleAttentionKind = 'input_prompt' | 'running_output' | 'permission_menu' | 'unknown';
+export type ConsoleAttentionSource = 'pty_screen' | 'pty_screen_fallback';
+
+export interface ConsoleAttentionState {
+  session_id: string;
+  kind: ConsoleAttentionKind;
+  source: ConsoleAttentionSource;
+  at: number;
+  active: boolean;
+  screen_excerpt: string;
+  clear_conditions: string[];
+  detail: {
+    provider: ConsoleSession['agent_type'];
+    confidence: 'high' | 'medium' | 'low';
+    reason: string;
+    matched?: string;
+  };
+  cleared_at?: number;
+  cleared_by?: 'screen_changed' | 'structured_stream_activity' | 'process_exit' | 'manual_clear';
+}
 
 export interface ConsoleSession {
   id: string;
@@ -591,6 +611,8 @@ export interface ConsoleSession {
   channel_enabled: boolean;
   /** Bug: 81c9d85 — derived from backend.processing, not stored in DB. */
   is_processing?: boolean;
+  /** Derived from PTY screen state. Not stored in DB. */
+  attention?: ConsoleAttentionState | null;
 }
 
 export interface ConsoleSessionInput {

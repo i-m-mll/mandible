@@ -45,6 +45,23 @@ type ConsoleSession = {
   mandible_session_id?: string | null;
   resume_at_message?: string | null;
   channel_enabled?: boolean;
+  attention?: {
+    session_id: string;
+    kind: 'input_prompt' | 'running_output' | 'permission_menu' | 'unknown';
+    source: 'pty_screen' | 'pty_screen_fallback';
+    at: number;
+    active: boolean;
+    screen_excerpt: string;
+    clear_conditions: string[];
+    detail: {
+      provider: ConsoleSession['agent_type'];
+      confidence: 'high' | 'medium' | 'low';
+      reason: string;
+      matched?: string;
+    };
+    cleared_at?: number;
+    cleared_by?: 'screen_changed' | 'structured_stream_activity' | 'process_exit' | 'manual_clear';
+  } | null;
 };
 
 export type { ConsoleSession };
@@ -730,6 +747,22 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       const session = ((record?.session as ConsoleSession) ?? record) as ConsoleSession | null;
       if (session?.id) {
         return appReducer(state, { type: 'upsertConsoleSession', session });
+      }
+      return state;
+    }
+    case 'console:attention': {
+      const data = unwrapSseData(payload);
+      const record = data as Record<string, unknown> | null;
+      const sessionId = typeof record?.console_session_id === 'string' ? record.console_session_id : null;
+      const existing = sessionId ? state.consoleSessions.find((s) => s.id === sessionId) : null;
+      if (existing) {
+        return appReducer(state, {
+          type: 'upsertConsoleSession',
+          session: {
+            ...existing,
+            attention: (record?.attention as ConsoleSession['attention']) ?? null,
+          },
+        });
       }
       return state;
     }
