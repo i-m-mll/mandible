@@ -1,4 +1,3 @@
-import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import type { IPty, IDisposable } from "node-pty";
 import pty from "node-pty";
@@ -14,20 +13,19 @@ import {
 import { PtyScreenObserver, shouldEnablePtyScreenModel } from "../screen-model.js";
 import type {
   ConsoleAttentionState,
+  ConsolePromptQueueBlockedBy,
+  ConsolePromptQueueItem,
+  ConsolePromptQueueState,
   ConsoleSession,
   ConsoleSessionStatus,
   ConsoleStreamEvent,
   Logger,
 } from "../types.js";
-import {
-  normalizeCodexStreamLine,
-  normalizeGeminiStreamLine,
-  type CodexNormalizerState,
-} from "./normalizers.js";
 
 const STREAM_EVENTS_LIMIT = 2000;
 const MAX_RESTART_ATTEMPTS = 5;
 const BASE_RESTART_DELAY_MS = 2000;
+const DEFAULT_PROMPT_QUIET_FALLBACK_MS = 1_500;
 const ANSI_STRIP_RE =
   /\x1b\[[0-9;]*[mGKHFABCDJu]|\x1b\][^\x07]*\x07|\x0f|\x1b[()][AB012]/g;
 
@@ -52,9 +50,12 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   private logger: Logger;
   /** Bug: 790433d — Preset IDs for PTY sessions, applied at launch via --append-system-prompt */
   private presetIds: string[] = [];
-  private promptChildren: Set<ChildProcess> = new Set();
+  private promptQueue: ConsolePromptQueueItem[] = [];
   private restartTimer: NodeJS.Timeout | null = null;
+  private promptQuietFallbackTimer: NodeJS.Timeout | null = null;
   private screenObserver: PtyScreenObserver | null = null;
+  private lastPtyOutputAt = 0;
+  private lastPromptFlushedAt: number | null = null;
   private destroyed = false;
 
   constructor(meta: ConsoleSession, logger: Logger) {
@@ -144,7 +145,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
 
   stop(signal?: string): void {
     this.clearRestartTimer();
-    this.killPromptChildren(signal ?? "SIGHUP");
+    this.clearPromptQuietFallbackTimer();
 
     if (!this.ptyProc) return;
 
@@ -187,7 +188,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.destroyed = true;
     this.screenObserver?.destroy();
     this.clearRestartTimer();
-    this.killPromptChildren("SIGHUP");
+    this.clearPromptQuietFallbackTimer();
     if (this.ptyProc) {
       this.stop("SIGHUP");
     }
@@ -226,139 +227,21 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   sendPrompt(text: string): void {
     const prompt = text.trim();
     if (!prompt) return;
-
-    const cwd = this.meta.cwd ?? process.env.HOME ?? "/tmp";
-    const invocation = this.buildPromptInvocation(prompt, cwd);
-    if (!invocation) {
+    if (!this.supportsPtyPromptInput()) {
       throw new Error("unsupported_prompt_backend");
     }
-
-    const env = this.buildPtyEnv(this.meta.env ?? {});
-    const existingSessionId = this.meta.provider_session_id ?? this.meta.id;
-    if (invocation.injectUserEvent) {
-      this.ingestStructuredEvent(this.makeUserEvent(prompt, existingSessionId));
+    if (!this.ptyProc || this.meta.status !== "running") {
+      throw new Error("pty_prompt_not_running");
     }
 
-    const child = spawn(invocation.command, invocation.args, {
-      cwd,
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    this.promptChildren.add(child);
+    const blockedBy = this.promptBlockedBy();
+    if (blockedBy) {
+      this.queuePrompt(prompt, blockedBy);
+      return;
+    }
 
-    let lineBuffer = "";
-    let sawResult = false;
-    const codexState: CodexNormalizerState = {
-      threadId: this.meta.provider_session_id,
-      turnCount: 0,
-      model: this.extractModel(this.meta.args),
-    };
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      lineBuffer += chunk.toString("utf8");
-      const lines = lineBuffer.split("\n");
-      lineBuffer = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        if (invocation.normalize === "claude") {
-          this.ingestText(line + "\n");
-          if (line.includes("\"type\":\"result\"")) {
-            sawResult = true;
-          }
-        } else if (invocation.normalize === "gemini") {
-          const event = normalizeGeminiStreamLine(line);
-          if (event) {
-            if (event.type === "result") {
-              sawResult = true;
-            }
-            this.ingestStructuredEvent(event);
-          }
-        } else {
-          const event = normalizeCodexStreamLine(line, codexState);
-          if (event) {
-            if (event.type === "result") {
-              sawResult = true;
-            }
-            this.ingestStructuredEvent(event);
-          }
-        }
-      }
-    });
-
-    let stderrBuf = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderrBuf += chunk.toString("utf8");
-    });
-
-    let completed = false;
-    const complete = () => {
-      if (completed) {
-        return false;
-      }
-      completed = true;
-      this.promptChildren.delete(child);
-      return true;
-    };
-
-    child.on("close", (code) => {
-      if (!complete()) {
-        return;
-      }
-      if (lineBuffer.trim()) {
-        if (invocation.normalize === "claude") {
-          this.ingestText(lineBuffer + "\n");
-        } else if (invocation.normalize === "gemini") {
-          const event = normalizeGeminiStreamLine(lineBuffer);
-          if (event) {
-            if (event.type === "result") {
-              sawResult = true;
-            }
-            this.ingestStructuredEvent(event);
-          }
-        } else {
-          const event = normalizeCodexStreamLine(lineBuffer, codexState);
-          if (event) {
-            if (event.type === "result") {
-              sawResult = true;
-            }
-            this.ingestStructuredEvent(event);
-          }
-        }
-      }
-
-      if (code !== 0 && stderrBuf.trim() && !sawResult) {
-        const errMsg = stderrBuf.trim().slice(0, 500);
-        this.ingestStructuredEvent({
-          type: "result",
-          subtype: "error_during_execution",
-          is_error: true,
-          errors: [errMsg],
-          session_id: this.meta.provider_session_id ?? codexState.threadId ?? existingSessionId,
-          duration_ms: 0,
-          num_turns: 0,
-          total_cost_usd: 0,
-        });
-      }
-    });
-
-    child.on("error", (err) => {
-      if (!complete()) {
-        return;
-      }
-      this.logger("warn", "pty_prompt_child_error", { id: this.id, error: String(err) });
-      if (!sawResult) {
-        this.ingestStructuredEvent({
-          type: "result",
-          subtype: "error_during_execution",
-          is_error: true,
-          errors: [String(err)],
-          session_id: existingSessionId,
-          duration_ms: 0,
-          num_turns: 0,
-          total_cost_usd: 0,
-        });
-      }
-    });
+    this.flushPromptToPty(prompt);
+    this.publishPromptQueueState();
   }
 
   addWsClient(ws: WebSocket): void {
@@ -443,6 +326,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   }
 
   private handleData(data: string): void {
+    this.lastPtyOutputAt = Date.now();
     this.ringBuffer.append(data);
     this.screenObserver?.feed(data);
 
@@ -520,6 +404,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.onExitDisposable = null;
     this.ptyProc = null;
     this.screenObserver?.clear("process_exit");
+    this.clearPromptQuietFallbackTimer();
 
     const crashed = exitCode > 0;
     const status: ConsoleSessionStatus = crashed ? "crashed" : "stopped";
@@ -593,17 +478,6 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.restartTimer = null;
   }
 
-  private killPromptChildren(signal: string): void {
-    for (const child of this.promptChildren) {
-      try {
-        child.kill(signal as NodeJS.Signals);
-      } catch {
-        // Process may already be gone.
-      }
-    }
-    this.promptChildren.clear();
-  }
-
   private broadcastWsStatus(status: ConsoleSessionStatus, exitCode?: number): void {
     if (this.wsClients.size === 0) return;
     const msg = JSON.stringify({
@@ -635,6 +509,9 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       updated_at: Date.now(),
     };
     this.emit("attention", attention);
+    if (attention?.active && attention.kind === "input_prompt") {
+      this.flushQueuedPrompts();
+    }
   }
 
   private extractModel(args: string[]): string | null {
@@ -747,6 +624,130 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     return cleaned;
   }
 
+  private supportsPtyPromptInput(): boolean {
+    return this.meta.backend_type === "pty" && ["claude", "codex", "gemini"].includes(this.meta.command);
+  }
+
+  private promptBlockedBy(): ConsolePromptQueueBlockedBy | null {
+    const attention = this.meta.attention;
+    if (attention?.active) {
+      return attention.kind === "input_prompt" ? null : attention.kind;
+    }
+    if (!this.screenObserver && this.isPromptQuietFallbackReady()) {
+      return null;
+    }
+    return "no_attention_state";
+  }
+
+  private queuePrompt(prompt: string, blockedBy: ConsolePromptQueueBlockedBy): void {
+    this.promptQueue.push({
+      id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      text: prompt,
+      queued_at: Date.now(),
+      blocked_by: blockedBy,
+    });
+    this.schedulePromptQuietFallback();
+    this.publishPromptQueueState();
+  }
+
+  private flushQueuedPrompts(): void {
+    if (this.promptQueue.length === 0) {
+      return;
+    }
+    const queued = this.promptQueue.splice(0);
+    for (const item of queued) {
+      this.flushPromptToPty(item.text);
+    }
+    this.clearPromptQuietFallbackTimer();
+    this.publishPromptQueueState();
+  }
+
+  private flushPromptToPty(prompt: string): void {
+    this.write(formatPtyPromptInput(prompt));
+    this.lastPromptFlushedAt = Date.now();
+    this.ingestStructuredEvent(this.makeUserEvent(prompt, this.meta.provider_session_id ?? this.meta.id));
+  }
+
+  private publishPromptQueueState(): void {
+    const state = this.buildPromptQueueState();
+    this.meta = {
+      ...this.meta,
+      prompt_queue: state,
+      updated_at: Date.now(),
+    };
+    this.emit("prompt_queue", state);
+  }
+
+  private buildPromptQueueState(): ConsolePromptQueueState | null {
+    if (this.promptQueue.length === 0 && this.lastPromptFlushedAt === null) {
+      return null;
+    }
+    return {
+      pending_count: this.promptQueue.length,
+      items: this.promptQueue.map((item) => ({ ...item })),
+      fallback_enabled: this.isPromptQuietFallbackEnabled(),
+      fallback_quiet_ms: this.promptQuietFallbackMs(),
+      last_flushed_at: this.lastPromptFlushedAt,
+    };
+  }
+
+  private schedulePromptQuietFallback(): void {
+    if (!this.isPromptQuietFallbackEnabled() || this.screenObserver || this.promptQueue.length === 0) {
+      return;
+    }
+    const quietMs = this.promptQuietFallbackMs();
+    const elapsed = Date.now() - this.lastPtyOutputAt;
+    if (elapsed >= quietMs) {
+      this.flushQueuedPrompts();
+      return;
+    }
+    this.clearPromptQuietFallbackTimer();
+    this.promptQuietFallbackTimer = setTimeout(() => {
+      this.promptQuietFallbackTimer = null;
+      if (this.isPromptQuietFallbackReady()) {
+        this.flushQueuedPrompts();
+      } else {
+        this.schedulePromptQuietFallback();
+      }
+    }, quietMs - elapsed);
+    if (
+      this.promptQuietFallbackTimer &&
+      typeof this.promptQuietFallbackTimer === "object" &&
+      "unref" in this.promptQuietFallbackTimer
+    ) {
+      this.promptQuietFallbackTimer.unref();
+    }
+  }
+
+  private clearPromptQuietFallbackTimer(): void {
+    if (!this.promptQuietFallbackTimer) {
+      return;
+    }
+    clearTimeout(this.promptQuietFallbackTimer);
+    this.promptQuietFallbackTimer = null;
+  }
+
+  private isPromptQuietFallbackReady(): boolean {
+    return (
+      this.isPromptQuietFallbackEnabled() &&
+      Date.now() - this.lastPtyOutputAt >= this.promptQuietFallbackMs()
+    );
+  }
+
+  private isPromptQuietFallbackEnabled(): boolean {
+    return (
+      readBooleanSwitch(this.meta.env.MANDIBLE_PTY_PROMPT_QUIET_FALLBACK) ??
+      readBooleanSwitch(process.env.MANDIBLE_PTY_PROMPT_QUIET_FALLBACK) ??
+      false
+    );
+  }
+
+  private promptQuietFallbackMs(): number {
+    const raw = this.meta.env.MANDIBLE_PTY_PROMPT_QUIET_MS ?? process.env.MANDIBLE_PTY_PROMPT_QUIET_MS;
+    const parsed = raw ? Number.parseInt(raw, 10) : NaN;
+    return Number.isFinite(parsed) && parsed >= 250 ? parsed : DEFAULT_PROMPT_QUIET_FALLBACK_MS;
+  }
+
   private makeUserEvent(prompt: string, sessionId: string): ConsoleStreamEvent {
     return {
       type: "user",
@@ -759,51 +760,24 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     };
   }
 
-  private buildPromptInvocation(
-    prompt: string,
-    cwd: string
-  ): {
-    command: string;
-    args: string[];
-    injectUserEvent: boolean;
-    normalize: "claude" | "codex" | "gemini";
-  } | null {
-    const model = this.extractModel(this.meta.args);
+}
 
-    if (this.meta.command === "claude") {
-      const args = ["-p", prompt, "--verbose", "--output-format", "stream-json", "--dangerously-skip-permissions"];
-      if (this.meta.provider_session_id) {
-        args.splice(2, 0, "--resume", this.meta.provider_session_id);
-      }
-      if (model) {
-        args.push("--model", model);
-      }
-      return { command: "claude", args, injectUserEvent: true, normalize: "claude" };
-    }
+export function formatPtyPromptInput(prompt: string): string {
+  return prompt.includes("\n")
+    ? `\x1b[200~${prompt}\x1b[201~\r`
+    : `${prompt}\r`;
+}
 
-    if (this.meta.command === "gemini") {
-      const args = ["-p", prompt, "--output-format", "stream-json", "-y"];
-      if (this.meta.provider_session_id) {
-        args.push("--resume", this.meta.provider_session_id);
-      }
-      if (model) {
-        args.push("--model", model);
-      }
-      return { command: "gemini", args, injectUserEvent: false, normalize: "gemini" };
-    }
-
-    if (this.meta.command === "codex") {
-      const args = this.meta.provider_session_id
-        ? ["exec", "resume", this.meta.provider_session_id, prompt]
-        : ["exec", prompt];
-      args.push("--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check", "-C", cwd);
-      if (model) {
-        args.push("--model", model);
-      }
-      return { command: "codex", args, injectUserEvent: true, normalize: "codex" };
-    }
-
+function readBooleanSwitch(value: string | undefined): boolean | null {
+  if (value === undefined) {
     return null;
   }
-
+  const normalized = value.trim().toLowerCase();
+  if (["0", "false", "no", "off"].includes(normalized)) {
+    return false;
+  }
+  if (["1", "true", "yes", "on"].includes(normalized)) {
+    return true;
+  }
+  return null;
 }

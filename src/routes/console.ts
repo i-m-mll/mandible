@@ -426,6 +426,10 @@ export function registerConsoleRoutes(
         sendJson(res, 400, { error: "unsupported_prompt_backend" });
         return;
       }
+      if (String(error).includes("pty_prompt_not_running")) {
+        sendJson(res, 409, { error: "pty_prompt_not_running" });
+        return;
+      }
       throw error;
     }
 

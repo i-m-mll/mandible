@@ -644,6 +644,10 @@ export class SessionManager {
       broadcast("console:session:updated", { session: backend.meta });
     });
 
+    backend.on("prompt_queue", () => {
+      broadcast("console:session:updated", { session: backend.meta });
+    });
+
     backend.on("meta_update", (fields: BackendMetaUpdate) => {
       this.applyMetaUpdate(backend.id, fields);
     });
