@@ -251,6 +251,68 @@ function shouldAcceptInitialLedgerDetail(
   return current.detail_stage === 'initial' || current.timeline_partial === true;
 }
 
+const ISSUE_DETAIL_CACHE_LIMIT = 15;
+type IssueDetailCache = Map<string, LedgerIssueDetailProjection>;
+
+function issueDetailCacheKeys(repoId: string | null, issueId: string): string[] {
+  return [`${repoId ?? ''}:${issueId}`];
+}
+
+function putCachedIssueDetail(
+  cache: IssueDetailCache,
+  repoId: string | null,
+  issueId: string,
+  detail: LedgerIssueDetailProjection,
+): void {
+  if (detail.detail_stage === 'initial') return;
+  const key = issueDetailCacheKeys(repoId, issueId)[0];
+  cache.delete(key);
+  cache.set(key, detail);
+  while (cache.size > ISSUE_DETAIL_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
+    if (!oldest) break;
+    cache.delete(oldest);
+  }
+}
+
+function getCachedIssueDetail(
+  cache: IssueDetailCache,
+  repoId: string | null,
+  issueId: string,
+): LedgerIssueDetailProjection | null {
+  for (const key of issueDetailCacheKeys(repoId, issueId)) {
+    const detail = cache.get(key);
+    if (!detail) continue;
+    cache.delete(key);
+    cache.set(key, detail);
+    return detail;
+  }
+  return null;
+}
+
+const ISSUE_DETAIL_SCROLL_STORAGE_PREFIX = 'mandible:issues:detail-scroll:';
+
+function issueDetailScrollStorageKey(repoId: string, issueId: string): string {
+  return `${ISSUE_DETAIL_SCROLL_STORAGE_PREFIX}${repoId}:${issueId}`;
+}
+
+function readIssueDetailScrollOffset(key: string): number | null {
+  if (typeof window === 'undefined') return null;
+  const value = window.sessionStorage.getItem(key);
+  if (!value) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+
+function writeIssueDetailScrollOffset(key: string, offset: number): void {
+  if (typeof window === 'undefined') return;
+  if (offset <= 0) {
+    window.sessionStorage.removeItem(key);
+    return;
+  }
+  window.sessionStorage.setItem(key, String(Math.round(offset)));
+}
+
 function synthesizeLedgerIssueDetail(
   repo: IssueRepoSummary,
   issue: IssueSummary,
@@ -378,6 +440,10 @@ export function IssuesView({
   const lastScrolledCommentRef = useRef<string | null>(null);
   const detailRequestSeqRef = useRef(0);
   const filterEditedRef = useRef(false);
+  const issueDetailScrollRef = useRef<HTMLDivElement>(null);
+  const scrollSaveTimerRef = useRef<number | null>(null);
+  const lastRestoredScrollKeyRef = useRef<string | null>(null);
+  const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
 
   useEffect(() => {
     if (!filterEditedRef.current) setFilter(normalizedDefaultFilter);
@@ -568,6 +634,62 @@ export function IssuesView({
       : synthesizedLedgerIssueDetail,
     [ledgerIssueDetail, selectedRepoId, selectedIssueId, synthesizedLedgerIssueDetail],
   );
+  const issueDetailScrollKey = useMemo(
+    () => selectedRepoId && selectedIssueId
+      ? issueDetailScrollStorageKey(selectedRepoId, selectedIssueId)
+      : null,
+    [selectedRepoId, selectedIssueId],
+  );
+
+  useEffect(() => {
+    const key = issueDetailScrollKey;
+    const node = issueDetailScrollRef.current;
+    if (!key || !node) return undefined;
+
+    const save = () => writeIssueDetailScrollOffset(key, node.scrollTop);
+    const scheduleSave = () => {
+      if (scrollSaveTimerRef.current !== null) window.clearTimeout(scrollSaveTimerRef.current);
+      scrollSaveTimerRef.current = window.setTimeout(() => {
+        scrollSaveTimerRef.current = null;
+        save();
+      }, 150);
+    };
+
+    node.addEventListener('scroll', scheduleSave, { passive: true });
+    return () => {
+      node.removeEventListener('scroll', scheduleSave);
+      if (scrollSaveTimerRef.current !== null) {
+        window.clearTimeout(scrollSaveTimerRef.current);
+        scrollSaveTimerRef.current = null;
+      }
+      save();
+    };
+  }, [issueDetailScrollKey]);
+
+  useEffect(() => {
+    if (!issueDetailScrollKey || !visibleLedgerIssueDetail || initialCommentId) return;
+    if (lastRestoredScrollKeyRef.current === issueDetailScrollKey) return;
+    if (visibleLedgerIssueDetail.detail_stage === 'initial' && visibleLedgerIssueDetail.timeline_partial) return;
+    const savedOffset = readIssueDetailScrollOffset(issueDetailScrollKey);
+    if (savedOffset === null) {
+      lastRestoredScrollKeyRef.current = issueDetailScrollKey;
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const node = issueDetailScrollRef.current;
+      if (!node) return;
+      const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
+      node.scrollTop = Math.min(savedOffset, maxScroll || savedOffset);
+      lastRestoredScrollKeyRef.current = issueDetailScrollKey;
+    });
+  }, [
+    initialCommentId,
+    issueDetailScrollKey,
+    visibleLedgerIssueDetail?.id,
+    visibleLedgerIssueDetail?.detail_stage,
+    visibleLedgerIssueDetail?.timeline_partial,
+    visibleLedgerIssueDetail?.timeline.length,
+  ]);
 
   // Fetch canonical ledger detail when selection changes.
   useEffect(() => {
@@ -582,31 +704,41 @@ export function IssuesView({
     const issueId = selectedIssueId;
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
-    setDetailLoading(true);
+    const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);
+    const hasCachedDetail = Boolean(cachedDetail && ledgerDetailMatchesSelection(cachedDetail, repoId, issueId));
+    if (hasCachedDetail && cachedDetail) {
+      setLedgerIssueDetail(cachedDetail);
+    }
+    setDetailLoading(!hasCachedDetail);
     setDetailLoadFailed(false);
-    const initialDetail = repoId
-      ? getLedgerIssueInitialDetailByRef(repoId, issueId)
-      : getLedgerIssueInitialDetailByIssueId(issueId);
+    const initialDetail = hasCachedDetail
+      ? null
+      : repoId
+        ? getLedgerIssueInitialDetailByRef(repoId, issueId)
+        : getLedgerIssueInitialDetailByIssueId(issueId);
     const fullDetail = repoId
       ? getLedgerIssueDetailByRef(repoId, issueId)
       : getLedgerIssueDetailByIssueId(issueId);
-    initialDetail
-      .then((detail) => {
-        if (detailRequestSeqRef.current !== requestSeq) return;
-        setLedgerIssueDetail((current) => (
-          shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
-        ));
-      })
-      .catch(() => {
-        // The full projection fetch below remains authoritative.
-      });
+    if (initialDetail) {
+      initialDetail
+        .then((detail) => {
+          if (detailRequestSeqRef.current !== requestSeq) return;
+          setLedgerIssueDetail((current) => (
+            shouldAcceptInitialLedgerDetail(current, detail, repoId, issueId) ? detail : current
+          ));
+        })
+        .catch(() => {
+          // The full projection fetch below remains authoritative.
+        });
+    }
     fullDetail
       .then((detail) => {
         if (detailRequestSeqRef.current !== requestSeq) return;
+        putCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId, detail);
         setLedgerIssueDetail(detail);
       })
       .catch(() => {
-        if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
+        if (detailRequestSeqRef.current === requestSeq && !hasCachedDetail) setDetailLoadFailed(true);
       })
       .finally(() => {
         if (detailRequestSeqRef.current === requestSeq) setDetailLoading(false);
@@ -617,12 +749,19 @@ export function IssuesView({
   }, [selectedRepoId, selectedIssueId]);
 
   const selectIssue = useCallback((repoId: string, issueId: string) => {
-    const repo = repos.find((candidate) => candidate.repo_id === repoId);
-    const issue = repo?.issues.find((candidate) => candidate.id === issueId);
-    if (repo && issue) {
-      setLedgerIssueDetail(synthesizeLedgerIssueDetail(repo, issue));
-      setDetailLoading(true);
+    const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);
+    if (cachedDetail && ledgerDetailMatchesSelection(cachedDetail, repoId, issueId)) {
+      setLedgerIssueDetail(cachedDetail);
+      setDetailLoading(false);
       setDetailLoadFailed(false);
+    } else {
+      const repo = repos.find((candidate) => candidate.repo_id === repoId);
+      const issue = repo?.issues.find((candidate) => candidate.id === issueId);
+      if (repo && issue) {
+        setLedgerIssueDetail(synthesizeLedgerIssueDetail(repo, issue));
+        setDetailLoading(true);
+        setDetailLoadFailed(false);
+      }
     }
     const nextHash = issueRouteHash(repoId, issueId);
     if (typeof window !== 'undefined' && window.location.hash !== nextHash) {
@@ -640,7 +779,10 @@ export function IssuesView({
     setDetailLoadFailed(false);
     try {
       const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
-      if (detailRequestSeqRef.current === requestSeq) setLedgerIssueDetail(detail);
+      if (detailRequestSeqRef.current === requestSeq) {
+        putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, detail);
+        setLedgerIssueDetail(detail);
+      }
     } catch {
       if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
     }
@@ -651,6 +793,7 @@ export function IssuesView({
     setActionInFlight(true);
     try {
       const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'closed' });
+      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
       setLedgerIssueDetail(detail);
       void onRescan();
     } catch {
@@ -665,6 +808,7 @@ export function IssuesView({
     setActionInFlight(true);
     try {
       const detail = await patchLedgerIssue(visibleLedgerIssueDetail.id, { status: 'open', resolution: null });
+      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
       setLedgerIssueDetail(detail);
       void onRescan();
     } catch {
@@ -679,6 +823,7 @@ export function IssuesView({
     setActionInFlight(true);
     try {
       const detail = await addLedgerIssueComment(visibleLedgerIssueDetail.id, message.trim());
+      putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId ?? visibleLedgerIssueDetail.display_id, detail);
       setLedgerIssueDetail(detail);
     } catch {
       // silently fail
@@ -943,7 +1088,7 @@ export function IssuesView({
       </ViewSidebar>
 
       {/* Right detail panel */}
-      <div className="issues-detail">
+      <div className="issues-detail" ref={issueDetailScrollRef}>
         {!selectedIssueId ? (
           <div className="issues-detail__empty">
             <p className="text-muted">Select an issue to view details</p>

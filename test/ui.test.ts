@@ -6,7 +6,13 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { App } from '../ui/src/app';
-import { getReviewSpec, patchSession, updateConversation, type InstanceInfo } from '../ui/src/api';
+import {
+  getReviewSpec,
+  invalidateApiGetCache,
+  patchSession,
+  updateConversation,
+  type InstanceInfo,
+} from '../ui/src/api';
 import {
   installTauriDeepLinkHandler,
   navigateToMandibleDeepLink,
@@ -142,6 +148,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  invalidateApiGetCache();
   cleanup();
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
@@ -717,7 +724,7 @@ describe('app shell', () => {
     });
   });
 
-  it('renders the Spaces preview notice from boot instance data before health resolves', () => {
+  it('renders the Spaces preview notice from boot instance data before health resolves', async () => {
     stubEventSource();
     (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
       instance: previewInstance,
@@ -756,7 +763,7 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = screen.getByTestId('preview-disabled-notice');
+    const notice = await screen.findByTestId('preview-disabled-notice');
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
     expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });
@@ -1431,6 +1438,158 @@ describe('issue deep links', () => {
     expect(screen.getByText('Full detail comment')).toBeTruthy();
   });
 
+  it('hides the full-detail loading banner when initial detail is complete enough to show', async () => {
+    let resolveFullDetail: (response: Response) => void = () => undefined;
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('stage=initial')) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId: '4c26383',
+          title: 'Small initial detail',
+          comments: ['Only visible comment'],
+          stage: 'initial',
+          timelinePartial: false,
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return new Promise<Response>((resolve) => {
+        resolveFullDetail = resolve;
+      });
+    }));
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByText('Only visible comment')).toBeTruthy();
+    expect(screen.queryByText(/Loading full issue detail/)).toBeNull();
+
+    await act(async () => {
+      resolveFullDetail(new Response(JSON.stringify(issueDetailProjection({
+        displayId: '4c26383',
+        title: 'Small full detail',
+        comments: ['Only visible comment'],
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    });
+
+    expect(await screen.findByRole('heading', { name: 'Small full detail' })).toBeTruthy();
+  });
+
+  it('renders cached issue detail synchronously on reselect and revalidates full detail only', async () => {
+    const multiRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        repos[0].issues[0],
+        {
+          id: '9f0e111',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Second issue',
+          status: 'open',
+          labels: ['feature'],
+          author: 'MLL',
+          created_at: '2026-05-31T12:00:00.000Z',
+          description: 'Second body',
+        },
+      ],
+    }];
+    const fetchCalls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      fetchCalls.push(url);
+      const displayId = url.includes('9f0e111') ? '9f0e111' : '4c26383';
+      if (url.includes('stage=initial')) {
+        return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+          displayId,
+          title: `${displayId} initial`,
+          comments: [`${displayId} initial comment`],
+          stage: 'initial',
+        })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+        displayId,
+        title: `${displayId} full`,
+        comments: [`${displayId} cached full comment`],
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+
+    render(h(IssuesView, {
+      repos: multiRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: '4c26383 full' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Second issue' }));
+    expect(await screen.findByRole('heading', { name: '9f0e111 full' })).toBeTruthy();
+    const callsBeforeReselect = fetchCalls.length;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Daemon reload toast link' }));
+
+    expect(await screen.findByRole('heading', { name: '4c26383 full' })).toBeTruthy();
+    expect(screen.getByText('4c26383 cached full comment')).toBeTruthy();
+    const reselectCalls = fetchCalls.slice(callsBeforeReselect);
+    expect(reselectCalls.some((url) => url.includes('4c26383') && url.includes('stage=initial'))).toBe(false);
+    expect(reselectCalls.some((url) => url.includes('4c26383') && !url.includes('stage=initial'))).toBe(true);
+    expect(screen.queryByText(/Loading full issue detail/)).toBeNull();
+  });
+
+  it('restores issue detail scroll position when an issue is reselected', async () => {
+    const multiRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        repos[0].issues[0],
+        {
+          id: '9f0e111',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Second issue',
+          status: 'open',
+          labels: ['feature'],
+          author: 'MLL',
+          created_at: '2026-05-31T12:00:00.000Z',
+          description: 'Second body',
+        },
+      ],
+    }];
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((callback: FrameRequestCallback) => {
+      callback(0);
+      return 1;
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      const displayId = url.includes('9f0e111') ? '9f0e111' : '4c26383';
+      return Promise.resolve(new Response(JSON.stringify(issueDetailProjection({
+        displayId,
+        title: `${displayId} full`,
+        comments: Array.from({ length: 8 }, (_, index) => `${displayId} comment ${index}`),
+        stage: url.includes('stage=initial') ? 'initial' : 'full',
+        timelinePartial: false,
+      })), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    }));
+
+    render(h(IssuesView, {
+      repos: multiRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    expect(await screen.findByRole('heading', { name: '4c26383 full' })).toBeTruthy();
+    const scroller = document.querySelector('.issues-detail') as HTMLDivElement;
+    scroller.scrollTop = 320;
+
+    fireEvent.click(screen.getByRole('button', { name: 'Second issue' }));
+    expect(await screen.findByRole('heading', { name: '9f0e111 full' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Daemon reload toast link' }));
+
+    await waitFor(() => expect(scroller.scrollTop).toBe(320));
+    raf.mockRestore();
+  });
+
   it('does not refetch selected issue detail when repo summaries refresh', async () => {
     const fetchCalls: string[] = [];
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
@@ -1553,11 +1712,13 @@ function issueDetailProjection({
   title,
   comments = [],
   stage = 'full',
+  timelinePartial,
 }: {
   displayId: string;
   title: string;
   comments?: string[];
   stage?: 'initial' | 'full';
+  timelinePartial?: boolean;
 }) {
   const now = Date.now();
   const author = { id: null, type: 'mandible_user', display: 'MLL' };
@@ -1634,7 +1795,7 @@ function issueDetailProjection({
       latest_jobs: [],
     },
     detail_stage: stage,
-    timeline_partial: stage === 'initial',
+    timeline_partial: timelinePartial ?? stage === 'initial',
   };
 }
 
@@ -1942,7 +2103,7 @@ describe('LedgerIssueDetail', () => {
     }));
     expect(artifactLinks).toContainEqual({
       text: 'artifact:bbbbbbbbbbbb',
-      href: '#/artifacts?ref=bbbbbbbbbbbb',
+      href: '#/artifacts?ref=artifact%3Abbbbbbbbbbbb',
     });
     expect(artifactLinks).toContainEqual({
       text: 'feedbax://runs/demo',
@@ -2133,14 +2294,14 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('Associated Artifacts')).toBeTruthy();
     const link = screen.getByText('repo://mandible@main/results/report.md').closest('a') as HTMLAnchorElement | null;
     expect(link?.getAttribute('href')).toBe(
-      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '#/artifacts?ref=artifact-blob%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
     expect(link?.textContent).toContain('pinned');
     expect(link?.textContent).not.toContain('v1');
     expect(link?.textContent).not.toContain('latest');
     const compactLink = screen.getByText('artifact:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
     expect(compactLink?.getAttribute('href')).toBe(
-      '#/artifacts?artifact=artifact%3Asha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      '#/artifacts?ref=artifact-blob%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     );
     const livingLink = screen.getByText('artifact-series:live-report').closest('a') as HTMLAnchorElement | null;
     expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
@@ -3055,6 +3216,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialArtifactId: firstArtifact.id }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('one.md'));
+    await waitFor(() => expect(screen.getByRole('button', { name: /one\.md/ })).toBeTruthy());
     expect(listCalls).toBe(1);
     expect(screen.queryByText('Loading artifacts...')).toBeNull();
 
@@ -3232,6 +3394,56 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('cold-load-report.md'));
     await waitFor(() => expect(contentCalls).toHaveLength(1));
     await waitFor(() => expect(screen.getAllByText('Loading preview...')).toHaveLength(1));
+  });
+
+  it('starts artifact metadata and content requests in parallel for direct artifact links', async () => {
+    const artifact = makeArtifactFixture('7', 'parallel-detail.md');
+    const artifactSeries = makeArtifactSeries('parallel-detail', [artifact], 'parallel-detail.md');
+    const calls: string[] = [];
+    let resolveDetail: (response: Response) => void = () => undefined;
+    const detailPromise = new Promise<Response>((resolve) => {
+      resolveDetail = resolve;
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: artifact.id,
+            scheme: 'artifact',
+            normalized_ref: artifact.id,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
+      }
+      if (url.endsWith('/content')) {
+        return new Promise<Response>(() => undefined);
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.includes(encodeURIComponent(artifact.id))) return detailPromise;
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+
+    await waitFor(() => {
+      expect(calls.some((url) => url.includes(encodeURIComponent(artifact.id)) && !url.endsWith('/content'))).toBe(true);
+      expect(calls.some((url) => url.endsWith('/content') && url.includes(encodeURIComponent(artifact.id)))).toBe(true);
+    });
+
+    await act(async () => {
+      resolveDetail(new Response(JSON.stringify({ artifact }), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    });
   });
 
   it('ignores stale preview content when artifact selection changes early', async () => {
@@ -3561,7 +3773,7 @@ describe('ArtifactsView', () => {
     render(h(ArtifactsView, { initialRef: ref }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('deep-link.md'));
-    expect(screen.getByText('sidebar-first.md')).toBeTruthy();
+    expect(await screen.findByText('sidebar-first.md')).toBeTruthy();
     fireEvent.click(screen.getByLabelText('Artifact actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     expect(within(screen.getByRole('dialog', { name: 'Artifact metadata' })).getByText(ref)).toBeTruthy();

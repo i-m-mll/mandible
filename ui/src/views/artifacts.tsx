@@ -405,7 +405,7 @@ export function ArtifactsView({
   }, [resolution?.artifact?.id, selectedArtifact?.id, selectedArtifactId]);
 
   useEffect(() => {
-    if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
+    if (!selectedArtifactId) {
       contentRequestIdRef.current += 1;
       setArtifactContent(null);
       setKnowledgeBackrefs([]);
@@ -415,15 +415,16 @@ export function ArtifactsView({
       setKnowledgeLoading(false);
       return;
     }
+    const artifactId = selectedArtifactId;
     const requestId = contentRequestIdRef.current + 1;
     contentRequestIdRef.current = requestId;
     const controller = new AbortController();
     setArtifactContent(null);
     setContentLoading(true);
     setContentError(null);
-    getArtifactContent(selectedArtifact.id, { signal: controller.signal })
+    getArtifactContent(artifactId, { signal: controller.signal })
       .then((content) => {
-        if (contentRequestIdRef.current !== requestId || content.artifact_id !== selectedArtifact.id) return;
+        if (contentRequestIdRef.current !== requestId || content.artifact_id !== artifactId) return;
         setArtifactContent(content);
       })
       .catch((err) => {
@@ -436,7 +437,7 @@ export function ArtifactsView({
     return () => {
       controller.abort();
     };
-  }, [selectedArtifact?.id, selectedArtifactId]);
+  }, [selectedArtifactId]);
 
   useEffect(() => {
     if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
@@ -1120,6 +1121,12 @@ function PreviewSection({
       ? highlightArtifactCode(previewValue, highlightLanguage)
       : null
   ), [preview, previewValue, highlightLanguage]);
+  const virtualizedPreview = Boolean(
+    preview
+    && (preview.kind === 'json' || preview.kind === 'text')
+    && !highlightedPreview
+    && shouldVirtualizeArtifactPreview(previewValue),
+  );
   const codeClassName = highlightedPreview
     ? `hljs language-${highlightedPreview.language}`
     : undefined;
@@ -1154,22 +1161,35 @@ function PreviewSection({
           </div>
         )}
         {showPreview && preview.kind === 'json' && (
-          <pre className={codePreviewClassName}>
-            {highlightedPreview ? (
-              <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
-            ) : (
-              <code>{previewValue}</code>
-            )}
-          </pre>
+          virtualizedPreview ? (
+            <VirtualizedCodePreview value={previewValue} className={codePreviewClassName} codeClassName={codeClassName} />
+          ) : (
+            <pre className={codePreviewClassName}>
+              {highlightedPreview ? (
+                <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
+              ) : (
+                <code>{previewValue}</code>
+              )}
+            </pre>
+          )
         )}
         {showPreview && preview.kind === 'text' && (
-          <pre className={codePreviewClassName}>
-            {highlightedPreview ? (
-              <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
-            ) : (
-              <code>{previewValue}</code>
-            )}
-          </pre>
+          virtualizedPreview ? (
+            <VirtualizedCodePreview value={previewValue} className={codePreviewClassName} codeClassName={codeClassName} />
+          ) : (
+            <pre className={codePreviewClassName}>
+              {highlightedPreview ? (
+                <code className={codeClassName} dangerouslySetInnerHTML={{ __html: highlightedPreview.html }} />
+              ) : (
+                <code>{previewValue}</code>
+              )}
+            </pre>
+          )
+        )}
+        {showPreview && virtualizedPreview && (
+          <div className="artifact-detail__hint">
+            Large preview windowed for smoother scrolling. <button type="button" className="artifact-detail__inline-button" onClick={() => void copyText(previewValue)}>Copy full preview</button>
+          </div>
         )}
         {showPreview && preview.kind === 'html' && (
           <iframe
@@ -1200,6 +1220,92 @@ function PreviewSection({
         )}
       </div>
     </section>
+  );
+}
+
+type VirtualRange = { start: number; end: number };
+
+const ARTIFACT_PREVIEW_VIRTUALIZE_MIN_CHARS = 100 * 1024;
+const ARTIFACT_PREVIEW_VIRTUALIZE_MIN_LINES = 400;
+const ARTIFACT_PREVIEW_LINE_HEIGHT = 20;
+const ARTIFACT_PREVIEW_OVERSCAN_LINES = 16;
+
+function shouldVirtualizeArtifactPreview(value: string): boolean {
+  if (value.length < ARTIFACT_PREVIEW_VIRTUALIZE_MIN_CHARS) return false;
+  let lines = 1;
+  for (let index = 0; index < value.length; index += 1) {
+    if (value.charCodeAt(index) === 10) lines += 1;
+    if (lines >= ARTIFACT_PREVIEW_VIRTUALIZE_MIN_LINES) return true;
+  }
+  return false;
+}
+
+function VirtualizedCodePreview({
+  value,
+  className,
+  codeClassName,
+}: {
+  value: string;
+  className: string;
+  codeClassName?: string;
+}): JSX.Element {
+  const scrollerRef = useRef<HTMLPreElement>(null);
+  const lines = useMemo(() => value.split('\n'), [value]);
+  const maxLineLength = useMemo(
+    () => lines.reduce((max, line) => Math.max(max, line.length), 1),
+    [lines],
+  );
+  const [range, setRange] = useState<VirtualRange>(() => ({
+    start: 0,
+    end: Math.min(lines.length, 80),
+  }));
+
+  const updateRange = useCallback(() => {
+    const node = scrollerRef.current;
+    if (!node) return;
+    const visibleLines = Math.ceil(node.clientHeight / ARTIFACT_PREVIEW_LINE_HEIGHT);
+    const start = Math.max(0, Math.floor(node.scrollTop / ARTIFACT_PREVIEW_LINE_HEIGHT) - ARTIFACT_PREVIEW_OVERSCAN_LINES);
+    const end = Math.min(lines.length, start + visibleLines + ARTIFACT_PREVIEW_OVERSCAN_LINES * 2);
+    setRange((current) => (current.start === start && current.end === end ? current : { start, end }));
+  }, [lines.length]);
+
+  useEffect(() => {
+    updateRange();
+    const node = scrollerRef.current;
+    if (!node) return undefined;
+    node.addEventListener('scroll', updateRange, { passive: true });
+    const resizeObserver = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(updateRange) : null;
+    resizeObserver?.observe(node);
+    return () => {
+      node.removeEventListener('scroll', updateRange);
+      resizeObserver?.disconnect();
+    };
+  }, [updateRange]);
+
+  const visibleLines = lines.slice(range.start, range.end);
+  const totalHeight = Math.max(lines.length, 1) * ARTIFACT_PREVIEW_LINE_HEIGHT;
+  return (
+    <pre
+      ref={scrollerRef}
+      className={`${className} artifact-preview--virtualized`}
+      aria-label={`Large preview, ${lines.length} lines`}
+    >
+      <code
+        className={codeClassName}
+        style={{ height: `${totalHeight}px`, minWidth: `${maxLineLength}ch` }}
+      >
+        <span
+          className="artifact-preview__virtual-window"
+          style={{ transform: `translateY(${range.start * ARTIFACT_PREVIEW_LINE_HEIGHT}px)` }}
+        >
+          {visibleLines.map((line, index) => (
+            <span key={range.start + index} className="artifact-preview__virtual-line">
+              {line || ' '}
+            </span>
+          ))}
+        </span>
+      </code>
+    </pre>
   );
 }
 

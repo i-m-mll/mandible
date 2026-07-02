@@ -21,6 +21,7 @@ import {
 } from '../../src/spaces/serialize';
 import {
   registerResourceRefRecognizer,
+  parseResourceRef,
   compactArtifactBlobRef,
   compactArtifactRef,
   type ParsedResourceRef,
@@ -87,7 +88,11 @@ let unregister: (() => void) | null = null;
  * function (also used by tests).
  */
 export function installSpacesDocRefRecognizer(): () => void {
-  if (unregister) return unregister;
+  if (unregister) {
+    const probe = parseResourceRef(':ref[x]{href="repo://mandible@main/x"}');
+    if (probe?.canonical === 'repo://mandible@main/x') return unregister;
+    unregister = null;
+  }
   const off = registerResourceRefRecognizer(recognizeSpacesDocDirectiveRef);
   unregister = () => {
     off();

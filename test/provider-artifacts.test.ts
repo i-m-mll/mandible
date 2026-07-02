@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { checkArtifactMaterialization, getArtifactContent } from "../src/artifact-content.js";
+import { checkArtifactMaterialization, getArtifactContent, getArtifactContentAsync } from "../src/artifact-content.js";
 import {
   addArtifactBundleMembers,
   createArtifactBundle,
@@ -1934,6 +1934,28 @@ describe("provider/artifact substrate", () => {
     expect(content?.preview?.text).toContain('\n  "accuracy": 0.95,');
   });
 
+  it("keeps tiny JSON previews on the async fallback path", async () => {
+    const compact = '{"accuracy":0.95,"tags":["fast","stable"]}';
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "metrics.json",
+    }, 1000, tempDir);
+
+    const content = await getArtifactContentAsync(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        raw_text: compact,
+        formatted: "json",
+      },
+    });
+    expect(content?.preview?.text).toContain('\n  "accuracy": 0.95,');
+  });
+
   it("auto-formats compact JSON beyond the default text preview window", () => {
     const compact = JSON.stringify({
       adam_grid: {
@@ -1964,6 +1986,68 @@ describe("provider/artifact substrate", () => {
     });
     expect(content?.preview?.text).toContain('\n  "adam_grid": {');
     expect(content?.preview?.text).toContain('\n      39999\n');
+  });
+
+  it("offloads non-trivial JSON preview formatting and hash validation", async () => {
+    const compact = JSON.stringify({
+      adam_grid: {
+        initialization: "zero",
+        learning_rates: [1e-5, 5e-5, 1e-4],
+        steps: Array.from({ length: 40_000 }, (_value, index) => index),
+      },
+    });
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: compact,
+      filename: "adam_soft_lambda_redo.json",
+    }, 1000, tempDir);
+
+    let contentResolved = false;
+    const contentPromise = getArtifactContentAsync(db, artifact.id).finally(() => {
+      contentResolved = true;
+    });
+    await new Promise<void>((resolve) => {
+      setImmediate(resolve);
+    });
+    expect(contentResolved).toBe(false);
+    const content = await contentPromise;
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      warnings: [],
+      preview: {
+        raw_text: compact,
+        formatted: "json",
+        truncated: false,
+      },
+    });
+    expect(content?.preview?.text).toContain('\n  "adam_grid": {');
+    expect(content?.preview?.text).toContain('\n      39999\n');
+  });
+
+  it("falls back to raw text for malformed JSON on the async worker path", async () => {
+    const malformed = `{"payload":"${"x".repeat(20 * 1024)}"`;
+    const artifact = ingestArtifact(db, {
+      role: "metrics",
+      media_type: "application/json",
+      content: malformed,
+      filename: "broken-metrics.json",
+    }, 1000, tempDir);
+
+    const content = await getArtifactContentAsync(db, artifact.id);
+
+    expect(content).toMatchObject({
+      status: "available",
+      kind: "json",
+      preview: {
+        text: malformed,
+        truncated: false,
+      },
+    });
+    expect(content?.preview?.raw_text).toBeUndefined();
+    expect(content?.preview?.formatted).toBeUndefined();
   });
 
   it("serves only a bounded initial slice for reported-size JSON previews", () => {

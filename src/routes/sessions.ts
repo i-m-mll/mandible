@@ -12,7 +12,7 @@ import {
   getChannelRegistry,
   getChannelConnectedSessionsFromDb,
 } from "../channel-registry.js";
-import { linkSessionToLedgerIssue } from "../ledger/operational-links.js";
+import { linkSessionToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -90,29 +90,13 @@ function resolveCanonicalRepoId(
   issueScanner: IssueScanner | undefined,
   repoId: string,
   repoName?: string | null,
-  issueId?: string,
+  _issueId?: string,
 ): string {
   if (!issueScanner) return repoId;
   const direct = issueScanner.workScanner.getRepoById(repoId);
   if (direct?.exists) return direct.id;
-
-  const summaries = issueScanner.getRepoSummaries();
-  const byIdentifier = summaries.find((summary) =>
-    summary.repo_id === repoId ||
-    summary.repo_name === repoId ||
-    summary.repo_root === repoId ||
-    (repoName != null && (summary.repo_name === repoName || summary.repo_root === repoName))
-  );
-  if (byIdentifier) return byIdentifier.repo_id;
-
-  if (issueId) {
-    const byIssue = summaries.filter((summary) =>
-      summary.issues.some((issue) => issue.id === issueId || issue.id.startsWith(issueId))
-    );
-    if (byIssue.length === 1) {
-      return byIssue[0].repo_id;
-    }
-  }
+  const byName = repoName ? issueScanner.workScanner.getRepoById(repoName) : null;
+  if (byName?.exists) return byName.id;
   // Stripped-dot basename fallback: handles ".dotfiles" → "dotfiles"
   const stripped = repoId.replace(/^\.+/, '');
   if (stripped !== repoId) {
@@ -123,6 +107,16 @@ function resolveCanonicalRepoId(
     if (row) return row.id;
   }
   return repoId;
+}
+
+function ledgerIssueStatusForSessionLink(repoId: string, issueId: string): "open" | "closed" | null {
+  const db = getDb();
+  const resolved = resolveOperationalIssueRef(db, issueId, repoId);
+  if (!resolved.ok) return null;
+  const row = db.prepare("SELECT status FROM ledger_issues WHERE id = ?").get(resolved.issue_id) as
+    | { status?: string }
+    | undefined;
+  return row?.status === "closed" ? "closed" : row?.status === "open" ? "open" : null;
 }
 
 // Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response
@@ -261,8 +255,8 @@ export function registerSessionRoutes(
       const linkMap = new Map<string, Array<{ issue_id: string; repo_id: string; created_at: number }>>();
       for (const link of allLinks) {
         // Filter to open issues by default (treat unknown as open — safe default)
-        if (!showAll && issueScanner) {
-          const status = issueScanner.getIssueStatus(link.repo_id, link.issue_id);
+        if (!showAll) {
+          const status = ledgerIssueStatusForSessionLink(link.repo_id, link.issue_id);
           if (status === "closed") {
             continue;
           }

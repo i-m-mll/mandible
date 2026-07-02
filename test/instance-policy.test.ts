@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import type http from "node:http";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { resolveInstanceInfo } from "../src/instance-policy.js";
@@ -217,6 +219,39 @@ describe("instance mutation policy", () => {
         },
       });
       expect(html.indexOf('id="mandible-bootstrap"')).toBeLessThan(html.indexOf('src="./dist/app.js"'));
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("honors If-Modified-Since for static assets using second-granularity mtimes", async () => {
+    const instance = resolveInstanceInfo({ env: {}, dbPath: "/tmp/mandible-main.db" });
+    const router = new Router({ instance });
+    const server = createServer({
+      db: {} as Db,
+      sse: new SseManager(),
+      logger: () => undefined,
+      version: "test",
+      router,
+      getStartupInfo: () => null,
+      instance,
+    });
+    const port = await listenOnEphemeralPort(server);
+    const assetPath = path.join(process.cwd(), "ui", "icon.svg");
+    const stat = fs.statSync(assetPath);
+    try {
+      const notModified = await fetch(`http://127.0.0.1:${port}/icon.svg`, {
+        headers: { "If-Modified-Since": stat.mtime.toUTCString() },
+      });
+      expect(notModified.status).toBe(304);
+      expect(await notModified.text()).toBe("");
+
+      const older = new Date(Math.floor(stat.mtime.getTime() / 1000) * 1000 - 10_000);
+      const modified = await fetch(`http://127.0.0.1:${port}/icon.svg`, {
+        headers: { "If-Modified-Since": older.toUTCString() },
+      });
+      expect(modified.status).toBe(200);
+      expect(await modified.text()).toContain("<svg");
     } finally {
       await closeServer(server);
     }

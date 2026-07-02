@@ -5,7 +5,7 @@ import {
 } from "../knowledge-backrefs.js";
 import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-import { checkArtifactMaterialization, diffArtifacts, getArtifactContent } from "../artifact-content.js";
+import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } from "../artifact-content.js";
 import {
   addArtifactBundleMembers,
   associateProjectArtifact,
@@ -30,6 +30,7 @@ import {
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
+  resolveArtifactSurfaceRefReadonlyFull,
   resolveArtifactVersionHistory,
   snapshotArtifactBytes,
 } from "../provider-artifacts.js";
@@ -244,7 +245,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      sendJson(res, 200, { resolution: resolveArtifactRef(getDb(), ref) });
+      sendJson(res, 200, { resolution: resolveArtifactSurfaceRefReadonlyFull(getDb(), ref) });
     } catch (error) {
       handleError(res, error);
     }
@@ -487,8 +488,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { fileRpc: "allow" });
 
-  app.get("/api/artifacts/:id/content", (req, res) => {
-    const content = getArtifactContent(getDb(), req.params.id);
+  app.get("/api/artifacts/:id/content", async (req, res) => {
+    const content = await getArtifactContentAsync(getDb(), req.params.id);
     if (!content) {
       sendJson(res, 404, { error: "artifact not found" });
       return;

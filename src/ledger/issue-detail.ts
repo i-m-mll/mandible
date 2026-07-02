@@ -1,5 +1,8 @@
 import type { Db } from "../db.js";
-import { resolveArtifactRef, resolveArtifactRefReadonlyFull } from "../provider-artifacts.js";
+import {
+  resolveArtifactLinkRef,
+  resolveArtifactSurfaceRefReadonlyFull,
+} from "../provider-artifacts.js";
 import type { ArtifactRecord, WorkUnit } from "../types.js";
 import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "./store.js";
@@ -614,7 +617,7 @@ function listAssociatedArtifacts(
     const refs = extractArtifactRefs([issueBody, ...comments.map((comment) => comment.body)]);
     for (const ref of refs) {
       try {
-        const resolution = resolveArtifactRef(db, ref);
+        const resolution = resolveArtifactLinkRef(db, ref);
         if (!resolution.artifact) continue;
         upsertAssociatedArtifact(artifacts, resolution.artifact, { ref });
       } catch {
@@ -759,7 +762,7 @@ function resolveIssueDetailLinkArtifact(
   }
 
   try {
-    const resolution = resolveArtifactRefReadonlyFull(db, ref);
+    const resolution = resolveArtifactSurfaceRefReadonlyFull(db, ref);
     if (resolution.artifact) {
       const resolvedSeriesId = resolution.series?.id ?? link.series_id;
       const resolvedVersionNo = resolution.version?.version_no ?? null;
@@ -1478,7 +1481,7 @@ function mapConflict(row: LedgerConflict): LedgerIssueDetailConflict {
   };
 }
 
-const ARTIFACT_REF_PATTERN = /\[((?:artifact|artifact-version):[^\]\s]+)\]/gi;
+const ARTIFACT_REF_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob):[^\]\s]+)\]/gi;
 const DIRECT_NAV_SCHEMES = new Set(["http", "https", "mailto"]);
 
 function extractArtifactRefs(sources: string[]): string[] {
@@ -1488,7 +1491,7 @@ function extractArtifactRefs(sources: string[]): string[] {
     ARTIFACT_REF_PATTERN.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = ARTIFACT_REF_PATTERN.exec(source))) {
-      const ref = trimTrailingPunctuation(match[1] ?? match[2] ?? match[0]);
+      const ref = normalizeAuthoredArtifactRef(trimTrailingPunctuation(match[1] ?? match[2] ?? match[0]));
       if (!isArtifactLikeRef(ref) || seen.has(ref)) continue;
       seen.add(ref);
       refs.push(ref);
@@ -1497,11 +1500,17 @@ function extractArtifactRefs(sources: string[]): string[] {
   return refs;
 }
 
+function normalizeAuthoredArtifactRef(ref: string): string {
+  const wrapped = /^artifact:([a-z][a-z0-9+.-]*:\/\/.+)$/i.exec(ref);
+  return wrapped ? wrapped[1] : ref;
+}
+
 function isArtifactLikeRef(ref: string): boolean {
   const scheme = schemeForRef(ref);
   if (scheme === "artifact") {
     return !/^artifact:sha256:/i.test(ref) && !/^artifact:[a-f0-9]{7,64}$/i.test(ref);
   }
+  if (scheme === "artifact-series") return true;
   if (scheme === "artifact-version") return true;
   if (scheme === "artifact-blob") return true;
   return Boolean(scheme && ref.includes("://") && !DIRECT_NAV_SCHEMES.has(scheme));

@@ -950,6 +950,104 @@ describe("auth queue", () => {
     }
   });
 
+  it("reuses submit-time merge preflight on approve when target and queue are unchanged", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/reuse-preflight", { "feature.txt": "feature\n" });
+      registerWorkRepo(db, repo);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "ok\n",
+            stderr: "",
+            output: "ok\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/reuse-preflight --into main",
+        title: "Merge feature/reuse-preflight",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/reuse-preflight",
+        cwd: repo,
+      });
+      expect(request.merge_preflight_base_sha).toBe(git(repo, ["rev-parse", "main"]));
+      expect(request.merge_preflight_queue_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+
+      queue.approve(request.id);
+      await waitForStatus(queue, request.id, "completed");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBe("1");
+      expect(calls[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(request.merge_preflight_base_sha);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reuse submit-time merge preflight after the target branch moves", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/target-moved", { "feature.txt": "feature\n" });
+      registerWorkRepo(db, repo);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "ok\n",
+            stderr: "",
+            output: "ok\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/target-moved --into main",
+        title: "Merge feature/target-moved",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/target-moved",
+        cwd: repo,
+      });
+      writeFile(repo, "main-only.txt", "main\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "move main"]);
+
+      queue.approve(request.id);
+      await waitForStatus(queue, request.id, "completed");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBeUndefined();
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("rejects daemon auth merge approval before spawning when context is incomplete", () => {
     const calls: string[] = [];
     const queue = createQueue({
@@ -1045,6 +1143,89 @@ describe("auth queue", () => {
     expect(approved.map((r) => r.id)).toEqual([first.id, second.id]);
     expect(queue.getRequest(first.id)?.approval_source).toBe("auto_lease");
     expect(queue.getRequest(second.id)?.approval_lease_id).toBe("lease-2");
+  });
+
+  it("runs a delegated signing presence challenge before spawning auth merge execution", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const order: string[] = [];
+    const events: SseEvent[] = [];
+    try {
+      commitOnBranch(repo, "feature/presence", { "presence.txt": "presence\n" });
+      registerWorkRepo(db, repo);
+
+      const queue = new AuthQueue({
+        db,
+        broadcast: (event) => events.push(event),
+        autoApprover: {
+          getActiveApprovalContext: () => null,
+          getDelegatedSigningStatus: () => ({
+            provider: "yubikey-age",
+            configured: true,
+            public_key: "ssh-ed25519 delegated",
+            public_key_path: "/tmp/delegated.pub",
+            encrypted_passphrase_path: "/tmp/delegated.age",
+            recipient_path: "/tmp/recipient.txt",
+            missing_tools: [],
+          }),
+          presenceChallenge: async () => {
+            order.push("challenge");
+            return {
+              source: "presence_challenge",
+              leaseId: "presence-1",
+              env: {
+                SSH_AUTH_SOCK: "/tmp/presence.sock",
+                MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
+                GIT_CONFIG_COUNT: "1",
+                GIT_CONFIG_KEY_0: "user.signingkey",
+                GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
+              },
+            };
+          },
+        },
+        executor: async (options) => {
+          order.push("executor");
+          expect(options.env?.SSH_AUTH_SOCK).toBe("/tmp/presence.sock");
+          expect(options.env?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "ok\n",
+            stderr: "",
+            output: "ok\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/presence --into main",
+        title: "Merge feature/presence",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/presence",
+        cwd: repo,
+      });
+      queue.approve(request.id);
+      const resolved = await waitForStatus(queue, request.id, "completed");
+
+      expect(order).toEqual(["challenge", "executor"]);
+      expect(resolved?.approval_source).toBe("presence_challenge");
+      expect(resolved?.approval_lease_id).toBe("presence-1");
+      const output = events
+        .filter((event) => event.event === "auth:output")
+        .map((event) => ((event.data as { text?: string }).text ?? ""))
+        .join("");
+      expect(output).toContain("waiting for YubiKey touch");
+      expect(output).toContain("delegated signing key ready");
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("rejects request", () => {

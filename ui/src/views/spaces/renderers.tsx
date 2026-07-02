@@ -12,7 +12,7 @@
 
 import type { SpaceRendererMountPoint, SpaceRendererMountProps } from './SpacesViewShell';
 import type { SpaceRenderer } from '../../api';
-import { getSpaceFactPacket } from '../../api';
+import { getSpaceFactPacket, type SpaceFactPacket } from '../../api';
 import { SpaceCollectionRenderer } from './space-collection';
 import { SpaceBoardRenderer } from './SpaceBoard';
 import { DocumentBlockEditor } from './DocumentBlockEditor';
@@ -28,15 +28,23 @@ import './renderers.css';
  */
 async function loadCanvasModel(spaceId: string): Promise<SpaceCanvasModel> {
   const packet = await getSpaceFactPacket(spaceId);
+  return canvasModelFromPacket(packet);
+}
+
+function canvasModelFromPacket(packet: SpaceFactPacket): SpaceCanvasModel {
   // `edges` is included so the canvas renders authored `space_edges` as lines
   // (drag-created and dropdown-created edges reconcile through the same packet).
   return { occurrences: packet.occurrences, items: packet.items, edges: packet.edges };
 }
 
 function CanvasMountPoint(props: SpaceRendererMountProps): JSX.Element {
+  const initialModel =
+    props.initialFactPacket && props.initialFactPacket.space.id === props.spaceId
+      ? canvasModelFromPacket(props.initialFactPacket)
+      : undefined;
   return (
     <div className="space-canvas-mount" data-testid="space-canvas-mount">
-      <SpaceCanvas {...props} loadModel={loadCanvasModel} />
+      <SpaceCanvas {...props} initialModel={initialModel} loadModel={loadCanvasModel} />
     </div>
   );
 }

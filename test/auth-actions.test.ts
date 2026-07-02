@@ -27,6 +27,11 @@ function createMigratedDb(): Db {
   return db;
 }
 
+function tableColumns(db: Db, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+    .map((row) => row.name);
+}
+
 function createLedgerIssue(db: Db, alias = "act123") {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-actions-repo-"));
   tempDirs.push(repoRoot);
@@ -55,8 +60,7 @@ describe("auth request action schema", () => {
     try {
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
         .toMatchObject({ value: String(CURRENT_SCHEMA_VERSION) });
-      const columns = (db.prepare("PRAGMA table_info(auth_request_actions)").all() as Array<{ name: string }>)
-        .map((row) => row.name);
+      const columns = tableColumns(db, "auth_request_actions");
       expect(columns).toEqual([
         "id",
         "auth_request_id",
@@ -71,6 +75,12 @@ describe("auth request action schema", () => {
         "applied_at",
         "outcome_detail",
       ]);
+      expect(tableColumns(db, "auth_requests")).toEqual(
+        expect.arrayContaining([
+          "merge_preflight_base_sha",
+          "merge_preflight_queue_fingerprint",
+        ]),
+      );
     } finally {
       db.close();
     }
@@ -95,6 +105,12 @@ describe("auth request action schema", () => {
       expect(db.prepare(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'auth_request_actions'",
       ).get()).toBeTruthy();
+      expect(tableColumns(db, "auth_requests")).toEqual(
+        expect.arrayContaining([
+          "merge_preflight_base_sha",
+          "merge_preflight_queue_fingerprint",
+        ]),
+      );
     } finally {
       db.close();
     }

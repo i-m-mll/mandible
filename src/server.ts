@@ -496,7 +496,7 @@ export function createServer(options: ServerOptions): http.Server {
       const handled = await router.handle(req, res);
       if (!handled) {
         if (!isApi && (method === "GET" || method === "HEAD")) {
-          const served = await handleStaticRequest(method, pathname, res, instance);
+          const served = await handleStaticRequest(method, pathname, req, res, instance);
           if (served) {
             return;
           }
@@ -644,6 +644,7 @@ function sendNotFound(res: http.ServerResponse, isApi: boolean): void {
 async function handleStaticRequest(
   method: string,
   pathname: string,
+  req: http.IncomingMessage,
   res: http.ServerResponse,
   instance: InstanceInfo
 ): Promise<boolean> {
@@ -651,7 +652,7 @@ async function handleStaticRequest(
   if (!filePath) {
     return false;
   }
-  return sendFile(res, filePath, method, instance);
+  return sendFile(req, res, filePath, method, instance);
 }
 
 const PWA_FILES = new Set([
@@ -697,6 +698,7 @@ function resolveSafePath(baseDir: string, requestPath: string): string | null {
 }
 
 async function sendFile(
+  req: http.IncomingMessage,
   res: http.ServerResponse,
   filePath: string,
   method: string,
@@ -723,11 +725,20 @@ async function sendFile(
       res.end(body);
       return true;
     }
+    const lastModified = stat.mtime.toUTCString();
+    if (isNotModified(req.headers["if-modified-since"], stat.mtime)) {
+      res.writeHead(304, {
+        "Cache-Control": "no-cache",
+        "Last-Modified": lastModified,
+      });
+      res.end();
+      return true;
+    }
     res.writeHead(200, {
       "Content-Type": getContentType(filePath),
       "Content-Length": stat.size,
       "Cache-Control": "no-cache",
-      "Last-Modified": stat.mtime.toUTCString(),
+      "Last-Modified": lastModified,
     });
     if (method === "HEAD") {
       res.end();
@@ -742,6 +753,16 @@ async function sendFile(
     }
     throw error;
   }
+}
+
+function isNotModified(header: string | string[] | undefined, mtime: Date): boolean {
+  const value = Array.isArray(header) ? header[0] : header;
+  if (!value) return false;
+  const sinceMs = Date.parse(value);
+  if (Number.isNaN(sinceMs)) return false;
+  const fileSeconds = Math.floor(mtime.getTime() / 1000);
+  const sinceSeconds = Math.floor(sinceMs / 1000);
+  return fileSeconds <= sinceSeconds;
 }
 
 function injectBootstrapData(html: string, instance: InstanceInfo): string {

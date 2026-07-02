@@ -1022,6 +1022,32 @@ a {
   min-width: 0;
 }
 
+.app-tab-panel {
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+}
+
+.app-tab-panel[hidden] {
+  display: none !important;
+}
+
+.app-content--console .app-tab-panel,
+.app-content--view-sidebar .app-tab-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-tab-loading {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
 /* Full-bleed layout for console tab — no padding, internal overflow only */
 .app-content--console {
   padding: 0;
@@ -7197,6 +7223,23 @@ tr:hover .work-actions__trigger {
   color: var(--text-primary);
 }
 
+.artifact-detail__inline-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--accent-blue);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.artifact-detail__inline-button:hover,
+.artifact-detail__inline-button:focus-visible {
+  color: var(--text-primary);
+}
+
 .artifact-preview > code,
 code.inbox-detail__meta-value {
   background: transparent;
@@ -7213,13 +7256,40 @@ code.inbox-detail__meta-value {
   background: var(--bg-card);
 }
 
-.artifact-preview--code {
+.artifact-preview--code,
+.artifact-preview--code-sizing {
   color: #24292f;
   white-space: pre;
+  min-height: min(520px, calc(100vh - 330px));
 }
 
 .artifact-preview--partial {
   max-height: min(720px, calc(100vh - 330px));
+}
+
+.artifact-preview--virtualized {
+  max-height: min(720px, calc(100vh - 330px));
+}
+
+.artifact-preview--virtualized > code {
+  position: relative;
+  display: block;
+  min-width: max-content;
+  background: transparent;
+}
+
+.artifact-preview__virtual-window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.artifact-preview__virtual-line {
+  display: block;
+  height: 20px;
+  line-height: 20px;
+  white-space: pre;
 }
 
 .artifact-preview--code .hljs {

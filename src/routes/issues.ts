@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
@@ -55,7 +56,6 @@ import {
   resolveLedgerIssueIdForRoute,
   runIssueReconciliation,
   updateLedgerIssueMigrationConfig,
-  type LedgerIssueMigrationConfig,
 } from "../ledger/issue-migration.js";
 import {
   linkCommitToLedgerIssue,
@@ -248,6 +248,12 @@ function ledgerWriteUnavailable(res: unknown, mode: string): boolean {
     return true;
   }
   return false;
+}
+
+function sendLegacyIssueEndpointGone(res: unknown): void {
+  sendJson(res, 410, {
+    error: "legacy git-bug issue endpoint is disabled; use the ledger issue API or explicit manual import/sync",
+  });
 }
 
 function resolveLedgerIssueId(db: Db, issueRef: string): { ok: true; issue_id: string } | { ok: false; status: 404 | 409; error: string } {
@@ -530,13 +536,17 @@ function listUmbrellaStructuredChildEdgeIds(db: Db, umbrellaId: string): string[
 
 function listUmbrellaChildEdgeIds(db: Db, umbrellaId: string): string[] {
   const edgeChildIds = listUmbrellaStructuredChildEdgeIds(db, umbrellaId);
-  const legacyChildIds = buildLedgerIssueDetailProjection(db, umbrellaId).relationships
-    .filter((relationship) =>
-      relationship.direction === "outgoing"
-      && relationship.relationship_type === "parent_child"
-      && relationship.related_issue
-    )
-    .map((relationship) => relationship.related_issue!.id);
+  const legacyChildIds = tableExists(db, "ledger_issue_relationships")
+    ? (db.prepare(
+        `SELECT target_issue_id
+           FROM ledger_issue_relationships
+          WHERE source_issue_id = ?
+            AND relationship_type = 'parent_child'
+            AND deleted_at IS NULL
+          ORDER BY created_at, id`,
+      ).all(umbrellaId) as Array<{ target_issue_id: string }>)
+        .map((row) => row.target_issue_id)
+    : [];
   return uniqueStrings([...edgeChildIds, ...legacyChildIds]);
 }
 
@@ -605,10 +615,297 @@ function repoAuthQueueSummary(db: Db, projection: LedgerIssueDetailProjection): 
   };
 }
 
+function placeholders(values: string[], prefix: string): { sql: string; bindings: Record<string, string> } {
+  const bindings: Record<string, string> = {};
+  const keys = values.map((value, index) => {
+    const key = `${prefix}${index}`;
+    bindings[key] = value;
+    return `:${key}`;
+  });
+  return { sql: keys.join(", "), bindings };
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  if (typeof value !== "string" || !value.trim()) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function batchLedgerIssueHeads(db: Db, issueIds: string[]): Map<string, ReturnType<typeof getLedgerIssueHead>> {
+  if (issueIds.length === 0) return new Map();
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const issues = db.prepare(
+    `SELECT id, short_id FROM ledger_issues WHERE id IN (${sql}) AND deleted_at IS NULL`,
+  ).all(bindings) as Array<{ id: string; short_id: string }>;
+  const rowsByIssue = new Map<string, Array<Record<string, unknown>>>();
+  for (const issue of issues) rowsByIssue.set(issue.id, []);
+
+  const appendRows = (rows: Array<Record<string, unknown>>): void => {
+    for (const row of rows) {
+      const issueId = String(row.issue_id ?? "");
+      const group = rowsByIssue.get(issueId);
+      if (!group) continue;
+      group.push({
+        id: String(row.id ?? ""),
+        event_type: String(row.event_type ?? ""),
+        entity_type: String(row.entity_type ?? ""),
+        entity_id: String(row.entity_id ?? ""),
+        payload_json: String(row.payload_json ?? ""),
+        occurred_at: Number(row.occurred_at ?? 0),
+        observed_at: Number(row.observed_at ?? 0),
+      });
+    }
+  };
+
+  appendRows(db.prepare(
+    `SELECT entity_id AS issue_id, id, event_type, entity_type, entity_id, payload_json, occurred_at, observed_at
+       FROM ledger_events
+      WHERE entity_type = 'issue' AND entity_id IN (${sql})`,
+  ).all(bindings) as Array<Record<string, unknown>>);
+  appendRows(db.prepare(
+    `SELECT c.issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_comments c ON c.id = e.entity_id
+      WHERE e.entity_type = 'comment' AND c.deleted_at IS NULL AND c.issue_id IN (${sql})`,
+  ).all(bindings) as Array<Record<string, unknown>>);
+  appendRows(db.prepare(
+    `SELECT c.issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_issue_checkpoints c ON c.id = e.entity_id
+      WHERE e.entity_type = 'issue_checkpoint' AND c.issue_id IN (${sql})`,
+  ).all(bindings) as Array<Record<string, unknown>>);
+  appendRows(db.prepare(
+    `SELECT r.source_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_issue_relationships r ON r.id = e.entity_id
+      WHERE e.entity_type = 'issue_relationship' AND r.source_issue_id IN (${sql})
+     UNION ALL
+     SELECT r.target_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_issue_relationships r ON r.id = e.entity_id
+      WHERE e.entity_type = 'issue_relationship' AND r.target_issue_id IN (${sql})`,
+  ).all(bindings) as Array<Record<string, unknown>>);
+  appendRows(db.prepare(
+    `SELECT r.source_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_relationship_edges r ON r.id = e.entity_id
+      WHERE e.entity_type = 'relationship_edge' AND r.source_issue_id IN (${sql})
+     UNION ALL
+     SELECT r.target_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
+       FROM ledger_events e
+       JOIN ledger_relationship_edges r ON r.id = e.entity_id
+      WHERE e.entity_type = 'relationship_edge' AND r.target_issue_id IN (${sql})`,
+  ).all(bindings) as Array<Record<string, unknown>>);
+
+  const heads = new Map<string, ReturnType<typeof getLedgerIssueHead>>();
+  for (const issue of issues) {
+    const events = (rowsByIssue.get(issue.id) ?? []).sort((a, b) =>
+      Number(a.occurred_at) - Number(b.occurred_at)
+      || Number(a.observed_at) - Number(b.observed_at)
+      || String(a.id).localeCompare(String(b.id))
+    );
+    const digest = createHash("sha256")
+      .update(JSON.stringify(events))
+      .digest("hex");
+    const latest = events.at(-1);
+    heads.set(issue.id, {
+      issue_id: issue.id,
+      short_id: issue.short_id || issue.id.slice(0, 7),
+      digest,
+      last_event_at: latest ? Number(latest.occurred_at) : null,
+      last_event_kind: latest ? String(latest.event_type) : null,
+    });
+  }
+  return heads;
+}
+
+function latestCommentsByIssue(db: Db, issueIds: string[]): Map<string, unknown> {
+  if (issueIds.length === 0) return new Map();
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT * FROM (
+       SELECT c.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY c.issue_id
+                ORDER BY c.created_at DESC, c.ordinal DESC
+              ) AS rn
+         FROM ledger_comments c
+        WHERE c.deleted_at IS NULL AND c.issue_id IN (${sql})
+     )
+     WHERE rn = 1`,
+  ).all(bindings) as Array<Record<string, unknown>>;
+  return new Map(rows.map((row) => [String(row.issue_id), {
+    id: row.id,
+    ordinal: row.ordinal,
+    body: row.body,
+    author: {
+      id: row.author_actor_id,
+      type: row.author_actor_type,
+      display: row.author_display || row.author_actor_type,
+    },
+    source: row.source,
+    created_at: row.created_at,
+    updated_at: row.updated_at,
+  }]));
+}
+
+function latestCloseoutsByIssue(db: Db, issueIds: string[]): Map<string, unknown> {
+  if (issueIds.length === 0) return new Map();
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT * FROM (
+       SELECT c.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY c.issue_id
+                ORDER BY c.created_at DESC, c.id DESC
+              ) AS rn
+         FROM ledger_issue_checkpoints c
+        WHERE c.kind = 'closeout' AND c.issue_id IN (${sql})
+     )
+     WHERE rn = 1`,
+  ).all(bindings) as LedgerIssueCheckpoint[];
+  return new Map(rows.map((row) => [row.issue_id, checkpointResponse(row)]));
+}
+
+function labelsByIssue(db: Db, issueIds: string[]): Map<string, string[]> {
+  if (issueIds.length === 0) return new Map();
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT issue_id, label FROM ledger_labels
+      WHERE deleted_at IS NULL AND issue_id IN (${sql})
+      ORDER BY label`,
+  ).all(bindings) as Array<{ issue_id: string; label: string }>;
+  const labels = new Map<string, string[]>();
+  for (const row of rows) {
+    const group = labels.get(row.issue_id) ?? [];
+    group.push(row.label);
+    labels.set(row.issue_id, group);
+  }
+  return labels;
+}
+
+function branchesByIssue(db: Db, issueIds: string[]): Map<string, unknown[]> {
+  if (issueIds.length === 0) return new Map();
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT issue_id, branch, role, created_at, updated_at
+       FROM issue_branches
+      WHERE issue_id IN (${sql})
+      ORDER BY issue_id, role, created_at, branch`,
+  ).all(bindings) as Array<Record<string, unknown>>;
+  const branches = new Map<string, unknown[]>();
+  for (const row of rows) {
+    const issueId = String(row.issue_id);
+    const group = branches.get(issueId) ?? [];
+    group.push({
+      branch: row.branch,
+      role: row.role,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    });
+    branches.set(issueId, group);
+  }
+  return branches;
+}
+
+function authRequestsByIssue(db: Db, issueIds: string[]): Map<string, unknown[]> {
+  if (issueIds.length === 0 || !tableExists(db, "ledger_auth_issue_links") || !tableExists(db, "auth_requests")) {
+    return new Map();
+  }
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT l.issue_id, l.auth_request_id, l.link_type, l.source AS link_source,
+            l.created_at AS link_created_at, l.metadata_json AS link_metadata_json,
+            ar.type, ar.title, ar.status, ar.repo, ar.base_branch, ar.head_branch,
+            ar.created_at, ar.approved_at, ar.resolved_at, ar.skipped_at,
+            ar.exit_code, ar.error
+       FROM ledger_auth_issue_links l
+       LEFT JOIN auth_requests ar ON ar.id = l.auth_request_id
+      WHERE l.issue_id IN (${sql})
+      ORDER BY l.issue_id, ar.created_at DESC, l.created_at DESC`,
+  ).all(bindings) as Array<Record<string, unknown>>;
+  const grouped = new Map<string, unknown[]>();
+  for (const row of rows) {
+    const issueId = String(row.issue_id);
+    const group = grouped.get(issueId) ?? [];
+    group.push({
+      id: String(row.auth_request_id ?? ""),
+      type: String(row.type ?? "merge"),
+      title: String(row.title ?? ""),
+      status: String(row.status ?? "unknown"),
+      repo: row.repo ?? null,
+      base_branch: row.base_branch ?? null,
+      head_branch: row.head_branch ?? null,
+      created_at: row.created_at ?? null,
+      approved_at: row.approved_at ?? null,
+      resolved_at: row.resolved_at ?? null,
+      skipped_at: row.skipped_at ?? null,
+      exit_code: row.exit_code ?? null,
+      error: row.error ?? null,
+      link_type: String(row.link_type ?? "references"),
+      link_source: String(row.link_source ?? "auth_queue"),
+      link_created_at: row.link_created_at ?? null,
+      metadata: parseJsonObject(row.link_metadata_json),
+    });
+    grouped.set(issueId, group);
+  }
+  return grouped;
+}
+
+function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<string, unknown>> {
+  if (childIds.length === 0) return [];
+  const { sql, bindings } = placeholders(childIds, "issue");
+  const rows = db.prepare(
+    `SELECT id, short_id, title, status, worker_status
+       FROM ledger_issues
+      WHERE id IN (${sql}) AND deleted_at IS NULL`,
+  ).all(bindings) as Array<{
+    id: string;
+    short_id: string;
+    title: string;
+    status: string;
+    worker_status: string;
+  }>;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const labels = labelsByIssue(db, childIds);
+  const heads = batchLedgerIssueHeads(db, childIds);
+  const branches = branchesByIssue(db, childIds);
+  const authRequests = authRequestsByIssue(db, childIds);
+  const latestComments = latestCommentsByIssue(db, childIds);
+  const closeouts = latestCloseoutsByIssue(db, childIds);
+  const summaries: Array<Record<string, unknown>> = [];
+  for (const childId of childIds) {
+    const row = byId.get(childId);
+    if (!row) continue;
+    const issueBranches = branches.get(childId) ?? [];
+    summaries.push({
+      id: row.id,
+      short_id: row.short_id || row.id.slice(0, 7),
+      title: row.title,
+      status: row.status,
+      worker_status: row.worker_status,
+      labels: labels.get(childId) ?? [],
+      head: heads.get(childId) ?? getLedgerIssueHead(db, childId),
+      issue_branches: issueBranches,
+      branches: issueBranches,
+      auth_requests: authRequests.get(childId) ?? [],
+      latest_comment: latestComments.get(childId) ?? null,
+      latest_closeout: closeouts.get(childId) ?? null,
+    });
+  }
+  return summaries;
+}
+
 function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean } = {}): Record<string, unknown> {
   const umbrella = buildLedgerIssueDetailProjection(db, issueId);
   const childIds = listUmbrellaChildEdgeIds(db, umbrella.id);
-  const children = childIds.map((childId) => {
+  const children = options.deep ? childIds.map((childId) => {
     const child = buildLedgerIssueDetailProjection(db, childId);
     const summary: Record<string, unknown> = {
       id: child.id,
@@ -646,7 +943,7 @@ function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean 
       conflicts: child.conflicts,
       sync: child.sync,
     };
-  });
+  }) : buildUmbrellaChildSummaries(db, childIds);
   return {
     umbrella: {
       id: umbrella.id,
@@ -801,60 +1098,28 @@ interface ResolvedRouteIssue {
   source: "scanner" | "ledger";
 }
 
-function resolveScannerIssueDetail(
-  issueScanner: IssueScanner,
-  repoIdParam: string,
-  issueId: string,
-): ResolvedRouteIssue | null {
-  let repoId = repoIdParam;
-  let detail = issueScanner.getIssueDetail(repoId, issueId);
-  if (!detail) {
-    const byName = issueScanner
-      .getRepoSummaries()
-      .find((summary) => summary.repo_name === repoIdParam || summary.repo_root === repoIdParam);
-    if (byName) {
-      repoId = byName.repo_id;
-      detail = issueScanner.getIssueDetail(repoId, issueId);
-    }
-  }
-  return detail ? { repoId, issue: detail, source: "scanner" } : null;
-}
-
 function resolveIssueDetailForRoute(
   db: Db,
-  config: LedgerIssueMigrationConfig,
   workScanner: WorkScanner,
-  issueScanner: IssueScanner,
   repoIdParam: string,
   issueId: string,
 ): { ok: true; resolved: ResolvedRouteIssue } | { ok: false; status: 404 | 409 | 500; error: string } {
-  if (config.read_mode === "ledger") {
-    try {
-      const result = getLedgerIssueDetailForRoute(db, workScanner, repoIdParam, issueId);
-      if (result.ok) {
-        return {
-          ok: true,
-          resolved: { repoId: result.detail.repo_id, issue: result.detail, source: "ledger" },
-        };
-      }
-      if (!config.fallback_on_ledger_error || result.status === 409) {
-        return { ok: false, status: result.status, error: result.error };
-      }
-    } catch (error) {
-      if (!config.fallback_on_ledger_error) {
-        return {
-          ok: false,
-          status: 500,
-          error: error instanceof Error ? error.message : String(error),
-        };
-      }
+  try {
+    const result = getLedgerIssueDetailForRoute(db, workScanner, repoIdParam, issueId);
+    if (result.ok) {
+      return {
+        ok: true,
+        resolved: { repoId: result.detail.repo_id, issue: result.detail, source: "ledger" },
+      };
     }
+    return { ok: false, status: result.status, error: result.error };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 500,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
-
-  const scannerResult = resolveScannerIssueDetail(issueScanner, repoIdParam, issueId);
-  return scannerResult
-    ? { ok: true, resolved: scannerResult }
-    : { ok: false, status: 404, error: "issue not found" };
 }
 
 // Bug: f3dbb3e — accept optional sessionRegistry + sessionManager for canonical
@@ -873,24 +1138,13 @@ export function registerIssueRoutes(
     const statusFilter = getQueryParam(req, "status");
     const labelFilter = getQueryParam(req, "label");
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
 
     let summaries: IssueRepoSummary[];
-    if (config.read_mode === "ledger") {
-      try {
-        summaries = listLedgerIssueSummaries(db, workScanner);
-      } catch (error) {
-        if (!config.fallback_on_ledger_error) {
-          sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
-          return;
-        }
-        summaries = issueScanner.getRepoSummaries();
-      }
-    } else {
-      summaries = issueScanner.getRepoSummaries();
-      if (config.read_mode === "shadow" && config.shadow_report_enabled) {
-        runIssueReconciliation(db, issueScanner, workScanner, "shadow");
-      }
+    try {
+      summaries = listLedgerIssueSummaries(db, workScanner);
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      return;
     }
 
     summaries = filterIssueSummaries(summaries, {
@@ -1787,7 +2041,7 @@ export function registerIssueRoutes(
     }
   }, { fileRpc: "deny" });
 
-  // GET /api/issues/find/:issueId — search all scanned repos for an issue by ID prefix.
+  // GET /api/issues/find/:issueId — search ledger-backed issues by ID prefix.
   // Registered before /:repoId/:issueId to avoid the literal "find" being treated as repoId.
   server.get("/api/issues/find/:issueId", (req, res) => {
     const issueId = getParam(req, "issueId");
@@ -1796,31 +2050,17 @@ export function registerIssueRoutes(
       return;
     }
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
-    if (config.read_mode === "ledger") {
-      try {
-        const result = findLedgerIssueAcrossRepos(db, workScanner, issueId);
-        if (result.ok) {
-          sendJson(res, 200, result.detail);
-          return;
-        }
-        if (!config.fallback_on_ledger_error || result.status === 409) {
-          sendJson(res, result.status, { error: result.error });
-          return;
-        }
-      } catch (error) {
-        if (!config.fallback_on_ledger_error) {
-          sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
-          return;
-        }
+    try {
+      const result = findLedgerIssueAcrossRepos(db, workScanner, issueId);
+      if (result.ok) {
+        sendJson(res, 200, result.detail);
+        return;
       }
-    }
-    const detail = issueScanner.findIssueAcrossRepos(issueId);
-    if (!detail) {
-      sendJson(res, 404, { error: "issue not found in any scanned repo" });
+      sendJson(res, result.status, { error: result.error });
+    } catch (error) {
+      sendJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
       return;
     }
-    sendJson(res, 200, detail);
   }, { fileRpc: "deny" });
 
   // POST /api/issues/resolutions — record a commit that resolved an issue
@@ -1889,12 +2129,9 @@ export function registerIssueRoutes(
       return;
     }
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
     const result = resolveIssueDetailForRoute(
       db,
-      config,
       workScanner,
-      issueScanner,
       repoIdParam,
       issueId,
     );
@@ -1906,151 +2143,28 @@ export function registerIssueRoutes(
   }, { fileRpc: "deny" });
 
   // POST /api/issues/:repoId/:issueId/status — close or reopen
-  server.post("/api/issues/:repoId/:issueId/status", (req, res) => {
-    const repoId = getParam(req, "repoId");
-    const issueId = getParam(req, "issueId");
-    if (!repoId || !issueId) {
-      sendJson(res, 400, { error: "missing repoId or issueId" });
-      return;
-    }
-    const body = getBody(req);
-    const newStatus = body?.status;
-    if (newStatus !== "open" && newStatus !== "closed") {
-      sendJson(res, 400, { error: "status must be 'open' or 'closed'" });
-      return;
-    }
-    const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
-    if (isLedgerWriteModeEnabled(config)) {
-      if (ledgerWriteUnavailable(res, config.write_mode)) return;
-      const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
-      if (!resolved.ok) {
-        sendJson(res, resolved.status, { error: resolved.error });
-        return;
-      }
-      new LedgerStore(db).setIssueStatus(resolved.issue_id, newStatus);
-      sendJson(res, 200, { ok: true, source: "ledger" });
-      return;
-    }
-    const ok = newStatus === "closed"
-      ? issueScanner.closeIssue(repoId, issueId)
-      : issueScanner.reopenIssue(repoId, issueId);
-    if (!ok) {
-      sendJson(res, 500, { error: "failed to update issue status" });
-      return;
-    }
-    sendJson(res, 200, { ok: true });
+  server.post("/api/issues/:repoId/:issueId/status", (_req, res) => {
+    sendLegacyIssueEndpointGone(res);
   }, { fileRpc: "deny" });
 
   // POST /api/issues/:repoId/:issueId/comment — add comment
-  server.post("/api/issues/:repoId/:issueId/comment", (req, res) => {
-    const repoId = getParam(req, "repoId");
-    const issueId = getParam(req, "issueId");
-    if (!repoId || !issueId) {
-      sendJson(res, 400, { error: "missing repoId or issueId" });
-      return;
-    }
-    const body = getBody(req);
-    const message = typeof body?.message === "string" ? body.message : "";
-    if (!message.trim()) {
-      sendJson(res, 400, { error: "message is required" });
-      return;
-    }
-    const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
-    if (isLedgerWriteModeEnabled(config)) {
-      if (ledgerWriteUnavailable(res, config.write_mode)) return;
-      const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
-      if (!resolved.ok) {
-        sendJson(res, resolved.status, { error: resolved.error });
-        return;
-      }
-      const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
-      if (!markdownPolicy.ok) return;
-      new LedgerStore(db).addComment(resolved.issue_id, {
-        body: message,
-        actor_type: "mandible_user",
-        author_display: "Mandible",
-        reopen: body?.reopen === true,
-      });
-      sendJson(res, 200, withMarkdownBodyWarnings({ ok: true, source: "ledger" }, markdownPolicy.warnings));
-      return;
-    }
-    const ok = issueScanner.addComment(repoId, issueId, message);
-    if (!ok) {
-      sendJson(res, 500, { error: "failed to add comment" });
-      return;
-    }
-    sendJson(res, 200, { ok: true });
+  server.post("/api/issues/:repoId/:issueId/comment", (_req, res) => {
+    sendLegacyIssueEndpointGone(res);
   }, { fileRpc: "deny" });
 
   // POST /api/issues/:repoId/:issueId/label — add or remove label
-  server.post("/api/issues/:repoId/:issueId/label", (req, res) => {
-    const repoId = getParam(req, "repoId");
-    const issueId = getParam(req, "issueId");
-    if (!repoId || !issueId) {
-      sendJson(res, 400, { error: "missing repoId or issueId" });
-      return;
-    }
-    const body = getBody(req);
-    const action = body?.action;
-    const label = typeof body?.label === "string" ? body.label : "";
-    if (action !== "add" && action !== "remove") {
-      sendJson(res, 400, { error: "action must be 'add' or 'remove'" });
-      return;
-    }
-    if (!label.trim()) {
-      sendJson(res, 400, { error: "label is required" });
-      return;
-    }
-    const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
-    if (isLedgerWriteModeEnabled(config)) {
-      if (ledgerWriteUnavailable(res, config.write_mode)) return;
-      const resolved = resolveLedgerIssueIdForRoute(db, workScanner, repoId, issueId);
-      if (!resolved.ok) {
-        sendJson(res, resolved.status, { error: resolved.error });
-        return;
-      }
-      new LedgerStore(db).setLabel(resolved.issue_id, label, action === "add", "mandible", {
-        actor_type: "mandible_user",
-        author_display: "Mandible",
-      });
-      sendJson(res, 200, { ok: true, source: "ledger" });
-      return;
-    }
-    const ok = action === "add"
-      ? issueScanner.addLabel(repoId, issueId, label)
-      : issueScanner.removeLabel(repoId, issueId, label);
-    if (!ok) {
-      sendJson(res, 500, { error: `failed to ${action} label` });
-      return;
-    }
-    sendJson(res, 200, { ok: true });
+  server.post("/api/issues/:repoId/:issueId/label", (_req, res) => {
+    sendLegacyIssueEndpointGone(res);
   }, { fileRpc: "deny" });
 
   // POST /api/issues/scan — force rescan all repos
-  server.post("/api/issues/scan", async (_req, res) => {
-    const summaries = await issueScanner.scanAllAsync();
-    sendJson(res, 200, summaries);
+  server.post("/api/issues/scan", (_req, res) => {
+    sendLegacyIssueEndpointGone(res);
   }, { fileRpc: "deny" });
 
-  // POST /api/issues/:repoId/scan — force-scan a single repo by ID.
-  // Used by the UI to unblock deep-link 404s on daemon reload: if the
-  // IssueScanner hasn't scanned a repo yet, the UI can trigger a targeted
-  // scan and retry the detail fetch rather than showing "Failed to load".
-  server.post("/api/issues/:repoId/scan", async (req, res) => {
-    const repoId = getParam(req, "repoId");
-    if (!repoId) {
-      sendJson(res, 400, { error: "missing repoId" });
-      return;
-    }
-    const ok = await issueScanner.scanRepoByIdAsync(repoId);
-    if (!ok) {
-      sendJson(res, 404, { error: "repo not found" });
-      return;
-    }
-    sendJson(res, 200, { ok: true });
+  // POST /api/issues/:repoId/scan — legacy git-bug targeted scan.
+  server.post("/api/issues/:repoId/scan", (_req, res) => {
+    sendLegacyIssueEndpointGone(res);
   }, { fileRpc: "deny" });
 
 
@@ -2065,12 +2179,9 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
     const resolvedIssue = resolveIssueDetailForRoute(
       db,
-      config,
       workScanner,
-      issueScanner,
       repoIdParam,
       issueIdParam,
     );
@@ -2289,12 +2400,9 @@ export function registerIssueRoutes(
       return;
     }
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
     const resolvedIssue = resolveIssueDetailForRoute(
       db,
-      config,
       workScanner,
-      issueScanner,
       repoIdParam,
       issueId,
     );
@@ -2354,12 +2462,9 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
     const resolvedIssue = resolveIssueDetailForRoute(
       db,
-      config,
       workScanner,
-      issueScanner,
       repoIdParam,
       issueIdParam,
     );
