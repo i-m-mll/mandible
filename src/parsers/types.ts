@@ -71,8 +71,17 @@ export interface ParseResult {
   blocks: Omit<ConversationBlock, "id" | "conversation_id">[];
 }
 
+export interface IncrementalParseInput {
+  filePath: string;
+  raw: string;
+  baseBlockCount: number;
+  sourceHash: string;
+  sourceMtime: number;
+}
+
 export interface ConversationParser {
   source: ConversationSource;
   canParse(filePath: string): boolean;
   parse(filePath: string): Promise<ParseResult | null>;
+  parseIncremental?(input: IncrementalParseInput): Promise<ParseResult | null>;
 }

@@ -29,6 +29,7 @@ import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
 import { ChatSurface, conversationBlocksToStreamEvents } from '../chat';
+import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -461,6 +462,10 @@ type ChatSidebarSections = {
 type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
   children: ConversationChild[];
+};
+type ConversationAppendSseDetail = {
+  type: string;
+  data?: ConversationAppendPayload;
 };
 function conversationShell(conversation: Conversation): ConversationWithDetails {
   return { ...conversation, blocks: [], children: [] };
@@ -1218,6 +1223,38 @@ function ConversationDetail({
         setLoading(false);
       });
     return () => { active = false; };
+  }, [conversationId, selectedLeaf]);
+
+  useEffect(() => {
+    const handleConversationSse = (event: Event) => {
+      const detail = (event as CustomEvent<ConversationAppendSseDetail>).detail;
+      const data = detail?.data;
+      if (!data || data.id !== conversationId) return;
+
+      if (selectedLeaf) {
+        setLoadNonce((prev) => prev + 1);
+        return;
+      }
+
+      const appendBlocks = data.append?.blocks ?? [];
+      if (appendBlocks.length === 0) {
+        setConversation((prev) => prev ? applyConversationAppendPayload(prev, data) ?? prev : prev);
+        return;
+      }
+
+      setConversation((prev) => {
+        if (!prev) return prev;
+        const next = applyConversationAppendPayload(prev, data);
+        if (!next) {
+          window.setTimeout(() => setLoadNonce((nonce) => nonce + 1), 0);
+          return prev;
+        }
+        return next;
+      });
+    };
+
+    window.addEventListener('conversation:sse', handleConversationSse);
+    return () => window.removeEventListener('conversation:sse', handleConversationSse);
   }, [conversationId, selectedLeaf]);
 
   // Toast auto-dismiss

@@ -129,4 +129,33 @@ describe("CodexParser", () => {
       tool_output: "today",
     });
   });
+
+  it("parses appended records at the requested base position", async () => {
+    const parser = new CodexParser();
+    const sessionPath = await makeCodexSession("session-incremental");
+
+    const result = await parser.parseIncremental?.({
+      filePath: sessionPath,
+      raw: `${JSON.stringify({
+        type: "response_item",
+        timestamp: "2026-05-16T00:00:06.000Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Incremental answer." }],
+        },
+      })}\n`,
+      baseBlockCount: 4,
+      sourceHash: "append:hash",
+      sourceMtime: 42,
+    });
+
+    expect(result?.conversation.block_count).toBe(5);
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "assistant_message",
+      position: 4,
+      content: "Incremental answer.",
+    });
+  });
 });

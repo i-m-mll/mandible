@@ -2587,6 +2587,23 @@ const MIGRATIONS: Migration[] = [
     // Issue: 3da19be — include SDK reasoning effort in the existing
     // per-message parameter keyframes.
     statements: []
+  },
+  {
+    version: 95,
+    name: "conversation_ingest_append_state",
+    // Issue: f894229 — durable append cursors for incremental transcript ingestion.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS conversation_ingest_state (
+        file_path TEXT PRIMARY KEY,
+        byte_offset INTEGER NOT NULL DEFAULT 0,
+        line_count INTEGER NOT NULL DEFAULT 0,
+        tail_hash TEXT NOT NULL DEFAULT '',
+        partial_line TEXT NOT NULL DEFAULT '',
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_conversation_ingest_state_updated
+        ON conversation_ingest_state(updated_at)`
+    ]
   }
 ];
 
@@ -5080,6 +5097,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "auth_requests",
     "console_sessions",
     "conversation_blocks",
+    "conversation_ingest_state",
     "conversations",
     "ledger_comments",
     "ledger_issues",

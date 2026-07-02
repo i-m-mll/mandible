@@ -74,4 +74,36 @@ describe("ClaudeParser", () => {
       tool_output: "README.md",
     });
   });
+
+  it("parses appended records at the requested base position", async () => {
+    const parser = new ClaudeParser();
+    const sessionPath = await makeClaudeSession();
+
+    const result = await parser.parseIncremental?.({
+      filePath: sessionPath,
+      raw: `${JSON.stringify({
+        uuid: "a2",
+        parentUuid: "u2",
+        type: "assistant",
+        timestamp: "2026-05-16T00:00:03.000Z",
+        sessionId: "11111111-1111-4111-8111-111111111111",
+        message: {
+          role: "assistant",
+          model: "claude-opus",
+          content: [{ type: "text", text: "Incremental Claude answer." }],
+        },
+      })}\n`,
+      baseBlockCount: 3,
+      sourceHash: "append:hash",
+      sourceMtime: 42,
+    });
+
+    expect(result?.conversation.block_count).toBe(4);
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "assistant_message",
+      position: 3,
+      content: "Incremental Claude answer.",
+    });
+  });
 });
