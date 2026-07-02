@@ -18,32 +18,6 @@
   overflow: hidden;
 }
 
-/* FIXED header row — never scrolls. */
-.spaces-tree__header {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.5rem 0.5rem;
-  border-bottom: 1px solid var(--border);
-  flex: 0 0 auto;
-}
-
-.spaces-tree__filter-input {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.8rem;
-  color: var(--text-primary);
-  background: var(--bg-primary);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-
-.spaces-tree__filter-input:focus {
-  outline: none;
-  border-color: var(--accent-blue);
-}
-
 /* Bare "+" create icon — NO border, NO background container. */
 .spaces-tree__create {
   display: inline-flex;

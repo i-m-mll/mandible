@@ -44,10 +44,11 @@ import {
   versionDetailHref,
 } from '../resource-refs';
 import { renderDocumentText } from './spaces/DocumentRenderer';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -128,11 +129,6 @@ export function ArtifactsView({
   initialRepo,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 320,
-    minWidth: 240,
-    storageKey: 'sidebar-width:artifacts',
-  });
   const [filters, setFilters] = useState<ArtifactFilters>(() => ({
     ...EMPTY_FILTERS,
     repo: initialRepo ?? '',
@@ -518,37 +514,30 @@ export function ArtifactsView({
 
   return (
     <div className="artifacts-view">
-      {!sidebarHidden ? (
-        <>
-          <aside
-            className="artifacts-sidebar"
-            style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
-          >
-            <div className="artifacts-filter">
-              <input
-                className="artifacts-filter__input"
-                value={filters.q}
-                placeholder="Search artifacts"
-                onInput={(e) => updateFilter('q', e.currentTarget.value)}
-              />
-              {filters.q && (
-                <button type="button" className="artifacts-filter__clear" onClick={() => updateFilter('q', '')}>
-                  ×
-                </button>
-              )}
-              <button
-                type="button"
-                className={`artifacts-filter__advanced-trigger${advancedOpen ? ' artifacts-filter__advanced-trigger--active' : ''}`}
-                onClick={() => setAdvancedOpen((open) => !open)}
-                aria-label="Artifact filters"
-                title="Artifact filters"
-                aria-expanded={advancedOpen}
-              >
-                <FilterIcon />
-              </button>
-            </div>
-            {advancedOpen && (
-              <div className="artifacts-advanced">
+      <ViewSidebar
+        storageKey="sidebar-width:artifacts"
+        defaultWidth={320}
+        minWidth={240}
+        className="artifacts-sidebar"
+        ariaLabel="Artifacts"
+        hidden={sidebarHidden}
+        header={
+          <SidebarSearchFilterHeader
+            value={filters.q}
+            onValueChange={(value) => updateFilter('q', value)}
+            placeholder="Search artifacts"
+            searchAriaLabel="Search artifacts"
+            clearAriaLabel="Clear artifact search"
+            filterTrigger={{
+              ariaLabel: 'Artifact filters',
+              title: 'Artifact filters',
+              open: advancedOpen,
+              onToggle: () => setAdvancedOpen((open) => !open),
+            }}
+            panel={advancedOpen ? {
+              variant: 'inline',
+              children: (
+                <>
                 <FacetSelect label="Location" value={filters.scheme} options={facetOptions.schemes} onChange={(value) => updateFilter('scheme', value)} />
                 <FacetSelect label="Custody" value={filters.custody} options={facetOptions.custodies} onChange={(value) => updateFilter('custody', value)} />
                 <FacetSelect label="Availability" value={filters.availability} options={facetOptions.availabilities} onChange={(value) => updateFilter('availability', value)} />
@@ -562,9 +551,13 @@ export function ArtifactsView({
                   onInput={(e) => updateFilter('location', e.currentTarget.value)}
                 />
                 <button type="button" className="btn btn--ghost btn--sm" onClick={clearFilters}>Clear</button>
-              </div>
-            )}
-            <div className="artifacts-sidebar__list">
+                </>
+              ),
+            } : undefined}
+          />
+        }
+        bodyClassName="artifacts-sidebar__list"
+      >
               {loading && series.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
               {!loading && series.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
               {series.map((entry) => (
@@ -581,11 +574,7 @@ export function ArtifactsView({
                   </span>
                 </button>
               ))}
-            </div>
-          </aside>
-          <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
-        </>
-      ) : null}
+      </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {error && <div className="artifacts-error">{error}</div>}
         {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
@@ -620,14 +609,6 @@ export function ArtifactsView({
         )}
       </main>
     </div>
-  );
-}
-
-function FilterIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
   );
 }
 

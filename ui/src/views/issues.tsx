@@ -14,6 +14,7 @@ import {
 import { sanitizeHtml } from '../sanitize';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 
 // --- Types ---
 
@@ -885,62 +886,48 @@ export function IssuesView({
         ariaLabel="Issues"
         className="issues-tree"
         as="div"
-      >
-          <div
-            className="issues-filter"
-            onBlur={(event) => {
+        header={
+          <>
+            <SidebarSearchFilterHeader
+              value={filter}
+              onValueChange={setIssueFilter}
+              placeholder="Filter issues..."
+              searchAriaLabel="Filter issues"
+              clearAriaLabel="Clear issue filter"
+              inputType="text"
+              onBlurWithin={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
                 setFilterMenuOpen(false);
               }
             }}
-          >
-            <input
-              type="text"
-              className="issues-filter__input"
-              placeholder="Filter issues..."
-              value={filter}
-              onInput={(e) => setIssueFilter(e.currentTarget.value)}
-            />
-            {filter && (
-              <button
-                type="button"
-                className="issues-filter__clear"
-                aria-label="Clear issue filter"
-                title="Clear issue filter"
-                onClick={() => setIssueFilter('')}
-              >
-                <ClearIcon />
-              </button>
-            )}
-            <button
-              type="button"
-              className={`issues-filter__advanced-trigger${filterMenuOpen ? ' issues-filter__advanced-trigger--active' : ''}`}
-              aria-label="Advanced issue filters"
-              title="Advanced issue filters"
-              onClick={() => setFilterMenuOpen((prev) => !prev)}
-            >
-              <FilterIcon />
-            </button>
-            {filterMenuOpen && (
-              <div className="issues-filter-menu">
-              <div className="issues-filter-menu__header">
+              filterTrigger={{
+                ariaLabel: 'Advanced issue filters',
+                title: 'Advanced issue filters',
+                open: filterMenuOpen,
+                onToggle: () => setFilterMenuOpen((prev) => !prev),
+              }}
+              panel={filterMenuOpen ? {
+                variant: 'popover',
+                children: (
+                  <>
+              <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
                 <span>Filters</span>
                 <button
                   type="button"
-                  className="issues-filter-menu__clear"
+                  className="sidebar-search-filter__clear-action"
                   onClick={() => setIssueFilter(parsedFilter.text)}
                 >
                   Clear
                 </button>
               </div>
-              <div className="issues-filter-menu__section">
-                <span className="issues-filter-menu__label">Status</span>
-                <div className="issues-filter-menu__options issues-filter-menu__options--segmented">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Status</span>
+                <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
                   {(['all', 'open', 'merged', 'closed'] as const).map((status) => (
                     <button
                       key={status}
                       type="button"
-                      className={`issues-filter-menu__option${selectedStatus === status ? ' issues-filter-menu__option--active' : ''}`}
+                      className={`sidebar-search-filter__option${selectedStatus === status ? ' sidebar-search-filter__option--active' : ''}`}
                       onClick={() => updateStructuredFilter({ status })}
                     >
                       {status}
@@ -948,14 +935,14 @@ export function IssuesView({
                   ))}
                 </div>
               </div>
-              <div className="issues-filter-menu__section">
-                <span className="issues-filter-menu__label">Kind</span>
-                <div className="issues-filter-menu__options">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Kind</span>
+                <div className="sidebar-search-filter__options">
                   {KIND_FILTERS.map((kind) => (
                     <button
                       key={kind.key}
                       type="button"
-                      className={`issues-filter-menu__option${selectedKinds.includes(kind.key) ? ' issues-filter-menu__option--active' : ''}`}
+                      className={`sidebar-search-filter__option${selectedKinds.includes(kind.key) ? ' sidebar-search-filter__option--active' : ''}`}
                       onClick={() => toggleMultiFilter('kinds', kind.key)}
                     >
                       {kind.label}
@@ -963,14 +950,14 @@ export function IssuesView({
                   ))}
                 </div>
               </div>
-              <div className="issues-filter-menu__section">
-                <span className="issues-filter-menu__label">Priority</span>
-                <div className="issues-filter-menu__options">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Priority</span>
+                <div className="sidebar-search-filter__options">
                   {PRIORITY_FILTERS.map((priority) => (
                     <button
                       key={priority.key}
                       type="button"
-                      className={`issues-filter-menu__option${selectedPriorities.includes(priority.key) ? ' issues-filter-menu__option--active' : ''}`}
+                      className={`sidebar-search-filter__option${selectedPriorities.includes(priority.key) ? ' sidebar-search-filter__option--active' : ''}`}
                       onClick={() => toggleMultiFilter('priorities', priority.key)}
                     >
                       {priority.label}
@@ -978,9 +965,10 @@ export function IssuesView({
                   ))}
                 </div>
               </div>
-              </div>
-            )}
-          </div>
+                  </>
+                ),
+              } : undefined}
+            />
 
         {/* Repo filter */}
         <div
@@ -1058,6 +1046,10 @@ export function IssuesView({
             </button>
           </div>
         )}
+          </>
+        }
+        bodyClassName="issues-tree__body"
+      >
 
         {/* Flat issue list */}
         {items.length === 0 ? (
@@ -1134,24 +1126,5 @@ export function IssuesView({
         )}
       </div>
     </div>
-  );
-}
-
-function FilterIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M4 6h16" />
-      <path d="M7 12h10" />
-      <path d="M10 18h4" />
-    </svg>
-  );
-}
-
-function ClearIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M18 6L6 18" />
-      <path d="M6 6l12 12" />
-    </svg>
   );
 }

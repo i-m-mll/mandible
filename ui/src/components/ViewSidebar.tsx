@@ -57,6 +57,15 @@ export type ViewSidebarProps = {
    */
   header?: ComponentChildren;
 
+  /** Optional class added to the shared scroll-owner body wrapper. */
+  bodyClassName?: string;
+
+  /** Optional fixed footer slot rendered below the scroll-owner body. */
+  footer?: ComponentChildren;
+
+  /** Optional class added to the shared fixed footer wrapper. */
+  footerClassName?: string;
+
   /** Scrollable body content (or the whole frame content when `header` omitted). */
   children: ComponentChildren;
 };
@@ -85,6 +94,8 @@ export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
 
   const Frame = props.as ?? 'aside';
   const cls = props.className ? `view-sidebar ${props.className}` : 'view-sidebar';
+  const bodyCls = props.bodyClassName ? `view-sidebar__body ${props.bodyClassName}` : 'view-sidebar__body';
+  const footerCls = props.footerClassName ? `view-sidebar__footer ${props.footerClassName}` : 'view-sidebar__footer';
   const style = width !== null ? { width: `${width}px`, flexShrink: 0 } : undefined;
 
   return (
@@ -109,10 +120,18 @@ export function ViewSidebar(props: ViewSidebarProps): JSX.Element | null {
       {props.header !== undefined ? (
         <>
           <div className="view-sidebar__header">{props.header}</div>
-          <div className="view-sidebar__body">{props.children}</div>
+          <div className={bodyCls}>{props.children}</div>
+          {props.footer !== undefined ? (
+            <div className={footerCls}>{props.footer}</div>
+          ) : null}
         </>
       ) : (
-        props.children
+        <>
+          {props.children}
+          {props.footer !== undefined ? (
+            <div className={footerCls}>{props.footer}</div>
+          ) : null}
+        </>
       )}
     </Frame>
   );
