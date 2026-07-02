@@ -2197,8 +2197,64 @@ export function snapshotArtifactBytes(
     }),
   }, now, artifactRoot);
 
-  const stored = getArtifact(db, artifact.id) as ArtifactRecord;
+  const stored = promoteSnapshotArtifactCustody(db, artifact.id, {
+    uri: `file://${filePath}`,
+    custodyMode,
+    sizeBytes: bytes.byteLength,
+    metadata: {
+      recoverability: "mandible_cas",
+      snapshot_source_ref: ref ?? null,
+      snapshot_source_path: input.path ? path.resolve(expandHomePath(input.path)) : null,
+    },
+    reference: {
+      recoverability: "mandible_cas",
+      snapshot_source_ref: ref ?? null,
+      uri: `file://${filePath}`,
+    },
+    now,
+  });
+  mirrorLegacyArtifactBlob(db, stored, now);
   return stored;
+}
+
+function promoteSnapshotArtifactCustody(db: Db, artifactId: string, input: {
+  uri: string;
+  custodyMode: "copy" | "managed";
+  sizeBytes: number;
+  metadata: JsonRecord;
+  reference: JsonRecord;
+  now: number;
+}): ArtifactRecord {
+  const current = getArtifact(db, artifactId) as ArtifactRecord | null;
+  if (!current) {
+    throw new Error("snapshot artifact was not stored");
+  }
+  const metadata = mergeJsonRecords(current.metadata, input.metadata, {
+    custody_mode: input.custodyMode,
+    availability: "present",
+  });
+  const reference = mergeJsonRecords(current.reference, input.reference);
+  db.prepare(
+    `UPDATE artifacts
+        SET uri = @uri,
+            size_bytes = CASE
+              WHEN size_bytes = 0 OR @size_bytes > 0 THEN @size_bytes
+              ELSE size_bytes
+            END,
+            custody_mode = @custody_mode,
+            availability = 'present',
+            metadata_json = @metadata_json,
+            reference_json = @reference_json
+      WHERE id = @id`
+  ).run({
+    id: artifactId,
+    uri: input.uri,
+    size_bytes: input.sizeBytes,
+    custody_mode: input.custodyMode,
+    metadata_json: jsonStringify(metadata),
+    reference_json: jsonStringify(reference),
+  });
+  return getArtifact(db, artifactId) as ArtifactRecord;
 }
 
 function linkBundleMember(
