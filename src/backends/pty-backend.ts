@@ -7,7 +7,9 @@ import type { AgenticBackend, BackendMetaUpdate, BackendStatusEvent } from "../a
 import { RingBuffer } from "../ring-buffer.js";
 import { computePresetUnion } from "../presets.js";
 import { getDb } from "../db.js";
+import { PtyScreenObserver, shouldEnablePtyScreenModel } from "../screen-model.js";
 import type {
+  ConsoleAttentionState,
   ConsoleSession,
   ConsoleSessionStatus,
   ConsoleStreamEvent,
@@ -48,6 +50,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   private presetIds: string[] = [];
   private promptChildren: Set<ChildProcess> = new Set();
   private restartTimer: NodeJS.Timeout | null = null;
+  private screenObserver: PtyScreenObserver | null = null;
   private destroyed = false;
 
   constructor(meta: ConsoleSession, logger: Logger) {
@@ -56,6 +59,15 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.meta = meta;
     this.ringBuffer = new RingBuffer();
     this.logger = logger;
+    if (shouldEnablePtyScreenModel(meta)) {
+      this.screenObserver = new PtyScreenObserver({
+        sessionId: meta.id,
+        provider: meta.agent_type,
+        cols: meta.cols,
+        rows: meta.rows,
+        onAttentionChange: (attention) => this.publishAttention(attention),
+      });
+    }
   }
 
   /** Bug: 790433d — Set preset IDs before start(). PTY presets are locked for session lifetime. */
@@ -136,6 +148,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.onExitDisposable?.dispose();
     this.onDataDisposable = null;
     this.onExitDisposable = null;
+    this.screenObserver?.clear("process_exit");
 
     try {
       this.ptyProc.kill(signal ?? "SIGHUP");
@@ -168,6 +181,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       return;
     }
     this.destroyed = true;
+    this.screenObserver?.destroy();
     this.clearRestartTimer();
     this.killPromptChildren("SIGHUP");
     if (this.ptyProc) {
@@ -185,6 +199,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
       }
     }
     this.meta = { ...this.meta, cols, rows };
+    this.screenObserver?.resize(cols, rows);
     this.emitMetaUpdate({ cols, rows, updated_at: Date.now() });
   }
 
@@ -201,6 +216,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.ringBuffer.clear();
     this.streamEvents = [];
     this.lineBuffer = "";
+    this.screenObserver?.clear("manual_clear");
   }
 
   sendPrompt(text: string): void {
@@ -424,6 +440,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
 
   private handleData(data: string): void {
     this.ringBuffer.append(data);
+    this.screenObserver?.feed(data);
 
     if (this.wsClients.size > 0) {
       const buf = Buffer.from(data, "utf8");
@@ -469,6 +486,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
   }
 
   private storeStructuredEvent(event: ConsoleStreamEvent): void {
+    this.screenObserver?.markStructuredActivity();
     this.streamEvents.push(event);
     if (this.streamEvents.length > STREAM_EVENTS_LIMIT) {
       this.streamEvents = this.streamEvents.slice(this.streamEvents.length - STREAM_EVENTS_LIMIT);
@@ -497,6 +515,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     this.onDataDisposable = null;
     this.onExitDisposable = null;
     this.ptyProc = null;
+    this.screenObserver?.clear("process_exit");
 
     const crashed = exitCode > 0;
     const status: ConsoleSessionStatus = crashed ? "crashed" : "stopped";
@@ -603,6 +622,15 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
 
   private emitStatus(event: BackendStatusEvent): void {
     this.emit("status", event);
+  }
+
+  private publishAttention(attention: ConsoleAttentionState | null): void {
+    this.meta = {
+      ...this.meta,
+      attention: attention?.active ? attention : null,
+      updated_at: Date.now(),
+    };
+    this.emit("attention", attention);
   }
 
   private extractModel(args: string[]): string | null {
