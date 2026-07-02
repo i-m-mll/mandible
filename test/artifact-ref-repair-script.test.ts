@@ -48,7 +48,7 @@ describe("repair-artifact-refs script", () => {
     expect(report.mode).toBe("dry_run");
     expect(report.summary.findings).toBeGreaterThanOrEqual(5);
     expect(report.summary.ledger_cells_to_update).toBe(3);
-    expect(report.summary.structured_links_to_update).toBe(1);
+    expect(report.summary.structured_links_to_update).toBe(2);
     expect(report.summary.latest_artifacts_to_version).toBe(1);
     expect(report.findings.some((finding: any) =>
       finding.ref === `artifact:sha256:${LEGACY_HASH}` &&
@@ -83,6 +83,7 @@ describe("repair-artifact-refs script", () => {
 
     const applied = new Database(dbPath);
     expect(getIssueBody(applied)).toContain(`artifact-blob:${LEGACY_HASH}`);
+    expect(getIssueBody(applied)).toContain(`artifact=artifact-blob%3A${LEGACY_HASH}`);
     expect(getIssueBody(applied)).toContain("artifact:report");
     expect(
       JSON.parse((applied.prepare("SELECT metadata_json FROM ledger_issues WHERE id = 'issue-1'").get() as any).metadata_json),
@@ -90,6 +91,15 @@ describe("repair-artifact-refs script", () => {
     expect(
       applied.prepare("SELECT target_type, target_id FROM artifact_links WHERE id = 'link-1'").get(),
     ).toEqual({ target_type: "artifact", target_id: "artifact:report" });
+    expect(
+      applied.prepare(
+        "SELECT target_type, target_id, legacy_blob_id FROM artifact_links WHERE id = 'link-blob'",
+      ).get(),
+    ).toEqual({
+      target_type: "artifact_blob",
+      target_id: `artifact-blob:${LEGACY_HASH}`,
+      legacy_blob_id: `artifact-blob:${LEGACY_HASH}`,
+    });
 
     const artifact = applied
       .prepare("SELECT latest_version_id, version_count FROM artifact WHERE id = 'artifact:report'")
@@ -151,6 +161,9 @@ describe("repair-artifact-refs script", () => {
     fixedDb.prepare("UPDATE ledger_issues SET metadata_json = '{}' WHERE id = 'issue-1'").run();
     fixedDb.prepare("UPDATE ledger_comments SET body = 'No old refs' WHERE id = 'comment-1'").run();
     fixedDb.prepare("UPDATE artifact_links SET series_id = NULL, series_ref = NULL WHERE id = 'link-1'").run();
+    fixedDb.prepare(
+      "UPDATE artifact_links SET target_type = 'artifact_blob', target_id = ?, legacy_blob_id = ? WHERE id = 'link-blob'",
+    ).run(`artifact-blob:${LEGACY_HASH}`, `artifact-blob:${LEGACY_HASH}`);
     fixedDb.close();
 
     const passed = await runArtifactRefRepair({ dbPath, check: true });
@@ -266,7 +279,10 @@ function createFixtureDb(options: {
     `INSERT INTO ledger_issues (id, title, body, metadata_json)
      VALUES ('issue-1', 'Issue', ?, ?)`,
   ).run(
-    `See artifact:sha256:${LEGACY_HASH} and artifact-series:report`,
+    [
+      `See artifact:sha256:${LEGACY_HASH} and artifact-series:report`,
+      `Short link [artifact:sha256:${LEGACY_HASH.slice(0, 7)}](http://localhost:19420/#/artifacts?artifact=artifact%3Asha256%3A${LEGACY_HASH}&sidebar=hidden)`,
+    ].join("\n"),
     JSON.stringify({ ref: `sha256:${LEGACY_HASH}` }),
   );
   db.prepare(
@@ -326,6 +342,15 @@ function createFixtureDb(options: {
       'artifact-series:report', '{}', 1, 1
     )`,
   ).run();
+  db.prepare(
+    `INSERT INTO artifact_links (
+      id, artifact_id, entity_type, entity_id,
+      metadata_json, created_at, updated_at
+    ) VALUES (
+      'link-blob', ?, 'issue', 'issue-1',
+      '{}', 1, 1
+    )`,
+  ).run(`artifact:sha256:${LEGACY_HASH}`);
 
   if (options.jsonArtifactHasRefs) {
     const manifest = JSON.stringify({ ref: `artifact:sha256:${LEGACY_HASH}` });

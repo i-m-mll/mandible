@@ -10,13 +10,21 @@ import Database from "better-sqlite3";
 
 const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 const DEFAULT_REPORT_NAME = "artifact-ref-repair-report.json";
-const HASH_RE = "[a-f0-9]{64}";
+const HASH_RE = "[a-f0-9]{7,64}";
 const OLD_REF_PATTERN = new RegExp(
   [
     `artifact:sha256:(${HASH_RE})`,
     `sha256:(${HASH_RE})`,
     `artifact:(${HASH_RE})`,
     "artifact-series:[A-Za-z0-9][A-Za-z0-9_.:-]*(?:[@#][A-Za-z0-9_.:-]+)?",
+  ].join("|"),
+  "gi",
+);
+const ENCODED_OLD_REF_PATTERN = new RegExp(
+  [
+    `artifact%3Asha256%3A(${HASH_RE})`,
+    `sha256%3A(${HASH_RE})`,
+    `artifact%3A(${HASH_RE})`,
   ].join("|"),
   "gi",
 );
@@ -158,6 +166,8 @@ export async function runArtifactRefRepair(options = {}) {
     skipped_targets: [],
     after_summary: null,
     after_findings: null,
+    verification: null,
+    after_verification: null,
     alias_deletes: [],
     integrity_check: null,
   };
@@ -169,6 +179,7 @@ export async function runArtifactRefRepair(options = {}) {
     planStructuredLinkUpdates(db, resolver, report);
     planLatestArtifactContentUpdates(db, resolver, report);
     finalizeSummary(report);
+    report.verification = verificationForSummary(report.summary);
 
     if (apply) {
       await backupDatabase(db, backupPath);
@@ -177,6 +188,7 @@ export async function runArtifactRefRepair(options = {}) {
       const after = buildScanOnlyReport(db, resolver);
       report.after_summary = after.summary;
       report.after_findings = after.findings;
+      report.after_verification = verificationForSummary(after.summary);
       report.check_failed = check && actionableFindingCount(after.summary) > 0;
     } else {
       report.check_failed = check && actionableFindingCount(report.summary) > 0;
@@ -226,6 +238,16 @@ function emptySummary() {
     latest_artifacts_scanned: 0,
     latest_artifacts_to_version: 0,
     skipped_artifacts: 0,
+  };
+}
+
+function verificationForSummary(summary) {
+  const actionable = actionableFindingCount(summary);
+  return {
+    remaining_actionable_refs: actionable,
+    zero_legacy_actionable_refs: actionable === 0,
+    unresolved_refs: summary.unresolved_refs,
+    ambiguous_refs: summary.ambiguous_refs,
   };
 }
 
@@ -332,10 +354,11 @@ function planLedgerUpdates(db, resolver, report) {
 function planStructuredLinkUpdates(db, resolver, report) {
   if (!tableExists(db, "artifact_links")) return;
   const columns = tableColumns(db, "artifact_links");
-  if (!columns.has("target_type") || !columns.has("target_id")) return;
+  if (!columns.has("target_type") && !columns.has("legacy_blob_id")) return;
 
-  const scanColumns = ["id", "target_type", "target_id", "series_id", "series_ref"]
+  const scanColumns = ["id", "artifact_id", "target_type", "target_id", "series_id", "series_ref", "legacy_blob_id"]
     .filter((column) => columns.has(column));
+  const supportsBlobTarget = columns.has("target_type") && artifactLinkTargetTypeAllows(db, "artifact_blob");
   const rows = db.prepare(
     `SELECT rowid AS __rowid, ${scanColumns.map(quoteIdent).join(", ")}
      FROM artifact_links
@@ -343,6 +366,9 @@ function planStructuredLinkUpdates(db, resolver, report) {
   ).all();
   for (const row of rows) {
     const candidates = [];
+    if (typeof row.artifact_id === "string" && row.artifact_id) {
+      candidates.push({ column: "artifact_id", ref: row.artifact_id });
+    }
     if (typeof row.target_id === "string" && row.target_id) {
       candidates.push({ column: "target_id", ref: row.target_id });
     }
@@ -358,6 +384,13 @@ function planStructuredLinkUpdates(db, resolver, report) {
       const old = parseOldRef(candidate.ref);
       if (!old) continue;
       const resolution = resolver.resolve(candidate.ref);
+      if (
+        candidate.column === "artifact_id" &&
+        resolution.status === "resolved" &&
+        structuredLinkBlobAlreadyBackfilled(row, resolution, supportsBlobTarget)
+      ) {
+        continue;
+      }
       const findingContext = {
         surface: "structured_link",
         table: "artifact_links",
@@ -368,21 +401,31 @@ function planStructuredLinkUpdates(db, resolver, report) {
       if (plannedUpdate) continue;
       if (resolution.status !== "resolved") continue;
       const targetType = targetTypeForCanonicalRef(resolution.replacement);
-      if (targetType !== "artifact" && targetType !== "artifact_version") continue;
       const clearsLegacySeries =
         candidate.column === "series_id" || candidate.column === "series_ref";
       const after = {
-        target_type: targetType,
-        target_id: resolution.replacement,
-        series_id: clearsLegacySeries ? null : row.series_id ?? null,
-        series_ref: clearsLegacySeries ? null : row.series_ref ?? null,
+        ...(columns.has("target_type") ? { target_type: row.target_type ?? null } : {}),
+        ...(columns.has("target_id") ? { target_id: row.target_id ?? null } : {}),
+        ...(columns.has("series_id") ? { series_id: clearsLegacySeries ? null : row.series_id ?? null } : {}),
+        ...(columns.has("series_ref") ? { series_ref: clearsLegacySeries ? null : row.series_ref ?? null } : {}),
+        ...(columns.has("legacy_blob_id") ? { legacy_blob_id: row.legacy_blob_id ?? null } : {}),
       };
-      if (
-        row.target_id === after.target_id &&
-        row.target_type === after.target_type &&
-        (row.series_id ?? null) === after.series_id &&
-        (row.series_ref ?? null) === after.series_ref
-      ) {
+
+      if (targetType === "artifact" || targetType === "artifact_version") {
+        if (!columns.has("target_type") || !columns.has("target_id")) continue;
+        after.target_type = targetType;
+        after.target_id = resolution.replacement;
+      } else if (targetType === "artifact_blob") {
+        if (columns.has("legacy_blob_id")) after.legacy_blob_id = resolution.replacement;
+        if (supportsBlobTarget && columns.has("target_type") && columns.has("target_id")) {
+          after.target_type = "artifact_blob";
+          after.target_id = resolution.replacement;
+        }
+      } else {
+        continue;
+      }
+
+      if (!hasStructuredLinkChange(row, after)) {
         continue;
       }
       report.structured_link_updates.push({
@@ -390,7 +433,7 @@ function planStructuredLinkUpdates(db, resolver, report) {
         rowid: row.__rowid,
         row_id: String(row.id),
         source_column: candidate.column,
-        before: { target_type: row.target_type ?? null, target_id: row.target_id ?? null },
+        before: structuredLinkBefore(row, after),
         after,
         replacement: {
           old_ref: candidate.ref,
@@ -507,15 +550,14 @@ function applyPlannedChanges(db, report) {
     }
 
     for (const update of report.structured_link_updates) {
+      const columns = Object.keys(update.after);
+      if (columns.length === 0) continue;
       db.prepare(
         `UPDATE artifact_links
-         SET target_type = ?, target_id = ?, series_id = ?, series_ref = ?, updated_at = ?
+         SET ${columns.map((column) => `${quoteIdent(column)} = ?`).join(", ")}, updated_at = ?
          WHERE rowid = ?`,
       ).run(
-        update.after.target_type,
-        update.after.target_id,
-        update.after.series_id,
-        update.after.series_ref,
+        ...columns.map((column) => update.after[column]),
         Date.now(),
         update.rowid,
       );
@@ -696,7 +738,7 @@ function rewriteJsonValue(value, resolver, context, findings, replacements, mark
 function rewriteText(text, resolver, context) {
   const findings = [];
   const replacements = [];
-  const rewritten = text.replace(OLD_REF_PATTERN, (match) => {
+  let rewritten = text.replace(OLD_REF_PATTERN, (match) => {
     const resolution = resolver.resolve(match);
     findings.push(makeFinding(match, resolution, context));
     if (resolution.status !== "resolved") return match;
@@ -706,6 +748,20 @@ function rewriteText(text, resolver, context) {
       replacement_kind: resolution.replacement_kind,
     });
     return resolution.replacement;
+  });
+  rewritten = rewritten.replace(ENCODED_OLD_REF_PATTERN, (match) => {
+    const decodedRef = decodeLegacyArtifactRef(match);
+    const resolution = resolver.resolve(decodedRef);
+    findings.push(makeFinding(decodedRef, resolution, { ...context, encoded: true }));
+    if (resolution.status !== "resolved") return match;
+    const encodedReplacement = encodeURIComponent(resolution.replacement);
+    replacements.push({
+      old_ref: match,
+      new_ref: encodedReplacement,
+      replacement_kind: resolution.replacement_kind,
+      encoded: true,
+    });
+    return encodedReplacement;
   });
   return {
     changed: rewritten !== text,
@@ -809,7 +865,7 @@ function buildResolver(db) {
       if (!parsed) return { status: "unsupported", reason: "not_old_ref" };
       const targets = parsed.kind === "series"
         ? resolveSeriesTargets(seriesTargets, seriesVersionTargets, parsed)
-        : hashTargets.get(parsed.key.toLowerCase()) ?? [];
+        : resolveHashTargets(hashTargets, parsed.key);
       const unique = uniqueTargets(targets);
       if (unique.length === 1) return { status: "resolved", ...unique[0] };
       if (unique.length > 1) return { status: "ambiguous", reason: "multiple_replacements" };
@@ -821,9 +877,9 @@ function buildResolver(db) {
 function parseOldRef(ref) {
   const trimmed = String(ref).trim();
   const hashMatch =
-    /^artifact:sha256:([a-f0-9]{64})$/i.exec(trimmed) ??
-    /^sha256:([a-f0-9]{64})$/i.exec(trimmed) ??
-    /^artifact:([a-f0-9]{64})$/i.exec(trimmed);
+    /^artifact:sha256:([a-f0-9]{7,64})$/i.exec(trimmed) ??
+    /^sha256:([a-f0-9]{7,64})$/i.exec(trimmed) ??
+    /^artifact:([a-f0-9]{7,64})$/i.exec(trimmed);
   if (hashMatch) return { kind: "hash", key: hashMatch[1].toLowerCase() };
   const seriesMatch = /^(artifact-series:[A-Za-z0-9][A-Za-z0-9_.:-]*)(?:([@#])([A-Za-z0-9_.:-]+))?$/i.exec(trimmed);
   if (seriesMatch) {
@@ -834,6 +890,22 @@ function parseOldRef(ref) {
     };
   }
   return null;
+}
+
+function decodeLegacyArtifactRef(value) {
+  return String(value)
+    .replace(/%3A/gi, ":")
+    .replace(/%2F/gi, "/");
+}
+
+function resolveHashTargets(hashTargets, key) {
+  const lower = key.toLowerCase();
+  if (lower.length === 64) return hashTargets.get(lower) ?? [];
+  const targets = [];
+  for (const [hash, hashTarget] of hashTargets.entries()) {
+    if (hash.startsWith(lower)) targets.push(...hashTarget);
+  }
+  return targets;
 }
 
 function resolveSeriesTargets(seriesTargets, seriesVersionTargets, parsed) {
@@ -900,8 +972,42 @@ function logicalArtifactIdFromLegacySeries(seriesId) {
 
 function targetTypeForCanonicalRef(ref) {
   if (/^artifact-version:/i.test(ref)) return "artifact_version";
+  if (/^artifact-blob:/i.test(ref)) return "artifact_blob";
   if (/^artifact:/i.test(ref)) return "artifact";
   return null;
+}
+
+function artifactLinkTargetTypeAllows(db, value) {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'artifact_links'")
+    .get();
+  const sql = typeof row?.sql === "string" ? row.sql : "";
+  if (!/target_type/i.test(sql)) return false;
+  if (!/CHECK\s*\(/i.test(sql)) return true;
+  return new RegExp(`['"]${escapeRegExp(value)}['"]`, "i").test(sql);
+}
+
+function hasStructuredLinkChange(row, after) {
+  return Object.entries(after).some(([column, value]) => (row[column] ?? null) !== value);
+}
+
+function structuredLinkBlobAlreadyBackfilled(row, resolution, supportsBlobTarget) {
+  if (resolution.replacement_kind !== "artifact_blob") return false;
+  const legacyOk = row.legacy_blob_id === resolution.replacement;
+  const targetOk = row.target_type === "artifact_blob" && row.target_id === resolution.replacement;
+  return legacyOk && (!supportsBlobTarget || targetOk);
+}
+
+function structuredLinkBefore(row, after) {
+  const before = {};
+  for (const column of Object.keys(after)) {
+    before[column] = row[column] ?? null;
+  }
+  return before;
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function existingLedgerTargets(db) {
