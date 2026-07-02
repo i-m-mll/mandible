@@ -21,7 +21,6 @@ import type {
   SDKToolProgressMessage,
   SDKToolUseSummaryMessage,
   SDKUserMessage,
-  EffortLevel,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebSocket } from "ws";
 import type {
@@ -49,6 +48,7 @@ const EVENT_LOG_LIMIT = 2000;
 const PERMISSION_TIMEOUT_MS = 120_000;
 
 type UsageRow = Record<string, unknown>;
+type SDKThinkingEffort = ClaudeSDKOptions["effort"];
 
 interface PendingPermission {
   request: PermissionRequest;
@@ -65,7 +65,7 @@ interface SubagentInfo {
 
 export interface SDKBackendOptions {
   model?: string;
-  thinkingEffort?: EffortLevel;
+  thinkingEffort?: SDKThinkingEffort;
   systemPrompt?: string;
   permissionMode?: "default" | "acceptEdits" | "bypassPermissions";
   allowedTools?: string[];
