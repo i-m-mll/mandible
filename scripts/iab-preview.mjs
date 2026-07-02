@@ -110,6 +110,7 @@ async function main(options) {
         MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
         MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
         MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
+        MANDIBLE_FILE_RPC_DIR: path.join(preview.root, "agent-rpc"),
       },
     };
   }
@@ -519,6 +520,7 @@ async function healthyExistingPreview(branch) {
   const health = await readHealth(metadata.port);
   if (!health) return null;
   if (!hasExpectedPreviewPolicy(health)) return null;
+  if (!hasExpectedPreviewFileRpc(metadata, health, preview.root)) return null;
 
   return {
     ...metadata,
@@ -790,6 +792,7 @@ ${Object.entries(env).map(([key, value]) => `  ${key}=${shellQuote(String(value)
 }
 
 function previewInstanceEnv(details) {
+  const fileRpcDir = path.join(path.dirname(details.dbCopy), "agent-rpc");
   return {
     MANDIBLE_PORT: String(details.port),
     MANDIBLE_DB: details.dbCopy,
@@ -798,6 +801,7 @@ function previewInstanceEnv(details) {
     MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
     MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
     MANDIBLE_INSTANCE_SOURCE_DB: details.sourceDb,
+    MANDIBLE_FILE_RPC_DIR: fileRpcDir,
   };
 }
 
@@ -867,6 +871,15 @@ function readHealth(port) {
 function hasExpectedPreviewPolicy(health) {
   return health?.instance?.role === "preview" &&
     health.instance.operational_mutations === "reject";
+}
+
+function hasExpectedPreviewFileRpc(metadata, health, previewRoot) {
+  const expected = canonicalPath(path.join(previewRoot, "agent-rpc"));
+  const candidates = [
+    metadata?.instanceEnv?.MANDIBLE_FILE_RPC_DIR,
+    health?.file_rpc_dir,
+  ].filter(Boolean).map(canonicalPath);
+  return candidates.length > 0 && candidates.every((candidate) => candidate === expected);
 }
 
 function describePreviewPolicy(health) {

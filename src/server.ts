@@ -429,6 +429,7 @@ export interface ServerOptions {
   // flag so health reports false until critical startup work completes.
   isReady?: () => boolean;
   instance?: InstanceInfo;
+  fileRpcDir?: string;
 }
 
 export function createServer(options: ServerOptions): http.Server {
@@ -453,6 +454,7 @@ export function createServer(options: ServerOptions): http.Server {
       version,
       startup_commit: startupCommit,
       instance,
+      ...(options.fileRpcDir ? { file_rpc_dir: options.fileRpcDir } : {}),
       ready,
       ...(rebuilding ? { rebuilding: true } : {})
     };

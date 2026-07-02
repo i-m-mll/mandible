@@ -26,6 +26,7 @@ export interface HealthResponse {
   version: string;
   startup_commit: StartupCommitInfo;
   instance: InstanceInfo;
+  file_rpc_dir?: string;
   // Bug: 4db692a — true when daemon is about to restart after a self-merge.
   // The UI health poll uses this to avoid reloading prematurely while the
   // daemon is still alive but in the process of shutting down.

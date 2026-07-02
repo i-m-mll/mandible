@@ -67,6 +67,9 @@ describe("iab-preview launcher", () => {
   it("reports explicit preview instance environment in dry-run output", () => {
     const repo = createRepo();
     const sourceDb = path.join(repo, "source.db");
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
     const result = spawnSync(process.execPath, [
       SCRIPT,
       "--dry-run",
@@ -78,6 +81,10 @@ describe("iab-preview launcher", () => {
     ], {
       cwd: repo,
       encoding: "utf8",
+      env: {
+        ...process.env,
+        MANDIBLE_PREVIEW_BASE_DIR: previewBase,
+      },
     });
 
     expect(result.status).toBe(0);
@@ -87,6 +94,7 @@ describe("iab-preview launcher", () => {
       MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
       MANDIBLE_INSTANCE_DB_PATH_SOURCE: "iab-preview-copy",
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
+      MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     });
   });
 
@@ -127,5 +135,56 @@ describe("iab-preview launcher", () => {
     const payload = JSON.parse(result.stdout);
     expect(payload.status).toBe("dry-run");
     expect(payload.mode).toBe("current-integration");
+  });
+
+  it("does not reuse a preview daemon that owns the shared file-RPC spool", async () => {
+    const repo = createRepo();
+    git(["checkout", "-b", "integration/test-preview"], repo);
+    const previewBase = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-iab-preview-cache-"));
+    tempRoots.push(previewBase);
+    const previewRoot = path.join(previewBase, "integration-test-preview");
+    fs.mkdirSync(previewRoot, { recursive: true });
+    const sharedFileRpcDir = path.join(os.homedir(), ".cache", "mandible", "agent-rpc");
+    const port = await listenForHealth({
+      ready: true,
+      instance: {
+        role: "preview",
+        operational_mutations: "reject",
+      },
+      file_rpc_dir: sharedFileRpcDir,
+    });
+    fs.writeFileSync(
+      path.join(previewRoot, "metadata.json"),
+      JSON.stringify({
+        branch: "integration/test-preview",
+        worktree: repo,
+        port,
+        instanceEnv: {
+          MANDIBLE_INSTANCE_ROLE: "preview",
+          MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
+          MANDIBLE_FILE_RPC_DIR: sharedFileRpcDir,
+        },
+      }),
+      "utf8",
+    );
+
+    const result = spawnSync(process.execPath, [
+      SCRIPT,
+      "--dry-run",
+      "--json",
+    ], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        MANDIBLE_PREVIEW_BASE_DIR: previewBase,
+      },
+    });
+
+    expect(result.status).toBe(0);
+    const payload = JSON.parse(result.stdout);
+    expect(payload.status).toBe("dry-run");
+    expect(payload.mode).toBe("current-integration");
+    expect(payload.instanceEnv.MANDIBLE_FILE_RPC_DIR).toBe(path.join(previewRoot, "agent-rpc"));
   });
 });
