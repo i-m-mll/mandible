@@ -1,0 +1,8 @@
+Claude wants to use an MCP tool
+
+MCP tool: mcp__github__create_issue
+
+Do you want to allow this MCP tool?
+> 1. Yes
+  2. Yes, and don't ask again for mcp__github__create_issue
+  3. No, and tell Claude what to do differently

@@ -1022,7 +1022,7 @@ export function TerminalPane({
   };
 
   useEffect(() => {
-    if (backendType !== 'sdk' && backendType !== 'acp') {
+    if (backendType !== 'sdk' && backendType !== 'acp' && backendType !== 'pty') {
       setPermissionQueue([]);
       return;
     }
@@ -1046,7 +1046,7 @@ export function TerminalPane({
   }, [backendType, sessionId]);
 
   useEffect(() => {
-    if (backendType !== 'sdk' && backendType !== 'acp') {
+    if (backendType !== 'sdk' && backendType !== 'acp' && backendType !== 'pty') {
       return undefined;
     }
 
@@ -1069,8 +1069,22 @@ export function TerminalPane({
     };
 
     window.addEventListener('console:permission:request', handlePermissionRequest);
+    const handlePermissionCleared = (
+      event: Event,
+    ) => {
+      const detail = (event as CustomEvent<{
+        console_session_id: string;
+        request_id: string;
+      }>).detail;
+      if (!detail || detail.console_session_id !== sessionId) {
+        return;
+      }
+      setPermissionQueue((prev) => prev.filter((request) => request.id !== detail.request_id));
+    };
+    window.addEventListener('console:permission:cleared', handlePermissionCleared);
     return () => {
       window.removeEventListener('console:permission:request', handlePermissionRequest);
+      window.removeEventListener('console:permission:cleared', handlePermissionCleared);
     };
   }, [backendType, sessionId]);
 
@@ -1380,7 +1394,7 @@ export function TerminalPane({
         )}
       </div>
       <PermissionDialog
-        request={(backendType === 'sdk' || backendType === 'acp') && !permissionBusy ? permissionQueue[0] ?? null : null}
+        request={(backendType === 'sdk' || backendType === 'acp' || backendType === 'pty') && !permissionBusy ? permissionQueue[0] ?? null : null}
         onRespond={handlePermissionResponse}
       />
     </div>

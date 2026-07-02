@@ -304,6 +304,9 @@ implements
   }
 
   resolvePermission(requestId: string, decision: PermissionDecision): boolean {
+    if (decision.startsWith("option:")) {
+      return false;
+    }
     const pending = this.pendingPermissions.get(requestId);
     if (!pending) {
       return false;

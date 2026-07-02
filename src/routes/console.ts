@@ -332,13 +332,7 @@ export function registerConsoleRoutes(
     }
 
     const decision = (req.body ?? {}) as { decision?: unknown };
-    if (
-      decision.decision !== "deny" &&
-      decision.decision !== "allow" &&
-      decision.decision !== "allow_always" &&
-      decision.decision !== "reject_once" &&
-      decision.decision !== "reject_always"
-    ) {
+    if (!isPermissionDecision(decision.decision)) {
       sendJson(res, 400, { error: "invalid_decision" });
       return;
     }
@@ -494,4 +488,15 @@ export function registerConsoleRoutes(
     manager.start(operatorSession.id);
     res.status(200).json({ session: operatorSession.meta });
   }, { fileRpc: "deny" });
+}
+
+function isPermissionDecision(value: unknown): value is PermissionDecision {
+  return (
+    value === "deny" ||
+    value === "allow" ||
+    value === "allow_always" ||
+    value === "reject_once" ||
+    value === "reject_always" ||
+    (typeof value === "string" && /^option:[0-9A-Za-z_-]+$/.test(value))
+  );
 }

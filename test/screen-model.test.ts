@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { PTYBackend } from "../src/backends/pty-backend.js";
+import { detectClaudePermissionPrompt } from "../src/claude-permission-patterns.js";
 import {
   detectInteractiveState,
   PtyScreenObserver,
@@ -8,6 +12,14 @@ import {
   type ScreenSnapshot,
 } from "../src/screen-model.js";
 import type { ConsoleAttentionState, ConsoleSession, Logger } from "../src/types.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const CLAUDE_FIXTURE_DIR = path.join(
+  __dirname,
+  "fixtures",
+  "claude-permission-screens",
+  "claude-code-1.0.117",
+);
 
 function snapshot(text: string): ScreenSnapshot {
   const rows = text.split("\n");
@@ -54,6 +66,48 @@ function makeSession(overrides: Partial<ConsoleSession> = {}): ConsoleSession {
 }
 
 describe("PTY screen detection", () => {
+  it.each([
+    ["bash-command.txt", "bash_command", "npm test -- --runInBand"],
+    ["file-edit.txt", "file_edit", "/tmp/mandible-fixture/src/index.ts"],
+    ["mcp-tool.txt", "mcp_tool", "mcp__github__create_issue"],
+    ["tool-use.txt", "tool_use", "Read"],
+  ])("parses Claude Code 1.0.117 permission fixture %s", (fileName, kind, subject) => {
+    const text = fs.readFileSync(path.join(CLAUDE_FIXTURE_DIR, fileName), "utf8");
+    const prompt = detectClaudePermissionPrompt(text);
+
+    expect(prompt).toMatchObject({
+      kind,
+      subject,
+      detect_only: false,
+    });
+    expect(prompt?.question).toContain("?");
+    expect(prompt?.options).toEqual([
+      { key: "1", label: "Yes", decision: "option:1" },
+      expect.objectContaining({ key: "2", label: expect.stringContaining("don't ask again") }),
+      expect.objectContaining({ key: "3", label: expect.stringContaining("No") }),
+    ]);
+
+    const state = detectInteractiveState(snapshot(text), "claude");
+    expect(state?.kind).toBe("permission_menu");
+    expect(state?.matched).toBe(`claude-permission-${kind}`);
+    expect(state?.claude_permission?.screen_hash).toBe(prompt?.screen_hash);
+  });
+
+  it("detects Claude trust prompts without creating answer options", () => {
+    const text = fs.readFileSync(path.join(CLAUDE_FIXTURE_DIR, "trust-folder.txt"), "utf8");
+    const prompt = detectClaudePermissionPrompt(text);
+
+    expect(prompt).toMatchObject({
+      kind: "trust_folder",
+      detect_only: true,
+      options: [],
+    });
+
+    const state = detectInteractiveState(snapshot(text), "claude");
+    expect(state?.kind).toBe("permission_menu");
+    expect(state?.matched).toBe("claude-detect-only-trust_folder");
+  });
+
   it("classifies Claude terminal permission menus", () => {
     const state = detectInteractiveState(
       snapshot("Claude needs your permission to use Bash\n❯ Allow\n  Deny"),

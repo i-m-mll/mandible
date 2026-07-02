@@ -8,7 +8,14 @@ export type PermissionDecision =
   | "allow"
   | "allow_always"
   | "reject_once"
-  | "reject_always";
+  | "reject_always"
+  | `option:${string}`;
+
+export interface PermissionRequestOption {
+  key: string;
+  label: string;
+  decision?: PermissionDecision;
+}
 
 export interface PermissionRequest {
   id: string;
@@ -23,6 +30,7 @@ export interface PermissionRequest {
   blocked_path?: string;
   decision_reason?: string;
   agent_id?: string;
+  options?: PermissionRequestOption[];
 }
 
 export interface BackendStatusEvent {
