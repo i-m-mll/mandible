@@ -235,15 +235,28 @@
 }
 
 .issues-detail .ledger-issue-detail__header {
-  position: sticky;
-  top: -24px;
+  position: relative;
   z-index: 12;
-  margin: -24px -24px 2px;
   padding: 24px 24px 14px;
   background: #0b0f14;
 }
 
-.issues-detail .ledger-issue-detail > :not(.ledger-issue-detail__header) {
+.issues-detail .ledger-issue-detail__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  padding: 18px 24px 24px;
+}
+
+.issues-detail--metadata-open .ledger-issue-detail__body {
+  overflow: hidden;
+}
+
+.issues-detail .ledger-issue-detail__body > .ledger-issue-detail__section {
   max-width: 720px;
 }
 
@@ -656,7 +669,14 @@
   min-width: 0;
 }
 
-.ledger-issue-detail__body,
+.ledger-issue-detail__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .ledger-comment-card__body {
   overflow-wrap: anywhere;
 }
