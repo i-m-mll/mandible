@@ -2096,7 +2096,7 @@ describe('LedgerIssueDetail', () => {
     }));
     expect(artifactLinks).toContainEqual({
       text: 'artifact:bbbbbbbbbbbb',
-      href: '#/artifacts?ref=bbbbbbbbbbbb',
+      href: '#/artifacts?ref=artifact%3Abbbbbbbbbbbb',
     });
     expect(artifactLinks).toContainEqual({
       text: 'feedbax://runs/demo',
@@ -2287,17 +2287,17 @@ describe('LedgerIssueDetail', () => {
     expect(screen.getByText('Associated Artifacts')).toBeTruthy();
     const link = screen.getByText('repo://mandible@main/results/report.md').closest('a') as HTMLAnchorElement | null;
     expect(link?.getAttribute('href')).toBe(
-      '#/artifacts?artifact=artifact%3Asha256%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '#/artifacts?ref=artifact-blob%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
     );
     expect(link?.textContent).toContain('pinned');
     expect(link?.textContent).not.toContain('v1');
     expect(link?.textContent).not.toContain('latest');
     const compactLink = screen.getByText('artifact:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
     expect(compactLink?.getAttribute('href')).toBe(
-      '#/artifacts?artifact=artifact%3Asha256%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      '#/artifacts?ref=artifact-blob%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     );
     const livingLink = screen.getByText('artifact-series:live-report').closest('a') as HTMLAnchorElement | null;
-    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
+    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact%3Alive-report');
     expect(livingLink?.textContent).toContain('latest → v2');
     expect(screen.getAllByText('linked + referenced')).toHaveLength(2);
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
