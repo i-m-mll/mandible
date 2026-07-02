@@ -216,12 +216,48 @@ export function reconcileEdges(
   previous: SpaceEdge[],
 ): SpaceEdge[] {
   const previousById = new Map(previous.map((e) => [e.id, e]));
-  return incoming.map((next) => {
+  let changed = previous.length !== incoming.length;
+  const nextEdges = incoming.map((next, index) => {
+    const previousEdge = previousById.get(next.id);
     if (editingIds.has(next.id)) {
-      return previousById.get(next.id) ?? next;
+      if (!previousEdge) changed = true;
+      else if (previous[index] !== previousEdge) changed = true;
+      return previousEdge ?? next;
     }
+    if (previousEdge && sameSpaceEdge(previousEdge, next)) {
+      if (previous[index] !== previousEdge) changed = true;
+      return previousEdge;
+    }
+    changed = true;
     return next;
   });
+  return changed ? nextEdges : previous;
+}
+
+function sameUnknownRecord(
+  left: Record<string, unknown> | null | undefined,
+  right: Record<string, unknown> | null | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => Object.is(left[key], right[key]));
+}
+
+function sameSpaceEdge(left: SpaceEdge, right: SpaceEdge): boolean {
+  return (
+    left.id === right.id &&
+    left.space_id === right.space_id &&
+    left.source === right.source &&
+    left.target === right.target &&
+    left.label === right.label &&
+    left.style === right.style &&
+    left.created_at === right.created_at &&
+    left.updated_at === right.updated_at &&
+    sameUnknownRecord(left.metadata, right.metadata)
+  );
 }
 
 /** Apply an optimistic label edit to one edge in a list (edit preview). */

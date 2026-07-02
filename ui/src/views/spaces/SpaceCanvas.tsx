@@ -30,9 +30,11 @@ import {
   MarkerType,
   Position,
   ReactFlow,
+  applyNodeChanges,
   type Connection,
   type EdgeChange,
   type Edge as FlowEdge,
+  type Node as FlowNode,
   type NodeChange,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
@@ -92,13 +94,7 @@ export type CanvasNode = {
   y: number;
 };
 
-export type SpaceFlowNode = {
-  id: string;
-  position: { x: number; y: number };
-  data: SpaceFlowNodeData;
-  selected?: boolean;
-  type: 'spaceOccurrence';
-};
+export type SpaceFlowNode = FlowNode<SpaceFlowNodeData, 'spaceOccurrence'>;
 
 type SpaceFlowNodeData = {
   label: string;
@@ -110,7 +106,7 @@ type SpaceFlowNodeData = {
     projectLabel: string;
     href: string;
   };
-};
+} & Record<string, unknown>;
 
 /** A legacy unplaced occurrence entry. New Canvas adds place immediately. */
 export type ShelfEntry = {
@@ -255,6 +251,42 @@ export function edgesToFlowEdges(
   return flow;
 }
 
+function sameFlowEdge(left: FlowEdge, right: FlowEdge): boolean {
+  const leftMarker = left.markerEnd;
+  const rightMarker = right.markerEnd;
+  return (
+    left.id === right.id &&
+    left.source === right.source &&
+    left.target === right.target &&
+    left.label === right.label &&
+    left.selected === right.selected &&
+    left.className === right.className &&
+    leftMarker?.type === rightMarker?.type &&
+    leftMarker?.color === rightMarker?.color
+  );
+}
+
+export function reconcileFlowEdges(
+  edges: SpaceEdge[],
+  placedIds: ReadonlySet<string>,
+  selectedEdgeId: string | null,
+  previous: FlowEdge[] = [],
+): FlowEdge[] {
+  const previousById = new Map(previous.map((edge) => [edge.id, edge]));
+  let changed = false;
+  const next = edgesToFlowEdges(edges, placedIds, selectedEdgeId).map((edge, index) => {
+    const previousEdge = previousById.get(edge.id);
+    if (previousEdge && sameFlowEdge(previousEdge, edge)) {
+      if (previous[index] !== previousEdge) changed = true;
+      return previousEdge;
+    }
+    changed = true;
+    return edge;
+  });
+  if (next.length !== previous.length) changed = true;
+  return changed ? next : previous;
+}
+
 /**
  * Validate a React Flow connection into a `CreateSpaceEdgeRequest`, or null when
  * the connection is not a valid authored edge (missing endpoints or a self-loop).
@@ -288,23 +320,9 @@ export function canvasNodesToFlowNodes(
 
 export function applyLocalNodeChanges(
   nodes: SpaceFlowNode[],
-  changes: NodeChange[],
+  changes: NodeChange<SpaceFlowNode>[],
 ): SpaceFlowNode[] {
-  let nextNodes = nodes;
-  for (const change of changes) {
-    if (change.type !== 'position' && change.type !== 'select') continue;
-    nextNodes = nextNodes.map((node) => {
-      if (node.id !== change.id) return node;
-      if (change.type === 'position' && change.position) {
-        return { ...node, position: { x: change.position.x, y: change.position.y } };
-      }
-      if (change.type === 'select') {
-        return { ...node, selected: change.selected };
-      }
-      return node;
-    });
-  }
-  return nextNodes;
+  return applyNodeChanges<SpaceFlowNode>(changes, nodes);
 }
 
 /**
@@ -388,18 +406,67 @@ export function reconcileOccurrences(
   protectedPositions: Record<string, { x: number; y: number }> = {},
 ): SpaceOccurrence[] {
   const previousById = new Map(previous.map((o) => [o.id, o]));
-  return incoming.map((next) => {
+  let changed = previous.length !== incoming.length;
+  const nextOccurrences = incoming.map((next, index) => {
+    const previousOccurrence = previousById.get(next.id);
     if (draggingIds.has(next.id)) {
       // Keep the local in-flight value for nodes the user is actively moving.
-      return previousById.get(next.id) ?? next;
+      if (!previousOccurrence) changed = true;
+      else if (previous[index] !== previousOccurrence) changed = true;
+      return previousOccurrence ?? next;
     }
     const protectedPosition = protectedPositions[next.id];
     if (protectedPosition && (next.x !== protectedPosition.x || next.y !== protectedPosition.y)) {
-      const previousOccurrence = previousById.get(next.id) ?? next;
-      return { ...previousOccurrence, x: protectedPosition.x, y: protectedPosition.y };
+      changed = true;
+      return { ...(previousOccurrence ?? next), x: protectedPosition.x, y: protectedPosition.y };
     }
+    if (previousOccurrence && sameSpaceOccurrence(previousOccurrence, next)) {
+      if (previous[index] !== previousOccurrence) changed = true;
+      return previousOccurrence;
+    }
+    changed = true;
     return next;
   });
+  const incomingIds = new Set(incoming.map((occurrence) => occurrence.id));
+  for (const previousOccurrence of previous) {
+    if (incomingIds.has(previousOccurrence.id) || !draggingIds.has(previousOccurrence.id)) continue;
+    nextOccurrences.push(previousOccurrence);
+    changed = true;
+  }
+  return changed ? nextOccurrences : previous;
+}
+
+function sameUnknownRecord(
+  left: Record<string, unknown> | null | undefined,
+  right: Record<string, unknown> | null | undefined,
+): boolean {
+  if (left === right) return true;
+  if (!left || !right) return false;
+  const leftKeys = Object.keys(left);
+  const rightKeys = Object.keys(right);
+  if (leftKeys.length !== rightKeys.length) return false;
+  return leftKeys.every((key) => Object.is(left[key], right[key]));
+}
+
+function sameSpaceOccurrence(left: SpaceOccurrence, right: SpaceOccurrence): boolean {
+  return (
+    left.id === right.id &&
+    left.space_id === right.space_id &&
+    left.item_id === right.item_id &&
+    left.renderer === right.renderer &&
+    left.parent_id === right.parent_id &&
+    left.x === right.x &&
+    left.y === right.y &&
+    left.width === right.width &&
+    left.height === right.height &&
+    left.z_index === right.z_index &&
+    left.sort_key === right.sort_key &&
+    left.section_id === right.section_id &&
+    left.note === right.note &&
+    left.created_at === right.created_at &&
+    left.updated_at === right.updated_at &&
+    sameUnknownRecord(left.metadata, right.metadata)
+  );
 }
 
 /** Apply an optimistic position to one occurrence in a list (drag preview). */
@@ -559,6 +626,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   const reconcileRequestSeq = useRef(0);
   const debounceTimer = useRef<number | null>(null);
   const occurrencesRef = useRef<SpaceOccurrence[]>(occurrences);
+  const flowEdgesRef = useRef<FlowEdge[]>([]);
   const editingEdgeIds = useRef<Set<string>>(new Set());
   const bodyRef = useRef<HTMLDivElement>(null);
   const inspectorResizeRef = useRef<{ startY: number; startHeight: number } | null>(null);
@@ -795,10 +863,11 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
   // React Flow edges from the authored `space_edges`, drawn only between nodes
   // that are both currently placed on the canvas.
   const placedIds = useMemo(() => new Set(placed.map((n) => n.occurrence.id)), [placed]);
-  const flowEdges = useMemo(
-    () => edgesToFlowEdges(edges, placedIds, selectedEdgeId),
-    [edges, placedIds, selectedEdgeId],
-  );
+  const flowEdges = useMemo(() => {
+    const next = reconcileFlowEdges(edges, placedIds, selectedEdgeId, flowEdgesRef.current);
+    flowEdgesRef.current = next;
+    return next;
+  }, [edges, placedIds, selectedEdgeId]);
   const occurrencesById = useMemo(() => indexOccurrences(occurrences), [occurrences]);
   const edgeItemsById = useMemo(() => indexItemsById(items), [items]);
   const resolvedSelectedEdge = useMemo<ResolvedSpaceEdge | null>(() => {
@@ -1225,6 +1294,14 @@ function sameFlowNode(left: SpaceFlowNode, right: SpaceFlowNode): boolean {
     left.id === right.id &&
     left.type === right.type &&
     left.selected === right.selected &&
+    left.dragging === right.dragging &&
+    left.resizing === right.resizing &&
+    left.width === right.width &&
+    left.height === right.height &&
+    left.initialWidth === right.initialWidth &&
+    left.initialHeight === right.initialHeight &&
+    left.measured?.width === right.measured?.width &&
+    left.measured?.height === right.measured?.height &&
     left.position.x === right.position.x &&
     left.position.y === right.position.y &&
     left.data.label === right.data.label &&
@@ -1235,6 +1312,25 @@ function sameFlowNode(left: SpaceFlowNode, right: SpaceFlowNode): boolean {
     left.data.linkedSpace?.projectLabel === right.data.linkedSpace?.projectLabel &&
     left.data.linkedSpace?.href === right.data.linkedSpace?.href
   );
+}
+
+function mergeCanonicalFlowNode(
+  previous: SpaceFlowNode,
+  canonical: SpaceFlowNode,
+  preservePosition: boolean,
+): SpaceFlowNode {
+  return {
+    ...previous,
+    ...canonical,
+    position: preservePosition ? previous.position : canonical.position,
+    dragging: previous.dragging,
+    resizing: previous.resizing,
+    measured: previous.measured,
+    width: previous.width,
+    height: previous.height,
+    initialWidth: previous.initialWidth,
+    initialHeight: previous.initialHeight,
+  };
 }
 
 function reconcileFlowNodeState(
@@ -1250,19 +1346,27 @@ function reconcileFlowNodeState(
       changed = true;
       return canonicalNode;
     }
-    const reconciledNode = activeDragIds.has(canonicalNode.id)
-      ? { ...canonicalNode, position: previousNode.position }
-      : canonicalNode;
+    const reconciledNode = mergeCanonicalFlowNode(
+      previousNode,
+      canonicalNode,
+      activeDragIds.has(canonicalNode.id),
+    );
     if (sameFlowNode(previousNode, reconciledNode)) {
       return previousNode;
     }
     changed = true;
     return reconciledNode;
   });
+  const canonicalIds = new Set(canonical.map((node) => node.id));
+  for (const previousNode of previous) {
+    if (canonicalIds.has(previousNode.id) || !activeDragIds.has(previousNode.id)) continue;
+    next.push(previousNode);
+    changed = true;
+  }
   return changed ? next : previous;
 }
 
-function SpaceCanvasFlowSurface({
+export function SpaceCanvasFlowSurface({
   nodes: canonicalNodes,
   edges,
   nodeTypes,
@@ -1295,13 +1399,13 @@ function SpaceCanvasFlowSurface({
   }, [canonicalNodes]);
 
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
+    (changes: NodeChange<SpaceFlowNode>[]) => {
       setNodes((previous) => applyLocalNodeChanges(previous, changes));
       for (const change of changes) {
         if (change.type === 'position' && change.position) {
           if (change.dragging === false) {
             onNodeDragStop(change.id, { x: change.position.x, y: change.position.y });
-          } else {
+          } else if (!activeDragIds.current.has(change.id)) {
             activeDragIds.current.add(change.id);
             onNodeDragStart(change.id);
           }
