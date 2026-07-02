@@ -2580,6 +2580,15 @@ const MIGRATIONS: Migration[] = [
     // from backend_type so UI badges and downstream chat controls have a
     // stable contract while legacy backend launch semantics stay intact.
     statements: []
+  },
+  {
+    version: 94,
+    name: "message_params_thinking_effort",
+    // Issue: 3da19be — include SDK reasoning effort in the existing
+    // per-message parameter keyframes.
+    statements: [
+      `ALTER TABLE message_params ADD COLUMN thinking_effort TEXT`,
+    ]
   }
 ];
 

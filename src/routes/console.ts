@@ -16,6 +16,9 @@ import type {
   ConsoleTransportLane,
 } from "../types.js";
 
+const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
+
 function sendJson(res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void }, code: number, payload: unknown): void {
   res.status(code).json(payload);
 }
@@ -40,6 +43,109 @@ function parseTransportLane(value: unknown): ConsoleTransportLane | undefined {
     || value === "spawn"
     ? value
     : undefined;
+}
+
+function parseStringArray(value: unknown): { ok: true; value: string[] } | { ok: false } | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    return { ok: false };
+  }
+  return { ok: true, value };
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function parseNonNegativeNumber(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parseSessionOptionsBody(
+  backendType: ConsoleSession["backend_type"],
+  body: unknown,
+): { ok: true; options: SDKBackendOptions } | { ok: false; error: string } {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const options: SDKBackendOptions = {};
+
+  if (typeof record.model === "string") {
+    options.model = record.model;
+  } else if (record.model !== undefined) {
+    return { ok: false, error: "invalid_model" };
+  }
+
+  const allowedTools = parseStringArray(record.allowedTools);
+  if (allowedTools?.ok) {
+    options.allowedTools = allowedTools.value;
+  } else if (allowedTools !== undefined) {
+    return { ok: false, error: "invalid_allowed_tools" };
+  }
+
+  const presetIds = parseStringArray(record.presetIds);
+  if (presetIds?.ok) {
+    options.presetIds = presetIds.value;
+  } else if (presetIds !== undefined) {
+    return { ok: false, error: "invalid_preset_ids" };
+  }
+
+  if (backendType === "sdk") {
+    if (record.thinkingEffort !== undefined) {
+      if (typeof record.thinkingEffort !== "string" || !SDK_THINKING_EFFORTS.has(record.thinkingEffort)) {
+        return { ok: false, error: "invalid_thinking_effort" };
+      }
+      options.thinkingEffort = record.thinkingEffort as SDKBackendOptions["thinkingEffort"];
+    }
+
+    if (record.permissionMode !== undefined) {
+      if (typeof record.permissionMode !== "string" || !SDK_PERMISSION_MODES.has(record.permissionMode)) {
+        return { ok: false, error: "invalid_permission_mode" };
+      }
+      options.permissionMode = record.permissionMode as SDKBackendOptions["permissionMode"];
+    }
+
+    const maxTurns = parsePositiveInteger(record.maxTurns);
+    if (maxTurns !== undefined) {
+      options.maxTurns = maxTurns;
+    } else if (record.maxTurns !== undefined) {
+      return { ok: false, error: "invalid_max_turns" };
+    }
+
+    const maxCostUsd = parseNonNegativeNumber(record.maxCostUsd);
+    if (maxCostUsd !== undefined) {
+      options.maxCostUsd = maxCostUsd;
+    } else if (record.maxCostUsd !== undefined) {
+      return { ok: false, error: "invalid_max_cost_usd" };
+    }
+
+    if (typeof record.systemPrompt === "string") {
+      options.systemPrompt = record.systemPrompt;
+    } else if (record.systemPrompt !== undefined) {
+      return { ok: false, error: "invalid_system_prompt" };
+    }
+
+    const settingSourcesOverride = parseStringArray(record.settingSourcesOverride);
+    if (settingSourcesOverride?.ok) {
+      options.settingSourcesOverride = settingSourcesOverride.value;
+    } else if (settingSourcesOverride !== undefined) {
+      return { ok: false, error: "invalid_setting_sources" };
+    }
+  } else {
+    const sdkOnlyKeys = [
+      "thinkingEffort",
+      "permissionMode",
+      "maxTurns",
+      "maxCostUsd",
+      "systemPrompt",
+      "settingSourcesOverride",
+    ];
+    if (sdkOnlyKeys.some((key) => record[key] !== undefined)) {
+      return { ok: false, error: "unsupported_session_option" };
+    }
+  }
+
+  return { ok: true, options };
 }
 
 // Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
@@ -169,7 +275,12 @@ export function registerConsoleRoutes(
       return;
     }
 
-    const body = (req.body ?? {}) as SDKBackendOptions;
+    const parsed = parseSessionOptionsBody(session.meta.backend_type, req.body ?? {});
+    if (!parsed.ok) {
+      sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    const body = parsed.options;
 
     // Bug: 790433d — Persist presetIds changes to session_presets table
     if (body.presetIds !== undefined) {

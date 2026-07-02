@@ -1,9 +1,19 @@
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
 import {
+  type ConsoleSessionOptions,
+  type ConsoleThinkingEffort,
   updateConsoleSession,
   updateConsoleSessionOptions,
 } from '../../api';
+
+const THINKING_EFFORT_OPTIONS: Array<{ value: ConsoleThinkingEffort; label: string }> = [
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'X-high' },
+  { value: 'max', label: 'Max' },
+];
 
 type SessionControlsProps = {
   sessionId: string;
@@ -93,6 +103,7 @@ export function SessionControls({
   hideModel = false,
 }: SessionControlsProps): JSX.Element {
   const [draftModel, setDraftModel] = useState(model ?? '');
+  const [thinkingEffort, setThinkingEffort] = useState<ConsoleThinkingEffort | ''>('');
   const [permissionMode, setPermissionMode] = useState<'default' | 'acceptEdits' | 'bypassPermissions'>('default');
   const [maxTurns, setMaxTurns] = useState('');
   const [maxCostUsd, setMaxCostUsd] = useState('');
@@ -100,6 +111,7 @@ export function SessionControls({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const supportsToolOptions = backendType === 'sdk' || backendType === 'acp';
+  const supportsThinkingEffort = backendType === 'sdk';
 
   useEffect(() => {
     setDraftModel(model ?? '');
@@ -113,13 +125,17 @@ export function SessionControls({
     setSaving(true);
     setError(null);
     try {
-      await updateConsoleSessionOptions(sessionId, {
-        model: draftModel || undefined,
-        permissionMode,
+      const nextOptions: ConsoleSessionOptions = {
         allowedTools: draftAllowedTools,
-        maxTurns: maxTurns.trim() ? Number(maxTurns) : undefined,
-        maxCostUsd: maxCostUsd.trim() ? Number(maxCostUsd) : undefined,
-      });
+      };
+      if (backendType === 'sdk') {
+        nextOptions.model = draftModel || undefined;
+        nextOptions.thinkingEffort = thinkingEffort || undefined;
+        nextOptions.permissionMode = permissionMode;
+        nextOptions.maxTurns = maxTurns.trim() ? Number(maxTurns) : undefined;
+        nextOptions.maxCostUsd = maxCostUsd.trim() ? Number(maxCostUsd) : undefined;
+      }
+      await updateConsoleSessionOptions(sessionId, nextOptions);
       onModelSaved?.(draftModel || undefined);
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : 'Unable to save session options');
@@ -164,6 +180,25 @@ export function SessionControls({
         <div className="session-controls__row">
           {backendType === 'sdk' && (
             <>
+              {supportsThinkingEffort && (
+                <label className="session-controls__field">
+                  <span className="session-controls__label">Thinking effort</span>
+                  <select
+                    className="session-controls__select"
+                    value={thinkingEffort}
+                    disabled={saving}
+                    aria-label="Thinking effort"
+                    onChange={(event) => setThinkingEffort(
+                      event.currentTarget.value as ConsoleThinkingEffort | '',
+                    )}
+                  >
+                    <option value="">Default</option>
+                    {THINKING_EFFORT_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              )}
               <label className="session-controls__field">
                 <span className="session-controls__label">Max turns</span>
                 <input

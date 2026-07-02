@@ -88,4 +88,56 @@ describe("console prompt route", () => {
     expect(manager.cancelPrompt).toHaveBeenCalledWith("sdk-session");
     expect(payloads).toEqual([{ code: 202, payload: { ok: true } }]);
   });
+
+  it("accepts typed SDK thinking-effort option updates", () => {
+    const { server, routes } = makeRegistrar();
+    const manager = {
+      get: vi.fn(() => ({ meta: { id: "sdk-session", backend_type: "sdk" } })),
+      updateOptions: vi.fn(() => ({ id: "sdk-session", backend_type: "sdk" })),
+    };
+
+    registerConsoleRoutes(server, manager as never);
+    const route = routes.find(
+      (item) => item.method === "PATCH" && item.path === "/api/console/sessions/:id/options",
+    );
+    expect(route).toBeDefined();
+
+    const { res, payloads } = makeJsonResponse();
+    route?.handler(
+      { params: { id: "sdk-session" }, body: { thinkingEffort: "high", maxTurns: 3 } } as never,
+      res as never,
+    );
+
+    expect(manager.updateOptions).toHaveBeenCalledWith("sdk-session", {
+      thinkingEffort: "high",
+      maxTurns: 3,
+    });
+    expect(payloads).toEqual([{
+      code: 200,
+      payload: { session: { id: "sdk-session", backend_type: "sdk" } },
+    }]);
+  });
+
+  it("rejects unsupported provider-specific options on ACP sessions", () => {
+    const { server, routes } = makeRegistrar();
+    const manager = {
+      get: vi.fn(() => ({ meta: { id: "acp-session", backend_type: "acp" } })),
+      updateOptions: vi.fn(),
+    };
+
+    registerConsoleRoutes(server, manager as never);
+    const route = routes.find(
+      (item) => item.method === "PATCH" && item.path === "/api/console/sessions/:id/options",
+    );
+    expect(route).toBeDefined();
+
+    const { res, payloads } = makeJsonResponse();
+    route?.handler(
+      { params: { id: "acp-session" }, body: { thinkingEffort: "high" } } as never,
+      res as never,
+    );
+
+    expect(manager.updateOptions).not.toHaveBeenCalled();
+    expect(payloads).toEqual([{ code: 400, payload: { error: "unsupported_session_option" } }]);
+  });
 });
