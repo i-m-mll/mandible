@@ -115,6 +115,13 @@ export function ConsoleSubTabBar({
             {/* Session name */}
             <span className="console-tab__name">{session.label}</span>
 
+            <span
+              className="console-tab__lane"
+              title={session.transport_badge?.title}
+            >
+              {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
+            </span>
+
             {/* Status indicator: red dot for crashed, muted dot for stopped.
                 Bug: 1d286c1 — requires Bug 3 (SSE events) to propagate status correctly */}
             {(session.status === 'crashed' || session.status === 'stopped') && (

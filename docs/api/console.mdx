@@ -1,6 +1,6 @@
 # Console API
 
-The Console manages first-class (SDK) and second-class (PTY) agent sessions spawned from the Mandible dashboard. Console sessions have full lifecycle control: create, start, stop, restart, resize, send prompts, and manage permissions.
+The Console manages SDK, ACP, PTY, and spawn-backed agent sessions from the Mandible dashboard. Console sessions have full lifecycle control: create, start, stop, restart, resize, send prompts, and manage permissions.
 
 ## Types
 
@@ -8,7 +8,7 @@ Console session statuses: `running`, `stopped`, `crashed`.
 
 Interaction modes: `inbox_only`, `direct`, `both`.
 
-Backend types: `sdk`, `pty`, `spawn`.
+Backend types: `sdk`, `acp`, `pty`, `spawn`.
 
 ## Endpoints
 
@@ -35,7 +35,7 @@ List all console sessions.
 
 ### POST /api/console/sessions
 
-Create a new console session. SDK and spawn sessions start immediately. PTY sessions for structured chat (claude, codex, gemini) wait until explicitly started unless `is_operator` is true. Creating a Codex session with `provider_session_id` first unarchives that Codex thread so archived worker follow-ups can resume.
+Create a new console session. SDK, ACP, and spawn sessions start immediately. PTY sessions wait until explicitly started unless `is_operator` is true. Creating a Codex session with `provider_session_id` first unarchives that Codex thread so archived worker follow-ups can resume.
 
 **Request body:**
 
@@ -51,7 +51,7 @@ Create a new console session. SDK and spawn sessions start immediately. PTY sess
 | `auto_restart` | boolean | no | Restart on crash (default: false) |
 | `is_operator` | boolean | no | Whether this is the operator session |
 | `interaction_mode` | string | no | `inbox_only`, `direct`, or `both` (default: `both`) |
-| `backend_type` | string | no | `sdk`, `pty`, or `spawn` (default: `sdk` for `claude`, `spawn` otherwise) |
+| `backend_type` | string | no | `sdk`, `acp`, `pty`, or `spawn` (default: `sdk` for `claude`, `acp` for `codex`/`gemini`, `spawn` otherwise) |
 | `presetIds` | string[] | no | Convention preset IDs to attach |
 
 **Response:** `201 Created`
@@ -162,7 +162,7 @@ Resize the PTY terminal.
 
 ### POST /api/console/sessions/:id/prompt
 
-Send a prompt to an SDK or spawn session. For Codex sessions with a provider thread ID, Mandible unarchives the thread before sending the prompt.
+Send a prompt to an SDK, ACP, or spawn session. For Codex sessions with a provider thread ID, Mandible unarchives the thread before sending the prompt.
 
 **Request body:**
 

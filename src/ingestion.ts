@@ -13,6 +13,7 @@ import { compressContent, compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
+import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import type { Logger } from "./types.js";
 import type { ParseResult } from "./parsers/types.js";
 
@@ -41,6 +42,10 @@ const ingestQueue: string[] = [];
 const queuedIngestPaths = new Set<string>();
 let ingestDrainRunning = false;
 const codexSessionIndexSyncMtimes = new Map<string, number>();
+const targetedIngestLastRun = new Map<string, number>();
+const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
+const acpSuppressedSessions = new Map<string, number>();
+const ACP_SUPPRESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 // --- Public API ---
 
@@ -138,7 +143,96 @@ export async function triggerFullIngest(): Promise<{ processed: number; errors: 
   return { processed, errors };
 }
 
+export interface TargetedIngestInput {
+  sessionRef?: string | null;
+  transcriptPath?: string | null;
+  now?: number;
+}
+
+export interface TargetedIngestResult {
+  ok: boolean;
+  status: "ingested" | "rate_limited" | "no_target" | "unsupported";
+  transcript_path: string | null;
+  session_ref: string | null;
+}
+
+export async function triggerTargetedIngest(input: TargetedIngestInput): Promise<TargetedIngestResult> {
+  const sessionRef = normalizeTargetRef(input.sessionRef);
+  const transcriptPath = normalizeTargetPath(input.transcriptPath) ?? findTranscriptPathForSession(sessionRef);
+  if (!transcriptPath) {
+    return { ok: true, status: "no_target", transcript_path: null, session_ref: sessionRef };
+  }
+
+  if (!getParserForFile(transcriptPath)) {
+    logger("debug", "ingestion_targeted_unsupported", { file: transcriptPath, session_ref: sessionRef });
+    return { ok: true, status: "unsupported", transcript_path: transcriptPath, session_ref: sessionRef };
+  }
+
+  const now = input.now ?? Date.now();
+  const key = `${sessionRef ?? ""}\u0000${transcriptPath}`;
+  const last = targetedIngestLastRun.get(key) ?? 0;
+  if (now - last < TARGETED_INGEST_MIN_INTERVAL_MS) {
+    return { ok: true, status: "rate_limited", transcript_path: transcriptPath, session_ref: sessionRef };
+  }
+  targetedIngestLastRun.set(key, now);
+
+  const pendingTimer = debounceTimers.get(transcriptPath);
+  if (pendingTimer) {
+    clearTimeout(pendingTimer);
+    debounceTimers.delete(transcriptPath);
+  }
+
+  await ingestFile(transcriptPath);
+  clearHookNotificationAttention({ sessionRef, transcriptPath });
+  return { ok: true, status: "ingested", transcript_path: transcriptPath, session_ref: sessionRef };
+}
+
+export function suppressAcpIngestForSession(source: string, sessionId: string): void {
+  if (!source.trim() || !sessionId.trim()) {
+    return;
+  }
+  acpSuppressedSessions.set(acpSuppressionKey(source, sessionId), Date.now() + ACP_SUPPRESSION_TTL_MS);
+}
+
 // --- Internal ---
+
+function normalizeTargetRef(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, 256) : null;
+}
+
+function normalizeTargetPath(value: string | null | undefined): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed || !path.isAbsolute(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+function findTranscriptPathForSession(sessionRef: string | null): string | null {
+  if (!sessionRef) {
+    return null;
+  }
+  try {
+    const db = getDb();
+    const row = db.prepare(`
+      SELECT source_path
+      FROM conversations
+      WHERE session_id = ?
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `).get(sessionRef) as { source_path: string | null } | undefined;
+    return normalizeTargetPath(row?.source_path ?? null);
+  } catch {
+    return null;
+  }
+}
 
 function debouncedIngest(filePath: string): void {
   const runToken = ingestionRunToken;
@@ -212,6 +306,23 @@ async function drainIngestQueue(runToken: number): Promise<void> {
 
 function isCurrentIngestionRun(runToken: number): boolean {
   return ingestionActive && runToken === ingestionRunToken;
+}
+
+export function isAcpIngestSuppressed(source: string, sessionId: string, now = Date.now()): boolean {
+  const key = acpSuppressionKey(source, sessionId);
+  const expiresAt = acpSuppressedSessions.get(key);
+  if (!expiresAt) {
+    return false;
+  }
+  if (expiresAt <= now) {
+    acpSuppressedSessions.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function acpSuppressionKey(source: string, sessionId: string): string {
+  return `${source.trim().toLowerCase()}:${sessionId.trim()}`;
 }
 
 async function syncCodexIndexedTitle(
@@ -412,6 +523,18 @@ async function ingestFile(filePath: string): Promise<void> {
       file: filePath,
       source: parser.source,
       error: String(error),
+    });
+    return;
+  }
+
+  if (
+    result?.conversation.session_id
+    && isAcpIngestSuppressed(result.conversation.source, result.conversation.session_id)
+  ) {
+    logger("debug", "ingestion_skip_acp_originated_session", {
+      file: filePath,
+      source: result.conversation.source,
+      session_id: result.conversation.session_id,
     });
     return;
   }

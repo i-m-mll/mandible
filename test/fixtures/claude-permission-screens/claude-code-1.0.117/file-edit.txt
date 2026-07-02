@@ -1,0 +1,8 @@
+Claude wants to edit a file before continuing
+
+File: /tmp/mandible-fixture/src/index.ts
+
+Do you want to allow this file edit?
+> 1. Yes
+  2. Yes, and don't ask again for edits in /tmp/mandible-fixture
+  3. No, and tell Claude what to do differently

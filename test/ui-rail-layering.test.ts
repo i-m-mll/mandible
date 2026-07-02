@@ -1,7 +1,8 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
-const stylesheet = readFileSync('ui/src/style.css', 'utf8');
+import { readResolvedStylesheet } from './helpers/css-manifest';
+
+const stylesheet = readResolvedStylesheet();
 const rules = Array.from(stylesheet.matchAll(/([^{}]+)\{([^{}]*)\}/g)).map((match) => ({
   selectors: match[1].split(',').map((selector) => selector.trim()),
   body: match[2],

@@ -38,13 +38,56 @@ type ConsoleSession = {
   created_at: number;
   started_at: number | null;
   stopped_at: number | null;
-  backend_type: 'pty' | 'sdk' | 'spawn';
+  backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+  transport_badge?: {
+    label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+    title: string;
+  };
   // Bug: b5e1c51 — Whether this PTY session has channel integration (Terminal + Events)
   channel_enabled?: boolean;
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   resume_at_message?: string | null;
-  channel_enabled?: boolean;
+  attention?: {
+    session_id: string;
+    kind: 'input_prompt' | 'running_output' | 'permission_menu' | 'hook_notification' | 'unknown';
+    source: 'pty_screen' | 'pty_screen_fallback' | 'claude_hook';
+    at: number;
+    active: boolean;
+    screen_excerpt: string;
+    clear_conditions: string[];
+    detail: {
+      provider: ConsoleSession['agent_type'];
+      confidence: 'high' | 'medium' | 'low';
+      reason: string;
+      matched?: string;
+    };
+    cleared_at?: number;
+    cleared_by?:
+      | 'screen_changed'
+      | 'structured_stream_activity'
+      | 'transcript_activity'
+      | 'process_exit'
+      | 'manual_clear';
+  } | null;
+  prompt_queue?: {
+    pending_count: number;
+    items: Array<{
+      id: string;
+      text: string;
+      queued_at: number;
+      blocked_by:
+        | 'permission_menu'
+        | 'hook_notification'
+        | 'running_output'
+        | 'unknown'
+        | 'no_attention_state';
+    }>;
+    fallback_enabled: boolean;
+    fallback_quiet_ms: number;
+    last_flushed_at: number | null;
+  } | null;
 };
 
 export type { ConsoleSession };
@@ -730,6 +773,22 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       const session = ((record?.session as ConsoleSession) ?? record) as ConsoleSession | null;
       if (session?.id) {
         return appReducer(state, { type: 'upsertConsoleSession', session });
+      }
+      return state;
+    }
+    case 'console:attention': {
+      const data = unwrapSseData(payload);
+      const record = data as Record<string, unknown> | null;
+      const sessionId = typeof record?.console_session_id === 'string' ? record.console_session_id : null;
+      const existing = sessionId ? state.consoleSessions.find((s) => s.id === sessionId) : null;
+      if (existing) {
+        return appReducer(state, {
+          type: 'upsertConsoleSession',
+          session: {
+            ...existing,
+            attention: (record?.attention as ConsoleSession['attention']) ?? null,
+          },
+        });
       }
       return state;
     }

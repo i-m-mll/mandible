@@ -1292,8 +1292,16 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
 
-export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn';
-export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always';
+export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn' | 'acp';
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+export type ConsolePermissionDecision =
+  | 'deny'
+  | 'allow'
+  | 'allow_always'
+  | 'reject_once'
+  | 'reject_always'
+  | `option:${string}`;
+export type ConsoleThinkingEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export type ConsolePermissionRequest = {
   id: string;
@@ -1308,10 +1316,16 @@ export type ConsolePermissionRequest = {
   blocked_path?: string;
   decision_reason?: string;
   agent_id?: string;
+  options?: Array<{
+    key: string;
+    label: string;
+    decision?: ConsolePermissionDecision;
+  }>;
 };
 
 export type ConsoleSessionOptions = {
   model?: string;
+  thinkingEffort?: ConsoleThinkingEffort;
   systemPrompt?: string;
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions';
   allowedTools?: string[];
@@ -1326,7 +1340,7 @@ export async function createConsoleSession(
   backend: string,
   kind: string,
   backendType?: ConsoleBackendType,
-  options?: { channel_enabled?: boolean },
+  options?: { channel_enabled?: boolean; transport_lane?: ConsoleTransportLane; presetIds?: string[] },
 ): Promise<{ session: {
   id: string;
   label: string;
@@ -1343,6 +1357,11 @@ export async function createConsoleSession(
   command: string;
   args: string[];
   backend_type: ConsoleBackendType;
+  transport_lane: ConsoleTransportLane;
+  transport_badge?: {
+    label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+    title: string;
+  };
   allowed_tools: string[] | null;
   mandible_session_id: string | null;
 } }> {
@@ -1356,29 +1375,37 @@ export async function createConsoleSession(
     is_operator?: boolean;
     backend_type?: ConsoleBackendType;
     channel_enabled?: boolean;
+    transport_lane?: ConsoleTransportLane;
+    presetIds?: string[];
   };
   const body: SessionBody = { label, command: '', args: [] };
   if (options?.channel_enabled) {
     body.channel_enabled = true;
+  }
+  if (options?.transport_lane) {
+    body.transport_lane = options.transport_lane;
+  }
+  if (options?.presetIds) {
+    body.presetIds = options.presetIds;
   }
   if (kind === 'operator') {
     body.command = 'claude';
     body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
     body.auto_restart = true;
     body.is_operator = true;
-    body.backend_type = backendType ?? 'sdk';
+    body.backend_type = backendType ?? 'pty';
   } else if (backend === 'claude') {
     body.command = 'claude';
     body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
-    body.backend_type = backendType ?? 'sdk';
+    body.backend_type = backendType ?? 'pty';
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];
-    body.backend_type = 'spawn';
+    body.backend_type = backendType ?? 'acp';
   } else if (backend === 'gemini') {
     body.command = 'gemini';
-    body.args = ['-y'];
-    body.backend_type = 'spawn';
+    body.args = [];
+    body.backend_type = backendType ?? 'acp';
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }
@@ -1401,6 +1428,11 @@ export async function createConsoleSession(
       command: string;
       args: string[];
       backend_type: ConsoleBackendType;
+      transport_lane: ConsoleTransportLane;
+      transport_badge?: {
+        label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+        title: string;
+      };
       allowed_tools: string[] | null;
       mandible_session_id: string | null;
     };
@@ -1438,6 +1470,12 @@ export async function sendConsolePrompt(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/prompt`,
     { prompt },
   );
+}
+
+export async function cancelConsolePrompt(
+  sessionId: string,
+): Promise<void> {
+  await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/cancel`);
 }
 
 export async function updateConsoleSession(
@@ -1498,6 +1536,7 @@ export type MessageParams = {
   session_id: string;
   message_index: number;
   model: string | null;
+  thinking_effort: string | null;
   permission_mode: string | null;
   max_turns: number | null;
   max_cost_usd: number | null;

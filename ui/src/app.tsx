@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'p
 import {
   acknowledgeInboxItem,
   ackAllInbox,
-  addSessionPreset,
   approveAuthRequest,
   closeConsoleSession,
   createConsoleSession,
@@ -822,6 +821,13 @@ function App(): JSX.Element {
       );
     };
 
+    const consolePermissionHandler = (payload: SSEPayload) => {
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
+      window.dispatchEvent(
+        new CustomEvent(payload.type, { detail: data }),
+      );
+    };
+
     // Bug: b5abaea — forward push SSE events to window so WorkOverviewView can subscribe
     const pushEventHandler = (payload: SSEPayload) => {
       invalidateDashboardApiCacheForEvent(payload.type);
@@ -862,6 +868,8 @@ function App(): JSX.Element {
       client.on('console:session:deleted', handler),
       client.on('console:inbox:badge', handler),
       client.on('console:stream_event', consoleStreamHandler),
+      client.on('console:permission:request', consolePermissionHandler),
+      client.on('console:permission:cleared', consolePermissionHandler),
       client.on('session:registered', graphRefreshHandler),
       client.on('session:updated', graphRefreshHandler),
       client.on('session:ended', graphRefreshHandler),
@@ -1200,22 +1208,30 @@ function App(): JSX.Element {
     backend,
     kind,
     backend_type,
+    transport_lane,
     channel_enabled,
     presetIds,
   }: {
     label: string;
     backend: string;
     kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn';
+    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind, backend_type, { channel_enabled });
+      const result = await createConsoleSession(label, backend, kind, backend_type, {
+        channel_enabled,
+        transport_lane,
+        presetIds,
+      });
       const session = {
         pinned: false,
         unread_count: 0,
         channel_enabled: channel_enabled ?? false,
+        transport_lane,
+        transport_badge: result.session.transport_badge,
         ...result.session,
         agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
       } as ConsoleSession;
@@ -1231,17 +1247,8 @@ function App(): JSX.Element {
       });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
 
-      // Bug: 11f4f47 — Apply selected presets to the new SDK session.
-      // Each preset is added independently so one failure doesn't block the rest.
-      if (backend_type === 'sdk' && presetIds && presetIds.length > 0) {
-        await Promise.all(
-          presetIds.map((presetId, position) =>
-            addSessionPreset(id, presetId, position).catch((err) => {
-              console.error(`Failed to add preset ${presetId} to session ${id}:`, err);
-            }),
-          ),
-        );
-      }
+      // Presets are sent with the create request so SDK sessions can configure
+      // immediately and PTY/Channel sessions can apply launch-time prompts.
     } catch {
       return;
     }

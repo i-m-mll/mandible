@@ -4,7 +4,7 @@
 
 // Bug: bce7370 — Gutter icon for block types
 
-export type BlockTypeIconType = 'thinking' | 'tool_use' | 'tool_result' | 'system' | 'event';
+export type BlockTypeIconType = 'thinking' | 'plan' | 'tool_use' | 'tool_result' | 'system' | 'event';
 
 export type BlockTypeIconProps = {
   type: BlockTypeIconType;
@@ -40,7 +40,7 @@ export function BlockTypeIcon({ type }: BlockTypeIconProps): JSX.Element | null 
       </svg>
     );
   }
-  if (type === 'system' || type === 'event') {
+  if (type === 'system' || type === 'event' || type === 'plan') {
     return (
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <circle

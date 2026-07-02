@@ -559,6 +559,57 @@ export interface SseEvent {
 
 export type ConsoleSessionStatus = 'running' | 'stopped' | 'crashed';
 export type ConsoleInteractionMode = 'inbox_only' | 'direct' | 'both';
+export type ConsoleAttentionKind =
+  | 'input_prompt'
+  | 'running_output'
+  | 'permission_menu'
+  | 'hook_notification'
+  | 'unknown';
+export type ConsoleAttentionSource = 'pty_screen' | 'pty_screen_fallback' | 'claude_hook';
+export type ConsolePromptQueueBlockedBy =
+  | 'permission_menu'
+  | 'hook_notification'
+  | 'running_output'
+  | 'unknown'
+  | 'no_attention_state';
+
+export interface ConsolePromptQueueItem {
+  id: string;
+  text: string;
+  queued_at: number;
+  blocked_by: ConsolePromptQueueBlockedBy;
+}
+
+export interface ConsolePromptQueueState {
+  pending_count: number;
+  items: ConsolePromptQueueItem[];
+  fallback_enabled: boolean;
+  fallback_quiet_ms: number;
+  last_flushed_at: number | null;
+}
+
+export interface ConsoleAttentionState {
+  session_id: string;
+  kind: ConsoleAttentionKind;
+  source: ConsoleAttentionSource;
+  at: number;
+  active: boolean;
+  screen_excerpt: string;
+  clear_conditions: string[];
+  detail: {
+    provider: ConsoleSession['agent_type'];
+    confidence: 'high' | 'medium' | 'low';
+    reason: string;
+    matched?: string;
+  };
+  cleared_at?: number;
+  cleared_by?:
+    | 'screen_changed'
+    | 'structured_stream_activity'
+    | 'transcript_activity'
+    | 'process_exit'
+    | 'manual_clear';
+}
 
 export interface ConsoleSession {
   id: string;
@@ -580,7 +631,9 @@ export interface ConsoleSession {
   updated_at: number;
   started_at: number | null;
   stopped_at: number | null;
-  backend_type: 'pty' | 'sdk' | 'spawn';
+  backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane: ConsoleTransportLane;
+  transport_badge: ConsoleTransportBadge;
   allowed_tools: string[] | null;
   mandible_session_id: string | null;
   /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
@@ -591,6 +644,10 @@ export interface ConsoleSession {
   channel_enabled: boolean;
   /** Bug: 81c9d85 — derived from backend.processing, not stored in DB. */
   is_processing?: boolean;
+  /** Derived from PTY screen state. Not stored in DB. */
+  attention?: ConsoleAttentionState | null;
+  /** Derived PTY composer prompt queue state. Not stored in DB. */
+  prompt_queue?: ConsolePromptQueueState | null;
 }
 
 export interface ConsoleSessionInput {
@@ -604,7 +661,8 @@ export interface ConsoleSessionInput {
   auto_restart?: boolean;
   is_operator?: boolean;
   interaction_mode?: ConsoleInteractionMode;
-  backend_type?: 'pty' | 'sdk' | 'spawn';
+  backend_type?: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane?: ConsoleTransportLane;
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   provider_session_id?: string | null;
@@ -615,10 +673,17 @@ export interface ConsoleSessionInput {
   presetIds?: string[];
 }
 
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+
+export interface ConsoleTransportBadge {
+  label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+  title: string;
+}
+
 // --- Structured console stream events ---
 
 export interface ConsoleContentBlock {
-  type: 'text' | 'thinking' | 'tool_use' | 'tool_result';
+  type: 'text' | 'thinking' | 'tool_use' | 'tool_result' | 'plan';
   text?: string;
   thinking?: string;
   id?: string;

@@ -6,6 +6,7 @@ import type {
   BackendStatusEvent,
   BackendType,
   ConfigurableBackend,
+  CancellablePromptBackend,
   PermissionAwareBackend,
   PermissionDecision,
   PermissionRequest,
@@ -17,6 +18,7 @@ import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
+import { AcpBackend, type AcpBackendOptions } from "./backends/acp-backend.js";
 import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import {
   defaultCodexThreadArchiver,
@@ -24,11 +26,14 @@ import {
   type CodexThreadArchiver,
 } from "./codex-thread-archive.js";
 import type {
+  ConsoleAttentionState,
   ConsoleInteractionMode,
   ConsoleSession,
   ConsoleSessionInput,
   ConsoleSessionStatus,
   ConsoleStreamEvent,
+  ConsoleTransportBadge,
+  ConsoleTransportLane,
   Logger,
 } from "./types.js";
 
@@ -57,6 +62,7 @@ interface ConsoleSessionRow {
   mandible_session_id: string | null;
   resume_at_message: string | null;
   channel_enabled: number;
+  transport_lane: string | null;
 }
 
 interface ConsoleSessionUsageRow {
@@ -91,6 +97,7 @@ const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
   is_operator: true,
   interaction_mode: "both",
   backend_type: "sdk",
+  transport_lane: "sdk",
 };
 
 function computeAgentType(
@@ -105,12 +112,84 @@ function computeAgentType(
 }
 
 function defaultBackendType(command: string): BackendType {
-  if (command === "claude") return "sdk";
-  // Bug: 8d3328c — Codex, Gemini use spawn (structured JSON stdout parsing)
-  if (command === "codex" || command === "gemini") return "spawn";
+  if (command === "claude") return "pty";
+  if (command === "gemini" || command === "codex") return "acp";
   // Shell and unknown commands need interactive terminal (SpawnBackend can't
   // execute arbitrary commands — buildPromptInvocation returns null for them)
   return "pty";
+}
+
+function isTransportLane(value: unknown): value is ConsoleTransportLane {
+  return value === "sdk"
+    || value === "pty"
+    || value === "channel"
+    || value === "acp"
+    || value === "spawn";
+}
+
+function transportLaneBadge(lane: ConsoleTransportLane): ConsoleTransportBadge {
+  if (lane === "sdk") {
+    return { label: "SDK", title: "Agent SDK transport" };
+  }
+  if (lane === "channel") {
+    return { label: "Channel", title: "PTY transport with Mandible channel integration" };
+  }
+  if (lane === "acp") {
+    return { label: "ACP", title: "Agent Client Protocol transport" };
+  }
+  if (lane === "spawn") {
+    return { label: "Spawn", title: "Spawned process transport" };
+  }
+  return { label: "PTY", title: "Mandible-owned PTY transport" };
+}
+
+function deriveTransportLane(
+  command: string,
+  backendType: BackendType,
+  channelEnabled: boolean,
+): ConsoleTransportLane {
+  if (channelEnabled) return "channel";
+  if (backendType === "sdk") return "sdk";
+  if (backendType === "acp") return "acp";
+  if (backendType === "spawn") return "spawn";
+  if (command === "gemini" || command === "codex") return "acp";
+  return "pty";
+}
+
+function normalizeTransportSelection(input: {
+  command: string;
+  backend_type?: BackendType;
+  transport_lane?: ConsoleTransportLane;
+  channel_enabled?: boolean;
+}): { backend_type: BackendType; transport_lane: ConsoleTransportLane; channel_enabled: boolean } {
+  const requestedLane = isTransportLane(input.transport_lane) ? input.transport_lane : null;
+  let lane = requestedLane;
+  let backendType = input.backend_type ?? defaultBackendType(input.command);
+  let channelEnabled = input.channel_enabled === true;
+
+  if (!lane) {
+    lane = deriveTransportLane(input.command, backendType, channelEnabled);
+    if (lane === "channel") {
+      backendType = "pty";
+      channelEnabled = true;
+    }
+    return { backend_type: backendType, transport_lane: lane, channel_enabled: channelEnabled };
+  }
+
+  if (lane === "channel") {
+    return { backend_type: "pty", transport_lane: "channel", channel_enabled: true };
+  }
+  if (lane === "sdk") {
+    return { backend_type: "sdk", transport_lane: "sdk", channel_enabled: false };
+  }
+  if (lane === "acp") {
+    return { backend_type: "acp", transport_lane: "acp", channel_enabled: false };
+  }
+  if (lane === "spawn") {
+    return { backend_type: "spawn", transport_lane: "spawn", channel_enabled: false };
+  }
+
+  return { backend_type: "pty", transport_lane: "pty", channel_enabled: false };
 }
 
 function parseAllowedTools(raw: string | null): string[] | null {
@@ -128,6 +207,16 @@ function parseAllowedTools(raw: string | null): string[] | null {
 
 function rowToSession(row: ConsoleSessionRow): ConsoleSession {
   const is_operator = row.is_operator === 1;
+  const backend_type = (row.backend_type === "sdk"
+    ? "sdk"
+    : row.backend_type === "spawn"
+      ? "spawn"
+      : row.backend_type === "acp"
+        ? "acp"
+        : "pty") as BackendType;
+  const transport_lane = isTransportLane(row.transport_lane)
+    ? row.transport_lane
+    : deriveTransportLane(row.command, backend_type, Boolean(row.channel_enabled));
   return {
     id: row.id,
     label: row.label,
@@ -148,11 +237,13 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     updated_at: row.updated_at,
     started_at: row.started_at,
     stopped_at: row.stopped_at,
-    backend_type: (row.backend_type === "sdk" ? "sdk" : row.backend_type === "spawn" ? "spawn" : "pty") as BackendType,
+    backend_type,
+    transport_lane,
+    transport_badge: transportLaneBadge(transport_lane),
     allowed_tools: parseAllowedTools(row.allowed_tools),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
-    channel_enabled: Boolean(row.channel_enabled),
+    channel_enabled: transport_lane === "channel" || Boolean(row.channel_enabled),
     agent_type: computeAgentType(row.command, is_operator),
   };
 }
@@ -252,12 +343,14 @@ export class SessionManager {
     const auto_restart = input.auto_restart ? 1 : 0;
     const is_operator = input.is_operator ? 1 : 0;
     const interaction_mode = input.interaction_mode ?? "both";
-    const backend_type = input.backend_type ?? defaultBackendType(input.command);
+    const selection = normalizeTransportSelection(input);
+    const backend_type = selection.backend_type;
+    const transport_lane = selection.transport_lane;
     const allowed_tools = input.allowed_tools ?? null;
 
     const provider_session_id = input.provider_session_id ?? null;
     const resume_at_message = input.resume_at_message ?? null;
-    const channel_enabled = input.channel_enabled ? 1 : 0;
+    const channel_enabled = selection.channel_enabled ? 1 : 0;
 
     this.unarchiveCodexThread(input.command, provider_session_id);
 
@@ -265,8 +358,9 @@ export class SessionManager {
       `INSERT INTO console_sessions
          (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
-          backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled,
+          transport_lane)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
@@ -286,7 +380,8 @@ export class SessionManager {
       allowed_tools ? JSON.stringify(allowed_tools) : null,
       input.mandible_session_id ?? null,
       resume_at_message,
-      channel_enabled
+      channel_enabled,
+      transport_lane
     );
 
     const session = rowToSession({
@@ -314,6 +409,7 @@ export class SessionManager {
       mandible_session_id: input.mandible_session_id ?? null,
       resume_at_message,
       channel_enabled,
+      transport_lane,
     });
 
     // Bug: 61bee4e — Store preset associations and pass presetIds to backend
@@ -451,7 +547,7 @@ export class SessionManager {
     return nextMeta;
   }
 
-  updateOptions(id: string, options: SDKBackendOptions): ConsoleSession {
+  updateOptions(id: string, options: SDKBackendOptions | AcpBackendOptions): ConsoleSession {
     const session = this.requireSession(id);
     const patch: Partial<Pick<ConsoleSession, "args" | "allowed_tools">> = {};
 
@@ -469,7 +565,7 @@ export class SessionManager {
     }
 
     const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch, { silent: true }) : session.meta;
-    if (this.isConfigurableBackend<SDKBackendOptions>(session)) {
+    if (this.isConfigurableBackend<SDKBackendOptions | AcpBackendOptions>(session)) {
       session.updateOptions(options);
     }
     return nextSession;
@@ -530,6 +626,14 @@ export class SessionManager {
     return [];
   }
 
+  cancelPrompt(id: string): boolean {
+    const session = this.requireSession(id);
+    if (this.isCancellablePromptBackend(session)) {
+      return session.cancelActivePrompt();
+    }
+    return false;
+  }
+
   startOperator(): void {
     const db = getDb();
     const settingRow = db
@@ -587,6 +691,9 @@ export class SessionManager {
     if (type === "spawn") {
       return new SpawnBackend(session, this.logger);
     }
+    if (type === "acp") {
+      return new AcpBackend(session, this.logger);
+    }
     return new PTYBackend(session, this.logger);
   }
 
@@ -620,6 +727,22 @@ export class SessionManager {
       }
     });
 
+    backend.on("attention", (attention: ConsoleAttentionState | null) => {
+      backend.meta = {
+        ...backend.meta,
+        attention: attention?.active ? attention : null,
+      };
+      broadcast("console:attention", {
+        console_session_id: backend.id,
+        attention,
+      });
+      broadcast("console:session:updated", { session: backend.meta });
+    });
+
+    backend.on("prompt_queue", () => {
+      broadcast("console:session:updated", { session: backend.meta });
+    });
+
     backend.on("meta_update", (fields: BackendMetaUpdate) => {
       this.applyMetaUpdate(backend.id, fields);
     });
@@ -632,6 +755,13 @@ export class SessionManager {
       broadcast("console:permission:request", {
         console_session_id: backend.id,
         request,
+      });
+    });
+
+    backend.on("permission_cleared", (event: { request_id: string }) => {
+      broadcast("console:permission:cleared", {
+        console_session_id: backend.id,
+        request_id: event.request_id,
       });
     });
 
@@ -779,5 +909,9 @@ export class SessionManager {
 
   private isUsageAwareBackend<TUsage>(backend: AgenticBackend): backend is AgenticBackend & UsageAwareBackend<TUsage> {
     return "getUsage" in backend;
+  }
+
+  private isCancellablePromptBackend(backend: AgenticBackend): backend is AgenticBackend & CancellablePromptBackend {
+    return "cancelActivePrompt" in backend;
   }
 }

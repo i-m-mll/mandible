@@ -4,6 +4,7 @@ export type BlockType =
   | "user_message"
   | "assistant_message"
   | "thinking"
+  | "plan"
   | "tool_use"
   | "tool_result"
   | "system"

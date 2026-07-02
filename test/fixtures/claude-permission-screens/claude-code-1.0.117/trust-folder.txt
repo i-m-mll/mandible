@@ -1,0 +1,5 @@
+Claude Code needs to confirm workspace trust
+
+Do you trust the files in this folder?
+
+Review the folder before continuing.

@@ -9,7 +9,14 @@ import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
-type Transport = 'pty' | 'sdk' | 'spawn';
+type Transport = 'pty' | 'sdk' | 'spawn' | 'acp';
+type TransportLane = 'sdk' | 'pty' | 'channel' | 'acp';
+type TransportLaneOption = {
+  value: TransportLane;
+  title: string;
+  description: string;
+  note: string;
+};
 
 type NewSessionDialogProps = {
   open: boolean;
@@ -19,6 +26,7 @@ type NewSessionDialogProps = {
     backend: Backend;
     kind: AgentKind;
     backend_type: Transport;
+    transport_lane: TransportLane;
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
@@ -57,16 +65,70 @@ const BACKEND_OPTIONS: Array<{
   {
     value: 'codex',
     title: 'Codex',
-    description: 'First-class chat backed by Codex exec JSON events and native Codex history.',
+    description: 'First-class chat backed by the Codex ACP adapter and native Codex history.',
     note: 'Operator mode is not available for Codex yet.',
   },
   {
     value: 'gemini',
     title: 'Gemini',
-    description: 'First-class chat backed by Gemini stream-json and native Gemini history.',
+    description: 'First-class chat backed by Gemini ACP live events.',
     note: 'Operator mode is not available for Gemini yet.',
   },
 ];
+
+function defaultTransportLaneForBackend(backend: Backend): TransportLane {
+  if (backend === 'claude') return 'pty';
+  if (backend === 'gemini' || backend === 'codex') return 'acp';
+  return 'pty';
+}
+
+function backendTypeForLane(lane: TransportLane): Transport {
+  if (lane === 'channel') return 'pty';
+  return lane;
+}
+
+function availableTransportLanes(
+  backend: Backend,
+  hasApiKey: boolean | null = null,
+): TransportLaneOption[] {
+  if (backend === 'claude') {
+    return [
+      {
+        value: 'pty',
+        title: 'Claude PTY',
+        description: 'Runs your local Claude Code CLI in a Mandible-owned terminal.',
+        note: 'Uses Claude subscription interactive limits.',
+      },
+      {
+        value: 'sdk',
+        title: 'Claude SDK',
+        description: 'Structured SDK session with Mandible-native control and permissions.',
+        note: hasApiKey === false ? 'Requires Agent SDK credit or API configuration.' : 'Uses Agent SDK credit or API billing.',
+      },
+      {
+        value: 'channel',
+        title: 'Claude Channel',
+        description: 'Runs Claude Code in a PTY with Mandible channel integration enabled.',
+        note: 'Uses Claude subscription interactive limits.',
+      },
+    ];
+  }
+  const provider = backend === 'codex' ? 'Codex' : 'Gemini';
+  return [
+    {
+      value: 'acp',
+      title: `${provider} ACP`,
+      description: `Structured ${provider} live session through Agent Client Protocol.`,
+      note: backend === 'codex' ? 'Uses your ChatGPT plan.' : 'Uses your Gemini plan.',
+    },
+    {
+      value: 'pty',
+      title: `${provider} PTY`,
+      description: `Runs the local ${backend} CLI in a Mandible-owned terminal.`,
+      note: 'Terminal fallback for CLI workflows.',
+    },
+  ];
+}
 
 function OptionCard({
   title,
@@ -106,9 +168,7 @@ export function NewSessionDialog({
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
-  const [transport, setTransport] = useState<Transport>('sdk');
-  // Bug: b5e1c51 — Channel-enabled flag for PTY+Channel transport
-  const [channelEnabled, setChannelEnabled] = useState(false);
+  const [transportLane, setTransportLane] = useState<TransportLane>('pty');
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   const [presetIds, setPresetIds] = useState<string[]>([]);
   const [allPresets, setAllPresets] = useState<Preset[]>([]);
@@ -165,11 +225,6 @@ export function NewSessionDialog({
         settings.anthropic_api_key || settings.ANTHROPIC_API_KEY,
       );
       setHasApiKey(apiKeyConfigured);
-      // Set default transport based on API key availability
-      if (!apiKeyConfigured) {
-        setTransport('pty');
-        setChannelEnabled(true);
-      }
     }).catch(() => {
       if (!cancelled) setHasApiKey(null);
     });
@@ -196,39 +251,41 @@ export function NewSessionDialog({
   useEffect(() => {
     if (kind === 'operator' && backend !== 'claude') {
       setBackend('claude');
-      setTransport('sdk');
+      setTransportLane(defaultTransportLaneForBackend('claude'));
     }
   }, [backend, kind]);
 
   useEffect(() => {
-    // Bug: 8d3328c — Non-Claude backends use spawn (no terminal emulation)
-    if (backend !== 'claude' && transport !== 'spawn') {
-      setTransport('spawn');
+    const allowed = availableTransportLanes(backend, hasApiKey).some((option) => option.value === transportLane);
+    if (!allowed) {
+      setTransportLane(defaultTransportLaneForBackend(backend));
     }
-  }, [backend, transport]);
+  }, [backend, hasApiKey, transportLane]);
 
   if (!open) return null;
 
-  const isSDK = transport === 'sdk';
+  const isSDK = transportLane === 'sdk';
   // Bug: 790433d — Presets are supported for both SDK and PTY Claude sessions
   const supportsPresets = backend === 'claude';
+  const transportOptions = availableTransportLanes(backend, hasApiKey);
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
     if (!label.trim()) return;
+    const backendType = backendTypeForLane(transportLane);
     onSubmit({
       label: label.trim(),
       backend,
       kind,
-      backend_type: transport,
-      channel_enabled: channelEnabled || undefined,
+      backend_type: backendType,
+      transport_lane: transportLane,
+      channel_enabled: transportLane === 'channel' || undefined,
       presetIds: supportsPresets ? presetIds : undefined,
     });
     setLabel('');
     setKind('agent');
     setBackend('claude');
-    setTransport('sdk');
-    setChannelEnabled(false);
+    setTransportLane(defaultTransportLaneForBackend('claude'));
     setPresetIds([]);
     setPresetsLoaded(false);
     setValidationWarnings([]);
@@ -295,7 +352,7 @@ export function NewSessionDialog({
                     disabled={disabled}
                     onClick={() => {
                       setBackend(option.value);
-                      setTransport(option.value === 'claude' ? 'sdk' : 'spawn');
+                      setTransportLane(defaultTransportLaneForBackend(option.value));
                     }}
                   />
                 );
@@ -303,31 +360,21 @@ export function NewSessionDialog({
             </div>
           </div>
 
-          {backend === 'claude' && (
-            <div className="new-session-dialog__field">
-              <div className="new-session-dialog__label">Transport</div>
-              <div className="new-session-dialog__options">
+          <div className="new-session-dialog__field">
+            <div className="new-session-dialog__label">Transport lane</div>
+            <div className="new-session-dialog__options">
+              {transportOptions.map((option) => (
                 <OptionCard
-                  title="Claude SDK"
-                  description="Structured events, Mandible permissions, and SDK-native session control."
-                  selected={transport === 'sdk'}
-                  onClick={() => { setTransport('sdk'); setChannelEnabled(false); }}
+                  key={option.value}
+                  title={option.title}
+                  description={option.description}
+                  note={option.note}
+                  selected={transportLane === option.value}
+                  onClick={() => setTransportLane(option.value)}
                 />
-                <OptionCard
-                  title="PTY + Channel"
-                  description="Your Claude Code CLI with Mandible channel integration. Uses your OAuth login. Terminal + structured events."
-                  selected={transport === 'pty' && channelEnabled}
-                  onClick={() => { setTransport('pty'); setChannelEnabled(true); }}
-                />
-                <OptionCard
-                  title="PTY"
-                  description="Classic terminal transport with a raw debug terminal fallback."
-                  selected={transport === 'pty' && !channelEnabled}
-                  onClick={() => { setTransport('pty'); setChannelEnabled(false); }}
-                />
-              </div>
+              ))}
             </div>
-          )}
+          </div>
 
           {/* Bug: 790433d — Preset selector shown for all Claude sessions (SDK + PTY) */}
           {supportsPresets && presetsLoaded && (

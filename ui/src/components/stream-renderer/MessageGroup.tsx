@@ -7,6 +7,7 @@ import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
+import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
 import { MessageActions, type MessageActionsMeta } from '../shared/MessageActions';
 
 /** Extract copyable text from a single content block. */
@@ -14,14 +15,22 @@ function blockCopyText(block: ContentBlock): string {
   switch (block.type) {
     case 'text': return block.text ?? '';
     case 'thinking': return (block as { type: 'thinking'; thinking: string }).thinking ?? '';
+    case 'plan': return (block as { type: 'plan'; text: string }).text ?? '';
     case 'tool_use': return JSON.stringify((block as { type: 'tool_use'; input: unknown }).input, null, 2);
     default: return '';
   }
 }
 
-export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
+export function MessageGroup({
+  turn,
+  isStreaming,
+  isThinking,
+  getBlockExpanded,
+  onBlockExpandedChange,
+}: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
+  const newestPlanIndex = latestPlanIndex(blocks);
 
   // Bug: 0a1ad82 — Thread turn-level metadata to per-block MessageActions
   const turnMeta: MessageActionsMeta | undefined = useMemo(() => {
@@ -47,11 +56,29 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
         // Bug: bce7370 — Fix 5: Keep thinking expanded while actively streaming
         // so the user can see thinking content accumulate. When streaming ends,
         // the block collapses intentionally rather than jarring.
+        {
+          const defaultExpanded = isStreaming && isThinking === true;
+          const expanded = getBlockExpanded?.(block, index, defaultExpanded);
+          inner = (
+            <ThinkingBlock
+              key={`thinking-${index}`}
+              content={block.thinking}
+              defaultCollapsed={!defaultExpanded}
+              expanded={expanded}
+              onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+            />
+          );
+        }
+        break;
+
+      case 'plan':
+        if (index !== newestPlanIndex) {
+          return null;
+        }
         inner = (
-          <ThinkingBlock
-            key={`thinking-${index}`}
-            content={block.thinking}
-            defaultCollapsed={!(isStreaming && isThinking)}
+          <PlanBlock
+            key={`plan-${index}`}
+            content={block.text}
           />
         );
         break;
@@ -61,6 +88,8 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
         // While streaming and no result yet, the tool is in-progress
         const isPendingStreaming = isStreaming && result === null;
+        const defaultExpanded = isPendingStreaming || result === null;
+        const expanded = getBlockExpanded?.(block, index, defaultExpanded);
         inner = (
           <ToolUseBlock
             key={`tool-${block.id}`}
@@ -69,7 +98,9 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
             input={block.input}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             // Expand while pending (streaming in progress), collapse after result
-            defaultExpanded={isPendingStreaming || result === null}
+            defaultExpanded={defaultExpanded}
+            expanded={expanded}
+            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
           />
         );
         break;
@@ -84,7 +115,7 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
     // Bug: 236d03b — Fix 5: Wrap each block with per-block MessageActions (copy)
     const text = blockCopyText(block);
     return (
-      <div key={`block-wrap-${index}`} className="message-block-wrapper" style={{ position: 'relative' }}>
+      <div key={`block-wrap-${index}`} className="message-block-wrapper">
         {inner}
         <MessageActions
           onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}

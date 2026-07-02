@@ -1,0 +1,194 @@
+/* Session table refinements */
+
+/* ── Session v2: project pills ── */
+
+.session-project-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.session-project-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-family: var(--font-mono);
+  background: rgba(160, 100, 255, 0.15);
+  color: #b388ff;
+  white-space: nowrap;
+}
+
+/* ── Session v2: branch as secondary detail under project ── */
+
+.session-branch-detail {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 200px;
+}
+
+/* ── Session v2: children column ── */
+
+.session-col-children {
+  width: 56px;
+  min-width: 56px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+
+/* ── Session v2: duration mono ── */
+
+.session-duration {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Session v2: closed issues toggle ── */
+
+.session-closed-toggle {
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  padding: 1px 4px;
+  white-space: nowrap;
+  transition: color 0.15s;
+}
+
+.session-closed-toggle:hover {
+  color: var(--text-primary);
+}
+
+/* ── Session v2: context menu (three-dot) ── */
+
+.session-ctx-menu {
+  position: relative;
+  display: inline-block;
+}
+
+.session-ctx-menu__trigger {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  line-height: 1;
+  opacity: 0;
+  transition: opacity 0.15s, background 0.15s, color 0.15s;
+}
+
+.session-row:hover .session-ctx-menu__trigger,
+.session-ctx-menu__trigger--active {
+  opacity: 1;
+}
+
+.session-ctx-menu__trigger:hover {
+  background: var(--neutral-alpha-06);
+  color: var(--text-primary);
+}
+
+.session-ctx-menu__trigger--active {
+  background: var(--neutral-alpha-08);
+  color: var(--text-primary);
+}
+
+.session-ctx-menu__dropdown {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 20;
+  min-width: 150px;
+  background: var(--bg-card);
+  border: 1px solid var(--neutral-alpha-08);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.session-ctx-menu__item {
+  border: none;
+  background: transparent;
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-align: left;
+  padding: 7px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.session-ctx-menu__item:hover {
+  background: var(--neutral-alpha-06);
+}
+
+.session-ctx-menu__item--danger {
+  color: var(--accent-red);
+}
+
+.session-ctx-menu__item--danger:hover {
+  background: rgba(242, 107, 107, 0.12);
+}
+
+.session-ctx-menu__item--confirm {
+  background: rgba(242, 107, 107, 0.2);
+  color: var(--accent-red);
+  font-weight: 500;
+}
+
+.session-ctx-menu__item--confirm:hover {
+  background: rgba(242, 107, 107, 0.35);
+}
+
+/* ── Session pin badge ── */
+/* Bug: 568eca7 — pin visibility indicator */
+
+.pin-badge {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  background: var(--accent-blue);
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5H8.5v5.243a.5.5 0 0 1-1 0V10H3.5a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189a5.6 5.6 0 0 1 .83-.603V2.277a1.9 1.9 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z'/%3E%3C/svg%3E");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.146.146A.5.5 0 0 1 4.5 0h7a.5.5 0 0 1 .5.5c0 .68-.342 1.174-.646 1.479-.126.125-.25.224-.354.298v4.431l.078.048c.203.127.476.314.751.555C12.36 7.775 13 8.527 13 9.5a.5.5 0 0 1-.5.5H8.5v5.243a.5.5 0 0 1-1 0V10H3.5a.5.5 0 0 1-.5-.5c0-.973.64-1.725 1.17-2.189a5.6 5.6 0 0 1 .83-.603V2.277a1.9 1.9 0 0 1-.354-.298C4.342 1.674 4 1.179 4 .5a.5.5 0 0 1 .146-.354z'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  opacity: 0.8;
+}
+
+/* Bug: 0b454df — channel-connected session badge (link icon) */
+.channel-badge {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-left: 2px;
+  background: var(--accent-purple);
+  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 1 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z'/%3E%3Cpath d='M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-.793.792c.112.42.155.855.128 1.287l1.372-1.372a3 3 0 1 0-4.243-4.243L6.586 4.672z'/%3E%3C/svg%3E");
+  mask-size: contain;
+  mask-repeat: no-repeat;
+  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4.715 6.542 3.343 7.914a3 3 0 1 0 4.243 4.243l1.828-1.829A3 3 0 0 0 8.586 5.5L8 6.086a1.002 1.002 0 0 0-.154.199 2 2 0 0 1 .861 3.337L6.88 11.45a2 2 0 1 1-2.83-2.83l.793-.792a4.018 4.018 0 0 1-.128-1.287z'/%3E%3Cpath d='M6.586 4.672A3 3 0 0 0 7.414 9.5l.775-.776a2 2 0 0 1-.896-3.346L9.12 3.55a2 2 0 1 1 2.83 2.83l-.793.792c.112.42.155.855.128 1.287l1.372-1.372a3 3 0 1 0-4.243-4.243L6.586 4.672z'/%3E%3C/svg%3E");
+  -webkit-mask-size: contain;
+  -webkit-mask-repeat: no-repeat;
+  opacity: 0.8;
+}
+
+.row-pinned {
+  background: rgba(77, 163, 255, 0.04);
+}

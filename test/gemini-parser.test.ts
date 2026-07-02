@@ -98,6 +98,7 @@ async function makeGeminiJsonlSession(options: {
       type: "gemini",
       timestamp: "2026-05-16T00:00:01.000Z",
       model: "gemini-3.1-pro-preview",
+      plan: "Check the file before answering.",
       content: [{ text: "Done from JSONL." }],
       toolCalls: [
         {
@@ -173,7 +174,15 @@ describe("GeminiParser", () => {
     expect(result?.conversation.project_path).toBe("/workspace/mandible");
     expect(result?.conversation.model).toBe("gemini-3.1-pro-preview");
     expect(result?.conversation.ended_at).toBe("2026-05-16T00:00:02.000Z");
-    expect(result?.blocks.map((block) => block.type)).toEqual(["user_message", "tool_use", "tool_result", "assistant_message"]);
+    expect(result?.blocks.map((block) => block.type)).toEqual(["user_message", "plan", "tool_use", "tool_result", "assistant_message"]);
+    expect(result?.blocks.find((block) => block.type === "plan")).toMatchObject({
+      role: "assistant",
+      content: "Check the file before answering.",
+      metadata: {
+        model: "gemini-3.1-pro-preview",
+        source_event_type: "gemini_plan",
+      },
+    });
     expect(result?.blocks.find((block) => block.type === "tool_use")?.metadata).toMatchObject({
       tool_name: "read_file",
       tool_kind: "gemini_tool_call",

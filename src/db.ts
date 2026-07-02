@@ -2572,6 +2572,21 @@ const MIGRATIONS: Migration[] = [
     // used by the merge simulation so approve can skip the shell-side merge-tree
     // re-check only when the target and queued context are unchanged.
     statements: []
+  },
+  {
+    version: 93,
+    name: "console_transport_lane",
+    // Issue: 71ca935 — persist the user-selected transport lane separately
+    // from backend_type so UI badges and downstream chat controls have a
+    // stable contract while legacy backend launch semantics stay intact.
+    statements: []
+  },
+  {
+    version: 94,
+    name: "message_params_thinking_effort",
+    // Issue: 3da19be — include SDK reasoning effort in the existing
+    // per-message parameter keyframes.
+    statements: []
   }
 ];
 
@@ -2670,6 +2685,12 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 92) {
           ensureAuthRequestPreflightReuseColumns(db);
+        }
+        if (migration.version === 93) {
+          ensureConsoleTransportLaneColumn(db);
+        }
+        if (migration.version === 94) {
+          ensureMessageParamsThinkingEffortColumn(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -5016,6 +5037,32 @@ function ensureAuthRequestPreflightReuseColumns(db: Db): void {
   }
 }
 
+function ensureConsoleTransportLaneColumn(db: Db): void {
+  if (!tableExists(db, "console_sessions")) return;
+  const columns = tableColumnNames(db, "console_sessions");
+  if (columns.has("transport_lane")) return;
+
+  db.exec("ALTER TABLE console_sessions ADD COLUMN transport_lane TEXT NOT NULL DEFAULT 'pty'");
+  db.exec(
+    `UPDATE console_sessions
+       SET transport_lane = CASE
+         WHEN channel_enabled = 1 THEN 'channel'
+         WHEN backend_type = 'sdk' THEN 'sdk'
+         WHEN backend_type = 'acp' THEN 'acp'
+         WHEN backend_type = 'spawn' THEN 'spawn'
+         ELSE 'pty'
+       END`
+  );
+}
+
+function ensureMessageParamsThinkingEffortColumn(db: Db): void {
+  if (!tableExists(db, "message_params")) return;
+  const columns = tableColumnNames(db, "message_params");
+  if (columns.has("thinking_effort")) return;
+
+  db.exec("ALTER TABLE message_params ADD COLUMN thinking_effort TEXT");
+}
+
 function tableExists(db: Db, table: string): boolean {
   const row = db
     .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
@@ -5031,10 +5078,12 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "artifact_links",
     "artifact_version",
     "auth_requests",
+    "console_sessions",
     "conversation_blocks",
     "conversations",
     "ledger_comments",
     "ledger_issues",
+    "message_params",
     "project_artifact_associations",
     "session_projects",
     "sessions",

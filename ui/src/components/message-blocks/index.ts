@@ -16,6 +16,9 @@ export type { ToolUseBlockProps, ToolResultContent, ToolResultContentBlock } fro
 export { FileEditBlock } from './FileEditBlock';
 export type { FileEditBlockProps } from './FileEditBlock';
 
+export { latestPlanIndex, parsePlanEntries, PlanBlock } from './PlanBlock';
+export type { PlanBlockProps, PlanEntry, PlanEntryStatus } from './PlanBlock';
+
 export { TurnGroup } from './TurnGroup';
 export type { TurnGroupProps } from './TurnGroup';
 

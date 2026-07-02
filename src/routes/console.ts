@@ -7,8 +7,17 @@ import { getDb } from "../db.js";
 import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
+import { AcpBackend } from "../backends/acp-backend.js";
 import type { RouteRegistrar } from "../server.js";
-import type { ConsoleSession, ConsoleSessionInput, ConsoleInteractionMode } from "../types.js";
+import type {
+  ConsoleInteractionMode,
+  ConsoleSession,
+  ConsoleSessionInput,
+  ConsoleTransportLane,
+} from "../types.js";
+
+const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
 
 function sendJson(res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void }, code: number, payload: unknown): void {
   res.status(code).json(payload);
@@ -26,10 +35,126 @@ function stripModelArgs(args: string[]): string[] {
   return next;
 }
 
+function parseTransportLane(value: unknown): ConsoleTransportLane | undefined {
+  return value === "sdk"
+    || value === "pty"
+    || value === "channel"
+    || value === "acp"
+    || value === "spawn"
+    ? value
+    : undefined;
+}
+
+function parseStringArray(value: unknown): { ok: true; value: string[] } | { ok: false } | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === "string")) {
+    return { ok: false };
+  }
+  return { ok: true, value };
+}
+
+function parsePositiveInteger(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function parseNonNegativeNumber(value: unknown): number | undefined {
+  if (value === undefined) return undefined;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+}
+
+function parseSessionOptionsBody(
+  backendType: ConsoleSession["backend_type"],
+  body: unknown,
+): { ok: true; options: SDKBackendOptions } | { ok: false; error: string } {
+  const record = body && typeof body === "object" ? body as Record<string, unknown> : {};
+  const options: SDKBackendOptions = {};
+
+  if (typeof record.model === "string") {
+    options.model = record.model;
+  } else if (record.model !== undefined) {
+    return { ok: false, error: "invalid_model" };
+  }
+
+  const allowedTools = parseStringArray(record.allowedTools);
+  if (allowedTools?.ok) {
+    options.allowedTools = allowedTools.value;
+  } else if (allowedTools !== undefined) {
+    return { ok: false, error: "invalid_allowed_tools" };
+  }
+
+  const presetIds = parseStringArray(record.presetIds);
+  if (presetIds?.ok) {
+    options.presetIds = presetIds.value;
+  } else if (presetIds !== undefined) {
+    return { ok: false, error: "invalid_preset_ids" };
+  }
+
+  if (backendType === "sdk") {
+    if (record.thinkingEffort !== undefined) {
+      if (typeof record.thinkingEffort !== "string" || !SDK_THINKING_EFFORTS.has(record.thinkingEffort)) {
+        return { ok: false, error: "invalid_thinking_effort" };
+      }
+      options.thinkingEffort = record.thinkingEffort as SDKBackendOptions["thinkingEffort"];
+    }
+
+    if (record.permissionMode !== undefined) {
+      if (typeof record.permissionMode !== "string" || !SDK_PERMISSION_MODES.has(record.permissionMode)) {
+        return { ok: false, error: "invalid_permission_mode" };
+      }
+      options.permissionMode = record.permissionMode as SDKBackendOptions["permissionMode"];
+    }
+
+    const maxTurns = parsePositiveInteger(record.maxTurns);
+    if (maxTurns !== undefined) {
+      options.maxTurns = maxTurns;
+    } else if (record.maxTurns !== undefined) {
+      return { ok: false, error: "invalid_max_turns" };
+    }
+
+    const maxCostUsd = parseNonNegativeNumber(record.maxCostUsd);
+    if (maxCostUsd !== undefined) {
+      options.maxCostUsd = maxCostUsd;
+    } else if (record.maxCostUsd !== undefined) {
+      return { ok: false, error: "invalid_max_cost_usd" };
+    }
+
+    if (typeof record.systemPrompt === "string") {
+      options.systemPrompt = record.systemPrompt;
+    } else if (record.systemPrompt !== undefined) {
+      return { ok: false, error: "invalid_system_prompt" };
+    }
+
+    const settingSourcesOverride = parseStringArray(record.settingSourcesOverride);
+    if (settingSourcesOverride?.ok) {
+      options.settingSourcesOverride = settingSourcesOverride.value;
+    } else if (settingSourcesOverride !== undefined) {
+      return { ok: false, error: "invalid_setting_sources" };
+    }
+  } else {
+    const sdkOnlyKeys = [
+      "thinkingEffort",
+      "permissionMode",
+      "maxTurns",
+      "maxCostUsd",
+      "systemPrompt",
+      "settingSourcesOverride",
+    ];
+    if (sdkOnlyKeys.some((key) => record[key] !== undefined)) {
+      return { ok: false, error: "unsupported_session_option" };
+    }
+  }
+
+  return { ok: true, options };
+}
+
 // Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
 function enrichWithProcessing(backend: { meta: ConsoleSession }): ConsoleSession {
   const meta = backend.meta;
   if (backend instanceof SDKBackend) {
+    return { ...meta, is_processing: backend.isProcessing };
+  }
+  if (backend instanceof AcpBackend) {
     return { ...meta, is_processing: backend.isProcessing };
   }
   return { ...meta, is_processing: false };
@@ -76,9 +201,13 @@ export function registerConsoleRoutes(
       interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
         ? body.interaction_mode as ConsoleInteractionMode
         : "both",
-      backend_type: body.backend_type === "pty" || body.backend_type === "sdk" || body.backend_type === "spawn"
+      backend_type: body.backend_type === "pty"
+        || body.backend_type === "sdk"
+        || body.backend_type === "spawn"
+        || body.backend_type === "acp"
         ? body.backend_type
-        : (body.command === "claude" ? "sdk" : "spawn"),
+        : (body.command === "claude" ? "pty" : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
+      transport_lane: parseTransportLane((body as Record<string, unknown>).transport_lane),
       // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
       channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
       // Bug: 61bee4e — Accept presetIds for convention presets
@@ -91,9 +220,9 @@ export function registerConsoleRoutes(
 
     const session = manager.create(input);
     const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
-    // Start immediately for: operators, non-structured-chat (shell), and SDK/spawn
+    // Start immediately for: operators, non-structured-chat (shell), and structured
     // sessions (they just wait for the first prompt — no process to allocate).
-    if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn") {
+    if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn" || input.backend_type === "acp") {
       manager.start(session.id);
     }
     const ptySession = manager.get(session.id);
@@ -146,7 +275,12 @@ export function registerConsoleRoutes(
       return;
     }
 
-    const body = (req.body ?? {}) as SDKBackendOptions;
+    const parsed = parseSessionOptionsBody(session.meta.backend_type, req.body ?? {});
+    if (!parsed.ok) {
+      sendJson(res, 400, { error: parsed.error });
+      return;
+    }
+    const body = parsed.options;
 
     // Bug: 790433d — Persist presetIds changes to session_presets table
     if (body.presetIds !== undefined) {
@@ -325,11 +459,7 @@ export function registerConsoleRoutes(
     }
 
     const decision = (req.body ?? {}) as { decision?: unknown };
-    if (
-      decision.decision !== "deny" &&
-      decision.decision !== "allow" &&
-      decision.decision !== "allow_always"
-    ) {
+    if (!isPermissionDecision(decision.decision)) {
       sendJson(res, 400, { error: "invalid_decision" });
       return;
     }
@@ -417,7 +547,28 @@ export function registerConsoleRoutes(
         sendJson(res, 400, { error: "unsupported_prompt_backend" });
         return;
       }
+      if (String(error).includes("pty_prompt_not_running")) {
+        sendJson(res, 409, { error: "pty_prompt_not_running" });
+        return;
+      }
       throw error;
+    }
+
+    res.status(202).json({ ok: true });
+  }, { fileRpc: "deny" });
+
+  server.post("/api/console/sessions/:id/cancel", (req, res) => {
+    const id = req.params.id;
+    const session = manager.get(id);
+    if (!session) {
+      sendJson(res, 404, { error: "not_found" });
+      return;
+    }
+
+    const cancelled = manager.cancelPrompt(id);
+    if (!cancelled) {
+      sendJson(res, 409, { error: "cancel_not_supported_or_idle" });
+      return;
     }
 
     res.status(202).json({ ok: true });
@@ -481,4 +632,15 @@ export function registerConsoleRoutes(
     manager.start(operatorSession.id);
     res.status(200).json({ session: operatorSession.meta });
   }, { fileRpc: "deny" });
+}
+
+function isPermissionDecision(value: unknown): value is PermissionDecision {
+  return (
+    value === "deny" ||
+    value === "allow" ||
+    value === "allow_always" ||
+    value === "reject_once" ||
+    value === "reject_always" ||
+    (typeof value === "string" && /^option:[0-9A-Za-z_-]+$/.test(value))
+  );
 }

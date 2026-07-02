@@ -46,7 +46,17 @@ export function PermissionDialog({
     if (!request) {
       return undefined;
     }
+    const optionDecisions = (request.options ?? []).map((option) => option.decision ?? `option:${option.key}`);
     const onKeyDown = (event: KeyboardEvent) => {
+      const option = request.options?.find((item) => item.key === event.key);
+      if (option) {
+        event.preventDefault();
+        onRespond(request.id, option.decision ?? `option:${option.key}`);
+        return;
+      }
+      if (optionDecisions.length > 0) {
+        return;
+      }
       if (event.shiftKey && event.key === 'A') {
         event.preventDefault();
         onRespond(request.id, 'allow_always');
@@ -133,29 +143,44 @@ export function PermissionDialog({
           )}
         </div>
 
-        <div className="permission-dialog__actions">
-          <button
-            type="button"
-            className="permission-dialog__button permission-dialog__button--deny"
-            onClick={() => onRespond(request.id, 'deny')}
-          >
-            Deny
-          </button>
-          <button
-            type="button"
-            className="permission-dialog__button permission-dialog__button--allow"
-            onClick={() => onRespond(request.id, 'allow')}
-          >
-            Allow
-          </button>
-          <button
-            type="button"
-            className="permission-dialog__button permission-dialog__button--always"
-            onClick={() => onRespond(request.id, 'allow_always')}
-          >
-            Always Allow
-          </button>
-        </div>
+        {request.options && request.options.length > 0 ? (
+          <div className="permission-dialog__actions">
+            {request.options.map((option) => (
+              <button
+                key={option.key}
+                type="button"
+                className="permission-dialog__button permission-dialog__button--allow"
+                onClick={() => onRespond(request.id, option.decision ?? `option:${option.key}`)}
+              >
+                {option.key}. {option.label}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <div className="permission-dialog__actions">
+            <button
+              type="button"
+              className="permission-dialog__button permission-dialog__button--deny"
+              onClick={() => onRespond(request.id, 'deny')}
+            >
+              Deny
+            </button>
+            <button
+              type="button"
+              className="permission-dialog__button permission-dialog__button--allow"
+              onClick={() => onRespond(request.id, 'allow')}
+            >
+              Allow
+            </button>
+            <button
+              type="button"
+              className="permission-dialog__button permission-dialog__button--always"
+              onClick={() => onRespond(request.id, 'allow_always')}
+            >
+              Always Allow
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

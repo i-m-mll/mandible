@@ -37,6 +37,7 @@ export type MandibleEventType =
   | "channel:session:connected"
   | "channel:session:disconnected"
   | "console:inbox:badge"
+  | "console:permission:cleared"
   | "console:permission:request"
   | "console:session:created"
   | "console:session:updated"

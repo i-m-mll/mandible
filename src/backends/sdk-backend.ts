@@ -21,6 +21,7 @@ import type {
   SDKToolProgressMessage,
   SDKToolUseSummaryMessage,
   SDKUserMessage,
+  EffortLevel,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { WebSocket } from "ws";
 import type {
@@ -64,6 +65,7 @@ interface SubagentInfo {
 
 export interface SDKBackendOptions {
   model?: string;
+  thinkingEffort?: EffortLevel;
   systemPrompt?: string;
   permissionMode?: "default" | "acceptEdits" | "bypassPermissions";
   allowedTools?: string[];
@@ -357,6 +359,9 @@ implements
   }
 
   resolvePermission(requestId: string, decision: PermissionDecision): boolean {
+    if (decision.startsWith("option:")) {
+      return false;
+    }
     const pending = this.pendingPermissions.get(requestId);
     if (!pending) {
       return false;
@@ -385,6 +390,29 @@ implements
 
   getUsage(): UsageRow[] {
     return [...this.usageLog];
+  }
+
+  cancelActivePrompt(): boolean {
+    const hadWork = this.processing || this.promptQueue.length > 0 || this.activeQuery !== null || this.abortController !== null;
+    this.promptQueue = [];
+    this.resolveAllPendingPermissions("deny");
+    void this.cancelActiveQuery();
+
+    if (hadWork) {
+      this.storeAndBroadcast({
+        type: "result",
+        subtype: "cancelled",
+        session_id: this.meta.provider_session_id ?? this.id,
+        duration_ms: 0,
+        num_turns: 0,
+        total_cost_usd: 0,
+        is_error: true,
+        errors: ["cancelled"],
+        stopReason: "cancelled",
+      });
+    }
+
+    return hadWork;
   }
 
   getActiveSubagents(): SubagentInfo[] {
@@ -587,6 +615,7 @@ implements
       allowedTools,
       maxTurns: this.options.maxTurns,
       maxBudgetUsd: this.options.maxCostUsd,
+      effort: this.options.thinkingEffort,
       includePartialMessages: true,
       settingSources,
       canUseTool: this.handleToolPermission,
@@ -1178,6 +1207,7 @@ implements
     try {
       const db = getDb();
       const model = this.options.model ?? this.extractModel(this.meta.args) ?? null;
+      const thinkingEffort = this.options.thinkingEffort ?? null;
       const permissionMode = this.options.permissionMode ?? "default";
       const maxTurns = this.options.maxTurns ?? null;
       const maxCostUsd = this.options.maxCostUsd ?? null;
@@ -1186,13 +1216,14 @@ implements
 
       // Check if params differ from the last snapshot
       const lastRow = db.prepare(
-        `SELECT model, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools
+        `SELECT model, thinking_effort, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools
          FROM message_params
          WHERE session_id = ?
          ORDER BY message_index DESC
          LIMIT 1`,
       ).get(this.id) as {
         model: string | null;
+        thinking_effort: string | null;
         permission_mode: string | null;
         max_turns: number | null;
         max_cost_usd: number | null;
@@ -1206,6 +1237,7 @@ implements
       if (lastRow) {
         const same =
           lastRow.model === model &&
+          lastRow.thinking_effort === thinkingEffort &&
           lastRow.permission_mode === permissionMode &&
           lastRow.max_turns === maxTurns &&
           lastRow.max_cost_usd === maxCostUsd &&
@@ -1216,12 +1248,13 @@ implements
 
       db.prepare(
         `INSERT OR REPLACE INTO message_params
-         (session_id, message_index, model, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (session_id, message_index, model, thinking_effort, permission_mode, max_turns, max_cost_usd, preset_ids, allowed_tools, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         this.id,
         this.messageIndex,
         model,
+        thinkingEffort,
         permissionMode,
         maxTurns,
         maxCostUsd,
