@@ -4,6 +4,7 @@
 @import "./styles/timeline.css";
 @import "./styles/shared.css";
 @import "./styles/sidebar-search-filter.css";
+@import "./styles/detail-pane-shell.css";
 @import "./styles/auth.css";
 @import "./styles/auth-hooks.css";
 @import "./styles/inbox.css";

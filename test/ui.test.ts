@@ -966,6 +966,10 @@ describe('AuthQueueView', () => {
     const authHeader = document.querySelector('.auth-detail__header');
     const authBody = document.querySelector('.auth-detail__body');
     expect(authPane).toBeTruthy();
+    expect(authPane?.classList.contains('detail-pane-shell')).toBe(true);
+    expect(authHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
+    expect(authBody?.classList.contains('detail-pane-shell__body')).toBe(true);
+    expect(authHeader?.querySelector('.detail-pane-shell__header-primary.auth-detail__header-primary')).toBeTruthy();
     expect(authPane?.contains(authHeader as Node)).toBe(true);
     expect(authPane?.contains(authBody as Node)).toBe(true);
     expect(authHeader?.nextElementSibling).toBe(authBody);
@@ -1988,6 +1992,10 @@ describe('LedgerIssueDetail', () => {
     const detailPane = document.querySelector('.ledger-issue-detail');
     const header = document.querySelector('.ledger-issue-detail__header');
     const body = document.querySelector('.ledger-issue-detail__body');
+    expect(detailPane?.classList.contains('detail-pane-shell')).toBe(true);
+    expect(header?.classList.contains('detail-pane-shell__header')).toBe(true);
+    expect(body?.classList.contains('detail-pane-shell__body')).toBe(true);
+    expect(header?.querySelector('.detail-pane-shell__header-primary.ledger-issue-detail__header-primary')).toBeTruthy();
     expect(detailPane?.contains(header as Node)).toBe(true);
     expect(detailPane?.contains(body as Node)).toBe(true);
     expect(header?.nextElementSibling).toBe(body);
@@ -2933,7 +2941,13 @@ describe('ArtifactsView', () => {
 
     await waitFor(() => expect(screen.getByText('humbleb://claims/claim_1')).toBeTruthy());
     expect(screen.getAllByText('demo-report.md').length).toBeGreaterThan(0);
+    const detailShell = document.querySelector('.artifact-detail');
     const detailHeader = document.querySelector('.artifact-detail__header');
+    const detailBody = document.querySelector('.artifact-detail__pane');
+    expect(detailShell?.classList.contains('detail-pane-shell')).toBe(true);
+    expect(detailHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
+    expect(detailBody?.classList.contains('detail-pane-shell__body')).toBe(true);
+    expect(detailHeader?.querySelector('.detail-pane-shell__header-primary.artifact-detail__header-primary')).toBeTruthy();
     expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('demo-report.md');
     expect(detailHeader?.textContent).not.toContain('present');
     expect(detailHeader?.textContent).not.toContain('pinned');
@@ -3039,7 +3053,8 @@ describe('ArtifactsView', () => {
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('376px');
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('317px');
     expect((metadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-bottom')).toBe('0px');
-    expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.artifact-detail')?.contains(metadataDialog)).toBe(true);
+    expect(document.querySelector('.artifact-detail__pane')?.contains(metadataDialog)).toBe(false);
     expect(document.querySelector('.artifact-detail__body')?.contains(metadataDialog)).toBe(false);
     expect(within(metadataDialog).getByText('Identity')).toBeTruthy();
     expect(within(metadataDialog).getByText('Custody')).toBeTruthy();
@@ -3629,6 +3644,9 @@ describe('ArtifactsView', () => {
 
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.detail-pane-shell\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.detail-pane-shell__header\s*\{[^}]*flex:\s*none;[^}]*width:\s*100%;/s);
+    expect(css).toMatch(/\.detail-pane-shell__body\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;/s);
     expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).toMatch(/\.issues-detail__content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*gap:\s*0;[^}]*overflow:\s*hidden;/s);

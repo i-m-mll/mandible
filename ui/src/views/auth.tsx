@@ -5,6 +5,7 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
@@ -1405,6 +1406,76 @@ function AuthRequestDetail({
     setActionsOpen(false);
   };
 
+  const subheader = (hasMeaningfulDiffToggle || actions) ? (
+    <>
+      <div className="auth-detail__aux-left">
+        {hasMeaningfulDiffToggle && (
+          <button
+            type="button"
+            className={`auth-detail__diff-toggle${diffViewActive ? ' auth-detail__diff-toggle--active' : ''}`}
+            aria-label={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
+            aria-pressed={diffViewActive}
+            title={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
+            onClick={() => setDiffViewActive((active) => !active)}
+          >
+            <DiffIcon />
+          </button>
+        )}
+      </div>
+      <div className="auth-detail__action-strip">
+        {actions}
+      </div>
+    </>
+  ) : undefined;
+
+  const overlays = (
+    <DetailPaneModal
+      open={metadataOpen}
+      onClose={() => setMetadataOpen(false)}
+      titleId="auth-metadata-title"
+      title="Auth metadata"
+      closeLabel="Close auth metadata"
+      excludeAboveRef={headerRef}
+      scrollOwnerSelector=".auth-detail"
+      scrollLockClassName="auth-detail--metadata-open"
+      className="auth-detail__metadata-modal"
+      panelClassName="auth-detail__metadata-panel"
+    >
+      <dl className="auth-detail-metadata__content">
+        <MetadataRow
+          label="Full request id"
+          value={(
+            <button
+              type="button"
+              className="auth-detail-metadata__copy"
+              onClick={() => void copyAuthText(fullId)}
+            >
+              {fullId || 'unknown'}
+            </button>
+          )}
+        />
+        <MetadataRow label="Status" value={status} />
+        <MetadataRow label="Type" value={authType} />
+        <MetadataRow label="Repo" value={repoId || null} />
+        <MetadataRow label="Head branch" value={headBranch ?? null} />
+        <MetadataRow label="Base branch" value={baseBranch ?? null} />
+        <MetadataRow label="Created" value={createdAt} />
+        <MetadataRow label="Last executed" value={lastExecutedAt} />
+        <MetadataRow label="Resolved" value={resolvedAt} />
+        <MetadataRow label="Approval source" value={request.approval_source ?? null} />
+        <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
+        <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
+        <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
+        <MetadataRow label="Merge SHA" value={mergeSha} />
+        <MetadataRow label="Finalized" value={finalizedAt} />
+        <MetadataRow label="Session" value={sessionId ?? null} />
+        <MetadataRow label="Target session" value={targetSession} />
+        <MetadataRow label="Target repo" value={targetRepo} />
+        <MetadataRow label="Conversation" value={conversationId} />
+      </dl>
+    </DetailPaneModal>
+  );
+
   useEffect(() => {
     setDiffViewActive(false);
   }, [fullId]);
@@ -1423,11 +1494,17 @@ function AuthRequestDetail({
   };
 
   return (
-    <article
+    <DetailPaneShell
       className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}
-    >
-      <header className="auth-detail__header" ref={headerRef}>
-        <div className="auth-detail__header-primary">
+      headerClassName="auth-detail__header"
+      headerPrimaryClassName="auth-detail__header-primary"
+      subheaderClassName="auth-detail__aux-header"
+      bodyClassName="auth-detail__body"
+      headerRef={headerRef}
+      subheader={subheader}
+      overlays={overlays}
+      header={(
+        <>
           <div className="auth-detail__header-main">
             <DetailHeaderIdentity
               className="auth-detail__eyebrow"
@@ -1506,31 +1583,9 @@ function AuthRequestDetail({
               </div>
             )}
           </div>
-        </div>
-        {(hasMeaningfulDiffToggle || actions) && (
-          <div className="auth-detail__aux-header">
-            <div className="auth-detail__aux-left">
-              {hasMeaningfulDiffToggle && (
-                <button
-                  type="button"
-                  className={`auth-detail__diff-toggle${diffViewActive ? ' auth-detail__diff-toggle--active' : ''}`}
-                  aria-label={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
-                  aria-pressed={diffViewActive}
-                  title={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
-                  onClick={() => setDiffViewActive((active) => !active)}
-                >
-                  <DiffIcon />
-                </button>
-              )}
-            </div>
-            <div className="auth-detail__action-strip">
-              {actions}
-            </div>
-          </div>
-        )}
-      </header>
-
-      <div className="auth-detail__body">
+        </>
+      )}
+    >
         {showFailure && (
           <div className={`auth-failure${status === 'expired' ? ' auth-failure--expired' : ''}`}>
             <div className="auth-failure__header">
@@ -1773,53 +1828,7 @@ function AuthRequestDetail({
             )}
           </div>
         )}
-      </div>
-      <DetailPaneModal
-        open={metadataOpen}
-        onClose={() => setMetadataOpen(false)}
-        titleId="auth-metadata-title"
-        title="Auth metadata"
-        closeLabel="Close auth metadata"
-        excludeAboveRef={headerRef}
-        scrollOwnerSelector=".auth-detail"
-        scrollLockClassName="auth-detail--metadata-open"
-        className="auth-detail__metadata-modal"
-        panelClassName="auth-detail__metadata-panel"
-      >
-        <dl className="auth-detail-metadata__content">
-          <MetadataRow
-            label="Full request id"
-            value={(
-              <button
-                type="button"
-                className="auth-detail-metadata__copy"
-                onClick={() => void copyAuthText(fullId)}
-              >
-                {fullId || 'unknown'}
-              </button>
-            )}
-          />
-          <MetadataRow label="Status" value={status} />
-          <MetadataRow label="Type" value={authType} />
-          <MetadataRow label="Repo" value={repoId || null} />
-          <MetadataRow label="Head branch" value={headBranch ?? null} />
-          <MetadataRow label="Base branch" value={baseBranch ?? null} />
-          <MetadataRow label="Created" value={createdAt} />
-          <MetadataRow label="Last executed" value={lastExecutedAt} />
-          <MetadataRow label="Resolved" value={resolvedAt} />
-          <MetadataRow label="Approval source" value={request.approval_source ?? null} />
-          <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
-          <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
-          <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
-          <MetadataRow label="Merge SHA" value={mergeSha} />
-          <MetadataRow label="Finalized" value={finalizedAt} />
-          <MetadataRow label="Session" value={sessionId ?? null} />
-          <MetadataRow label="Target session" value={targetSession} />
-          <MetadataRow label="Target repo" value={targetRepo} />
-          <MetadataRow label="Conversation" value={conversationId} />
-        </dl>
-      </DetailPaneModal>
-    </article>
+    </DetailPaneShell>
   );
 }
 
