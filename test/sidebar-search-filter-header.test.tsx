@@ -1,0 +1,141 @@
+import { readFileSync } from 'node:fs';
+import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { SidebarSearchFilterHeader } from '../ui/src/components/shared/SidebarSearchFilterHeader';
+import { readResolvedStylesheet } from './helpers/css-manifest';
+
+afterEach(() => {
+  cleanup();
+});
+
+describe('SidebarSearchFilterHeader', () => {
+  it('renders search-only headers with an action slot and stable input test id', () => {
+    const onValueChange = vi.fn();
+    render(
+      <SidebarSearchFilterHeader
+        value="road"
+        onValueChange={onValueChange}
+        placeholder="Filter spaces..."
+        searchAriaLabel="Filter spaces"
+        clearAriaLabel="Clear spaces filter"
+        actionSlot={<button type="button">+</button>}
+        testId="spaces-sidebar"
+        inputTestId="spaces-filter-input"
+      />,
+    );
+
+    const input = screen.getByTestId('spaces-filter-input') as HTMLInputElement;
+    expect(input.value).toBe('road');
+    expect(screen.getByTestId('spaces-sidebar').classList.contains('sidebar-search-filter')).toBe(true);
+    expect(screen.getByRole('button', { name: '+' })).toBeTruthy();
+
+    fireEvent.input(input, { target: { value: 'canvas' } });
+    expect(onValueChange).toHaveBeenCalledWith('canvas');
+  });
+
+  it('clears search text and renders a popover filter trigger with count and panel content', () => {
+    const onValueChange = vi.fn();
+    const onToggle = vi.fn();
+    render(
+      <SidebarSearchFilterHeader
+        value="auth"
+        onValueChange={onValueChange}
+        placeholder="Search auth requests..."
+        searchAriaLabel="Search auth requests"
+        clearAriaLabel="Clear auth search"
+        filterTrigger={{
+          ariaLabel: 'Advanced auth filters',
+          open: true,
+          active: true,
+          count: 3,
+          onToggle,
+        }}
+        summarySlot={<span>active filters</span>}
+        panel={{
+          id: 'auth-filter-panel',
+          variant: 'popover',
+          children: <button type="button" className="sidebar-search-filter__option">active</button>,
+        }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear auth search' }));
+    expect(onValueChange).toHaveBeenCalledWith('');
+
+    const trigger = screen.getByRole('button', { name: 'Advanced auth filters' });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(trigger.classList.contains('sidebar-search-filter__trigger--active')).toBe(true);
+    expect(screen.getByText('3')).toBeTruthy();
+    fireEvent.click(trigger);
+    expect(onToggle).toHaveBeenCalledTimes(1);
+
+    const panel = document.getElementById('auth-filter-panel');
+    expect(panel).toBeTruthy();
+    expect(panel!.classList.contains('sidebar-search-filter__panel--popover')).toBe(true);
+    expect(screen.getByText('active filters')).toBeTruthy();
+  });
+
+  it('renders inline panels and calls onBlurWithin for outside-focus handling', () => {
+    const onBlurWithin = vi.fn();
+    const { container } = render(
+      <SidebarSearchFilterHeader
+        value=""
+        onValueChange={vi.fn()}
+        placeholder="Search artifacts"
+        searchAriaLabel="Search artifacts"
+        clearAriaLabel="Clear artifact search"
+        onBlurWithin={onBlurWithin}
+        panel={{
+          variant: 'inline',
+          children: <label className="artifacts-advanced__field">Facet</label>,
+        }}
+      />,
+    );
+
+    expect(container.querySelector('.sidebar-search-filter__panel--inline')).toBeTruthy();
+    fireEvent(
+      screen.getByRole('searchbox', { name: 'Search artifacts' }),
+      new FocusEvent('focusout', { bubbles: true }),
+    );
+    expect(onBlurWithin).toHaveBeenCalledTimes(1);
+  });
+
+  it('ships the shared CSS selectors used by migrated sidebar filter panels', () => {
+    const css = readResolvedStylesheet();
+    expect(css).toContain('.sidebar-search-filter__row');
+    expect(css).toContain('.sidebar-search-filter__panel--popover');
+    expect(css).toContain('.sidebar-search-filter__panel--inline');
+    expect(css).toContain('.sidebar-search-filter__section');
+    expect(css).toContain('.sidebar-search-filter__options');
+  });
+
+  it('keeps migrated views on the shared primitive instead of per-view search chrome', () => {
+    const migratedViews = [
+      'ui/src/views/issues.tsx',
+      'ui/src/views/auth.tsx',
+      'ui/src/views/artifacts.tsx',
+      'ui/src/views/conversations.tsx',
+      'ui/src/views/spaces/SpacesSidebar.tsx',
+      'ui/src/views/work.tsx',
+    ];
+
+    for (const viewPath of migratedViews) {
+      const source = readFileSync(viewPath, 'utf8');
+      expect(source).toContain('SidebarSearchFilterHeader');
+    }
+
+    const staleChrome = [
+      'issues-filter-menu',
+      'auth-filter-menu',
+      'artifacts-filter',
+      'chat-history-search-row',
+      'work-sidebar__search-row',
+      'spaces-tree__filter-input',
+    ];
+    const migratedSource = migratedViews.map((viewPath) => readFileSync(viewPath, 'utf8')).join('\n');
+    for (const staleClass of staleChrome) {
+      expect(migratedSource).not.toContain(staleClass);
+    }
+  });
+});

@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { html as diff2htmlHtml } from 'diff2html';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import {
   disableAuthAutoApprove,
@@ -1404,6 +1406,76 @@ function AuthRequestDetail({
     setActionsOpen(false);
   };
 
+  const subheader = (hasMeaningfulDiffToggle || actions) ? (
+    <>
+      <div className="auth-detail__aux-left">
+        {hasMeaningfulDiffToggle && (
+          <button
+            type="button"
+            className={`auth-detail__diff-toggle${diffViewActive ? ' auth-detail__diff-toggle--active' : ''}`}
+            aria-label={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
+            aria-pressed={diffViewActive}
+            title={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
+            onClick={() => setDiffViewActive((active) => !active)}
+          >
+            <DiffIcon />
+          </button>
+        )}
+      </div>
+      <div className="auth-detail__action-strip">
+        {actions}
+      </div>
+    </>
+  ) : undefined;
+
+  const overlays = (
+    <DetailPaneModal
+      open={metadataOpen}
+      onClose={() => setMetadataOpen(false)}
+      titleId="auth-metadata-title"
+      title="Auth metadata"
+      closeLabel="Close auth metadata"
+      excludeAboveRef={headerRef}
+      scrollOwnerSelector=".auth-detail"
+      scrollLockClassName="auth-detail--metadata-open"
+      className="auth-detail__metadata-modal"
+      panelClassName="auth-detail__metadata-panel"
+    >
+      <dl className="auth-detail-metadata__content">
+        <MetadataRow
+          label="Full request id"
+          value={(
+            <button
+              type="button"
+              className="auth-detail-metadata__copy"
+              onClick={() => void copyAuthText(fullId)}
+            >
+              {fullId || 'unknown'}
+            </button>
+          )}
+        />
+        <MetadataRow label="Status" value={status} />
+        <MetadataRow label="Type" value={authType} />
+        <MetadataRow label="Repo" value={repoId || null} />
+        <MetadataRow label="Head branch" value={headBranch ?? null} />
+        <MetadataRow label="Base branch" value={baseBranch ?? null} />
+        <MetadataRow label="Created" value={createdAt} />
+        <MetadataRow label="Last executed" value={lastExecutedAt} />
+        <MetadataRow label="Resolved" value={resolvedAt} />
+        <MetadataRow label="Approval source" value={request.approval_source ?? null} />
+        <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
+        <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
+        <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
+        <MetadataRow label="Merge SHA" value={mergeSha} />
+        <MetadataRow label="Finalized" value={finalizedAt} />
+        <MetadataRow label="Session" value={sessionId ?? null} />
+        <MetadataRow label="Target session" value={targetSession} />
+        <MetadataRow label="Target repo" value={targetRepo} />
+        <MetadataRow label="Conversation" value={conversationId} />
+      </dl>
+    </DetailPaneModal>
+  );
+
   useEffect(() => {
     setDiffViewActive(false);
   }, [fullId]);
@@ -1422,11 +1494,17 @@ function AuthRequestDetail({
   };
 
   return (
-    <article
+    <DetailPaneShell
       className={`auth-detail__pane auth-detail-pane${history ? ' auth-detail-pane--history' : ''}`}
-    >
-      <header className="auth-detail__header" ref={headerRef}>
-        <div className="auth-detail__header-primary">
+      headerClassName="auth-detail__header"
+      headerPrimaryClassName="auth-detail__header-primary"
+      subheaderClassName="auth-detail__aux-header"
+      bodyClassName="auth-detail__body"
+      headerRef={headerRef}
+      subheader={subheader}
+      overlays={overlays}
+      header={(
+        <>
           <div className="auth-detail__header-main">
             <DetailHeaderIdentity
               className="auth-detail__eyebrow"
@@ -1505,31 +1583,9 @@ function AuthRequestDetail({
               </div>
             )}
           </div>
-        </div>
-        {(hasMeaningfulDiffToggle || actions) && (
-          <div className="auth-detail__aux-header">
-            <div className="auth-detail__aux-left">
-              {hasMeaningfulDiffToggle && (
-                <button
-                  type="button"
-                  className={`auth-detail__diff-toggle${diffViewActive ? ' auth-detail__diff-toggle--active' : ''}`}
-                  aria-label={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
-                  aria-pressed={diffViewActive}
-                  title={diffViewActive ? 'Hide changes diff' : 'Show changes diff'}
-                  onClick={() => setDiffViewActive((active) => !active)}
-                >
-                  <DiffIcon />
-                </button>
-              )}
-            </div>
-            <div className="auth-detail__action-strip">
-              {actions}
-            </div>
-          </div>
-        )}
-      </header>
-
-      <div className="auth-detail__body">
+        </>
+      )}
+    >
         {showFailure && (
           <div className={`auth-failure${status === 'expired' ? ' auth-failure--expired' : ''}`}>
             <div className="auth-failure__header">
@@ -1772,53 +1828,7 @@ function AuthRequestDetail({
             )}
           </div>
         )}
-      </div>
-      <DetailPaneModal
-        open={metadataOpen}
-        onClose={() => setMetadataOpen(false)}
-        titleId="auth-metadata-title"
-        title="Auth metadata"
-        closeLabel="Close auth metadata"
-        excludeAboveRef={headerRef}
-        scrollOwnerSelector=".auth-detail"
-        scrollLockClassName="auth-detail--metadata-open"
-        className="auth-detail__metadata-modal"
-        panelClassName="auth-detail__metadata-panel"
-      >
-        <dl className="auth-detail-metadata__content">
-          <MetadataRow
-            label="Full request id"
-            value={(
-              <button
-                type="button"
-                className="auth-detail-metadata__copy"
-                onClick={() => void copyAuthText(fullId)}
-              >
-                {fullId || 'unknown'}
-              </button>
-            )}
-          />
-          <MetadataRow label="Status" value={status} />
-          <MetadataRow label="Type" value={authType} />
-          <MetadataRow label="Repo" value={repoId || null} />
-          <MetadataRow label="Head branch" value={headBranch ?? null} />
-          <MetadataRow label="Base branch" value={baseBranch ?? null} />
-          <MetadataRow label="Created" value={createdAt} />
-          <MetadataRow label="Last executed" value={lastExecutedAt} />
-          <MetadataRow label="Resolved" value={resolvedAt} />
-          <MetadataRow label="Approval source" value={request.approval_source ?? null} />
-          <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
-          <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
-          <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
-          <MetadataRow label="Merge SHA" value={mergeSha} />
-          <MetadataRow label="Finalized" value={finalizedAt} />
-          <MetadataRow label="Session" value={sessionId ?? null} />
-          <MetadataRow label="Target session" value={targetSession} />
-          <MetadataRow label="Target repo" value={targetRepo} />
-          <MetadataRow label="Conversation" value={conversationId} />
-        </dl>
-      </DetailPaneModal>
-    </article>
+    </DetailPaneShell>
   );
 }
 
@@ -1841,21 +1851,6 @@ function DiffIcon(): JSX.Element {
   );
 }
 
-function FilterIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ClearIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function AuthCardItem({
   leading,
@@ -2307,12 +2302,6 @@ export function AuthQueueView({
   daemonReady = true,
   instance = null,
 }: AuthQueueViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
-    defaultWidth: 320,
-    minWidth: 190,
-    storageKey: 'sidebar-width:auth',
-  });
-
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -3212,85 +3201,81 @@ export function AuthQueueView({
         </div>
       )}
 
-      {!sidebarHidden ? (
-        <>
-          {/* LEFT sidebar */}
-          <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
-            <div
-              className="auth-sidebar__search"
-              onBlur={(event) => {
+      <ViewSidebar
+        storageKey="sidebar-width:auth"
+        defaultWidth={320}
+        minWidth={190}
+        className="auth-sidebar"
+        ariaLabel="Auth requests"
+        hidden={sidebarHidden}
+        header={
+          <SidebarSearchFilterHeader
+            value={authSearch}
+            onValueChange={setAuthSearch}
+            placeholder="Search auth requests..."
+            searchAriaLabel="Search auth requests"
+            clearAriaLabel="Clear auth search"
+            inputType="text"
+            onBlurWithin={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
                   setFilterMenuOpen(false);
                 }
               }}
-            >
-              <input
-                type="text"
-                className="auth-sidebar__search-input"
-                placeholder="Search auth requests..."
-                value={authSearch}
-                onInput={(event) => setAuthSearch(event.currentTarget.value)}
-              />
-              {authSearch && (
-                <button type="button" className="auth-sidebar__search-clear" aria-label="Clear auth search" title="Clear" onClick={() => setAuthSearch('')}>
-                  <ClearIcon />
-                </button>
-              )}
-              <button
-                type="button"
-                className={`auth-sidebar__advanced-trigger${filterMenuOpen ? ' auth-sidebar__advanced-trigger--active' : ''}`}
-                aria-label="Advanced auth filters"
-                title="Advanced auth filters"
-                onClick={() => setFilterMenuOpen((prev) => !prev)}
-              >
-                <FilterIcon />
-              </button>
-              {activeFilterSummary && <div className="auth-sidebar__filter-summary">{activeFilterSummary}</div>}
-              {filterMenuOpen && (
-                <div className="auth-filter-menu">
-              <div className="auth-filter-menu__header">
+            filterTrigger={{
+              ariaLabel: 'Advanced auth filters',
+              title: 'Advanced auth filters',
+              open: filterMenuOpen,
+              active: Boolean(activeFilterSummary),
+              onToggle: () => setFilterMenuOpen((prev) => !prev),
+            }}
+            summarySlot={activeFilterSummary ? <span>{activeFilterSummary}</span> : undefined}
+            panel={filterMenuOpen ? {
+              variant: 'popover',
+              children: (
+                <>
+              <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
                 <span>Filters</span>
-                <button type="button" className="auth-filter-menu__clear" onClick={clearAuthFilters}>Clear</button>
+                <button type="button" className="sidebar-search-filter__clear-action" onClick={clearAuthFilters}>Clear</button>
               </div>
-              <div className="auth-filter-menu__section">
-                <span className="auth-filter-menu__label">Queue</span>
-                <div className="auth-filter-menu__options auth-filter-menu__options--segmented">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Queue</span>
+                <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
                   {(['active', 'all', 'historical'] as AuthFilterMode[]).map((mode) => (
-                    <button key={mode} type="button" className={`auth-filter-menu__option${filterMode === mode ? ' auth-filter-menu__option--active' : ''}`} onClick={() => setFilterMode(mode)}>
+                    <button key={mode} type="button" className={`sidebar-search-filter__option${filterMode === mode ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => setFilterMode(mode)}>
                       {mode}
                     </button>
                   ))}
                 </div>
               </div>
               {filterMode === 'active' && (
-                <div className="auth-filter-menu__section">
-                  <span className="auth-filter-menu__label">Sort</span>
-                  <div className="auth-filter-menu__options auth-filter-menu__options--segmented">
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Sort</span>
+                  <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
                     {(['newest', 'oldest', 'status'] as SortMode[]).map((mode) => (
-                      <button key={mode} type="button" className={`auth-filter-menu__option${sortMode === mode ? ' auth-filter-menu__option--active' : ''}`} onClick={() => handleSortChange(mode)}>
+                      <button key={mode} type="button" className={`sidebar-search-filter__option${sortMode === mode ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => handleSortChange(mode)}>
                         {mode}
                       </button>
                     ))}
                   </div>
                 </div>
               )}
-              <div className="auth-filter-menu__section">
-                <span className="auth-filter-menu__label">Type</span>
-                <div className="auth-filter-menu__options">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Type</span>
+                <div className="sidebar-search-filter__options">
                   {AUTH_TYPE_OPTIONS.map((opt) => (
-                    <button key={opt.value} type="button" className={`auth-filter-menu__option${typeFilter === opt.value ? ' auth-filter-menu__option--active' : ''}`} onClick={() => setTypeFilter(opt.value)}>
+                    <button key={opt.value} type="button" className={`sidebar-search-filter__option${typeFilter === opt.value ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => setTypeFilter(opt.value)}>
                       {opt.label}
                     </button>
                   ))}
                 </div>
               </div>
               {uniqueRepos.length > 1 && (
-                <div className="auth-filter-menu__section">
-                  <span className="auth-filter-menu__label">Repo</span>
-                  <div className="auth-filter-menu__options">
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Repo</span>
+                  <div className="sidebar-search-filter__options">
                     <button
                       type="button"
-                      className={`auth-filter-menu__option${repoFilter === null ? ' auth-filter-menu__option--active' : ''}`}
+                      className={`sidebar-search-filter__option${repoFilter === null ? ' sidebar-search-filter__option--active' : ''}`}
                       onClick={() => {
                         setRepoFilter(null);
                         setBranchFilter(null);
@@ -3305,7 +3290,7 @@ export function AuthQueueView({
                         <button
                           key={repo}
                           type="button"
-                          className={`auth-filter-menu__option${repoFilter === repo ? ' auth-filter-menu__option--active' : ''}`}
+                          className={`sidebar-search-filter__option${repoFilter === repo ? ' sidebar-search-filter__option--active' : ''}`}
                           onClick={() => {
                             setRepoFilter(repoFilter === repo ? null : repo);
                             setBranchFilter(null);
@@ -3320,8 +3305,8 @@ export function AuthQueueView({
                 </div>
               )}
               {repoFilter && uniqueBranchesForRepo.length > 1 && (
-                <div className="auth-filter-menu__section">
-                  <span className="auth-filter-menu__label">Branch</span>
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Branch</span>
                   <div className="auth-sidebar__branch-filter-row">
                     <input
                       type="text"
@@ -3367,11 +3352,36 @@ export function AuthQueueView({
                   </div>
                 </div>
               )}
-                </div>
-              )}
+                </>
+              ),
+            } : undefined}
+          />
+        }
+        bodyClassName="auth-sidebar__list"
+        footer={
+            <div className="auth-auto-approve">
+              <div className="auth-auto-approve__text">
+                <span className="auth-auto-approve__label">Auto-approve</span>
+                <span className="auth-auto-approve__status">
+                  {instanceMutationBlocked
+                    ? `Disabled on ${instanceLabel}`
+                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
+                </span>
+              </div>
+              <button
+                type="button"
+                className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
+                role="switch"
+                aria-checked={Boolean(autoApproveStatus?.enabled)}
+                aria-label="Toggle auth auto-approve"
+                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
+                onClick={() => void handleAutoApproveToggle()}
+              >
+                <span className="auth-auto-approve__knob" />
+              </button>
             </div>
-
-            <div className="auth-sidebar__list">
+        }
+      >
               {filteredSidebarItems.length === 0 ? (
                 <div className="auth-sidebar__empty">
                   {authSearch
@@ -3398,35 +3408,7 @@ export function AuthQueueView({
                   />
                 ))
               )}
-            </div>
-
-            <div className="auth-auto-approve">
-              <div className="auth-auto-approve__text">
-                <span className="auth-auto-approve__label">Auto-approve</span>
-                <span className="auth-auto-approve__status">
-                  {instanceMutationBlocked
-                    ? `Disabled on ${instanceLabel}`
-                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
-                </span>
-              </div>
-              <button
-                type="button"
-                className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
-                role="switch"
-                aria-checked={Boolean(autoApproveStatus?.enabled)}
-                aria-label="Toggle auth auto-approve"
-                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
-                onClick={() => void handleAutoApproveToggle()}
-              >
-                <span className="auth-auto-approve__knob" />
-              </button>
-            </div>
-          </div>
-
-          {/* Drag handle */}
-          <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
-        </>
-      ) : null}
+      </ViewSidebar>
 
       {/* RIGHT detail panel */}
       <div

@@ -23,6 +23,7 @@ import type {
 import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
+import { DetailPaneShell } from '../shared/DetailPaneShell';
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
 type IssueMetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
@@ -163,12 +164,41 @@ export function LedgerIssueDetail({
     }
   };
 
+  const overlays = (
+    <>
+      <DetailPaneModal
+        open={metadataOpen}
+        onClose={() => setMetadataOpen(false)}
+        titleId="issue-metadata-title"
+        title="Issue metadata"
+        closeLabel="Close issue metadata"
+        excludeAboveRef={headerRef}
+        scrollOwnerSelector={ISSUE_METADATA_SCROLL_OWNER_SELECTORS}
+        scrollLockClassName="issues-detail--metadata-open"
+        className="ledger-issue-detail__metadata-modal"
+        panelClassName="ledger-issue-detail__metadata-panel"
+      >
+        <IssueMetadataContent detail={detail} />
+      </DetailPaneModal>
+      {authEvidenceOpen && (
+        <AuthEvidenceModal
+          authRequests={detail.auth_requests}
+          onOpenEntity={onOpenEntity}
+          onClose={() => setAuthEvidenceOpen(false)}
+        />
+      )}
+    </>
+  );
+
   return (
-    <article
+    <DetailPaneShell
       className={`ledger-issue-detail${compact ? ' ledger-issue-detail--compact' : ''}`}
-      aria-busy={hydrating ? 'true' : 'false'}
-    >
-      <header className="ledger-issue-detail__header" ref={headerRef}>
+      headerClassName="ledger-issue-detail__header"
+      headerPrimaryClassName="ledger-issue-detail__header-primary"
+      bodyClassName="ledger-issue-detail__body"
+      headerRef={headerRef}
+      header={(
+        <>
         <div className="ledger-issue-detail__heading">
           <DetailHeaderIdentity
             className="ledger-issue-detail__eyebrow"
@@ -225,23 +255,11 @@ export function LedgerIssueDetail({
             <span className={`ledger-sync-pill ledger-sync-pill--${syncTone}`}>{syncLabel(detail.sync.state)}</span>
           </div>
         )}
-      </header>
-      <DetailPaneModal
-        open={metadataOpen}
-        onClose={() => setMetadataOpen(false)}
-        titleId="issue-metadata-title"
-        title="Issue metadata"
-        closeLabel="Close issue metadata"
-        excludeAboveRef={headerRef}
-        scrollOwnerSelector={ISSUE_METADATA_SCROLL_OWNER_SELECTORS}
-        scrollLockClassName="issues-detail--metadata-open"
-        className="ledger-issue-detail__metadata-modal"
-        panelClassName="ledger-issue-detail__metadata-panel"
-      >
-        <IssueMetadataContent detail={detail} />
-      </DetailPaneModal>
-
-      <div className="ledger-issue-detail__body">
+        </>
+      )}
+      overlays={overlays}
+      ariaBusy={hydrating}
+    >
         <section className="ledger-issue-detail__section">
           <div className="ledger-comment-list ledger-timeline-list">
             {timelineEntries.map((entry) => (
@@ -313,16 +331,7 @@ export function LedgerIssueDetail({
             <SyncStatus detail={detail} onResolveConflict={onResolveConflict} busy={busy} />
           </section>
         )}
-      </div>
-
-      {authEvidenceOpen && (
-        <AuthEvidenceModal
-          authRequests={detail.auth_requests}
-          onOpenEntity={onOpenEntity}
-          onClose={() => setAuthEvidenceOpen(false)}
-        />
-      )}
-    </article>
+    </DetailPaneShell>
   );
 }
 

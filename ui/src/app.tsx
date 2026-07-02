@@ -310,14 +310,23 @@ const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
   'issues',
   'artifacts',
   'inbox',
+  'presets',
   'spaces',
 ]);
 
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
-// full-bleed content (no .app-content gutters). Deliberately NARROWER than
-// VIEW_SIDEBAR_TABS, which also includes console/auth/inbox/artifacts — those use
-// other breakout mechanisms. Issue e29a8c5.
-const RESIZE_RAIL_TABS = new Set<Route['tab']>(['issues', 'graph', 'timeline', 'spaces']);
+// full-bleed content (no .app-content gutters). Issue e29a8c5.
+const RESIZE_RAIL_TABS = new Set<Route['tab']>([
+  'auth',
+  'artifacts',
+  'console',
+  'graph',
+  'inbox',
+  'issues',
+  'presets',
+  'spaces',
+  'timeline',
+]);
 
 function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {
   // Lucide-style "layout-grid": Spaces are an authored grid of surfaces.
@@ -1772,6 +1781,7 @@ function App(): JSX.Element {
           <LazyPresetsView
             presetsState={state.presetsState}
             dispatch={dispatch}
+            sidebarHidden={isViewSidebarHidden(routeForTab('presets', route, tabRouteSnapshots))}
           />
         ))}
         {renderTabPanel('spaces', (() => {

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { openPath, pushRepos, pushRepo } from '../api';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 
 export type WorkRepo = {
   id?: string;
@@ -225,14 +226,6 @@ function useDebounce(value: string, delayMs: number): string {
 
 function copyToClipboard(text: string): void {
   void navigator.clipboard.writeText(text);
-}
-
-function WorkFilterIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
 }
 
 // --- Context menu component ---
@@ -833,27 +826,22 @@ export function WorkOverviewView({
       )}
       <div className="work-shell">
         <aside className="work-sidebar" aria-label="Repositories">
-          <div className="work-sidebar__search-row">
-            <input
-              type="search"
-              className="work-search"
-              placeholder="Search repos..."
-              value={repoFilterInput}
-              onInput={(event) => setRepoFilterInput(event.currentTarget.value)}
-            />
-            <button
-              type="button"
-              className={`work-filter-button${advancedFiltersOpen ? ' work-filter-button--active' : ''}`}
-              onClick={() => setAdvancedFiltersOpen((open) => !open)}
-              title="Advanced filters"
-              aria-label="Advanced filters"
-              aria-expanded={advancedFiltersOpen}
-            >
-              <WorkFilterIcon />
-            </button>
-          </div>
-          {advancedFiltersOpen ? (
-            <div className="work-filter-panel">
+          <SidebarSearchFilterHeader
+            value={repoFilterInput}
+            onValueChange={setRepoFilterInput}
+            placeholder="Search repos..."
+            searchAriaLabel="Search repositories"
+            clearAriaLabel="Clear repository search"
+            filterTrigger={{
+              ariaLabel: 'Advanced filters',
+              title: 'Advanced filters',
+              open: advancedFiltersOpen,
+              onToggle: () => setAdvancedFiltersOpen((open) => !open),
+            }}
+            panel={advancedFiltersOpen ? {
+              variant: 'inline',
+              children: (
+                <>
               <label className="work-filter-panel__field">
                 <span>Branch filter</span>
                 <input
@@ -896,8 +884,10 @@ export function WorkOverviewView({
               <button type="button" className="work-refresh-action" onClick={onRescan}>
                 Refresh now
               </button>
-            </div>
-          ) : null}
+                </>
+              ),
+            } : undefined}
+          />
           <div className="work-repo-list" role="list">
             {repoRows.length === 0 ? (
               <div className="empty-state">

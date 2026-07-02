@@ -614,6 +614,14 @@ a {
   padding: 0;
 }
 
+.app-content--view-sidebar .auth-sidebar-layout,
+.app-content--view-sidebar .artifacts-view,
+.app-content--view-sidebar .inbox-sidebar-layout,
+.app-content--view-sidebar .presets-view {
+  height: 100%;
+  margin: 0;
+}
+
 /* ── Shared view-sidebar container (issue e29a8c5) ──
    One owner for every resize-rail view sidebar. Coexists with the per-view
    selectors during migration; views opt in via <ViewSidebar>. */
@@ -639,6 +647,10 @@ a {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+
+.view-sidebar__footer {
+  flex: 0 0 auto;
 }
 
 /*

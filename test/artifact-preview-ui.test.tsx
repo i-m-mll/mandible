@@ -202,6 +202,10 @@ describe('ArtifactDetail artifact preview rendering', () => {
     const body = container.querySelector('.artifact-detail__body');
     const detail = container.querySelector('.artifact-detail');
 
+    expect(detail?.classList.contains('detail-pane-shell')).toBe(true);
+    expect(header?.classList.contains('detail-pane-shell__header')).toBe(true);
+    expect(pane?.classList.contains('detail-pane-shell__body')).toBe(true);
+    expect(header?.querySelector('.detail-pane-shell__header-primary.artifact-detail__header-primary')).toBeTruthy();
     expect(eyebrow?.textContent).toContain('rlrmp');
     expect(eyebrow?.textContent).toContain('156f240');
     expect(eyebrow?.textContent).not.toContain('link');

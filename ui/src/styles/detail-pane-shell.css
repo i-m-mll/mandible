@@ -1,0 +1,29 @@
+.detail-pane-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.detail-pane-shell__header {
+  flex: none;
+  width: 100%;
+  min-width: 0;
+}
+
+.detail-pane-shell__header-primary,
+.detail-pane-shell__subheader {
+  width: 100%;
+  min-width: 0;
+}
+
+.detail-pane-shell__body {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+}

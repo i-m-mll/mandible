@@ -71,16 +71,6 @@
   border-right: 1px solid var(--neutral-alpha-06);
 }
 
-.work-sidebar__search-row {
-  position: relative;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 34px;
-  gap: 8px;
-  padding: 12px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
-}
-
-.work-filter-button,
 .repo-card__gear {
   display: inline-flex;
   align-items: center;
@@ -93,33 +83,10 @@
   transition: background 0.15s ease, color 0.15s ease;
 }
 
-.work-filter-button {
-  width: 34px;
-  height: 34px;
-}
-
-.work-filter-button svg {
-  width: 16px;
-  height: 16px;
-}
-
-.work-filter-button:hover,
-.work-filter-button--active {
-  background: rgba(77, 163, 255, 0.12);
-  color: var(--text-primary);
-}
-
 .repo-card__gear:hover,
 .repo-card__gear--active {
   background: var(--neutral-alpha-08);
   color: var(--text-primary);
-}
-
-.work-filter-panel {
-  display: grid;
-  gap: 10px;
-  padding: 0 12px 12px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
 }
 
 .work-filter-panel__field,

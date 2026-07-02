@@ -142,6 +142,10 @@ describe('AuthQueueView daemon readiness gate', () => {
     expect(detail?.classList.contains('auth-detail--with-preview-notice')).toBe(true);
     expect(detail?.firstElementChild).toBe(warning);
     expect(warning?.nextElementSibling).toBe(requestPane);
+    expect(requestPane?.classList.contains('detail-pane-shell')).toBe(true);
+    expect(requestHeader?.classList.contains('detail-pane-shell__header')).toBe(true);
+    expect(requestBody?.classList.contains('detail-pane-shell__body')).toBe(true);
+    expect(requestHeader?.querySelector('.detail-pane-shell__header-primary.auth-detail__header-primary')).toBeTruthy();
     expect(requestHeader && warning?.compareDocumentPosition(requestHeader) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(requestBody?.contains(warning as Node)).toBe(false);
     expect(requestBody?.contains(requestHeader as Node)).toBe(false);
