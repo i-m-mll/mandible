@@ -21,6 +21,7 @@ import {
   parseAcpNdjsonLine,
   type AcpJsonRpcMessage,
   type AcpMapperState,
+  type AcpPermissionOption,
   type JsonRpcId,
 } from "./acp-protocol.js";
 import { suppressAcpIngestForSession } from "../ingestion.js";
@@ -33,12 +34,54 @@ const POLLUTED_ENV_KEYS_EXACT = new Set([
   "CLAUDECODE",
   "GIT_CONFIG_COUNT",
 ]);
+const CODEX_ACP_VERSION = "1.0.2";
 
 interface PendingPermission {
   request: PermissionRequest;
   responseId: JsonRpcId;
+  options: AcpPermissionOption[];
   timeout: NodeJS.Timeout;
 }
+
+interface AcpAgentDefinition {
+  command: string;
+  args: string[];
+  probeFlag?: boolean;
+  fallbackAuthMethodId?: string;
+  selectAuthMethod(authMethods: AcpAuthMethod[], env: Record<string, string>): string | null;
+}
+
+interface AcpAuthMethod {
+  id?: string;
+  name?: string;
+  type?: string;
+  _meta?: Record<string, unknown>;
+}
+
+const ACP_AGENT_REGISTRY: Record<string, AcpAgentDefinition> = {
+  gemini: {
+    command: "gemini",
+    args: [],
+    probeFlag: true,
+    fallbackAuthMethodId: "oauth-personal",
+    selectAuthMethod(authMethods) {
+      return firstAuthMethod(authMethods, ["oauth-personal", "oauth", "browser"]) ?? "oauth-personal";
+    },
+  },
+  codex: {
+    command: "npx",
+    args: ["-y", `@agentclientprotocol/codex-acp@${CODEX_ACP_VERSION}`],
+    // Observed in @agentclientprotocol/codex-acp@1.0.2: api-key, chat-gpt, gateway.
+    // ChatGPT is omitted by the adapter when NO_BROWSER is set; gateway is only
+    // advertised when the client opts into the gateway auth capability.
+    selectAuthMethod(authMethods, env) {
+      if (env.CODEX_API_KEY?.trim() || env.OPENAI_API_KEY?.trim()) {
+        return firstAuthMethod(authMethods, ["api-key"]);
+      }
+      return firstAuthMethod(authMethods, ["chat-gpt", "api-key", "gateway"]);
+    },
+  },
+};
 
 export interface AcpBackendOptions {
   model?: string;
@@ -70,6 +113,9 @@ implements
   private mapper: AcpMapperState;
   private autoAllowedTools: Set<string>;
   private pendingPermissions: Map<string, PendingPermission> = new Map();
+  private pendingRequestMethods: Map<string, string> = new Map();
+  private authMethods: AcpAuthMethod[] = [];
+  private agentCapabilities: Record<string, unknown> | null = null;
 
   get isProcessing(): boolean {
     return this.processing;
@@ -278,7 +324,7 @@ implements
       });
     }
 
-    this.respondToPermission(pending.responseId, decision);
+    this.respondToPermission(pending.responseId, decision, pending.options);
     return true;
   }
 
@@ -287,24 +333,32 @@ implements
   }
 
   private async launch(): Promise<void> {
-    if (this.meta.command !== "gemini") {
+    const agent = ACP_AGENT_REGISTRY[this.meta.command];
+    if (!agent) {
       this.markCrashed(`Unsupported ACP command: ${this.meta.command}`);
       return;
     }
 
-    const flag = await probeGeminiAcpFlag(this.meta.command, this.buildCleanEnv(this.meta.env));
-    if (!flag) {
-      this.markCrashed("Gemini CLI does not advertise --acp or --experimental-acp");
-      return;
+    const env = this.buildCleanEnv(this.meta.env);
+    let launchCommand = agent.command;
+    let launchArgs = [...agent.args];
+
+    if (agent.probeFlag) {
+      const flag = await probeGeminiAcpFlag(this.meta.command, env);
+      if (!flag) {
+        this.markCrashed("Gemini CLI does not advertise --acp or --experimental-acp");
+        return;
+      }
+      launchCommand = this.meta.command;
+      launchArgs = this.buildGeminiLaunchArgs(flag);
     }
 
-    const args = this.buildLaunchArgs(flag);
     const cwd = this.meta.cwd ?? process.env.HOME ?? "/tmp";
 
     try {
-      this.childProc = spawn(this.meta.command, args, {
+      this.childProc = spawn(launchCommand, launchArgs, {
         cwd,
-        env: this.buildCleanEnv(this.meta.env),
+        env,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (error) {
@@ -346,17 +400,14 @@ implements
     this.sendRequest("initialize", {
       protocolVersion: 1,
       clientInfo: { name: "Mandible", version: "0.1.0" },
-      capabilities: { fs: false, terminal: false },
+      clientCapabilities: {
+        fs: { readTextFile: false, writeTextFile: false },
+        terminal: false,
+        session: { configOptions: { boolean: {} } },
+        plan: {},
+        auth: { terminal: false },
+      },
     });
-    this.sendRequest("authenticate", { methodId: "oauth-personal" });
-    this.sendRequest("session/new", {
-      cwd,
-      ...(this.meta.provider_session_id ? { sessionId: this.meta.provider_session_id } : {}),
-    });
-    this.ready = true;
-    if (this.processing) {
-      this.sendNextPrompt();
-    }
   }
 
   private async processPromptQueue(): Promise<void> {
@@ -423,6 +474,7 @@ implements
   }
 
   private handleMessage(message: AcpJsonRpcMessage): void {
+    this.handleHandshakeMessage(message);
     const normalized = normalizeAcpIncoming(message, this.mapper, this.id);
     for (const event of normalized.events) {
       this.storeAndBroadcast(event);
@@ -438,13 +490,21 @@ implements
     if (normalized.permission) {
       const toolName = normalized.permission.request.tool_name;
       if (this.autoAllowedTools.has(toolName)) {
-        this.respondToPermission(normalized.permission.responseId, "allow_always");
+        this.respondToPermission(
+          normalized.permission.responseId,
+          "allow_always",
+          normalized.permission.options,
+        );
         return;
       }
 
       const timeout = setTimeout(() => {
         this.pendingPermissions.delete(normalized.permission!.request.id);
-        this.respondToPermission(normalized.permission!.responseId, "deny");
+        this.respondToPermission(
+          normalized.permission!.responseId,
+          "deny",
+          normalized.permission!.options,
+        );
       }, PERMISSION_TIMEOUT_MS);
       if (typeof timeout === "object" && "unref" in timeout) {
         timeout.unref();
@@ -452,6 +512,7 @@ implements
       this.pendingPermissions.set(normalized.permission.request.id, {
         request: normalized.permission.request,
         responseId: normalized.permission.responseId,
+        options: normalized.permission.options,
         timeout,
       });
       this.emit("permission", normalized.permission.request);
@@ -468,8 +529,104 @@ implements
     }
   }
 
-  private respondToPermission(responseId: JsonRpcId, decision: PermissionDecision): void {
+  private handleHandshakeMessage(message: AcpJsonRpcMessage): void {
+    if (message.id === null || message.id === undefined || message.result === undefined) {
+      return;
+    }
+    const requestKey = String(message.id);
+    const method = this.pendingRequestMethods.get(requestKey);
+    if (!method) {
+      return;
+    }
+    this.pendingRequestMethods.delete(requestKey);
+
+    if (method === "initialize") {
+      this.captureInitializeResult(message.result);
+      this.authenticateOrStartSession();
+      return;
+    }
+
+    if (method === "authenticate") {
+      this.startProviderSession();
+      return;
+    }
+
+    if (method === "session/new" || method === "session/load") {
+      this.ready = true;
+      if (this.processing) {
+        this.sendNextPrompt();
+      }
+    }
+  }
+
+  private captureInitializeResult(result: unknown): void {
+    const record = asRecord(result);
+    if (!record) {
+      return;
+    }
+    this.authMethods = Array.isArray(record.authMethods)
+      ? record.authMethods.filter(isAcpAuthMethod)
+      : [];
+    this.agentCapabilities = asRecord(record.agentCapabilities);
+    this.storeAndBroadcast({
+      type: "system",
+      subtype: "acp_initialize",
+      session_id: this.meta.provider_session_id ?? this.id,
+      agent_info: asRecord(record.agentInfo) ?? null,
+      agent_capabilities: this.agentCapabilities ?? {},
+      auth_methods: this.authMethods,
+      event: record,
+    });
+  }
+
+  private authenticateOrStartSession(): void {
+    const agent = ACP_AGENT_REGISTRY[this.meta.command];
+    if (!agent) {
+      this.markCrashed(`Unsupported ACP command: ${this.meta.command}`);
+      return;
+    }
+    const methodId = agent.selectAuthMethod(this.authMethods, this.buildCleanEnv(this.meta.env))
+      ?? agent.fallbackAuthMethodId
+      ?? null;
+    if (!methodId) {
+      this.startProviderSession();
+      return;
+    }
+    this.sendRequest("authenticate", { methodId });
+  }
+
+  private startProviderSession(): void {
+    const cwd = this.meta.cwd ?? process.cwd();
+    const canLoadSession = this.supportsLoadSession();
+    const method = this.meta.provider_session_id && canLoadSession ? "session/load" : "session/new";
+    this.sendRequest(method, {
+      cwd,
+      ...(method === "session/load" && this.meta.provider_session_id
+        ? { sessionId: this.meta.provider_session_id }
+        : {}),
+    });
+  }
+
+  private supportsLoadSession(): boolean {
+    const capabilities = this.agentCapabilities ?? {};
+    const sessionCapabilities = asRecord(capabilities.sessionCapabilities) ?? {};
+    return capabilities.loadSession === true || Boolean(sessionCapabilities.resume);
+  }
+
+  private respondToPermission(
+    responseId: JsonRpcId,
+    decision: PermissionDecision,
+    options: AcpPermissionOption[] = [],
+  ): void {
     if (responseId === null || responseId === undefined) {
+      return;
+    }
+    if (options.length > 0) {
+      this.writeJson({
+        jsonrpc: "2.0",
+        id: responseId,
+        result: { outcome: this.acpSelectedPermissionOutcome(decision, options) },
+      });
       return;
     }
     this.writeJson({
@@ -479,10 +636,22 @@ implements
     });
   }
 
+  private acpSelectedPermissionOutcome(
+    decision: PermissionDecision,
+    options: AcpPermissionOption[],
+  ): Record<string, string> {
+    const targetKind = acpPermissionOutcome(decision);
+    const fallbackKind = targetKind === "reject_always" ? "reject_once" : targetKind;
+    const option = options.find((entry) => entry.kind === targetKind)
+      ?? options.find((entry) => entry.kind === fallbackKind)
+      ?? options[0];
+    return { outcome: "selected", optionId: option.optionId };
+  }
+
   private resolveAllPendingPermissions(decision: PermissionDecision): void {
     for (const [id, pending] of this.pendingPermissions) {
       clearTimeout(pending.timeout);
-      this.respondToPermission(pending.responseId, decision);
+      this.respondToPermission(pending.responseId, decision, pending.options);
       this.pendingPermissions.delete(id);
     }
   }
@@ -498,6 +667,7 @@ implements
 
   private sendRequest(method: string, params?: Record<string, unknown>): number {
     const id = this.nextRequestId++;
+    this.pendingRequestMethods.set(String(id), method);
     this.writeJson({ jsonrpc: "2.0", id, method, params });
     return id;
   }
@@ -519,7 +689,7 @@ implements
       "session_id" in event && typeof event.session_id === "string" && event.session_id.trim()
         ? event.session_id.trim()
         : null;
-    if (providerSessionId && providerSessionId !== this.meta.provider_session_id) {
+    if (providerSessionId && providerSessionId !== this.id && providerSessionId !== this.meta.provider_session_id) {
       const updatedAt = Date.now();
       this.meta = {
         ...this.meta,
@@ -596,7 +766,7 @@ implements
     });
   }
 
-  private buildLaunchArgs(flag: string): string[] {
+  private buildGeminiLaunchArgs(flag: string): string[] {
     const args = [flag];
     const model = this.extractModel(this.meta.args);
     if (model) {
@@ -634,6 +804,26 @@ implements
   private emitStatus(event: BackendStatusEvent): void {
     this.emit("status", event);
   }
+}
+
+function firstAuthMethod(authMethods: AcpAuthMethod[], ids: string[]): string | null {
+  for (const id of ids) {
+    if (authMethods.some((method) => method.id === id)) {
+      return id;
+    }
+  }
+  return null;
+}
+
+function isAcpAuthMethod(value: unknown): value is AcpAuthMethod {
+  const record = asRecord(value);
+  return Boolean(record && typeof record.id === "string");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 export async function probeGeminiAcpFlag(

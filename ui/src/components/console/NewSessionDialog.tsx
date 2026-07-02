@@ -57,7 +57,7 @@ const BACKEND_OPTIONS: Array<{
   {
     value: 'codex',
     title: 'Codex',
-    description: 'First-class chat backed by Codex exec JSON events and native Codex history.',
+    description: 'First-class chat backed by the Codex ACP adapter and native Codex history.',
     note: 'Operator mode is not available for Codex yet.',
   },
   {
@@ -70,7 +70,7 @@ const BACKEND_OPTIONS: Array<{
 
 function defaultTransportForBackend(backend: Backend): Transport {
   if (backend === 'claude') return 'sdk';
-  if (backend === 'gemini') return 'acp';
+  if (backend === 'gemini' || backend === 'codex') return 'acp';
   return 'spawn';
 }
 
@@ -207,7 +207,7 @@ export function NewSessionDialog({
   }, [backend, kind]);
 
   useEffect(() => {
-    // Gemini defaults to ACP; Codex stays on spawn for its lane.
+    // Gemini and Codex default to ACP; Claude keeps its explicit transport picker.
     if (backend !== 'claude' && transport !== defaultTransportForBackend(backend)) {
       setTransport(defaultTransportForBackend(backend));
     }

@@ -108,9 +108,7 @@ function computeAgentType(
 
 function defaultBackendType(command: string): BackendType {
   if (command === "claude") return "sdk";
-  if (command === "gemini") return "acp";
-  // Bug: 8d3328c — Codex uses spawn (structured JSON stdout parsing)
-  if (command === "codex") return "spawn";
+  if (command === "gemini" || command === "codex") return "acp";
   // Shell and unknown commands need interactive terminal (SpawnBackend can't
   // execute arbitrary commands — buildPromptInvocation returns null for them)
   return "pty";
