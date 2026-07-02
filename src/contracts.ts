@@ -249,6 +249,28 @@ export type WorkUnitWithLiveness = WorkUnit & {
 };
 
 export type ConversationSource = "claude_code" | "codex" | "gemini";
+export type ConversationAttachKind = "live-owned" | "live-external" | "resumable" | "historical";
+export type ConversationAttachReason =
+  | "mandible-owned"
+  | "transcript-recent"
+  | "channel-fresh"
+  | "session-active"
+  | "provider-resumable"
+  | "subagent"
+  | "no-session"
+  | "unsupported-provider";
+
+export type ConversationAttachState = {
+  kind: ConversationAttachKind;
+  reason: ConversationAttachReason;
+  resumable: boolean;
+  can_fork: boolean;
+  provider_session_id: string | null;
+  console_session_id?: string | null;
+  external_session_id?: string | null;
+  source_mtime?: number | null;
+  checked_at: number;
+};
 export type BlockType =
   | "user_message"
   | "assistant_message"
@@ -293,6 +315,7 @@ export type Conversation = {
   notes: string | null;
   parent_conversation_id: string | null;
   children_count: number;
+  attach_state: ConversationAttachState;
 };
 
 export type ConversationChild = {

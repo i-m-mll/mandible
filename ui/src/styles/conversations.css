@@ -253,6 +253,35 @@
   white-space: nowrap;
 }
 
+.conv-attach-badge {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--neutral-alpha-04);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.conv-attach-badge--live-owned {
+  color: var(--accent-green);
+  border-color: color-mix(in srgb, var(--accent-green) 42%, transparent);
+}
+
+.conv-attach-badge--live-external {
+  color: var(--accent-red);
+  border-color: color-mix(in srgb, var(--accent-red) 42%, transparent);
+}
+
+.conv-attach-badge--resumable {
+  color: var(--accent-blue);
+  border-color: color-mix(in srgb, var(--accent-blue) 42%, transparent);
+}
+
 .conv-detail__meta {
   display: flex;
   align-items: center;
@@ -469,6 +498,11 @@
   gap: 8px;
 }
 
+.conv-compose__hint {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .conv-compose__input {
   flex: 1;
   min-width: 0;
@@ -528,6 +562,29 @@
 
 .conv-compose__status--error {
   color: var(--accent-red);
+}
+
+.conv-compose__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.conv-compose__details {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.conv-compose__details pre {
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  padding: 8px;
+  border-radius: 6px;
+  background: var(--neutral-alpha-04);
+  color: var(--text-primary);
+  white-space: pre-wrap;
 }
 
 .conv-star-btn {
