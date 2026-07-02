@@ -1189,67 +1189,6 @@
   margin: 1em 0;
 }
 
-/* ── Tool use card — Bug: 372edcb ── */
-.block-tool-use {
-  margin-left: 28px;
-}
-
-.tool-use-card {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.tool-use-card__header {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.tool-use-card__name {
-  font-family: var(--font-mono);
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(50, 210, 150, 0.9);
-  flex-shrink: 0;
-}
-
-.tool-use-card__arg {
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  flex: 1;
-  min-width: 0;
-}
-
-.tool-use-card__expand {
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  cursor: pointer;
-  font-size: 11px;
-  padding: 0 4px;
-  font-family: var(--font-sans);
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-.tool-use-card__expand:hover {
-  opacity: 1;
-  color: var(--text-primary);
-}
-
-.tool-use-card__full {
-  margin-top: 4px;
-  font-size: 11px;
-  border-radius: 6px;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 8px 10px;
-}
-
 /* ── Export panel ── */
 
 .export-panel {

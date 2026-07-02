@@ -1,13 +1,5 @@
-// SHARED COMPONENT — used by BOTH Chat (StreamRenderer) and History (conversations.tsx).
-// Changes here affect BOTH views. If you modify rendering for one view,
-// the other MUST update automatically because they use this same component.
-
-// Bug: bce7370 — Unified tool use renderer (full + compact modes)
-
-import { useMemo, useState } from 'preact/hooks';
-import { FileEditBlock } from './FileEditBlock';
-
-// ---- Types ----
+import { useEffect, useMemo, useState } from 'preact/hooks';
+import { computeDiffStats, FileEditBlock } from './FileEditBlock';
 
 export type ToolResultContent =
   | string
@@ -31,194 +23,285 @@ export type ToolUseBlockProps = {
   statusEmoji?: string;
 };
 
-// ---- JSON syntax highlighter (inline, no external dep) ----
+export type ToolVisualKind =
+  | 'read'
+  | 'edit'
+  | 'delete'
+  | 'move'
+  | 'search'
+  | 'execute'
+  | 'think'
+  | 'fetch'
+  | 'switch_mode'
+  | 'mcp'
+  | 'other';
 
-function highlightJson(json: string): string {
-  const escaped = json.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  return escaped.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
-    (match) => {
-      let cls = 'json-number';
-      if (/^"/.test(match)) {
-        cls = /:$/.test(match) ? 'json-key' : 'json-string';
-      } else if (/true|false/.test(match)) {
-        cls = 'json-boolean';
-      } else if (/null/.test(match)) {
-        cls = 'json-null';
-      }
-      return `<span class="${cls}">${match}</span>`;
-    },
-  );
+export type ToolVisual = {
+  kind: ToolVisualKind;
+  icon: string;
+  verb: string;
+};
+
+type ToolStatus = 'pending' | 'running' | 'success' | 'failed';
+
+const RESULT_TEXT_LIMIT = 4000;
+const RESULT_COLLAPSED_LIMIT = 900;
+const INPUT_AUTO_COLLAPSE_LINES = 5;
+
+const TOOL_VISUALS: Record<ToolVisualKind, ToolVisual> = {
+  read: { kind: 'read', icon: 'R', verb: 'Read' },
+  edit: { kind: 'edit', icon: 'E', verb: 'Edit' },
+  delete: { kind: 'delete', icon: 'D', verb: 'Delete' },
+  move: { kind: 'move', icon: 'M', verb: 'Move' },
+  search: { kind: 'search', icon: 'S', verb: 'Search' },
+  execute: { kind: 'execute', icon: '$', verb: 'Run' },
+  think: { kind: 'think', icon: '?', verb: 'Think' },
+  fetch: { kind: 'fetch', icon: 'F', verb: 'Fetch' },
+  switch_mode: { kind: 'switch_mode', icon: '>', verb: 'Switch mode' },
+  mcp: { kind: 'mcp', icon: 'MCP', verb: 'Use MCP tool' },
+  other: { kind: 'other', icon: '*', verb: 'Use tool' },
+};
+
+function parseInput(input: Record<string, unknown> | string): Record<string, unknown> {
+  if (typeof input !== 'string') {
+    return input;
+  }
+  try {
+    const parsed = JSON.parse(input);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
-// ---- Result content rendering helpers ----
+export function getToolVisual(toolName: string): ToolVisual {
+  const normalized = toolName.trim().toLowerCase();
+  if (normalized.startsWith('mcp__') || normalized.includes(':mcp') || normalized.includes('mcp')) {
+    return TOOL_VISUALS.mcp;
+  }
+  if (['read', 'view', 'open'].includes(normalized)) return TOOL_VISUALS.read;
+  if (['edit', 'multiedit', 'write', 'patch', 'create'].includes(normalized)) return TOOL_VISUALS.edit;
+  if (['delete', 'remove', 'rm'].includes(normalized)) return TOOL_VISUALS.delete;
+  if (['move', 'rename', 'mv'].includes(normalized)) return TOOL_VISUALS.move;
+  if (['grep', 'glob', 'search', 'websearch'].includes(normalized)) return TOOL_VISUALS.search;
+  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command'].includes(normalized)) return TOOL_VISUALS.execute;
+  if (['think', 'thinking'].includes(normalized)) return TOOL_VISUALS.think;
+  if (['webfetch', 'fetch', 'http'].includes(normalized)) return TOOL_VISUALS.fetch;
+  if (['switch_mode', 'switchmode'].includes(normalized)) return TOOL_VISUALS.switch_mode;
+  if (
+    ['read', 'edit', 'delete', 'move', 'search', 'execute', 'think', 'fetch', 'switch_mode', 'other']
+      .includes(normalized)
+  ) {
+    return TOOL_VISUALS[normalized as ToolVisualKind];
+  }
+  return { ...TOOL_VISUALS.other, verb: toolName || TOOL_VISUALS.other.verb };
+}
 
-function extractResultText(content: ToolResultContent): string {
+function firstString(input: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = input[key];
+    if (typeof value === 'string' && value.trim()) {
+      return value;
+    }
+  }
+  return '';
+}
+
+export function getToolTarget(toolName: string, input: Record<string, unknown>): string {
+  const normalized = toolName.trim().toLowerCase();
+  if (['read', 'write', 'edit', 'multiedit', 'delete', 'remove'].includes(normalized)) {
+    return firstString(input, ['file_path', 'path', 'target']);
+  }
+  if (['move', 'rename'].includes(normalized)) {
+    const source = firstString(input, ['source', 'from', 'old_path', 'file_path', 'path']);
+    const destination = firstString(input, ['destination', 'to', 'new_path']);
+    return destination ? `${source} -> ${destination}` : source;
+  }
+  if (['bash', 'execute', 'run', 'shell', 'terminal', 'command'].includes(normalized)) {
+    return firstString(input, ['description', 'command']);
+  }
+  if (['grep', 'glob', 'search'].includes(normalized)) {
+    const pattern = firstString(input, ['pattern', 'query']);
+    const scope = firstString(input, ['path', 'directory', 'include']);
+    return scope ? `${pattern} in ${scope}` : pattern;
+  }
+  if (['websearch'].includes(normalized)) {
+    return firstString(input, ['query']);
+  }
+  if (['webfetch', 'fetch', 'http'].includes(normalized)) {
+    return firstString(input, ['url', 'uri']);
+  }
+  return firstString(input, ['path', 'file_path', 'target', 'pattern', 'query', 'url', 'command'])
+    || JSON.stringify(input).slice(0, 120);
+}
+
+export function leftTruncateTarget(target: string, maxChars = 72): string {
+  if (target.length <= maxChars) {
+    return target;
+  }
+  const slashIndex = Math.max(target.lastIndexOf('/'), target.lastIndexOf('\\'));
+  const filename = slashIndex >= 0 ? target.slice(slashIndex + 1) : '';
+  if (filename && filename.length + 6 < maxChars) {
+    const prefixLength = maxChars - filename.length - 5;
+    return `...${target.slice(0, prefixLength)}/${filename}`;
+  }
+  return `...${target.slice(target.length - maxChars + 3)}`;
+}
+
+export function extractResultText(content: ToolResultContent): string {
   if (typeof content === 'string') {
     return content;
   }
   if (Array.isArray(content)) {
-    const textItems = (content as Array<{ type: string; text?: string }>).filter(
-      (item) => item.type === 'text',
-    );
-    if (textItems.length > 0) {
-      return textItems.map((item) => item.text ?? '').join('\n');
-    }
+    return (content as Array<{ type: string; text?: string }>)
+      .filter((item) => item.type === 'text')
+      .map((item) => item.text ?? '')
+      .join('\n');
   }
   return '';
 }
 
-function hasImages(content: ToolResultContent): boolean {
-  if (!Array.isArray(content)) {
-    return false;
-  }
-  return (content as Array<{ type: string }>).some((item) => item.type === 'image');
-}
-
-type ImageSource = { type: string; media_type: string; data: string };
-
-function extractImages(content: ToolResultContent): ImageSource[] {
+function extractImages(content: ToolResultContent): Array<{ type: string; media_type: string; data: string }> {
   if (!Array.isArray(content)) {
     return [];
   }
-  return (content as Array<{ type: string; source?: ImageSource }>)
+  return (content as Array<{ type: string; source?: { type: string; media_type: string; data: string } }>)
     .filter((item) => item.type === 'image' && item.source)
-    .map((item) => item.source as ImageSource);
+    .map((item) => item.source as { type: string; media_type: string; data: string });
 }
 
-// ---- Tool description helpers ----
-
-function getToolDescription(toolName: string, input: Record<string, unknown>): string {
-  switch (toolName) {
-    case 'Read': {
-      const p = input.file_path ?? input.path;
-      return typeof p === 'string' ? p : JSON.stringify(input).slice(0, 80);
-    }
-    case 'Edit':
-    case 'MultiEdit': {
-      const p = input.file_path ?? input.path;
-      return typeof p === 'string' ? p : JSON.stringify(input).slice(0, 80);
-    }
-    case 'Write': {
-      const p = input.file_path ?? input.path;
-      return typeof p === 'string' ? p : JSON.stringify(input).slice(0, 80);
-    }
-    case 'Bash': {
-      const cmd = input.command;
-      if (typeof cmd === 'string') {
-        return cmd.slice(0, 60) + (cmd.length > 60 ? '\u2026' : '');
-      }
-      return JSON.stringify(input).slice(0, 80);
-    }
-    case 'Grep': {
-      const pat = input.pattern;
-      const path = input.path ?? input.directory;
-      if (typeof pat === 'string') {
-        return typeof path === 'string' ? `${pat} in ${path}` : pat;
-      }
-      return JSON.stringify(input).slice(0, 80);
-    }
-    case 'Glob': {
-      const pat = input.pattern;
-      return typeof pat === 'string' ? pat : JSON.stringify(input).slice(0, 80);
-    }
-    case 'WebSearch': {
-      const q = input.query;
-      return typeof q === 'string' ? q.slice(0, 60) : JSON.stringify(input).slice(0, 80);
-    }
-    case 'WebFetch': {
-      const url = input.url;
-      return typeof url === 'string' ? url.slice(0, 60) : JSON.stringify(input).slice(0, 80);
-    }
-    default:
-      return JSON.stringify(input).slice(0, 80);
-  }
+function countInputLines(input: Record<string, unknown> | string): number {
+  const text = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
+  return text.split('\n').length;
 }
 
-// ---- Primary arg extractor (used in compact mode) ----
-
-function primaryToolArg(toolName: string, input: Record<string, unknown>): string {
-  const priority: string[] = (() => {
-    switch (toolName) {
-      case 'Read': case 'Write': case 'Edit': return ['file_path'];
-      case 'Bash': return ['description', 'command'];
-      case 'Grep': return ['pattern', 'path'];
-      case 'Glob': return ['pattern', 'path'];
-      case 'WebFetch': return ['url'];
-      case 'WebSearch': return ['query'];
-      default: return ['path', 'file_path', 'pattern', 'query', 'url', 'command'];
-    }
-  })();
-  for (const key of priority) {
-    if (typeof input[key] === 'string' && input[key]) {
-      const val = input[key] as string;
-      return val.length > 80 ? val.slice(0, 80) + '\u2026' : val;
-    }
-  }
-  for (const v of Object.values(input)) {
-    if (typeof v === 'string' && v) return v.length > 80 ? v.slice(0, 80) + '\u2026' : v;
-  }
-  return '';
+function formatInput(input: Record<string, unknown> | string): string {
+  return typeof input === 'string' ? input : JSON.stringify(input, null, 2);
 }
 
-// ---- Status indicator ----
-
-type StatusIndicatorProps = {
-  pending: boolean;
-  isError: boolean;
-  emoji?: string;
-};
-
-function StatusIndicator({ pending, isError, emoji }: StatusIndicatorProps): JSX.Element {
-  if (emoji) {
-    return <span className="tool-use-block__status" aria-label="Status">{emoji}</span>;
+function statusFor(result?: ToolResultContentBlock | null, statusEmoji?: string): ToolStatus {
+  if (statusEmoji && /run|hourglass|⏳|…/.test(statusEmoji.toLowerCase())) {
+    return 'running';
   }
-  if (pending) {
-    return <span className="tool-use-block__status tool-use-block__status--pending" aria-label="Pending">{'\u23F3'}</span>;
+  if (!result) {
+    return 'pending';
   }
-  if (isError) {
-    return <span className="tool-use-block__status tool-use-block__status--error" aria-label="Error">{'\u2717'}</span>;
-  }
-  return <span className="tool-use-block__status tool-use-block__status--ok" aria-label="Done">{'\u2713'}</span>;
+  return result.is_error ? 'failed' : 'success';
 }
 
-// ---- Result rendering ----
+function StatusBadge({ status }: { status: ToolStatus }): JSX.Element {
+  const label = status === 'pending' ? 'Pending' : status === 'running' ? 'Running' : status === 'failed' ? 'Failed' : 'Success';
+  return (
+    <span className={`tool-card__status tool-card__status--${status}`}>
+      {label}
+    </span>
+  );
+}
 
-function ToolResult({ result }: { result: ToolResultContentBlock }): JSX.Element {
-  if (result.is_error) {
-    const text = extractResultText(result.content);
-    return (
-      <div className="tool-use-block__result tool-result--error">
-        <pre>{text || '(error \u2014 no message)'}</pre>
-      </div>
-    );
+function isEditTool(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  return normalized === 'edit' || normalized === 'multiedit';
+}
+
+function isCommandTool(toolName: string): boolean {
+  const normalized = toolName.trim().toLowerCase();
+  return ['bash', 'execute', 'run', 'shell', 'terminal', 'command'].includes(normalized);
+}
+
+function ansiClass(code: string): string | null {
+  if (code === '31') return 'ansi-red';
+  if (code === '32') return 'ansi-green';
+  if (code === '33') return 'ansi-yellow';
+  if (code === '34') return 'ansi-blue';
+  if (code === '35') return 'ansi-magenta';
+  if (code === '36') return 'ansi-cyan';
+  if (code === '90') return 'ansi-muted';
+  return null;
+}
+
+function AnsiText({ text }: { text: string }): JSX.Element {
+  const parts: Array<{ text: string; className: string | null }> = [];
+  const pattern = /\x1b\[([0-9;]+)m/g;
+  let lastIndex = 0;
+  let currentClass: string | null = null;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      parts.push({ text: text.slice(lastIndex, match.index), className: currentClass });
+    }
+    const codes = match[1].split(';');
+    currentClass = codes.includes('0') ? null : (codes.map(ansiClass).find(Boolean) ?? currentClass);
+    lastIndex = pattern.lastIndex;
   }
+  if (lastIndex < text.length) {
+    parts.push({ text: text.slice(lastIndex), className: currentClass });
+  }
+  return (
+    <>
+      {parts.map((part, index) => (
+        <span key={index} className={part.className ?? undefined}>{part.text}</span>
+      ))}
+    </>
+  );
+}
 
-  const images = hasImages(result.content) ? extractImages(result.content) : [];
+function ResultBody({ result, commandLike }: {
+  result: ToolResultContentBlock;
+  commandLike: boolean;
+}): JSX.Element {
+  const [expanded, setExpanded] = useState(false);
   const text = extractResultText(result.content);
+  const images = extractImages(result.content);
+  const limit = expanded ? RESULT_TEXT_LIMIT : RESULT_COLLAPSED_LIMIT;
+  const canToggle = text.length > RESULT_COLLAPSED_LIMIT;
+  const visibleText = text.length > limit ? `${text.slice(0, limit)}\n...` : text;
 
   return (
-    <div className="tool-use-block__result">
-      {text && <pre>{text}</pre>}
-      {images.map((src, i) => (
+    <div className={`tool-card__result${result.is_error ? ' tool-card__result--error' : ''}`}>
+      {text && (
+        <pre className={commandLike ? 'tool-card__terminal-output' : undefined}>
+          {commandLike ? <AnsiText text={visibleText} /> : visibleText}
+        </pre>
+      )}
+      {images.map((src, index) => (
         <img
-          key={i}
+          key={index}
+          className="tool-card__image"
           src={`data:${src.media_type};base64,${src.data}`}
           alt="Tool output"
-          style={{ maxWidth: '100%', borderRadius: '8px', marginTop: '8px' }}
         />
       ))}
+      {canToggle && (
+        <button
+          type="button"
+          className="tool-card__secondary-action"
+          onClick={(event) => {
+            event.stopPropagation();
+            setExpanded((value) => !value);
+          }}
+        >
+          {expanded ? 'Collapse output' : 'Show more output'}
+        </button>
+      )}
     </div>
   );
 }
 
-// ---- Special tool renderers (full mode) ----
-
-function BashInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
-  const command = typeof input.command === 'string' ? input.command : JSON.stringify(input);
+function JsonInputPanel({ input }: { input: Record<string, unknown> | string }): JSX.Element {
   return (
-    <div className="tool-use-block__input">
-      <pre><code>{command}</code></pre>
+    <div className="tool-card__input">
+      <pre>{formatInput(input)}</pre>
+    </div>
+  );
+}
+
+function CommandInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
+  const command = firstString(input, ['command', 'cmd', 'description']) || JSON.stringify(input, null, 2);
+  return (
+    <div className="tool-card__terminal">
+      <pre><AnsiText text={command} /></pre>
     </div>
   );
 }
@@ -226,104 +309,13 @@ function BashInputPanel({ input }: { input: Record<string, unknown> }): JSX.Elem
 function WriteInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
   const content = typeof input.content === 'string' ? input.content : JSON.stringify(input, null, 2);
   return (
-    <div className="tool-use-block__input">
-      <pre><code>{content}</code></pre>
+    <div className="tool-card__input">
+      <pre>{content}</pre>
     </div>
   );
 }
 
-function JsonInputPanel({ input }: { input: Record<string, unknown> }): JSX.Element {
-  const jsonStr = JSON.stringify(input, null, 2);
-  const highlighted = highlightJson(jsonStr);
-  return (
-    <div
-      className="tool-use-block__input"
-      dangerouslySetInnerHTML={{ __html: `<pre>${highlighted}</pre>` }}
-    />
-  );
-}
-
-// ---- Compact mode renderer (for History) ----
-
-function CompactToolUseBlock({
-  toolName,
-  input,
-  result,
-  statusEmoji,
-}: {
-  toolName: string;
-  input: Record<string, unknown> | string;
-  result?: ToolResultContentBlock | null;
-  statusEmoji?: string;
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(false);
-  const inputObj = typeof input === 'string' ? (() => { try { return JSON.parse(input); } catch { return {}; } })() : input;
-  const primary = primaryToolArg(toolName, inputObj);
-  const hasResult = result != null;
-  const isError = hasResult && result.is_error === true;
-  const isPending = !hasResult;
-
-  // Result summary for compact display
-  const resultSummary = useMemo(() => {
-    if (!result) return null;
-    const text = extractResultText(result.content);
-    if (!text) return null;
-    return text.length > 120 ? text.slice(0, 120) + '\u2026' : text;
-  }, [result]);
-
-  const fullContent = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-
-  // Bug: 0a1ad82 — Click-anywhere-to-toggle for compact mode
-  const handleCompactClick = (e: MouseEvent) => {
-    const target = e.target as HTMLElement;
-    if (expanded && target.closest('.tool-use-block--compact__body')) return;
-    setExpanded((p) => !p);
-  };
-
-  return (
-    <div className="tool-use-block tool-use-block--compact" data-tool={toolName} onClick={handleCompactClick} style={{ cursor: 'pointer' }}>
-      <div className="tool-use-card__header">
-        <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
-        <span className="tool-use-card__name">{toolName}</span>
-        {primary && <span className="tool-use-card__arg">{primary}</span>}
-        <span className="tool-use-card__expand">
-          {expanded ? '\u25BE' : '\u25B8'}
-        </span>
-      </div>
-      {expanded && (
-        <div className="tool-use-block--compact__body">
-          <pre className="block-pre tool-use-card__full">{fullContent}</pre>
-          {result && (
-            <>
-              <div className="tool-use-block__divider" />
-              <ToolResult result={result} />
-            </>
-          )}
-        </div>
-      )}
-      {!expanded && resultSummary && (
-        <div className="tool-use-block--compact__summary">
-          <span className="tool-use-block--compact__summary-text">{resultSummary}</span>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---- Auto-collapse threshold ----
-// Bug: 0a1ad82 — Don't auto-collapse short tool uses (< N lines).
-// TODO: make this threshold configurable via settings.
-const TOOL_USE_AUTO_COLLAPSE_LINES = 5;
-
-/** Count lines in the serialized tool input. */
-function countInputLines(input: Record<string, unknown> | string): number {
-  const text = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-  return text.split('\n').length;
-}
-
-// ---- Main ToolUseBlock ----
-
-export function ToolUseBlock({
+export function ToolCard({
   toolName,
   toolUseId,
   input,
@@ -332,111 +324,108 @@ export function ToolUseBlock({
   compact,
   statusEmoji,
 }: ToolUseBlockProps): JSX.Element {
-  // Compact mode delegates to a simpler renderer
-  if (compact) {
-    return (
-      <CompactToolUseBlock
-        toolName={toolName}
-        input={input}
-        result={result}
-        statusEmoji={statusEmoji}
-      />
-    );
-  }
-
-  // Full mode (Chat)
-  const inputObj = typeof input === 'string' ? (() => { try { return JSON.parse(input); } catch { return {}; } })() : input;
-  const hasResult = result != null;
-  const isError = hasResult && (result.is_error === true);
-  const isPending = !hasResult;
-
-  // Bug: 0a1ad82 — Auto-collapse threshold: short inputs stay expanded even after result
+  const inputObj = useMemo(() => parseInput(input), [input]);
+  const visual = useMemo(() => getToolVisual(toolName), [toolName]);
+  const target = useMemo(() => getToolTarget(toolName, inputObj), [toolName, inputObj]);
+  const displayTarget = useMemo(() => leftTruncateTarget(target), [target]);
+  const status = statusFor(result, statusEmoji);
+  const commandLike = isCommandTool(toolName);
+  const editLike = isEditTool(toolName) && typeof inputObj.file_path === 'string';
   const inputLineCount = useMemo(() => countInputLines(input), [input]);
-  const isShortInput = inputLineCount < TOOL_USE_AUTO_COLLAPSE_LINES;
-
-  // Default: expanded while pending, collapsed after result arrives (unless short)
   const initialExpanded = defaultExpanded !== undefined
     ? defaultExpanded
-    : (isPending || isShortInput);
+    : (status === 'pending' || status === 'running' || inputLineCount < INPUT_AUTO_COLLAPSE_LINES);
   const [expanded, setExpanded] = useState(initialExpanded);
+  const [userToggled, setUserToggled] = useState(false);
 
-  const description = useMemo(() => getToolDescription(toolName, inputObj), [toolName, inputObj]);
+  useEffect(() => {
+    if (defaultExpanded !== undefined || userToggled) {
+      return;
+    }
+    if ((status === 'success' || status === 'failed') && inputLineCount >= INPUT_AUTO_COLLAPSE_LINES) {
+      setExpanded(false);
+    }
+  }, [defaultExpanded, inputLineCount, status, userToggled]);
 
-  // Bug: 0a1ad82 — First line of input for collapsed preview
-  const firstInputLine = useMemo(() => {
-    const text = typeof input === 'string' ? input : JSON.stringify(input, null, 2);
-    const line = text.split('\n')[0] ?? '';
-    return line.length > 80 ? line.slice(0, 80) + '\u2026' : line;
-  }, [input]);
+  const diffStats = useMemo(() => {
+    if (!editLike) return null;
+    return computeDiffStats(
+      typeof inputObj.old_string === 'string' ? inputObj.old_string : '',
+      typeof inputObj.new_string === 'string' ? inputObj.new_string : '',
+    );
+  }, [editLike, inputObj]);
 
-  // Determine which input panel to render
+  const resultSummary = useMemo(() => {
+    if (!result) return '';
+    const text = extractResultText(result.content).replace(/\s+/g, ' ').trim();
+    return text.length > 180 ? `${text.slice(0, 180)}...` : text;
+  }, [result]);
+
   function renderInputPanel(): JSX.Element {
-    if ((toolName === 'Edit' || toolName === 'MultiEdit') && typeof inputObj.file_path === 'string') {
-      const filePath = inputObj.file_path as string;
-      const oldString = typeof inputObj.old_string === 'string' ? inputObj.old_string : '';
-      const newString = typeof inputObj.new_string === 'string' ? inputObj.new_string : '';
+    if (editLike) {
       return (
         <FileEditBlock
-          filePath={filePath}
-          oldString={oldString}
-          newString={newString}
+          filePath={inputObj.file_path as string}
+          oldString={typeof inputObj.old_string === 'string' ? inputObj.old_string : ''}
+          newString={typeof inputObj.new_string === 'string' ? inputObj.new_string : ''}
         />
       );
     }
-    if (toolName === 'Bash') {
-      return <BashInputPanel input={inputObj} />;
+    if (commandLike) {
+      return <CommandInputPanel input={inputObj} />;
     }
     if (toolName === 'Write') {
       return <WriteInputPanel input={inputObj} />;
     }
-    return <JsonInputPanel input={inputObj} />;
+    return <JsonInputPanel input={input} />;
   }
 
-  // Bug: 0a1ad82 — Click-anywhere-to-toggle: entire block is clickable
-  const handleBlockClick = (e: MouseEvent) => {
-    // Don't toggle if user is selecting text or clicking interactive elements inside body
-    const target = e.target as HTMLElement;
-    if (expanded && target.closest('.tool-use-block__body')) return;
-    setExpanded((prev) => !prev);
-  };
-
   return (
-    <div
-      className={`tool-use-block${expanded ? '' : ' tool-use-block--collapsed'}`}
+    <section
+      className={`tool-card${expanded ? ' tool-card--expanded' : ' tool-card--collapsed'}${compact ? ' tool-card--compact' : ''}`}
       data-tool={toolName}
+      data-tool-kind={visual.kind}
       data-id={toolUseId}
-      onClick={handleBlockClick}
-      style={{ cursor: 'pointer' }}
     >
-      {/* Bug: 0a1ad82 — Collapsed: two-line display (name + more, then first input line) */}
-      {!expanded ? (
-        <div className="tool-use-block__header" aria-expanded={false}>
-          <span className="tool-use-block__chevron">{'\u25B8'}</span>
-          <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
-          <span className="tool-use-block__name">{toolName}</span>
-          {firstInputLine && (
-            <div className="tool-use-block__preview">{firstInputLine}</div>
-          )}
+      <button
+        type="button"
+        className="tool-card__header"
+        aria-expanded={expanded}
+        onClick={() => {
+          setUserToggled(true);
+          setExpanded((value) => !value);
+        }}
+      >
+        <span className="tool-card__chevron">{expanded ? 'v' : '>'}</span>
+        <span className="tool-card__icon" aria-hidden="true">{visual.icon}</span>
+        <span className="tool-card__verb">{visual.verb}</span>
+        {target && (
+          <span className="tool-card__target" title={target}>
+            {displayTarget}
+          </span>
+        )}
+        {diffStats && (
+          <span className="tool-card__stat-chip">+{diffStats.additions} / -{diffStats.deletions}</span>
+        )}
+        {commandLike && (
+          <span className="tool-card__stat-chip">{status === 'pending' || status === 'running' ? 'running' : result?.is_error ? 'exit failed' : 'exit ok'}</span>
+        )}
+        <StatusBadge status={status} />
+      </button>
+      {expanded ? (
+        <div className="tool-card__body">
+          {renderInputPanel()}
+          {result && <ResultBody result={result} commandLike={commandLike} />}
         </div>
-      ) : (
-        <>
-          <div className="tool-use-block__header" aria-expanded={true}>
-            <span className="tool-use-block__chevron">{'\u25BE'}</span>
-            <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />
-            <span className="tool-use-block__name">{toolName}</span>
-            <span className="tool-use-block__desc">{description}</span>
-          </div>
-          <div className="tool-use-block__body">
-            {renderInputPanel()}
-            {hasResult && (
-              <>
-                <div className="tool-use-block__divider" />
-                <ToolResult result={result} />
-              </>
-            )}
-          </div>
-        </>
-      )}
-    </div>
+      ) : resultSummary ? (
+        <div className="tool-card__summary">
+          {resultSummary}
+        </div>
+      ) : null}
+    </section>
   );
+}
+
+export function ToolUseBlock(props: ToolUseBlockProps): JSX.Element {
+  return <ToolCard {...props} />;
 }

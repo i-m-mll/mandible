@@ -1,5 +1,6 @@
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import type { RenderNode, StreamRendererProps } from '../components/stream-renderer/types';
 import { MessageGroup } from '../components/stream-renderer/MessageGroup';
 import { PresetViolationBlock } from '../components/stream-renderer/PresetViolationBlock';
@@ -8,6 +9,7 @@ import type { NodeGroup } from '../components/shared/groupByEntity';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
+import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import {
   computeTotalTokens,
   deriveLiveLabel,
@@ -17,7 +19,11 @@ import {
   useStreamState,
 } from './renderModel';
 
-export type ChatSurfaceProps = StreamRendererProps;
+export type ChatSurfaceProps = StreamRendererProps & {
+  activePermissionRequest?: ConsolePermissionRequest | null;
+  permissionBackendType?: ConsoleBackendType;
+  onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
+};
 
 export function ChatSurface({
   events,
@@ -26,6 +32,9 @@ export function ChatSurface({
   emptyLabel,
   onSelectMessageInfo,
   selectedMessageId,
+  activePermissionRequest,
+  permissionBackendType = 'sdk',
+  onPermissionRespond,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -188,6 +197,15 @@ export function ChatSurface({
         onScroll={handleScroll}
       >
         {rendered}
+        {activePermissionRequest && onPermissionRespond && (
+          <TurnGroup speaker="system" isShort>
+            <PermissionApprovalCard
+              request={activePermissionRequest}
+              backendType={permissionBackendType}
+              onRespond={onPermissionRespond}
+            />
+          </TurnGroup>
+        )}
         {streaming && (
           <div className="stream-live-indicator">
             <span className="stream-live-indicator__dot" />

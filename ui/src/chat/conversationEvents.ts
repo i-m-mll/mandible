@@ -143,7 +143,7 @@ export function conversationBlocksToStreamEvents(
     }
 
     if (block.type === 'plan') {
-      pushAssistantBlock(block.id, { type: 'text', text: block.content });
+      pushAssistantBlock(block.id, { type: 'plan', text: block.content });
       continue;
     }
 

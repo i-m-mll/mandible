@@ -16,7 +16,7 @@ import {
   getPresetUnion,
   sendConsolePrompt,
 } from '../../api';
-import type { PresetUnion } from '../../api';
+import type { ConsolePermissionDecision, PresetUnion } from '../../api';
 
 export type ViewMode = 'terminal' | 'rich' | 'events';
 type ActiveSubagent = {
@@ -191,6 +191,7 @@ export function TerminalPane({
     viewMode,
   });
   const [model, setModel] = useState<string | undefined>(() => parseModelFromArgs(sessionArgs));
+  const [optimisticAllowedTools, setOptimisticAllowedTools] = useState<string[]>(allowedTools ?? []);
   const {
     request: permissionRequest,
     handlePermissionResponse,
@@ -220,6 +221,21 @@ export function TerminalPane({
   const availableTools = collectAvailableTools(streamEvents);
 
   useEffect(() => { setModel(parseModelFromArgs(sessionArgs)); }, [sessionArgs]);
+  useEffect(() => { setOptimisticAllowedTools(allowedTools ?? []); }, [allowedTools]);
+
+  const handleRichPermissionResponse = async (
+    requestId: string,
+    decision: ConsolePermissionDecision,
+  ) => {
+    await handlePermissionResponse(requestId, decision);
+    if (decision === 'allow_always' && permissionRequest?.tool_name) {
+      setOptimisticAllowedTools((current) => (
+        current.includes(permissionRequest.tool_name)
+          ? current
+          : [...current, permissionRequest.tool_name].sort()
+      ));
+    }
+  };
 
   useEffect(() => {
     if (backendType !== 'sdk') {
@@ -360,8 +376,10 @@ export function TerminalPane({
             providerFamily={providerFamily}
             model={model}
             modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
-            allowedTools={allowedTools}
+            allowedTools={optimisticAllowedTools}
             availableTools={availableTools}
+            permissionRequest={permissionRequest}
+            onPermissionRespond={handleRichPermissionResponse}
             selectedMessageId={selectedMessageId}
             onSelectMessageInfo={handleSelectMessageInfo}
             presetTokenCount={presetTokenCount}
@@ -379,10 +397,12 @@ export function TerminalPane({
           />
         )}
       </div>
-      <PermissionDialog
-        request={permissionRequest}
-        onRespond={handlePermissionResponse}
-      />
+      {viewMode !== 'rich' && (
+        <PermissionDialog
+          request={permissionRequest}
+          onRespond={handlePermissionResponse}
+        />
+      )}
     </div>
   );
 }
