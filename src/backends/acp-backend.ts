@@ -147,7 +147,7 @@ implements
   stop(_signal?: string): void {
     this.promptQueue = [];
     this.resolveAllPendingPermissions("deny");
-    this.cancelActivePrompt();
+    this.cancelActivePromptRequest();
     this.stopping = true;
 
     if (this.childProc) {
@@ -335,6 +335,17 @@ implements
     return [...this.usageLog];
   }
 
+  cancelActivePrompt(): boolean {
+    const hadWork = this.processing || this.promptQueue.length > 0;
+    this.promptQueue = [];
+    this.resolveAllPendingPermissions("deny");
+    this.cancelActivePromptRequest();
+    if (hadWork) {
+      this.setProcessing(false);
+    }
+    return hadWork;
+  }
+
   private async launch(): Promise<void> {
     const agent = ACP_AGENT_REGISTRY[this.meta.command];
     if (!agent) {
@@ -445,7 +456,7 @@ implements
     });
   }
 
-  private cancelActivePrompt(): void {
+  private cancelActivePromptRequest(): void {
     if (!this.childProc || !this.ready) {
       return;
     }

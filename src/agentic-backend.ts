@@ -94,3 +94,7 @@ export interface ConfigurableBackend<TOptions> {
 export interface UsageAwareBackend<TUsage> {
   getUsage(): TUsage[];
 }
+
+export interface CancellablePromptBackend {
+  cancelActivePrompt(): boolean;
+}

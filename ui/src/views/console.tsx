@@ -134,6 +134,9 @@ export function ConsoleView({
               isOperator={session.is_operator}
               interactionMode={session.interaction_mode}
               sessionStatus={session.status}
+              transportLane={session.transport_lane}
+              transportBadge={session.transport_badge}
+              attention={session.attention}
               providerSessionId={session.provider_session_id}
               isVisible={session.id === activeSessionId}
               viewMode={getViewMode(session.id)}

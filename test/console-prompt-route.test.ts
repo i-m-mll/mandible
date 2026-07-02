@@ -67,4 +67,25 @@ describe("console prompt route", () => {
     expect(manager.sendPrompt).not.toHaveBeenCalled();
     expect(payloads).toEqual([{ code: 404, payload: { error: "not_found" } }]);
   });
+
+  it("routes supported cancel requests through the session manager", () => {
+    const { server, routes } = makeRegistrar();
+    const manager = {
+      get: vi.fn(() => ({ meta: { id: "sdk-session" } })),
+      cancelPrompt: vi.fn(() => true),
+    };
+
+    registerConsoleRoutes(server, manager as never);
+    const route = routes.find(
+      (item) => item.method === "POST" && item.path === "/api/console/sessions/:id/cancel",
+    );
+    expect(route).toBeDefined();
+
+    const { res, payloads } = makeJsonResponse();
+    route?.handler({ params: { id: "sdk-session" }, body: {} } as never, res as never);
+
+    expect(manager.get).toHaveBeenCalledWith("sdk-session");
+    expect(manager.cancelPrompt).toHaveBeenCalledWith("sdk-session");
+    expect(payloads).toEqual([{ code: 202, payload: { ok: true } }]);
+  });
 });

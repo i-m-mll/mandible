@@ -13,10 +13,12 @@ import { usePermissionQueue } from './usePermissionQueue';
 import { TerminalPaneHeader } from './TerminalPaneHeader';
 import { TerminalDebugOverlay } from './TerminalDebugOverlay';
 import {
+  cancelConsolePrompt,
   getPresetUnion,
   sendConsolePrompt,
 } from '../../api';
 import type { PresetUnion } from '../../api';
+import type { ComposerUsage, QueuedPrompt } from './Composer';
 
 export type ViewMode = 'terminal' | 'rich' | 'events';
 type ActiveSubagent = {
@@ -36,6 +38,9 @@ type TerminalPaneProps = {
   isOperator: boolean;
   interactionMode: ConsoleSession['interaction_mode'];
   sessionStatus: ConsoleSession['status'];
+  transportLane: ConsoleSession['transport_lane'];
+  transportBadge?: ConsoleSession['transport_badge'];
+  attention?: ConsoleSession['attention'];
   providerSessionId: string | null;
   isVisible: boolean;
   viewMode: ViewMode;
@@ -62,6 +67,70 @@ const MODEL_OPTIONS: Record<string, string[]> = {
     'gemini-2.5-flash-lite',
   ],
 };
+
+const DRAFT_STORAGE_PREFIX = 'mandible:console:composer-draft:v1:';
+
+function draftStorageKey(sessionId: string): string {
+  return `${DRAFT_STORAGE_PREFIX}${sessionId}`;
+}
+
+function readComposerDraft(sessionId: string): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(draftStorageKey(sessionId)) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writeComposerDraft(sessionId: string, value: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const key = draftStorageKey(sessionId);
+    if (value) {
+      window.localStorage.setItem(key, value);
+    } else {
+      window.localStorage.removeItem(key);
+    }
+  } catch {
+    // Browser-local draft persistence is best-effort only.
+  }
+}
+
+function readUsageNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function collectComposerUsage(events: StreamEvent[], contextTokens: number): ComposerUsage | undefined {
+  let usage: Record<string, unknown> | undefined;
+  let costUsd: number | undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index] as StreamEvent & {
+      usage?: Record<string, unknown>;
+      total_cost_usd?: unknown;
+      message?: { usage?: Record<string, unknown> };
+    };
+    usage = event.usage ?? event.message?.usage;
+    costUsd = readUsageNumber(event.total_cost_usd);
+    if (usage) break;
+  }
+  const inputTokens = readUsageNumber(usage?.input_tokens);
+  const outputTokens = readUsageNumber(usage?.output_tokens);
+  const cacheTokens = (readUsageNumber(usage?.cache_creation_input_tokens) ?? 0)
+    + (readUsageNumber(usage?.cache_read_input_tokens) ?? 0);
+  const totalTokens = (inputTokens ?? 0) + (outputTokens ?? 0) + cacheTokens;
+  if (totalTokens === 0 && contextTokens === 0 && costUsd === undefined) {
+    return undefined;
+  }
+  return {
+    inputTokens,
+    outputTokens,
+    cacheTokens: cacheTokens > 0 ? cacheTokens : undefined,
+    totalTokens: totalTokens > 0 ? totalTokens : undefined,
+    contextTokens: contextTokens > 0 ? contextTokens : undefined,
+    costUsd,
+  };
+}
 
 function parseModelFromArgs(args: string[]): string | undefined {
   for (let i = args.length - 2; i >= 0; i -= 1) {
@@ -155,6 +224,9 @@ export function TerminalPane({
   isOperator,
   interactionMode,
   sessionStatus,
+  transportLane,
+  transportBadge,
+  attention,
   providerSessionId,
   isVisible,
   viewMode,
@@ -206,7 +278,11 @@ export function TerminalPane({
   // Bug: b5e1c51 — Unseen channel event badge tracking
   const [channelEventCount, setChannelEventCount] = useState(0);
   const [unseenEventCount, setUnseenEventCount] = useState(0);
+  const [prompt, setPrompt] = useState(() => readComposerDraft(sessionId));
+  const [queuedPrompts, setQueuedPrompts] = useState<QueuedPrompt[]>([]);
+  const [stopBusy, setStopBusy] = useState(false);
   const lastSeenEventCountRef = useRef(0);
+  const flushingQueueRef = useRef(false);
 
   // Reset unseen count when Events tab is activated
   useEffect(() => {
@@ -218,8 +294,20 @@ export function TerminalPane({
 
   const providerFamily = isOperator ? 'claude' : command;
   const availableTools = collectAvailableTools(streamEvents);
+  const composerUsage = collectComposerUsage(streamEvents, backendType === 'sdk' ? presetTokenCount : 0);
+  const transportLabel = transportBadge?.label ?? transportLane ?? backendType;
+  const transportTitle = transportBadge?.title;
 
   useEffect(() => { setModel(parseModelFromArgs(sessionArgs)); }, [sessionArgs]);
+
+  useEffect(() => {
+    setPrompt(readComposerDraft(sessionId));
+    setQueuedPrompts([]);
+  }, [sessionId]);
+
+  useEffect(() => {
+    writeComposerDraft(sessionId, prompt);
+  }, [sessionId, prompt]);
 
   useEffect(() => {
     if (backendType !== 'sdk') {
@@ -254,7 +342,25 @@ export function TerminalPane({
     setSidebarTab('info');
   };
 
-  const [prompt, setPrompt] = useState('');
+  const submitRichPrompt = (submittedPrompt: string) => {
+    beginLocalPrompt(submittedPrompt);
+    void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
+      setStreaming(false);
+    });
+  };
+
+  useEffect(() => {
+    if (streaming || viewMode !== 'rich' || queuedPrompts.length === 0 || flushingQueueRef.current) {
+      return;
+    }
+    flushingQueueRef.current = true;
+    const [nextPrompt, ...remainingPrompts] = queuedPrompts;
+    setQueuedPrompts(remainingPrompts);
+    submitRichPrompt(nextPrompt.text);
+    window.setTimeout(() => {
+      flushingQueueRef.current = false;
+    }, 0);
+  }, [queuedPrompts, streaming, viewMode]);
 
   const handlePromptSubmit = (e: JSX.TargetedEvent<HTMLFormElement, Event>) => {
     e.preventDefault();
@@ -263,10 +369,17 @@ export function TerminalPane({
     if (viewMode === 'rich') {
       const submittedPrompt = prompt.trim();
       setPrompt('');
-      beginLocalPrompt(submittedPrompt);
-      void sendConsolePrompt(sessionId, submittedPrompt).catch(() => {
-        setStreaming(false);
-      });
+      if (streaming) {
+        setQueuedPrompts((current) => [
+          ...current,
+          {
+            id: `qp-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+            text: submittedPrompt,
+          },
+        ]);
+        return;
+      }
+      submitRichPrompt(submittedPrompt);
       return;
     }
 
@@ -274,6 +387,35 @@ export function TerminalPane({
       setPrompt('');
     }
   };
+
+  const handleStop = () => {
+    if (stopBusy) return;
+    setStopBusy(true);
+    void cancelConsolePrompt(sessionId)
+      .then(() => {
+        setStreaming(false);
+      })
+      .catch(() => {
+        setStreaming(false);
+      })
+      .finally(() => {
+        setStopBusy(false);
+      });
+  };
+
+  const attentionSlot = permissionRequest ? (
+    <div className="composer-attention composer-attention--permission">
+      <span className="composer-attention__label">Permission</span>
+      <span className="composer-attention__title">
+        {permissionRequest.display_name || permissionRequest.title || permissionRequest.tool_name}
+      </span>
+    </div>
+  ) : attention?.active ? (
+    <div className="composer-attention composer-attention--state">
+      <span className="composer-attention__label">Needs attention</span>
+      <span className="composer-attention__title">{attention.detail.reason || attention.kind}</span>
+    </div>
+  ) : null;
 
   const showReconnectOverlay = showDebugTerminal && (wsStatus === 'closed' || wsStatus === 'error');
   const showDebugStart = showDebugTerminal && viewMode === 'terminal' && sessionStatus !== 'running';
@@ -365,12 +507,23 @@ export function TerminalPane({
             selectedMessageId={selectedMessageId}
             onSelectMessageInfo={handleSelectMessageInfo}
             presetTokenCount={presetTokenCount}
+            usage={composerUsage}
+            queuedPrompts={queuedPrompts}
+            transportLabel={transportLabel}
+            transportTitle={transportTitle}
+            canStop={backendType === 'sdk' || backendType === 'acp'}
+            stopBusy={stopBusy}
+            attentionSlot={attentionSlot}
             onModelSaved={setModel}
             onPresetTokenCount={setPresetTokenCount}
             prompt={prompt}
             interactionMode={interactionMode}
             onPromptChange={setPrompt}
             onPromptSubmit={handlePromptSubmit}
+            onQueuedPromptRemove={(id) => {
+              setQueuedPrompts((current) => current.filter((item) => item.id !== id));
+            }}
+            onStop={handleStop}
             sidebarOpen={sidebarOpen}
             workspaceMode={workspaceMode}
             sidebarTab={sidebarTab}

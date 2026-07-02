@@ -6,6 +6,7 @@ import type {
   BackendStatusEvent,
   BackendType,
   ConfigurableBackend,
+  CancellablePromptBackend,
   PermissionAwareBackend,
   PermissionDecision,
   PermissionRequest,
@@ -625,6 +626,14 @@ export class SessionManager {
     return [];
   }
 
+  cancelPrompt(id: string): boolean {
+    const session = this.requireSession(id);
+    if (this.isCancellablePromptBackend(session)) {
+      return session.cancelActivePrompt();
+    }
+    return false;
+  }
+
   startOperator(): void {
     const db = getDb();
     const settingRow = db
@@ -900,5 +909,9 @@ export class SessionManager {
 
   private isUsageAwareBackend<TUsage>(backend: AgenticBackend): backend is AgenticBackend & UsageAwareBackend<TUsage> {
     return "getUsage" in backend;
+  }
+
+  private isCancellablePromptBackend(backend: AgenticBackend): backend is AgenticBackend & CancellablePromptBackend {
+    return "cancelActivePrompt" in backend;
   }
 }
