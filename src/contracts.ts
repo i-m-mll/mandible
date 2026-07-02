@@ -288,6 +288,8 @@ export type Conversation = {
   branch: string | null;
   model: string | null;
   cli_version: string | null;
+  is_sidechain: boolean;
+  agent_id: string | null;
   starred: boolean;
   label: string | null;
   notes: string | null;
@@ -303,7 +305,15 @@ export type ConversationChild = {
   ended_at: string | null;
   source: string;
   model: string | null;
+  agent_id: string | null;
+  is_sidechain: boolean;
+  status: "active" | "finished";
   duration_seconds: number | null;
+};
+
+export type ConversationParent = {
+  id: string;
+  title: string;
 };
 
 export type ArtifactAliasResolutionStatus = "resolved" | "unresolved" | "ambiguous" | "unsupported";

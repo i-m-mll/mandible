@@ -59,6 +59,8 @@ export interface Conversation {
   branch: string | null;
   model: string | null;
   cli_version: string | null;
+  is_sidechain: boolean;
+  agent_id: string | null;
   starred: boolean;
   label: string | null;
   notes: string | null;

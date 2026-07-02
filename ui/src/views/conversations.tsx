@@ -6,6 +6,7 @@ import type {
   Conversation,
   ConversationBlock,
   ConversationChild,
+  ConversationParent,
   ConversationSource,
 } from '../api.js';
 import {
@@ -28,7 +29,7 @@ import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
-import { ChatSurface, conversationBlocksToStreamEvents } from '../chat';
+import { ChatSurface, conversationBlocksToStreamEvents, Shelf, type ShelfItem } from '../chat';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -461,9 +462,10 @@ type ChatSidebarSections = {
 type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
   children: ConversationChild[];
+  parent: ConversationParent | null;
 };
 function conversationShell(conversation: Conversation): ConversationWithDetails {
-  return { ...conversation, blocks: [], children: [] };
+  return { ...conversation, blocks: [], children: [], parent: null };
 }
 
 function getEntryTitle(entry: ChatEntry): string {
@@ -930,56 +932,50 @@ function ExportPanel({
 
 // ── Detail View ──
 
-function SubAgentsList({
-  children,
-  onNavigate,
-}: {
-  children: ConversationChild[];
-  onNavigate: (id: string) => void;
-}): JSX.Element {
-  const [expanded, setExpanded] = useState(true);
+function formatShelfDuration(seconds: number | null): string | null {
+  if (seconds == null) return null;
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
 
-  if (children.length === 0) return <></>;
+function taskLabelFromBlock(block: ConversationBlock): string | null {
+  const metadata = parseMetadata(block.metadata_json);
+  if (metadata.tool_name !== 'Task') return null;
+  const input = metadata.tool_input;
+  if (!input || typeof input !== 'object') return null;
+  const record = input as Record<string, unknown>;
+  const description = typeof record.description === 'string' ? record.description.trim() : '';
+  const subagentType = typeof record.subagent_type === 'string' ? record.subagent_type.trim() : '';
+  return description || subagentType || null;
+}
 
-  return (
-    <div className="conv-subagents">
-      <button
-        type="button"
-        className="conv-subagents__header"
-        onClick={() => setExpanded((prev) => !prev)}
-      >
-        <span className="conv-subagents__toggle">{expanded ? '\u25BE' : '\u25B8'}</span>
-        <span className="conv-subagents__title">Sub-agents ({children.length})</span>
-      </button>
-      {expanded && (
-        <div className="conv-subagents__list">
-          {children.map((child) => {
-            const durationStr = child.duration_seconds != null
-              ? child.duration_seconds < 60
-                ? `${child.duration_seconds}s`
-                : `${Math.floor(child.duration_seconds / 60)}m ${child.duration_seconds % 60}s`
-              : null;
-            return (
-              <div
-                key={child.id}
-                className="conv-subagent-card"
-                onClick={() => onNavigate(child.id)}
-              >
-                <div className="conv-subagent-card__title">
-                  {truncate(child.title || 'Untitled', 60)}
-                </div>
-                <div className="conv-subagent-card__meta">
-                  <span>{child.block_count} blocks</span>
-                  {durationStr && <span>{durationStr}</span>}
-                  {child.model && <span className="conv-subagent-card__model">{child.model}</span>}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
+function buildSubagentShelfItems(
+  children: ConversationChild[],
+  parentBlocks: ConversationBlock[],
+  onNavigate: (id: string) => void,
+): ShelfItem[] {
+  const taskLabels = parentBlocks
+    .filter((block) => block.type === 'tool_use')
+    .map(taskLabelFromBlock)
+    .filter((label): label is string => Boolean(label));
+
+  return children.map((child, index) => {
+    const duration = formatShelfDuration(child.duration_seconds);
+    const meta = [
+      `${child.block_count} blocks`,
+      duration,
+      child.model,
+    ].filter((value): value is string => Boolean(value));
+    const fallbackLabel = child.agent_id ? `agent-${child.agent_id}` : stripMarkdownText(child.title) || 'Subagent';
+    return {
+      id: child.id,
+      icon: '↳',
+      label: truncate(taskLabels[index] ?? fallbackLabel, 80),
+      status: child.status,
+      meta,
+      onActivate: () => onNavigate(child.id),
+    };
+  });
 }
 
 function ConversationInfoDialog({
@@ -1161,6 +1157,38 @@ function ConversationDetail({
       });
     return () => { active = false; };
   }, [conversationId, initialConversation, loadNonce]);
+
+  useEffect(() => {
+    if (typeof EventSource === 'undefined') return undefined;
+    let refreshTimer: number | null = null;
+    const source = new EventSource('/api/events');
+    const scheduleRefresh = () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      refreshTimer = window.setTimeout(() => {
+        setLoadNonce((prev) => prev + 1);
+      }, 150);
+    };
+    const onMessage = (event: MessageEvent) => {
+      try {
+        const payload = JSON.parse(event.data) as { type?: string };
+        if (payload.type === 'conversation:new' || payload.type === 'conversation:updated') {
+          scheduleRefresh();
+        }
+      } catch {
+        // Ignore malformed SSE payloads.
+      }
+    };
+    source.addEventListener('message', onMessage);
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      source.removeEventListener('message', onMessage);
+      source.close();
+    };
+  }, [conversationId]);
 
   // Bug: 84cd5ae — fetch linked issues for the conversation's session
   useEffect(() => {
@@ -1347,6 +1375,23 @@ function ConversationDetail({
     () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
     [conversation?.session_id, conversationId, visibleBlocks],
   );
+  const shelfItems = useMemo(
+    () => buildSubagentShelfItems(conversation?.children ?? [], blocks, onNavigate),
+    [blocks, conversation?.children, onNavigate],
+  );
+  const isReadOnlyChild = Boolean(conversation?.is_sidechain || conversation?.parent_conversation_id);
+
+  useEffect(() => {
+    if (!conversation?.parent_conversation_id) return undefined;
+    const parentId = conversation.parent_conversation_id;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      onNavigate(parentId);
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [conversation?.parent_conversation_id, onNavigate]);
 
   const exportableBlocks = useMemo(
     () => visibleBlocks.filter((b) => selected.has(b.id)),
@@ -1561,11 +1606,19 @@ function ConversationDetail({
   }, [composerModel, continueDisabledReason, continueDraft, conversationId, latestDagUuid, linkedConsoleSession]);
 
   const handleComposerKeyDown = useCallback((event: JSX.TargetedKeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === 'ArrowUp' && shelfItems.length > 0 && event.currentTarget.selectionStart === 0) {
+      const firstRow = document.querySelector<HTMLButtonElement>('.chat-shelf-row');
+      if (firstRow) {
+        event.preventDefault();
+        firstRow.focus();
+        return;
+      }
+    }
     if (event.key !== 'Enter') return;
     if (event.shiftKey && !event.metaKey && !event.ctrlKey) return;
     event.preventDefault();
     event.currentTarget.form?.requestSubmit();
-  }, []);
+  }, [shelfItems.length]);
 
   const handleComposerModelChange = useCallback(async (value: string) => {
     setComposerModel(value);
@@ -1632,7 +1685,7 @@ function ConversationDetail({
             className="btn btn--ghost btn--sm"
             onClick={() => onNavigate(conversation.parent_conversation_id!)}
           >
-            &uarr; Parent conversation
+            Subagent of {conversation.parent?.title ? truncate(stripMarkdownText(conversation.parent.title), 80) : 'parent conversation'}
           </button>
         </div>
       )}
@@ -1704,11 +1757,6 @@ function ConversationDetail({
             Retry
           </button>
         </div>
-      )}
-
-      {/* Sub-agents section */}
-      {conversation.children && conversation.children.length > 0 && (
-        <SubAgentsList children={conversation.children} onNavigate={onNavigate} />
       )}
 
       {showMessageFilters && (
@@ -1852,6 +1900,18 @@ function ConversationDetail({
         </div>
       )}
 
+      <Shelf
+        conversationId={conversation.id}
+        title="Subagents"
+        items={shelfItems}
+        onEscape={conversation.parent_conversation_id ? () => onNavigate(conversation.parent_conversation_id!) : undefined}
+      />
+
+      {isReadOnlyChild ? (
+        <div className="conv-compose conv-compose--readonly">
+          <span>Read-only subagent transcript</span>
+        </div>
+      ) : (
       <div className="conv-compose">
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
@@ -1927,6 +1987,7 @@ function ConversationDetail({
           </div>
         )}
       </div>
+      )}
 
       {/* Toast notification */}
       <Toast toast={toast} onDismiss={() => setToast(null)} />

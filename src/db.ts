@@ -2587,6 +2587,13 @@ const MIGRATIONS: Migration[] = [
     // Issue: 3da19be — include SDK reasoning effort in the existing
     // per-message parameter keyframes.
     statements: []
+  },
+  {
+    version: 95,
+    name: "conversation_sidechain_metadata",
+    // Issue: 84fcd4a — mark provider child/sidechain transcripts without
+    // depending on live sessions rows.
+    statements: []
   }
 ];
 
@@ -2691,6 +2698,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 94) {
           ensureMessageParamsThinkingEffortColumn(db);
+        }
+        if (migration.version === 95) {
+          ensureConversationSidechainColumns(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -2828,6 +2838,14 @@ export function migrate(db: Db): void {
   )) {
     runPostMigration(db, "v74_ensure_conversation_integer_timestamps", () => {
       ensureConversationIntegerTimestampColumns(db);
+    });
+  }
+  if (shouldRunPostMigration(db, "v95_backfill_conversation_sidechains", pending, 95, () =>
+    needsConversationSidechainWork(db)
+  )) {
+    runPostMigration(db, "v95_backfill_conversation_sidechains", () => {
+      ensureConversationSidechainColumns(db);
+      backfillConversationSidechains(db);
     });
   }
   // Issue: 812df41 — make spaces.project_id nullable (top-level Spaces). Runs as a
@@ -3125,6 +3143,123 @@ function needsConversationIntegerTimestampWork(db: Db): boolean {
   }
 
   return false;
+}
+
+function parseClaudeSubagentSourcePath(sourcePath: string | null): { parentSessionId: string; agentId: string } | null {
+  if (!sourcePath) return null;
+  const normalized = sourcePath.replace(/\\/g, "/");
+  const match = normalized.match(/\/([^/]+)\/subagents\/agent-([^/]+)\.jsonl$/);
+  if (!match) return null;
+  return {
+    parentSessionId: match[1],
+    agentId: match[2],
+  };
+}
+
+function ensureConversationSidechainColumns(db: Db): void {
+  if (!tableExists(db, "conversations")) return;
+  const names = tableColumnNames(db, "conversations");
+  if (!names.has("is_sidechain")) {
+    db.exec("ALTER TABLE conversations ADD COLUMN is_sidechain INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!names.has("agent_id")) {
+    db.exec("ALTER TABLE conversations ADD COLUMN agent_id TEXT");
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_conv_sidechain_parent
+      ON conversations(parent_conversation_id, is_sidechain)
+      WHERE is_sidechain = 1`
+  );
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_conv_agent
+      ON conversations(agent_id)
+      WHERE agent_id IS NOT NULL`
+  );
+}
+
+function backfillConversationSidechains(db: Db): void {
+  if (!tableExists(db, "conversations")) return;
+  ensureConversationSidechainColumns(db);
+
+  const rows = db.prepare(
+    `SELECT id, source_path
+     FROM conversations
+     WHERE source = 'claude_code'
+       AND LOWER(source_path) LIKE '%/subagents/agent-%.jsonl'`
+  ).all() as Array<{ id: string; source_path: string }>;
+  if (rows.length === 0) return;
+
+  const findParent = db.prepare(
+    `SELECT id
+     FROM conversations
+     WHERE session_id = ?
+       AND id != ?
+       AND LOWER(source_path) NOT LIKE '%/subagents/agent-%.jsonl'
+     ORDER BY started_at ASC, created_at ASC
+     LIMIT 1`
+  );
+  const update = db.prepare(
+    `UPDATE conversations
+     SET is_sidechain = 1,
+         agent_id = COALESCE(NULLIF(agent_id, ''), ?),
+         parent_conversation_id = COALESCE(parent_conversation_id, ?)
+     WHERE id = ?`
+  );
+
+  const apply = db.transaction(() => {
+    for (const row of rows) {
+      const parsed = parseClaudeSubagentSourcePath(row.source_path);
+      if (!parsed) continue;
+      const parent = findParent.get(parsed.parentSessionId, row.id) as { id: string } | undefined;
+      update.run(parsed.agentId, parent?.id ?? null, row.id);
+    }
+  });
+  apply();
+}
+
+function needsConversationSidechainWork(db: Db): boolean {
+  if (!tableExists(db, "conversations")) return false;
+  const names = tableColumnNames(db, "conversations");
+  if (
+    !names.has("is_sidechain")
+    || !names.has("agent_id")
+    || !indexExists(db, "idx_conv_sidechain_parent")
+    || !indexExists(db, "idx_conv_agent")
+  ) {
+    return true;
+  }
+  const row = db.prepare(
+    `SELECT id, source_path, parent_conversation_id, is_sidechain, agent_id
+     FROM conversations
+     WHERE source = 'claude_code'
+       AND LOWER(source_path) LIKE '%/subagents/agent-%.jsonl'
+       AND (is_sidechain != 1 OR agent_id IS NULL OR agent_id = '' OR parent_conversation_id IS NULL)`
+  ).all() as Array<{
+    id: string;
+    source_path: string;
+    parent_conversation_id: string | null;
+    is_sidechain: number;
+    agent_id: string | null;
+  }>;
+  if (row.length === 0) return false;
+  const parentExists = db.prepare(
+    `SELECT 1
+     FROM conversations
+     WHERE session_id = ?
+       AND id != ?
+       AND LOWER(source_path) NOT LIKE '%/subagents/agent-%.jsonl'
+     LIMIT 1`
+  );
+  return row.some((candidate) => {
+    if (candidate.is_sidechain !== 1 || !candidate.agent_id) {
+      return true;
+    }
+    if (!candidate.parent_conversation_id) {
+      const parsed = parseClaudeSubagentSourcePath(candidate.source_path);
+      return !parsed || Boolean(parentExists.get(parsed.parentSessionId, candidate.id));
+    }
+    return true;
+  });
 }
 
 function ensureWorkUnitLedgerIssueColumn(db: Db): void {

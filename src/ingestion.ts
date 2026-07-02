@@ -12,6 +12,7 @@ import { broadcast } from "./sse.js";
 import { compressContent, compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
+import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import type { Logger } from "./types.js";
@@ -38,6 +39,55 @@ let logger: Logger = () => {};
 let ingestionActive = false;
 let ingestionRunToken = 0;
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+function resolveParentConversationId(
+  db: ReturnType<typeof getDb>,
+  sessionId: string,
+  filePath: string,
+  currentConversationId?: string,
+): string | null {
+  const subagentPath = parseClaudeSubagentPath(filePath);
+  if (subagentPath) {
+    const row = db.prepare(`
+      SELECT id
+      FROM conversations
+      WHERE source = 'claude_code'
+        AND session_id = ?
+        AND id != ?
+        AND LOWER(source_path) NOT LIKE '%/subagents/agent-%.jsonl'
+      ORDER BY started_at ASC, created_at ASC
+      LIMIT 1
+    `).get(subagentPath.parentSessionId, currentConversationId ?? "") as { id: string } | undefined;
+    if (row) {
+      return row.id;
+    }
+  }
+
+  const parentRow = db.prepare(`
+    SELECT c.id FROM sessions s
+    JOIN conversations c ON c.session_id = s.parent_id
+    WHERE s.id = ?
+    LIMIT 1
+  `).get(sessionId) as { id: string } | undefined;
+  return parentRow?.id ?? null;
+}
+
+function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSessionId: string, parentConversationId: string): void {
+  const parentPattern = `%/${parentSessionId}/subagents/agent-%.jsonl`;
+  db.prepare(`
+    UPDATE conversations
+    SET parent_conversation_id = COALESCE(parent_conversation_id, ?),
+        is_sidechain = 1,
+        agent_id = COALESCE(
+          NULLIF(agent_id, ''),
+          substr(source_path, instr(source_path, '/subagents/agent-') + length('/subagents/agent-'),
+            length(source_path) - instr(source_path, '/subagents/agent-') - length('/subagents/agent-') - length('.jsonl') + 1)
+        )
+    WHERE source = 'claude_code'
+      AND LOWER(source_path) LIKE LOWER(?)
+      AND id != ?
+  `).run(parentConversationId, parentPattern, parentConversationId);
+}
 const ingestQueue: string[] = [];
 const queuedIngestPaths = new Set<string>();
 let ingestDrainRunning = false;
@@ -558,6 +608,16 @@ async function ingestFile(filePath: string): Promise<void> {
     return;
   }
 
+  const subagentPath = parseClaudeSubagentPath(filePath);
+  const isSidechain = result.conversation.is_sidechain || Boolean(subagentPath);
+  const agentId = result.conversation.agent_id ?? subagentPath?.agentId ?? null;
+  const parentConversationId = resolveParentConversationId(
+    db,
+    result.conversation.session_id,
+    filePath,
+    existing?.id,
+  );
+
   // Check hash — if same content, just update mtime
   if (existing && existing.source_hash === result.conversation.source_hash) {
     db.prepare(`
@@ -569,6 +629,9 @@ async function ingestFile(filePath: string): Promise<void> {
         block_count = ?,
         model = ?,
         cli_version = ?,
+        parent_conversation_id = COALESCE(?, parent_conversation_id),
+        is_sidechain = ?,
+        agent_id = ?,
         updated_at = datetime('now')
       WHERE source_path = ?
     `).run(
@@ -579,8 +642,14 @@ async function ingestFile(filePath: string): Promise<void> {
       result.conversation.block_count,
       result.conversation.model,
       result.conversation.cli_version,
+      parentConversationId,
+      isSidechain ? 1 : 0,
+      agentId,
       filePath,
     );
+    if (!isSidechain && result.conversation.source === "claude_code") {
+      linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
+    }
     broadcast("conversation:updated", {
       id: existing.id,
       source: result.conversation.source,
@@ -602,20 +671,6 @@ async function ingestFile(filePath: string): Promise<void> {
       hash: result.conversation.source_hash,
     });
     return;
-  }
-
-  // Resolve parent conversation: if this session has a parent session,
-  // find the conversation belonging to that parent session.
-  // Bug: d0759d1 — sub-agent conversations should be linked to their parent
-  let parentConversationId: string | null = null;
-  const parentRow = db.prepare(`
-    SELECT c.id FROM sessions s
-    JOIN conversations c ON c.session_id = s.parent_id
-    WHERE s.id = ?
-    LIMIT 1
-  `).get(result.conversation.session_id) as { id: string } | undefined;
-  if (parentRow) {
-    parentConversationId = parentRow.id;
   }
 
   // Bug: 871765b — Delta ingestion: for existing conversations, only insert
@@ -649,6 +704,9 @@ async function ingestFile(filePath: string): Promise<void> {
         source_hash = ?, source_mtime = ?,
         title = ?, summary = ?, ended_at = ?,
         block_count = ?, model = ?, cli_version = ?,
+        parent_conversation_id = COALESCE(?, parent_conversation_id),
+        is_sidechain = ?,
+        agent_id = ?,
         updated_at = datetime('now')
       WHERE id = ?
     `).run(
@@ -660,8 +718,14 @@ async function ingestFile(filePath: string): Promise<void> {
       result.conversation.block_count,
       result.conversation.model,
       result.conversation.cli_version,
+      parentConversationId,
+      isSidechain ? 1 : 0,
+      agentId,
       conversationId,
     );
+    if (!isSidechain && result.conversation.source === "claude_code") {
+      linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
+    }
     return;
   }
 
@@ -694,13 +758,13 @@ async function ingestFile(filePath: string): Promise<void> {
           id, source, source_path, source_hash, source_mtime,
           title, summary, started_at, ended_at, block_count,
           session_id, project_path, cwd, branch, model, cli_version,
-          starred, label, notes, parent_conversation_id,
+          starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
           created_at, updated_at
         ) VALUES (
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?,
           ?, ?, ?, ?, ?, ?,
-          0, NULL, NULL, ?,
+          0, NULL, NULL, ?, ?, ?,
           datetime('now'), datetime('now')
         )
       `).run(
@@ -721,6 +785,8 @@ async function ingestFile(filePath: string): Promise<void> {
         result.conversation.model,
         result.conversation.cli_version,
         parentConversationId,
+        isSidechain ? 1 : 0,
+        agentId,
       );
     } else {
       // Delta append path: update conversation metadata only, no block deletion
@@ -729,6 +795,9 @@ async function ingestFile(filePath: string): Promise<void> {
           source_hash = ?, source_mtime = ?,
           title = ?, summary = ?, ended_at = ?,
           block_count = ?, model = ?, cli_version = ?,
+          parent_conversation_id = COALESCE(?, parent_conversation_id),
+          is_sidechain = ?,
+          agent_id = ?,
           updated_at = datetime('now')
         WHERE id = ?
       `).run(
@@ -740,6 +809,9 @@ async function ingestFile(filePath: string): Promise<void> {
         result.conversation.block_count,
         result.conversation.model,
         result.conversation.cli_version,
+        parentConversationId,
+        isSidechain ? 1 : 0,
+        agentId,
         conversationId,
       );
     }
@@ -825,13 +897,13 @@ async function ingestFile(filePath: string): Promise<void> {
               id, source, source_path, source_hash, source_mtime,
               title, summary, started_at, ended_at, block_count,
               session_id, project_path, cwd, branch, model, cli_version,
-              starred, label, notes, parent_conversation_id,
+              starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
               created_at, updated_at
             ) VALUES (
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?,
               ?, ?, ?, ?, ?, ?,
-              0, NULL, NULL, ?,
+              0, NULL, NULL, ?, ?, ?,
               datetime('now'), datetime('now')
             )
           `).run(
@@ -852,6 +924,8 @@ async function ingestFile(filePath: string): Promise<void> {
             result.conversation.model,
             result.conversation.cli_version,
             parentConversationId,
+            isSidechain ? 1 : 0,
+            agentId,
           );
           // Re-insert all blocks using pre-compressed buffers.
           const insertBlock2 = db.prepare(`
@@ -907,6 +981,10 @@ async function ingestFile(filePath: string): Promise<void> {
       `UPDATE sessions SET last_active = ?
        WHERE id = ? AND (last_active IS NULL OR last_active < ?)`
     ).run(activeAt, result.conversation.session_id, activeAt);
+  }
+
+  if (!isSidechain && result.conversation.source === "claude_code") {
+    linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
   }
 
   // Broadcast SSE event

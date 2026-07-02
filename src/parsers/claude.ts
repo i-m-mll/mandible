@@ -74,6 +74,11 @@ interface SessionsIndex {
   entries: SessionsIndexEntry[];
 }
 
+export interface ClaudeSubagentPathInfo {
+  parentSessionId: string;
+  agentId: string;
+}
+
 // --- Helpers ---
 
 function extractTextFromContent(content: string | ClaudeContentBlock[] | undefined): string {
@@ -104,6 +109,16 @@ function tryReadSessionsIndex(jsonlPath: string): SessionsIndexEntry | null {
   }
 }
 
+export function parseClaudeSubagentPath(filePath: string): ClaudeSubagentPathInfo | null {
+  const normalized = filePath.replace(/\\/g, "/");
+  const match = normalized.match(/\/([^/]+)\/subagents\/agent-([^/]+)\.jsonl$/);
+  if (!match) return null;
+  return {
+    parentSessionId: match[1],
+    agentId: match[2],
+  };
+}
+
 // --- Parser ---
 
 export class ClaudeParser implements ConversationParser {
@@ -119,13 +134,19 @@ export class ClaudeParser implements ConversationParser {
     const lines = raw.split("\n").filter((line) => line.trim().length > 0);
 
     const records: ClaudeRecord[] = [];
+    let hasSidechainRecord = false;
     for (const line of lines) {
       try {
-        records.push(JSON.parse(line) as ClaudeRecord);
+        const record = JSON.parse(line) as ClaudeRecord;
+        if (record.isSidechain) {
+          hasSidechainRecord = true;
+        }
+        records.push(record);
       } catch {
         // Skip malformed lines
       }
     }
+    const subagentPath = parseClaudeSubagentPath(filePath);
 
     // Extract metadata from first non-snapshot record
     let sessionId = "";
@@ -181,7 +202,7 @@ export class ClaudeParser implements ConversationParser {
     if (!projectPath) {
       // Path structure: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
       // encoded-path uses - for /
-      const dir = path.dirname(filePath);
+      const dir = subagentPath ? path.dirname(path.dirname(path.dirname(filePath))) : path.dirname(filePath);
       const dirName = path.basename(dir);
       // Decode: "-Users-mll--dotfiles" → "/Users/mll/.dotfiles"
       // The encoding replaces / with - and . with - (first char only)
@@ -402,6 +423,8 @@ export class ClaudeParser implements ConversationParser {
         branch,
         model,
         cli_version: cliVersion,
+        is_sidechain: Boolean(subagentPath || hasSidechainRecord || indexEntry?.isSidechain),
+        agent_id: subagentPath?.agentId ?? null,
       },
       blocks,
     };

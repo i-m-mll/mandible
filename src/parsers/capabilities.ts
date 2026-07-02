@@ -54,6 +54,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Tool uses come from assistant content blocks with type tool_use.",
       "Tool results come from user content blocks with type tool_result.",
+      "Task subagent transcripts under subagents/agent-*.jsonl are marked as sidechain conversations.",
     ],
   },
   {

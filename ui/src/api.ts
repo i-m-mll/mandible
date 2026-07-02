@@ -16,6 +16,7 @@ import type {
   BlockType as ContractBlockType,
   Conversation as ContractConversation,
   ConversationChild as ContractConversationChild,
+  ConversationParent as ContractConversationParent,
   ConversationSource as ContractConversationSource,
   ReviewSpecResponse,
   Role as ContractRole,
@@ -1647,20 +1648,22 @@ export async function getConversations(params?: {
   );
 }
 
-export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }> {
+export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null }> {
   const query = leaf ? `?leaf=${encodeURIComponent(leaf)}` : '';
   const resp = await apiGet(`/api/conversations/${encodeURIComponent(id)}${query}`);
   const payload = (await parseMaybeJson(resp)) as {
     conversation?: Conversation;
     blocks?: ConversationBlock[];
     children?: ConversationChild[];
+    parent?: ConversationParent | null;
   };
   // Flatten: merge top-level conversation fields with blocks/children arrays
   return {
     ...(payload.conversation ?? {} as Conversation),
     blocks: payload.blocks ?? [],
     children: payload.children ?? [],
-  } as Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] };
+    parent: payload.parent ?? null,
+  } as Conversation & { blocks: ConversationBlock[]; children: ConversationChild[]; parent: ConversationParent | null };
 }
 
 export async function getConversationBlocks(id: string, params?: {
@@ -1903,6 +1906,7 @@ export type ConversationBlock = ContractConversationBlock;
 export type Conversation = ContractConversation;
 
 export type ConversationChild = ContractConversationChild;
+export type ConversationParent = ContractConversationParent;
 
 // ── Graph API ──
 
