@@ -259,6 +259,7 @@ function emptySummary() {
     ambiguous_refs: 0,
     invalid_issue_tags_rewritten: 0,
     invalid_issue_tags_refused: 0,
+    key_collisions_skipped: 0,
     ledger_cells_to_update: 0,
     structured_links_to_update: 0,
     aliases_to_delete: 0,
@@ -289,6 +290,9 @@ function finalizeSummary(report) {
   ).length;
   report.summary.invalid_issue_tags_refused = report.findings.filter(
     (finding) => finding.context?.invalid_issue_tag && finding.status !== "resolved",
+  ).length;
+  report.summary.key_collisions_skipped = report.skipped_targets.filter(
+    (target) => target.reason === "key_collision",
   ).length;
   report.summary.ledger_cells_to_update = report.ledger_updates.reduce(
     (count, update) => count + update.cells.length,
@@ -367,8 +371,23 @@ function planLedgerUpdates(db, resolver, report) {
           : rewriteText(before, resolver, contextFor(target.table, row[target.key], column.name), {
             includeIssueTags: true,
           });
+        if (!rewritten.changed) {
+          report.findings.push(...rewritten.findings);
+          continue;
+        }
+        if (column.name === target.key && keyReplacementCollides(db, target, row.__rowid, rewritten.text)) {
+          report.skipped_targets.push({
+            reason: "key_collision",
+            table: target.table,
+            column: column.name,
+            row_id: String(row[target.key]),
+            old_value: before,
+            replacement: rewritten.text,
+            findings: rewritten.findings,
+          });
+          continue;
+        }
         report.findings.push(...rewritten.findings);
-        if (!rewritten.changed) continue;
         updates[column.name] = rewritten.text;
         cells.push({
           column: column.name,
@@ -1308,6 +1327,19 @@ function existingLedgerTargets(db) {
     targets.push({ ...target, columns: existingColumns });
   }
   return targets;
+}
+
+function keyReplacementCollides(db, target, rowid, replacement) {
+  if (!tableExists(db, target.table)) return false;
+  const columns = tableColumns(db, target.table);
+  if (!columns.has(target.key)) return false;
+  return Boolean(db.prepare(
+    `SELECT 1
+     FROM ${quoteIdent(target.table)}
+     WHERE ${quoteIdent(target.key)} = ?
+       AND rowid != ?
+     LIMIT 1`,
+  ).get(replacement, rowid));
 }
 
 function reportSkippedTarget(_target, _reason) {
