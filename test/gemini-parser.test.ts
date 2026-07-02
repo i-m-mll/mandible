@@ -189,4 +189,34 @@ describe("GeminiParser", () => {
       tool_input: { path: "README.md" },
     });
   });
+
+  it("parses appended JSONL messages at the requested base position", async () => {
+    const parser = new GeminiParser();
+    const sessionPath = await makeGeminiJsonlSession({
+      tmpName: "mandible-incremental",
+      projectRoot: "/workspace/mandible",
+    });
+
+    const result = await parser.parseIncremental?.({
+      filePath: sessionPath,
+      raw: `${JSON.stringify({
+        id: "g2",
+        type: "gemini",
+        timestamp: "2026-05-16T00:00:03.000Z",
+        model: "gemini-3.1-pro-preview",
+        content: "Incremental Gemini answer.",
+      })}\n`,
+      baseBlockCount: 5,
+      sourceHash: "append:hash",
+      sourceMtime: 42,
+    });
+
+    expect(result?.conversation.block_count).toBe(6);
+    expect(result?.blocks).toHaveLength(1);
+    expect(result?.blocks[0]).toMatchObject({
+      type: "assistant_message",
+      position: 5,
+      content: "Incremental Gemini answer.",
+    });
+  });
 });

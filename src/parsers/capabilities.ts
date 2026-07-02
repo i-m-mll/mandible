@@ -36,6 +36,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Tool uses come from function_call/custom_tool_call response items.",
       "Tool names are stored in metadata.tool_name.",
+      "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
     ],
   },
   {
@@ -55,6 +56,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool uses come from assistant content blocks with type tool_use.",
       "Tool results come from user content blocks with type tool_result.",
       "Task subagent transcripts under subagents/agent-*.jsonl are marked as sidechain conversations.",
+      "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
     ],
   },
   {
@@ -76,6 +78,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     notes: [
       "Tool-use support depends on Gemini logs containing toolCalls.",
       "Some Gemini logs only contain user and assistant messages.",
+      "Incremental ingestion is supported for JSONL session streams; whole JSON session files use full parse.",
     ],
   },
 ];

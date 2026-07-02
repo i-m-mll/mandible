@@ -13,6 +13,7 @@ import * as path from "node:path";
 import type {
   ConversationBlock,
   ConversationParser,
+  IncrementalParseInput,
   ParseResult,
 } from "./types.js";
 
@@ -189,6 +190,33 @@ export class CodexParser implements ConversationParser {
 
   async parse(filePath: string): Promise<ParseResult | null> {
     const raw = await fs.promises.readFile(filePath, "utf8");
+    let sourceMtime = 0;
+    try {
+      const stat = await fs.promises.stat(filePath);
+      sourceMtime = stat.mtimeMs;
+    } catch {
+      // ignore
+    }
+    return this.parseRaw(filePath, raw, {
+      baseBlockCount: 0,
+      sourceHash: crypto.createHash("sha256").update(raw).digest("hex"),
+      sourceMtime,
+    });
+  }
+
+  async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
+    return this.parseRaw(input.filePath, input.raw, {
+      baseBlockCount: input.baseBlockCount,
+      sourceHash: input.sourceHash,
+      sourceMtime: input.sourceMtime,
+    });
+  }
+
+  private async parseRaw(
+    filePath: string,
+    raw: string,
+    options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
+  ): Promise<ParseResult | null> {
     const lines = raw.split("\n").filter((line) => line.trim().length > 0);
 
     const records: CodexRecord[] = [];
@@ -292,7 +320,7 @@ export class CodexParser implements ConversationParser {
 
     // Parse blocks
     const blocks: Omit<ConversationBlock, "id" | "conversation_id">[] = [];
-    let position = 0;
+    let position = options.baseBlockCount;
     // Map call_id → position for linking function outputs to calls
     const callMap = new Map<string, number>();
     const callNameMap = new Map<string, string>();
@@ -450,26 +478,17 @@ export class CodexParser implements ConversationParser {
       return null;
     }
 
-    const sourceHash = crypto.createHash("sha256").update(raw).digest("hex");
-    let sourceMtime = 0;
-    try {
-      const stat = await fs.promises.stat(filePath);
-      sourceMtime = stat.mtimeMs;
-    } catch {
-      // ignore
-    }
-
     return {
       conversation: {
         source: "codex",
         source_path: filePath,
-        source_hash: sourceHash,
-        source_mtime: sourceMtime,
+        source_hash: options.sourceHash,
+        source_mtime: options.sourceMtime,
         title,
         summary: null,
         started_at: startedAt || new Date().toISOString(),
         ended_at: endedAt,
-        block_count: blocks.length,
+        block_count: options.baseBlockCount + blocks.length,
         session_id: sessionId,
         project_path: null,
         cwd,
