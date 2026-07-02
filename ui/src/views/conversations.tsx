@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import type { ConsoleSession } from '../state';
 import type {
   BlockType,
@@ -2558,8 +2559,14 @@ export function ConversationsView({
         ariaLabel="Conversations"
         hidden={sidebarHidden}
         header={
-          <div className="chat-sidebar-top">
-            <div className="chat-history-search-row">
+          <SidebarSearchFilterHeader
+            value={search}
+            onValueChange={setSearch}
+            placeholder="Search chats"
+            searchAriaLabel="Search chats"
+            clearAriaLabel="Clear chat search"
+            inputType="text"
+            leadingAction={(
               <button
                 type="button"
                 className="icon-btn chat-sidebar-new"
@@ -2569,38 +2576,31 @@ export function ConversationsView({
               >
                 +
               </button>
-              <input
-                type="text"
-                className="conv-search"
-                placeholder="Search chats"
-                value={search}
-                onInput={(e) => setSearch((e.target as HTMLInputElement).value)}
-              />
-              <button
-                type="button"
-                className={`icon-btn chat-filter-trigger${activeFilterCount > 0 ? ' chat-filter-trigger--active' : ''}`}
-                title="Search and filter options"
-                aria-label="Search and filter options"
-                onClick={() => setFilterPanelOpen((prev) => !prev)}
-              >
-                ⋯
-                {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
-              </button>
-            </div>
-            {activeFilterCount > 0 && (
-              <div className="chat-filter-summary">
+            )}
+            filterTrigger={{
+              ariaLabel: 'Search and filter options',
+              title: 'Search and filter options',
+              open: filterPanelOpen,
+              active: activeFilterCount > 0,
+              count: activeFilterCount,
+              onToggle: () => setFilterPanelOpen((prev) => !prev),
+            }}
+            summarySlot={activeFilterCount > 0 ? (
+              <>
                 {sourceFilter !== 'all' && <span>{SOURCE_LABELS[sourceFilter]}</span>}
                 {starredOnly && <span>Starred</span>}
                 {!hideEmpty && <span>Empty shown</span>}
                 {sort !== 'date' && <span>By blocks</span>}
                 {searchMode === 'full' && <span>Full text</span>}
-              </div>
-            )}
-            {filterPanelOpen && (
-              <div className="chat-filter-popover">
-                <div className="chat-filter-popover__section">
-                  <div className="chat-filter-popover__label">Agent</div>
-                  <div className="chat-filter-popover__row">
+              </>
+            ) : undefined}
+            panel={filterPanelOpen ? {
+              variant: 'popover',
+              children: (
+                <>
+                <div className="sidebar-search-filter__section">
+                  <div className="sidebar-search-filter__label">Agent</div>
+                  <div className="sidebar-search-filter__options">
                     {(['all', 'claude_code', 'codex', 'gemini'] as const).map((src) => (
                       <button
                         key={src}
@@ -2613,7 +2613,7 @@ export function ConversationsView({
                     ))}
                   </div>
                 </div>
-                <div className="chat-filter-popover__section">
+                <div className="sidebar-search-filter__section">
                   <label className="chat-filter-popover__toggle">
                     <input
                       type="checkbox"
@@ -2631,9 +2631,9 @@ export function ConversationsView({
                     <span>Hide empty chats</span>
                   </label>
                 </div>
-                <div className="chat-filter-popover__section">
-                  <div className="chat-filter-popover__label">Search</div>
-                  <div className="chat-filter-popover__row">
+                <div className="sidebar-search-filter__section">
+                  <div className="sidebar-search-filter__label">Search</div>
+                  <div className="sidebar-search-filter__options">
                     <button
                       type="button"
                       className={`conv-filter-btn${searchMode === 'title' ? ' conv-filter-btn--active' : ''}`}
@@ -2661,9 +2661,10 @@ export function ConversationsView({
                     <option value="blocks">Message count</option>
                   </select>
               </label>
-            </div>
-          )}
-          </div>
+                </>
+              ),
+            } : undefined}
+          />
         }
         bodyClassName="chat-history-list"
       >

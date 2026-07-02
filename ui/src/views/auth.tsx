@@ -6,6 +6,7 @@ import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
+import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import {
   disableAuthAutoApprove,
@@ -1841,21 +1842,6 @@ function DiffIcon(): JSX.Element {
   );
 }
 
-function FilterIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M4 6h16M7 12h10M10 18h4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function ClearIcon(): JSX.Element {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
 
 function AuthCardItem({
   leading,
@@ -3214,81 +3200,73 @@ export function AuthQueueView({
         ariaLabel="Auth requests"
         hidden={sidebarHidden}
         header={
-            <div
-              className="auth-sidebar__search"
-              onBlur={(event) => {
+          <SidebarSearchFilterHeader
+            value={authSearch}
+            onValueChange={setAuthSearch}
+            placeholder="Search auth requests..."
+            searchAriaLabel="Search auth requests"
+            clearAriaLabel="Clear auth search"
+            inputType="text"
+            onBlurWithin={(event) => {
                 if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
                   setFilterMenuOpen(false);
                 }
               }}
-            >
-              <input
-                type="text"
-                className="auth-sidebar__search-input"
-                placeholder="Search auth requests..."
-                value={authSearch}
-                onInput={(event) => setAuthSearch(event.currentTarget.value)}
-              />
-              {authSearch && (
-                <button type="button" className="auth-sidebar__search-clear" aria-label="Clear auth search" title="Clear" onClick={() => setAuthSearch('')}>
-                  <ClearIcon />
-                </button>
-              )}
-              <button
-                type="button"
-                className={`auth-sidebar__advanced-trigger${filterMenuOpen ? ' auth-sidebar__advanced-trigger--active' : ''}`}
-                aria-label="Advanced auth filters"
-                title="Advanced auth filters"
-                onClick={() => setFilterMenuOpen((prev) => !prev)}
-              >
-                <FilterIcon />
-              </button>
-              {activeFilterSummary && <div className="auth-sidebar__filter-summary">{activeFilterSummary}</div>}
-              {filterMenuOpen && (
-                <div className="auth-filter-menu">
-              <div className="auth-filter-menu__header">
+            filterTrigger={{
+              ariaLabel: 'Advanced auth filters',
+              title: 'Advanced auth filters',
+              open: filterMenuOpen,
+              active: Boolean(activeFilterSummary),
+              onToggle: () => setFilterMenuOpen((prev) => !prev),
+            }}
+            summarySlot={activeFilterSummary ? <span>{activeFilterSummary}</span> : undefined}
+            panel={filterMenuOpen ? {
+              variant: 'popover',
+              children: (
+                <>
+              <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
                 <span>Filters</span>
-                <button type="button" className="auth-filter-menu__clear" onClick={clearAuthFilters}>Clear</button>
+                <button type="button" className="sidebar-search-filter__clear-action" onClick={clearAuthFilters}>Clear</button>
               </div>
-              <div className="auth-filter-menu__section">
-                <span className="auth-filter-menu__label">Queue</span>
-                <div className="auth-filter-menu__options auth-filter-menu__options--segmented">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Queue</span>
+                <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
                   {(['active', 'all', 'historical'] as AuthFilterMode[]).map((mode) => (
-                    <button key={mode} type="button" className={`auth-filter-menu__option${filterMode === mode ? ' auth-filter-menu__option--active' : ''}`} onClick={() => setFilterMode(mode)}>
+                    <button key={mode} type="button" className={`sidebar-search-filter__option${filterMode === mode ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => setFilterMode(mode)}>
                       {mode}
                     </button>
                   ))}
                 </div>
               </div>
               {filterMode === 'active' && (
-                <div className="auth-filter-menu__section">
-                  <span className="auth-filter-menu__label">Sort</span>
-                  <div className="auth-filter-menu__options auth-filter-menu__options--segmented">
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Sort</span>
+                  <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
                     {(['newest', 'oldest', 'status'] as SortMode[]).map((mode) => (
-                      <button key={mode} type="button" className={`auth-filter-menu__option${sortMode === mode ? ' auth-filter-menu__option--active' : ''}`} onClick={() => handleSortChange(mode)}>
+                      <button key={mode} type="button" className={`sidebar-search-filter__option${sortMode === mode ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => handleSortChange(mode)}>
                         {mode}
                       </button>
                     ))}
                   </div>
                 </div>
               )}
-              <div className="auth-filter-menu__section">
-                <span className="auth-filter-menu__label">Type</span>
-                <div className="auth-filter-menu__options">
+              <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Type</span>
+                <div className="sidebar-search-filter__options">
                   {AUTH_TYPE_OPTIONS.map((opt) => (
-                    <button key={opt.value} type="button" className={`auth-filter-menu__option${typeFilter === opt.value ? ' auth-filter-menu__option--active' : ''}`} onClick={() => setTypeFilter(opt.value)}>
+                    <button key={opt.value} type="button" className={`sidebar-search-filter__option${typeFilter === opt.value ? ' sidebar-search-filter__option--active' : ''}`} onClick={() => setTypeFilter(opt.value)}>
                       {opt.label}
                     </button>
                   ))}
                 </div>
               </div>
               {uniqueRepos.length > 1 && (
-                <div className="auth-filter-menu__section">
-                  <span className="auth-filter-menu__label">Repo</span>
-                  <div className="auth-filter-menu__options">
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Repo</span>
+                  <div className="sidebar-search-filter__options">
                     <button
                       type="button"
-                      className={`auth-filter-menu__option${repoFilter === null ? ' auth-filter-menu__option--active' : ''}`}
+                      className={`sidebar-search-filter__option${repoFilter === null ? ' sidebar-search-filter__option--active' : ''}`}
                       onClick={() => {
                         setRepoFilter(null);
                         setBranchFilter(null);
@@ -3303,7 +3281,7 @@ export function AuthQueueView({
                         <button
                           key={repo}
                           type="button"
-                          className={`auth-filter-menu__option${repoFilter === repo ? ' auth-filter-menu__option--active' : ''}`}
+                          className={`sidebar-search-filter__option${repoFilter === repo ? ' sidebar-search-filter__option--active' : ''}`}
                           onClick={() => {
                             setRepoFilter(repoFilter === repo ? null : repo);
                             setBranchFilter(null);
@@ -3318,8 +3296,8 @@ export function AuthQueueView({
                 </div>
               )}
               {repoFilter && uniqueBranchesForRepo.length > 1 && (
-                <div className="auth-filter-menu__section">
-                  <span className="auth-filter-menu__label">Branch</span>
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Branch</span>
                   <div className="auth-sidebar__branch-filter-row">
                     <input
                       type="text"
@@ -3365,9 +3343,10 @@ export function AuthQueueView({
                   </div>
                 </div>
               )}
-                </div>
-              )}
-            </div>
+                </>
+              ),
+            } : undefined}
+          />
         }
         bodyClassName="auth-sidebar__list"
         footer={

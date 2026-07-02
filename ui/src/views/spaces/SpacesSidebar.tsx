@@ -36,6 +36,7 @@ import {
 import { SpaceSeedDialog } from './SpaceSeedDialog';
 import type { SeedSpaceResult } from '../../api';
 import { ViewSidebar } from '../../components/ViewSidebar';
+import { SidebarSearchFilterHeader } from '../../components/shared/SidebarSearchFilterHeader';
 import { SpaceTypeIndicator, spaceTypeLabel } from './SpaceTypeIndicator';
 import './SpacesSidebar.css';
 
@@ -641,18 +642,17 @@ export function SpacesSidebar({
   // FIXED header row (the container renders it as `.view-sidebar__header`,
   // outside the single scroll owner `.view-sidebar__body`).
   const header = (
-    <div className="spaces-tree__header" data-testid="spaces-sidebar">
-      <input
-        type="text"
-        className="spaces-tree__filter-input"
-        placeholder="Filter spaces…"
-        aria-label="Filter spaces"
-        value={filter}
-        data-testid="spaces-filter-input"
-        onInput={(event) => setFilter((event.currentTarget as HTMLInputElement).value)}
-      />
-      {createButton({ kind: 'top-level' }, 'Create top-level space', 'create-top-level')}
-    </div>
+    <SidebarSearchFilterHeader
+      value={filter}
+      onValueChange={setFilter}
+      placeholder="Filter spaces..."
+      searchAriaLabel="Filter spaces"
+      clearAriaLabel="Clear spaces filter"
+      inputType="text"
+      actionSlot={createButton({ kind: 'top-level' }, 'Create top-level space', 'create-top-level')}
+      testId="spaces-sidebar"
+      inputTestId="spaces-filter-input"
+    />
   );
 
   return (
