@@ -40,6 +40,7 @@ import type {
   UpdateSpaceOccurrenceRequest,
   BatchSpaceOccurrenceEntry,
   BatchSpaceOccurrenceResponse,
+  ConversationAttachState as ContractConversationAttachState,
   CreateSpaceEdgeRequest,
   UpdateSpaceEdgeRequest,
   AddSpaceItemResponse,
@@ -1740,13 +1741,43 @@ export async function resumeConversation(
   messageDagUuid: string,
   label?: string,
   model?: string,
-): Promise<{ console_session_id: string }> {
-  const resp = await apiPost(`/api/conversations/${encodeURIComponent(conversationId)}/resume`, {
-    message_dag_uuid: messageDagUuid,
-    label,
-    ...(model ? { model } : {}),
+  options: { force?: boolean; fork?: boolean } = {},
+): Promise<{ console_session_id?: string; session_id?: string; attach_state?: ConversationAttachState }> {
+  const path = `/api/conversations/${encodeURIComponent(conversationId)}/resume`;
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      message_dag_uuid: messageDagUuid,
+      label,
+      ...(model ? { model } : {}),
+      ...(options.force ? { force: true } : {}),
+      ...(options.fork ? { fork: true } : {}),
+    }),
   });
-  return (await parseMaybeJson(resp)) as { console_session_id: string };
+  const payload = await parseMaybeJson(response) as {
+    console_session_id?: string;
+    session_id?: string;
+    attach_state?: ConversationAttachState;
+    error?: string;
+    reason?: string;
+    message?: string;
+    details?: string;
+  };
+  if (!response.ok) {
+    const message = payload.message || payload.error || `POST ${path} failed: ${response.status}`;
+    const error = new Error(message) as Error & {
+      status?: number;
+      body?: typeof payload;
+    };
+    error.status = response.status;
+    error.body = payload;
+    throw error;
+  }
+  return payload;
 }
 
 // ── Work Units API — Bug: 8a281b3 ──
@@ -1897,6 +1928,8 @@ export async function navigateToDesktopBootstrap(): Promise<void> {
 export type BlockType = ContractBlockType;
 export type Role = ContractRole;
 export type ConversationSource = ContractConversationSource;
+
+export type ConversationAttachState = ContractConversationAttachState;
 
 export type ConversationBlock = ContractConversationBlock;
 

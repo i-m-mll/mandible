@@ -4,6 +4,7 @@ import type { ConsoleSession } from '../state';
 import type {
   BlockType,
   Conversation,
+  ConversationAttachState,
   ConversationBlock,
   ConversationChild,
   ConversationSource,
@@ -15,7 +16,7 @@ import {
   getConversations,
   getSessionIssues,
   getSessionPresets,
-  getSettings,
+  navigateSession,
   resumeConversation,
   sendConsolePrompt,
   updateConsoleSession,
@@ -41,62 +42,73 @@ import {
 
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
+type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
+
+export function getConversationAttachPresentation(
+  state: ConversationAttachState,
+): { label: string; title: string; composer: AttachComposerMode; hint: string | null } {
+  if (state.kind === 'live-owned') {
+    return {
+      label: 'Live',
+      title: 'Mandible owns the live process for this conversation.',
+      composer: 'enabled',
+      hint: null,
+    };
+  }
+  if (state.kind === 'live-external') {
+    return {
+      label: 'External',
+      title: 'This conversation appears live outside Mandible.',
+      composer: 'disabled',
+      hint: 'Live in your terminal.',
+    };
+  }
+  if (state.kind === 'resumable') {
+    return {
+      label: 'Resumable',
+      title: 'Sending a message will resume this conversation.',
+      composer: 'enabled',
+      hint: 'Sending will resume this session.',
+    };
+  }
+  return {
+    label: 'History',
+    title: 'This conversation is read-only.',
+    composer: 'hidden',
+    hint: null,
+  };
+}
+
+type ResumeApiError = Error & {
+  status?: number;
+  body?: {
+    error?: string;
+    reason?: string;
+    message?: string;
+    details?: string;
+    attach_state?: ConversationAttachState;
+  };
+};
+
+function formatResumeApiError(err: unknown): { message: string; details: string | null; state: ConversationAttachState | null } {
+  if (err instanceof Error) {
+    const apiError = err as ResumeApiError;
+    const reason = apiError.body?.reason ? ` (${apiError.body.reason})` : '';
+    const message = apiError.body?.message || apiError.message;
+    return {
+      message: `${message}${reason}`,
+      details: apiError.body?.details ?? (apiError.body ? JSON.stringify(apiError.body, null, 2) : null),
+      state: apiError.body?.attach_state ?? null,
+    };
+  }
+  return { message: String(err), details: null, state: null };
+}
+
 function Toast({ toast, onDismiss }: { toast: ToastState; onDismiss: () => void }): JSX.Element | null {
   if (!toast) return null;
   return (
     <div className={`conv-toast conv-toast--${toast.type}`} onClick={onDismiss}>
       {toast.message}
-    </div>
-  );
-}
-
-// ── Resume conflict dialog ──
-
-type ResumeConflictPolicy = 'auto_fork' | 'prompt' | 'allow_concurrent';
-
-function ResumeConflictDialog({
-  onBranch,
-  onFork,
-  onCancel,
-}: {
-  onBranch: (remember: boolean) => void;
-  onFork: (remember: boolean) => void;
-  onCancel: () => void;
-}): JSX.Element {
-  const [remember, setRemember] = useState(false);
-
-  return (
-    <div className="conv-dialog-overlay" onClick={onCancel}>
-      <div className="conv-dialog" onClick={(e) => e.stopPropagation()}>
-        <h3 className="conv-dialog__title">This conversation is active in Console.</h3>
-        <div className="conv-dialog__options">
-          <button
-            type="button"
-            className="btn btn--active"
-            onClick={() => onBranch(remember)}
-          >
-            Branch &mdash; Continue in the same session (creates a branch point)
-          </button>
-          <button
-            type="button"
-            className="btn btn--ghost"
-            onClick={() => onFork(remember)}
-          >
-            Fork &mdash; Create a new conversation (clean copy up to here)
-          </button>
-        </div>
-        <label className="conv-dialog__remember">
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember((e.target as HTMLInputElement).checked)}
-          />
-          Remember my choice
-        </label>
-        <button type="button" className="btn btn--ghost btn--sm conv-dialog__cancel" onClick={onCancel}>
-          Cancel
-        </button>
-      </div>
     </div>
   );
 }
@@ -1126,7 +1138,7 @@ function ConversationDetail({
   const [continueDraft, setContinueDraft] = useState('');
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
-  const [conflictDialog, setConflictDialog] = useState<{ dagUuid: string } | null>(null);
+  const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
   const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
 
   // Virtual scroll state
@@ -1241,88 +1253,26 @@ function ConversationDetail({
   }, [conversationId]);
 
   const handleResume = useCallback(async (dagUuid: string) => {
-    // Check conflict: is this conversation active in Console?
-    const activeSession = consoleSessions.find(
-      (s) => s.provider_session_id === conversation?.session_id && s.status !== 'stopped' && s.status !== 'crashed'
-    );
-
-    if (activeSession) {
-      // Check auto-fork policy
-      let policy: ResumeConflictPolicy = 'prompt';
-      try {
-        const settings = await getSettings();
-        const stored = settings.resume_conflict_policy;
-        if (stored === 'auto_fork' || stored === 'prompt' || stored === 'allow_concurrent') {
-          policy = stored;
-        }
-      } catch {
-        // Default to prompt if settings unavailable
-      }
-
-      if (policy === 'auto_fork') {
-        // Fork first, then resume the fork
-        try {
-          await forkConversation(conversationId, dagUuid);
-          setToast({ message: 'Auto-forked due to active session — it will appear in History shortly.', type: 'info' });
-        } catch (err) {
-          setToast({ message: `Auto-fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-        }
-        return;
-      }
-
-      if (policy === 'prompt') {
-        setConflictDialog({ dagUuid });
-        return;
-      }
-      // allow_concurrent — fall through to resume directly
-    }
-
-    // No conflict or allow_concurrent — resume directly
     try {
       const result = await resumeConversation(conversationId, dagUuid);
+      if (result.attach_state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
+      }
+      if (!result.console_session_id) {
+        throw new Error('Resume did not return a console session.');
+      }
       setToast({ message: 'Resuming conversation in Console...', type: 'info' });
       window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
     } catch (err) {
-      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
+      const formatted = formatResumeApiError(err);
+      if (formatted.state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      }
+      setContinueError(formatted.message);
+      setResumeErrorDetails(formatted.details);
+      setToast({ message: `Resume failed: ${formatted.message}`, type: 'error' });
     }
-  }, [conversationId, consoleSessions, conversation?.session_id]);
-
-  const handleConflictBranch = useCallback(async (remember: boolean) => {
-    if (!conflictDialog) return;
-    const dagUuid = conflictDialog.dagUuid;
-    setConflictDialog(null);
-    if (remember) {
-      try {
-        const { updateSetting } = await import('../api.js');
-        await updateSetting('resume_conflict_policy', 'allow_concurrent');
-      } catch { /* non-critical */ }
-    }
-    try {
-      const result = await resumeConversation(conversationId, dagUuid);
-      setToast({ message: 'Resuming conversation in Console...', type: 'info' });
-      window.location.hash = `#/console?session=${encodeURIComponent(result.console_session_id)}`;
-    } catch (err) {
-      setToast({ message: `Resume failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-    }
-  }, [conflictDialog, conversationId]);
-
-  const handleConflictFork = useCallback(async (remember: boolean) => {
-    if (!conflictDialog) return;
-    const dagUuid = conflictDialog.dagUuid;
-    setConflictDialog(null);
-    if (remember) {
-      try {
-        const { updateSetting } = await import('../api.js');
-        await updateSetting('resume_conflict_policy', 'auto_fork');
-      } catch { /* non-critical */ }
-    }
-    try {
-      await forkConversation(conversationId, dagUuid);
-      setToast({ message: 'Forked conversation — it will appear in History shortly.', type: 'info' });
-    } catch (err) {
-      setToast({ message: `Fork failed: ${err instanceof Error ? err.message : String(err)}`, type: 'error' });
-    }
-  }, [conflictDialog, conversationId]);
+  }, [conversationId]);
 
   // Observe container resize
   useEffect(() => {
@@ -1485,6 +1435,22 @@ function ConversationDetail({
     return consoleSessions.find((session) => session.provider_session_id === conversation.session_id) ?? null;
   }, [consoleSessions, conversation?.session_id]);
 
+  const attachState = useMemo<ConversationAttachState | null>(() => {
+    if (!conversation) return null;
+    if (linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)) {
+      return {
+        ...conversation.attach_state,
+        kind: 'live-owned',
+        reason: 'mandible-owned',
+        resumable: true,
+        console_session_id: linkedConsoleSession.id,
+      };
+    }
+    return conversation.attach_state;
+  }, [conversation, linkedConsoleSession]);
+
+  const attachPresentation = attachState ? getConversationAttachPresentation(attachState) : null;
+
   const latestDagUuid = useMemo(() => {
     for (let index = blocks.length - 1; index >= 0; index -= 1) {
       const dagUuid = blocks[index].dag_uuid;
@@ -1496,6 +1462,12 @@ function ConversationDetail({
   }, [blocks]);
 
   const continueDisabledReason = useMemo(() => {
+    if (attachState?.kind === 'live-external') {
+      return 'Live in your terminal.';
+    }
+    if (attachState?.kind === 'historical') {
+      return 'This conversation is read-only.';
+    }
     if (linkedConsoleSession?.interaction_mode === 'inbox_only' && isLiveConsoleSession(linkedConsoleSession)) {
       return 'Direct input is disabled for this session.';
     }
@@ -1503,7 +1475,7 @@ function ConversationDetail({
       return 'No resumable message is available.';
     }
     return null;
-  }, [latestDagUuid, linkedConsoleSession]);
+  }, [attachState?.kind, latestDagUuid, linkedConsoleSession]);
 
   const providerFamily = linkedConsoleSession ? getSessionProviderFamily(linkedConsoleSession) : (
     conversation?.source === 'gemini' ? 'gemini' :
@@ -1538,6 +1510,7 @@ function ConversationDetail({
     }
     setContinueBusy(true);
     setContinueError(null);
+    setResumeErrorDetails(null);
     try {
       let targetSessionId = linkedConsoleSession && isLiveConsoleSession(linkedConsoleSession)
         ? linkedConsoleSession.id
@@ -1547,6 +1520,12 @@ function ConversationDetail({
           throw new Error('No resumable message is available.');
         }
         const result = await resumeConversation(conversationId, latestDagUuid, undefined, composerModel || undefined);
+        if (result.attach_state) {
+          setConversation((prev) => prev ? { ...prev, attach_state: result.attach_state! } : prev);
+        }
+        if (!result.console_session_id) {
+          throw new Error('Resume did not return a console session.');
+        }
         targetSessionId = result.console_session_id;
       }
       await sendConsolePrompt(targetSessionId, prompt);
@@ -1554,7 +1533,12 @@ function ConversationDetail({
       setToast({ message: 'Message sent.', type: 'info' });
       setLoadNonce((prev) => prev + 1);
     } catch (err) {
-      setContinueError(err instanceof Error ? err.message : String(err));
+      const formatted = formatResumeApiError(err);
+      if (formatted.state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      }
+      setContinueError(formatted.message);
+      setResumeErrorDetails(formatted.details);
     } finally {
       setContinueBusy(false);
     }
@@ -1581,6 +1565,54 @@ function ConversationDetail({
       setContinueError(err instanceof Error ? err.message : String(err));
     }
   }, [canSaveComposerModel, linkedConsoleSession]);
+
+  const handleFocusExternalSession = useCallback(async () => {
+    const sessionId = attachState?.external_session_id;
+    if (!sessionId) return;
+    setContinueError(null);
+    setResumeErrorDetails(null);
+    try {
+      await navigateSession(sessionId);
+      setToast({ message: 'Terminal focus requested.', type: 'info' });
+    } catch (err) {
+      setContinueError(err instanceof Error ? err.message : String(err));
+    }
+  }, [attachState?.external_session_id]);
+
+  const handleForkHere = useCallback(async () => {
+    if (!latestDagUuid) {
+      setContinueError('No fork point is available.');
+      return;
+    }
+    setContinueBusy(true);
+    setContinueError(null);
+    setResumeErrorDetails(null);
+    try {
+      const result = await resumeConversation(
+        conversationId,
+        latestDagUuid,
+        undefined,
+        composerModel || undefined,
+        { fork: true },
+      );
+      setToast({
+        message: result.session_id
+          ? 'Forked conversation — it will appear in History shortly.'
+          : 'Fork requested.',
+        type: 'info',
+      });
+    } catch (err) {
+      const formatted = formatResumeApiError(err);
+      if (formatted.state) {
+        setConversation((prev) => prev ? { ...prev, attach_state: formatted.state! } : prev);
+      }
+      setContinueError(formatted.message);
+      setResumeErrorDetails(formatted.details);
+    } finally {
+      setContinueBusy(false);
+    }
+  }, [composerModel, conversationId, latestDagUuid]);
+
   const navigateToGraph = useCallback(() => {
     const sessionId = linkedConsoleSession?.id ?? conversation?.session_id;
     const focus = sessionId ? `session:${sessionId}` : undefined;
@@ -1646,6 +1678,14 @@ function ConversationDetail({
               )}
               <span>{getConversationTitle(conversation)}</span>
             </h2>
+            {attachPresentation && attachState && (
+              <span
+                className={`conv-attach-badge conv-attach-badge--${attachState.kind}`}
+                title={attachPresentation.title}
+              >
+                {attachPresentation.label}
+              </span>
+            )}
             <div className="conv-actions">
               <button
                 type="button"
@@ -1852,27 +1892,54 @@ function ConversationDetail({
         </div>
       )}
 
+      {attachPresentation?.composer !== 'hidden' && (
       <div className="conv-compose">
+        {attachPresentation?.hint && (
+          <div className="conv-compose__hint">{attachPresentation.hint}</div>
+        )}
         <form className="conv-compose__form" onSubmit={handleContinueSubmit}>
           <textarea
             className="conv-compose__input"
             value={continueDraft}
             onInput={(event) => setContinueDraft(event.currentTarget.value)}
             onKeyDown={handleComposerKeyDown}
-            placeholder="Message..."
-            disabled={continueBusy}
+            placeholder={attachPresentation?.composer === 'disabled' ? 'Live in your terminal' : 'Message...'}
+            disabled={continueBusy || attachPresentation?.composer === 'disabled'}
             rows={3}
           />
           <button
             type="submit"
             className="conv-compose__send"
-            disabled={continueBusy || !continueDraft.trim()}
+            disabled={continueBusy || attachPresentation?.composer === 'disabled' || !continueDraft.trim()}
             title="Send message"
             aria-label="Send message"
           >
             {continueBusy ? '...' : '↑'}
           </button>
         </form>
+        {attachState?.kind === 'live-external' && (
+          <div className="conv-compose__actions">
+            {attachState.external_session_id && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                onClick={() => { void handleFocusExternalSession(); }}
+              >
+                Go to terminal
+              </button>
+            )}
+            {attachState.can_fork && (
+              <button
+                type="button"
+                className="btn btn--ghost btn--sm"
+                disabled={continueBusy || !latestDagUuid}
+                onClick={() => { void handleForkHere(); }}
+              >
+                Fork here
+              </button>
+            )}
+          </div>
+        )}
         <div className="conv-compose__footer">
           <div className="conv-compose__runtime">
             <span className={`agent-mark ${SOURCE_CLASSES[conversation.source] || ''}`}>
@@ -1926,19 +1993,18 @@ function ConversationDetail({
             {continueError ?? continueDisabledReason}
           </div>
         )}
+        {resumeErrorDetails && (
+          <details className="conv-compose__details">
+            <summary>Details</summary>
+            <pre>{resumeErrorDetails}</pre>
+          </details>
+        )}
       </div>
+      )}
 
       {/* Toast notification */}
       <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-      {/* Resume conflict dialog */}
-      {conflictDialog && (
-        <ResumeConflictDialog
-          onBranch={handleConflictBranch}
-          onFork={handleConflictFork}
-          onCancel={() => setConflictDialog(null)}
-        />
-      )}
       {infoOpen && (
         <ConversationInfoDialog
           conversation={conversation}
