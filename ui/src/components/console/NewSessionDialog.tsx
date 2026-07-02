@@ -9,7 +9,7 @@ import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
 type Backend = 'claude' | 'codex' | 'gemini';
-type Transport = 'pty' | 'sdk' | 'spawn';
+type Transport = 'pty' | 'sdk' | 'spawn' | 'acp';
 
 type NewSessionDialogProps = {
   open: boolean;
@@ -63,10 +63,16 @@ const BACKEND_OPTIONS: Array<{
   {
     value: 'gemini',
     title: 'Gemini',
-    description: 'First-class chat backed by Gemini stream-json and native Gemini history.',
+    description: 'First-class chat backed by Gemini ACP live events.',
     note: 'Operator mode is not available for Gemini yet.',
   },
 ];
+
+function defaultTransportForBackend(backend: Backend): Transport {
+  if (backend === 'claude') return 'sdk';
+  if (backend === 'gemini') return 'acp';
+  return 'spawn';
+}
 
 function OptionCard({
   title,
@@ -201,9 +207,9 @@ export function NewSessionDialog({
   }, [backend, kind]);
 
   useEffect(() => {
-    // Bug: 8d3328c — Non-Claude backends use spawn (no terminal emulation)
-    if (backend !== 'claude' && transport !== 'spawn') {
-      setTransport('spawn');
+    // Gemini defaults to ACP; Codex stays on spawn for its lane.
+    if (backend !== 'claude' && transport !== defaultTransportForBackend(backend)) {
+      setTransport(defaultTransportForBackend(backend));
     }
   }, [backend, transport]);
 
@@ -295,7 +301,7 @@ export function NewSessionDialog({
                     disabled={disabled}
                     onClick={() => {
                       setBackend(option.value);
-                      setTransport(option.value === 'claude' ? 'sdk' : 'spawn');
+                      setTransport(defaultTransportForBackend(option.value));
                     }}
                   />
                 );

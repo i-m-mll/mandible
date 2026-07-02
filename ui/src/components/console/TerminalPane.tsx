@@ -1022,7 +1022,7 @@ export function TerminalPane({
   };
 
   useEffect(() => {
-    if (backendType !== 'sdk') {
+    if (backendType !== 'sdk' && backendType !== 'acp') {
       setPermissionQueue([]);
       return;
     }
@@ -1046,7 +1046,7 @@ export function TerminalPane({
   }, [backendType, sessionId]);
 
   useEffect(() => {
-    if (backendType !== 'sdk') {
+    if (backendType !== 'sdk' && backendType !== 'acp') {
       return undefined;
     }
 
@@ -1076,7 +1076,7 @@ export function TerminalPane({
 
   const handlePermissionResponse = async (
     requestId: string,
-    decision: 'deny' | 'allow' | 'allow_always',
+    decision: 'deny' | 'allow' | 'allow_always' | 'reject_once' | 'reject_always',
   ) => {
     setPermissionBusy(true);
     try {
@@ -1380,7 +1380,7 @@ export function TerminalPane({
         )}
       </div>
       <PermissionDialog
-        request={backendType === 'sdk' && !permissionBusy ? permissionQueue[0] ?? null : null}
+        request={(backendType === 'sdk' || backendType === 'acp') && !permissionBusy ? permissionQueue[0] ?? null : null}
         onRespond={handlePermissionResponse}
       />
     </div>

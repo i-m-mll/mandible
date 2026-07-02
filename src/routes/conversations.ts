@@ -795,7 +795,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         : conv.source === "gemini"
           ? "gemini"
           : "claude";
-      const backendType = command === "claude" ? "sdk" : "spawn";
+      const backendType = command === "claude" ? "sdk" : command === "gemini" ? "acp" : "spawn";
 
       const newSession = sessionManager.create({
         label: body.label || conv.title || "Resumed conversation",

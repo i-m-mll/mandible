@@ -17,6 +17,7 @@ import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
 import { SDKBackend, type SDKBackendOptions } from "./backends/sdk-backend.js";
 import { SpawnBackend } from "./backends/spawn-backend.js";
+import { AcpBackend, type AcpBackendOptions } from "./backends/acp-backend.js";
 import { bridgeChannelEvents, type ChannelBridgeHandle } from "./channel-event-bridge.js";
 import {
   defaultCodexThreadArchiver,
@@ -107,8 +108,9 @@ function computeAgentType(
 
 function defaultBackendType(command: string): BackendType {
   if (command === "claude") return "sdk";
-  // Bug: 8d3328c — Codex, Gemini use spawn (structured JSON stdout parsing)
-  if (command === "codex" || command === "gemini") return "spawn";
+  if (command === "gemini") return "acp";
+  // Bug: 8d3328c — Codex uses spawn (structured JSON stdout parsing)
+  if (command === "codex") return "spawn";
   // Shell and unknown commands need interactive terminal (SpawnBackend can't
   // execute arbitrary commands — buildPromptInvocation returns null for them)
   return "pty";
@@ -149,7 +151,13 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     updated_at: row.updated_at,
     started_at: row.started_at,
     stopped_at: row.stopped_at,
-    backend_type: (row.backend_type === "sdk" ? "sdk" : row.backend_type === "spawn" ? "spawn" : "pty") as BackendType,
+    backend_type: (row.backend_type === "sdk"
+      ? "sdk"
+      : row.backend_type === "spawn"
+        ? "spawn"
+        : row.backend_type === "acp"
+          ? "acp"
+          : "pty") as BackendType,
     allowed_tools: parseAllowedTools(row.allowed_tools),
     mandible_session_id: row.mandible_session_id ?? null,
     resume_at_message: row.resume_at_message ?? null,
@@ -452,7 +460,7 @@ export class SessionManager {
     return nextMeta;
   }
 
-  updateOptions(id: string, options: SDKBackendOptions): ConsoleSession {
+  updateOptions(id: string, options: SDKBackendOptions | AcpBackendOptions): ConsoleSession {
     const session = this.requireSession(id);
     const patch: Partial<Pick<ConsoleSession, "args" | "allowed_tools">> = {};
 
@@ -470,7 +478,7 @@ export class SessionManager {
     }
 
     const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch, { silent: true }) : session.meta;
-    if (this.isConfigurableBackend<SDKBackendOptions>(session)) {
+    if (this.isConfigurableBackend<SDKBackendOptions | AcpBackendOptions>(session)) {
       session.updateOptions(options);
     }
     return nextSession;
@@ -587,6 +595,9 @@ export class SessionManager {
     }
     if (type === "spawn") {
       return new SpawnBackend(session, this.logger);
+    }
+    if (type === "acp") {
+      return new AcpBackend(session, this.logger);
     }
     return new PTYBackend(session, this.logger);
   }

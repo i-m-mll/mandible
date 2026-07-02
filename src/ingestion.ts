@@ -44,6 +44,8 @@ let ingestDrainRunning = false;
 const codexSessionIndexSyncMtimes = new Map<string, number>();
 const targetedIngestLastRun = new Map<string, number>();
 const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
+const acpSuppressedSessions = new Map<string, number>();
+const ACP_SUPPRESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 // --- Public API ---
 
@@ -185,6 +187,13 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
   return { ok: true, status: "ingested", transcript_path: transcriptPath, session_ref: sessionRef };
 }
 
+export function suppressAcpIngestForSession(source: string, sessionId: string): void {
+  if (!source.trim() || !sessionId.trim()) {
+    return;
+  }
+  acpSuppressedSessions.set(acpSuppressionKey(source, sessionId), Date.now() + ACP_SUPPRESSION_TTL_MS);
+}
+
 // --- Internal ---
 
 function normalizeTargetRef(value: string | null | undefined): string | null {
@@ -297,6 +306,23 @@ async function drainIngestQueue(runToken: number): Promise<void> {
 
 function isCurrentIngestionRun(runToken: number): boolean {
   return ingestionActive && runToken === ingestionRunToken;
+}
+
+export function isAcpIngestSuppressed(source: string, sessionId: string, now = Date.now()): boolean {
+  const key = acpSuppressionKey(source, sessionId);
+  const expiresAt = acpSuppressedSessions.get(key);
+  if (!expiresAt) {
+    return false;
+  }
+  if (expiresAt <= now) {
+    acpSuppressedSessions.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function acpSuppressionKey(source: string, sessionId: string): string {
+  return `${source.trim().toLowerCase()}:${sessionId.trim()}`;
 }
 
 async function syncCodexIndexedTitle(
@@ -497,6 +523,18 @@ async function ingestFile(filePath: string): Promise<void> {
       file: filePath,
       source: parser.source,
       error: String(error),
+    });
+    return;
+  }
+
+  if (
+    result?.conversation.session_id
+    && isAcpIngestSuppressed(result.conversation.source, result.conversation.session_id)
+  ) {
+    logger("debug", "ingestion_skip_acp_originated_session", {
+      file: filePath,
+      source: result.conversation.source,
+      session_id: result.conversation.session_id,
     });
     return;
   }

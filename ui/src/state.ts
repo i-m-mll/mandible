@@ -38,7 +38,7 @@ type ConsoleSession = {
   created_at: number;
   started_at: number | null;
   stopped_at: number | null;
-  backend_type: 'pty' | 'sdk' | 'spawn';
+  backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
   // Bug: b5e1c51 — Whether this PTY session has channel integration (Terminal + Events)
   channel_enabled?: boolean;
   allowed_tools?: string[] | null;

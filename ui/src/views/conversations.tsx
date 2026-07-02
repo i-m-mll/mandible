@@ -113,6 +113,7 @@ const ALL_BLOCK_TYPES: BlockType[] = [
   'user_message',
   'assistant_message',
   'thinking',
+  'plan',
   'tool_use',
   'tool_result',
   'system',
@@ -123,6 +124,7 @@ const BLOCK_TYPE_LABELS: Record<BlockType, string> = {
   user_message: 'User',
   assistant_message: 'Assistant',
   thinking: 'Thinking',
+  plan: 'Plan',
   tool_use: 'Tool Use',
   tool_result: 'Tool Result',
   system: 'System',
@@ -534,7 +536,7 @@ export type ConversationsViewProps = {
     label: string;
     backend: string;
     kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn';
+    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
@@ -1819,11 +1821,14 @@ function ConversationDetail({
   const currentModel = conversation?.model || parseModelFromArgs(linkedConsoleSession?.args) || 'default';
   const modelOptions = MODEL_OPTIONS[providerFamily] ?? [];
   const canShowSessionControls = linkedConsoleSession
-    && (linkedConsoleSession.backend_type === 'sdk' || linkedConsoleSession.backend_type === 'pty');
+    && (linkedConsoleSession.backend_type === 'sdk'
+      || linkedConsoleSession.backend_type === 'pty'
+      || linkedConsoleSession.backend_type === 'acp');
   const canSaveComposerModel = Boolean(linkedConsoleSession)
     && (linkedConsoleSession?.backend_type === 'sdk'
       || linkedConsoleSession?.backend_type === 'pty'
-      || linkedConsoleSession?.backend_type === 'spawn');
+      || linkedConsoleSession?.backend_type === 'spawn'
+      || linkedConsoleSession?.backend_type === 'acp');
 
   useEffect(() => {
     setComposerModel(currentModel === 'default' ? '' : currentModel);
@@ -2225,7 +2230,11 @@ function ConversationDetail({
           <div className="conv-compose__controls">
             <SessionControls
               sessionId={linkedConsoleSession.id}
-              backendType={linkedConsoleSession.backend_type === 'sdk' ? 'sdk' : 'pty'}
+              backendType={linkedConsoleSession.backend_type === 'sdk'
+                ? 'sdk'
+                : linkedConsoleSession.backend_type === 'acp'
+                  ? 'acp'
+                  : 'pty'}
               model={parseModelFromArgs(linkedConsoleSession.args)}
               modelOptions={MODEL_OPTIONS[providerFamily] ?? []}
               allowedTools={linkedConsoleSession.allowed_tools}
@@ -2824,7 +2833,7 @@ export function ConversationsView({
     label: string;
     backend: string;
     kind: string;
-    backend_type: 'pty' | 'sdk' | 'spawn';
+    backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => {
