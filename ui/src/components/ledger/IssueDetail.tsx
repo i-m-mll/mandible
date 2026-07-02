@@ -241,63 +241,79 @@ export function LedgerIssueDetail({
         <IssueMetadataContent detail={detail} />
       </DetailPaneModal>
 
-      <section className="ledger-issue-detail__section">
-        <div className="ledger-comment-list ledger-timeline-list">
-          {timelineEntries.map((entry) => (
-            <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
-          ))}
-        </div>
-        {shouldShowFullDetailLoading && (
-          <p className="text-muted">
-            {fullLoadFailed
-              ? 'Full issue detail failed to load.'
-              : detail.timeline_partial
-                ? 'Loading full issue detail; more timeline entries may appear.'
-                : 'Loading full issue detail...'}
-          </p>
-        )}
-        {onAddComment && (
-          <div className="ledger-comment-composer">
-            {!showComposer ? (
-              <button type="button" className="btn btn--ghost" onClick={() => setShowComposer(true)}>
-                Add Comment
-              </button>
-            ) : (
-              <>
-                <textarea
-                  className="issue-comment-form__input"
-                  placeholder="Write a comment..."
-                  rows={compact ? 3 : 4}
-                  value={commentText}
-                  onInput={(event) => setCommentText(event.currentTarget.value)}
-                />
-                <div className="ledger-comment-composer__actions">
-                  <button type="button" className="btn btn--active" disabled={busy || !commentText.trim()} onClick={submitComment}>
-                    Submit Comment
-                  </button>
-                  <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => setShowComposer(false)}>
-                    Cancel
-                  </button>
-                </div>
-              </>
-            )}
+      <div className="ledger-issue-detail__body">
+        <section className="ledger-issue-detail__section">
+          <div className="ledger-comment-list ledger-timeline-list">
+            {timelineEntries.map((entry) => (
+              <TimelineEntryCard key={entry.id} entry={entry} detail={detail} onOpenEntity={onOpenEntity} />
+            ))}
           </div>
+          {shouldShowFullDetailLoading && (
+            <p className="text-muted">
+              {fullLoadFailed
+                ? 'Full issue detail failed to load.'
+                : detail.timeline_partial
+                  ? 'Loading full issue detail; more timeline entries may appear.'
+                  : 'Loading full issue detail...'}
+            </p>
+          )}
+          {onAddComment && (
+            <div className="ledger-comment-composer">
+              {!showComposer ? (
+                <button type="button" className="btn btn--ghost" onClick={() => setShowComposer(true)}>
+                  Add Comment
+                </button>
+              ) : (
+                <>
+                  <textarea
+                    className="issue-comment-form__input"
+                    placeholder="Write a comment..."
+                    rows={compact ? 3 : 4}
+                    value={commentText}
+                    onInput={(event) => setCommentText(event.currentTarget.value)}
+                  />
+                  <div className="ledger-comment-composer__actions">
+                    <button type="button" className="btn btn--active" disabled={busy || !commentText.trim()} onClick={submitComment}>
+                      Submit Comment
+                    </button>
+                    <button type="button" className="btn btn--ghost" disabled={busy} onClick={() => setShowComposer(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </section>
+
+        {detail.relationships.length > 0 && (
+          <section className="ledger-issue-detail__section">
+            <SectionTitle title="Relationships" count={detail.relationships.length} />
+            <RelationshipList relationships={detail.relationships} onOpenEntity={onOpenEntity} />
+          </section>
         )}
-      </section>
 
-      {detail.relationships.length > 0 && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Relationships" count={detail.relationships.length} />
-          <RelationshipList relationships={detail.relationships} onOpenEntity={onOpenEntity} />
-        </section>
-      )}
+        {associatedArtifacts.length > 0 && (
+          <section className="ledger-issue-detail__section">
+            <SectionTitle title="Associated Artifacts" count={associatedArtifacts.length} />
+            <AssociatedArtifactList artifacts={associatedArtifacts} />
+          </section>
+        )}
 
-      {associatedArtifacts.length > 0 && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Associated Artifacts" count={associatedArtifacts.length} />
-          <AssociatedArtifactList artifacts={associatedArtifacts} />
-        </section>
-      )}
+        {(activeSessions.length > 0 || historicalSessions.length > 0) && (
+          <section className="ledger-issue-detail__section">
+            <SectionTitle title="Sessions" count={detail.sessions.length} />
+            <SessionHistory active={activeSessions} historical={historicalSessions} onOpenEntity={onOpenEntity} />
+          </section>
+        )}
+
+        {(detail.sync.state !== 'clean' || detail.conflicts.length > 0) && (
+          <section className="ledger-issue-detail__section">
+            <SectionTitle title="Sync" count={detail.conflicts.length || undefined} />
+            <SyncStatus detail={detail} onResolveConflict={onResolveConflict} busy={busy} />
+          </section>
+        )}
+      </div>
 
       {authEvidenceOpen && (
         <AuthEvidenceModal
@@ -305,20 +321,6 @@ export function LedgerIssueDetail({
           onOpenEntity={onOpenEntity}
           onClose={() => setAuthEvidenceOpen(false)}
         />
-      )}
-
-      {(activeSessions.length > 0 || historicalSessions.length > 0) && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Sessions" count={detail.sessions.length} />
-          <SessionHistory active={activeSessions} historical={historicalSessions} onOpenEntity={onOpenEntity} />
-        </section>
-      )}
-
-      {(detail.sync.state !== 'clean' || detail.conflicts.length > 0) && (
-        <section className="ledger-issue-detail__section">
-          <SectionTitle title="Sync" count={detail.conflicts.length || undefined} />
-          <SyncStatus detail={detail} onResolveConflict={onResolveConflict} busy={busy} />
-        </section>
       )}
     </article>
   );

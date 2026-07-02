@@ -962,7 +962,14 @@ describe('AuthQueueView', () => {
     );
 
     expect(screen.getByRole('heading', { name: 'Structured auth detail' })).toBeTruthy();
-    expect(document.querySelector('.auth-detail-pane')).toBeTruthy();
+    const authPane = document.querySelector('.auth-detail-pane');
+    const authHeader = document.querySelector('.auth-detail__header');
+    const authBody = document.querySelector('.auth-detail__body');
+    expect(authPane).toBeTruthy();
+    expect(authPane?.contains(authHeader as Node)).toBe(true);
+    expect(authPane?.contains(authBody as Node)).toBe(true);
+    expect(authHeader?.nextElementSibling).toBe(authBody);
+    expect(authBody?.contains(authHeader as Node)).toBe(false);
     expect(document.querySelector('.auth-detail-surface')).toBeNull();
     expect(document.querySelector('.auth-card--expanded')).toBeNull();
     expect(document.querySelector('.auth-detail__summary-grid')).toBeNull();
@@ -1615,7 +1622,7 @@ describe('issue deep links', () => {
     }));
 
     expect(await screen.findByRole('heading', { name: '4c26383 full' })).toBeTruthy();
-    const scroller = document.querySelector('.issues-detail') as HTMLDivElement;
+    const scroller = document.querySelector('.ledger-issue-detail__body') as HTMLDivElement;
     scroller.scrollTop = 320;
 
     fireEvent.click(screen.getByRole('button', { name: 'Second issue' }));
@@ -1978,6 +1985,13 @@ describe('LedgerIssueDetail', () => {
     expect(eyebrowChildren.indexOf(statusPill as Element)).toBe(eyebrowChildren.indexOf(copyButton) + 1);
     expect(document.querySelector('.ledger-issue-detail__title-row .status-pill')).toBeNull();
     expect(document.querySelector('.ledger-issue-detail__header-actions .status-pill')).toBeNull();
+    const detailPane = document.querySelector('.ledger-issue-detail');
+    const header = document.querySelector('.ledger-issue-detail__header');
+    const body = document.querySelector('.ledger-issue-detail__body');
+    expect(detailPane?.contains(header as Node)).toBe(true);
+    expect(detailPane?.contains(body as Node)).toBe(true);
+    expect(header?.nextElementSibling).toBe(body);
+    expect(body?.contains(header as Node)).toBe(false);
   });
 
   it('prefers canonical project keys over checkout repo ids in copy refs', () => {
@@ -2454,7 +2468,8 @@ describe('LedgerIssueDetail', () => {
     expect(issueVisibleMeta).not.toContain('git_bug');
     expect(issueVisibleMeta).not.toContain('umbrella');
     expect(issueHeader?.querySelector('[aria-label="Issue metadata"]')).toBeNull();
-    const detailScroller = document.querySelector('.ledger-issue-detail') as HTMLElement | null;
+    const detailPane = document.querySelector('.ledger-issue-detail') as HTMLElement | null;
+    const detailScroller = document.querySelector('.ledger-issue-detail__body') as HTMLElement | null;
     const originalInnerWidth = window.innerWidth;
     const originalInnerHeight = window.innerHeight;
     Object.defineProperty(window, 'innerWidth', { value: 1280, configurable: true });
@@ -2462,7 +2477,7 @@ describe('LedgerIssueDetail', () => {
     const originalClosest = HTMLElement.prototype.closest;
     const closestSpy = vi.spyOn(HTMLElement.prototype, 'closest').mockImplementation(function closestIssueOwner(selector: string) {
       if (selector === '.issues-detail' && this.classList.contains('ledger-issue-detail__header')) {
-        return detailScroller;
+        return detailPane;
       }
       return originalClosest.call(this, selector);
     });
@@ -2509,8 +2524,9 @@ describe('LedgerIssueDetail', () => {
     fireEvent.click(screen.getByLabelText('Issue actions'));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
     const issueMetadataDialog = screen.getByRole('dialog', { name: 'Issue metadata' });
-    await waitFor(() => expect(detailScroller?.className).toContain('issues-detail--metadata-open'));
+    await waitFor(() => expect(detailPane?.className).toContain('issues-detail--metadata-open'));
     expect(detailScroller?.scrollTop).toBe(320);
+    expect(issueMetadataDialog.closest('.ledger-issue-detail__body')).toBeNull();
     expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-top')).toBe('176px');
     expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-left')).toBe('300px');
     expect((issueMetadataDialog as HTMLElement).style.getPropertyValue('--detail-pane-modal-right')).toBe('100px');
@@ -2523,7 +2539,7 @@ describe('LedgerIssueDetail', () => {
     expect(within(issueMetadataDialog).getByText('git_bug')).toBeTruthy();
     fireEvent.keyDown(document, { key: 'Escape' });
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Issue metadata' })).toBeNull());
-    await waitFor(() => expect(detailScroller?.className).not.toContain('issues-detail--metadata-open'));
+    await waitFor(() => expect(detailPane?.className).not.toContain('issues-detail--metadata-open'));
     rectSpy.mockRestore();
     closestSpy.mockRestore();
     Object.defineProperty(window, 'innerWidth', { value: originalInnerWidth, configurable: true });
@@ -3613,13 +3629,23 @@ describe('ArtifactsView', () => {
 
   it('keeps artifact overlays scoped and layered by CSS contract', () => {
     const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.issues-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.issues-detail__content\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.issues-detail__content \.ledger-issue-detail\s*\{[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*gap:\s*0;[^}]*overflow:\s*hidden;/s);
+    expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*12;[^}]*padding:\s*24px 24px 14px;[^}]*background:\s*#0b0f14;/s);
+    expect(css).not.toMatch(/\.issues-detail \.ledger-issue-detail__header\s*\{[^}]*position:\s*sticky;/s);
+    expect(css).toMatch(/\.issues-detail \.ledger-issue-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;/s);
+    expect(css).toMatch(/\.issues-detail--metadata-open \.ledger-issue-detail__body\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifacts-detail\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).not.toMatch(/\.artifacts-detail\s*\{[^}]*padding:\s*24px;/s);
     expect(css).toMatch(/\.artifacts-detail--metadata-open,\s*\.issues-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.auth-detail--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__actions-menu\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*80;/s);
     expect(css).toMatch(/\.artifact-detail\s*\{[^}]*display:\s*flex;[^}]*flex:\s*1;[^}]*flex-direction:\s*column;[^}]*min-height:\s*0;[^}]*overflow:\s*hidden;/s);
-    expect(css).toMatch(/\.artifact-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*8;/s);
-    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*margin:\s*0 -24px -24px;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).toMatch(/\.artifact-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*8;[^}]*padding:\s*24px 24px 14px;/s);
+    expect(css).not.toMatch(/\.artifact-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
+    expect(css).toMatch(/\.artifact-detail__pane\s*\{[^}]*--artifact-detail-pane-max-height:\s*calc\(100vh - 190px\);[^}]*position:\s*relative;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*18px 24px 24px;[^}]*background:\s*var\(--issues-detail-bg\)/s);
+    expect(css).not.toMatch(/\.artifact-detail__pane\s*\{[^}]*margin:\s*0 -24px -24px;/s);
     expect(css).toMatch(/\.artifact-detail__pane--metadata-open\s*\{[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.artifact-detail__body\s*\{[^}]*position:\s*relative;[^}]*width:\s*min\(1120px, 100%\);[^}]*background:\s*var\(--issues-detail-bg\)/s);
     expect(css).not.toMatch(/\.artifact-detail__body\s*\{[^}]*min-height:/s);
@@ -3644,9 +3670,11 @@ describe('ArtifactsView', () => {
     expect(css).toMatch(/\.app-content\s*>\s*\*\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;/s);
     expect(css).toMatch(/\.auth-sidebar-layout\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*isolation:\s*isolate;/s);
     expect(css).toMatch(/\.auth-detail\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*3;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
+    expect(css).not.toMatch(/\.auth-detail\s*\{[^}]*padding:\s*24px;/s);
     expect(css).toMatch(/\.auth-detail-pane\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*1;[^}]*flex:\s*1;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;/s);
     expect(css).toMatch(/\.auth-detail__header\s*\{[^}]*position:\s*relative;[^}]*z-index:\s*2;[^}]*display:\s*flex;[^}]*flex-direction:\s*column;/s);
-    expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;/s);
+    expect(css).not.toMatch(/\.auth-detail__header\s*\{[^}]*margin:\s*-24px -24px 0;/s);
+    expect(css).toMatch(/\.auth-detail__body\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*flex:\s*1;[^}]*min-height:\s*0;[^}]*overflow-y:\s*auto;[^}]*overscroll-behavior-y:\s*contain;[^}]*padding:\s*20px 24px 24px;/s);
     expect(css).toMatch(/\.auth-detail__header-primary\s*\{[^}]*display:\s*grid;[^}]*grid-template-columns:\s*minmax\(0, 1fr\) auto;[^}]*padding:\s*20px 24px;/s);
     expect(css).toMatch(/\.auth-detail__aux-header\s*\{[^}]*display:\s*flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*space-between;[^}]*padding:\s*12px 24px;[^}]*border-top:\s*1px solid var\(--neutral-alpha-06\);/s);
     expect(css).toMatch(/\.auth-detail__panels\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*2fr\)\s+minmax\(260px,\s*1fr\);/s);

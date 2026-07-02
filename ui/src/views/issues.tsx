@@ -643,10 +643,14 @@ export function IssuesView({
       : null,
     [selectedRepoId, selectedIssueId],
   );
+  const getIssueDetailScrollNode = useCallback((): HTMLDivElement | null => {
+    const shell = issueDetailScrollRef.current;
+    return shell?.querySelector<HTMLDivElement>('.ledger-issue-detail__body') ?? shell;
+  }, []);
 
   useEffect(() => {
     const key = issueDetailScrollKey;
-    const node = issueDetailScrollRef.current;
+    const node = getIssueDetailScrollNode();
     if (!key || !node) return undefined;
 
     const save = () => writeIssueDetailScrollOffset(key, node.scrollTop);
@@ -667,7 +671,7 @@ export function IssuesView({
       }
       save();
     };
-  }, [issueDetailScrollKey]);
+  }, [getIssueDetailScrollNode, issueDetailScrollKey, visibleLedgerIssueDetail?.id]);
 
   useEffect(() => {
     if (!issueDetailScrollKey || !visibleLedgerIssueDetail || initialCommentId) return;
@@ -679,7 +683,7 @@ export function IssuesView({
       return;
     }
     window.requestAnimationFrame(() => {
-      const node = issueDetailScrollRef.current;
+      const node = getIssueDetailScrollNode();
       if (!node) return;
       const maxScroll = Math.max(0, node.scrollHeight - node.clientHeight);
       node.scrollTop = Math.min(savedOffset, maxScroll || savedOffset);
@@ -687,6 +691,7 @@ export function IssuesView({
     });
   }, [
     initialCommentId,
+    getIssueDetailScrollNode,
     issueDetailScrollKey,
     visibleLedgerIssueDetail?.id,
     visibleLedgerIssueDetail?.detail_stage,
@@ -1091,13 +1096,13 @@ export function IssuesView({
       </ViewSidebar>
 
       {/* Right detail panel */}
-      <div className="issues-detail" ref={issueDetailScrollRef}>
+      <div className="issues-detail">
         {!selectedIssueId ? (
           <div className="issues-detail__empty">
             <p className="text-muted">Select an issue to view details</p>
           </div>
         ) : visibleLedgerIssueDetail ? (
-          <div className="issues-detail__content">
+          <div className="issues-detail__content" ref={issueDetailScrollRef}>
             <LedgerIssueDetail
               detail={visibleLedgerIssueDetail}
               hydrating={detailLoading}
