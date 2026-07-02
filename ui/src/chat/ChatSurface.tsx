@@ -1,6 +1,7 @@
 import type { ComponentChildren } from 'preact';
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import type { ConsoleBackendType, ConsolePermissionDecision, ConsolePermissionRequest } from '../api';
 import type {
   ContentBlock,
   DisplayGroup,
@@ -13,6 +14,7 @@ import { MessageActions } from '../components/shared/MessageActions';
 import { TurnGroup } from '../components/message-blocks/TurnGroup';
 import { GroupFooter } from '../components/message-blocks/GroupFooter';
 import { UserBubble } from '../components/message-blocks/UserBubble';
+import { PermissionApprovalCard } from '../components/console/PermissionApprovalCard';
 import {
   deriveLiveLabel,
   deriveTokenCount,
@@ -24,7 +26,11 @@ import {
   useStreamState,
 } from './renderModel';
 
-export type ChatSurfaceProps = StreamRendererProps;
+export type ChatSurfaceProps = StreamRendererProps & {
+  activePermissionRequest?: ConsolePermissionRequest | null;
+  permissionBackendType?: ConsoleBackendType;
+  onPermissionRespond?: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
+};
 
 const ESTIMATED_ROW_HEIGHT = 168;
 const VIRTUAL_OVERSCAN = 6;
@@ -167,6 +173,9 @@ export function ChatSurface({
   onSelectMessageInfo,
   selectedMessageId,
   sessionInfo,
+  activePermissionRequest,
+  permissionBackendType = 'sdk',
+  onPermissionRespond,
 }: ChatSurfaceProps): JSX.Element {
   const { nodes } = useStreamState(events);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -187,6 +196,7 @@ export function ChatSurface({
   const liveLabel = deriveLiveLabel(turns, streaming);
   const tokenCount = deriveTokenCount(turns);
   const hasContent = nodes.length > 0;
+  const hasPermissionCard = Boolean(activePermissionRequest && onPermissionRespond);
 
   const items = useMemo<VirtualItem[]>(() => {
     const groupedItems: VirtualItem[] = groups.map((group) => ({
@@ -375,7 +385,7 @@ export function ChatSurface({
     );
   }
 
-  if (!hasContent) {
+  if (!hasContent && !hasPermissionCard) {
     return (
       <div className="stream-renderer">
         <div className="stream-renderer__empty">
@@ -429,6 +439,15 @@ export function ChatSurface({
             );
           })}
         </div>
+        {activePermissionRequest && onPermissionRespond && (
+          <TurnGroup speaker="system" isShort>
+            <PermissionApprovalCard
+              request={activePermissionRequest}
+              backendType={permissionBackendType}
+              onRespond={onPermissionRespond}
+            />
+          </TurnGroup>
+        )}
       </div>
       {!isFollowing && (
         <button

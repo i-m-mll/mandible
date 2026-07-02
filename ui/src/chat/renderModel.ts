@@ -301,6 +301,9 @@ export function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): stri
   if (blocks.some((block) => block.type === 'thinking' && block.thinking.trim())) {
     return 'Thinking';
   }
+  if (blocks.some((block) => block.type === 'plan' && block.text.trim())) {
+    return 'Planning';
+  }
   if (blocks.some((block) => block.type === 'tool_use')) {
     return 'Using tools';
   }

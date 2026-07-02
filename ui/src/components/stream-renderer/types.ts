@@ -12,6 +12,11 @@ export type ThinkingContentBlock = {
   thinking: string;
 };
 
+export type PlanContentBlock = {
+  type: 'plan';
+  text: string;
+};
+
 export type ToolUseContentBlock = {
   type: 'tool_use';
   id: string;
@@ -19,7 +24,7 @@ export type ToolUseContentBlock = {
   input: Record<string, unknown>;
 };
 
-export type ContentBlock = TextContentBlock | ThinkingContentBlock | ToolUseContentBlock;
+export type ContentBlock = TextContentBlock | ThinkingContentBlock | PlanContentBlock | ToolUseContentBlock;
 
 export type ToolResultContent =
   | string

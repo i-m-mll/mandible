@@ -7,6 +7,7 @@ import type { ContentBlock, MessageGroupProps, ToolResultContentBlock } from './
 import { TextBlock } from '../message-blocks/TextBlock';
 import { ThinkingBlock } from '../message-blocks/ThinkingBlock';
 import { ToolUseBlock } from '../message-blocks/ToolUseBlock';
+import { latestPlanIndex, PlanBlock } from '../message-blocks/PlanBlock';
 import { MessageActions, type MessageActionsMeta } from '../shared/MessageActions';
 
 /** Extract copyable text from a single content block. */
@@ -14,6 +15,7 @@ function blockCopyText(block: ContentBlock): string {
   switch (block.type) {
     case 'text': return block.text ?? '';
     case 'thinking': return (block as { type: 'thinking'; thinking: string }).thinking ?? '';
+    case 'plan': return (block as { type: 'plan'; text: string }).text ?? '';
     case 'tool_use': return JSON.stringify((block as { type: 'tool_use'; input: unknown }).input, null, 2);
     default: return '';
   }
@@ -28,6 +30,7 @@ export function MessageGroup({
 }: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
+  const newestPlanIndex = latestPlanIndex(blocks);
 
   // Bug: 0a1ad82 — Thread turn-level metadata to per-block MessageActions
   const turnMeta: MessageActionsMeta | undefined = useMemo(() => {
@@ -66,6 +69,18 @@ export function MessageGroup({
             />
           );
         }
+        break;
+
+      case 'plan':
+        if (index !== newestPlanIndex) {
+          return null;
+        }
+        inner = (
+          <PlanBlock
+            key={`plan-${index}`}
+            content={block.text}
+          />
+        );
         break;
 
       case 'tool_use': {

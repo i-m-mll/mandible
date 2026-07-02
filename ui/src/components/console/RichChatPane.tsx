@@ -1,4 +1,5 @@
 import type { JSX } from 'preact/jsx-runtime';
+import type { ConsolePermissionDecision, ConsolePermissionRequest } from '../../api';
 import type { ConsoleSession } from '../../state';
 import type { StreamEvent } from '../stream-renderer/types';
 import { ChatSurface } from '../../chat';
@@ -8,6 +9,8 @@ import { SessionControls, SessionModelControl } from './SessionControls';
 import { LivePresetPills } from './LivePresetPills';
 import { MessageInfoPanel } from './MessageInfoPanel';
 import { Composer, type ComposerUsage, type QueuedPrompt } from './Composer';
+import { PermissionApprovalCard } from './PermissionApprovalCard';
+import { PermissionPolicyStrip } from './PermissionPolicyStrip';
 
 type ActiveSubagent = {
   agent_id: string;
@@ -29,6 +32,8 @@ export function RichChatPane({
   modelOptions,
   allowedTools,
   availableTools,
+  permissionRequest,
+  onPermissionRespond,
   selectedMessageId,
   onSelectMessageInfo,
   presetTokenCount,
@@ -65,6 +70,8 @@ export function RichChatPane({
   modelOptions: string[];
   allowedTools?: string[] | null;
   availableTools: string[];
+  permissionRequest: ConsolePermissionRequest | null;
+  onPermissionRespond: (id: string, decision: ConsolePermissionDecision) => void | Promise<void>;
   selectedMessageId: string | null;
   onSelectMessageInfo: (turnId: string) => void;
   presetTokenCount: number;
@@ -94,6 +101,17 @@ export function RichChatPane({
       <div className="terminal-pane__rich-main">
         <div style={{ flex: 1, overflow: 'auto', minHeight: 0 }}>
           {backendType === 'pty' && <PtyBanner />}
+          {(backendType === 'sdk' || backendType === 'acp') && (
+            <div className="terminal-pane__policy-row">
+              <PermissionPolicyStrip
+                allowedTools={allowedTools}
+                onOpenSettings={() => {
+                  onSidebarOpenChange(true);
+                  onSidebarTabChange('settings');
+                }}
+              />
+            </div>
+          )}
           {backendType === 'sdk' && activeSubagents.length > 0 && (
             <div className="terminal-pane__subagents">
               <div className="terminal-pane__subagents-title">Active subagents</div>
@@ -123,6 +141,9 @@ export function RichChatPane({
             }}
             onSelectMessageInfo={onSelectMessageInfo}
             selectedMessageId={selectedMessageId}
+            activePermissionRequest={permissionRequest}
+            permissionBackendType={backendType}
+            onPermissionRespond={onPermissionRespond}
           />
         </div>
         {backendType === 'sdk' && (
@@ -156,6 +177,16 @@ export function RichChatPane({
           onSubmit={onPromptSubmit}
           onStop={onStop}
         />
+        {permissionRequest && (
+          <div className="terminal-pane__approval-footer">
+            <PermissionApprovalCard
+              request={permissionRequest}
+              backendType={backendType}
+              onRespond={onPermissionRespond}
+              variant="sticky"
+            />
+          </div>
+        )}
       </div>
 
       {sidebarOpen && !workspaceMode && (

@@ -99,6 +99,7 @@ export function SessionControls({
   const [draftAllowedTools, setDraftAllowedTools] = useState<string[]>(allowedTools ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const supportsToolOptions = backendType === 'sdk' || backendType === 'acp';
 
   useEffect(() => {
     setDraftModel(model ?? '');
@@ -159,34 +160,38 @@ export function SessionControls({
         )}
       </div>
 
-      {backendType === 'sdk' && (
+      {supportsToolOptions && (
         <div className="session-controls__row">
-          <label className="session-controls__field">
-            <span className="session-controls__label">Max turns</span>
-            <input
-              className="session-controls__input"
-              type="number"
-              min="1"
-              step="1"
-              value={maxTurns}
-              disabled={saving}
-              onInput={(event) => setMaxTurns(event.currentTarget.value)}
-              placeholder="Unlimited"
-            />
-          </label>
-          <label className="session-controls__field">
-            <span className="session-controls__label">Max cost (USD)</span>
-            <input
-              className="session-controls__input"
-              type="number"
-              min="0"
-              step="0.01"
-              value={maxCostUsd}
-              disabled={saving}
-              onInput={(event) => setMaxCostUsd(event.currentTarget.value)}
-              placeholder="Unlimited"
-            />
-          </label>
+          {backendType === 'sdk' && (
+            <>
+              <label className="session-controls__field">
+                <span className="session-controls__label">Max turns</span>
+                <input
+                  className="session-controls__input"
+                  type="number"
+                  min="1"
+                  step="1"
+                  value={maxTurns}
+                  disabled={saving}
+                  onInput={(event) => setMaxTurns(event.currentTarget.value)}
+                  placeholder="Unlimited"
+                />
+              </label>
+              <label className="session-controls__field">
+                <span className="session-controls__label">Max cost (USD)</span>
+                <input
+                  className="session-controls__input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={maxCostUsd}
+                  disabled={saving}
+                  onInput={(event) => setMaxCostUsd(event.currentTarget.value)}
+                  placeholder="Unlimited"
+                />
+              </label>
+            </>
+          )}
           <div className="session-controls__actions">
             <button
               type="button"
@@ -200,7 +205,7 @@ export function SessionControls({
         </div>
       )}
 
-      {backendType === 'sdk' && (
+      {supportsToolOptions && (
         <div className="session-controls__tools">
           <div className="session-controls__label">Allowed tools</div>
           {availableTools.length === 0 ? (
