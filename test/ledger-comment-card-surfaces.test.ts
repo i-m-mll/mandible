@@ -3,11 +3,16 @@ import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 
 const stylesheet = readFileSync("ui/src/style.css", "utf8");
+const tokensStylesheet = readFileSync("ui/src/styles/tokens.css", "utf8");
+
+function cssRuleBodyIn(css: string, selector: string): string {
+  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = css.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
+  return match?.[1] ?? "";
+}
 
 function cssRuleBody(selector: string): string {
-  const escapedSelector = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = stylesheet.match(new RegExp(`(?:^|})\\s*${escapedSelector}\\s*\\{([^}]*)\\}`));
-  return match?.[1] ?? "";
+  return cssRuleBodyIn(stylesheet, selector);
 }
 
 function cssRule(selector: string): string {
@@ -96,22 +101,23 @@ describe("ledger comment card surfaces", () => {
   });
 
   it("keeps the issue detail shell off the content surface", () => {
-    const lightRoot = cssRuleBody(":root[data-theme='light']");
+    const lightTokens = cssRuleBodyIn(tokensStylesheet, "[data-theme='light']");
     const body = cssRuleBody(".issues-detail");
 
-    expect(lightRoot).toContain("--issues-detail-bg: #e8edf4");
+    expect(lightTokens).toContain("--neutral-4: #e8edf4");
+    expect(lightTokens).toContain("--issues-detail-bg: var(--neutral-4)");
     expect(body).toContain("background: var(--issues-detail-bg)");
     expect(body).not.toContain("background: var(--surface-content)");
     expect(body).not.toContain("background: var(--bg-card)");
   });
 
   it("maps light content surfaces to primary card white", () => {
-    const lightRoot = cssRuleBody(":root[data-theme='light']");
+    const lightTokens = cssRuleBodyIn(tokensStylesheet, "[data-theme='light']");
     const lightCommentCard = cssRuleBody(":root[data-theme='light'] .ledger-comment-card");
     const lightCommentBody = cssRuleBody(":root[data-theme='light'] .ledger-comment-card__body.spec-panel");
 
-    expect(lightRoot).toContain("--bg-card: #ffffff");
-    expect(lightRoot).toContain("--surface-content: var(--bg-card)");
+    expect(lightTokens).toContain("--neutral-1: #ffffff");
+    expect(lightTokens).toContain("--surface-card: var(--neutral-1)");
     expect(lightCommentCard).toContain("background: #ffffff");
     expect(lightCommentBody).toContain("background: #ffffff");
   });

@@ -1,0 +1,356 @@
+:root {
+  color-scheme: dark;
+
+  /* Tier 1: primitives */
+  --neutral-1: #0b0f14;
+  --neutral-2: #111821;
+  --neutral-3: #151d27;
+  --neutral-4: #17202a;
+  --neutral-5: #243244;
+  --neutral-6: #334155;
+  --neutral-7: #5f6b7a;
+  --neutral-8: #7d8794;
+  --neutral-9: #9aa4b2;
+  --neutral-10: #b0b8c4;
+  --neutral-11: #cbd5e1;
+  --neutral-12: #e6edf3;
+
+  --blue-fg: #4da3ff;
+  --blue-border: rgba(77, 163, 255, 0.3);
+  --blue-bg: rgba(77, 163, 255, 0.15);
+  --blue-bg-soft: rgba(77, 163, 255, 0.08);
+  --green-fg: #32d296;
+  --green-border: rgba(50, 210, 150, 0.3);
+  --green-bg: rgba(50, 210, 150, 0.15);
+  --green-bg-strong: rgba(50, 210, 150, 0.25);
+  --red-fg: #f26b6b;
+  --red-border: rgba(242, 107, 107, 0.3);
+  --red-border-soft: rgba(242, 107, 107, 0.25);
+  --red-bg: rgba(242, 107, 107, 0.15);
+  --red-bg-soft: rgba(242, 107, 107, 0.06);
+  --amber-fg: #f5c25c;
+  --amber-border: rgba(245, 194, 92, 0.3);
+  --amber-border-soft: rgba(245, 194, 92, 0.25);
+  --amber-bg: rgba(245, 194, 92, 0.15);
+  --amber-bg-soft: rgba(245, 194, 92, 0.08);
+  --purple-fg: #a855f7;
+  --purple-border: rgba(168, 85, 247, 0.3);
+  --purple-bg: rgba(168, 85, 247, 0.15);
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-7: 32px;
+  --space-8: 40px;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 13px;
+  --text-lg: 14px;
+  --text-xl: 16px;
+  --leading: 1.6;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+
+  --neutral-alpha-01: rgba(255, 255, 255, 0.01);
+  --neutral-alpha-02: rgba(255, 255, 255, 0.02);
+  --neutral-alpha-025: rgba(255, 255, 255, 0.025);
+  --neutral-alpha-03: rgba(255, 255, 255, 0.03);
+  --neutral-alpha-035: rgba(255, 255, 255, 0.035);
+  --neutral-alpha-04: rgba(255, 255, 255, 0.04);
+  --neutral-alpha-045: rgba(255, 255, 255, 0.045);
+  --neutral-alpha-05: rgba(255, 255, 255, 0.05);
+  --neutral-alpha-055: rgba(255, 255, 255, 0.055);
+  --neutral-alpha-06: rgba(255, 255, 255, 0.06);
+  --neutral-alpha-07: rgba(255, 255, 255, 0.07);
+  --neutral-alpha-08: rgba(255, 255, 255, 0.08);
+  --neutral-alpha-10: rgba(255, 255, 255, 0.1);
+  --neutral-alpha-12: rgba(255, 255, 255, 0.12);
+  --neutral-alpha-15: rgba(255, 255, 255, 0.15);
+  --neutral-alpha-16: rgba(255, 255, 255, 0.16);
+  --neutral-alpha-18: rgba(255, 255, 255, 0.18);
+  --neutral-alpha-20: rgba(255, 255, 255, 0.2);
+
+  --font-sans: 'Space Grotesk', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+  --shadow-soft: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --shadow-header: 0 10px 24px rgba(0, 0, 0, 0.18);
+  --shadow-rail: 10px 0 30px rgba(0, 0, 0, 0.18);
+  --shadow-panel-top: 0 -10px 24px rgba(0, 0, 0, 0.18);
+  --shadow-content-top: inset 0 18px 24px -28px rgba(0, 0, 0, 0.28);
+
+  /* Tier 2: semantic tokens */
+  --surface-app: var(--neutral-1);
+  --surface-page: var(--neutral-1);
+  --surface-panel: var(--neutral-2);
+  --surface-card: var(--neutral-3);
+  --surface-raised: var(--neutral-4);
+  --surface-app-glow: var(--neutral-4);
+  --surface-header: rgba(8, 12, 17, 0.97);
+  --surface-rail: rgba(8, 12, 17, 0.94);
+  --surface-sidebar: rgba(13, 18, 25, 0.96);
+  --surface-toolbar: rgba(11, 15, 20, 0.92);
+  --surface-popover: rgba(12, 17, 24, 0.96);
+  --surface-content: var(--surface-card);
+  --surface-code: rgba(0, 0, 0, 0.3);
+  --surface-inset: rgba(8, 12, 17, 0.88);
+  --surface-overlay: rgba(0, 0, 0, 0.6);
+  --surface-muted: var(--neutral-alpha-06);
+  --surface-hover: var(--neutral-alpha-06);
+  --surface-active: var(--neutral-alpha-08);
+  --surface-selected: var(--status-info-bg);
+  --surface-overlay-muted: var(--neutral-alpha-04);
+  --scrim-modal: rgba(0, 0, 0, 0.6);
+
+  --text-primary: var(--neutral-12);
+  --text-secondary: var(--neutral-10);
+  --text-muted: var(--neutral-9);
+  --text-disabled: rgba(154, 164, 178, 0.56);
+  --text-inverse: #fff;
+  --text-on-accent: var(--text-inverse);
+  --text-primary-soft: rgba(230, 237, 243, 0.86);
+  --text-primary-muted: rgba(230, 237, 243, 0.76);
+  --text-primary-subtle: rgba(230, 237, 243, 0.75);
+  --text-subtle: rgba(230, 237, 243, 0.72);
+
+  --border-default: var(--neutral-alpha-10);
+  --border-muted: var(--neutral-alpha-08);
+  --border-faint: var(--neutral-alpha-04);
+  --border-strong: var(--neutral-alpha-12);
+  --border-focus: rgba(77, 163, 255, 0.72);
+
+  --accent-fg: var(--blue-fg);
+  --accent-bg: var(--blue-bg);
+  --accent-border: var(--blue-border);
+  --status-info-fg: var(--blue-fg);
+  --status-info-bg: var(--blue-bg);
+  --status-info-bg-soft: var(--blue-bg-soft);
+  --status-info-border: var(--blue-border);
+  --status-success-fg: var(--green-fg);
+  --status-success-bg: var(--green-bg);
+  --status-success-bg-strong: var(--green-bg-strong);
+  --status-success-border: var(--green-border);
+  --status-warning-fg: var(--amber-fg);
+  --status-warning-bg: var(--amber-bg);
+  --status-warning-bg-soft: var(--amber-bg-soft);
+  --status-warning-border: var(--amber-border);
+  --status-warning-border-soft: var(--amber-border-soft);
+  --status-danger-fg: var(--red-fg);
+  --status-danger-bg: var(--red-bg);
+  --status-danger-bg-soft: var(--red-bg-soft);
+  --status-danger-border: var(--red-border);
+  --status-danger-border-soft: var(--red-border-soft);
+  --status-purple-fg: var(--purple-fg);
+  --status-purple-bg: var(--purple-bg);
+  --status-purple-border: var(--purple-border);
+  --status-neutral-fg: var(--text-muted);
+
+  --diff-added-fg: var(--status-success-fg);
+  --diff-added-bg: var(--status-success-bg);
+  --diff-removed-fg: var(--status-danger-fg);
+  --diff-removed-bg: var(--status-danger-bg);
+  --diff-modified-fg: var(--status-warning-fg);
+  --diff-modified-bg: var(--status-warning-bg);
+
+  /* Tier 3: component tokens */
+  --chat-max-width: 76ch;
+  --inbox-continuation: #60a5fa;
+  --inbox-continuation-bg: #60a5fa22;
+  --inbox-handoff: #f59e0b;
+  --inbox-handoff-bg: #f59e0b22;
+  --inbox-issue: #a78bfa;
+  --inbox-issue-bg: #a78bfa22;
+  --inbox-preset-diff: var(--status-warning-fg);
+  --inbox-preset-diff-bg: var(--status-warning-bg);
+
+  --auth-result-completed: #34d399;
+  --auth-result-completed-bg: #34d39922;
+  --auth-result-problem: #f87171;
+  --auth-result-problem-bg: #f8717122;
+  --auth-result-neutral: #9ca3af;
+  --auth-result-neutral-bg: #9ca3af22;
+
+  --terminal-bg: var(--surface-page);
+  --terminal-fg: var(--text-primary);
+  --terminal-cursor: var(--accent-fg);
+
+  --graph-node-muted: rgba(154, 164, 178, 0.5);
+  --graph-node-muted-strong: rgba(154, 164, 178, 0.64);
+  --graph-node-default: rgba(255, 255, 255, 0.85);
+  --graph-node-default-muted: rgba(255, 255, 255, 0.5);
+  --graph-label: var(--text-primary-subtle);
+  --graph-selection-stroke: #fff;
+  --graph-node-stroke: rgba(255, 255, 255, 0.15);
+  --graph-edge-session: rgba(77, 163, 255, 0.4);
+  --graph-edge-umbrella: rgba(168, 85, 247, 0.4);
+  --graph-edge-auth: rgba(245, 194, 92, 0.4);
+  --graph-edge-parent: rgba(154, 164, 178, 0.25);
+  --graph-edge-muted: rgba(154, 164, 178, 0.2);
+  --graph-arrow: rgba(77, 163, 255, 0.5);
+  --graph-background-grid: rgba(154, 164, 178, 0.12);
+  --graph-minimap-mask: rgba(11, 15, 20, 0.64);
+
+  /* DEPRECATED ALIASES — do not add consumers */
+  --bg-primary: var(--surface-page);
+  --bg-secondary: var(--surface-panel);
+  --bg-card: var(--surface-card);
+  --fg-default: var(--text-primary);
+  --fg-muted: var(--text-muted);
+  --fg-subtle: var(--text-subtle);
+  --fg-inverse: var(--text-inverse);
+  --accent-green: var(--status-success-fg);
+  --accent-yellow: var(--status-warning-fg);
+  --accent-red: var(--status-danger-fg);
+  --accent-blue: var(--accent-fg);
+  --accent-purple: var(--status-purple-fg);
+  --accent: var(--accent-fg);
+  --accent-soft: var(--accent-bg);
+  --status-success: var(--status-success-fg);
+  --status-warning: var(--status-warning-fg);
+  --status-danger: var(--status-danger-fg);
+  --status-info: var(--status-info-fg);
+  --status-purple: var(--status-purple-fg);
+  --status-neutral: var(--status-neutral-fg);
+  --bg-page: var(--bg-primary);
+  --bg-surface: var(--bg-secondary);
+  --bg-panel: var(--bg-card);
+  --issues-detail-bg: var(--bg-primary);
+  --bg-inset: var(--surface-inset);
+  --bg-muted: var(--surface-muted);
+  --bg-hover: var(--surface-hover);
+  --bg-active: var(--surface-active);
+  --bg-overlay: var(--surface-overlay);
+  --overlay-hover: var(--surface-hover);
+  --overlay-active: var(--surface-active);
+  --overlay-selected: var(--surface-selected);
+  --overlay-muted: var(--surface-overlay-muted);
+  --border: var(--border-default);
+  --border-color: var(--border);
+  --border-subtle: var(--border-default);
+  --border-active: var(--border-focus);
+  --focus-ring: var(--border-focus);
+  --shadow-chrome: var(--shadow-header);
+}
+
+[data-theme='light'] {
+  color-scheme: light;
+
+  /* Tier 1 light remap */
+  --neutral-1: #ffffff;
+  --neutral-2: #f5f7fb;
+  --neutral-3: #ffffff;
+  --neutral-4: #e8edf4;
+  --neutral-5: #d8e0ea;
+  --neutral-6: #b9c4d1;
+  --neutral-7: #8b97a6;
+  --neutral-8: #5f6b7a;
+  --neutral-9: #4b5563;
+  --neutral-10: #334155;
+  --neutral-11: #243244;
+  --neutral-12: #17202a;
+
+  --blue-fg: #0b63ce;
+  --blue-border: rgba(11, 99, 206, 0.24);
+  --blue-bg: rgba(11, 99, 206, 0.11);
+  --blue-bg-soft: rgba(11, 99, 206, 0.06);
+  --green-fg: #047857;
+  --green-border: rgba(4, 120, 87, 0.26);
+  --green-bg: rgba(4, 120, 87, 0.12);
+  --green-bg-strong: rgba(4, 120, 87, 0.2);
+  --red-fg: #b42318;
+  --red-border: rgba(180, 35, 24, 0.24);
+  --red-border-soft: rgba(180, 35, 24, 0.18);
+  --red-bg: rgba(180, 35, 24, 0.11);
+  --red-bg-soft: rgba(180, 35, 24, 0.06);
+  --amber-fg: #9a5b00;
+  --amber-border: rgba(154, 91, 0, 0.28);
+  --amber-border-soft: rgba(154, 91, 0, 0.2);
+  --amber-bg: rgba(154, 91, 0, 0.12);
+  --amber-bg-soft: rgba(154, 91, 0, 0.07);
+  --purple-fg: #7c3aed;
+  --purple-border: rgba(124, 58, 237, 0.24);
+  --purple-bg: rgba(124, 58, 237, 0.11);
+
+  --neutral-alpha-01: rgba(15, 23, 42, 0.01);
+  --neutral-alpha-02: rgba(15, 23, 42, 0.02);
+  --neutral-alpha-025: rgba(15, 23, 42, 0.025);
+  --neutral-alpha-03: rgba(15, 23, 42, 0.03);
+  --neutral-alpha-035: rgba(15, 23, 42, 0.035);
+  --neutral-alpha-04: rgba(15, 23, 42, 0.04);
+  --neutral-alpha-045: rgba(15, 23, 42, 0.045);
+  --neutral-alpha-05: rgba(15, 23, 42, 0.05);
+  --neutral-alpha-055: rgba(15, 23, 42, 0.055);
+  --neutral-alpha-06: rgba(15, 23, 42, 0.06);
+  --neutral-alpha-07: rgba(15, 23, 42, 0.07);
+  --neutral-alpha-08: rgba(15, 23, 42, 0.08);
+  --neutral-alpha-10: rgba(15, 23, 42, 0.1);
+  --neutral-alpha-12: rgba(15, 23, 42, 0.12);
+  --neutral-alpha-15: rgba(15, 23, 42, 0.15);
+  --neutral-alpha-16: rgba(15, 23, 42, 0.16);
+  --neutral-alpha-18: rgba(15, 23, 42, 0.18);
+  --neutral-alpha-20: rgba(15, 23, 42, 0.2);
+
+  --shadow-soft: 0 16px 40px rgba(15, 23, 42, 0.12);
+  --shadow-header: 0 10px 24px rgba(15, 23, 42, 0.08);
+  --shadow-rail: 10px 0 30px rgba(15, 23, 42, 0.08);
+  --shadow-panel-top: 0 -10px 24px rgba(15, 23, 42, 0.08);
+  --shadow-content-top: inset 0 18px 24px -28px rgba(15, 23, 42, 0.2);
+
+  /* Rare Tier 2 light exceptions retained to match the existing app chrome. */
+  --surface-page: var(--neutral-2);
+  --surface-app: var(--neutral-1);
+  --surface-panel: var(--neutral-1);
+  --surface-card: var(--neutral-1);
+  --surface-raised: var(--neutral-4);
+  --surface-app-glow: var(--neutral-1);
+  --surface-header: rgba(255, 255, 255, 0.96);
+  --surface-rail: rgba(255, 255, 255, 0.94);
+  --surface-sidebar: rgba(250, 252, 255, 0.96);
+  --surface-toolbar: rgba(250, 252, 255, 0.92);
+  --surface-popover: rgba(255, 255, 255, 0.98);
+  --surface-code: rgba(15, 23, 42, 0.06);
+  --surface-inset: rgba(241, 245, 249, 0.9);
+  --surface-overlay: rgba(15, 23, 42, 0.34);
+  --scrim-modal: rgba(15, 23, 42, 0.34);
+  --text-primary-soft: rgba(23, 32, 42, 0.88);
+  --text-primary-muted: rgba(23, 32, 42, 0.76);
+  --text-primary-subtle: rgba(23, 32, 42, 0.72);
+  --text-subtle: rgba(23, 32, 42, 0.72);
+  --border-focus: rgba(11, 99, 206, 0.64);
+  --issues-detail-bg: var(--neutral-4);
+
+  --inbox-continuation: #0b63ce;
+  --inbox-continuation-bg: var(--status-info-bg);
+  --inbox-handoff: #9a5b00;
+  --inbox-handoff-bg: var(--status-warning-bg);
+  --inbox-issue: #6d28d9;
+  --inbox-issue-bg: rgba(109, 40, 217, 0.11);
+  --auth-result-completed: #047857;
+  --auth-result-completed-bg: var(--status-success-bg);
+  --auth-result-problem: #b42318;
+  --auth-result-problem-bg: var(--status-danger-bg);
+  --auth-result-neutral: #5f6b7a;
+  --auth-result-neutral-bg: rgba(95, 107, 122, 0.12);
+  --terminal-bg: var(--neutral-1);
+  --terminal-fg: var(--text-primary);
+  --graph-node-muted: rgba(95, 107, 122, 0.48);
+  --graph-node-muted-strong: rgba(95, 107, 122, 0.62);
+  --graph-node-default: rgba(23, 32, 42, 0.84);
+  --graph-node-default-muted: rgba(23, 32, 42, 0.5);
+  --graph-label: rgba(23, 32, 42, 0.78);
+  --graph-selection-stroke: #17202a;
+  --graph-node-stroke: rgba(15, 23, 42, 0.18);
+  --graph-edge-session: rgba(11, 99, 206, 0.42);
+  --graph-edge-umbrella: rgba(124, 58, 237, 0.38);
+  --graph-edge-auth: rgba(154, 91, 0, 0.4);
+  --graph-edge-parent: rgba(95, 107, 122, 0.28);
+  --graph-edge-muted: rgba(95, 107, 122, 0.22);
+  --graph-arrow: rgba(11, 99, 206, 0.56);
+  --graph-background-grid: rgba(95, 107, 122, 0.16);
+  --graph-minimap-mask: rgba(245, 247, 251, 0.68);
+}
