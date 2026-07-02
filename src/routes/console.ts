@@ -9,7 +9,12 @@ import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
 import { AcpBackend } from "../backends/acp-backend.js";
 import type { RouteRegistrar } from "../server.js";
-import type { ConsoleSession, ConsoleSessionInput, ConsoleInteractionMode } from "../types.js";
+import type {
+  ConsoleInteractionMode,
+  ConsoleSession,
+  ConsoleSessionInput,
+  ConsoleTransportLane,
+} from "../types.js";
 
 function sendJson(res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void }, code: number, payload: unknown): void {
   res.status(code).json(payload);
@@ -25,6 +30,16 @@ function stripModelArgs(args: string[]): string[] {
     next.push(args[i]);
   }
   return next;
+}
+
+function parseTransportLane(value: unknown): ConsoleTransportLane | undefined {
+  return value === "sdk"
+    || value === "pty"
+    || value === "channel"
+    || value === "acp"
+    || value === "spawn"
+    ? value
+    : undefined;
 }
 
 // Bug: 81c9d85 — enrich ConsoleSession with is_processing from SDKBackend state
@@ -85,7 +100,8 @@ export function registerConsoleRoutes(
         || body.backend_type === "spawn"
         || body.backend_type === "acp"
         ? body.backend_type
-        : (body.command === "claude" ? "sdk" : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
+        : (body.command === "claude" ? "pty" : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
+      transport_lane: parseTransportLane((body as Record<string, unknown>).transport_lane),
       // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
       channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
       // Bug: 61bee4e — Accept presetIds for convention presets

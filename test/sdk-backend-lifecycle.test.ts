@@ -32,10 +32,13 @@ function makeMeta(overrides: Partial<ConsoleSession> = {}): ConsoleSession {
     started_at: null,
     stopped_at: null,
     backend_type: "sdk",
+    transport_lane: "sdk",
+    transport_badge: { label: "SDK", title: "Agent SDK transport" },
     allowed_tools: null,
     mandible_session_id: null,
     resume_at_message: null,
     agent_type: "claude",
+    channel_enabled: false,
     ...overrides,
   };
 }

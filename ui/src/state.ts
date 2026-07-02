@@ -39,12 +39,16 @@ type ConsoleSession = {
   started_at: number | null;
   stopped_at: number | null;
   backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+  transport_badge?: {
+    label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+    title: string;
+  };
   // Bug: b5e1c51 — Whether this PTY session has channel integration (Terminal + Events)
   channel_enabled?: boolean;
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   resume_at_message?: string | null;
-  channel_enabled?: boolean;
   attention?: {
     session_id: string;
     kind: 'input_prompt' | 'running_output' | 'permission_menu' | 'hook_notification' | 'unknown';

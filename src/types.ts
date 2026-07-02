@@ -632,6 +632,8 @@ export interface ConsoleSession {
   started_at: number | null;
   stopped_at: number | null;
   backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane: ConsoleTransportLane;
+  transport_badge: ConsoleTransportBadge;
   allowed_tools: string[] | null;
   mandible_session_id: string | null;
   /** Bug: 40f0298 — DAG branching: message UUID to resume conversation from. */
@@ -660,6 +662,7 @@ export interface ConsoleSessionInput {
   is_operator?: boolean;
   interaction_mode?: ConsoleInteractionMode;
   backend_type?: 'pty' | 'sdk' | 'spawn' | 'acp';
+  transport_lane?: ConsoleTransportLane;
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   provider_session_id?: string | null;
@@ -668,6 +671,13 @@ export interface ConsoleSessionInput {
   channel_enabled?: boolean;
   /** Bug: 61bee4e — Preset IDs to associate with this console session */
   presetIds?: string[];
+}
+
+export type ConsoleTransportLane = 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
+
+export interface ConsoleTransportBadge {
+  label: 'SDK' | 'PTY' | 'Channel' | 'ACP' | 'Spawn';
+  title: string;
 }
 
 // --- Structured console stream events ---

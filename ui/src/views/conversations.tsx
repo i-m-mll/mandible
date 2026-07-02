@@ -537,6 +537,7 @@ export type ConversationsViewProps = {
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
@@ -2432,7 +2433,9 @@ function LiveSessionDetail({
             <span className={`chat-live-session__status chat-live-session__status--${session.status}`} />
             <span>{getAgentLabel(session.agent_type)}</span>
             <span>{session.status}</span>
-            <span>{session.backend_type}</span>
+            <span title={session.transport_badge?.title}>
+              {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
+            </span>
           </div>
         </div>
       </div>
@@ -2834,6 +2837,7 @@ export function ConversationsView({
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => {

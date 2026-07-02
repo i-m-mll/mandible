@@ -5,7 +5,6 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'p
 import {
   acknowledgeInboxItem,
   ackAllInbox,
-  addSessionPreset,
   approveAuthRequest,
   closeConsoleSession,
   createConsoleSession,
@@ -1209,6 +1208,7 @@ function App(): JSX.Element {
     backend,
     kind,
     backend_type,
+    transport_lane,
     channel_enabled,
     presetIds,
   }: {
@@ -1216,15 +1216,22 @@ function App(): JSX.Element {
     backend: string;
     kind: string;
     backend_type: 'pty' | 'sdk' | 'spawn' | 'acp';
+    transport_lane: 'sdk' | 'pty' | 'channel' | 'acp' | 'spawn';
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => {
     try {
-      const result = await createConsoleSession(label, backend, kind, backend_type, { channel_enabled });
+      const result = await createConsoleSession(label, backend, kind, backend_type, {
+        channel_enabled,
+        transport_lane,
+        presetIds,
+      });
       const session = {
         pinned: false,
         unread_count: 0,
         channel_enabled: channel_enabled ?? false,
+        transport_lane,
+        transport_badge: result.session.transport_badge,
         ...result.session,
         agent_type: (kind === 'operator' ? 'operator' : backend) as ConsoleSession['agent_type'],
       } as ConsoleSession;
@@ -1240,17 +1247,8 @@ function App(): JSX.Element {
       });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
 
-      // Bug: 11f4f47 — Apply selected presets to the new SDK session.
-      // Each preset is added independently so one failure doesn't block the rest.
-      if (backend_type === 'sdk' && presetIds && presetIds.length > 0) {
-        await Promise.all(
-          presetIds.map((presetId, position) =>
-            addSessionPreset(id, presetId, position).catch((err) => {
-              console.error(`Failed to add preset ${presetId} to session ${id}:`, err);
-            }),
-          ),
-        );
-      }
+      // Presets are sent with the create request so SDK sessions can configure
+      // immediately and PTY/Channel sessions can apply launch-time prompts.
     } catch {
       return;
     }
