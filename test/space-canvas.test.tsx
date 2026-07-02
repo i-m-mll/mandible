@@ -321,6 +321,16 @@ describe('reconcileOccurrences (SSE path)', () => {
     });
     expect(next[0]).toMatchObject({ x: 55, y: 66 });
   });
+
+  it('keeps an actively dragged occurrence when a refetch temporarily omits it', () => {
+    const previous = [occ('a', { x: 55, y: 66 }), occ('b', { x: 1, y: 1 })];
+    const incoming = [occ('b', { x: 2, y: 2 })];
+    const next = reconcileOccurrences(incoming, new Set(['a']), previous);
+
+    expect(next.map((entry) => entry.id).sort()).toEqual(['a', 'b']);
+    expect(next.find((entry) => entry.id === 'a')).toBe(previous[0]);
+    expect(next.find((entry) => entry.id === 'b')).toMatchObject({ x: 2, y: 2 });
+  });
 });
 
 describe('applyOptimisticPosition', () => {
@@ -876,6 +886,46 @@ describe('SpaceCanvas SSE reconciliation', () => {
     expect(screen.getByTestId('rf-node').getAttribute('data-y')).toBe('30');
     expect(screen.getByTestId('rf-node').getAttribute('data-dragging')).toBe('true');
     expect(screen.getByTestId('rf-node').getAttribute('data-measured-width')).toBe('240');
+  });
+
+  it('keeps an actively dragged node mounted when an SSE refetch temporarily omits it', async () => {
+    const model: SpaceCanvasModel = {
+      items: [item('a', 'Alpha'), item('b', 'Beta')],
+      occurrences: [occ('a', { x: 10, y: 20 }), occ('b', { x: 40, y: 50 })],
+    };
+    const { client, emit } = makeFakeSse();
+    const stale: SpaceCanvasModel = {
+      items: model.items,
+      occurrences: [occ('b', { x: 44, y: 55 })],
+    };
+    const loadModel = vi.fn().mockResolvedValue(stale);
+
+    render(
+      h(SpaceCanvas, {
+        ...baseProps,
+        spaceId: 'sp1',
+        initialModel: model,
+        loadModel,
+        createSse: () => client,
+      }),
+    );
+
+    act(() => {
+      lastOnNodesChange?.([{ type: 'position', id: 'a', position: { x: 25, y: 30 }, dragging: true }]);
+    });
+
+    await act(async () => {
+      emit('space:occurrence:moved', { space_id: 'sp1' });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
+    const nodes = screen.getAllByTestId('rf-node');
+    const dragged = nodes.find((node) => node.getAttribute('data-node-id') === 'a');
+    expect(dragged?.getAttribute('data-x')).toBe('25');
+    expect(dragged?.getAttribute('data-y')).toBe('30');
+    expect(dragged?.getAttribute('data-dragging')).toBe('true');
   });
 
   it('ignores an out-of-order refetch that started before a drag stop', async () => {

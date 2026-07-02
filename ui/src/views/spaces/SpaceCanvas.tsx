@@ -427,6 +427,12 @@ export function reconcileOccurrences(
     changed = true;
     return next;
   });
+  const incomingIds = new Set(incoming.map((occurrence) => occurrence.id));
+  for (const previousOccurrence of previous) {
+    if (incomingIds.has(previousOccurrence.id) || !draggingIds.has(previousOccurrence.id)) continue;
+    nextOccurrences.push(previousOccurrence);
+    changed = true;
+  }
   return changed ? nextOccurrences : previous;
 }
 
@@ -1351,6 +1357,12 @@ function reconcileFlowNodeState(
     changed = true;
     return reconciledNode;
   });
+  const canonicalIds = new Set(canonical.map((node) => node.id));
+  for (const previousNode of previous) {
+    if (canonicalIds.has(previousNode.id) || !activeDragIds.has(previousNode.id)) continue;
+    next.push(previousNode);
+    changed = true;
+  }
   return changed ? next : previous;
 }
 
