@@ -2,8 +2,13 @@ import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
 import type { ConsoleSession, ConsoleSessionStatus, ConsoleStreamEvent } from "./types.js";
 
-export type BackendType = "pty" | "sdk" | "spawn";
-export type PermissionDecision = "deny" | "allow" | "allow_always";
+export type BackendType = "pty" | "sdk" | "spawn" | "acp";
+export type PermissionDecision =
+  | "deny"
+  | "allow"
+  | "allow_always"
+  | "reject_once"
+  | "reject_always";
 
 export interface PermissionRequest {
   id: string;

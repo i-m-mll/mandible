@@ -7,6 +7,7 @@ import { getDb } from "../db.js";
 import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
+import { AcpBackend } from "../backends/acp-backend.js";
 import type { RouteRegistrar } from "../server.js";
 import type { ConsoleSession, ConsoleSessionInput, ConsoleInteractionMode } from "../types.js";
 
@@ -30,6 +31,9 @@ function stripModelArgs(args: string[]): string[] {
 function enrichWithProcessing(backend: { meta: ConsoleSession }): ConsoleSession {
   const meta = backend.meta;
   if (backend instanceof SDKBackend) {
+    return { ...meta, is_processing: backend.isProcessing };
+  }
+  if (backend instanceof AcpBackend) {
     return { ...meta, is_processing: backend.isProcessing };
   }
   return { ...meta, is_processing: false };
@@ -76,9 +80,12 @@ export function registerConsoleRoutes(
       interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
         ? body.interaction_mode as ConsoleInteractionMode
         : "both",
-      backend_type: body.backend_type === "pty" || body.backend_type === "sdk" || body.backend_type === "spawn"
+      backend_type: body.backend_type === "pty"
+        || body.backend_type === "sdk"
+        || body.backend_type === "spawn"
+        || body.backend_type === "acp"
         ? body.backend_type
-        : (body.command === "claude" ? "sdk" : "spawn"),
+        : (body.command === "claude" ? "sdk" : body.command === "gemini" ? "acp" : "spawn"),
       // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
       channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
       // Bug: 61bee4e — Accept presetIds for convention presets
@@ -91,9 +98,9 @@ export function registerConsoleRoutes(
 
     const session = manager.create(input);
     const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
-    // Start immediately for: operators, non-structured-chat (shell), and SDK/spawn
+    // Start immediately for: operators, non-structured-chat (shell), and structured
     // sessions (they just wait for the first prompt — no process to allocate).
-    if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn") {
+    if (input.is_operator || !structuredChat || input.backend_type === "sdk" || input.backend_type === "spawn" || input.backend_type === "acp") {
       manager.start(session.id);
     }
     const ptySession = manager.get(session.id);
@@ -328,7 +335,9 @@ export function registerConsoleRoutes(
     if (
       decision.decision !== "deny" &&
       decision.decision !== "allow" &&
-      decision.decision !== "allow_always"
+      decision.decision !== "allow_always" &&
+      decision.decision !== "reject_once" &&
+      decision.decision !== "reject_always"
     ) {
       sendJson(res, 400, { error: "invalid_decision" });
       return;

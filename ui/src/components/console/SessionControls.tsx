@@ -7,7 +7,7 @@ import {
 
 type SessionControlsProps = {
   sessionId: string;
-  backendType: 'pty' | 'sdk';
+  backendType: 'pty' | 'sdk' | 'acp';
   model: string | undefined;
   modelOptions: string[];
   allowedTools?: string[] | null;
@@ -84,7 +84,7 @@ export function SessionControls({
             onChange={(event) => {
               const nextModel = event.currentTarget.value;
               setDraftModel(nextModel);
-              if (backendType === 'pty') {
+              if (backendType === 'pty' || backendType === 'acp') {
                 void handleModelOnlySave(nextModel);
               }
             }}

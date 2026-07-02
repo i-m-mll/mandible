@@ -45,6 +45,7 @@ interface GeminiMessage {
   tokens?: GeminiTokens;
   model?: string;
   toolCalls?: GeminiToolCall[];
+  plan?: unknown;
 }
 
 interface GeminiSession {
@@ -352,6 +353,22 @@ export class GeminiParser implements ConversationParser {
               },
             });
           }
+        }
+
+        const plan = renderGeminiContent(msg.plan).trim();
+        if (plan) {
+          blocks.push({
+            type: "plan",
+            role: "assistant",
+            content: plan,
+            position: position++,
+            timestamp: ts,
+            parent_id: null,
+            metadata: {
+              model: msg.model || undefined,
+              source_event_type: "gemini_plan",
+            },
+          });
         }
 
         // Emit tool calls before the main message

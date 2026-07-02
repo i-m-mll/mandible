@@ -1292,8 +1292,8 @@ export async function startConsoleSession(sessionId: string): Promise<void> {
   await apiPost(`/api/console/sessions/${encodeURIComponent(sessionId)}/start`);
 }
 
-export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn';
-export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always';
+export type ConsoleBackendType = 'pty' | 'sdk' | 'spawn' | 'acp';
+export type ConsolePermissionDecision = 'deny' | 'allow' | 'allow_always' | 'reject_once' | 'reject_always';
 
 export type ConsolePermissionRequest = {
   id: string;
@@ -1377,8 +1377,8 @@ export async function createConsoleSession(
     body.backend_type = 'spawn';
   } else if (backend === 'gemini') {
     body.command = 'gemini';
-    body.args = ['-y'];
-    body.backend_type = 'spawn';
+    body.args = [];
+    body.backend_type = backendType ?? 'acp';
   } else {
     throw new Error(`Unsupported backend: ${backend}`);
   }

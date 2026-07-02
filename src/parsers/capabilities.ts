@@ -24,7 +24,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "~/.codex/sessions/**/*.jsonl",
       "~/.codex/archived_sessions/**/*.jsonl",
     ],
-    block_types: ["user_message", "assistant_message", "thinking", "tool_use", "tool_result", "system"],
+    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result", "system"],
     roles: ["user", "assistant", "tool", "system"],
     tool_metadata: {
       tool_name: true,
@@ -42,7 +42,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
     source: "claude_code",
     display_name: "Claude Code",
     source_globs: ["~/.claude/projects/**/*.jsonl"],
-    block_types: ["user_message", "assistant_message", "thinking", "tool_use", "tool_result", "system"],
+    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result", "system"],
     roles: ["user", "assistant", "tool", "system"],
     tool_metadata: {
       tool_name: true,
@@ -63,7 +63,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "~/.gemini/tmp/**/chats/session-*.json",
       "~/.gemini/tmp/**/chats/session-*.jsonl",
     ],
-    block_types: ["user_message", "assistant_message", "thinking", "tool_use", "tool_result"],
+    block_types: ["user_message", "assistant_message", "thinking", "plan", "tool_use", "tool_result"],
     roles: ["user", "assistant", "tool"],
     tool_metadata: {
       tool_name: true,
