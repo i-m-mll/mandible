@@ -12,7 +12,6 @@ import {
   exportConversationBlocks,
   forkConversation,
   getConversation,
-  getConversationForks,
   getConversations,
   getSessionIssues,
   getSessionPresets,
@@ -22,25 +21,20 @@ import {
   updateConsoleSession,
   updateConsoleSessionOptions,
   updateConversation,
-  type ForkData,
-  type ForkPoint,
   type SessionPreset,
 } from '../api.js';
 import { MessageActions } from '../components/shared/MessageActions';
-import { BranchSelector, type BranchInfo } from '../components/console/BranchSelector';
 import { TerminalPane } from '../components/console/TerminalPane';
 import { NewSessionDialog } from '../components/console/NewSessionDialog';
 import { SessionControls } from '../components/console/SessionControls';
 import { EntityPill } from '../components/shared/EntityPill';
+import { ChatSurface, conversationBlocksToStreamEvents } from '../chat';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
 import {
   TextBlock,
   ThinkingBlock,
   ToolUseBlock,
-  TurnGroup,
-  GroupFooter,
-  BlockTypeIcon as SharedBlockTypeIcon,
 } from '../components/message-blocks';
 
 // ── Toast notification ──
@@ -439,7 +433,6 @@ function getBlockHeaderLabel(
   }
 }
 
-type TranscriptSpeaker = 'user' | 'assistant' | 'system';
 type ViewMode = 'terminal' | 'rich' | 'events';
 type ChatSelection =
   | { type: 'conversation'; id: string }
@@ -469,12 +462,6 @@ type ConversationWithDetails = Conversation & {
   blocks: ConversationBlock[];
   children: ConversationChild[];
 };
-type TranscriptTurn = {
-  id: string;
-  speaker: TranscriptSpeaker;
-  blocks: ConversationBlock[];
-};
-
 function conversationShell(conversation: Conversation): ConversationWithDetails {
   return { ...conversation, blocks: [], children: [] };
 }
@@ -482,43 +469,6 @@ function conversationShell(conversation: Conversation): ConversationWithDetails 
 function getEntryTitle(entry: ChatEntry): string {
   if (entry.conversation) return getConversationTitle(entry.conversation);
   return stripMarkdownText(entry.session?.label) || 'Untitled';
-}
-
-function speakerForBlock(block: ConversationBlock): TranscriptSpeaker {
-  if (block.type === 'user_message') {
-    return 'user';
-  }
-  if (
-    block.type === 'assistant_message' ||
-    block.type === 'thinking' ||
-    block.type === 'tool_use' ||
-    block.type === 'tool_result'
-  ) {
-    return 'assistant';
-  }
-  return 'system';
-}
-
-function buildTranscriptTurns(blocks: ConversationBlock[]): TranscriptTurn[] {
-  const turns: TranscriptTurn[] = [];
-  let current: TranscriptTurn | null = null;
-
-  for (const block of blocks) {
-    const speaker = speakerForBlock(block);
-    if (speaker === 'system') {
-      current = null;
-      turns.push({ id: `turn-${block.id}`, speaker, blocks: [block] });
-      continue;
-    }
-    if (!current || current.speaker !== speaker) {
-      current = { id: `turn-${block.id}`, speaker, blocks: [block] };
-      turns.push(current);
-      continue;
-    }
-    current.blocks.push(block);
-  }
-
-  return turns;
 }
 
 // ── Props ──
@@ -597,19 +547,6 @@ function CopyButton({ content }: { content: string }): JSX.Element {
       )}
     </button>
   );
-}
-
-// Bug: bce7370 — BlockTypeIcon now delegates to the shared component from message-blocks.
-// Bug: 722e318 — Fix 1: Suppress outer gutter icon for thinking (ThinkingBlock has its own).
-//                Fix 3: Suppress gutter icon for tool_result (only tool_use gets wrench).
-function BlockTypeIcon({ type }: { type: BlockType }): JSX.Element | null {
-  // thinking: ThinkingBlock renders its own lightbulb gutter — skip outer icon
-  // tool_result: shared BlockTypeIcon now returns null for this type
-  if (type === 'thinking') return null;
-  if (type === 'tool_use' || type === 'tool_result' || type === 'system' || type === 'event') {
-    return <SharedBlockTypeIcon type={type} />;
-  }
-  return null;
 }
 
 // ── Tool use card ──
@@ -784,219 +721,6 @@ function BlockRenderer({
         showFork={!!blockDagUuid}
       />
     </div>
-  );
-}
-
-function TranscriptBlockItem({
-  block,
-  isSelected,
-  selectMode,
-  onToggleSelect,
-  onShiftSelect,
-  onToggleCollapse,
-  collapsed,
-}: {
-  block: ConversationBlock;
-  isSelected: boolean;
-  selectMode: boolean;
-  onToggleSelect: () => void;
-  onShiftSelect: () => void;
-  onToggleCollapse: () => void;
-  collapsed: boolean;
-}): JSX.Element {
-  const isCollapsible = isCollapsibleBlock(block.type);
-  const metadata = parseMetadata(block.metadata_json);
-  const isErrorEvent = block.type === 'event' && (metadata.is_error === true || metadata.level === 'error');
-  const typeIcon = BlockTypeIcon({ type: block.type });
-  const hasTypeIcon = typeIcon !== null;
-  const className = [
-    'transcript-item',
-    `transcript-item--${block.type.replace('_', '-')}`,
-    hasTypeIcon ? 'transcript-item--with-gutter' : '',
-    collapsed ? 'transcript-item--collapsed' : '',
-    isSelected ? 'transcript-item--selected' : '',
-    isErrorEvent ? 'transcript-item--error' : '',
-    selectMode ? 'transcript-item--selectable' : '',
-  ].filter(Boolean).join(' ');
-
-  // Bug: bce7370 — Fix 1: For thinking blocks, skip the outer collapse mechanism
-  // and let the shared ThinkingBlock handle its own collapse UI ("Thinking" + "more").
-  const isThinkingBlock = block.type === 'thinking';
-  const instructionMeta = block.type === 'user_message' ? getInstructionMessageMeta(block.content) : null;
-  // Bug: 722e318 — Fix 2: tool_use and tool_result also manage their own collapse
-  // internally (ToolUseBlock has its own expand/collapse). Suppress outer collapse
-  // to prevent the "implosion" where clicking hides the rich component.
-  const isSelfCollapsing = isThinkingBlock || block.type === 'tool_use' || block.type === 'tool_result';
-
-  const handleClick = (e: MouseEvent) => {
-    if (selectMode) {
-      if (e.shiftKey) {
-        onShiftSelect();
-      } else {
-        onToggleSelect();
-      }
-      return;
-    }
-    // Don't toggle outer collapse for blocks that manage their own collapse
-    if (isCollapsible && !isSelfCollapsing) {
-      onToggleCollapse();
-    }
-  };
-
-  // Bug: bce7370 — B3: Compute collapsed label for non-thinking blocks
-  const collapsedLabel = (() => {
-    if (isThinkingBlock) return ''; // ThinkingBlock handles its own
-    if (block.type === 'tool_use') {
-      const toolName = (metadata.tool_name as string | undefined) ?? 'Tool';
-      return `Tool: ${toolName}`;
-    }
-    if (block.type === 'tool_result') return 'Result';
-    if (block.type === 'system' || block.type === 'event') return 'System';
-    return block.type;
-  })();
-
-  return (
-    <div className={className} onClick={handleClick} data-block-id={block.id} style={{ position: 'relative' }}>
-      <div className="transcript-item__frame">
-        {hasTypeIcon ? (
-          <div className="transcript-item__gutter" aria-hidden="true">
-            {typeIcon}
-          </div>
-        ) : null}
-        <div className="transcript-item__bubble">
-          {instructionMeta ? (
-            <InstructionMessageBlock content={block.content} meta={instructionMeta} />
-          ) : isThinkingBlock ? (
-            // Bug: bce7370 — Fix 1: Render ThinkingBlock directly, bypassing outer collapse.
-            // ThinkingBlock shows "Thinking" + "more" pattern, matching Chat view.
-            <ThinkingBlock content={block.content} defaultCollapsed={true} />
-          ) : collapsed ? (
-            // Bug: bce7370 — B3: Collapsed block with chevron indicator
-            <div className="thinking-block__collapsed" aria-label="Collapsed block">
-              <span className="thinking-block__chevron">{'\u25B8'}</span>
-              <span className="thinking-block__label">{collapsedLabel}</span>
-            </div>
-          ) : (
-            renderConversationBlockBody(block, collapsed)
-          )}
-        </div>
-      </div>
-      {/* Bug: 236d03b — Fix 5: Per-block MessageActions with copy */}
-      <MessageActions
-        onCopy={() => { navigator.clipboard.writeText(block.content).catch(() => {}); }}
-      />
-    </div>
-  );
-}
-
-function TranscriptTurnRenderer({
-  turn,
-  selected,
-  selectMode,
-  collapsedBlocks,
-  onToggleSelect,
-  onShiftSelect,
-  onToggleCollapse,
-  onFork,
-  onResume,
-  forkData,
-  branchSelections,
-  onBranchSelect,
-}: {
-  turn: TranscriptTurn;
-  selected: Set<string>;
-  selectMode: boolean;
-  collapsedBlocks: Set<string>;
-  onToggleSelect: (blockId: string) => void;
-  onShiftSelect: (blockId: string) => void;
-  onToggleCollapse: (blockId: string) => void;
-  onFork?: (dagUuid: string) => void;
-  onResume?: (dagUuid: string) => void;
-  forkData?: ForkData | null;
-  branchSelections?: Record<string, number>;
-  onBranchSelect?: (forkPointUuid: string, index: number, forkPoint: ForkPoint) => void;
-}): JSX.Element {
-  // Collect text content for copy action across all blocks in this turn
-  const turnText = turn.blocks.map((b) => b.content).join('\n\n');
-  // dag_uuid: use the first block's dag_uuid if available (populated after P1 merges)
-  const turnDagUuid = turn.blocks[0]?.dag_uuid ?? undefined;
-
-  // Branch selector data: find fork point matching this turn's dagUuid
-  const forkPoint = forkData?.forks.find((fp) => fp.parent_dag_uuid === turnDagUuid);
-  const currentBranchIdx = forkPoint && branchSelections ? (branchSelections[turnDagUuid ?? ''] ?? 0) : 0;
-  const branchInfos: BranchInfo[] | undefined = forkPoint?.branches.map((b) => ({
-    dagUuid: b.dag_uuid,
-    firstText: b.first_text,
-    blockCount: b.block_count,
-  }));
-
-  const isShort = turn.blocks.length <= 2;
-
-  // Bug: 236d03b — Fix 4: Compute aggregate tokens for GroupFooter from block metadata
-  let aggregateTokens: number | undefined;
-  if (turn.speaker === 'assistant' && turn.blocks.length > 1) {
-    let sum = 0;
-    let found = false;
-    for (const block of turn.blocks) {
-      const meta = parseMetadata(block.metadata_json);
-      const usage = meta.token_usage as { input?: number; output?: number } | undefined;
-      if (usage) {
-        sum += (usage.input ?? 0) + (usage.output ?? 0);
-        found = true;
-      }
-    }
-    if (found) aggregateTokens = sum;
-  }
-
-  // Bug: 236d03b — Fix 5: Group-level copy removed from MessageActions; now in GroupFooter.
-  // Fix 4: GroupFooter with aggregate tokens + copy-all for multi-block assistant turns.
-  const groupFooter = turn.speaker === 'assistant' && turn.blocks.length > 1 ? (
-    <GroupFooter
-      totalTokens={aggregateTokens}
-      onCopyAll={() => { navigator.clipboard.writeText(turnText).catch(() => {}); }}
-    />
-  ) : undefined;
-
-  const footer = (
-    <>
-      {groupFooter}
-      {/* Keep fork/resume actions at the turn level (no copy — that's per-block now) */}
-      {turnDagUuid && (onResume || onFork) && (
-        <MessageActions
-          onResume={onResume ? () => onResume(turnDagUuid) : undefined}
-          onFork={onFork ? () => onFork(turnDagUuid) : undefined}
-          dagUuid={turnDagUuid}
-          showResume={!!turnDagUuid}
-          showFork={!!turnDagUuid}
-        />
-      )}
-      {forkPoint && turnDagUuid && (
-        <BranchSelector
-          branchPointUuid={turnDagUuid}
-          totalBranches={forkPoint.branches.length}
-          currentIndex={currentBranchIdx}
-          onSelect={(idx) => onBranchSelect?.(turnDagUuid, idx, forkPoint)}
-          branches={branchInfos}
-        />
-      )}
-    </>
-  );
-
-  return (
-    <TurnGroup speaker={turn.speaker} isShort={isShort} footer={footer} showSpeakerBadge={false}>
-      {turn.blocks.map((block) => (
-        <TranscriptBlockItem
-          key={block.id}
-          block={block}
-          isSelected={selected.has(block.id)}
-          selectMode={selectMode}
-          onToggleSelect={() => onToggleSelect(block.id)}
-          onShiftSelect={() => onShiftSelect(block.id)}
-          onToggleCollapse={() => onToggleCollapse(block.id)}
-          collapsed={collapsedBlocks.has(block.id)}
-        />
-      ))}
-    </TurnGroup>
   );
 }
 
@@ -1402,13 +1126,10 @@ function ConversationDetail({
   const [continueBusy, setContinueBusy] = useState(false);
   const [continueError, setContinueError] = useState<string | null>(null);
   const [conflictDialog, setConflictDialog] = useState<{ dagUuid: string } | null>(null);
-  const [forkData, setForkData] = useState<ForkData | null>(null);
-  const [branchSelections, setBranchSelections] = useState<Record<string, number>>({});
   const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
 
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(800);
 
@@ -1439,30 +1160,6 @@ function ConversationDetail({
       });
     return () => { active = false; };
   }, [conversationId, initialConversation, loadNonce]);
-
-  useEffect(() => {
-    if (loading || !conversation || renderMode !== 'transcript') return;
-    const frame = window.requestAnimationFrame(() => {
-      const el = transcriptContainerRef.current;
-      if (el) {
-        el.scrollTop = el.scrollHeight;
-      }
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [conversation?.id, loading, renderMode]);
-
-  // Fetch fork data for branch selector
-  useEffect(() => {
-    let active = true;
-    getConversationForks(conversationId)
-      .then((data) => {
-        if (active) setForkData(data);
-      })
-      .catch(() => {
-        // Non-critical — branch selector will just not show
-      });
-    return () => { active = false; };
-  }, [conversationId, loadNonce]);
 
   // Bug: 84cd5ae — fetch linked issues for the conversation's session
   useEffect(() => {
@@ -1626,15 +1323,6 @@ function ConversationDetail({
     }
   }, [conflictDialog, conversationId]);
 
-  // Branch selection handler
-  const handleBranchSelect = useCallback((forkPointUuid: string, index: number, forkPoint: ForkPoint) => {
-    setBranchSelections((prev) => ({ ...prev, [forkPointUuid]: index }));
-    const branch = forkPoint.branches[index];
-    if (branch) {
-      setSelectedLeaf(branch.dag_uuid);
-    }
-  }, []);
-
   // Observe container resize
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -1654,7 +1342,10 @@ function ConversationDetail({
     () => blocks.filter((b) => visibleTypes.has(b.type)),
     [blocks, visibleTypes],
   );
-  const transcriptTurns = useMemo(() => buildTranscriptTurns(visibleBlocks), [visibleBlocks]);
+  const chatEvents = useMemo(
+    () => conversationBlocksToStreamEvents(conversation?.session_id ?? conversationId, visibleBlocks),
+    [conversation?.session_id, conversationId, visibleBlocks],
+  );
 
   const exportableBlocks = useMemo(
     () => visibleBlocks.filter((b) => selected.has(b.id)),
@@ -2100,28 +1791,16 @@ function ConversationDetail({
 
       {renderMode === 'transcript' ? (
         <div className="conv-transcript">
-          {transcriptTurns.map((turn) => (
-            <TranscriptTurnRenderer
-              key={turn.id}
-              turn={turn}
-              selected={selected}
-              selectMode={selectMode}
-              collapsedBlocks={collapsedBlocks}
-              onToggleSelect={toggleSelect}
-              onShiftSelect={handleShiftSelect}
-              onToggleCollapse={toggleCollapse}
-              onFork={handleFork}
-              onResume={handleResume}
-              forkData={forkData}
-              branchSelections={branchSelections}
-              onBranchSelect={handleBranchSelect}
-            />
-          ))}
-          {transcriptTurns.length === 0 && (
-            <div className="empty-state">
-              {loading ? 'Loading messages...' : 'No blocks match the current filters.'}
-            </div>
-          )}
+          <ChatSurface
+            events={chatEvents}
+            streaming={false}
+            emptyLabel={loading ? 'Loading messages...' : 'No blocks match the current filters.'}
+            sessionInfo={{
+              sessionId: conversation.session_id,
+              backend: conversation.source,
+              model: conversation.model ?? undefined,
+            }}
+          />
         </div>
       ) : (
         <div
