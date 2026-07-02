@@ -111,6 +111,13 @@ function tryReadSessionsIndex(jsonlPath: string): SessionsIndexEntry | null {
 
 export function parseClaudeSubagentPath(filePath: string): ClaudeSubagentPathInfo | null {
   const normalized = filePath.replace(/\\/g, "/");
+  const workflowMatch = normalized.match(/\/([^/]+)\/subagents\/workflows\/wf_[^/]+\/agent-([^/]+)\.jsonl$/);
+  if (workflowMatch) {
+    return {
+      parentSessionId: workflowMatch[1],
+      agentId: workflowMatch[2],
+    };
+  }
   const match = normalized.match(/\/([^/]+)\/subagents\/agent-([^/]+)\.jsonl$/);
   if (!match) return null;
   return {

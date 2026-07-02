@@ -26,6 +26,12 @@ import type {
   WorkUnitLiveness as ContractWorkUnitLiveness,
   WorkUnitState as ContractWorkUnitState,
   WorkUnitWithLiveness as ContractWorkUnitWithLiveness,
+  WorkflowRun as ContractWorkflowRun,
+  WorkflowPhase as ContractWorkflowPhase,
+  WorkflowWorker as ContractWorkflowWorker,
+  WorkflowRunStatus as ContractWorkflowRunStatus,
+  WorkflowWorkerStatus as ContractWorkflowWorkerStatus,
+  WorkflowWarning as ContractWorkflowWarning,
   Space as ContractSpace,
   SpaceGroup as ContractSpaceGroup,
   SpaceItem as ContractSpaceItem,
@@ -1940,6 +1946,34 @@ export type Conversation = ContractConversation;
 
 export type ConversationChild = ContractConversationChild;
 export type ConversationParent = ContractConversationParent;
+export type WorkflowRun = ContractWorkflowRun;
+export type WorkflowPhase = ContractWorkflowPhase;
+export type WorkflowWorker = ContractWorkflowWorker;
+export type WorkflowRunStatus = ContractWorkflowRunStatus;
+export type WorkflowWorkerStatus = ContractWorkflowWorkerStatus;
+export type WorkflowWarning = ContractWorkflowWarning;
+
+export async function listWorkflows(params: {
+  session_id?: string | null;
+} = {}): Promise<WorkflowRun[]> {
+  const query = new URLSearchParams();
+  if (params.session_id) query.set('session_id', params.session_id);
+  const qs = query.toString();
+  const payload = await cachedApiGetJson<{ workflows?: WorkflowRun[] }>(
+    `/api/workflows${qs ? '?' + qs : ''}`,
+  );
+  return Array.isArray(payload.workflows) ? payload.workflows : [];
+}
+
+export async function getWorkflow(id: string): Promise<WorkflowRun> {
+  const payload = await cachedApiGetJson<{ workflow?: WorkflowRun }>(
+    `/api/workflows/${encodeURIComponent(id)}`,
+  );
+  if (!payload.workflow) {
+    throw new Error('Workflow run not found');
+  }
+  return payload.workflow;
+}
 
 // ── Graph API ──
 
