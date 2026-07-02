@@ -48,6 +48,7 @@ import { useSidebarResize } from '../hooks/useSidebarResize';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
+import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -811,9 +812,91 @@ export function ArtifactDetail({
     setActionsOpen(false);
   };
 
+  const overlays = (
+    <>
+      {versionHistoryOpen && (
+        <div className="artifact-detail__modal" role="dialog" aria-modal="true" aria-labelledby="artifact-version-history-title">
+          <div className="artifact-detail__modal-panel" ref={historyPanelRef}>
+            <div className="artifact-detail__modal-header">
+              <h3 id="artifact-version-history-title">Version history</h3>
+              <button
+                type="button"
+                className="artifact-detail__modal-close"
+                aria-label="Close version history"
+                onClick={onCloseVersionHistory}
+              >
+                <CloseIcon />
+              </button>
+            </div>
+            <div className="artifact-detail__list">
+              {versions.map((version) => (
+                <button
+                  key={version.id}
+                  type="button"
+                  className={`artifact-detail__list-item${version.artifact_id === artifact.id ? ' artifact-detail__list-item--active' : ''}`}
+                  onClick={() => {
+                    onVersionChange(version.version_no);
+                    onCloseVersionHistory();
+                  }}
+                >
+                  <code>v{version.version_no}</code>
+                  <span>{version.label || version.note || version.source_kind}</span>
+                  <span>{formatTime(version.created_at)}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {metadataOpen && (
+        <DetailPaneModal
+          open={metadataOpen}
+          onClose={() => setMetadataOpen(false)}
+          titleId="artifact-metadata-title"
+          title="Artifact metadata"
+          closeLabel="Close artifact metadata"
+          excludeAboveRef={headerRef}
+          scrollOwnerSelector=".artifacts-detail"
+          scrollLockClassName="artifacts-detail--metadata-open"
+          className="artifact-detail__metadata-modal"
+          panelClassName="artifact-detail__metadata-panel"
+        >
+          <section className="artifact-detail__section">
+            <h3>Identity</h3>
+            <MetadataKeyValue rows={identityRows} />
+          </section>
+          <section className="artifact-detail__section">
+            <h3>Custody</h3>
+            <MetadataKeyValue rows={custodyRows} />
+          </section>
+          {locatorRows.length > 0 && (
+            <section className="artifact-detail__section">
+              <h3>Locators</h3>
+              <div className="artifact-detail__list">
+                {locatorRows.map((alias) => (
+                  <div key={alias.id} className="artifact-detail__list-item">
+                    <code>{alias.normalized_ref}</code>
+                    <span>{alias.scheme}</span>
+                    <span>{alias.resolution_status}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+        </DetailPaneModal>
+      )}
+    </>
+  );
+
   return (
-    <article className="artifact-detail">
-      <header className="artifact-detail__header" ref={headerRef}>
+    <DetailPaneShell
+      className="artifact-detail"
+      headerClassName="artifact-detail__header"
+      headerPrimaryClassName="artifact-detail__header-primary"
+      bodyClassName={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}
+      headerRef={headerRef}
+      header={(
+        <>
         <div className="artifact-detail__top-row">
           <DetailHeaderIdentity
             className="artifact-detail__eyebrow"
@@ -920,42 +1003,10 @@ export function ArtifactDetail({
           <span>Created: {formatTime(createdUpdated.created)}</span>
           <span>Updated: {formatTime(createdUpdated.updated)}</span>
         </div>
-      </header>
-      {versionHistoryOpen && (
-        <div className="artifact-detail__modal" role="dialog" aria-modal="true" aria-labelledby="artifact-version-history-title">
-          <div className="artifact-detail__modal-panel" ref={historyPanelRef}>
-            <div className="artifact-detail__modal-header">
-              <h3 id="artifact-version-history-title">Version history</h3>
-              <button
-                type="button"
-                className="artifact-detail__modal-close"
-                aria-label="Close version history"
-                onClick={onCloseVersionHistory}
-              >
-                <CloseIcon />
-              </button>
-            </div>
-            <div className="artifact-detail__list">
-              {versions.map((version) => (
-                <button
-                  key={version.id}
-                  type="button"
-                  className={`artifact-detail__list-item${version.artifact_id === artifact.id ? ' artifact-detail__list-item--active' : ''}`}
-                  onClick={() => {
-                    onVersionChange(version.version_no);
-                    onCloseVersionHistory();
-                  }}
-                >
-                  <code>v{version.version_no}</code>
-                  <span>{version.label || version.note || version.source_kind}</span>
-                  <span>{formatTime(version.created_at)}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+        </>
       )}
-      <div className={`artifact-detail__pane${metadataOpen ? ' artifact-detail__pane--metadata-open' : ''}`}>
+      overlays={overlays}
+    >
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
@@ -1006,49 +1057,11 @@ export function ArtifactDetail({
                     </div>
                   ))}
                 </div>
-              )}
-            </section>
-          )}
-        </div>
-        {metadataOpen && (
-          <DetailPaneModal
-            open={metadataOpen}
-            onClose={() => setMetadataOpen(false)}
-            titleId="artifact-metadata-title"
-            title="Artifact metadata"
-            closeLabel="Close artifact metadata"
-            excludeAboveRef={headerRef}
-            scrollOwnerSelector=".artifacts-detail"
-            scrollLockClassName="artifacts-detail--metadata-open"
-            className="artifact-detail__metadata-modal"
-            panelClassName="artifact-detail__metadata-panel"
-          >
-            <section className="artifact-detail__section">
-              <h3>Identity</h3>
-              <MetadataKeyValue rows={identityRows} />
-            </section>
-            <section className="artifact-detail__section">
-              <h3>Custody</h3>
-              <MetadataKeyValue rows={custodyRows} />
-            </section>
-            {locatorRows.length > 0 && (
-              <section className="artifact-detail__section">
-                <h3>Locators</h3>
-                <div className="artifact-detail__list">
-                  {locatorRows.map((alias) => (
-                    <div key={alias.id} className="artifact-detail__list-item">
-                      <code>{alias.normalized_ref}</code>
-                      <span>{alias.scheme}</span>
-                      <span>{alias.resolution_status}</span>
-                    </div>
-                  ))}
-                </div>
-              </section>
             )}
-          </DetailPaneModal>
+          </section>
         )}
       </div>
-    </article>
+    </DetailPaneShell>
   );
 }
 

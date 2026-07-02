@@ -239,14 +239,17 @@
 }
 
 .artifact-detail__header {
-  display: grid;
-  align-items: stretch;
-  gap: 6px;
   position: relative;
   z-index: 8;
   padding: 24px 24px 14px;
   border-bottom: 1px solid var(--neutral-alpha-08);
   background: #0b0f14;
+}
+
+.artifact-detail__header-primary {
+  display: grid;
+  align-items: stretch;
+  gap: 6px;
 }
 
 .artifact-detail__top-row,

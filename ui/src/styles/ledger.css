@@ -216,22 +216,26 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 0;
   min-height: 0;
 }
 
 .ledger-issue-detail--compact {
-  gap: 12px;
+  gap: 0;
   font-size: 12px;
 }
 
 .ledger-issue-detail__header {
+  position: relative;
+  z-index: 2;
+  border-bottom: 1px solid var(--neutral-alpha-06);
+}
+
+.ledger-issue-detail__header-primary {
   display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 14px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--neutral-alpha-06);
 }
 
 .issues-detail .ledger-issue-detail__header {
