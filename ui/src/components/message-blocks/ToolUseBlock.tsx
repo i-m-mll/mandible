@@ -19,6 +19,9 @@ export type ToolResultContentBlock = {
   tool_use_id: string;
   content: ToolResultContent;
   is_error?: boolean;
+  truncated?: boolean;
+  fullText?: string;
+  omittedCharacters?: number;
 };
 
 export type ToolUseBlockProps = {
@@ -27,6 +30,8 @@ export type ToolUseBlockProps = {
   input: Record<string, unknown> | string;
   result?: ToolResultContentBlock | null;
   defaultExpanded?: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
   compact?: boolean;
   statusEmoji?: string;
 };
@@ -185,21 +190,61 @@ function StatusIndicator({ pending, isError, emoji }: StatusIndicatorProps): JSX
 // ---- Result rendering ----
 
 function ToolResult({ result }: { result: ToolResultContentBlock }): JSX.Element {
+  const [showFull, setShowFull] = useState(false);
+  const text = extractResultText(result.content);
+  const displayText = showFull && result.fullText ? result.fullText : text;
+  const copyText = result.fullText ?? text;
+
+  function handleCopy(e: MouseEvent): void {
+    e.stopPropagation();
+    navigator.clipboard.writeText(copyText).catch(() => {});
+  }
+
+  function handleOpenFull(e: MouseEvent): void {
+    e.stopPropagation();
+    setShowFull(true);
+  }
+
   if (result.is_error) {
-    const text = extractResultText(result.content);
     return (
       <div className="tool-use-block__result tool-result--error">
-        <pre>{text || '(error \u2014 no message)'}</pre>
+        <div className="tool-use-block__result-actions">
+          <button type="button" className="tool-use-block__result-btn" onClick={handleCopy}>
+            Copy
+          </button>
+          {result.truncated && !showFull && (
+            <button type="button" className="tool-use-block__result-btn" onClick={handleOpenFull}>
+              Open full
+            </button>
+          )}
+        </div>
+        <pre>{displayText || '(error \u2014 no message)'}</pre>
       </div>
     );
   }
 
   const images = hasImages(result.content) ? extractImages(result.content) : [];
-  const text = extractResultText(result.content);
 
   return (
     <div className="tool-use-block__result">
-      {text && <pre>{text}</pre>}
+      <div className="tool-use-block__result-actions">
+        {copyText && (
+          <button type="button" className="tool-use-block__result-btn" onClick={handleCopy}>
+            Copy
+          </button>
+        )}
+        {result.truncated && !showFull && (
+          <button type="button" className="tool-use-block__result-btn" onClick={handleOpenFull}>
+            Open full
+          </button>
+        )}
+        {result.truncated && result.omittedCharacters != null && !showFull && (
+          <span className="tool-use-block__result-note">
+            {result.omittedCharacters.toLocaleString()} chars hidden
+          </span>
+        )}
+      </div>
+      {displayText && <pre>{displayText}</pre>}
       {images.map((src, i) => (
         <img
           key={i}
@@ -329,6 +374,8 @@ export function ToolUseBlock({
   input,
   result,
   defaultExpanded,
+  expanded,
+  onExpandedChange,
   compact,
   statusEmoji,
 }: ToolUseBlockProps): JSX.Element {
@@ -358,7 +405,8 @@ export function ToolUseBlock({
   const initialExpanded = defaultExpanded !== undefined
     ? defaultExpanded
     : (isPending || isShortInput);
-  const [expanded, setExpanded] = useState(initialExpanded);
+  const [localExpanded, setLocalExpanded] = useState(initialExpanded);
+  const isExpanded = expanded ?? localExpanded;
 
   const description = useMemo(() => getToolDescription(toolName, inputObj), [toolName, inputObj]);
 
@@ -396,20 +444,24 @@ export function ToolUseBlock({
   const handleBlockClick = (e: MouseEvent) => {
     // Don't toggle if user is selecting text or clicking interactive elements inside body
     const target = e.target as HTMLElement;
-    if (expanded && target.closest('.tool-use-block__body')) return;
-    setExpanded((prev) => !prev);
+    if (isExpanded && target.closest('.tool-use-block__body')) return;
+    const next = !isExpanded;
+    if (expanded === undefined) {
+      setLocalExpanded(next);
+    }
+    onExpandedChange?.(next);
   };
 
   return (
     <div
-      className={`tool-use-block${expanded ? '' : ' tool-use-block--collapsed'}`}
+      className={`tool-use-block${isExpanded ? '' : ' tool-use-block--collapsed'}`}
       data-tool={toolName}
       data-id={toolUseId}
       onClick={handleBlockClick}
       style={{ cursor: 'pointer' }}
     >
       {/* Bug: 0a1ad82 — Collapsed: two-line display (name + more, then first input line) */}
-      {!expanded ? (
+      {!isExpanded ? (
         <div className="tool-use-block__header" aria-expanded={false}>
           <span className="tool-use-block__chevron">{'\u25B8'}</span>
           <StatusIndicator pending={isPending} isError={isError} emoji={statusEmoji} />

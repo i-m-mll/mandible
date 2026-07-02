@@ -31,6 +31,9 @@ export type ToolResultContentBlock = {
   tool_use_id: string;
   content: ToolResultContent;
   is_error?: boolean;
+  truncated?: boolean;
+  fullText?: string;
+  omittedCharacters?: number;
 };
 
 export type SystemInitEvent = {
@@ -170,6 +173,19 @@ export type RenderNodeViolation = {
 
 export type RenderNode = RenderNodeAssistantTurn | RenderNodeUserMessage | RenderNodeViolation;
 
+export type DisplayGroupMeta = {
+  totalTokens?: number;
+  model?: string;
+  durationMs?: number;
+};
+
+export type DisplayGroup = {
+  id: string;
+  speaker: GroupEntity;
+  nodes: RenderNode[];
+  meta: DisplayGroupMeta;
+};
+
 // ---- Component props ----
 // NOTE (Bug: bce7370): TextBlockProps, ThinkingBlockProps, ToolUseBlockProps,
 // FileEditBlockProps have moved to ../message-blocks/. These types remain here
@@ -181,6 +197,8 @@ export interface MessageGroupProps {
   isStreaming: boolean;
   /** True if this turn contains a thinking block and is still streaming — shows "thinking…" indicator. */
   isThinking?: boolean;
+  getBlockExpanded?: (block: ContentBlock, index: number, defaultExpanded: boolean) => boolean;
+  onBlockExpandedChange?: (block: ContentBlock, index: number, expanded: boolean) => void;
 }
 
 // TOMBSTONE (Bug: fbca9d5): StatusBarProps deleted — StatusBar removed in P1.

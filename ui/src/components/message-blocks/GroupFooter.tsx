@@ -9,11 +9,18 @@ import { useState } from 'preact/hooks';
 export type GroupFooterProps = {
   totalTokens?: number;
   onCopyAll: () => void;
+  onOpenMarkdown?: () => void;
   onSelect?: () => void;
   isSelected?: boolean;
 };
 
-export function GroupFooter({ totalTokens, onCopyAll, onSelect, isSelected }: GroupFooterProps): JSX.Element {
+export function GroupFooter({
+  totalTokens,
+  onCopyAll,
+  onOpenMarkdown,
+  onSelect,
+  isSelected,
+}: GroupFooterProps): JSX.Element {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -63,6 +70,22 @@ export function GroupFooter({ totalTokens, onCopyAll, onSelect, isSelected }: Gr
                 <rect x="3" y="3" width="18" height="18" rx="3" ry="3" />
               </svg>
             )}
+          </button>
+        )}
+        {onOpenMarkdown && (
+          <button
+            type="button"
+            className="group-footer__btn"
+            onClick={onOpenMarkdown}
+            title="Open markdown"
+            aria-label="Open turn as markdown"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <path d="M14 2v6h6" />
+              <path d="M9 15h6" />
+              <path d="M9 18h3" />
+            </svg>
           </button>
         )}
         {totalTokens != null && (

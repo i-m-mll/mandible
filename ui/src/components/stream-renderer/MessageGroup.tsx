@@ -19,7 +19,13 @@ function blockCopyText(block: ContentBlock): string {
   }
 }
 
-export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProps): JSX.Element {
+export function MessageGroup({
+  turn,
+  isStreaming,
+  isThinking,
+  getBlockExpanded,
+  onBlockExpandedChange,
+}: MessageGroupProps): JSX.Element {
   const { assistantEvent, toolResults } = turn;
   const blocks = assistantEvent.message.content;
 
@@ -47,13 +53,19 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
         // Bug: bce7370 — Fix 5: Keep thinking expanded while actively streaming
         // so the user can see thinking content accumulate. When streaming ends,
         // the block collapses intentionally rather than jarring.
-        inner = (
-          <ThinkingBlock
-            key={`thinking-${index}`}
-            content={block.thinking}
-            defaultCollapsed={!(isStreaming && isThinking)}
-          />
-        );
+        {
+          const defaultExpanded = isStreaming && isThinking === true;
+          const expanded = getBlockExpanded?.(block, index, defaultExpanded);
+          inner = (
+            <ThinkingBlock
+              key={`thinking-${index}`}
+              content={block.thinking}
+              defaultCollapsed={!defaultExpanded}
+              expanded={expanded}
+              onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
+            />
+          );
+        }
         break;
 
       case 'tool_use': {
@@ -61,6 +73,8 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
         const result: ToolResultContentBlock | null = toolResults.get(block.id) ?? null;
         // While streaming and no result yet, the tool is in-progress
         const isPendingStreaming = isStreaming && result === null;
+        const defaultExpanded = isPendingStreaming || result === null;
+        const expanded = getBlockExpanded?.(block, index, defaultExpanded);
         inner = (
           <ToolUseBlock
             key={`tool-${block.id}`}
@@ -69,7 +83,9 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
             input={block.input}
             result={result as import('../message-blocks/ToolUseBlock').ToolResultContentBlock | null}
             // Expand while pending (streaming in progress), collapse after result
-            defaultExpanded={isPendingStreaming || result === null}
+            defaultExpanded={defaultExpanded}
+            expanded={expanded}
+            onExpandedChange={(next) => onBlockExpandedChange?.(block, index, next)}
           />
         );
         break;
@@ -84,7 +100,7 @@ export function MessageGroup({ turn, isStreaming, isThinking }: MessageGroupProp
     // Bug: 236d03b — Fix 5: Wrap each block with per-block MessageActions (copy)
     const text = blockCopyText(block);
     return (
-      <div key={`block-wrap-${index}`} className="message-block-wrapper" style={{ position: 'relative' }}>
+      <div key={`block-wrap-${index}`} className="message-block-wrapper">
         {inner}
         <MessageActions
           onCopy={text ? () => { navigator.clipboard.writeText(text).catch(() => {}); } : undefined}

@@ -9,14 +9,26 @@ import { useState } from 'preact/hooks';
 export type ThinkingBlockProps = {
   content: string;
   defaultCollapsed?: boolean;
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
 };
 
-export function ThinkingBlock({ content, defaultCollapsed = true }: ThinkingBlockProps): JSX.Element {
-  // Short blocks stay expanded — only collapse if >= 10 lines.
-  // TODO: make this threshold configurable via settings (issue 6a7bedf).
-  const lineCount = content.split('\n').length;
-  const shouldCollapse = defaultCollapsed && lineCount >= 10;
-  const [collapsed, setCollapsed] = useState(shouldCollapse);
+export function ThinkingBlock({
+  content,
+  defaultCollapsed = true,
+  expanded,
+  onExpandedChange,
+}: ThinkingBlockProps): JSX.Element {
+  const [localExpanded, setLocalExpanded] = useState(!defaultCollapsed);
+  const isExpanded = expanded ?? localExpanded;
+
+  function toggleExpanded(): void {
+    const next = !isExpanded;
+    if (expanded === undefined) {
+      setLocalExpanded(next);
+    }
+    onExpandedChange?.(next);
+  }
 
   return (
     <div className="thinking-block">
@@ -34,12 +46,12 @@ export function ThinkingBlock({ content, defaultCollapsed = true }: ThinkingBloc
       </div>
       <button
         type="button"
-        className={`thinking-block__bubble${collapsed ? '' : ' thinking-block__bubble--expanded'}`}
-        onClick={() => setCollapsed((prev) => !prev)}
-        aria-expanded={!collapsed}
-        title={collapsed ? 'Expand thinking' : 'Collapse thinking'}
+        className={`thinking-block__bubble${isExpanded ? ' thinking-block__bubble--expanded' : ''}`}
+        onClick={toggleExpanded}
+        aria-expanded={isExpanded}
+        title={isExpanded ? 'Collapse thinking' : 'Expand thinking'}
       >
-        {collapsed ? (
+        {!isExpanded ? (
           <div className="thinking-block__collapsed">
             <span className="thinking-block__chevron">{'\u25B8'}</span>
             <span className="thinking-block__label">Thinking</span>
@@ -50,7 +62,7 @@ export function ThinkingBlock({ content, defaultCollapsed = true }: ThinkingBloc
             <span className="thinking-block__label">Thinking</span>
           </div>
         )}
-        {!collapsed && (
+        {isExpanded && (
           <div className="thinking-block__body">
             <pre>{content}</pre>
           </div>

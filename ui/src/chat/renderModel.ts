@@ -1,6 +1,8 @@
 import { useMemo } from 'preact/hooks';
 import type {
   AssistantEvent,
+  ContentBlock,
+  DisplayGroup,
   PresetViolationEvent,
   RenderNode,
   RenderNodeAssistantTurn,
@@ -8,6 +10,7 @@ import type {
   ResultEvent,
   StreamEvent,
   SyntheticPromptEvent,
+  ToolResultContent,
   SystemInitEvent,
   ToolResultContentBlock,
   UserEvent,
@@ -20,6 +23,7 @@ export type StreamState = {
 };
 
 let turnIndexCounter = 0;
+export const TOOL_RESULT_EXCERPT_CHARS = 12000;
 
 function buildTurn(
   assistant: AssistantEvent,
@@ -30,6 +34,38 @@ function buildTurn(
     assistantEvent: assistant,
     toolResults: new Map(results),
     receivedAt: Date.now(),
+  };
+}
+
+export function extractToolResultText(content: ToolResultContent): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((item): item is { type: 'text'; text: string } => item.type === 'text')
+      .map((item) => item.text ?? '')
+      .join('\n');
+  }
+  return '';
+}
+
+export function boundToolResultBlock(
+  block: ToolResultContentBlock,
+  maxChars = TOOL_RESULT_EXCERPT_CHARS,
+): ToolResultContentBlock {
+  const fullText = extractToolResultText(block.content);
+  if (!fullText || fullText.length <= maxChars) {
+    return block;
+  }
+
+  const excerpt = `${fullText.slice(0, maxChars).trimEnd()}\n\n[Output truncated]`;
+  return {
+    ...block,
+    content: excerpt,
+    truncated: true,
+    fullText,
+    omittedCharacters: fullText.length - maxChars,
   };
 }
 
@@ -86,7 +122,8 @@ export function buildStreamState(events: StreamEvent[]): StreamState {
       const textParts: string[] = [];
       for (const block of userEvent.message.content) {
         if (block.type === 'tool_result') {
-          pendingResults.set((block as ToolResultContentBlock).tool_use_id, block as ToolResultContentBlock);
+          const resultBlock = block as ToolResultContentBlock;
+          pendingResults.set(resultBlock.tool_use_id, boundToolResultBlock(resultBlock));
         } else if (block.type === 'text' && (block as { type: 'text'; text: string }).text) {
           textParts.push((block as { type: 'text'; text: string }).text);
           hasText = true;
@@ -146,6 +183,51 @@ export function extractTurns(nodes: RenderNode[]): RenderedTurn[] {
     .map((n) => n.turn);
 }
 
+export function groupMessagesForDisplay(nodes: RenderNode[]): DisplayGroup[] {
+  const groups: DisplayGroup[] = [];
+
+  for (const node of nodes) {
+    const previous = groups[groups.length - 1];
+    if (previous && previous.speaker === node.entity) {
+      previous.nodes.push(node);
+    } else {
+      groups.push({
+        id: `${node.entity}-${node.key}`,
+        speaker: node.entity,
+        nodes: [node],
+        meta: {},
+      });
+    }
+  }
+
+  return groups.map((group) => {
+    let tokenSum = 0;
+    let foundTokens = false;
+    let model: string | undefined;
+
+    for (const node of group.nodes) {
+      if (node.kind !== 'assistant_turn') {
+        continue;
+      }
+      const message = node.turn.assistantEvent.message;
+      const total = computeTotalTokens(message.usage);
+      if (total !== undefined) {
+        tokenSum += total;
+        foundTokens = true;
+      }
+      model = model ?? message.model;
+    }
+
+    return {
+      ...group,
+      meta: {
+        totalTokens: foundTokens ? tokenSum : undefined,
+        model,
+      },
+    };
+  });
+}
+
 export function computeTotalTokens(
   usage: {
     input_tokens?: number;
@@ -156,6 +238,55 @@ export function computeTotalTokens(
 ): number | undefined {
   if (!usage) return undefined;
   return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0);
+}
+
+function contentBlockToMarkdown(block: ContentBlock, toolResults?: Map<string, ToolResultContentBlock>): string {
+  if (block.type === 'text') {
+    return block.text.trim();
+  }
+  if (block.type === 'thinking') {
+    const body = block.thinking.trim();
+    return body ? `<details><summary>Thinking</summary>\n\n${body}\n\n</details>` : '';
+  }
+  if (block.type === 'tool_use') {
+    const input = JSON.stringify(block.input, null, 2);
+    const result = toolResults?.get(block.id);
+    const resultText = result ? extractToolResultText(result.fullText ?? result.content).trim() : '';
+    const parts = [
+      `**Tool: ${block.name}**`,
+      '```json',
+      input,
+      '```',
+    ];
+    if (resultText) {
+      parts.push('', '**Result**', '```text', resultText, '```');
+    }
+    return parts.join('\n');
+  }
+  return '';
+}
+
+export function renderNodeToMarkdown(node: RenderNode): string {
+  if (node.kind === 'user_message') {
+    return `## User\n\n${node.text.trim()}`;
+  }
+  if (node.kind === 'violation') {
+    const preset = node.event.preset_id ? ` for ${node.event.preset_id}` : '';
+    return `## System\n\nPreset violation${preset}${node.event.analyzing ? ' is being analyzed.' : '.'}`;
+  }
+
+  const parts = node.turn.assistantEvent.message.content
+    .map((block) => contentBlockToMarkdown(block, node.turn.toolResults))
+    .filter(Boolean);
+  return `## Assistant\n\n${parts.join('\n\n')}`;
+}
+
+export function serializeDisplayGroupToMarkdown(group: DisplayGroup): string {
+  return group.nodes.map(renderNodeToMarkdown).filter(Boolean).join('\n\n');
+}
+
+export function serializeConversationToMarkdown(nodes: RenderNode[]): string {
+  return nodes.map(renderNodeToMarkdown).filter(Boolean).join('\n\n---\n\n');
 }
 
 export function deriveLiveLabel(turns: RenderedTurn[], streaming: boolean): string | undefined {
