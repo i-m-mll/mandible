@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import type { ConsoleSession } from '../state';
 import type {
   BlockType,
@@ -2158,12 +2158,6 @@ export function ConversationsView({
   onSelectSession,
   onNewSession,
 }: ConversationsViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 320,
-    minWidth: 190,
-    storageKey: 'sidebar-width:conversations',
-  });
-
   const [selection, setSelection] = useState<ChatSelection>(null);
   const [dialogOpen, setDialogOpen] = useState(Boolean(initialPresetId));
   const [search, setSearch] = useState('');
@@ -2556,8 +2550,14 @@ export function ConversationsView({
 
   return (
     <div className="chat-history-view">
-      {!sidebarHidden && (
-        <div className="chat-history-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+      <ViewSidebar
+        storageKey="sidebar-width:conversations"
+        defaultWidth={320}
+        minWidth={190}
+        className="chat-history-sidebar"
+        ariaLabel="Conversations"
+        hidden={sidebarHidden}
+        header={
           <div className="chat-sidebar-top">
             <div className="chat-history-search-row">
               <button
@@ -2660,12 +2660,14 @@ export function ConversationsView({
                     <option value="date">Recent activity</option>
                     <option value="blocks">Message count</option>
                   </select>
-                </label>
-              </div>
-            )}
+              </label>
+            </div>
+          )}
           </div>
+        }
+        bodyClassName="chat-history-list"
+      >
 
-          <div className="chat-history-list">
             <div className="chat-sidebar-section">
               <button
                 type="button"
@@ -2733,12 +2735,7 @@ export function ConversationsView({
                 Load more ({remainingConversationCount} remaining)
               </button>
             )}
-          </div>
-        </div>
-      )}
-
-      {/* Drag handle */}
-      {!sidebarHidden && <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />}
+      </ViewSidebar>
 
       {/* Detail pane */}
       <div className="chat-history-detail">

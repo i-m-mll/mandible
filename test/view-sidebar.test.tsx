@@ -7,6 +7,8 @@
 import { render, screen, cleanup, fireEvent } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createRef } from 'preact';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 import { ViewSidebar } from '../ui/src/components/ViewSidebar';
 import { readResolvedStylesheet } from './helpers/css-manifest';
@@ -133,6 +135,100 @@ describe('ViewSidebar', () => {
     expect(body!.contains(screen.getByTestId('scroll'))).toBe(true);
   });
 
+  it('applies body and footer slots while keeping the body as the scroll owner', () => {
+    const { container } = render(
+      <ViewSidebar
+        storageKey="sidebar-width:t-footer"
+        defaultWidth={300}
+        minWidth={220}
+        ariaLabel="Auth requests"
+        className="auth-sidebar"
+        header={<div data-testid="hdr">header</div>}
+        bodyClassName="auth-sidebar__list"
+        footer={<button type="button" data-testid="footer">footer</button>}
+        footerClassName="auth-auto-approve-wrap"
+      >
+        <div data-testid="row">row</div>
+      </ViewSidebar>,
+    );
+    const body = container.querySelector('.view-sidebar__body');
+    const footer = container.querySelector('.view-sidebar__footer');
+    expect(body).toBeTruthy();
+    expect(body!.classList.contains('auth-sidebar__list')).toBe(true);
+    expect(body!.contains(screen.getByTestId('row'))).toBe(true);
+    expect(footer).toBeTruthy();
+    expect(footer!.classList.contains('auth-auto-approve-wrap')).toBe(true);
+    expect(footer!.contains(screen.getByTestId('footer'))).toBe(true);
+  });
+
+  it('renders the migrated sidebar shell configurations without orphan handles when hidden', () => {
+    const migrated = [
+      { storageKey: 'sidebar-width:auth', defaultWidth: 320, minWidth: 190, className: 'auth-sidebar', ariaLabel: 'Auth requests', bodyClassName: 'auth-sidebar__list', footer: <div>auto-approve</div> },
+      { storageKey: 'sidebar-width:artifacts', defaultWidth: 320, minWidth: 240, className: 'artifacts-sidebar', ariaLabel: 'Artifacts', bodyClassName: 'artifacts-sidebar__list' },
+      { storageKey: 'sidebar-width:conversations', defaultWidth: 320, minWidth: 190, className: 'chat-history-sidebar', ariaLabel: 'Conversations', bodyClassName: 'chat-history-list' },
+      { storageKey: 'sidebar-width:inbox', defaultWidth: 400, minWidth: 190, className: 'inbox-sidebar', ariaLabel: 'Inbox', bodyClassName: 'inbox-sidebar__list' },
+      { storageKey: 'mandible-presets-sidebar-width', defaultWidth: 260, minWidth: 200, className: 'presets-sidebar', ariaLabel: 'Presets', bodyClassName: 'presets-sidebar__list', footer: <button type="button">New Preset</button> },
+    ];
+
+    for (const config of migrated) {
+      cleanup();
+      const { container, rerender } = render(
+        <ViewSidebar
+          storageKey={config.storageKey}
+          defaultWidth={config.defaultWidth}
+          minWidth={config.minWidth}
+          className={config.className}
+          ariaLabel={config.ariaLabel}
+          header={<div>header</div>}
+          bodyClassName={config.bodyClassName}
+          footer={config.footer}
+        >
+          <div>body</div>
+        </ViewSidebar>,
+      );
+      const frame = container.querySelector('.view-sidebar');
+      expect(frame).toBeTruthy();
+      expect(frame!.classList.contains(config.className)).toBe(true);
+      expect(frame!.getAttribute('aria-label')).toBe(config.ariaLabel);
+      expect(container.querySelector('.view-sidebar__body')!.classList.contains(config.bodyClassName)).toBe(true);
+      expect(container.querySelectorAll('.view-sidebar__resize-handle')).toHaveLength(1);
+
+      rerender(
+        <ViewSidebar
+          hidden
+          storageKey={config.storageKey}
+          defaultWidth={config.defaultWidth}
+          minWidth={config.minWidth}
+          className={config.className}
+          ariaLabel={config.ariaLabel}
+          header={<div>header</div>}
+          bodyClassName={config.bodyClassName}
+          footer={config.footer}
+        >
+          <div>body</div>
+        </ViewSidebar>,
+      );
+      expect(container.querySelector('.view-sidebar')).toBeNull();
+      expect(container.querySelector('.view-sidebar__resize-handle')).toBeNull();
+    }
+  });
+
+  it('keeps migrated views on ViewSidebar instead of direct resize handles', () => {
+    const viewPaths = [
+      'ui/src/views/auth.tsx',
+      'ui/src/views/artifacts.tsx',
+      'ui/src/views/conversations.tsx',
+      'ui/src/views/inbox.tsx',
+      'ui/src/views/presets.tsx',
+    ];
+    for (const viewPath of viewPaths) {
+      const source = readFileSync(resolve(viewPath), 'utf8');
+      expect(source).toContain('<ViewSidebar');
+      expect(source).not.toContain("from '../hooks/useSidebarResize'");
+      expect(source).not.toContain('className="sidebar-drag-handle"');
+    }
+  });
+
   it('keyboard ArrowRight/ArrowLeft resize the sidebar directly and persist the clamped width', () => {
     // window.innerWidth in jsdom is 1024 → 50% clamp = 512.
     localStorage.setItem('sidebar-width:issues', '420');
@@ -168,6 +264,7 @@ describe('ViewSidebar', () => {
   // getBoundingClientRect) is the real verification — see the issue's CDP run.
   it('uses a higher-specificity two-class selector for the resize handle (cascade guard)', () => {
     const css = readResolvedStylesheet();
+    expect(css).toMatch(/\.view-sidebar__footer\s*\{[^}]*flex:\s*0 0 auto/);
     // The winning rule must be the two-class form, pinned to the right edge.
     expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*position:\s*absolute/);
     expect(css).toMatch(/\.view-sidebar__resize-handle\.sidebar-drag-handle\s*\{[^}]*right:\s*0/);

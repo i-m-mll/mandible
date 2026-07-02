@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
 import { html as diff2htmlHtml } from 'diff2html';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { EntityPill } from '../components/shared/EntityPill';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
@@ -2307,12 +2307,6 @@ export function AuthQueueView({
   daemonReady = true,
   instance = null,
 }: AuthQueueViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown: handleSidebarMouseDown } = useSidebarResize({
-    defaultWidth: 320,
-    minWidth: 190,
-    storageKey: 'sidebar-width:auth',
-  });
-
   // Sidebar filter: Active (default) | All | Historical
   const [filterMode, setFilterMode] = useState<AuthFilterMode>('active');
 
@@ -3212,10 +3206,14 @@ export function AuthQueueView({
         </div>
       )}
 
-      {!sidebarHidden ? (
-        <>
-          {/* LEFT sidebar */}
-          <div className="auth-sidebar" style={{ ...(sidebarWidth !== null ? { width: `${sidebarWidth}px` } : {}), flexShrink: 0 }}>
+      <ViewSidebar
+        storageKey="sidebar-width:auth"
+        defaultWidth={320}
+        minWidth={190}
+        className="auth-sidebar"
+        ariaLabel="Auth requests"
+        hidden={sidebarHidden}
+        header={
             <div
               className="auth-sidebar__search"
               onBlur={(event) => {
@@ -3370,8 +3368,32 @@ export function AuthQueueView({
                 </div>
               )}
             </div>
-
-            <div className="auth-sidebar__list">
+        }
+        bodyClassName="auth-sidebar__list"
+        footer={
+            <div className="auth-auto-approve">
+              <div className="auth-auto-approve__text">
+                <span className="auth-auto-approve__label">Auto-approve</span>
+                <span className="auth-auto-approve__status">
+                  {instanceMutationBlocked
+                    ? `Disabled on ${instanceLabel}`
+                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
+                </span>
+              </div>
+              <button
+                type="button"
+                className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
+                role="switch"
+                aria-checked={Boolean(autoApproveStatus?.enabled)}
+                aria-label="Toggle auth auto-approve"
+                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
+                onClick={() => void handleAutoApproveToggle()}
+              >
+                <span className="auth-auto-approve__knob" />
+              </button>
+            </div>
+        }
+      >
               {filteredSidebarItems.length === 0 ? (
                 <div className="auth-sidebar__empty">
                   {authSearch
@@ -3398,35 +3420,7 @@ export function AuthQueueView({
                   />
                 ))
               )}
-            </div>
-
-            <div className="auth-auto-approve">
-              <div className="auth-auto-approve__text">
-                <span className="auth-auto-approve__label">Auto-approve</span>
-                <span className="auth-auto-approve__status">
-                  {instanceMutationBlocked
-                    ? `Disabled on ${instanceLabel}`
-                    : autoApproveStatus?.enabled ? `On for ${formatRemaining(autoApproveStatus.remaining_ms)}` : 'Off'}
-                </span>
-              </div>
-              <button
-                type="button"
-                className={`auth-auto-approve__switch${autoApproveStatus?.enabled ? ' auth-auto-approve__switch--on' : ''}`}
-                role="switch"
-                aria-checked={Boolean(autoApproveStatus?.enabled)}
-                aria-label="Toggle auth auto-approve"
-                disabled={autoApproveBusy || !autoApproveStatus || instanceMutationBlocked}
-                onClick={() => void handleAutoApproveToggle()}
-              >
-                <span className="auth-auto-approve__knob" />
-              </button>
-            </div>
-          </div>
-
-          {/* Drag handle */}
-          <div className="sidebar-drag-handle" onMouseDown={handleSidebarMouseDown} />
-        </>
-      ) : null}
+      </ViewSidebar>
 
       {/* RIGHT detail panel */}
       <div
