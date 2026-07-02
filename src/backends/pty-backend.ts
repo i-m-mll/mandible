@@ -7,6 +7,10 @@ import type { AgenticBackend, BackendMetaUpdate, BackendStatusEvent } from "../a
 import { RingBuffer } from "../ring-buffer.js";
 import { computePresetUnion } from "../presets.js";
 import { getDb } from "../db.js";
+import {
+  extractSettingsPath,
+  injectMandibleClaudeHookSettingsArgs,
+} from "../claude-hook-settings.js";
 import { PtyScreenObserver, shouldEnablePtyScreenModel } from "../screen-model.js";
 import type {
   ConsoleAttentionState,
@@ -660,7 +664,7 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
 
   private buildLaunchArgs(): string[] {
     if (this.meta.command === "claude") {
-      const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model", "--append-system-prompt"]);
+      const args = this.stripArgValue(this.meta.args, ["-p", "--print", "--resume", "--output-format", "--model", "--append-system-prompt", "--settings"]);
       const sanitized = args.filter((arg) => arg !== "--verbose");
       const model = this.extractModel(this.meta.args);
       if (model) {
@@ -685,7 +689,15 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
           this.logger("warn", "pty_preset_union_failed", { id: this.id, error: String(err) });
         }
       }
-      return sanitized;
+      try {
+        return injectMandibleClaudeHookSettingsArgs(sanitized, {
+          sessionRef: this.meta.provider_session_id ?? this.id,
+          baseSettingsPath: extractSettingsPath(this.meta.args),
+        });
+      } catch (err) {
+        this.logger("warn", "pty_claude_hook_settings_failed", { id: this.id, error: String(err) });
+        return sanitized;
+      }
     }
     if (this.meta.command === "gemini") {
       const args = this.stripArgValue(this.meta.args, ["-p", "--prompt", "--resume", "--output-format", "--model"]);
@@ -728,6 +740,9 @@ export class PTYBackend extends EventEmitter implements AgenticBackend {
     // Bug: b5aba0e — channel-enabled PTY: expose session ID for channel server discovery
     if (this.meta.channel_enabled) {
       cleaned["MANDIBLE_SESSION_ID"] = this.meta.mandible_session_id ?? this.id;
+    }
+    if (this.meta.command === "claude") {
+      cleaned["MANDIBLE_SESSION_REF"] = this.meta.provider_session_id ?? this.id;
     }
     return cleaned;
   }

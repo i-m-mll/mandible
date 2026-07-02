@@ -559,8 +559,13 @@ export interface SseEvent {
 
 export type ConsoleSessionStatus = 'running' | 'stopped' | 'crashed';
 export type ConsoleInteractionMode = 'inbox_only' | 'direct' | 'both';
-export type ConsoleAttentionKind = 'input_prompt' | 'running_output' | 'permission_menu' | 'unknown';
-export type ConsoleAttentionSource = 'pty_screen' | 'pty_screen_fallback';
+export type ConsoleAttentionKind =
+  | 'input_prompt'
+  | 'running_output'
+  | 'permission_menu'
+  | 'hook_notification'
+  | 'unknown';
+export type ConsoleAttentionSource = 'pty_screen' | 'pty_screen_fallback' | 'claude_hook';
 
 export interface ConsoleAttentionState {
   session_id: string;
@@ -577,7 +582,12 @@ export interface ConsoleAttentionState {
     matched?: string;
   };
   cleared_at?: number;
-  cleared_by?: 'screen_changed' | 'structured_stream_activity' | 'process_exit' | 'manual_clear';
+  cleared_by?:
+    | 'screen_changed'
+    | 'structured_stream_activity'
+    | 'transcript_activity'
+    | 'process_exit'
+    | 'manual_clear';
 }
 
 export interface ConsoleSession {

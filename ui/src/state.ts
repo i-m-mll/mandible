@@ -47,8 +47,8 @@ type ConsoleSession = {
   channel_enabled?: boolean;
   attention?: {
     session_id: string;
-    kind: 'input_prompt' | 'running_output' | 'permission_menu' | 'unknown';
-    source: 'pty_screen' | 'pty_screen_fallback';
+    kind: 'input_prompt' | 'running_output' | 'permission_menu' | 'hook_notification' | 'unknown';
+    source: 'pty_screen' | 'pty_screen_fallback' | 'claude_hook';
     at: number;
     active: boolean;
     screen_excerpt: string;
@@ -60,7 +60,12 @@ type ConsoleSession = {
       matched?: string;
     };
     cleared_at?: number;
-    cleared_by?: 'screen_changed' | 'structured_stream_activity' | 'process_exit' | 'manual_clear';
+    cleared_by?:
+      | 'screen_changed'
+      | 'structured_stream_activity'
+      | 'transcript_activity'
+      | 'process_exit'
+      | 'manual_clear';
   } | null;
 };
 
