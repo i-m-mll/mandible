@@ -272,10 +272,11 @@ function collectRefsFromNode(node: MdastNode, refs: ParsedDocRef[]): void {
     const source = directiveSourceText(node);
     const parsed = parseSpacesDocDirectiveRef(source);
     if (parsed) {
+      installSpacesDocRefRecognizer();
       // Classify against the C6 shared parser. Prefer the directive form (the
       // installed C12 extension claims it); fall back to the canonical ref
       // string, which C6 recognizes natively regardless of extension state.
-      const resource = parseResourceRef(source) ?? parseResourceRef(parsed.canonical);
+      const resource = parseResourceRef(source) ?? parseResourceRef(parsed.canonical) ?? resourceFromDirective(parsed);
       refs.push({
         raw: parsed.raw,
         canonical: parsed.canonical,
@@ -287,6 +288,16 @@ function collectRefsFromNode(node: MdastNode, refs: ParsedDocRef[]): void {
     }
   }
   for (const child of node.children ?? []) collectRefsFromNode(child, refs);
+}
+
+function resourceFromDirective(parsed: SpacesDocDirectiveRef): ParsedResourceRef | null {
+  if (parsed.kind === 'unknown') return null;
+  return {
+    raw: parsed.raw,
+    canonical: parsed.canonical,
+    kind: parsed.kind,
+    display: parsed.label ?? parsed.canonical,
+  };
 }
 
 // --- prose extraction for a block (directive nodes stripped) -----------------

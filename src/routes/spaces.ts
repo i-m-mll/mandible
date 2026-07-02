@@ -1,6 +1,9 @@
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
-import { resolveArtifactRef } from "../provider-artifacts.js";
+import {
+  resolveArtifactRefReadonlyFull,
+  resolveArtifactSurfaceRefReadonlyFull,
+} from "../provider-artifacts.js";
 import {
   addSpaceItem,
   createSpace,
@@ -233,7 +236,7 @@ function resolveUnifiedRef(db: Db, rawRef: string): ResolverResult {
   // repo:// refs are repo-relative artifact/file refs — defer to the artifact
   // resolver, which understands repo-relative custody refs.
   if (ref.startsWith("repo://")) {
-    const resolution = resolveArtifactRef(db, ref);
+    const resolution = resolveArtifactSurfaceRefReadonlyFull(db, ref);
     return {
       ref,
       kind: "repo",
@@ -329,7 +332,10 @@ function resolveArtifactResult(
   kind: ResolverRefKind = "artifact",
   displayRef?: string,
 ): ResolverResult {
-  const resolution = resolveArtifactRef(db, refValue.trim());
+  const trimmed = refValue.trim();
+  const resolution = /^artifact:sha256:[0-9a-f]{64}$/i.test(trimmed)
+    ? resolveArtifactRefReadonlyFull(db, trimmed)
+    : resolveArtifactSurfaceRefReadonlyFull(db, trimmed);
   return {
     ref: displayRef ?? refValue,
     kind,

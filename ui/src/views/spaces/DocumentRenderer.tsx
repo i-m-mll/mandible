@@ -159,7 +159,69 @@ export interface RenderedBlock {
  */
 function linkifyProse(html: string): string {
   if (!html) return '';
-  return linkifyResourceRefs(html);
+  return linkifyLegacyArtifactHashRefs(linkifyResourceRefs(html));
+}
+
+const LEGACY_ARTIFACT_HASH_REF_PATTERN = /artifact:sha256:[0-9a-f]{64}/gi;
+
+function legacyArtifactHashAnchor(ref: string): HTMLAnchorElement {
+  const anchor = document.createElement('a');
+  anchor.className = 'artifact-xref resource-ref__link';
+  anchor.href = resourceRefHref(ref);
+  anchor.textContent = ref;
+  anchor.title = `Resource reference ${ref} (legacy artifact hash)`;
+  return anchor;
+}
+
+function linkifyLegacyArtifactHashRefs(html: string): string {
+  if (typeof document === 'undefined' || !html) return html;
+  const container = document.createElement('div');
+  container.innerHTML = html;
+
+  for (const anchor of Array.from(container.querySelectorAll('a'))) {
+    const text = anchor.textContent?.trim() ?? '';
+    const exact = /^artifact:sha256:[0-9a-f]{64}$/i.exec(text)?.[0];
+    if (exact && !anchor.getAttribute('href')) {
+      anchor.replaceWith(legacyArtifactHashAnchor(exact));
+    }
+  }
+
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || parent.closest('a, code, pre, .resource-ref')) return NodeFilter.FILTER_REJECT;
+      LEGACY_ARTIFACT_HASH_REF_PATTERN.lastIndex = 0;
+      return LEGACY_ARTIFACT_HASH_REF_PATTERN.test(node.nodeValue ?? '')
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const nodes: Text[] = [];
+  let node = walker.nextNode();
+  while (node) {
+    nodes.push(node as Text);
+    node = walker.nextNode();
+  }
+  for (const textNode of nodes) {
+    const text = textNode.nodeValue ?? '';
+    LEGACY_ARTIFACT_HASH_REF_PATTERN.lastIndex = 0;
+    let lastIndex = 0;
+    let match: RegExpExecArray | null;
+    const fragment = document.createDocumentFragment();
+    while ((match = LEGACY_ARTIFACT_HASH_REF_PATTERN.exec(text))) {
+      const ref = match[0];
+      if (match.index > lastIndex) {
+        fragment.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
+      }
+      fragment.appendChild(legacyArtifactHashAnchor(ref));
+      lastIndex = match.index + ref.length;
+    }
+    if (lastIndex < text.length) {
+      fragment.appendChild(document.createTextNode(text.slice(lastIndex)));
+    }
+    textNode.replaceWith(fragment);
+  }
+  return container.innerHTML;
 }
 
 /**

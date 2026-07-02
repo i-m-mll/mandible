@@ -30,6 +30,7 @@ import {
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
+  resolveArtifactSurfaceRefReadonlyFull,
   resolveArtifactVersionHistory,
   snapshotArtifactBytes,
 } from "../provider-artifacts.js";
@@ -244,7 +245,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      sendJson(res, 200, { resolution: resolveArtifactRef(getDb(), ref) });
+      sendJson(res, 200, { resolution: resolveArtifactSurfaceRefReadonlyFull(getDb(), ref) });
     } catch (error) {
       handleError(res, error);
     }

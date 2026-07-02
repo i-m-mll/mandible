@@ -1269,7 +1269,7 @@ describe('DocumentBlockEditor (editable)', () => {
     await waitFor(() => expect(screen.getByTestId('spaces-block-editor-picker-overlay')).toBeTruthy());
     fireEvent.mouseEnter(screen.getAllByTestId('spaces-block-editor-row')[1]);
     await waitFor(() => expect(screen.getByTestId('space-item-picker')).toBeTruthy());
-    fireEvent.click(screen.getByText('Issue abc123'));
+    fireEvent.click(await screen.findByText('Issue abc123'));
     fireEvent.click(screen.getByTestId('space-item-picker-add'));
 
     await waitFor(() => expect(sourceText(0)).toBe('See [issue:abc123]'));

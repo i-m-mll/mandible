@@ -32,7 +32,7 @@ import type { EditorView } from '@codemirror/view';
 
 import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
-import { getSpaceExports, getSpaceFactPacket } from '../../api';
+import { getSpaceExports } from '../../api';
 import { createSSEClient } from '../../sse-client';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -128,6 +128,13 @@ type SaveState =
 
 type CaretTarget = { blockId: string; start: number; end: number };
 type ItemCommandRange = { blockId: string; start: number; end: number };
+
+async function getSpaceItemsWithFetch(spaceId: string, fetchImpl: typeof fetch): Promise<SpaceItem[]> {
+  const response = await fetchImpl(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  if (!response.ok) throw new Error(`Failed to load Space fact packet (${response.status})`);
+  const payload = (await response.json()) as { items?: SpaceItem[] };
+  return payload.items ?? [];
+}
 type SelectionMenuState = {
   blockId: string;
   start: number;
@@ -364,12 +371,12 @@ export function DocumentBlockEditor({
           exports: exportsResult.exports,
           items: prior.status === 'ready' && prior.spaceId === requestedSpaceId ? prior.items : [],
         }));
-        void getSpaceFactPacket(requestedSpaceId)
-          .then((packet) => {
+        void getSpaceItemsWithFetch(requestedSpaceId, fetcher())
+          .then((items) => {
             if (currentSpaceIdRef.current !== requestedSpaceId) return;
             setLoad((prior) =>
               prior.status === 'ready' && prior.spaceId === requestedSpaceId
-                ? { ...prior, items: packet.items }
+                ? { ...prior, items }
                 : prior,
             );
           })

@@ -249,7 +249,12 @@ export function SpacesViewShell({
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
   const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
-  const waitingForFactPacket = Boolean(spaceId && !selectedFactPacket && !spaceLoadError);
+  const waitingForFactPacket = Boolean(
+    spaceId &&
+    !selectedFactPacket &&
+    !spaceLoadError &&
+    (!explicitRenderer || loadSpaceFactPacket),
+  );
 
   return (
     <section

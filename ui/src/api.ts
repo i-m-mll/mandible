@@ -2514,7 +2514,7 @@ export async function getSpaceFactPacket(spaceId: string): Promise<SpaceFactPack
     items?: ContractSpaceItem[];
     occurrences?: ContractSpaceOccurrence[];
     edges?: ContractSpaceEdge[];
-  }>(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  }>(`/api/spaces/${encodeURIComponent(spaceId)}`, { ttlMs: 0, staleWhileRevalidateMs: 0 });
   return {
     space: payload.space,
     items: payload.items ?? [],

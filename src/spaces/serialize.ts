@@ -133,7 +133,7 @@ const CONTAINER_EMBED_DIRECTIVE =
 
 function classifyRefKind(canonical: string): SpacesDocDirectiveRef['kind'] {
   const c = canonical.trim();
-  if (/^artifact:(?!sha256:)/i.test(c) || /^artifact-(?:version|blob):/i.test(c)) {
+  if (/^artifact:/i.test(c) || /^artifact-(?:version|blob):/i.test(c)) {
     return 'artifact';
   }
   if (c.startsWith('repo://')) return 'repo';

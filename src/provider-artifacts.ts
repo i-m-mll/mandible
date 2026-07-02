@@ -2074,7 +2074,7 @@ export function resolveAndLinkArtifact(
 ): ArtifactResolveAndLinkResult {
   const ref = asString(input.ref) ?? asString(input.artifact_ref) ?? asString(input.artifact_id);
   if (!ref) throw new Error("artifact ref is required");
-  const resolution = resolveArtifactRef(db, ref, now);
+  const resolution = resolveArtifactLinkRef(db, ref, now);
   if (resolution.status === "ambiguous") {
     throw new Error(`ambiguous artifact ref: ${ref}`);
   }
@@ -4441,7 +4441,7 @@ function artifactSeriesSummaryFromRow(
   const id = String(row.series_id);
   return {
     id,
-    ref: logicalArtifactIdFromLegacySeries(id),
+    ref: id,
     series_key: String(row.series_key),
     source_kind: String(row.series_source_kind) as ArtifactSeriesSourceKind,
     title: row.series_title === null || row.series_title === undefined ? null : String(row.series_title),
@@ -5027,7 +5027,12 @@ export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVers
   if (!artifactVersioningTablesExist(db)) return null;
   const trimmed = ref.trim();
   let series: ArtifactSeriesRecord | null = null;
-  if (/^artifact-series:/i.test(trimmed) || /^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
+  if (/^artifact-series:/i.test(trimmed)) {
+    const resolved = resolveArtifactSeriesSelectorRef(db, trimmed, Date.now());
+    if (resolved.series) {
+      series = resolved.series;
+    }
+  } else if (/^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
     return null;
   }
   if (/^artifact-version:/i.test(trimmed)) {
@@ -5122,6 +5127,28 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
   };
 }
 
+export function resolveArtifactSurfaceRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
+  const trimmed = ref.trim();
+  if (/^artifact-series:/i.test(trimmed)) {
+    return resolveArtifactSeriesSelectorRef(db, trimmed, Date.now());
+  }
+  const direct = getArtifact(db, trimmed);
+  if (direct) {
+    return {
+      status: "resolved",
+      ref,
+      scheme: schemeFromRef(trimmed),
+      normalized_ref: direct.id,
+      artifact: direct,
+      alias: null,
+      series: null,
+      version: null,
+      warnings: [],
+    };
+  }
+  return resolveArtifactRefReadonlyFull(db, ref);
+}
+
 // Resolve artifact-version: refs to their pinned immutable artifact.
 function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactResolveResult {
   const base: Omit<ArtifactResolveResult, "status" | "artifact" | "warnings"> = {
@@ -5158,6 +5185,108 @@ function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactR
     version: selected,
     warnings: [],
   };
+}
+
+function splitArtifactSeriesSelector(ref: string): { seriesRef: string; versionSelector: string | null } {
+  const trimmed = ref.trim();
+  const marker = trimmed.lastIndexOf("@");
+  if (marker <= "artifact-series:".length) {
+    return { seriesRef: trimmed, versionSelector: null };
+  }
+  return {
+    seriesRef: trimmed.slice(0, marker),
+    versionSelector: trimmed.slice(marker + 1).trim() || null,
+  };
+}
+
+function resolveArtifactSeriesSelectorRef(db: Db, ref: string, _now: number): ArtifactResolveResult {
+  const { seriesRef, versionSelector } = splitArtifactSeriesSelector(ref);
+  const base: Omit<ArtifactResolveResult, "status" | "artifact" | "warnings"> = {
+    ref,
+    scheme: schemeFromRef(seriesRef),
+    normalized_ref: seriesRef,
+    alias: null,
+    series: null,
+    version: null,
+  };
+  if (!artifactVersioningTablesExist(db)) {
+    return { ...base, status: "unsupported", artifact: null, warnings: ["artifact_versioning_unavailable"] };
+  }
+  const seriesLookup = resolveArtifactSeriesPrefix(db, seriesRef);
+  if (seriesLookup.status !== "resolved" || !seriesLookup.value) {
+    const warnings = seriesLookup.status === "unsupported"
+      ? ["artifact_series_prefix_too_short"]
+      : [`artifact_series_${seriesLookup.status}`];
+    return { ...base, status: seriesLookup.status, artifact: null, warnings };
+  }
+
+  const series = seriesLookup.value;
+  let version: ArtifactVersionRecord | null = null;
+  const selector = versionSelector?.toLowerCase() ?? null;
+  if (selector && selector !== "latest") {
+    const versionNo = Number.parseInt(selector, 10);
+    if (!Number.isFinite(versionNo) || String(versionNo) !== selector || versionNo < 1) {
+      return {
+        ...base,
+        normalized_ref: `${series.id}@${versionSelector}`,
+        series,
+        status: "unsupported",
+        artifact: null,
+        warnings: ["artifact_series_version_invalid"],
+      };
+    }
+    const row = db.prepare(
+      "SELECT * FROM artifact_versions WHERE series_id = ? AND version_no = ?",
+    ).get(series.id, versionNo) as Record<string, unknown> | undefined;
+    version = row ? versionFromRow(row) : null;
+  } else if (series.latest_version_id) {
+    version = getArtifactVersion(db, series.latest_version_id);
+  }
+
+  if (!version) {
+    return {
+      ...base,
+      normalized_ref: versionSelector ? `${series.id}@${versionSelector}` : series.id,
+      series,
+      status: "unresolved",
+      artifact: null,
+      warnings: ["artifact_series_version_unresolved"],
+    };
+  }
+  const artifact = getArtifact(db, version.artifact_id);
+  return {
+    ...base,
+    normalized_ref: version.id,
+    target_type: "artifact_version",
+    target_id: version.id,
+    status: artifact ? "resolved" : "unresolved",
+    artifact,
+    series,
+    version,
+    warnings: selector === null || selector === "latest" ? ["series_latest_not_pinned"] : [],
+  };
+}
+
+export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+  const trimmed = ref.trim();
+  if (/^artifact-series:/i.test(trimmed)) {
+    return resolveArtifactSeriesSelectorRef(db, trimmed, now);
+  }
+  const direct = getArtifact(db, trimmed);
+  if (direct) {
+    return {
+      status: "resolved",
+      ref,
+      scheme: schemeFromRef(trimmed),
+      normalized_ref: direct.id,
+      artifact: direct,
+      alias: null,
+      series: null,
+      version: null,
+      warnings: [],
+    };
+  }
+  return resolveArtifactRef(db, ref, now);
 }
 
 export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {

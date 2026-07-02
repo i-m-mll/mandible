@@ -107,7 +107,23 @@ export function LedgerIssueDetail({
     fullLoadFailed ||
     (isInitialDetail && detail.timeline_partial === true)
   );
-  const hasIssueActions = true;
+  const hasIssueMetadata = Boolean(
+    detail.source !== 'mandible' ||
+    detail.author.type !== 'mandible_user' ||
+    detail.kind !== 'feature' ||
+    detail.priority !== 'unknown' ||
+    detail.aliases.length > 0 ||
+    detail.checkpoints.length > 0,
+  );
+  const hasIssueActions = Boolean(
+    hasIssueMetadata ||
+    onAddComment ||
+    onSetStatus ||
+    onStartAgent ||
+    onShowChildren ||
+    onResolveConflict ||
+    onAddToSpace,
+  );
   const syncTone = detail.sync.state === 'clean'
     ? 'clean'
     : detail.sync.state === 'pending'
@@ -182,7 +198,7 @@ export function LedgerIssueDetail({
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
                 onAddToSpace={onAddToSpace}
-                onShowMetadata={() => setMetadataOpen(true)}
+                onShowMetadata={hasIssueMetadata ? () => setMetadataOpen(true) : undefined}
                 onShowAuthEvidence={detail.auth_requests.length > 0 ? () => setAuthEvidenceOpen(true) : undefined}
                 onShowChildren={detail.labels.includes('umbrella') ? onShowChildren : undefined}
               />
@@ -367,8 +383,8 @@ function artifactLinkHref(
 
 function logicalArtifactRefFromSeriesId(ref: string): string {
   const trimmed = ref.trim();
-  if (/^artifact:/i.test(trimmed) && !/^artifact-series:/i.test(trimmed)) return trimmed;
-  return `artifact:${trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '')}`;
+  if (/^artifact-series:/i.test(trimmed)) return trimmed;
+  return `artifact-series:${trimmed.replace(/^artifact:/i, '')}`;
 }
 
 function artifactLinkBadgeLabel(link: LedgerIssueDetailArtifactLink): string {
@@ -437,7 +453,7 @@ function IssueActionsMenu({
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
   onAddToSpace?: () => void;
-  onShowMetadata: () => void;
+  onShowMetadata?: () => void;
   onShowAuthEvidence?: () => void;
   onShowChildren?: (issue: LedgerIssueDetailProjection) => void;
 }): JSX.Element {
@@ -505,14 +521,16 @@ function IssueActionsMenu({
               Add to Space
             </button>
           )}
-          <button
-            type="button"
-            className="ledger-issue-actions-menu__item"
-            role="menuitem"
-            onClick={() => closeAfter(onShowMetadata)}
-          >
-            Show metadata
-          </button>
+          {onShowMetadata && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              onClick={() => closeAfter(onShowMetadata)}
+            >
+              Show metadata
+            </button>
+          )}
           {onShowChildren && (
             <button
               type="button"

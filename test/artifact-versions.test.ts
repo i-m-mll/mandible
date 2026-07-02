@@ -401,7 +401,7 @@ describe("version history query", () => {
     expect(byVersion?.series.id).toBe(r1.series.id);
     const byArtifact = resolveArtifactVersionHistory(db, `artifact-blob:${r1.artifact.content_hash}`);
     expect(byArtifact?.series.id).toBe(r1.series.id);
-    expect(resolveArtifactVersionHistory(db, r1.series.id)).toBeNull();
+    expect(resolveArtifactVersionHistory(db, r1.series.id)?.series.id).toBe(r1.series.id);
   });
 });
 

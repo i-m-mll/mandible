@@ -7256,9 +7256,11 @@ code.inbox-detail__meta-value {
   background: var(--bg-card);
 }
 
-.artifact-preview--code {
+.artifact-preview--code,
+.artifact-preview--code-sizing {
   color: #24292f;
   white-space: pre;
+  min-height: min(520px, calc(100vh - 330px));
 }
 
 .artifact-preview--partial {

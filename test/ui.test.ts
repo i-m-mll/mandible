@@ -2304,7 +2304,7 @@ describe('LedgerIssueDetail', () => {
       '#/artifacts?ref=artifact-blob%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     );
     const livingLink = screen.getByText('artifact-series:live-report').closest('a') as HTMLAnchorElement | null;
-    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact%3Alive-report');
+    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
     expect(livingLink?.textContent).toContain('latest → v2');
     expect(screen.getAllByText('linked + referenced')).toHaveLength(2);
     expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
