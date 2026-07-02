@@ -9,7 +9,7 @@ import {
   SpacesViewShell,
   type SpaceRendererMountProps,
 } from '../ui/src/views/spaces/SpacesViewShell';
-import type { Space } from '../ui/src/api';
+import type { Space, SpaceFactPacket } from '../ui/src/api';
 
 function installMemoryLocalStorage(): void {
   const store = new Map<string, string>();
@@ -28,6 +28,25 @@ function installMemoryLocalStorage(): void {
     },
   };
   Object.defineProperty(globalThis, 'localStorage', { value: mem, configurable: true, writable: true });
+}
+
+function makeSpace(overrides: Partial<Space> = {}): Space {
+  return {
+    id: 's1',
+    project_id: 'p1',
+    title: 'Canvas space',
+    default_renderer: 'canvas',
+    ...overrides,
+  } as Space;
+}
+
+function makePacket(space: Space = makeSpace()): SpaceFactPacket {
+  return {
+    space,
+    items: [],
+    occurrences: [],
+    edges: [],
+  };
 }
 
 beforeEach(() => {
@@ -88,28 +107,31 @@ describe('SpacesViewShell', () => {
     expect(screen.getByTestId('spaces-shell-renderer').textContent).toBe('Canvas');
   });
 
-  it('mounts a registered renderer at the matching mount point and forwards props', () => {
+  it('mounts a registered renderer at the matching mount point and forwards the fact packet', async () => {
     const seen: SpaceRendererMountProps[] = [];
     function CanvasMount(props: SpaceRendererMountProps): JSX.Element {
       seen.push(props);
       return <div data-testid="canvas-mount">canvas mount</div>;
     }
+    const packet = makePacket();
     render(
       <SpacesViewShell
         projectId="p1"
         spaceId="s1"
         renderer="canvas"
         renderers={{ canvas: CanvasMount }}
+        loadSpaceFactPacket={vi.fn().mockResolvedValue(packet)}
       />,
     );
-    expect(screen.getByTestId('canvas-mount')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('canvas-mount')).toBeTruthy());
     // The empty-state is replaced when a renderer is registered.
     expect(screen.queryByTestId('spaces-shell-empty')).toBeNull();
     expect(seen).toHaveLength(1);
     expect(seen[0]).toMatchObject({ projectId: 'p1', spaceId: 's1', renderer: 'canvas' });
+    expect(seen[0].initialFactPacket).toBe(packet);
   });
 
-  it('mounts the cached primary renderer before the selected Space read resolves', () => {
+  it('uses the cached primary renderer while waiting for the fact packet', () => {
     localStorage.setItem(
       'spaces:selected-space:v1',
       JSON.stringify({
@@ -119,7 +141,7 @@ describe('SpacesViewShell', () => {
         default_renderer: 'canvas',
       }),
     );
-    const loadSpace = vi.fn(() => new Promise<Space>(() => {}));
+    const loadSpaceFactPacket = vi.fn(() => new Promise<SpaceFactPacket>(() => {}));
     const seen: SpaceRendererMountProps[] = [];
     function CanvasMount(props: SpaceRendererMountProps): JSX.Element {
       seen.push(props);
@@ -131,29 +153,29 @@ describe('SpacesViewShell', () => {
         projectId="p1"
         spaceId="s1"
         renderers={{ canvas: CanvasMount }}
-        loadSpace={loadSpace}
+        loadSpaceFactPacket={loadSpaceFactPacket}
       />,
     );
 
-    expect(screen.getByTestId('canvas-mount')).toBeTruthy();
-    expect(screen.queryByTestId('spaces-shell-empty')).toBeNull();
     expect(screen.getByTestId('spaces-view-shell').getAttribute('data-active-renderer')).toBe('canvas');
     expect(screen.getByTestId('spaces-shell-identity').textContent).toContain('Cached canvas');
-    expect(seen[0]).toMatchObject({ projectId: 'p1', spaceId: 's1', renderer: 'canvas' });
+    expect(screen.getByTestId('spaces-shell-loading')).toBeTruthy();
+    expect(screen.queryByTestId('canvas-mount')).toBeNull();
+    expect(seen).toHaveLength(0);
   });
 
   it('shows the selected Space read error when no cached snapshot exists', async () => {
     function CollectionMount(): JSX.Element {
       return <div data-testid="collection-mount">collection mount</div>;
     }
-    const loadSpace = vi.fn().mockRejectedValue(new Error('space read failed'));
+    const loadSpaceFactPacket = vi.fn().mockRejectedValue(new Error('space read failed'));
 
     render(
       <SpacesViewShell
         projectId="p1"
         spaceId="s1"
         renderers={{ collection: CollectionMount }}
-        loadSpace={loadSpace}
+        loadSpaceFactPacket={loadSpaceFactPacket}
       />,
     );
 

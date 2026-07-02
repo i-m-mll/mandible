@@ -717,7 +717,7 @@ describe('app shell', () => {
     });
   });
 
-  it('renders the Spaces preview notice from boot instance data before health resolves', () => {
+  it('renders the Spaces preview notice from boot instance data before health resolves', async () => {
     stubEventSource();
     (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
       instance: previewInstance,
@@ -756,7 +756,7 @@ describe('app shell', () => {
 
     render(h(App, {}));
 
-    const notice = screen.getByTestId('preview-disabled-notice');
+    const notice = await screen.findByTestId('preview-disabled-notice');
     expect(notice.textContent).toContain('Saving disabled in copied preview instance.');
     expect(notice.closest('.spaces-shell__main')?.firstElementChild).toBe(notice);
   });

@@ -15,10 +15,17 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useCallback, useEffect, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
-import { getSpace, type InstanceInfo, type Space, type SpaceRenderer } from '../../api';
+import {
+  getSpace,
+  getSpaceFactPacket,
+  type InstanceInfo,
+  type Space,
+  type SpaceFactPacket,
+  type SpaceRenderer,
+} from '../../api';
 import { PreviewDisabledNotice } from '../../components/shared/PreviewDisabledNotice';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
@@ -52,6 +59,8 @@ export type SpaceRendererMountProps = {
   renderer: SpaceRenderer;
   /** Current Mandible instance metadata; renderers use this for preview-safe UX. */
   instance?: InstanceInfo | null;
+  /** Optional shell-preloaded fact packet for renderers that use `/api/spaces/:id`. */
+  initialFactPacket?: SpaceFactPacket | null;
 };
 
 export type SpacesViewShellProps = {
@@ -86,6 +95,8 @@ export type SpacesViewShellProps = {
   onNavigate?: (target: { projectId?: string | null; spaceId?: string | null; renderer?: string | null }) => void;
   /** Injected selected-Space loader for tests; defaults to the real API client. */
   loadSpace?: typeof getSpace;
+  /** Injected selected-Space fact packet loader for tests; defaults to the real API client. */
+  loadSpaceFactPacket?: typeof getSpaceFactPacket;
 };
 
 const DEFAULT_RENDERER: SpaceRenderer = 'collection';
@@ -157,9 +168,27 @@ export function SpacesViewShell({
   sidebarHidden = false,
   instance = null,
   onNavigate,
-  loadSpace = getSpace,
+  loadSpace,
+  loadSpaceFactPacket,
 }: SpacesViewShellProps): JSX.Element {
+  const resolvedLoadSpaceFactPacket = useMemo(
+    () => {
+      if (loadSpaceFactPacket) return loadSpaceFactPacket;
+      if (loadSpace) {
+        return (id: string) =>
+          loadSpace(id).then((space) => ({
+            space,
+            items: [],
+            occurrences: [],
+            edges: [],
+          } satisfies SpaceFactPacket));
+      }
+      return getSpaceFactPacket;
+    },
+    [loadSpace, loadSpaceFactPacket],
+  );
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
+  const [selectedFactPacket, setSelectedFactPacket] = useState<SpaceFactPacket | null>(null);
   const [selectedSnapshot, setSelectedSnapshot] = useState<SpaceSelectionSnapshot | null>(
     () => loadCachedSelection(spaceId),
   );
@@ -168,19 +197,23 @@ export function SpacesViewShell({
   useEffect(() => {
     if (!spaceId) {
       setSelectedSpace(null);
+      setSelectedFactPacket(null);
       setSelectedSnapshot(null);
       setSpaceLoadError(null);
       return undefined;
     }
     let cancelled = false;
     setSelectedSpace((current) => (current?.id === spaceId ? current : null));
+    setSelectedFactPacket((current) => (current?.space.id === spaceId ? current : null));
     setSelectedSnapshot((current) => (current?.id === spaceId ? current : loadCachedSelection(spaceId)));
     setSpaceLoadError(null);
-    loadSpace(spaceId)
-      .then((space) => {
+    resolvedLoadSpaceFactPacket(spaceId)
+      .then((packet) => {
         if (!cancelled) {
+          const { space } = packet;
           const snapshot = snapshotFromSpace(space);
           setSelectedSpace(space);
+          setSelectedFactPacket(packet);
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);
         }
@@ -191,7 +224,7 @@ export function SpacesViewShell({
     return () => {
       cancelled = true;
     };
-  }, [spaceId, loadSpace]);
+  }, [spaceId, resolvedLoadSpaceFactPacket]);
 
   const handleSidebarSpaceResolved = useCallback((space: Space) => {
     if (space.id !== spaceId) return;
@@ -216,6 +249,7 @@ export function SpacesViewShell({
 
   const MountPoint = renderers?.[activeRenderer] ?? null;
   const previewMutationsBlocked = Boolean(instance && instance.operational_mutations !== 'allow');
+  const waitingForFactPacket = Boolean(spaceId && !selectedFactPacket && !spaceLoadError);
 
   return (
     <section
@@ -287,12 +321,17 @@ export function SpacesViewShell({
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">{spaceLoadError}</p>
             </div>
+          ) : waitingForFactPacket ? (
+            <div className="spaces-shell__empty" data-testid="spaces-shell-loading">
+              <p className="spaces-shell__empty-text">Loading space...</p>
+            </div>
           ) : MountPoint ? (
             <MountPoint
               projectId={effectiveProjectId}
               spaceId={spaceId}
               renderer={activeRenderer}
               instance={instance}
+              initialFactPacket={selectedFactPacket}
             />
           ) : (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">

@@ -245,9 +245,111 @@ async function parseMaybeJson(response: Response): Promise<unknown> {
   return response.text();
 }
 
+type CachedJsonOptions = {
+  ttlMs?: number;
+  staleWhileRevalidateMs?: number;
+};
+
+type CachedJsonEntry = {
+  value: unknown;
+  freshUntil: number;
+  staleUntil: number;
+};
+
+const DEFAULT_GET_CACHE_TTL_MS = 1_000;
+const DEFAULT_GET_CACHE_STALE_MS = 4_000;
+const getJsonCache = new Map<string, CachedJsonEntry>();
+const inflightGetJson = new Map<string, Promise<unknown>>();
+
+function cacheKeyForGet(path: string): string {
+  return `GET ${path}`;
+}
+
+async function fetchJsonForCache(path: string, options: Required<CachedJsonOptions>): Promise<unknown> {
+  const response = await apiGet(path);
+  const value = await parseMaybeJson(response);
+  const now = Date.now();
+  getJsonCache.set(cacheKeyForGet(path), {
+    value,
+    freshUntil: now + options.ttlMs,
+    staleUntil: now + options.ttlMs + options.staleWhileRevalidateMs,
+  });
+  return value;
+}
+
+async function cachedApiGetJson<T>(
+  path: string,
+  options: CachedJsonOptions = {},
+): Promise<T> {
+  const resolvedOptions = {
+    ttlMs: options.ttlMs ?? DEFAULT_GET_CACHE_TTL_MS,
+    staleWhileRevalidateMs: options.staleWhileRevalidateMs ?? DEFAULT_GET_CACHE_STALE_MS,
+  };
+  const key = cacheKeyForGet(path);
+  const cached = getJsonCache.get(key);
+  const now = Date.now();
+  if (cached && now < cached.freshUntil) {
+    return cached.value as T;
+  }
+  const inflight = inflightGetJson.get(key);
+  if (inflight) {
+    return (await inflight) as T;
+  }
+  if (cached && now < cached.staleUntil) {
+    const refresh = fetchJsonForCache(path, resolvedOptions).finally(() => {
+      if (inflightGetJson.get(key) === refresh) inflightGetJson.delete(key);
+    });
+    inflightGetJson.set(key, refresh);
+    return cached.value as T;
+  }
+  const request = fetchJsonForCache(path, resolvedOptions).finally(() => {
+    if (inflightGetJson.get(key) === request) inflightGetJson.delete(key);
+  });
+  inflightGetJson.set(key, request);
+  return (await request) as T;
+}
+
+export function invalidateApiGetCache(
+  matcher?: string | RegExp | ((key: string) => boolean),
+): void {
+  if (!matcher) {
+    getJsonCache.clear();
+    inflightGetJson.clear();
+    return;
+  }
+  for (const key of Array.from(getJsonCache.keys())) {
+    const matches =
+      typeof matcher === 'string'
+        ? key.includes(matcher)
+        : matcher instanceof RegExp
+          ? matcher.test(key)
+          : matcher(key);
+    if (matches) getJsonCache.delete(key);
+  }
+}
+
+export function invalidateDashboardApiCacheForEvent(type: string): void {
+  if (type.startsWith('session:') || type.startsWith('console:session:')) {
+    invalidateApiGetCache('/api/sessions');
+    invalidateApiGetCache('/api/console/sessions');
+    invalidateApiGetCache('/api/conversations');
+  } else if (type.startsWith('auth:')) {
+    invalidateApiGetCache('/api/auth/');
+    invalidateApiGetCache('/api/inbox');
+  } else if (type.startsWith('work:') || type.startsWith('push:')) {
+    invalidateApiGetCache('/api/work/');
+  } else if (type.startsWith('ledger:issue:')) {
+    invalidateApiGetCache('/api/issues');
+    invalidateApiGetCache('/api/ledger');
+  } else if (type.startsWith('space:')) {
+    invalidateApiGetCache('/api/spaces');
+  } else if (type.startsWith('artifact:')) {
+    invalidateApiGetCache('/api/artifacts');
+  }
+}
+
 export async function getSessions<T>(query?: string): Promise<T[]> {
-  const response = await apiGet(`/api/sessions${query || ''}`);
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>(`/api/sessions${query || ''}`);
   return normalizeList(payload);
 }
 
@@ -280,15 +382,13 @@ export async function patchSession(sessionId: string, body: Record<string, unkno
 }
 
 export async function getAuthQueue<T>(): Promise<T[]> {
-  const response = await apiGet('/api/auth/queue');
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/auth/queue');
   return normalizeList(payload);
 }
 
 export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   const query = limit != null ? `?limit=${limit}` : '';
-  const response = await apiGet(`/api/auth/history${query}`);
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>(`/api/auth/history${query}`);
   return normalizeList(payload);
 }
 
@@ -420,14 +520,14 @@ export async function updateAuthRequestField(
 }
 
 export async function getWorkRepos<T>(): Promise<T[]> {
-  const response = await apiGet('/api/work/repos');
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/work/repos');
   return normalizeList(payload);
 }
 
 export async function getRepoBranches<T>(repoId: string): Promise<T[]> {
-  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/branches`);
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>(
+    `/api/work/repos/${encodeURIComponent(repoId)}/branches`,
+  );
   return normalizeList(payload);
 }
 
@@ -573,8 +673,7 @@ export async function getPushStatus(): Promise<unknown> {
 // ── Inbox API ──
 
 export async function getInboxGlobal(): Promise<InboxData> {
-  const res = await apiGet('/api/inbox/global');
-  return (await parseMaybeJson(res)) as InboxData;
+  return cachedApiGetJson<InboxData>('/api/inbox/global');
 }
 
 export async function acknowledgeInboxItem(
@@ -1130,8 +1229,7 @@ export async function updateStarredChat(
 }
 
 export async function getSettings(): Promise<Record<string, string>> {
-  const response = await apiGet('/api/settings');
-  const payload = await parseMaybeJson(response);
+  const payload = await cachedApiGetJson<unknown>('/api/settings');
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
     return payload as Record<string, string>;
   }
@@ -1150,6 +1248,7 @@ export async function updateSetting(key: string, value: string): Promise<void> {
   if (!response.ok) {
     throw new Error(`PUT /api/settings/${key} failed: ${response.status}`);
   }
+  invalidateApiGetCache('/api/settings');
 }
 
 export async function getInstructionDeliverySettings(): Promise<InstructionDeliverySettings> {
@@ -1181,8 +1280,7 @@ export async function updateInstructionDeliverySettings(
 // ── Console API ──
 
 export async function getConsoleSessions<T>(): Promise<T[]> {
-  const response = await apiGet('/api/console/sessions');
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
+  const payload = await cachedApiGetJson<ApiList<T>>('/api/console/sessions');
   return normalizeList(payload);
 }
 
@@ -1504,8 +1602,9 @@ export async function getConversations(params?: {
   if (params?.parent_id) query.set('parent_id', params.parent_id);
   if (params?.session_id) query.set('session_id', params.session_id);
   const qs = query.toString();
-  const resp = await apiGet(`/api/conversations${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(resp)) as { conversations: Conversation[]; total: number };
+  return cachedApiGetJson<{ conversations: Conversation[]; total: number }>(
+    `/api/conversations${qs ? '?' + qs : ''}`,
+  );
 }
 
 export async function getConversation(id: string, leaf?: string): Promise<Conversation & { blocks: ConversationBlock[]; children: ConversationChild[] }> {
@@ -1785,8 +1884,9 @@ export async function getGraph(
   if (params.limit != null) query.set('limit', String(params.limit));
   if (params.status) query.set('status', params.status);
   const qs = query.toString();
-  const response = await apiGet(`/api/graph${qs ? '?' + qs : ''}`);
-  return (await parseMaybeJson(response)) as { nodes: GraphNode[]; edges: GraphEdge[] };
+  return cachedApiGetJson<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
+    `/api/graph${qs ? '?' + qs : ''}`,
+  );
 }
 
 // ── Artifact API ──
@@ -1886,15 +1986,15 @@ export type ArtifactQueryParams = {
 
 export async function getArtifacts(params: ArtifactQueryParams = {}): Promise<ArtifactRecord[]> {
   const query = buildQuery(params);
-  const response = await apiGet(`/api/artifacts${query}`);
-  const payload = (await parseMaybeJson(response)) as { artifacts?: ArtifactRecord[] };
+  const payload = await cachedApiGetJson<{ artifacts?: ArtifactRecord[] }>(`/api/artifacts${query}`);
   return payload.artifacts ?? [];
 }
 
 export async function getArtifactSeriesList(params: ArtifactQueryParams = {}): Promise<ArtifactSeriesSummary[]> {
   const query = buildQuery(params);
-  const response = await apiGet(`/api/artifacts/series${query}`);
-  const payload = (await parseMaybeJson(response)) as { series?: ArtifactSeriesSummary[] };
+  const payload = await cachedApiGetJson<{ series?: ArtifactSeriesSummary[] }>(
+    `/api/artifacts/series${query}`,
+  );
   return payload.series ?? [];
 }
 
@@ -1933,8 +2033,7 @@ export async function resolveArtifact(ref: string): Promise<ArtifactResolveResul
 // ── Presets API — Bug: e20c88e, Bug: 11f4f47 ──
 
 export async function fetchPresets(): Promise<Preset[]> {
-  const response = await apiGet('/api/presets');
-  const payload = (await parseMaybeJson(response)) as ApiList<Preset>;
+  const payload = await cachedApiGetJson<ApiList<Preset>>('/api/presets');
   return normalizeList(payload);
 }
 
@@ -2115,8 +2214,9 @@ export async function getPresetUnion(params: {
   if (params.session_id) query.set('session_id', params.session_id);
   if (params.preset_ids) query.set('preset_ids', params.preset_ids.join(','));
   const qs = query.toString();
-  const response = await apiGet(`/api/presets/union${qs ? '?' + qs : ''}`);
-  const payload = await parseMaybeJson(response) as Record<string, unknown>;
+  const payload = await cachedApiGetJson<Record<string, unknown>>(
+    `/api/presets/union${qs ? '?' + qs : ''}`,
+  );
   // Server returns { text, tokenEstimate }; map to client type
   return {
     systemPrompt: (payload.systemPrompt ?? payload.text ?? '') as string,
@@ -2128,10 +2228,9 @@ export async function getPresetUnion(params: {
 export async function getSessionPresets(
   sessionId: string,
 ): Promise<SessionPreset[]> {
-  const response = await apiGet(
+  const payload = await cachedApiGetJson<{ presets?: SessionPreset[] } | SessionPreset[]>(
     `/api/console/sessions/${encodeURIComponent(sessionId)}/presets`,
   );
-  const payload = (await parseMaybeJson(response)) as { presets?: SessionPreset[] } | SessionPreset[];
   if (Array.isArray(payload)) return payload;
   return Array.isArray(payload?.presets) ? payload.presets : [];
 }
@@ -2330,8 +2429,9 @@ export async function resetRuntime(): Promise<{ ok: boolean }> {
 // ---------------------------------------------------------------------------
 
 export async function listSpaces(projectId: string): Promise<ContractSpace[]> {
-  const response = await apiGet(`/api/spaces${buildQuery({ project_id: projectId })}`);
-  const payload = (await parseMaybeJson(response)) as { spaces: ContractSpace[] };
+  const payload = await cachedApiGetJson<{ spaces: ContractSpace[] }>(
+    `/api/spaces${buildQuery({ project_id: projectId })}`,
+  );
   return payload.spaces;
 }
 
@@ -2342,15 +2442,15 @@ export async function listSpaces(projectId: string): Promise<ContractSpace[]> {
  * per project. Each Space carries its nullable `project_id`.
  */
 export async function listSpacesGrouped(): Promise<ContractSpaceGroup[]> {
-  const response = await apiGet('/api/spaces');
-  const payload = (await parseMaybeJson(response)) as { groups?: ContractSpaceGroup[] };
+  const payload = await cachedApiGetJson<{ groups?: ContractSpaceGroup[] }>('/api/spaces');
   return payload.groups ?? [];
 }
 
 /** List only the top-level / global Spaces (project_id IS NULL, issue 812df41). */
 export async function listTopLevelSpaces(): Promise<ContractSpace[]> {
-  const response = await apiGet(`/api/spaces${buildQuery({ scope: 'top-level' })}`);
-  const payload = (await parseMaybeJson(response)) as { spaces: ContractSpace[] };
+  const payload = await cachedApiGetJson<{ spaces: ContractSpace[] }>(
+    `/api/spaces${buildQuery({ scope: 'top-level' })}`,
+  );
   return payload.spaces;
 }
 
@@ -2365,16 +2465,29 @@ export type ProjectPickerItem = {
   display_name: string | null;
 };
 
+export type SpaceFactPacket = {
+  space: ContractSpace;
+  items: ContractSpaceItem[];
+  occurrences: ContractSpaceOccurrence[];
+  edges: ContractSpaceEdge[];
+};
+
+function invalidateSpaceCaches(spaceId?: string): void {
+  invalidateApiGetCache('/api/spaces');
+  if (spaceId) {
+    invalidateApiGetCache(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  }
+}
+
 /**
  * Fetch the project list from the registry for use in the space-creation picker
  * (issue 6fdd924). Returns a lightweight summary array; callers display
  * `display_name` (or fall back to `project_key`) as the option label.
  */
 export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
-  const response = await apiGet('/api/projects');
-  const payload = (await parseMaybeJson(response)) as {
+  const payload = await cachedApiGetJson<{
     projects?: Array<{ id: string; project_key: string; display_name?: string | null }>;
-  };
+  }>('/api/projects');
   return (payload.projects ?? []).map((p) => ({
     id: p.id,
     project_key: p.project_key,
@@ -2383,8 +2496,9 @@ export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
 }
 
 export async function getSpace(spaceId: string): Promise<ContractSpace> {
-  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
-  const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  const payload = await cachedApiGetJson<{ space: ContractSpace }>(
+    `/api/spaces/${encodeURIComponent(spaceId)}`,
+  );
   return payload.space;
 }
 
@@ -2394,19 +2508,13 @@ export async function getSpace(spaceId: string): Promise<ContractSpace> {
  * C9a canvas, …) assemble their `SpaceViewModel` from this single read. Older
  * responses that omit the collections degrade to empty arrays.
  */
-export async function getSpaceFactPacket(spaceId: string): Promise<{
-  space: ContractSpace;
-  items: ContractSpaceItem[];
-  occurrences: ContractSpaceOccurrence[];
-  edges: ContractSpaceEdge[];
-}> {
-  const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}`);
-  const payload = (await parseMaybeJson(response)) as {
+export async function getSpaceFactPacket(spaceId: string): Promise<SpaceFactPacket> {
+  const payload = await cachedApiGetJson<{
     space: ContractSpace;
     items?: ContractSpaceItem[];
     occurrences?: ContractSpaceOccurrence[];
     edges?: ContractSpaceEdge[];
-  };
+  }>(`/api/spaces/${encodeURIComponent(spaceId)}`);
   return {
     space: payload.space,
     items: payload.items ?? [],
@@ -2418,24 +2526,29 @@ export async function getSpaceFactPacket(spaceId: string): Promise<{
 export async function createSpace(body: CreateSpaceRequest): Promise<ContractSpace> {
   const response = await apiPost('/api/spaces', body);
   const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  invalidateSpaceCaches(payload.space.id);
   return payload.space;
 }
 
 export async function updateSpace(spaceId: string, body: UpdateSpaceRequest): Promise<ContractSpace> {
   const response = await apiPatch(`/api/spaces/${encodeURIComponent(spaceId)}`, body);
   const payload = (await parseMaybeJson(response)) as { space: ContractSpace };
+  invalidateSpaceCaches(spaceId);
   return payload.space;
 }
 
 export async function deleteSpace(spaceId: string): Promise<void> {
   await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}`);
+  invalidateSpaceCaches(spaceId);
 }
 
 // --- items ---
 
 export async function addSpaceItem(spaceId: string, body: AddSpaceItemRequest): Promise<AddSpaceItemResponse> {
   const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/items`, body);
-  return (await parseMaybeJson(response)) as AddSpaceItemResponse;
+  const payload = (await parseMaybeJson(response)) as AddSpaceItemResponse;
+  invalidateSpaceCaches(spaceId);
+  return payload;
 }
 
 export async function updateSpaceItem(
@@ -2448,11 +2561,13 @@ export async function updateSpaceItem(
     body,
   );
   const payload = (await parseMaybeJson(response)) as { item: ContractSpaceItem };
+  invalidateSpaceCaches(spaceId);
   return payload.item;
 }
 
 export async function deleteSpaceItem(spaceId: string, itemId: string): Promise<void> {
   await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}`);
+  invalidateSpaceCaches(spaceId);
 }
 
 // --- occurrences ---
@@ -2463,6 +2578,7 @@ export async function createSpaceOccurrence(
 ): Promise<ContractSpaceOccurrence> {
   const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/occurrences`, body);
   const payload = (await parseMaybeJson(response)) as { occurrence: ContractSpaceOccurrence };
+  invalidateSpaceCaches(spaceId);
   return payload.occurrence;
 }
 
@@ -2476,6 +2592,7 @@ export async function updateSpaceOccurrence(
     body,
   );
   const payload = (await parseMaybeJson(response)) as { occurrence: ContractSpaceOccurrence };
+  invalidateSpaceCaches(spaceId);
   return payload.occurrence;
 }
 
@@ -2483,6 +2600,7 @@ export async function deleteSpaceOccurrence(spaceId: string, occurrenceId: strin
   await apiDelete(
     `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/${encodeURIComponent(occurrenceId)}`,
   );
+  invalidateSpaceCaches(spaceId);
 }
 
 /** Batch occurrence write (drag persistence / re-layout): entries with a known `id` update, others create. */
@@ -2494,7 +2612,9 @@ export async function batchWriteSpaceOccurrences(
     `/api/spaces/${encodeURIComponent(spaceId)}/occurrences/batch`,
     { occurrences },
   );
-  return (await parseMaybeJson(response)) as BatchSpaceOccurrenceResponse;
+  const payload = (await parseMaybeJson(response)) as BatchSpaceOccurrenceResponse;
+  invalidateSpaceCaches(spaceId);
+  return payload;
 }
 
 // --- edges ---
@@ -2505,6 +2625,7 @@ export async function createSpaceEdge(
 ): Promise<ContractSpaceEdge> {
   const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/edges`, body);
   const payload = (await parseMaybeJson(response)) as { edge: ContractSpaceEdge };
+  invalidateSpaceCaches(spaceId);
   return payload.edge;
 }
 
@@ -2518,18 +2639,22 @@ export async function updateSpaceEdge(
     body,
   );
   const payload = (await parseMaybeJson(response)) as { edge: ContractSpaceEdge };
+  invalidateSpaceCaches(spaceId);
   return payload.edge;
 }
 
 export async function deleteSpaceEdge(spaceId: string, edgeId: string): Promise<void> {
   await apiDelete(`/api/spaces/${encodeURIComponent(spaceId)}/edges/${encodeURIComponent(edgeId)}`);
+  invalidateSpaceCaches(spaceId);
 }
 
 // --- seed-from-filter ---
 
 export async function seedSpace(spaceId: string, body: SeedSpaceRequest): Promise<SeedSpaceResult> {
   const response = await apiPost(`/api/spaces/${encodeURIComponent(spaceId)}/seed`, body);
-  return (await parseMaybeJson(response)) as SeedSpaceResult;
+  const payload = (await parseMaybeJson(response)) as SeedSpaceResult;
+  invalidateSpaceCaches(spaceId);
+  return payload;
 }
 
 // --- unified ref resolver ---
