@@ -772,15 +772,16 @@ function rewriteInvalidIssueTags(text, resolver, context, findings, replacements
   return replaceOutsideCodeSpans(text, /\[([a-z][a-z0-9_-]*):([^\]\n]+)\]/gi, (match, tag, ref) => {
     const normalizedTag = tag.toLowerCase();
     if (!INVALID_ISSUE_TAGS.has(normalizedTag)) return match;
-    const target = ref.trim();
-    const resolution = resolver.resolveIssue(target);
+    const target = normalizeInvalidIssueTagRef(ref.trim());
+    const resolution = resolver.resolveIssue(target.ref);
     const findingContext = {
       ...context,
       invalid_issue_tag: normalizedTag,
+      normalized_issue_ref: target.ref,
     };
     findings.push(makeFinding(match, issueFindingResolution(resolution), findingContext));
     if (resolution.status !== "resolved") return match;
-    const next = `[issue:${resolver.displayIssue(resolution.issue)}]`;
+    const next = `[issue:${target.display ?? resolution.display ?? resolver.displayIssue(resolution.issue)}]`;
     replacements.push({
       old_ref: match,
       new_ref: next,
@@ -789,6 +790,13 @@ function rewriteInvalidIssueTags(text, resolver, context, findings, replacements
     });
     return next;
   });
+}
+
+function normalizeInvalidIssueTagRef(ref) {
+  const projectColon = /^([A-Za-z][A-Za-z0-9_.-]*)\s*:\s*([A-Za-z0-9][A-Za-z0-9._-]{1,127})$/.exec(ref);
+  if (!projectColon) return { ref };
+  const normalized = `${projectColon[1]}/${projectColon[2]}`;
+  return { ref: normalized, display: normalized };
 }
 
 function rewriteText(text, resolver, context, options = {}) {

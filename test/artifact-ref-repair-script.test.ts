@@ -50,7 +50,7 @@ describe("repair-artifact-refs script", () => {
     expect(report.summary.ledger_cells_to_update).toBeGreaterThanOrEqual(4);
     expect(report.summary.structured_links_to_update).toBe(2);
     expect(report.summary.latest_artifacts_to_version).toBe(1);
-    expect(report.summary.invalid_issue_tags_rewritten).toBe(4);
+    expect(report.summary.invalid_issue_tags_rewritten).toBe(6);
     expect(report.summary.invalid_issue_tags_refused).toBe(1);
     expect(report.findings.some((finding: any) =>
       finding.ref === `artifact:sha256:${LEGACY_HASH}` &&
@@ -90,6 +90,7 @@ describe("repair-artifact-refs script", () => {
     expect(getIssueBody(applied)).toContain(`artifact=artifact-blob%3A${LEGACY_HASH}`);
     expect(getIssueBody(applied)).toContain("artifact:report");
     expect(getIssueBody(applied)).toContain("[issue:abc1234]");
+    expect(getIssueBody(applied)).toContain("[issue:dotfiles/ab6d8b0]");
     expect(getIssueBody(applied)).toContain("`[closes:abc1234]`");
     expect(getIssueBody(applied)).toContain("```");
     expect(
@@ -113,7 +114,7 @@ describe("repair-artifact-refs script", () => {
     expect(
       (applied.prepare("SELECT snapshot_body FROM ledger_body_revisions WHERE id = 'revision-1'").get() as any)
         .snapshot_body,
-    ).toContain("[issue:abc1234]");
+    ).toContain("[issue:dotfiles/ab6d8b0]");
 
     const artifact = applied
       .prepare("SELECT latest_version_id, version_count FROM artifact WHERE id = 'artifact:report'")
@@ -319,6 +320,10 @@ function createFixtureDb(options: {
      VALUES ('prj_mandible', 'mandible', 'Mandible', 'mandible', 'mandible')`,
   ).run();
   db.prepare(
+    `INSERT INTO ledger_projects (id, project_key, display_name, repo_id, work_repo_id)
+     VALUES ('prj_dotfiles', 'dotfiles', 'dotfiles', 'dotfiles', 'dotfiles')`,
+  ).run();
+  db.prepare(
     `INSERT INTO ledger_issues (id, short_id, project_id, title, body, metadata_json)
      VALUES ('issue-1', 'abc1234', 'prj_mandible', 'Issue', ?, ?)`,
   ).run(
@@ -326,6 +331,7 @@ function createFixtureDb(options: {
       `See artifact:sha256:${LEGACY_HASH} and artifact-series:report`,
       `Short link [artifact:sha256:${LEGACY_HASH.slice(0, 7)}](http://localhost:19420/#/artifacts?artifact=artifact%3Asha256%3A${LEGACY_HASH}&sidebar=hidden)`,
       "Invalid [references:abc1234] and [parent_child:mandible/alias-issue] rewrite.",
+      "Legacy project-colon [references: dotfiles:ab6d8b0] rewrites.",
       "Protected `[closes:abc1234]` and fenced stay:",
       "```",
       "[fixes:abc1234]",
@@ -335,6 +341,10 @@ function createFixtureDb(options: {
     JSON.stringify({ ref: `sha256:${LEGACY_HASH}` }),
   );
   db.prepare(
+    `INSERT INTO ledger_issues (id, short_id, project_id, title, body, metadata_json)
+     VALUES ('dotfiles-issue', 'ab6d8b0', 'prj_dotfiles', 'Dotfiles Issue', '', '{}')`,
+  ).run();
+  db.prepare(
     `INSERT INTO ledger_issue_aliases (issue_id, alias_kind, project_id, alias, source)
      VALUES ('issue-1', 'test', 'prj_mandible', 'alias-issue', 'test')`,
   ).run();
@@ -343,7 +353,7 @@ function createFixtureDb(options: {
   ).run(`Old shorthand artifact:${LEGACY_HASH} and [closes:mandible/abc1234]`);
   db.prepare(
     "INSERT INTO ledger_body_revisions (id, snapshot_body, patch_text) VALUES ('revision-1', ?, '')",
-  ).run("Historical [fixes:alias-issue] rewrites.");
+  ).run("Historical [fixes:alias-issue] and [references: dotfiles:ab6d8b0] rewrites.");
   db.prepare("INSERT INTO ledger_events (id, payload_json) VALUES ('event-1', '{}')").run();
   insertBlob(db, LEGACY_HASH, "legacy target", "text/plain");
   db.prepare(
