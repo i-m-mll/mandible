@@ -21,6 +21,7 @@
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
+#   claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
 #   instructions <subcommand>        Install or diff the Mandible instruction fragment
 #   work-unit <subcommand>           Policy-free work-unit lifecycle client
 #   issue-file <subcommand>          Read/write the .issue helper file
@@ -61,6 +62,7 @@ Commands:
   artifact <subcommand>            Register, resolve, link, and check artifacts
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
+  claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
   instructions <subcommand>        Install or diff the Mandible instruction fragment
   work-unit <subcommand>           Policy-free work-unit lifecycle client
   issue-file <subcommand>          Read/write the .issue helper file
@@ -111,6 +113,7 @@ case "${1:-}" in
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
   space) shift; exec "$MANDIBLE_CLI_DIR/space.sh" "$@" ;;
   project) shift; exec "$MANDIBLE_CLI_DIR/project.sh" "$@" ;;
+  claude-integration) shift; exec "$MANDIBLE_CLI_DIR/claude-integration.sh" "$@" ;;
   instructions) shift; exec "$MANDIBLE_CLI_DIR/instructions.sh" "$@" ;;
   work-unit) shift; exec "$MANDIBLE_CLI_DIR/work-unit.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;

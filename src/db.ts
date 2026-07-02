@@ -2587,6 +2587,39 @@ const MIGRATIONS: Migration[] = [
     // Issue: 3da19be — include SDK reasoning effort in the existing
     // per-message parameter keyframes.
     statements: []
+  },
+  {
+    version: 95,
+    name: "claude_statusline_telemetry",
+    // Issue: ad10160 — persist the latest Claude Code statusline telemetry
+    // pushed by the no-network statusline hook bridge.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS console_session_telemetry (
+        telemetry_key TEXT PRIMARY KEY,
+        console_session_id TEXT REFERENCES console_sessions(id) ON DELETE CASCADE,
+        provider_session_id TEXT,
+        transcript_path TEXT,
+        model TEXT,
+        context_used_percentage REAL,
+        context_window_size INTEGER,
+        context_input_tokens INTEGER,
+        context_output_tokens INTEGER,
+        context_cache_creation_input_tokens INTEGER,
+        context_cache_read_input_tokens INTEGER,
+        rate_limit_five_hour_used_percentage REAL,
+        rate_limit_five_hour_resets_at TEXT,
+        rate_limit_seven_day_used_percentage REAL,
+        rate_limit_seven_day_resets_at TEXT,
+        raw_payload_json TEXT NOT NULL,
+        received_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_console_session_telemetry_console
+        ON console_session_telemetry(console_session_id)
+        WHERE console_session_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_console_session_telemetry_provider
+        ON console_session_telemetry(provider_session_id)
+        WHERE provider_session_id IS NOT NULL`
+    ]
   }
 ];
 

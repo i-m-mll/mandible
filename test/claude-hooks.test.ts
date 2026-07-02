@@ -1,13 +1,19 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   extractSettingsPath,
+  getUserClaudeIntegrationStatus,
   injectMandibleClaudeHookSettingsArgs,
+  installUserClaudeIntegration,
   mergeMandibleClaudeHookSettings,
   stripSettingsArgs,
+  uninstallUserClaudeIntegration,
 } from "../src/claude-hook-settings.js";
 import {
   getHookNotificationAttention,
@@ -41,6 +47,7 @@ describe("Claude hook routes", () => {
   it("allows hook endpoints over file RPC policy", () => {
     expect(router.resolveFileRpcPolicy("POST", "/api/hooks/ingest-nudge")).toBe(true);
     expect(router.resolveFileRpcPolicy("POST", "/api/hooks/notification")).toBe(true);
+    expect(router.resolveFileRpcPolicy("POST", "/api/hooks/statusline")).toBe(true);
   });
 
   it("ingests one transcript path immediately and rate-limits a burst nudge", async () => {
@@ -125,6 +132,97 @@ describe("Claude hook routes", () => {
       provider_session_id: "claude-provider-1",
     });
   });
+
+  it("persists latest statusline telemetry and nudges transcript ingestion", async () => {
+    const transcriptPath = writeClaudeTranscript("claude-provider-telemetry");
+    db.prepare(`
+      INSERT INTO console_sessions (
+        id, label, command, args_json, provider_session_id, cwd, env_json,
+        cols, rows, status, auto_restart, is_operator, interaction_mode,
+        created_at, updated_at, backend_type, channel_enabled
+      ) VALUES (
+        'console-telemetry', 'Claude', 'claude', '[]', 'claude-provider-telemetry', ?, '{}',
+        120, 30, 'running', 0, 0, 'both',
+        1, 1, 'pty', 0
+      )
+    `).run(tempDir);
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/hooks/statusline",
+      body: {
+        session_id: "claude-provider-telemetry",
+        transcript_path: transcriptPath,
+        model: { id: "claude-sonnet-4-5", display_name: "Sonnet 4.5" },
+        context_window: {
+          used_percentage: 37.5,
+          context_window_size: 200000,
+          input_tokens: 1000,
+          output_tokens: 250,
+        },
+        rate_limits: {
+          five_hour: { used_percentage: 12, resets_at: "2026-07-02T18:00:00Z" },
+        },
+      },
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({
+      ok: true,
+      telemetry: {
+        telemetry_key: "console:console-telemetry",
+        console_session_id: "console-telemetry",
+        provider_session_id: "claude-provider-telemetry",
+        model: "Sonnet 4.5",
+        context_window: {
+          used_percentage: 37.5,
+          context_window_size: 200000,
+        },
+      },
+      ingest: {
+        ok: true,
+        transcript_path: transcriptPath,
+      },
+    });
+    expect(db.prepare(`
+      SELECT console_session_id, provider_session_id, model, context_used_percentage,
+             rate_limit_five_hour_used_percentage, rate_limit_seven_day_used_percentage
+      FROM console_session_telemetry
+      WHERE telemetry_key = 'console:console-telemetry'
+    `).get()).toEqual({
+      console_session_id: "console-telemetry",
+      provider_session_id: "claude-provider-telemetry",
+      model: "Sonnet 4.5",
+      context_used_percentage: 37.5,
+      rate_limit_five_hour_used_percentage: 12,
+      rate_limit_seven_day_used_percentage: null,
+    });
+  });
+
+  it("stores statusline telemetry for unrecognized external sessions", async () => {
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/hooks/statusline?sessionRef=external-claude",
+      body: {
+        model: "Claude",
+        context_window: { used_percentage: null },
+      },
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({
+      ok: true,
+      telemetry: {
+        telemetry_key: "provider:external-claude",
+        console_session_id: null,
+        provider_session_id: "external-claude",
+      },
+      ingest: {
+        ok: true,
+        status: "no_target",
+      },
+    });
+  });
 });
 
 describe("Claude hook settings", () => {
@@ -148,6 +246,7 @@ describe("Claude hook settings", () => {
     ]);
     expect(merged.hooks.Stop[0].hooks[0].command).toContain("mandible-claude-ingest-nudge.sh");
     expect(merged.hooks.Notification[0].hooks[0].command).toContain("mandible-claude-notification.sh");
+    expect((merged.statusLine as { command: string }).command).toContain("mandible-claude-statusline.sh");
   });
 
   it("writes merged settings and replaces an existing --settings argument", () => {
@@ -183,8 +282,158 @@ describe("Claude hook settings", () => {
       "say attention",
       expect.stringContaining("mandible-claude-notification.sh"),
     ]);
+    expect(generated.statusLine.command).toContain("mandible-claude-statusline.sh");
+  });
+
+  it("installs, reports, and uninstalls user-level Claude integration idempotently", () => {
+    const settingsPath = path.join(tempDir, ".claude", "settings.json");
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    const original = {
+      theme: "dark",
+      hooks: {
+        Stop: [
+          {
+            matcher: "",
+            hooks: [{ type: "command", command: "say done", timeout: 2 }],
+          },
+        ],
+      },
+      statusLine: { type: "command", command: "node ~/statusline.js --flag" },
+    };
+    const originalText = `${JSON.stringify(original, null, 2)}\n`;
+    fs.writeFileSync(settingsPath, originalText, "utf8");
+
+    const first = installUserClaudeIntegration({
+      settingsPath,
+      now: new Date("2026-07-02T12:00:00Z"),
+    });
+    const installedText = fs.readFileSync(settingsPath, "utf8");
+    const second = installUserClaudeIntegration({ settingsPath });
+    const installed = JSON.parse(installedText) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+      statusLine: { command: string };
+    };
+
+    expect(first.status).toBe("installed");
+    expect(first.backupPath).toContain(".mandible-backup-2026-07-02T12-00-00-000Z");
+    expect(second.status).toBe("unchanged");
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(installedText);
+    expect(installed.hooks.Stop.map((entry) => entry.hooks[0]?.command)).toEqual([
+      "say done",
+      expect.stringContaining("mandible-claude-ingest-nudge.sh"),
+    ]);
+    expect(installed.statusLine.command).toContain("MANDIBLE_CHAINED_STATUSLINE='node ~/statusline.js --flag'");
+    expect(getUserClaudeIntegrationStatus({ settingsPath })).toMatchObject({
+      status: "installed",
+      chainedStatusLine: "node ~/statusline.js --flag",
+    });
+
+    expect(uninstallUserClaudeIntegration({ settingsPath }).status).toBe("uninstalled");
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(originalText);
+    expect(JSON.parse(fs.readFileSync(settingsPath, "utf8"))).toEqual(original);
+    expect(uninstallUserClaudeIntegration({ settingsPath }).status).toBe("absent");
+  });
+
+  it("keeps installs idempotent when no user settings file existed", () => {
+    const settingsPath = path.join(tempDir, ".claude", "new-settings.json");
+
+    const first = installUserClaudeIntegration({ settingsPath });
+    const installedText = fs.readFileSync(settingsPath, "utf8");
+    const second = installUserClaudeIntegration({ settingsPath });
+
+    expect(first).toMatchObject({ status: "installed", backupPath: null, chainedStatusLine: null });
+    expect(second).toMatchObject({ status: "unchanged", backupPath: null, chainedStatusLine: null });
+    expect(fs.readFileSync(settingsPath, "utf8")).toBe(installedText);
   });
 });
+
+describe("Claude statusline relay script", () => {
+  it("posts captured stdin and preserves chained user statusline output", async () => {
+    const received: unknown[] = [];
+    const server = http.createServer((req, res) => {
+      let body = "";
+      req.setEncoding("utf8");
+      req.on("data", (chunk) => {
+        body += chunk;
+      });
+      req.on("end", () => {
+        received.push({
+          url: req.url,
+          body: JSON.parse(body),
+        });
+        res.writeHead(202, { "Content-Type": "application/json", Connection: "close" });
+        res.end("{\"ok\":true}");
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("unexpected server address");
+      }
+      const script = path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        "../cli/hooks/mandible-claude-statusline.sh",
+      );
+      const input = JSON.stringify({
+        session_id: "claude-relay-1",
+        model: { display_name: "Sonnet" },
+        context_window: { used_percentage: 42 },
+      });
+      const stdout = await runScriptWithInput("sh", [script], input, {
+        env: {
+          ...process.env,
+          MANDIBLE_BASE: `http://127.0.0.1:${address.port}`,
+          MANDIBLE_CHAINED_STATUSLINE: "cat >/dev/null; printf chained-output",
+        },
+      });
+
+      expect(stdout).toBe("chained-output");
+      expect(received).toEqual([
+        {
+          url: "/api/hooks/statusline?sessionRef=claude-relay-1",
+          body: JSON.parse(input),
+        },
+      ]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }, 10_000);
+});
+
+function runScriptWithInput(
+  command: string,
+  args: string[],
+  input: string,
+  options: { env: NodeJS.ProcessEnv },
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      env: options.env,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve(stdout);
+      } else {
+        reject(new Error(`script exited ${code}: ${stderr}`));
+      }
+    });
+    child.stdin.end(input);
+  });
+}
 
 function writeClaudeTranscript(sessionId: string): string {
   const dir = path.join(tempDir, ".claude", "projects", "-tmp-project");
