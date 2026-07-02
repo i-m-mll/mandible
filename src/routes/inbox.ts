@@ -2,10 +2,12 @@ import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
+import { listLedgerIssueSummaries } from "../ledger/issue-migration.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
 import type { AuthRequestOutcome, AuthRequestStatus, WebhookEventRow } from "../types.js";
+import type { WorkScanner } from "../work-scanner.js";
 import { getIntSetting } from "./settings.js";
 import {
   mapWorkUnitRow,
@@ -227,11 +229,12 @@ function queryAuthResultsForSession(
 export function registerInboxRoutes(
   server: InboxRouteServer,
   sessionRegistry: SessionRegistry,
-  issueScanner: IssueScanner,
+  _issueScanner: IssueScanner,
   sessionManager?: SessionManager,
   // Bug: 4e32923 — authQueue is required for the new /api/inbox/delivered
   // endpoint that marks auth_requests as delivered to the owner session.
   authQueue?: AuthQueue,
+  workScanner?: WorkScanner,
 ): void {
   const db = getDb();
 
@@ -359,6 +362,42 @@ export function registerInboxRoutes(
       .filter((wu) => !wu.liveness.has_live_agent);
   }
 
+  function ledgerOpenIssues(repoFilter?: string): Array<{
+    id: string;
+    title: string;
+    labels: string[];
+    repo_id?: string;
+    repo_name?: string;
+  }> {
+    if (!workScanner) return [];
+    const openIssues: Array<{
+      id: string;
+      title: string;
+      labels: string[];
+      repo_id?: string;
+      repo_name?: string;
+    }> = [];
+    for (const summary of listLedgerIssueSummaries(db, workScanner)) {
+      const matchesRepo = !repoFilter
+        || summary.repo_root === repoFilter
+        || summary.repo_name === repoFilter
+        || summary.repo_id === repoFilter
+        || summary.project_key === repoFilter;
+      if (!matchesRepo) continue;
+      for (const issue of summary.issues) {
+        if (issue.status !== "open") continue;
+        openIssues.push({
+          id: issue.id,
+          title: issue.title,
+          labels: issue.labels,
+          repo_id: summary.repo_id,
+          repo_name: summary.repo_name,
+        });
+      }
+    }
+    return openIssues;
+  }
+
   // GET /api/inbox — unified query of pending items for a branch
   server.get("/api/inbox", (req, res) => {
     const branch = getQueryParam(req, "branch");
@@ -398,23 +437,10 @@ export function registerInboxRoutes(
     const workUnits = getWorkUnitsNeedingAttention(repo ?? undefined);
     const workUnitContinuations = getWorkUnitContinuations(repo ?? undefined);
 
-    // Open issues: from issue scanner, filtered by repo (kept for backward compat)
-    let openIssues: Array<{ id: string; title: string; labels: string[] }> = [];
-    if (repo) {
-      const summaries = issueScanner.getRepoSummaries();
-      for (const summary of summaries) {
-        if (summary.repo_root === repo || summary.repo_name === repo || summary.repo_id === repo) {
-          openIssues = summary.issues
-            .filter((issue) => issue.status === "open")
-            .map((issue) => ({
-              id: issue.id,
-              title: issue.title,
-              labels: issue.labels,
-            }));
-          break;
-        }
-      }
-    }
+    // Open issues: ledger-backed compatibility field, filtered by repo.
+    const openIssues = repo
+      ? ledgerOpenIssues(repo).map(({ id, title, labels }) => ({ id, title, labels }))
+      : [];
 
     // Bug: 9f66ad9 — pending webhook events, optionally filtered by branch
     const pendingWebhooks = branch
@@ -490,27 +516,8 @@ export function registerInboxRoutes(
     const workUnits = getWorkUnitsNeedingAttention();
     const workUnitContinuations = getWorkUnitContinuations();
 
-    // Open issues: all repos (kept for backward compat)
-    const openIssues: Array<{
-      id: string;
-      title: string;
-      labels: string[];
-      repo_id?: string;
-      repo_name?: string;
-    }> = [];
-    for (const summary of issueScanner.getRepoSummaries()) {
-      for (const issue of summary.issues) {
-        if (issue.status === "open") {
-          openIssues.push({
-            id: issue.id,
-            title: issue.title,
-            labels: issue.labels,
-            repo_id: summary.repo_id,
-            repo_name: summary.repo_name,
-          });
-        }
-      }
-    }
+    // Open issues: all ledger repos (kept for backward compat).
+    const openIssues = ledgerOpenIssues();
 
     // Bug: 9f66ad9 — pending webhook events (all)
     const pendingWebhooks = db

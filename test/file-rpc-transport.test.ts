@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
-import { FileRpcTransport } from "../src/file-rpc-transport.js";
+import { FileRpcTransport, defaultFileRpcDirForInstance } from "../src/file-rpc-transport.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
 import { Router, type RouteHandler } from "../src/server.js";
@@ -179,6 +179,24 @@ async function runCliWithTransport(
 }
 
 describe("file RPC transport", () => {
+  it("uses preview-scoped spools instead of the shared agent-rpc spool for preview instances", () => {
+    const shared = path.join(os.homedir(), ".cache", "mandible", "agent-rpc");
+    const instance = {
+      role: "preview" as const,
+      operational_mutations: "reject" as const,
+      operational_mutations_overridden: false,
+      db_path: path.join(tempDir, "preview.db"),
+      db_path_source: "iab-preview-copy",
+    };
+
+    expect(defaultFileRpcDirForInstance(instance, {})).toBe(path.join(tempDir, "agent-rpc"));
+    expect(defaultFileRpcDirForInstance(instance, { MANDIBLE_FILE_RPC_DIR: shared })).toBe(
+      path.join(tempDir, "agent-rpc"),
+    );
+    expect(defaultFileRpcDirForInstance(instance, { MANDIBLE_FILE_RPC_DIR: path.join(tempDir, "custom") }))
+      .toBe(path.join(tempDir, "custom"));
+  });
+
   it("dispatches allowed requests through the router and writes response JSON", async () => {
     const router = new Router();
     router.get("/api/ledger/issues/:issueId", (req, res) => {
