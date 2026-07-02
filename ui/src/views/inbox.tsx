@@ -3,7 +3,7 @@
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { marked } from 'marked';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { EntityPill } from '../components/shared/EntityPill';
 import { spawnIssueAgent } from '../api';
 import { appColors } from '../theme';
@@ -795,12 +795,6 @@ export function InboxView({
   onAckAll,
   onRefresh,
 }: InboxViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 400,
-    minWidth: 190,
-    storageKey: 'sidebar-width:inbox',
-  });
-
   const [chips, setChips] = useState<FilterChip[]>([]);
 
   // Build full unified item list from data
@@ -861,10 +855,15 @@ export function InboxView({
 
   return (
     <div className={`inbox-sidebar-layout${sidebarHidden ? ' inbox-sidebar-layout--sidebar-hidden' : ''}`}>
-      {/* LEFT SIDEBAR */}
-      {!sidebarHidden ? (
-        <>
-          <div className="inbox-sidebar" style={{ width: `${sidebarWidth}px`, flexShrink: 0 }}>
+      <ViewSidebar
+        storageKey="sidebar-width:inbox"
+        defaultWidth={400}
+        minWidth={190}
+        className="inbox-sidebar"
+        ariaLabel="Inbox"
+        hidden={sidebarHidden}
+        header={
+          <>
             {/* Filter chips + autocomplete */}
             <div className="inbox-sidebar__chip-row">
               <ChipInput
@@ -898,9 +897,10 @@ export function InboxView({
                 </button>
               </div>
             </div>
-
-            {/* Item list */}
-            <div className="inbox-sidebar__list">
+          </>
+        }
+        bodyClassName="inbox-sidebar__list"
+      >
               {filteredItems.length === 0 ? (
                 <div className="inbox-sidebar__empty">
                   {allItems.length === 0 ? 'Inbox is clear.' : 'No items match the current filters.'}
@@ -915,13 +915,7 @@ export function InboxView({
                   />
                 ))
               )}
-            </div>
-          </div>
-
-          {/* Drag handle */}
-          <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
-        </>
-      ) : null}
+      </ViewSidebar>
 
       {/* RIGHT DETAIL PANEL */}
       <div className="inbox-detail">

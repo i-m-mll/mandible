@@ -14,7 +14,7 @@ import {
   fetchPresets,
   updatePreset,
 } from '../api';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { PresetTree } from '../components/presets/PresetTree';
 import { ConventionLibrary } from '../components/presets/ConventionLibrary';
 import { InsertFromLibraryModal } from '../components/presets/InsertFromLibraryModal';
@@ -30,18 +30,14 @@ export type PresetsViewProps = {
     redoStack: UndoCommand[];
   };
   dispatch: (action: unknown) => void;
+  sidebarHidden?: boolean;
 };
 
 export function PresetsView({
   presetsState,
   dispatch,
+  sidebarHidden = false,
 }: PresetsViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 260,
-    minWidth: 200,
-    storageKey: 'mandible-presets-sidebar-width',
-  });
-
   const [insertModalOpen, setInsertModalOpen] = useState(false);
   const [editingName, setEditingName] = useState<string | null>(null);
   const [menuPresetId, setMenuPresetId] = useState<string | null>(null);
@@ -256,27 +252,39 @@ export function PresetsView({
 
   return (
     <div className="presets-view">
-      <div
+      <ViewSidebar
+        storageKey="mandible-presets-sidebar-width"
+        defaultWidth={260}
+        minWidth={200}
         className="presets-sidebar"
-        style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
+        ariaLabel="Presets"
+        hidden={sidebarHidden}
+        header={
+          <button
+            type="button"
+            className={`presets-sidebar__item presets-sidebar__item--library${presetsState.libraryMode ? ' presets-sidebar__item--active' : ''}`}
+            onClick={handleLibraryToggle}
+          >
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
+              <rect x="1" y="1" width="5" height="5" rx="1" />
+              <rect x="8" y="1" width="5" height="5" rx="1" />
+              <rect x="1" y="8" width="5" height="5" rx="1" />
+              <rect x="8" y="8" width="5" height="5" rx="1" />
+            </svg>
+            <span>Convention Library</span>
+          </button>
+        }
+        bodyClassName="presets-sidebar__list"
+        footer={
+          <button
+            type="button"
+            className="presets-sidebar__add-btn"
+            onClick={handleCreatePreset}
+          >
+            + New Preset
+          </button>
+        }
       >
-        {/* Library entry */}
-        <button
-          type="button"
-          className={`presets-sidebar__item presets-sidebar__item--library${presetsState.libraryMode ? ' presets-sidebar__item--active' : ''}`}
-          onClick={handleLibraryToggle}
-        >
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden="true">
-            <rect x="1" y="1" width="5" height="5" rx="1" />
-            <rect x="8" y="1" width="5" height="5" rx="1" />
-            <rect x="1" y="8" width="5" height="5" rx="1" />
-            <rect x="8" y="8" width="5" height="5" rx="1" />
-          </svg>
-          <span>Convention Library</span>
-        </button>
-
-        {/* Preset list */}
-        <div className="presets-sidebar__list">
           {presetsState.presets.map((preset) => {
             const isSelected =
               !presetsState.libraryMode && presetsState.selectedPresetId === preset.id;
@@ -378,21 +386,7 @@ export function PresetsView({
               </div>
             );
           })}
-        </div>
-
-        <button
-          type="button"
-          className="presets-sidebar__add-btn"
-          onClick={handleCreatePreset}
-        >
-          + New Preset
-        </button>
-      </div>
-
-      <div
-        className="sidebar-drag-handle"
-        onMouseDown={handleMouseDown}
-      />
+      </ViewSidebar>
 
       <div className="presets-main">
         {presetsState.libraryMode ? (

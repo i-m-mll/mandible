@@ -44,7 +44,7 @@ import {
   versionDetailHref,
 } from '../resource-refs';
 import { renderDocumentText } from './spaces/DocumentRenderer';
-import { useSidebarResize } from '../hooks/useSidebarResize';
+import { ViewSidebar } from '../components/ViewSidebar';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -128,11 +128,6 @@ export function ArtifactsView({
   initialRepo,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
-  const { width: sidebarWidth, handleMouseDown } = useSidebarResize({
-    defaultWidth: 320,
-    minWidth: 240,
-    storageKey: 'sidebar-width:artifacts',
-  });
   const [filters, setFilters] = useState<ArtifactFilters>(() => ({
     ...EMPTY_FILTERS,
     repo: initialRepo ?? '',
@@ -518,12 +513,15 @@ export function ArtifactsView({
 
   return (
     <div className="artifacts-view">
-      {!sidebarHidden ? (
-        <>
-          <aside
-            className="artifacts-sidebar"
-            style={sidebarWidth !== null ? { width: `${sidebarWidth}px`, flexShrink: 0 } : undefined}
-          >
+      <ViewSidebar
+        storageKey="sidebar-width:artifacts"
+        defaultWidth={320}
+        minWidth={240}
+        className="artifacts-sidebar"
+        ariaLabel="Artifacts"
+        hidden={sidebarHidden}
+        header={
+          <>
             <div className="artifacts-filter">
               <input
                 className="artifacts-filter__input"
@@ -564,7 +562,10 @@ export function ArtifactsView({
                 <button type="button" className="btn btn--ghost btn--sm" onClick={clearFilters}>Clear</button>
               </div>
             )}
-            <div className="artifacts-sidebar__list">
+          </>
+        }
+        bodyClassName="artifacts-sidebar__list"
+      >
               {loading && series.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
               {!loading && series.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
               {series.map((entry) => (
@@ -581,11 +582,7 @@ export function ArtifactsView({
                   </span>
                 </button>
               ))}
-            </div>
-          </aside>
-          <div className="sidebar-drag-handle" onMouseDown={handleMouseDown} />
-        </>
-      ) : null}
+      </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {error && <div className="artifacts-error">{error}</div>}
         {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
