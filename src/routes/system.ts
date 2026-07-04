@@ -24,6 +24,9 @@ type LogEntry = {
   [key: string]: unknown;
 };
 
+const DEFAULT_TAIL_CHUNK_BYTES = 256 * 1024;
+const DEFAULT_MAX_TAIL_BYTES = 64 * 1024 * 1024;
+
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -32,54 +35,76 @@ function shellQuote(value: string): string {
  * Read up to `tailLines` lines from the end of a file without loading the
  * entire file into memory.
  */
-async function tailFile(filePath: string, tailLines: number): Promise<string> {
+export async function tailFile(
+  filePath: string,
+  tailLines: number,
+  options: { chunkBytes?: number; maxBytes?: number } = {},
+): Promise<string> {
+  const requestedLines = Math.max(0, Math.floor(tailLines));
+  if (requestedLines === 0) {
+    return "";
+  }
+
   const stat = await fs.promises.stat(filePath);
   if (stat.size === 0) {
     return "";
   }
 
-  // Read the last chunk. Each NDJSON line is typically 100–500 bytes; use a
-  // generous estimate of 2 KB per line to cover verbose entries.
-  const chunkSize = Math.min(tailLines * 2048, stat.size);
+  const chunkBytes = Math.max(1, Math.floor(options.chunkBytes ?? DEFAULT_TAIL_CHUNK_BYTES));
+  const maxBytes = Math.max(1, Math.floor(options.maxBytes ?? DEFAULT_MAX_TAIL_BYTES));
+  const readLimit = Math.min(maxBytes, stat.size);
   const fd = await fs.promises.open(filePath, "r");
+  const chunks: Buffer[] = [];
+  let position = stat.size;
+  let totalBytesRead = 0;
+  let newlineCount = 0;
+
   try {
-    const buf = Buffer.alloc(chunkSize);
-    const { bytesRead } = await fd.read(buf, 0, chunkSize, stat.size - chunkSize);
-    const text = buf.slice(0, bytesRead).toString("utf8");
+    while (position > 0 && totalBytesRead < readLimit) {
+      const bytesToRead = Math.min(chunkBytes, position, readLimit - totalBytesRead);
+      position -= bytesToRead;
 
-    const lines = text.split("\n");
-    if (stat.size > chunkSize && lines.length > 0) {
-      lines.shift(); // discard potentially-partial first line
-    }
-    const nonEmpty = lines.filter((l: string) => l.trim());
-
-    if (nonEmpty.length >= tailLines) {
-      return nonEmpty.slice(-tailLines).join("\n");
-    }
-
-    // Not enough lines in the chunk — read a larger slice from the end,
-    // but cap at 8 MB to avoid reading enormous log files into memory.
-    const FALLBACK_CAP = 8 * 1024 * 1024; // 8 MB
-    const fallbackSize = Math.min(FALLBACK_CAP, stat.size);
-    const fd2 = await fs.promises.open(filePath, "r");
-    try {
-      const buf2 = Buffer.alloc(fallbackSize);
-      const { bytesRead: bytesRead2 } = await fd2.read(buf2, 0, fallbackSize, stat.size - fallbackSize);
-      const text2 = buf2.slice(0, bytesRead2).toString("utf8");
-      const lines2 = text2.split("\n");
-      if (stat.size > fallbackSize && lines2.length > 0) {
-        lines2.shift(); // discard potentially-partial first line
+      const buf = Buffer.allocUnsafe(bytesToRead);
+      const { bytesRead } = await fd.read(buf, 0, bytesToRead, position);
+      if (bytesRead === 0) {
+        break;
       }
-      return lines2
-        .filter((l: string) => l.trim())
-        .slice(-tailLines)
-        .join("\n");
-    } finally {
-      await fd2.close();
+
+      chunks.unshift(buf.subarray(0, bytesRead));
+      totalBytesRead += bytesRead;
+      newlineCount += countNewlines(buf, bytesRead);
+
+      if (newlineCount >= requestedLines + (position > 0 ? 1 : 0)) {
+        break;
+      }
     }
+
+    return completeTailLines(chunks, position > 0).slice(-requestedLines).join("\n");
   } finally {
     await fd.close();
   }
+}
+
+function countNewlines(buffer: Buffer, length: number): number {
+  let count = 0;
+  for (let index = 0; index < length; index += 1) {
+    if (buffer[index] === 10) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function completeTailLines(chunks: Buffer[], discardPartialFirstLine: boolean): string[] {
+  if (chunks.length === 0) {
+    return [];
+  }
+
+  const lines = Buffer.concat(chunks).toString("utf8").split("\n");
+  if (discardPartialFirstLine && lines.length > 0) {
+    lines.shift();
+  }
+  return lines.filter((line: string) => line.trim());
 }
 
 export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkScanner): void {
@@ -134,7 +159,9 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
     }
 
     const total = entries.length;
-    const page = entries.slice(offset, offset + limit);
+    const pageEnd = Math.max(0, total - offset);
+    const pageStart = Math.max(0, pageEnd - limit);
+    const page = entries.slice(pageStart, pageEnd);
 
     sendJson(res, 200, {
       entries: page,
