@@ -71,6 +71,16 @@
   user-select: none;
 }
 
+.logs-refresh-status {
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.logs-refresh-status--stale {
+  color: var(--accent-yellow);
+}
+
 .logs-error {
   margin: 12px 0;
   padding: 10px 14px;
@@ -79,6 +89,11 @@
   border-radius: 8px;
   color: var(--accent-red);
   font-size: 13px;
+}
+
+.logs-error__detail {
+  margin-top: 4px;
+  color: var(--text-muted);
 }
 
 .logs-scroll-region {

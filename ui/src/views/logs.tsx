@@ -47,6 +47,16 @@ function formatTime(iso?: string): string {
   });
 }
 
+function formatStatusTime(date: Date | null): string {
+  if (!date) return 'never';
+  return date.toLocaleTimeString('en-US', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
+
 function LogRow({ entry }: { entry: LogEntry }): JSX.Element {
   const [expanded, setExpanded] = useState(false);
 
@@ -91,20 +101,32 @@ export function LogsView(): JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [logFileExists, setLogFileExists] = useState<boolean | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [lastLoadedAt, setLastLoadedAt] = useState<Date | null>(null);
+  const [lastFailedAt, setLastFailedAt] = useState<Date | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const requestSeqRef = useRef(0);
 
   const fetchLogs = useCallback(async () => {
+    const requestSeq = requestSeqRef.current + 1;
+    requestSeqRef.current = requestSeq;
     setLoading(true);
-    setError(null);
     try {
       const result = await getLogs({ level: minLevel, limit: 500 });
+      if (requestSeq !== requestSeqRef.current) return;
       setEntries(result.entries);
       setLogFileExists(result.exists ?? true);
+      setError(null);
+      setLastLoadedAt(new Date());
+      setLastFailedAt(null);
     } catch (err) {
-      setError(String(err));
+      if (requestSeq !== requestSeqRef.current) return;
+      setError(err instanceof Error ? err.message : String(err));
+      setLastFailedAt(new Date());
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) {
+        setLoading(false);
+      }
     }
   }, [minLevel]);
 
@@ -139,6 +161,11 @@ export function LogsView(): JSX.Element {
   const filteredByLevel = entries.filter(
     (e) => (LEVEL_ORDER[e.level] ?? 1) >= (LEVEL_ORDER[minLevel] ?? 1),
   );
+  const refreshStatus = error
+    ? `Stale since ${formatStatusTime(lastFailedAt)}`
+    : lastLoadedAt
+      ? `Updated ${formatStatusTime(lastLoadedAt)}`
+      : 'Not loaded';
 
   return (
     <div className="view logs-view">
@@ -163,6 +190,9 @@ export function LogsView(): JSX.Element {
           <button type="button" className="btn" onClick={fetchLogs} disabled={loading}>
             {loading ? 'Loading…' : 'Refresh'}
           </button>
+          <span className={`logs-refresh-status${error ? ' logs-refresh-status--stale' : ''}`}>
+            {refreshStatus}
+          </span>
           <label className="logs-autoscroll-label">
             <input
               type="checkbox"
@@ -175,7 +205,14 @@ export function LogsView(): JSX.Element {
       </div>
 
       {error && (
-        <div className="logs-error">Failed to load logs: {error}</div>
+        <div className="logs-error">
+          <div>Failed to load logs: {error}</div>
+          <div className="logs-error__detail">
+            {lastLoadedAt
+              ? `Showing entries from the last successful response at ${formatStatusTime(lastLoadedAt)}.`
+              : 'No successful log response has loaded in this view yet.'}
+          </div>
+        </div>
       )}
 
       {logFileExists === false && (
