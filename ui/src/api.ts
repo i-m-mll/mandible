@@ -11,6 +11,8 @@ import type {
   ArtifactResolveResult as ContractArtifactResolveResult,
   ArtifactSeriesRecord as ContractArtifactSeriesRecord,
   ArtifactSeriesSummary as ContractArtifactSeriesSummary,
+  ArtifactDraftPublishResult as ContractArtifactDraftPublishResult,
+  ArtifactDraftRecord as ContractArtifactDraftRecord,
   ArtifactVersionRecord as ContractArtifactVersionRecord,
   AuthRequestAction as ContractAuthRequestAction,
   BlockType as ContractBlockType,
@@ -2040,6 +2042,10 @@ export type ArtifactSeriesSummary = ContractArtifactSeriesSummary;
 
 export type ArtifactVersionRecord = ContractArtifactVersionRecord;
 
+export type ArtifactDraftRecord = ContractArtifactDraftRecord;
+
+export type ArtifactDraftPublishResult = ContractArtifactDraftPublishResult;
+
 export type ArtifactVersionHistory = {
   series: ArtifactSeriesRecord;
   versions: ArtifactVersionRecord[];
@@ -2076,6 +2082,33 @@ export type ArtifactContentResult = {
   };
   reason?: string;
   warnings?: string[];
+};
+
+export type ArtifactDiffResult = {
+  a: {
+    ref: string;
+    artifact_id: string | null;
+    content_hash: string | null;
+    media_type: string;
+    size_bytes: number | null;
+    available: boolean;
+    reason?: string;
+  };
+  b: {
+    ref: string;
+    artifact_id: string | null;
+    content_hash: string | null;
+    media_type: string;
+    size_bytes: number | null;
+    available: boolean;
+    reason?: string;
+  };
+  diffable: boolean;
+  identical: boolean;
+  kind: string;
+  unified: string | null;
+  stats: { added: number; removed: number } | null;
+  reason?: string;
 };
 
 export type KnowledgeBackrefRecord = {
@@ -2126,6 +2159,56 @@ export async function getArtifactVersions(ref: string): Promise<ArtifactVersionH
   const response = await apiGet(`/api/artifacts/versions${query}`);
   const payload = (await parseMaybeJson(response)) as { history: ArtifactVersionHistory };
   return payload.history;
+}
+
+export async function getArtifactDiff(from: string, to: string): Promise<ArtifactDiffResult> {
+  const query = buildQuery({ a: from, b: to });
+  const response = await apiGet(`/api/artifacts/diff${query}`);
+  const payload = (await parseMaybeJson(response)) as { diff: ArtifactDiffResult };
+  return payload.diff;
+}
+
+export async function getArtifactDraft(ref: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactDraftRecord | null> {
+  const query = buildQuery({ ref });
+  const response = await apiGet(`/api/artifacts/drafts${query}`, { signal: options.signal });
+  const payload = (await parseMaybeJson(response)) as { draft: ArtifactDraftRecord | null };
+  return payload.draft ?? null;
+}
+
+export async function saveArtifactDraft(input: {
+  ref: string;
+  base_version_id?: string;
+  content: string;
+  media_type?: string | null;
+  label?: string | null;
+  note?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<ArtifactDraftRecord> {
+  const response = await apiPost('/api/artifacts/drafts', input);
+  const payload = (await parseMaybeJson(response)) as { draft: ArtifactDraftRecord };
+  return payload.draft;
+}
+
+export async function rebaseArtifactDraft(ref: string): Promise<ArtifactDraftRecord> {
+  const response = await apiPost('/api/artifacts/drafts/rebase', { ref });
+  const payload = (await parseMaybeJson(response)) as { draft: ArtifactDraftRecord };
+  return payload.draft;
+}
+
+export async function publishArtifactDraft(input: {
+  ref: string;
+  label?: string | null;
+  note?: string | null;
+  allow_stale?: boolean;
+}): Promise<ArtifactDraftPublishResult> {
+  const response = await apiPost('/api/artifacts/drafts/publish', input);
+  return (await parseMaybeJson(response)) as ArtifactDraftPublishResult;
+}
+
+export async function deleteArtifactDraft(ref: string): Promise<{ deleted: boolean }> {
+  const query = buildQuery({ ref });
+  const response = await apiDelete(`/api/artifacts/drafts${query}`);
+  return (await parseMaybeJson(response)) as { deleted: boolean };
 }
 
 export async function getArtifact(id: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactRecord> {
