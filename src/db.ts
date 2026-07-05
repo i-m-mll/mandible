@@ -2828,6 +2828,28 @@ const MIGRATIONS: Migration[] = [
         ON artifact_versions(parent_version_id)
         WHERE parent_version_id IS NOT NULL`
     ]
+  },
+  {
+    version: 102,
+    name: "session_instruction_artifacts",
+    // Issue: 2181ffd — session instruction attachments now pin artifact
+    // versions. Legacy preset ids are kept only as migration provenance.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS session_instruction_artifacts (
+        session_id          TEXT NOT NULL,
+        artifact_series_id  TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        legacy_preset_id    TEXT,
+        position            INTEGER NOT NULL DEFAULT 0,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL,
+        PRIMARY KEY (session_id, artifact_series_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_session_instruction_artifacts_session
+        ON session_instruction_artifacts(session_id, position)`,
+      `CREATE INDEX IF NOT EXISTS idx_session_instruction_artifacts_version
+        ON session_instruction_artifacts(artifact_version_id)`
+    ]
   }
 ];
 

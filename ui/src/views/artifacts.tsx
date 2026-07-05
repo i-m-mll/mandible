@@ -67,6 +67,7 @@ type ArtifactsViewProps = {
   initialSeriesRef?: string;
   initialVersionNo?: number | null;
   initialRepo?: string;
+  initialRole?: string;
   sidebarHidden?: boolean;
 };
 
@@ -138,11 +139,13 @@ export function ArtifactsView({
   initialSeriesRef,
   initialVersionNo = null,
   initialRepo,
+  initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
   const [filters, setFilters] = useState<ArtifactFilters>(() => ({
     ...EMPTY_FILTERS,
     repo: initialRepo ?? '',
+    role: initialRole ?? '',
   }));
   const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
   const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
@@ -184,6 +187,13 @@ export function ArtifactsView({
       return current.repo === repo ? current : { ...current, repo };
     });
   }, [initialRepo]);
+
+  useEffect(() => {
+    setFilters((current) => {
+      const role = initialRole ?? current.role;
+      return current.role === role ? current : { ...current, role };
+    });
+  }, [initialRole]);
 
   useEffect(() => {
     deepLinkActiveRef.current = Boolean(initialArtifactId || initialRef || initialSeriesRef);

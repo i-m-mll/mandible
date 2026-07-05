@@ -30,7 +30,7 @@ type NewSessionDialogProps = {
     channel_enabled?: boolean;
     presetIds?: string[];
   }) => void;
-  /** Pre-selected preset ID from navigation (e.g., "Start Chat" from Presets tab). */
+  /** Pre-selected instruction artifact or legacy preset ID from navigation. */
   initialPresetId?: string | null;
 };
 
@@ -189,18 +189,28 @@ export function NewSessionDialog({
         ]);
         if (cancelled) return;
         setAllPresets(presets);
+        const resolvePresetId = (id: string): string | null => {
+          const match = presets.find((p) => p.id === id || p.legacy_preset_id === id);
+          return match?.id ?? null;
+        };
 
         // If an initial preset ID was passed (e.g., from "Start Chat" button),
         // use it; otherwise use defaults
         if (initialPresetId) {
-          const ids = presets.some((p) => p.id === initialPresetId)
-            ? [initialPresetId]
+          const initialId = resolvePresetId(initialPresetId);
+          const ids = initialId
+            ? [initialId]
             : [];
           // Merge with defaults, initial first
-          const merged = [...ids, ...defaults.filter((d) => !ids.includes(d))];
+          const defaultIds = defaults
+            .map(resolvePresetId)
+            .filter((id): id is string => Boolean(id));
+          const merged = [...ids, ...defaultIds.filter((d) => !ids.includes(d))];
           setPresetIds(merged.filter((id) => presets.some((p) => p.id === id)));
         } else {
-          setPresetIds(defaults.filter((id) => presets.some((p) => p.id === id)));
+          setPresetIds(defaults
+            .map(resolvePresetId)
+            .filter((id): id is string => Boolean(id)));
         }
         setPresetsLoaded(true);
       } catch {
@@ -265,7 +275,7 @@ export function NewSessionDialog({
   if (!open) return null;
 
   const isSDK = transportLane === 'sdk';
-  // Bug: 790433d — Presets are supported for both SDK and PTY Claude sessions
+  // Issue 2181ffd — instruction artifacts are supported for both SDK and PTY Claude sessions.
   const supportsPresets = backend === 'claude';
   const transportOptions = availableTransportLanes(backend, hasApiKey);
 
@@ -376,10 +386,10 @@ export function NewSessionDialog({
             </div>
           </div>
 
-          {/* Bug: 790433d — Preset selector shown for all Claude sessions (SDK + PTY) */}
+          {/* Issue 2181ffd — instruction artifact selector shown for all Claude sessions (SDK + PTY) */}
           {supportsPresets && presetsLoaded && (
             <div className="new-session-dialog__field">
-              <div className="new-session-dialog__label">Presets</div>
+              <div className="new-session-dialog__label">Instructions</div>
               <PresetPillSelector
                 selectedPresetIds={presetIds}
                 onChange={setPresetIds}
@@ -388,12 +398,12 @@ export function NewSessionDialog({
               {/* Bug: 790433d — Mode-specific note about preset mutability */}
               {!isSDK && (
                 <div className="new-session-dialog__preset-note">
-                  Presets will be applied at session start. Restart session to change.
+                  Instructions will be applied at session start. Restart session to change.
                 </div>
               )}
               {isSDK && (
                 <div className="new-session-dialog__preset-note new-session-dialog__preset-note--muted">
-                  Presets can be changed mid-conversation.
+                  Instructions can be changed mid-conversation.
                 </div>
               )}
               {/* Bug: 8baedeb — validation warnings for unconfigured required settings */}

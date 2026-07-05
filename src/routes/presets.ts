@@ -16,8 +16,14 @@ import {
   computeContentHash,
   computePresetUnion,
   estimateTokens,
+  appendSessionInstructionArtifacts,
   importClaudeMd,
+  ensureInstructionArtifactForPreset,
+  legacyPresetIdForInstructionRef,
+  listInstructionArtifactPresets,
+  listSessionInstructionArtifacts,
   routePresetDiffWithNodes,
+  removeSessionInstructionArtifact,
   scanForSettingLinks,
   scanPresetForSettingLinks,
   type ConventionSettingLink,
@@ -57,13 +63,14 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     const db = getDb();
-    const rows = db
-      .prepare(
-        "SELECT preset_id FROM session_presets WHERE session_id = ? ORDER BY position ASC",
-      )
-      .all(sessionId) as { preset_id: string }[];
-
-    const presetIds = rows.map((r) => r.preset_id);
+    const attachedArtifacts = listSessionInstructionArtifacts(db, sessionId);
+    const presetIds = attachedArtifacts.length > 0
+      ? attachedArtifacts.map((r) => r.artifact_version_id)
+      : (db
+          .prepare(
+            "SELECT preset_id FROM session_presets WHERE session_id = ? ORDER BY position ASC",
+          )
+          .all(sessionId) as { preset_id: string }[]).map((r) => r.preset_id);
     const result = computePresetUnion(presetIds, db);
 
     res.status(200).json(result);
@@ -328,6 +335,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     // Bug: 8baedeb — auto-detect setting links for imported nodes
     scanPresetForSettingLinks(id, db);
+    ensureInstructionArtifactForPreset(db, id);
 
     const preset: Preset = {
       id,
@@ -397,6 +405,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       const preset = importClaudeMd(filePath, db);
       // Bug: 8baedeb — auto-detect setting links for imported CLAUDE.md nodes
       scanPresetForSettingLinks(preset.id, db);
+      ensureInstructionArtifactForPreset(db, preset.id);
       broadcast("preset:created", preset);
       res.status(201).json({ preset });
     } catch (error) {
@@ -435,15 +444,25 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     const diffId = randomUUID();
     const conventionText = body.context.conventionText ?? "";
 
-    // Get the session's active presets for routing
-    const sessionPresetRows = db
-      .prepare(
-        `SELECT p.* FROM presets p
-         JOIN session_presets sp ON sp.preset_id = p.id
-         WHERE sp.session_id = ?
-         ORDER BY sp.position ASC`,
-      )
-      .all(body.sessionId) as Preset[];
+    // Violation routing is parked on legacy preset nodes. Migrated sessions
+    // attach artifact versions, so recover legacy ids where migration
+    // provenance exists and otherwise route with an empty candidate set.
+    const instructionRows = listSessionInstructionArtifacts(db, body.sessionId);
+    const legacyPresetIds = instructionRows
+      .map((row) => row.legacy_preset_id)
+      .filter((id): id is string => Boolean(id));
+    const sessionPresetRows = legacyPresetIds.length > 0
+      ? db
+          .prepare(`SELECT * FROM presets WHERE id IN (${legacyPresetIds.map(() => "?").join(",")})`)
+          .all(...legacyPresetIds) as Preset[]
+      : db
+          .prepare(
+            `SELECT p.* FROM presets p
+             JOIN session_presets sp ON sp.preset_id = p.id
+             WHERE sp.session_id = ?
+             ORDER BY sp.position ASC`,
+          )
+          .all(body.sessionId) as Preset[];
 
     // Route the violation to the best preset
     const routeResult = routePresetDiffWithNodes(
@@ -533,10 +552,15 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     const db = getDb();
 
-    // Get all preset IDs for this session
-    const sessionPresetRows = db
-      .prepare("SELECT preset_id FROM session_presets WHERE session_id = ?")
-      .all(sessionId) as Array<{ preset_id: string }>;
+    const artifactRows = listSessionInstructionArtifacts(db, sessionId);
+    const sessionPresetRows = artifactRows.length > 0
+      ? artifactRows
+          .map((row) => row.legacy_preset_id)
+          .filter((id): id is string => Boolean(id))
+          .map((preset_id) => ({ preset_id }))
+      : db
+          .prepare("SELECT preset_id FROM session_presets WHERE session_id = ?")
+          .all(sessionId) as Array<{ preset_id: string }>;
 
     if (sessionPresetRows.length === 0) {
       res.status(200).json({ valid: true, warnings: [] });
@@ -609,16 +633,23 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       return;
     }
 
-    const presetIds = (body.presetIds as unknown[]).filter(
+    const requestedPresetIds = (body.presetIds as unknown[]).filter(
       (id): id is string => typeof id === "string",
     );
 
-    if (presetIds.length === 0) {
+    if (requestedPresetIds.length === 0) {
       res.status(200).json({ valid: true, warnings: [] });
       return;
     }
 
     const db = getDb();
+    const presetIds = requestedPresetIds
+      .map((id) => legacyPresetIdForInstructionRef(db, id))
+      .filter((id): id is string => Boolean(id));
+    if (presetIds.length === 0) {
+      res.status(200).json({ valid: true, warnings: [] });
+      return;
+    }
     const placeholders = presetIds.map(() => "?").join(",");
 
     // Find all 'requires' links for nodes in those presets
@@ -682,27 +713,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
   // Bug: 61bee4e — Uses aggregate query instead of N+1 per-preset queries.
   server.get("/api/presets", (_req, res) => {
     const db = getDb();
-
-    // Single query: get presets with node count and approximate token estimate.
-    // Token estimate: SUM of body + title character lengths / 3.5 (rough tokenizer heuristic).
-    const enriched = db
-      .prepare(
-        `SELECT p.*,
-                COALESCE(agg.node_count, 0) AS node_count,
-                CAST(CEIL(COALESCE(agg.total_chars, 0) / 3.5) AS INTEGER) AS token_estimate
-         FROM presets p
-         LEFT JOIN (
-           SELECT preset_id,
-                  COUNT(*) AS node_count,
-                  SUM(LENGTH(title) + LENGTH(body)) AS total_chars
-           FROM preset_nodes
-           GROUP BY preset_id
-         ) agg ON agg.preset_id = p.id
-         ORDER BY p.created_at DESC`,
-      )
-      .all() as Array<Preset & { node_count: number; token_estimate: number }>;
-
-    res.status(200).json({ presets: enriched });
+    res.status(200).json({ presets: listInstructionArtifactPresets(db) });
   }, { fileRpc: "deny" });
 
   // POST /api/presets — create preset
@@ -767,6 +778,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       // Bug: 8baedeb — auto-detect setting links for newly created nodes
       scanPresetForSettingLinks(id, db);
     }
+    ensureInstructionArtifactForPreset(db, id);
 
     const preset: Preset = {
       id,
@@ -831,6 +843,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     ).run(name, description, now, preset.id);
 
     const updated = { ...preset, name, description, updated_at: now };
+    ensureInstructionArtifactForPreset(db, preset.id);
     broadcast("preset:updated", updated);
     res.status(200).json({ preset: updated });
   }, { fileRpc: "deny" });
@@ -961,6 +974,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
 
     // Bug: 8baedeb — re-scan setting links after bulk node replacement
     scanPresetForSettingLinks(preset.id, db);
+    ensureInstructionArtifactForPreset(db, preset.id);
 
     broadcast("preset:updated", { id: preset.id });
     res.status(200).json({ nodes });
@@ -1271,17 +1285,20 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
   // GET /api/console/sessions/:id/presets — get session's active presets
   server.get("/api/console/sessions/:id/presets", (req, res) => {
     const db = getDb();
-    const rows = db
-      .prepare(
-        `SELECT sp.*, p.name, p.description, p.source, p.version as current_version
-         FROM session_presets sp
-         JOIN presets p ON p.id = sp.preset_id
-         WHERE sp.session_id = ?
-         ORDER BY sp.position ASC`,
-      )
-      .all(req.params.id) as Array<
-      SessionPreset & { name: string; description: string; source: string; current_version: number }
-    >;
+    const artifactRows = listSessionInstructionArtifacts(db, req.params.id);
+    const rows = artifactRows.length > 0
+      ? artifactRows
+      : db
+          .prepare(
+            `SELECT sp.*, p.name, p.description, p.source, p.version as current_version
+             FROM session_presets sp
+             JOIN presets p ON p.id = sp.preset_id
+             WHERE sp.session_id = ?
+             ORDER BY sp.position ASC`,
+          )
+          .all(req.params.id) as Array<
+          SessionPreset & { name: string; description: string; source: string; current_version: number }
+        >;
 
     res.status(200).json({ presets: rows });
   }, { fileRpc: "deny" });
@@ -1297,30 +1314,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
       return;
     }
 
-    // Get current max position
-    const maxRow = db
-      .prepare(
-        "SELECT MAX(position) as max_pos FROM session_presets WHERE session_id = ?",
-      )
-      .get(sessionId) as { max_pos: number | null };
-    let nextPos = (maxRow?.max_pos ?? -1) + 1;
-
-    const insert = db.prepare(
-      `INSERT OR IGNORE INTO session_presets (session_id, preset_id, preset_version, position)
-       VALUES (?, ?, ?, ?)`,
-    );
-
-    const addAll = db.transaction(() => {
-      for (const presetId of body.presetIds!) {
-        const preset = db
-          .prepare("SELECT version FROM presets WHERE id = ?")
-          .get(presetId) as { version: number } | undefined;
-        if (preset) {
-          insert.run(sessionId, presetId, preset.version, nextPos++);
-        }
-      }
-    });
-    addAll();
+    appendSessionInstructionArtifacts(db, sessionId, body.presetIds);
 
     res.status(200).json({ ok: true });
   }, { fileRpc: "deny" });
@@ -1330,6 +1324,7 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     "/api/console/sessions/:id/presets/:presetId",
     (req, res) => {
       const db = getDb();
+      removeSessionInstructionArtifact(db, req.params.id, req.params.presetId);
       db.prepare(
         "DELETE FROM session_presets WHERE session_id = ? AND preset_id = ?",
       ).run(req.params.id, req.params.presetId);
