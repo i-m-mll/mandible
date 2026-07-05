@@ -11,6 +11,8 @@ import type {
   ArtifactResolveResult as ContractArtifactResolveResult,
   ArtifactSeriesRecord as ContractArtifactSeriesRecord,
   ArtifactSeriesSummary as ContractArtifactSeriesSummary,
+  ArtifactDraftPublishResult as ContractArtifactDraftPublishResult,
+  ArtifactDraftRecord as ContractArtifactDraftRecord,
   ArtifactVersionRecord as ContractArtifactVersionRecord,
   AuthRequestAction as ContractAuthRequestAction,
   BlockType as ContractBlockType,
@@ -18,7 +20,6 @@ import type {
   ConversationChild as ContractConversationChild,
   ConversationParent as ContractConversationParent,
   ConversationSource as ContractConversationSource,
-  ReviewSpecResponse,
   Role as ContractRole,
   StoredConversationBlock as ContractConversationBlock,
   WorkUnit as ContractWorkUnit,
@@ -117,6 +118,43 @@ export type InstructionDeliverySettings = {
     stdout: string;
     stderr: string;
   }>;
+};
+
+export type WorkCommitClassification = 'unique' | 'pre-branch-point' | 'merged-elsewhere';
+
+export type WorkCommit = {
+  hash: string;
+  short_hash: string;
+  message: string;
+  author: string;
+  date: string;
+  parents: string[];
+  classification: WorkCommitClassification;
+  is_pre_branch_point: boolean;
+  is_merged_elsewhere: boolean;
+};
+
+export type WorkCommitPage = {
+  repo_root: string;
+  branch: string;
+  default_branch: string;
+  merge_base: string | null;
+  commits: WorkCommit[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type WorkCompareMode = 'merge-base' | 'range';
+
+export type WorkCompareResult = {
+  repo_root: string;
+  from: string;
+  to: string;
+  mode: WorkCompareMode;
+  range: string;
+  raw: string;
+  stat: string;
 };
 
 export type UpdateInstructionDeliveryRequest = {
@@ -539,46 +577,25 @@ export async function getRepoBranches<T>(repoId: string): Promise<T[]> {
   return normalizeList(payload);
 }
 
-export async function getReviewDiff(
-  params: Record<string, string | number | boolean | undefined>,
-): Promise<string> {
-  const response = await apiGet(`/api/review/diff${buildQuery(params)}`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === 'string') {
-    return payload;
-  }
-  if (payload && typeof payload === 'object' && 'html' in payload) {
-    return String((payload as { html?: unknown }).html || '');
-  }
-  return '';
+export async function getRepoBranchCommits(
+  repoId: string,
+  branch: string,
+  params: { limit?: number; offset?: number } = {},
+): Promise<WorkCommitPage> {
+  const response = await apiGet(
+    `/api/work/repos/${encodeURIComponent(repoId)}/branches/${encodeURIComponent(branch)}/commits${buildQuery(params)}`,
+  );
+  return (await response.json()) as WorkCommitPage;
 }
 
-export type ReviewSpecPayload = ReviewSpecResponse;
-
-export async function getReviewSpec(
-  params: Record<string, string | number | boolean | undefined>,
-): Promise<ReviewSpecPayload> {
-  const response = await apiGet(`/api/review/spec${buildQuery(params)}`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === 'string') {
-    return { markdown: payload, commits: [], meta: {} };
-  }
-  if (!payload || typeof payload !== 'object') {
-    return { markdown: '', commits: [], meta: {} };
-  }
-  const data = payload as {
-    markdown?: string;
-    raw?: string;
-    spec?: string;
-    commits?: string[];
-    meta?: Record<string, unknown>;
-    content?: string;
-  };
-  return {
-    markdown: data.markdown || data.raw || data.spec || data.content || '',
-    commits: Array.isArray(data.commits) ? data.commits : [],
-    meta: data.meta ?? {},
-  };
+export async function getWorkCompare(
+  repoId: string,
+  params: { from: string; to: string; mode?: WorkCompareMode },
+): Promise<WorkCompareResult> {
+  const response = await apiGet(
+    `/api/work/repos/${encodeURIComponent(repoId)}/compare${buildQuery(params)}`,
+  );
+  return (await response.json()) as WorkCompareResult;
 }
 
 export async function getIssueRepos<T>(): Promise<T[]> {
@@ -1852,22 +1869,71 @@ export async function updateWorkUnit(
 
 // ── Logs API — Bug: af91bdd ──
 
+export type LogFacetValue = {
+  value: string;
+  count: number;
+};
+
+export type LogEntityFacetValue = LogFacetValue & {
+  type: 'issue' | 'auth_request' | 'artifact' | 'session' | 'repo';
+};
+
+export type LogFacets = {
+  levels: LogFacetValue[];
+  subsystems: LogFacetValue[];
+  events: LogFacetValue[];
+  entity_refs: LogEntityFacetValue[];
+  latest_ts: string | null;
+  latest_heartbeat_ts: string | null;
+};
+
+export type LogEntry = {
+  id?: string;
+  level: string;
+  message?: string;
+  event?: string;
+  subsystem?: string;
+  time?: string;
+  issue_id?: string | null;
+  auth_request_id?: string | null;
+  artifact_id?: string | null;
+  session_id?: string | null;
+  repo_id?: string | null;
+  [key: string]: unknown;
+};
+
 export type LogsResponse = {
-  entries: Array<{ level: string; message: string; time?: string; [key: string]: unknown }>;
+  entries: LogEntry[];
   total: number;
   limit: number;
   offset: number;
   log_file: string;
   exists: boolean;
+  source?: 'daemon_log' | 'stderr_file';
+  facets?: LogFacets;
 };
 
 export async function getLogs(params?: {
+  levels?: string[];
   level?: string;
+  subsystem?: string;
+  event?: string;
+  q?: string;
+  related?: string;
+  since?: string;
+  until?: string;
   limit?: number;
   offset?: number;
 }): Promise<LogsResponse> {
   const query = new URLSearchParams();
+  if (params?.levels && params.levels.length > 0) query.set('levels', params.levels.join(','));
   if (params?.level) query.set('level', params.level);
+  if (params?.subsystem) query.set('subsystem', params.subsystem);
+  if (params?.event) query.set('event', params.event);
+  if (params?.q) query.set('q', params.q);
+  if (params?.related) query.set('related', params.related);
+  if (params?.since) query.set('since', params.since);
+  if (params?.until) query.set('until', params.until);
   if (params?.limit != null) query.set('limit', String(params.limit));
   if (params?.offset != null) query.set('offset', String(params.offset));
   const qs = query.toString();
@@ -2040,6 +2106,10 @@ export type ArtifactSeriesSummary = ContractArtifactSeriesSummary;
 
 export type ArtifactVersionRecord = ContractArtifactVersionRecord;
 
+export type ArtifactDraftRecord = ContractArtifactDraftRecord;
+
+export type ArtifactDraftPublishResult = ContractArtifactDraftPublishResult;
+
 export type ArtifactVersionHistory = {
   series: ArtifactSeriesRecord;
   versions: ArtifactVersionRecord[];
@@ -2076,6 +2146,33 @@ export type ArtifactContentResult = {
   };
   reason?: string;
   warnings?: string[];
+};
+
+export type ArtifactDiffResult = {
+  a: {
+    ref: string;
+    artifact_id: string | null;
+    content_hash: string | null;
+    media_type: string;
+    size_bytes: number | null;
+    available: boolean;
+    reason?: string;
+  };
+  b: {
+    ref: string;
+    artifact_id: string | null;
+    content_hash: string | null;
+    media_type: string;
+    size_bytes: number | null;
+    available: boolean;
+    reason?: string;
+  };
+  diffable: boolean;
+  identical: boolean;
+  kind: string;
+  unified: string | null;
+  stats: { added: number; removed: number } | null;
+  reason?: string;
 };
 
 export type KnowledgeBackrefRecord = {
@@ -2126,6 +2223,56 @@ export async function getArtifactVersions(ref: string): Promise<ArtifactVersionH
   const response = await apiGet(`/api/artifacts/versions${query}`);
   const payload = (await parseMaybeJson(response)) as { history: ArtifactVersionHistory };
   return payload.history;
+}
+
+export async function getArtifactDiff(from: string, to: string): Promise<ArtifactDiffResult> {
+  const query = buildQuery({ a: from, b: to });
+  const response = await apiGet(`/api/artifacts/diff${query}`);
+  const payload = (await parseMaybeJson(response)) as { diff: ArtifactDiffResult };
+  return payload.diff;
+}
+
+export async function getArtifactDraft(ref: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactDraftRecord | null> {
+  const query = buildQuery({ ref });
+  const response = await apiGet(`/api/artifacts/drafts${query}`, { signal: options.signal });
+  const payload = (await parseMaybeJson(response)) as { draft: ArtifactDraftRecord | null };
+  return payload.draft ?? null;
+}
+
+export async function saveArtifactDraft(input: {
+  ref: string;
+  base_version_id?: string;
+  content: string;
+  media_type?: string | null;
+  label?: string | null;
+  note?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<ArtifactDraftRecord> {
+  const response = await apiPost('/api/artifacts/drafts', input);
+  const payload = (await parseMaybeJson(response)) as { draft: ArtifactDraftRecord };
+  return payload.draft;
+}
+
+export async function rebaseArtifactDraft(ref: string): Promise<ArtifactDraftRecord> {
+  const response = await apiPost('/api/artifacts/drafts/rebase', { ref });
+  const payload = (await parseMaybeJson(response)) as { draft: ArtifactDraftRecord };
+  return payload.draft;
+}
+
+export async function publishArtifactDraft(input: {
+  ref: string;
+  label?: string | null;
+  note?: string | null;
+  allow_stale?: boolean;
+}): Promise<ArtifactDraftPublishResult> {
+  const response = await apiPost('/api/artifacts/drafts/publish', input);
+  return (await parseMaybeJson(response)) as ArtifactDraftPublishResult;
+}
+
+export async function deleteArtifactDraft(ref: string): Promise<{ deleted: boolean }> {
+  const query = buildQuery({ ref });
+  const response = await apiDelete(`/api/artifacts/drafts${query}`);
+  return (await parseMaybeJson(response)) as { deleted: boolean };
 }
 
 export async function getArtifact(id: string, options: { signal?: AbortSignal } = {}): Promise<ArtifactRecord> {

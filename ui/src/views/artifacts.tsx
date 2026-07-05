@@ -18,14 +18,22 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import {
+  deleteArtifactDraft,
   getArtifact,
   getArtifactContent,
+  getArtifactDiff,
+  getArtifactDraft,
   getArtifactKnowledgeBackrefs,
   getArtifactSeriesList,
   getArtifactVersions,
   getLedgerIssueDetail,
+  publishArtifactDraft,
+  rebaseArtifactDraft,
   resolveArtifact,
+  saveArtifactDraft,
   type ArtifactContentResult,
+  type ArtifactDiffResult,
+  type ArtifactDraftRecord,
   type ArtifactLinkRecord,
   type ArtifactRecord,
   type ArtifactResolveResult,
@@ -35,6 +43,7 @@ import {
   type ArtifactVersionRecord,
   type KnowledgeBackrefRecord,
 } from '../api';
+import { DiffView } from '../components/DiffView';
 import {
   artifactDetailHref,
   compactArtifactBlobRef,
@@ -44,6 +53,7 @@ import {
   versionDetailHref,
 } from '../resource-refs';
 import { renderDocumentText } from './spaces/DocumentRenderer';
+import { MarkdownSourceEditor } from './spaces/MarkdownSourceEditor';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpace';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
@@ -57,6 +67,7 @@ type ArtifactsViewProps = {
   initialSeriesRef?: string;
   initialVersionNo?: number | null;
   initialRepo?: string;
+  initialRole?: string;
   sidebarHidden?: boolean;
 };
 
@@ -128,11 +139,13 @@ export function ArtifactsView({
   initialSeriesRef,
   initialVersionNo = null,
   initialRepo,
+  initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
   const [filters, setFilters] = useState<ArtifactFilters>(() => ({
     ...EMPTY_FILTERS,
     repo: initialRepo ?? '',
+    role: initialRole ?? '',
   }));
   const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
   const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
@@ -174,6 +187,13 @@ export function ArtifactsView({
       return current.repo === repo ? current : { ...current, repo };
     });
   }, [initialRepo]);
+
+  useEffect(() => {
+    setFilters((current) => {
+      const role = initialRole ?? current.role;
+      return current.role === role ? current : { ...current, role };
+    });
+  }, [initialRole]);
 
   useEffect(() => {
     deepLinkActiveRef.current = Boolean(initialArtifactId || initialRef || initialSeriesRef);
@@ -505,6 +525,37 @@ export function ArtifactsView({
     writeArtifactHash(selectedSeriesRef, versionNo, lastWrittenHashRef);
   };
 
+  const handleVersionPublished = useCallback((published: { result: { series: ArtifactSeriesRecord; version: ArtifactVersionRecord; artifact: ArtifactRecord } }) => {
+    const nextSeriesRef = seriesRecordRef(published.result.series);
+    setVersionHistory((current) => {
+      const nextVersion = published.result.version;
+      if (!current || current.series.id !== published.result.series.id) {
+        return {
+          series: published.result.series,
+          versions: [nextVersion],
+          links: [],
+        };
+      }
+      const versions = [
+        nextVersion,
+        ...current.versions.filter((version) => version.id !== nextVersion.id),
+      ].sort((a, b) => b.version_no - a.version_no);
+      return {
+        ...current,
+        series: published.result.series,
+        versions,
+      };
+    });
+    setSelectedSeriesRef(nextSeriesRef);
+    setSelectedVersionNo(published.result.version.version_no);
+    setSelectedArtifactId(published.result.artifact.id);
+    setSelectedArtifact(published.result.artifact);
+    setArtifactContent(null);
+    setResolution(null);
+    writeArtifactHash(nextSeriesRef, published.result.version.version_no, lastWrittenHashRef);
+    void loadSeries();
+  }, [loadSeries]);
+
   const updateFilter = (key: keyof ArtifactFilters, value: string) => {
     setFilters((current) => ({ ...current, [key]: value }));
   };
@@ -599,6 +650,7 @@ export function ArtifactsView({
             onVersionChange={selectVersion}
             onToggleVersionHistory={() => setVersionHistoryOpen((open) => !open)}
             onCloseVersionHistory={() => setVersionHistoryOpen(false)}
+            onVersionPublished={handleVersionPublished}
             onMetadataOpenChange={setDetailMetadataOpen}
             content={coherentArtifactContent}
             contentLoading={coherentContentLoading}
@@ -644,6 +696,7 @@ export type ArtifactDetailProps = {
   onVersionChange: (versionNo: number | null) => void;
   onToggleVersionHistory: () => void;
   onCloseVersionHistory: () => void;
+  onVersionPublished?: (published: { result: { series: ArtifactSeriesRecord; version: ArtifactVersionRecord; artifact: ArtifactRecord } }) => void;
   onMetadataOpenChange?: (open: boolean) => void;
   content: ArtifactContentResult | null;
   contentLoading: boolean;
@@ -664,6 +717,7 @@ export function ArtifactDetail({
   onVersionChange,
   onToggleVersionHistory,
   onCloseVersionHistory,
+  onVersionPublished,
   onMetadataOpenChange,
   content,
   contentLoading,
@@ -725,6 +779,28 @@ export function ArtifactDetail({
     ['Created', formatTime(artifact.created_at)],
   ].filter(([, value]) => Boolean(value)) as MetadataRow[];
   const locatorRows = artifact.aliases ?? [];
+  const editableState = artifactEditableState(artifact, content);
+  const baseVersion = selectedVersion ?? versions[0] ?? null;
+  const previousVersion = selectedVersion
+    ? versions
+      .filter((version) => version.version_no < selectedVersion.version_no)
+      .sort((a, b) => b.version_no - a.version_no)[0] ?? null
+    : null;
+  const [draft, setDraft] = useState<ArtifactDraftRecord | null>(null);
+  const [draftValue, setDraftValue] = useState('');
+  const [draftLabel, setDraftLabel] = useState('');
+  const [draftNote, setDraftNote] = useState('');
+  const [draftLoading, setDraftLoading] = useState(false);
+  const [draftSaving, setDraftSaving] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
+  const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  const [editMode, setEditMode] = useState(false);
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [diffLoading, setDiffLoading] = useState(false);
+  const [diffError, setDiffError] = useState<string | null>(null);
+  const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
+  const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
+  latestDraftRef.current = draft;
 
   const updateActionsMenuPosition = useCallback(() => {
     const node = actionsRef.current;
@@ -788,10 +864,198 @@ export function ArtifactDetail({
     };
   }, [metadataOpen, onMetadataOpenChange]);
 
+  useEffect(() => {
+    if (!seriesRefValue) {
+      setDraft(null);
+      setDraftValue('');
+      setEditMode(false);
+      return undefined;
+    }
+    const controller = new AbortController();
+    setDraftLoading(true);
+    setDraftError(null);
+    getArtifactDraft(seriesRefValue, { signal: controller.signal })
+      .then((nextDraft) => {
+        setDraft(nextDraft);
+        setDraftValue(nextDraft?.content ?? '');
+        setDraftLabel(nextDraft?.label ?? '');
+        setDraftNote(nextDraft?.note ?? '');
+        setEditMode(Boolean(nextDraft));
+      })
+      .catch((err) => {
+        if (isAbortError(err)) return;
+        setDraftError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => setDraftLoading(false));
+    return () => controller.abort();
+  }, [seriesRefValue]);
+
+  useEffect(() => {
+    if (!editMode || !draft || draftValue === draft.content || !seriesRefValue) return undefined;
+    setDraftSaving(true);
+    const timer = window.setTimeout(() => {
+      saveArtifactDraft({
+        ref: seriesRefValue,
+        base_version_id: draft.base_version_id,
+        content: draftValue,
+        media_type: editableState.mediaType,
+        label: draftLabel || null,
+        note: draftNote || null,
+      })
+        .then((saved) => {
+          setDraft(saved);
+          setDraftStatus('Draft saved');
+          setDraftError(null);
+        })
+        .catch((err) => setDraftError(err instanceof Error ? err.message : String(err)))
+        .finally(() => setDraftSaving(false));
+    }, 700);
+    return () => {
+      window.clearTimeout(timer);
+      setDraftSaving(false);
+    };
+  }, [draft, draftLabel, draftNote, draftValue, editMode, editableState.mediaType, seriesRefValue]);
+
+  useEffect(() => {
+    setDiffOpen(false);
+    setVersionDiff(null);
+    setDiffError(null);
+  }, [selectedVersion?.id]);
+
+  useEffect(() => {
+    if (!diffOpen || !selectedVersion || !previousVersion) return undefined;
+    let cancelled = false;
+    setDiffLoading(true);
+    setDiffError(null);
+    getArtifactDiff(previousVersion.id, selectedVersion.id)
+      .then((diff) => {
+        if (!cancelled) setVersionDiff(diff);
+      })
+      .catch((err) => {
+        if (!cancelled) setDiffError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setDiffLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [diffOpen, previousVersion, selectedVersion]);
+
   const closeActionsAfter = (callback: () => void) => {
     callback();
     setActionsOpen(false);
   };
+
+  const saveDraftNow = useCallback(async () => {
+    if (!seriesRefValue || !draft) return null;
+    setDraftSaving(true);
+    try {
+      const saved = await saveArtifactDraft({
+        ref: seriesRefValue,
+        base_version_id: draft.base_version_id,
+        content: draftValue,
+        media_type: editableState.mediaType,
+        label: draftLabel || null,
+        note: draftNote || null,
+      });
+      setDraft(saved);
+      setDraftStatus('Draft saved');
+      setDraftError(null);
+      return saved;
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : String(err));
+      return null;
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [draft, draftLabel, draftNote, draftValue, editableState.mediaType, seriesRefValue]);
+
+  const startEdit = useCallback(async () => {
+    if (!editableState.editable || !seriesRefValue || !baseVersion || !editableState.sourceText) return;
+    setDraftSaving(true);
+    setDraftError(null);
+    try {
+      const saved = await saveArtifactDraft({
+        ref: seriesRefValue,
+        base_version_id: draft?.base_version_id ?? baseVersion.id,
+        content: draft?.content ?? editableState.sourceText,
+        media_type: editableState.mediaType,
+        label: draftLabel || null,
+        note: draftNote || null,
+      });
+      setDraft(saved);
+      setDraftValue(saved.content);
+      setDraftLabel(saved.label ?? '');
+      setDraftNote(saved.note ?? '');
+      setEditMode(true);
+      setDraftStatus(saved.stale ? 'Draft resumed from an older base' : 'Draft ready');
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [baseVersion, draft, draftLabel, draftNote, editableState, seriesRefValue]);
+
+  const discardDraft = useCallback(async () => {
+    if (!seriesRefValue) return;
+    setDraftSaving(true);
+    try {
+      await deleteArtifactDraft(seriesRefValue);
+      setDraft(null);
+      setDraftValue('');
+      setEditMode(false);
+      setDraftStatus('Draft discarded');
+      setDraftError(null);
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [seriesRefValue]);
+
+  const publishDraft = useCallback(async (allowStale: boolean) => {
+    if (!seriesRefValue) return;
+    const saved = await saveDraftNow();
+    const activeDraft = saved ?? latestDraftRef.current;
+    if (!activeDraft) return;
+    setDraftSaving(true);
+    try {
+      const published = await publishArtifactDraft({
+        ref: seriesRefValue,
+        label: draftLabel || null,
+        note: draftNote || null,
+        allow_stale: allowStale,
+      });
+      setDraft(null);
+      setDraftValue('');
+      setEditMode(false);
+      setDraftStatus(`Published v${published.result.version.version_no}`);
+      setDraftError(null);
+      onVersionPublished?.(published);
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [draftLabel, draftNote, onVersionPublished, saveDraftNow, seriesRefValue]);
+
+  const rebaseDraft = useCallback(async () => {
+    if (!seriesRefValue) return;
+    await saveDraftNow();
+    setDraftSaving(true);
+    try {
+      const rebased = await rebaseArtifactDraft(seriesRefValue);
+      setDraft(rebased);
+      setDraftValue(rebased.content);
+      setDraftStatus('Draft rebased; resolve conflict markers before publishing');
+      setDraftError(null);
+    } catch (err) {
+      setDraftError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDraftSaving(false);
+    }
+  }, [saveDraftNow, seriesRefValue]);
 
   const overlays = (
     <>
@@ -951,6 +1215,16 @@ export function ArtifactDetail({
                   type="button"
                   className="artifact-detail__actions-item"
                   role="menuitem"
+                  disabled={!editableState.editable || draftSaving}
+                  title={editableState.editable ? 'Edit artifact content' : editableState.reason}
+                  onClick={() => closeActionsAfter(() => void startEdit())}
+                >
+                  {draft ? 'Resume draft' : 'Edit content'}
+                </button>
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
                   onClick={() => closeActionsAfter(onToggleVersionHistory)}
                 >
                   Version history
@@ -965,6 +1239,15 @@ export function ArtifactDetail({
                     Jump to latest
                   </button>
                 )}
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
+                  disabled={!selectedVersion || !previousVersion}
+                  onClick={() => closeActionsAfter(() => setDiffOpen((open) => !open))}
+                >
+                  Diff vs previous
+                </button>
               </div>
             )}
             <AddToSpace
@@ -992,12 +1275,62 @@ export function ArtifactDetail({
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
         <div className="artifact-detail__body">
-          <PreviewSection
-            preview={preview}
-            content={content}
-            contentLoading={contentLoading}
-            contentError={contentError}
-          />
+          {editMode && draft ? (
+            <ArtifactEditorSection
+              draft={draft}
+              value={draftValue}
+              label={draftLabel}
+              note={draftNote}
+              saving={draftSaving}
+              loading={draftLoading}
+              error={draftError}
+              status={draftStatus}
+              onChange={setDraftValue}
+              onLabelChange={setDraftLabel}
+              onNoteChange={setDraftNote}
+              onSave={() => void saveDraftNow()}
+              onPublish={() => void publishDraft(false)}
+              onPublishStale={() => void publishDraft(true)}
+              onRebase={() => void rebaseDraft()}
+              onDiscard={() => void discardDraft()}
+              onClose={() => setEditMode(false)}
+            />
+          ) : (
+            <>
+              {!editableState.editable && (
+                <div className="artifact-detail__hint artifact-detail__hint--edit">{editableState.reason}</div>
+              )}
+              {draft && (
+                <div className="artifact-detail__draft-banner">
+                  <span>Draft saved for v{draft.base_version_no}</span>
+                  <button type="button" className="artifact-detail__inline-button" onClick={() => setEditMode(true)}>Resume</button>
+                  <button type="button" className="artifact-detail__inline-button" onClick={() => void discardDraft()}>Discard</button>
+                </div>
+              )}
+              <PreviewSection
+                preview={preview}
+                content={content}
+                contentLoading={contentLoading}
+                contentError={contentError}
+              />
+            </>
+          )}
+          {diffOpen && selectedVersion && previousVersion && (
+            <section className="artifact-detail__section artifact-detail__diff" aria-label="Artifact version diff">
+              <div className="artifact-detail__section-heading">
+                <h3>Diff v{previousVersion.version_no} → v{selectedVersion.version_no}</h3>
+                <button type="button" className="artifact-detail__inline-button" onClick={() => setDiffOpen(false)}>Hide</button>
+              </div>
+              {diffLoading && <div className="artifacts-empty" role="status">Loading diff...</div>}
+              {!diffLoading && diffError && <div className="artifacts-error">{diffError}</div>}
+              {!diffLoading && !diffError && versionDiff?.unified && (
+                <DiffView diffText={versionDiff.unified} ariaLabel="Artifact version diff" />
+              )}
+              {!diffLoading && !diffError && versionDiff && !versionDiff.unified && (
+                <div className="artifacts-empty">{versionDiff.reason || 'No textual diff is available.'}</div>
+              )}
+            </section>
+          )}
           {artifact.links && artifact.links.length > 0 && (
             <section className="artifact-detail__section">
               <h3>Links</h3>
@@ -1077,6 +1410,151 @@ function useArtifactSpaceProject(artifact: ArtifactRecord): string | null {
   }, [issueEntityId]);
 
   return projectId;
+}
+
+type ArtifactEditableState = {
+  editable: boolean;
+  reason: string;
+  sourceText: string;
+  mediaType: string | null;
+};
+
+function artifactEditableState(
+  artifact: ArtifactRecord,
+  content: ArtifactContentResult | null,
+): ArtifactEditableState {
+  const mediaType = content?.media_type ?? artifact.media_type ?? null;
+  if (artifact.custody_mode === 'external') {
+    return {
+      editable: false,
+      reason: 'Editing unavailable: external custody cannot be safely snapshotted.',
+      sourceText: '',
+      mediaType,
+    };
+  }
+  if (!content || content.status !== 'available' || !content.preview) {
+    return {
+      editable: false,
+      reason: 'Editing unavailable until artifact text is materialized.',
+      sourceText: '',
+      mediaType,
+    };
+  }
+  if (content.preview.truncated) {
+    return {
+      editable: false,
+      reason: 'Editing unavailable for partial previews; full text is required.',
+      sourceText: '',
+      mediaType,
+    };
+  }
+  if (content.kind !== 'text' && content.kind !== 'markdown') {
+    return {
+      editable: false,
+      reason: 'Editing is limited to safe text and Markdown artifacts.',
+      sourceText: '',
+      mediaType,
+    };
+  }
+  return {
+    editable: true,
+    reason: artifact.custody_mode === 'link'
+      ? 'Publishing will snapshot the edited text as a managed artifact version.'
+      : 'Editable text artifact.',
+    sourceText: content.preview.text,
+    mediaType,
+  };
+}
+
+function ArtifactEditorSection({
+  draft,
+  value,
+  label,
+  note,
+  saving,
+  loading,
+  error,
+  status,
+  onChange,
+  onLabelChange,
+  onNoteChange,
+  onSave,
+  onPublish,
+  onPublishStale,
+  onRebase,
+  onDiscard,
+  onClose,
+}: {
+  draft: ArtifactDraftRecord;
+  value: string;
+  label: string;
+  note: string;
+  saving: boolean;
+  loading: boolean;
+  error: string | null;
+  status: string | null;
+  onChange: (value: string) => void;
+  onLabelChange: (value: string) => void;
+  onNoteChange: (value: string) => void;
+  onSave: () => void;
+  onPublish: () => void;
+  onPublishStale: () => void;
+  onRebase: () => void;
+  onDiscard: () => void;
+  onClose: () => void;
+}): JSX.Element {
+  return (
+    <section className="artifact-detail__section artifact-editor" aria-label="Artifact editor">
+      <div className="artifact-editor__header">
+        <div>
+          <h3>Edit content</h3>
+          <p>Draft based on v{draft.base_version_no}{draft.latest_version_no ? `; latest is v${draft.latest_version_no}` : ''}</p>
+        </div>
+        <div className="artifact-editor__status" role="status">
+          {saving ? 'Saving...' : loading ? 'Loading draft...' : status}
+        </div>
+      </div>
+      {draft.stale && (
+        <div className="artifact-detail__warning artifact-editor__stale">
+          <span>Draft based on v{draft.base_version_no}; v{draft.latest_version_no} exists.</span>
+          <button type="button" onClick={onPublishStale}>Publish anyway</button>
+          <button type="button" onClick={onRebase}>Rebase draft</button>
+          <button type="button" onClick={onDiscard}>Discard draft</button>
+        </div>
+      )}
+      {error && <div className="artifacts-error">{error}</div>}
+      <div className="artifact-editor__fields">
+        <label>
+          <span>Version label</span>
+          <input value={label} onInput={(event) => onLabelChange(event.currentTarget.value)} placeholder="Optional label" />
+        </label>
+        <label>
+          <span>Version note</span>
+          <input value={note} onInput={(event) => onNoteChange(event.currentTarget.value)} placeholder="Optional note" />
+        </label>
+      </div>
+      <MarkdownSourceEditor
+        blockId={`artifact-draft:${draft.series_id}`}
+        value={value}
+        ariaLabel="Artifact draft Markdown source"
+        onChange={(nextValue) => onChange(nextValue)}
+        onBlur={(nextValue) => onChange(nextValue)}
+        onCaretChange={() => undefined}
+        onSelectionChange={() => undefined}
+        onItemCommand={() => undefined}
+        onOpenReference={() => undefined}
+        onBoundaryArrow={(_blockId, _direction) => false}
+      />
+      <div className="artifact-editor__actions">
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onClose}>Close editor</button>
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onSave} disabled={saving}>Save draft</button>
+        <button type="button" className="btn btn--ghost btn--sm" onClick={onDiscard} disabled={saving}>Discard draft</button>
+        <button type="button" className="btn btn--primary btn--sm" onClick={onPublish} disabled={saving || draft.stale}>
+          Save as new version
+        </button>
+      </div>
+    </section>
+  );
 }
 
 function PreviewSection({

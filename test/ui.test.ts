@@ -7,7 +7,7 @@ import { useCallback, useMemo, useState } from 'preact/hooks';
 import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
 import { App } from '../ui/src/app';
 import {
-  getReviewSpec,
+  getWorkCompare,
   invalidateApiGetCache,
   patchSession,
   updateConversation,
@@ -32,7 +32,6 @@ import {
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
-import { ReviewView } from '../ui/src/views/review';
 import { SessionsView } from '../ui/src/views/sessions';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
@@ -179,16 +178,45 @@ function setViewportWidth(width: number): void {
 function stubFetch(): void {
   const mockFetch = vi.fn((input: RequestInfo) => {
     const url = String(input);
-    if (url.includes('/api/review/diff')) {
+    if (url.includes('/api/work/repos/') && url.includes('/commits')) {
       return Promise.resolve(
-        new Response('<div class="diff">diff</div>', {
-          headers: { 'content-type': 'text/html' },
+        new Response(JSON.stringify({
+          repo_root: '/tmp/repo',
+          branch: 'feature/work',
+          default_branch: 'main',
+          merge_base: 'base',
+          commits: [
+            {
+              hash: 'abc123456789',
+              short_hash: 'abc1234',
+              message: 'Fresh work',
+              author: 'Test User',
+              date: '2024-01-03T10:00:00Z',
+              parents: ['base0000'],
+              classification: 'unique',
+              is_pre_branch_point: false,
+              is_merged_elsewhere: false,
+            },
+          ],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        }), {
+          headers: { 'content-type': 'application/json' },
         }),
       );
     }
-    if (url.includes('/api/review/spec')) {
+    if (url.includes('/api/work/repos/repo/compare')) {
       return Promise.resolve(
-        new Response(JSON.stringify({ markdown: 'spec', commits: ['c1'] }), {
+        new Response(JSON.stringify({
+          repo_root: '/tmp/repo',
+          from: 'main',
+          to: 'feature',
+          mode: 'merge-base',
+          range: 'main...feature',
+          raw: 'diff --git a/a.txt b/a.txt\n',
+          stat: 'a.txt | 1 +',
+        }), {
           headers: { 'content-type': 'application/json' },
         }),
       );
@@ -305,6 +333,24 @@ describe('App routing', () => {
     expect(parseRouteFromHash('#/sessions?session=s1')).toEqual({
       tab: 'console',
       params: { session: 's1' },
+    });
+  });
+
+  it('routes retired Review hashes into Projects while preserving query params', () => {
+    expect(parseRouteFromHash('#/review?repo=repo&base=main&head=feature')).toEqual({
+      tab: 'work',
+      params: { repo: 'repo', base: 'main', head: 'feature' },
+    });
+  });
+
+  it('routes retired Presets hashes into instruction artifacts', () => {
+    expect(parseRouteFromHash('#/presets')).toEqual({
+      tab: 'artifacts',
+      params: { role: 'instructions' },
+    });
+    expect(parseRouteFromHash('#/presets?role=context')).toEqual({
+      tab: 'artifacts',
+      params: { role: 'context' },
     });
   });
 
@@ -1277,7 +1323,7 @@ describe('WorkOverviewView', () => {
     expect(screen.getByLabelText('Repository details')).toBeTruthy();
     expect(screen.getByPlaceholderText('Search repos...')).toBeTruthy();
     expect(screen.getAllByText('Alpha Repo').length).toBeGreaterThan(0);
-    expect(screen.getByText('feature/work')).toBeTruthy();
+    expect(screen.getAllByText('feature/work').length).toBeGreaterThan(0);
     expect(screen.getAllByText('\u2191 Push').length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByLabelText('Advanced filters'));
@@ -1295,7 +1341,83 @@ describe('WorkOverviewView', () => {
     });
 
     fireEvent.click(screen.getByText('Zeta Repo'));
-    expect(screen.getByText('legacy')).toBeTruthy();
+    expect(screen.getAllByText('legacy').length).toBeGreaterThan(0);
+  });
+
+  it('loads commit browser and renders URL compare state through DiffView', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo) => {
+      const url = String(input);
+      if (url === '/api/work/repos') {
+        return new Response(JSON.stringify([
+          { id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' },
+        ]), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/commits')) {
+        return new Response(JSON.stringify({
+          repo_root: '/tmp/repo',
+          branch: 'feature/work',
+          default_branch: 'main',
+          merge_base: 'base0000',
+          commits: [
+            {
+              hash: 'new000000000',
+              short_hash: 'new0000',
+              message: 'Fresh work',
+              author: 'Test User',
+              date: '2024-01-03T10:00:00Z',
+              parents: ['old000000000'],
+              classification: 'unique',
+              is_pre_branch_point: false,
+              is_merged_elsewhere: false,
+            },
+          ],
+          total: 1,
+          limit: 50,
+          offset: 0,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url.includes('/compare')) {
+        return new Response(JSON.stringify({
+          repo_root: '/tmp/repo',
+          from: 'old000000000',
+          to: 'new000000000',
+          mode: 'range',
+          range: 'old000000000..new000000000',
+          raw: [
+            'diff --git a/file.txt b/file.txt',
+            '--- a/file.txt',
+            '+++ b/file.txt',
+            '@@ -1 +1 @@',
+            '-old',
+            '+new',
+          ].join('\n'),
+          stat: 'file.txt | 2 +-',
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { headers: { 'content-type': 'application/json' } });
+    }));
+
+    render(
+      h(WorkOverviewView, {
+        repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
+        branchesByRepo: {
+          r1: [
+            { name: 'feature/work', status: 'clean', ahead_default: 1, behind_default: 0, last_commit_message: 'Fresh work' },
+          ],
+        },
+        params: {
+          repo: 'r1',
+          branch: 'feature/work',
+          compare: 'old000000000..new000000000',
+          mode: 'range',
+        },
+        onRescan: () => undefined,
+      }),
+    );
+
+    expect((await screen.findAllByText('Fresh work')).length).toBeGreaterThan(0);
+    expect(await screen.findByLabelText('Projects compare diff')).toBeTruthy();
+    expect(screen.getByText('file.txt | 2 +-')).toBeTruthy();
   });
 });
 
@@ -1912,34 +2034,26 @@ describe('useSidebarResize', () => {
   });
 });
 
-describe('ReviewView', () => {
-  it('renders spec and diff', async () => {
-    render(
-      h(ReviewView, {
-        params: { repo: 'repo', base: 'main', head: 'feat' },
-        loaders: {
-          diff: async () => '<div class="diff">diff</div>',
-          spec: async () => ({ markdown: 'spec text', commits: ['c1'], meta: {} }),
-        },
-      }),
-    );
-
-    await waitFor(() => expect(screen.getByText('spec text')).toBeTruthy());
-    expect(screen.getByText('c1')).toBeTruthy();
-  });
-});
-
 describe('API contract helpers', () => {
-  it('normalizes legacy review spec fields into the canonical payload', async () => {
+  it('loads Projects compare payloads with raw unified diff text', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => (
-      new Response(JSON.stringify({ raw: 'legacy spec', commits: ['c1'] }), {
+      new Response(JSON.stringify({
+        repo_root: '/tmp/repo',
+        from: 'main',
+        to: 'feature',
+        mode: 'merge-base',
+        range: 'main...feature',
+        raw: 'diff --git a/a.txt b/a.txt\n',
+        stat: 'a.txt | 1 +',
+      }), {
         headers: { 'content-type': 'application/json' },
       })
     )));
 
-    const spec = await getReviewSpec({ repo: 'repo', branch: 'feature/x' });
+    const compare = await getWorkCompare('repo', { from: 'main', to: 'feature', mode: 'merge-base' });
 
-    expect(spec).toEqual({ markdown: 'legacy spec', commits: ['c1'], meta: {} });
+    expect(compare.raw).toContain('diff --git');
+    expect(compare.range).toBe('main...feature');
   });
 
   it('surfaces server error bodies for PATCH helpers', async () => {

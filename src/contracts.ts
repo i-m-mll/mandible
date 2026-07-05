@@ -95,12 +95,6 @@ export type SseEvent<TData = unknown> = {
   data: TData;
 };
 
-export type ReviewSpecResponse = {
-  markdown: string;
-  commits: string[];
-  meta: Record<string, unknown>;
-};
-
 export type AuthRequestStatus =
   | "pending"
   | "executing"
@@ -579,6 +573,7 @@ export type ArtifactVersionRecord = {
   series_id: string;
   artifact_id: string;
   version_no: number;
+  parent_version_id: string | null;
   source_kind: ArtifactVersionSourceKind;
   content_hash: string;
   commit_sha: string | null;
@@ -624,6 +619,36 @@ export type ArtifactSeriesSummary = {
   latest_version: ArtifactVersionRecord | null;
   latest_artifact: ArtifactRecord | null;
   links: ArtifactLinkRecord[];
+};
+
+export type ArtifactDraftRecord = {
+  id: string;
+  series_id: string;
+  base_version_id: string;
+  base_version_no: number;
+  latest_version_id: string | null;
+  latest_version_no: number | null;
+  stale: boolean;
+  content: string;
+  media_type: string | null;
+  label: string | null;
+  note: string | null;
+  metadata: Record<string, unknown>;
+  created_at: number;
+  updated_at: number;
+};
+
+export type ArtifactVersionRecordResult = {
+  series: ArtifactSeriesRecord;
+  version: ArtifactVersionRecord;
+  artifact: ArtifactRecord;
+  created: boolean;
+  warnings: string[];
+};
+
+export type ArtifactDraftPublishResult = {
+  draft: ArtifactDraftRecord;
+  result: ArtifactVersionRecordResult;
 };
 
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 
+import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
 import type { WorkScanner, RepoInfo } from "./work-scanner.js";
@@ -27,6 +28,7 @@ export type PushSessionResult = {
 
 const REPO_TIMEOUT_MS = 30_000;
 const SESSION_TIMEOUT_MS = 10 * 60 * 1000;
+const pushLog = getDaemonLogger();
 
 // Bug: ea3102a — SSH ControlMaster approach: open one SSH connection per host
 // (one YubiKey touch) and reuse for all subsequent git pushes via GIT_SSH_COMMAND.
@@ -448,7 +450,10 @@ function recordPushHistory(sessionId: string, scope: PushScope, result: PushSess
       );
     }
   } catch (err) {
-    console.error("[push-manager] failed to record push history:", err);
+    pushLog("error", "push_history_record_failed", {
+      subsystem: "push-manager",
+      error: String(err),
+    });
   }
 }
 

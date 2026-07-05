@@ -1,10 +1,11 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/preact';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type {
   ArtifactContentResult,
   ArtifactRecord,
   ArtifactSeriesRecord,
+  ArtifactVersionRecord,
 } from '../ui/src/api';
 import {
   ArtifactDetail,
@@ -15,6 +16,7 @@ import {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 function artifact(overrides: Partial<ArtifactRecord> = {}): ArtifactRecord {
@@ -84,18 +86,45 @@ function content(overrides: Partial<ArtifactContentResult> = {}): ArtifactConten
   };
 }
 
+function version(overrides: Partial<ArtifactVersionRecord> = {}): ArtifactVersionRecord {
+  return {
+    id: 'artifact-version:v1',
+    series_id: 'artifact-series:156f240abcdef',
+    artifact_id: 'artifact:sha256:156f240abcdef',
+    version_no: 1,
+    parent_version_id: null,
+    source_kind: 'managed',
+    content_hash: '156f240abcdef',
+    commit_sha: null,
+    repo_path: null,
+    observed_path: null,
+    custody_mode: 'managed',
+    label: null,
+    note: null,
+    metadata: {},
+    created_at: 1000,
+    ...overrides,
+  };
+}
+
 function renderArtifactDetail(
   nextContent: ArtifactContentResult | null = content(),
-  options: { contentLoading?: boolean } = {},
+  options: {
+    contentLoading?: boolean;
+    artifact?: ArtifactRecord;
+    versions?: ArtifactVersionRecord[];
+    selectedVersion?: ArtifactVersionRecord | null;
+    selectedVersionNo?: number | null;
+  } = {},
 ) {
   return render(
     <ArtifactDetail
-      artifact={artifact()}
+      artifact={options.artifact ?? artifact()}
       resolution={null}
       series={series()}
-      versions={[]}
-      selectedVersion={null}
-      selectedVersionNo={null}
+      versions={options.versions ?? []}
+      selectedVersion={options.selectedVersion ?? null}
+      selectedVersionNo={options.selectedVersionNo ?? null}
       versionHistoryOpen={false}
       onVersionChange={() => undefined}
       onToggleVersionHistory={() => undefined}
@@ -181,6 +210,154 @@ describe('artifact preview helpers', () => {
     expect(highlighted?.language).toBe('python');
     expect(highlighted?.html).toContain('hljs-keyword');
     expect(highlighted?.html).toContain('def');
+  });
+
+  it('opens a server-backed Markdown draft editor for editable artifacts', async () => {
+    const baseVersion = version();
+    const mockFetch = vi.fn((input: RequestInfo, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/drafts') && (!init || init.method === undefined)) {
+        return Promise.resolve(new Response(JSON.stringify({ draft: null }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url === '/api/artifacts/drafts' && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({
+          draft: {
+            id: 'artifact-draft:1',
+            series_id: baseVersion.series_id,
+            base_version_id: baseVersion.id,
+            base_version_no: 1,
+            latest_version_id: baseVersion.id,
+            latest_version_no: 1,
+            stale: false,
+            content: '# Draft\n',
+            media_type: 'text/markdown',
+            label: null,
+            note: null,
+            metadata: {},
+            created_at: 1000,
+            updated_at: 1000,
+          },
+        }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    });
+    vi.stubGlobal('fetch', mockFetch);
+    renderArtifactDetail(content({
+      kind: 'markdown',
+      media_type: 'text/markdown',
+      preview: {
+        encoding: 'utf-8',
+        text: '# Draft\n',
+        truncated: false,
+      },
+    }), {
+      artifact: artifact({ custody_mode: 'managed', media_type: 'text/markdown' }),
+      versions: [baseVersion],
+      selectedVersion: baseVersion,
+      selectedVersionNo: 1,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Edit content' }));
+
+    expect(await screen.findByLabelText('Artifact editor')).toBeTruthy();
+    expect(screen.getByText('Save as new version')).toBeTruthy();
+    expect(mockFetch).toHaveBeenCalledWith('/api/artifacts/drafts', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('resumes a stale draft and shows stale-base actions', async () => {
+    const baseVersion = version();
+    const latestVersion = version({ id: 'artifact-version:v2', version_no: 2 });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/drafts')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          draft: {
+            id: 'artifact-draft:1',
+            series_id: baseVersion.series_id,
+            base_version_id: baseVersion.id,
+            base_version_no: 1,
+            latest_version_id: latestVersion.id,
+            latest_version_no: 2,
+            stale: true,
+            content: '# Stale draft\n',
+            media_type: 'text/markdown',
+            label: null,
+            note: null,
+            metadata: {},
+            created_at: 1000,
+            updated_at: 2000,
+          },
+        }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    renderArtifactDetail(content({
+      kind: 'markdown',
+      media_type: 'text/markdown',
+      preview: {
+        encoding: 'utf-8',
+        text: '# Latest\n',
+        truncated: false,
+      },
+    }), {
+      artifact: artifact({ custody_mode: 'managed', media_type: 'text/markdown' }),
+      versions: [latestVersion, baseVersion],
+      selectedVersion: latestVersion,
+      selectedVersionNo: 2,
+    });
+
+    expect(await screen.findByText('Publish anyway')).toBeTruthy();
+    expect(screen.getByText('Rebase draft')).toBeTruthy();
+    expect(screen.getByText(/Draft based on v1; v2 exists/)).toBeTruthy();
+  });
+
+  it('renders version diffs through the shared diff view', async () => {
+    const older = version({ id: 'artifact-version:v1', version_no: 1 });
+    const newer = version({ id: 'artifact-version:v2', version_no: 2 });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/drafts')) {
+        return Promise.resolve(new Response(JSON.stringify({ draft: null }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/artifacts/diff?')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          diff: {
+            a: { ref: older.id, artifact_id: older.artifact_id, content_hash: older.content_hash, media_type: 'text/plain', size_bytes: 6, available: true },
+            b: { ref: newer.id, artifact_id: newer.artifact_id, content_hash: newer.content_hash, media_type: 'text/plain', size_bytes: 9, available: true },
+            diffable: true,
+            identical: false,
+            kind: 'text',
+            unified: 'diff --git a/artifact.md b/artifact.md\n--- a/artifact.md\n+++ b/artifact.md\n@@ -1 +1 @@\n-old\n+new\n',
+            stats: { added: 1, removed: 1 },
+          },
+        }), {
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+    renderArtifactDetail(content(), {
+      artifact: artifact({ custody_mode: 'managed' }),
+      versions: [newer, older],
+      selectedVersion: newer,
+      selectedVersionNo: 2,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Diff vs previous' }));
+
+    await waitFor(() => expect(screen.getByText('Split')).toBeTruthy());
+    expect(screen.getAllByLabelText('Artifact version diff').length).toBeGreaterThan(0);
   });
 });
 

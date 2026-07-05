@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { parse as parseToml } from "smol-toml";
+import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
@@ -32,6 +33,43 @@ export interface BranchData {
   last_commit: LastCommit | null;
   last_commit_date?: string | null;
   diff_stat: string | null;
+}
+
+export type WorkCommitClassification = "unique" | "pre-branch-point" | "merged-elsewhere";
+
+export interface WorkCommit {
+  hash: string;
+  short_hash: string;
+  message: string;
+  author: string;
+  date: string;
+  parents: string[];
+  classification: WorkCommitClassification;
+  is_pre_branch_point: boolean;
+  is_merged_elsewhere: boolean;
+}
+
+export interface WorkCommitPage {
+  repo_root: string;
+  branch: string;
+  default_branch: string;
+  merge_base: string | null;
+  commits: WorkCommit[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export type WorkCompareMode = "merge-base" | "range";
+
+export interface WorkCompareResult {
+  repo_root: string;
+  from: string;
+  to: string;
+  mode: WorkCompareMode;
+  range: string;
+  raw: string;
+  stat: string;
 }
 
 export interface RepoInfo {
@@ -71,6 +109,8 @@ export interface SqliteDatabase {
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
 }
+
+const workScannerLog = getDaemonLogger();
 
 interface WorktreeInfo {
   path: string;
@@ -203,7 +243,11 @@ function readReposToml(monorepoRoot: string): string[] {
     }
     return roots;
   } catch (err) {
-    console.warn(`[work-scanner] Could not read repos.toml at ${tomlPath}:`, err);
+    workScannerLog("warn", "work_scanner_repos_toml_read_failed", {
+      subsystem: "work-scanner",
+      path: tomlPath,
+      error: String(err),
+    });
     return [];
   }
 }
@@ -298,7 +342,7 @@ function runGit(
   const result = spawnSync("git", args, {
     cwd: options.cwd,
     encoding: "utf8",
-    env: process.env,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
   });
   if (result.status !== 0) {
     if (options.allow_failure) {
@@ -309,6 +353,37 @@ function runGit(
     throw new Error(message);
   }
   return result.stdout.trimEnd();
+}
+
+function runGitStatus(args: string[], cwd: string): number | null {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  return typeof result.status === "number" ? result.status : null;
+}
+
+function parseCommitRecord(
+  record: string,
+  classify: (hash: string) => WorkCommitClassification,
+): WorkCommit | null {
+  const [hash, shortHash, author, date, parentsRaw, subject] = record.split("\u001f");
+  if (!hash || !shortHash) {
+    return null;
+  }
+  const classification = classify(hash);
+  return {
+    hash,
+    short_hash: shortHash,
+    message: subject ?? "",
+    author: author ?? "",
+    date: date ?? "",
+    parents: parentsRaw ? parentsRaw.split(" ").filter(Boolean) : [],
+    classification,
+    is_pre_branch_point: classification === "pre-branch-point",
+    is_merged_elsewhere: classification === "merged-elsewhere",
+  };
 }
 
 function parseWorktreeList(output: string): WorktreeInfo[] {
@@ -551,6 +626,89 @@ export class WorkScanner {
       }));
   }
 
+  getCommits(
+    repoRoot: string,
+    branch: string,
+    options: { limit?: number; offset?: number } = {},
+  ): WorkCommitPage {
+    const limit = Math.min(Math.max(Math.trunc(options.limit ?? 50), 1), 200);
+    const offset = Math.max(Math.trunc(options.offset ?? 0), 0);
+    const defaultBranch = this.detectDefaultBranch(repoRoot);
+    const mergeBase = defaultBranch && defaultBranch !== branch
+      ? runGit(["merge-base", defaultBranch, branch], { cwd: repoRoot, allow_failure: true })
+      : null;
+    const cherryStatus = this.getCherryStatus(repoRoot, defaultBranch, branch);
+    const format = [
+      "%H",
+      "%h",
+      "%an",
+      "%aI",
+      "%P",
+      "%s",
+    ].join("%x1f");
+    const output = runGit([
+      "log",
+      `--max-count=${limit}`,
+      `--skip=${offset}`,
+      `--pretty=format:${format}%x1e`,
+      branch,
+    ], {
+      cwd: repoRoot,
+      allow_failure: true,
+    }) ?? "";
+    const totalRaw = runGit(["rev-list", "--count", branch], {
+      cwd: repoRoot,
+      allow_failure: true,
+    });
+    const total = Number.parseInt(totalRaw ?? "0", 10);
+    const commits = output
+      .split("\u001e")
+      .map((record) => record.trim())
+      .filter(Boolean)
+      .map((record) => parseCommitRecord(record, (hash) =>
+        this.classifyCommit(repoRoot, hash, mergeBase, cherryStatus),
+      ))
+      .filter((commit): commit is WorkCommit => commit !== null);
+
+    return {
+      repo_root: repoRoot,
+      branch,
+      default_branch: defaultBranch || "\u2014",
+      merge_base: mergeBase,
+      commits,
+      total: Number.isNaN(total) ? commits.length : total,
+      limit,
+      offset,
+    };
+  }
+
+  compareRefs(
+    repoRoot: string,
+    from: string,
+    to: string,
+    mode: WorkCompareMode = "merge-base",
+  ): WorkCompareResult {
+    const normalizedMode: WorkCompareMode = mode === "range" ? "range" : "merge-base";
+    const range = normalizedMode === "range" ? `${from}..${to}` : `${from}...${to}`;
+    const raw = runGit(["diff", range], {
+      cwd: repoRoot,
+      allow_failure: true,
+    }) ?? "";
+    const stat = runGit(["diff", "--stat", range], {
+      cwd: repoRoot,
+      allow_failure: true,
+    }) ?? "";
+    return {
+      repo_root: repoRoot,
+      from,
+      to,
+      mode: normalizedMode,
+      range,
+      raw,
+      stat: stat.trim(),
+    };
+  }
+
   // Bug: d6f79a2 — async scanAll yields the event loop between repos so the HTTP
   // server stays responsive while the branch scan runs. spawnSync calls inside
   // scanRepo block the thread; without yielding, a full scan (85+ branches) can
@@ -596,7 +754,12 @@ export class WorkScanner {
         }
       } catch (_error) {
         // Log but continue scanning remaining repos
-        console.error(`[work-scanner] scanRepo failed for ${repo.root}: ${_error}`);
+        workScannerLog("error", "work_scanner_repo_scan_failed", {
+          subsystem: "work-scanner",
+          repo_id: repo.id,
+          path: repo.root,
+          error: String(_error),
+        });
       }
     }
 
@@ -720,7 +883,11 @@ export class WorkScanner {
       }
       fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), "utf8");
     } catch (err) {
-      console.error(`[work-scanner] addRepo: failed to write repos.json: ${err}`);
+      workScannerLog("error", "work_scanner_repo_config_write_failed", {
+        subsystem: "work-scanner",
+        path: this.configPath,
+        error: String(err),
+      });
     }
 
     const newRepo: RepoInfo = {
@@ -748,7 +915,12 @@ export class WorkScanner {
           this.repoInfos[idx] = { ...this.repoInfos[idx], last_scanned_at: scanNow };
         }
       } catch (err) {
-        console.error(`[work-scanner] addRepo background scan failed: ${err}`);
+        workScannerLog("error", "work_scanner_add_repo_background_scan_failed", {
+          subsystem: "work-scanner",
+          repo_id: newId,
+          path: resolved,
+          error: String(err),
+        });
       }
     })();
 
@@ -1162,6 +1334,55 @@ export class WorkScanner {
       { cwd: repoRoot, allow_failure: true },
     );
     return parseLastCommit(output);
+  }
+
+  private getCherryStatus(
+    repoRoot: string,
+    defaultBranch: string,
+    branch: string,
+  ): Map<string, WorkCommitClassification> {
+    const statusByHash = new Map<string, WorkCommitClassification>();
+    if (!defaultBranch || defaultBranch === branch) {
+      return statusByHash;
+    }
+    const output = runGit(["cherry", defaultBranch, branch], {
+      cwd: repoRoot,
+      allow_failure: true,
+    });
+    if (!output) {
+      return statusByHash;
+    }
+    for (const line of output.split("\n")) {
+      const match = line.trim().match(/^([+-])\s+([0-9a-f]{7,40})$/i);
+      if (!match) {
+        continue;
+      }
+      if (match[1] === "-") {
+        statusByHash.set(match[2], "merged-elsewhere");
+      } else {
+        statusByHash.set(match[2], "unique");
+      }
+    }
+    return statusByHash;
+  }
+
+  private classifyCommit(
+    repoRoot: string,
+    hash: string,
+    mergeBase: string | null,
+    cherryStatus: Map<string, WorkCommitClassification>,
+  ): WorkCommitClassification {
+    const cherryClassification = cherryStatus.get(hash);
+    if (cherryClassification === "merged-elsewhere") {
+      return cherryClassification;
+    }
+    if (mergeBase) {
+      const ancestorStatus = runGitStatus(["merge-base", "--is-ancestor", hash, mergeBase], repoRoot);
+      if (ancestorStatus === 0) {
+        return "pre-branch-point";
+      }
+    }
+    return "unique";
   }
 
   private getUpstreamInfo(

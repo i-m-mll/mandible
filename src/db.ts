@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { compressContent } from "./compression.js";
+import { getDaemonLogger } from "./daemon-log.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 import { backfillProjectKeys } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
@@ -13,6 +14,7 @@ export type Db = Database.Database;
 const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "mandible");
 const DEFAULT_DB_PATH = path.join(DEFAULT_CACHE_DIR, "mandible.db");
 const SCHEMA_VERSION_KEY = "schema_version";
+const dbLog = getDaemonLogger();
 
 export interface Migration {
   version: number;
@@ -2751,6 +2753,103 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_workflow_ingest_state_summary
         ON workflow_ingest_state(summary_path)`
     ]
+  },
+  {
+    version: 100,
+    name: "daemon_log",
+    // Issue: be88a0f — inclusive structured daemon log. Levels are metadata;
+    // insertion is never gated by LOG_LEVEL. Stderr rotation remains a separate
+    // bootstrap/failure sink concern.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS daemon_log (
+        id              TEXT PRIMARY KEY,
+        ts              INTEGER NOT NULL,
+        level           TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),
+        event           TEXT NOT NULL,
+        subsystem       TEXT NOT NULL DEFAULT 'daemon',
+        fields_json     TEXT NOT NULL DEFAULT '{}',
+        issue_id        TEXT,
+        auth_request_id TEXT,
+        artifact_id     TEXT,
+        session_id      TEXT,
+        repo_id         TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_ts
+        ON daemon_log(ts DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_facets
+        ON daemon_log(subsystem, level, event, ts DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_issue
+        ON daemon_log(issue_id, ts DESC)
+        WHERE issue_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_auth_request
+        ON daemon_log(auth_request_id, ts DESC)
+        WHERE auth_request_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_artifact
+        ON daemon_log(artifact_id, ts DESC)
+        WHERE artifact_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_session
+        ON daemon_log(session_id, ts DESC)
+        WHERE session_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_daemon_log_repo
+        ON daemon_log(repo_id, ts DESC)
+        WHERE repo_id IS NOT NULL`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('stderr_rotation_max_bytes', '16777216', CAST(strftime('%s','now') * 1000 AS INTEGER))`,
+      `INSERT OR IGNORE INTO settings (key, value, updated_at)
+       VALUES ('stderr_rotation_keep_segments', '5', CAST(strftime('%s','now') * 1000 AS INTEGER))`
+    ]
+  },
+  {
+    version: 101,
+    name: "artifact_markdown_drafts",
+    // Issue: 8ad5b95 — server-side artifact edit drafts and parent-version
+    // pointers for immutable versions minted from drafts. Drafts are one active
+    // row per artifact series, explicitly pinned to a base version. Publishing
+    // snapshots edited text through the existing artifact version write path,
+    // then removes the draft. `parent_version_id` is additive and nullable so
+    // historical versions remain valid.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS artifact_drafts (
+        id              TEXT PRIMARY KEY,
+        series_id       TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        content         TEXT NOT NULL,
+        media_type      TEXT,
+        label           TEXT,
+        note            TEXT,
+        metadata_json   TEXT NOT NULL DEFAULT '{}',
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        UNIQUE(series_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_drafts_base
+        ON artifact_drafts(base_version_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_versions_parent
+        ON artifact_versions(parent_version_id)
+        WHERE parent_version_id IS NOT NULL`
+    ]
+  },
+  {
+    version: 102,
+    name: "session_instruction_artifacts",
+    // Issue: 2181ffd — session instruction attachments now pin artifact
+    // versions. Legacy preset ids are kept only as migration provenance.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS session_instruction_artifacts (
+        session_id          TEXT NOT NULL,
+        artifact_series_id  TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        legacy_preset_id    TEXT,
+        position            INTEGER NOT NULL DEFAULT 0,
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL,
+        PRIMARY KEY (session_id, artifact_series_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_session_instruction_artifacts_session
+        ON session_instruction_artifacts(session_id, position)`,
+      `CREATE INDEX IF NOT EXISTS idx_session_instruction_artifacts_version
+        ON session_instruction_artifacts(artifact_version_id)`
+    ]
   }
 ];
 
@@ -2858,6 +2957,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 95) {
           ensureConversationSidechainColumns(db);
+        }
+        if (migration.version === 101) {
+          ensureArtifactVersionParentColumn(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -3144,8 +3246,10 @@ function compressExistingBlocks(db: Db): void {
   }
 
   if (totalCompressed > 0) {
-    // Log to stderr so daemon startup shows the migration result
-    console.error(`[db] Compressed ${totalCompressed} conversation blocks`);
+    dbLog("info", "db_conversation_blocks_compressed", {
+      subsystem: "db",
+      compressed_count: totalCompressed,
+    });
   }
 }
 
@@ -4228,7 +4332,10 @@ function backfillProjectRepoNames(db: Db): void {
   });
 
   run();
-  console.error(`[db] Backfilled repo names for ${rows.length} session_projects rows`);
+  dbLog("info", "db_session_project_repo_names_backfilled", {
+    subsystem: "db",
+    row_count: rows.length,
+  });
 }
 
 function hasLegacySessionProjectWorktreeRepoIds(db: Db): boolean {
@@ -4308,7 +4415,10 @@ function backfillProjectRepoNamesV2(db: Db): void {
   });
 
   run();
-  console.error(`[db] v25: backfilled repo names for ${rows.length} session_projects rows`);
+  dbLog("info", "db_session_project_repo_names_backfilled_v25", {
+    subsystem: "db",
+    row_count: rows.length,
+  });
 }
 
 function hasLegacySessionProjectCwdRepoIds(db: Db): boolean {
@@ -4377,7 +4487,10 @@ function backfillIssueIds(db: Db): void {
     return regex.test(r.commit_message);
   }).length;
   if (filled > 0) {
-    console.error(`[db] Backfilled issue_ids for ${filled} auth_requests rows`);
+    dbLog("info", "db_auth_request_issue_ids_backfilled", {
+      subsystem: "db",
+      row_count: filled,
+    });
   }
 }
 
@@ -4508,6 +4621,14 @@ function verifyArtifactVersioningSchema(db: Db): void {
   }
   if (!fkTargets.has("artifacts")) {
     throw new Error("migration 88 verification: artifact_versions is missing its foreign key to artifacts");
+  }
+}
+
+function ensureArtifactVersionParentColumn(db: Db): void {
+  if (!tableExists(db, "artifact_versions")) return;
+  const columns = tableColumnNames(db, "artifact_versions");
+  if (!columns.has("parent_version_id")) {
+    db.exec("ALTER TABLE artifact_versions ADD COLUMN parent_version_id TEXT");
   }
 }
 
@@ -5368,6 +5489,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "artifact_blob",
     "artifacts",
     "artifact_links",
+    "artifact_versions",
     "artifact_version",
     "auth_requests",
     "console_sessions",

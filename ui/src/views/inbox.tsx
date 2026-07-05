@@ -772,10 +772,10 @@ function PresetDiffDetail({ item }: { item: InboxPresetDiff }): JSX.Element {
       </div>
       <div className="inbox-detail__actions">
         <a
-          href={`#/presets?id=${encodeURIComponent(item.preset_id)}&view=diff`}
+          href="#/artifacts?role=instructions"
           className="btn btn--ghost"
         >
-          View diff &rarr;
+          View instructions &rarr;
         </a>
       </div>
     </div>

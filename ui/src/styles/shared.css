@@ -32,9 +32,7 @@
 
 .table-card,
 .repo-card,
-.auth-card,
-.review-diff,
-.review-panels .panel {
+.auth-card {
   background: var(--bg-card);
   padding: 18px;
   border-radius: 16px;

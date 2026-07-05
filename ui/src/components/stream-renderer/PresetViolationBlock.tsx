@@ -19,7 +19,7 @@ export function PresetViolationBlock({
     if (analyzing && subagentSessionId) {
       window.location.hash = `#/console?session=${encodeURIComponent(subagentSessionId)}`;
     } else if (presetId) {
-      window.location.hash = `#/presets?id=${encodeURIComponent(presetId)}&view=diff`;
+      window.location.hash = '#/artifacts?role=instructions';
     }
   };
 

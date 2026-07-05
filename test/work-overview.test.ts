@@ -10,8 +10,9 @@ vi.mock("../src/sse", () => ({
 }));
 
 import { WorkScanner, type BranchData } from "../src/work-scanner";
-import { filterAndSortBranches } from "../src/routes/work";
+import { filterAndSortBranches, registerWorkRoutes } from "../src/routes/work";
 import { migrate } from "../src/db";
+import { Router } from "../src/server";
 
 const gitEnv = {
   ...process.env,
@@ -77,6 +78,12 @@ describe.sequential("WorkScanner", () => {
     writeFile(path.join(repoRoot, "no-upstream.txt"), "local\n");
     run("git add no-upstream.txt", repoRoot);
     run("git -c commit.gpgsign=false commit -m \"no upstream\"", repoRoot);
+    run("git checkout main", repoRoot);
+
+    run("git checkout -b topic/slash", repoRoot);
+    writeFile(path.join(repoRoot, "slash.txt"), "slash\n");
+    run("git add slash.txt", repoRoot);
+    run("git -c commit.gpgsign=false commit -m \"slash branch\"", repoRoot);
     run("git checkout main", repoRoot);
   });
 
@@ -252,5 +259,51 @@ describe.sequential("WorkScanner", () => {
     scanner.scanAll();
     feature = scanner.getBranch(repoRoot, "feature");
     expect(feature?.is_dirty).toBe(false);
+  });
+
+  it("serves encoded branch commit pages with classification metadata", async () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+    const repoId = scanner.getRepos()[0].id;
+    const router = new Router();
+    registerWorkRoutes(router, scanner);
+
+    const response = await router.invoke({
+      method: "GET",
+      url: `/api/work/repos/${encodeURIComponent(repoId)}/branches/topic%2Fslash/commits?limit=10&offset=0`,
+    });
+
+    expect(response.status).toBe(200);
+    const body = response.body as {
+      branch: string;
+      total: number;
+      commits: Array<{ message: string; classification: string }>;
+    };
+    expect(body.branch).toBe("topic/slash");
+    expect(body.total).toBeGreaterThanOrEqual(2);
+    expect(body.commits[0].message).toBe("slash branch");
+    expect(body.commits.some((commit) => commit.classification === "pre-branch-point")).toBe(true);
+  });
+
+  it("serves Projects compare results as raw unified diff plus stat", async () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+    const repoId = scanner.getRepos()[0].id;
+    const router = new Router();
+    registerWorkRoutes(router, scanner);
+
+    const response = await router.invoke({
+      method: "GET",
+      url: `/api/work/repos/${encodeURIComponent(repoId)}/compare?from=main&to=topic%2Fslash&mode=merge-base`,
+    });
+
+    expect(response.status).toBe(200);
+    const body = response.body as { raw: string; stat: string; range: string; mode: string };
+    expect(body.mode).toBe("merge-base");
+    expect(body.range).toBe("main...topic/slash");
+    expect(body.raw).toContain("diff --git");
+    expect(body.stat).toContain("slash.txt");
   });
 });

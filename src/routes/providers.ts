@@ -15,9 +15,11 @@ import {
   getProviderCapabilities,
   getProviderDetail,
   getProviderHealth,
+  getArtifactDraft,
   ingestArtifact,
   ingestProviderManifest,
   ingestProviderManifestFile,
+  deleteArtifactDraft,
   listArtifactBlobs,
   listLogicalArtifacts,
   listArtifactSeries,
@@ -25,6 +27,7 @@ import {
   listProjectArtifactAssociations,
   listProviders,
   planLocalArtifactPath,
+  publishArtifactDraft,
   recordArtifactVersion,
   registerLocalArtifactPath,
   registerProvider,
@@ -32,6 +35,8 @@ import {
   resolveArtifactRef,
   resolveArtifactSurfaceRefReadonlyFull,
   resolveArtifactVersionHistory,
+  rebaseArtifactDraft,
+  saveArtifactDraft,
   snapshotArtifactBytes,
 } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
@@ -413,6 +418,91 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         return;
       }
       sendJson(res, 200, { diff: diffArtifacts(getDb(), refA, refB) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  app.get("/api/artifacts/drafts", (req, res) => {
+    try {
+      const ref = queryString(req, "ref") ?? queryString(req, "series");
+      if (!ref) {
+        sendJson(res, 400, { error: "ref query parameter required" });
+        return;
+      }
+      sendJson(res, 200, { draft: getArtifactDraft(getDb(), ref) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  app.post("/api/artifacts/drafts", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const content = typeof body.content === "string" ? body.content : undefined;
+      if (content === undefined) {
+        sendJson(res, 400, { error: "content is required" });
+        return;
+      }
+      const draft = saveArtifactDraft(getDb(), {
+        ref: typeof body.ref === "string" ? body.ref : undefined,
+        series_id: typeof body.series_id === "string" ? body.series_id : undefined,
+        base_version_id: typeof body.base_version_id === "string" ? body.base_version_id : undefined,
+        content,
+        media_type: typeof body.media_type === "string" ? body.media_type : null,
+        label: typeof body.label === "string" ? body.label : null,
+        note: typeof body.note === "string" ? body.note : null,
+        metadata: body.metadata && typeof body.metadata === "object" && !Array.isArray(body.metadata)
+          ? body.metadata as Record<string, unknown>
+          : undefined,
+      });
+      sendJson(res, 200, { draft });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  app.post("/api/artifacts/drafts/rebase", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const ref = typeof body.ref === "string" ? body.ref : undefined;
+      if (!ref) {
+        sendJson(res, 400, { error: "ref is required" });
+        return;
+      }
+      sendJson(res, 200, { draft: rebaseArtifactDraft(getDb(), ref) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  app.post("/api/artifacts/drafts/publish", (req, res) => {
+    try {
+      const body = bodyRecord(req);
+      const ref = typeof body.ref === "string" ? body.ref : undefined;
+      if (!ref) {
+        sendJson(res, 400, { error: "ref is required" });
+        return;
+      }
+      sendJson(res, 200, publishArtifactDraft(getDb(), {
+        ref,
+        label: typeof body.label === "string" ? body.label : null,
+        note: typeof body.note === "string" ? body.note : null,
+        allow_stale: body.allow_stale === true,
+      }));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  app.delete("/api/artifacts/drafts", (req, res) => {
+    try {
+      const ref = queryString(req, "ref") ?? queryString(req, "series");
+      if (!ref) {
+        sendJson(res, 400, { error: "ref query parameter required" });
+        return;
+      }
+      sendJson(res, 200, deleteArtifactDraft(getDb(), ref));
     } catch (error) {
       handleError(res, error);
     }

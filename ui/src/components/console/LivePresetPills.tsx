@@ -90,8 +90,8 @@ export function LivePresetPills({
   if (loading) {
     return (
       <div className="session-controls__field" style={{ marginTop: '12px' }}>
-        <span className="session-controls__label">Presets</span>
-        <div className="session-controls__placeholder">Loading presets...</div>
+        <span className="session-controls__label">Instructions</span>
+        <div className="session-controls__placeholder">Loading instructions...</div>
       </div>
     );
   }
@@ -99,7 +99,7 @@ export function LivePresetPills({
   return (
     <div className="session-controls__field" style={{ marginTop: '12px' }}>
       <span className="session-controls__label">
-        Presets
+        Instructions
         {readOnly && (
           <span
             className="session-controls__lock-icon"
@@ -112,7 +112,7 @@ export function LivePresetPills({
       {readOnly ? (
         <div className="session-controls__preset-readonly">
           {selectedIds.length === 0 ? (
-            <span className="session-controls__placeholder">No presets selected</span>
+            <span className="session-controls__placeholder">No instructions selected</span>
           ) : (
             selectedIds.map((id) => {
               const preset = allPresets.find((p) => p.id === id);

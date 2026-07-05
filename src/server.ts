@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import {
   normalizeAmbientProviderIdentity,
@@ -470,8 +471,31 @@ export function createServer(options: ServerOptions): http.Server {
     const url = req.url ? new URL(req.url, "http://localhost") : null;
     const pathname = url?.pathname ?? "/";
     const isApi = isApiPath(pathname);
-
-    logger("debug", "request", { method, pathname });
+    const requestStartedAt = performance.now();
+    let loggedRequest = false;
+    const logRequest = (aborted: boolean) => {
+      if (loggedRequest) {
+        return;
+      }
+      loggedRequest = true;
+      const status = res.statusCode || (aborted ? 499 : 200);
+      logger(status >= 500 || aborted ? "warn" : "info", "http_request", {
+        subsystem: "http",
+        method,
+        pathname,
+        status,
+        duration_ms: Math.round(performance.now() - requestStartedAt),
+        origin: headerValue(req.headers.origin) ?? null,
+        request_id: headerValue(req.headers["x-request-id"]) ?? null,
+        aborted,
+      });
+    };
+    res.once("finish", () => logRequest(false));
+    res.once("close", () => {
+      if (!res.writableEnded) {
+        logRequest(true);
+      }
+    });
 
     const boundary = validateDaemonWriteBoundary(req, method, isApi);
     if (!boundary.ok) {

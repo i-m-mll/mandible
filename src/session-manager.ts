@@ -36,6 +36,7 @@ import type {
   ConsoleTransportLane,
   Logger,
 } from "./types.js";
+import { replaceSessionInstructionArtifacts } from "./presets.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -412,22 +413,9 @@ export class SessionManager {
       transport_lane,
     });
 
-    // Bug: 61bee4e — Store preset associations and pass presetIds to backend
+    // Issue 2181ffd — Store instruction attachments as pinned artifact versions.
     if (input.presetIds && input.presetIds.length > 0) {
-      const insertPreset = db.prepare(
-        `INSERT OR IGNORE INTO session_presets (session_id, preset_id, preset_version, position)
-         VALUES (?, ?, ?, ?)`,
-      );
-      const presetTx = db.transaction(() => {
-        for (let i = 0; i < input.presetIds!.length; i++) {
-          const presetRow = db.prepare("SELECT version FROM presets WHERE id = ?")
-            .get(input.presetIds![i]) as { version: number } | undefined;
-          if (presetRow) {
-            insertPreset.run(id, input.presetIds![i], presetRow.version, i);
-          }
-        }
-      });
-      presetTx();
+      replaceSessionInstructionArtifacts(db, id, input.presetIds);
     }
 
     const backend = this.createBackend(session, backend_type);

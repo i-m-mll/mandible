@@ -548,6 +548,103 @@
   letter-spacing: 0.05em;
 }
 
+.artifact-detail__section-heading,
+.artifact-editor__header,
+.artifact-editor__actions,
+.artifact-editor__fields,
+.artifact-detail__draft-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.artifact-detail__section-heading,
+.artifact-editor__header,
+.artifact-detail__draft-banner {
+  justify-content: space-between;
+}
+
+.artifact-editor__header p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-transform: none;
+}
+
+.artifact-editor__status {
+  min-width: 92px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.artifact-editor__fields {
+  align-items: stretch;
+}
+
+.artifact-editor__fields label {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.artifact-editor__fields input {
+  min-width: 0;
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 6px;
+  padding: 6px 8px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.artifact-editor .spaces-markdown-source {
+  min-height: min(560px, calc(100vh - 360px));
+  border: 1px solid var(--neutral-alpha-07);
+  border-radius: 8px;
+  overflow: auto;
+  background: var(--bg-card);
+}
+
+.artifact-editor__stale {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.artifact-editor__stale button {
+  border: 1px solid var(--neutral-alpha-10);
+  border-radius: 6px;
+  padding: 4px 8px;
+  background: var(--bg-card);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.artifact-editor__actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.artifact-detail__draft-banner {
+  border: 1px solid var(--neutral-alpha-07);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.artifact-detail__hint--edit {
+  margin-bottom: 2px;
+}
+
 .artifact-detail__kv,
 .artifact-detail__list {
   display: grid;
