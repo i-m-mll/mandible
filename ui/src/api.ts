@@ -1852,22 +1852,71 @@ export async function updateWorkUnit(
 
 // ── Logs API — Bug: af91bdd ──
 
+export type LogFacetValue = {
+  value: string;
+  count: number;
+};
+
+export type LogEntityFacetValue = LogFacetValue & {
+  type: 'issue' | 'auth_request' | 'artifact' | 'session' | 'repo';
+};
+
+export type LogFacets = {
+  levels: LogFacetValue[];
+  subsystems: LogFacetValue[];
+  events: LogFacetValue[];
+  entity_refs: LogEntityFacetValue[];
+  latest_ts: string | null;
+  latest_heartbeat_ts: string | null;
+};
+
+export type LogEntry = {
+  id?: string;
+  level: string;
+  message?: string;
+  event?: string;
+  subsystem?: string;
+  time?: string;
+  issue_id?: string | null;
+  auth_request_id?: string | null;
+  artifact_id?: string | null;
+  session_id?: string | null;
+  repo_id?: string | null;
+  [key: string]: unknown;
+};
+
 export type LogsResponse = {
-  entries: Array<{ level: string; message: string; time?: string; [key: string]: unknown }>;
+  entries: LogEntry[];
   total: number;
   limit: number;
   offset: number;
   log_file: string;
   exists: boolean;
+  source?: 'daemon_log' | 'stderr_file';
+  facets?: LogFacets;
 };
 
 export async function getLogs(params?: {
+  levels?: string[];
   level?: string;
+  subsystem?: string;
+  event?: string;
+  q?: string;
+  related?: string;
+  since?: string;
+  until?: string;
   limit?: number;
   offset?: number;
 }): Promise<LogsResponse> {
   const query = new URLSearchParams();
+  if (params?.levels && params.levels.length > 0) query.set('levels', params.levels.join(','));
   if (params?.level) query.set('level', params.level);
+  if (params?.subsystem) query.set('subsystem', params.subsystem);
+  if (params?.event) query.set('event', params.event);
+  if (params?.q) query.set('q', params.q);
+  if (params?.related) query.set('related', params.related);
+  if (params?.since) query.set('since', params.since);
+  if (params?.until) query.set('until', params.until);
   if (params?.limit != null) query.set('limit', String(params.limit));
   if (params?.offset != null) query.set('offset', String(params.offset));
   const qs = query.toString();
