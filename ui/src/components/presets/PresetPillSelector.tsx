@@ -10,15 +10,15 @@ type PresetPillSelectorProps = {
   disabled?: boolean;
 };
 
-function NavIcon({ presetId }: { presetId: string }): JSX.Element {
+function NavIcon({ seriesRef }: { seriesRef: string }): JSX.Element {
   return (
     <button
       type="button"
       className="preset-pill__nav"
-      title="View preset"
+      title="View instruction artifact"
       onClick={(e) => {
         e.stopPropagation();
-        window.location.hash = `#/presets?id=${encodeURIComponent(presetId)}`;
+        window.location.hash = `#/artifacts?role=instructions&series=${encodeURIComponent(seriesRef)}`;
       }}
     >
       <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -123,7 +123,7 @@ export function PresetPillSelector({
           ref={inputRef}
           type="text"
           className="preset-pill-selector__input"
-          placeholder={selectedPresetIds.length > 0 ? 'Add preset...' : 'Search presets...'}
+          placeholder={selectedPresetIds.length > 0 ? 'Add instruction...' : 'Search instructions...'}
           value={searchText}
           disabled={disabled}
           aria-controls="preset-dropdown"
@@ -170,7 +170,7 @@ export function PresetPillSelector({
           {selectedPresets.map((preset) => (
             <span key={preset.id} className="preset-pill">
               <span className="preset-pill__name">{preset.name}</span>
-              <NavIcon presetId={preset.id} />
+              <NavIcon seriesRef={preset.artifact_series_id ?? preset.id} />
               <button
                 type="button"
                 className="preset-pill__dismiss"

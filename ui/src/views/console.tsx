@@ -24,7 +24,7 @@ type ConsoleViewProps = {
   }) => void;
   isActive: boolean;
   initialSessionId: string | null;
-  /** Pre-selected preset ID from navigation (e.g., "Start Chat" from Presets tab). */
+  /** Pre-selected instruction artifact or legacy preset ID from navigation. */
   initialPresetId?: string | null;
 };
 

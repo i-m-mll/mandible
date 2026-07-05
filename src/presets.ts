@@ -6,6 +6,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Db } from "./db.js";
+import { readArtifactBytesFull } from "./artifact-content.js";
+import {
+  getArtifactVersion,
+  listArtifactSeries,
+  recordArtifactVersion,
+  resolveArtifactVersionHistory,
+} from "./provider-artifacts.js";
+import type { ArtifactSeriesSummary, ArtifactVersionRecord } from "./types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -23,6 +31,9 @@ export interface Preset {
   version: number;
   created_at: number;
   updated_at: number;
+  artifact_series_id?: string;
+  artifact_version_id?: string | null;
+  legacy_preset_id?: string | null;
 }
 
 export interface PresetNode {
@@ -64,11 +75,24 @@ export interface PresetUnionResult {
   tokenEstimate: number;
 }
 
+export interface InstructionArtifactAttachment {
+  session_id: string;
+  artifact_series_id: string;
+  artifact_version_id: string;
+  legacy_preset_id: string | null;
+  position: number;
+  created_at: number;
+  updated_at: number;
+}
+
 export interface RouteResult {
   recommendedPresetId: string;
   confidence: "high" | "medium" | "low";
   reason: string;
 }
+
+export const INSTRUCTION_ARTIFACT_ROLE = "instructions";
+export const PRESET_ARTIFACT_PROVIDER_ID = "presets";
 
 // ---------------------------------------------------------------------------
 // Convention-Setting Link Types
@@ -343,6 +367,306 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 };
 
 // ---------------------------------------------------------------------------
+// Instruction Artifact Compatibility
+// ---------------------------------------------------------------------------
+
+function tableExists(db: Db, table: string): boolean {
+  const row = db
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table) as { name: string } | undefined;
+  return Boolean(row);
+}
+
+function artifactVersioningAvailable(db: Db): boolean {
+  return tableExists(db, "artifact_series")
+    && tableExists(db, "artifact_versions")
+    && tableExists(db, "artifacts");
+}
+
+function sessionInstructionAttachmentsAvailable(db: Db): boolean {
+  return artifactVersioningAvailable(db) && tableExists(db, "session_instruction_artifacts");
+}
+
+export function presetInstructionSeriesKey(presetId: string): string {
+  return `managed:${PRESET_ARTIFACT_PROVIDER_ID}:${INSTRUCTION_ARTIFACT_ROLE}:preset:${presetId}`;
+}
+
+function legacyPresetMarkdown(db: Db, presetId: string): string | null {
+  if (!tableExists(db, "preset_nodes")) return null;
+  const nodes = db
+    .prepare("SELECT * FROM preset_nodes WHERE preset_id = ? ORDER BY position ASC")
+    .all(presetId) as PresetNode[];
+  return serializeNodesToMarkdown(nodes);
+}
+
+function legacyPresetById(db: Db, presetId: string): Preset | null {
+  if (!tableExists(db, "presets")) return null;
+  return (db.prepare("SELECT * FROM presets WHERE id = ?").get(presetId) as Preset | undefined) ?? null;
+}
+
+function readArtifactVersionMarkdown(db: Db, version: ArtifactVersionRecord): string | null {
+  const bytes = readArtifactBytesFull(db, version.artifact_id);
+  if (!bytes.ok) return null;
+  return bytes.bytes.toString("utf8");
+}
+
+function presetFromInstructionSeries(series: ArtifactSeriesSummary): Preset {
+  const metadata = series.metadata ?? {};
+  const latest = series.latest_version;
+  const latestArtifact = series.latest_artifact;
+  const legacyPresetId = typeof metadata.legacy_preset_id === "string" ? metadata.legacy_preset_id : null;
+  const description = typeof metadata.description === "string" ? metadata.description : "";
+  const sourcePath = typeof metadata.source_path === "string" ? metadata.source_path : series.id;
+  return {
+    id: series.id,
+    name: series.title ?? series.logical_name ?? legacyPresetId ?? series.id,
+    description,
+    source: "manual",
+    source_path: sourcePath,
+    content_hash: latest?.content_hash ?? latestArtifact?.content_hash ?? "",
+    version: latest?.version_no ?? series.version_count,
+    created_at: series.created_at,
+    updated_at: series.updated_at,
+    artifact_series_id: series.id,
+    artifact_version_id: latest?.id ?? series.latest_version_id,
+    legacy_preset_id: legacyPresetId,
+  };
+}
+
+export function ensureInstructionArtifactForPreset(
+  db: Db,
+  presetId: string,
+): { preset: Preset; series_id: string; version_id: string } | null {
+  if (!artifactVersioningAvailable(db)) return null;
+  const preset = legacyPresetById(db, presetId);
+  if (!preset) return null;
+  const markdown = legacyPresetMarkdown(db, preset.id) ?? "";
+  const result = recordArtifactVersion(db, {
+    source_kind: "managed",
+    provider_id: PRESET_ARTIFACT_PROVIDER_ID,
+    role: INSTRUCTION_ARTIFACT_ROLE,
+    media_type: "text/markdown",
+    logical_name: preset.id,
+    title: preset.name,
+    content: markdown,
+    series_key: presetInstructionSeriesKey(preset.id),
+    label: `preset v${preset.version}`,
+    metadata: {
+      migrated_from: "preset",
+      legacy_preset_id: preset.id,
+      name: preset.name,
+      description: preset.description,
+      source: preset.source,
+      source_path: preset.source_path,
+      preset_version: preset.version,
+    },
+  });
+  return { preset, series_id: result.series.id, version_id: result.version.id };
+}
+
+export function migrateLegacyPresetsToInstructionArtifacts(db: Db): number {
+  if (!artifactVersioningAvailable(db) || !tableExists(db, "presets")) return 0;
+  const presets = db.prepare("SELECT id FROM presets ORDER BY created_at ASC, id").all() as Array<{ id: string }>;
+  let migrated = 0;
+  for (const preset of presets) {
+    const result = ensureInstructionArtifactForPreset(db, preset.id);
+    if (result) migrated += 1;
+  }
+  return migrated;
+}
+
+export function listInstructionArtifactPresets(db: Db): Preset[] {
+  if (!artifactVersioningAvailable(db)) {
+    if (!tableExists(db, "presets")) return [];
+    return db.prepare("SELECT * FROM presets ORDER BY created_at DESC").all() as Preset[];
+  }
+  migrateLegacyPresetsToInstructionArtifacts(db);
+  return listArtifactSeries(db, {
+    role: INSTRUCTION_ARTIFACT_ROLE,
+    limit: 500,
+  }).map(presetFromInstructionSeries);
+}
+
+function resolveInstructionArtifactRef(
+  db: Db,
+  ref: string,
+): {
+  series_id: string;
+  version_id: string;
+  legacy_preset_id: string | null;
+  markdown: string | null;
+} | null {
+  if (!artifactVersioningAvailable(db)) return null;
+
+  if (ref.startsWith("artifact-version:")) {
+    const version = getArtifactVersion(db, ref);
+    if (!version) return null;
+    return {
+      series_id: version.series_id,
+      version_id: version.id,
+      legacy_preset_id: null,
+      markdown: readArtifactVersionMarkdown(db, version),
+    };
+  }
+
+  if (ref.startsWith("artifact-series:") || ref.startsWith("artifact:") || ref.startsWith("artifact-blob:")) {
+    const history = resolveArtifactVersionHistory(db, ref);
+    const latest = history?.series.latest_version_id ? getArtifactVersion(db, history.series.latest_version_id) : null;
+    if (!history || !latest) return null;
+    const legacy = typeof history.series.metadata.legacy_preset_id === "string"
+      ? history.series.metadata.legacy_preset_id
+      : null;
+    return {
+      series_id: history.series.id,
+      version_id: latest.id,
+      legacy_preset_id: legacy,
+      markdown: readArtifactVersionMarkdown(db, latest),
+    };
+  }
+
+  const migrated = ensureInstructionArtifactForPreset(db, ref);
+  if (!migrated) return null;
+  const version = getArtifactVersion(db, migrated.version_id);
+  return {
+    series_id: migrated.series_id,
+    version_id: migrated.version_id,
+    legacy_preset_id: migrated.preset.id,
+    markdown: version ? readArtifactVersionMarkdown(db, version) : legacyPresetMarkdown(db, migrated.preset.id),
+  };
+}
+
+export function legacyPresetIdForInstructionRef(db: Db, ref: string): string | null {
+  const resolved = resolveInstructionArtifactRef(db, ref);
+  return resolved?.legacy_preset_id ?? (legacyPresetById(db, ref) ? ref : null);
+}
+
+export function replaceSessionInstructionArtifacts(
+  db: Db,
+  sessionId: string,
+  refs: string[],
+): void {
+  if (!sessionInstructionAttachmentsAvailable(db)) return;
+  const resolved = refs
+    .map((ref) => resolveInstructionArtifactRef(db, ref))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const now = Date.now();
+  const replace = db.transaction(() => {
+    db.prepare("DELETE FROM session_instruction_artifacts WHERE session_id = ?").run(sessionId);
+    const insert = db.prepare(
+      `INSERT OR REPLACE INTO session_instruction_artifacts (
+        session_id, artifact_series_id, artifact_version_id, legacy_preset_id, position, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    );
+    resolved.forEach((item, index) => {
+      insert.run(sessionId, item.series_id, item.version_id, item.legacy_preset_id, index, now, now);
+    });
+  });
+  replace();
+}
+
+export function appendSessionInstructionArtifacts(
+  db: Db,
+  sessionId: string,
+  refs: string[],
+): void {
+  if (!sessionInstructionAttachmentsAvailable(db)) return;
+  const maxRow = db
+    .prepare("SELECT MAX(position) AS max_pos FROM session_instruction_artifacts WHERE session_id = ?")
+    .get(sessionId) as { max_pos: number | null } | undefined;
+  let nextPosition = (maxRow?.max_pos ?? -1) + 1;
+  const resolved = refs
+    .map((ref) => resolveInstructionArtifactRef(db, ref))
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const now = Date.now();
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO session_instruction_artifacts (
+      session_id, artifact_series_id, artifact_version_id, legacy_preset_id, position, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const add = db.transaction(() => {
+    for (const item of resolved) {
+      insert.run(sessionId, item.series_id, item.version_id, item.legacy_preset_id, nextPosition++, now, now);
+    }
+  });
+  add();
+}
+
+export function removeSessionInstructionArtifact(db: Db, sessionId: string, ref: string): void {
+  if (!sessionInstructionAttachmentsAvailable(db)) return;
+  const resolved = resolveInstructionArtifactRef(db, ref);
+  db.prepare(
+    `DELETE FROM session_instruction_artifacts
+      WHERE session_id = ?
+        AND (artifact_series_id = ? OR artifact_version_id = ? OR legacy_preset_id = ?)`,
+  ).run(sessionId, resolved?.series_id ?? ref, resolved?.version_id ?? ref, ref);
+}
+
+export function migrateSessionPresetsToInstructionArtifacts(db: Db): number {
+  if (!sessionInstructionAttachmentsAvailable(db) || !tableExists(db, "session_presets")) return 0;
+  const rows = db
+    .prepare(
+      `SELECT session_id, preset_id, position
+         FROM session_presets
+        WHERE session_id NOT IN (SELECT DISTINCT session_id FROM session_instruction_artifacts)
+        ORDER BY session_id, position ASC`,
+    )
+    .all() as Array<{ session_id: string; preset_id: string; position: number }>;
+  let migrated = 0;
+  for (const row of rows) {
+    const resolved = resolveInstructionArtifactRef(db, row.preset_id);
+    if (!resolved) continue;
+    const now = Date.now();
+    db.prepare(
+      `INSERT OR IGNORE INTO session_instruction_artifacts (
+        session_id, artifact_series_id, artifact_version_id, legacy_preset_id, position, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(row.session_id, resolved.series_id, resolved.version_id, resolved.legacy_preset_id, row.position, now, now);
+    migrated += 1;
+  }
+  return migrated;
+}
+
+export function listSessionInstructionArtifacts(db: Db, sessionId: string): Array<
+  InstructionArtifactAttachment & {
+    preset_id: string;
+    preset_name: string;
+    name: string;
+    description: string;
+    version: number;
+    current_version: number;
+  }
+> {
+  if (!sessionInstructionAttachmentsAvailable(db)) return [];
+  migrateSessionPresetsToInstructionArtifacts(db);
+  return db
+    .prepare(
+      `SELECT sia.*,
+              sia.artifact_series_id AS preset_id,
+              COALESCE(s.title, s.logical_name, sia.legacy_preset_id, sia.artifact_series_id) AS preset_name,
+              COALESCE(s.title, s.logical_name, sia.legacy_preset_id, sia.artifact_series_id) AS name,
+              COALESCE(json_extract(s.metadata_json, '$.description'), '') AS description,
+              v.version_no AS version,
+              COALESCE(latest.version_no, v.version_no) AS current_version
+         FROM session_instruction_artifacts sia
+         JOIN artifact_series s ON s.id = sia.artifact_series_id
+         JOIN artifact_versions v ON v.id = sia.artifact_version_id
+         LEFT JOIN artifact_versions latest ON latest.id = s.latest_version_id
+        WHERE sia.session_id = ?
+        ORDER BY sia.position ASC`,
+    )
+    .all(sessionId) as Array<
+      InstructionArtifactAttachment & {
+        preset_id: string;
+        preset_name: string;
+        name: string;
+        description: string;
+        version: number;
+        current_version: number;
+      }
+    >;
+}
+
+// ---------------------------------------------------------------------------
 // Union Engine
 // ---------------------------------------------------------------------------
 
@@ -363,6 +687,16 @@ export function computePresetUnion(
   const parts: string[] = [];
 
   for (const presetId of presetIds) {
+    const artifact = resolveInstructionArtifactRef(db, presetId);
+    if (artifact?.markdown != null) {
+      const hash = computeContentHash(artifact.markdown);
+      if (!seenHashes.has(hash)) {
+        seenHashes.add(hash);
+        parts.push(artifact.markdown);
+      }
+      continue;
+    }
+
     const nodes = db
       .prepare("SELECT * FROM preset_nodes WHERE preset_id = ? ORDER BY position ASC")
       .all(presetId) as PresetNode[];
@@ -540,6 +874,8 @@ export function importClaudeMd(filePath: string, db: Db): Preset {
     }
   });
   insertAll();
+
+  ensureInstructionArtifactForPreset(db, presetId);
 
   return {
     id: presetId,

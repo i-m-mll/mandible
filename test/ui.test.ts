@@ -343,6 +343,17 @@ describe('App routing', () => {
     });
   });
 
+  it('routes retired Presets hashes into instruction artifacts', () => {
+    expect(parseRouteFromHash('#/presets')).toEqual({
+      tab: 'artifacts',
+      params: { role: 'instructions' },
+    });
+    expect(parseRouteFromHash('#/presets?role=context')).toEqual({
+      tab: 'artifacts',
+      params: { role: 'context' },
+    });
+  });
+
   it('routes removed Switchboard hashes to the default Spaces workspace', () => {
     expect(parseRouteFromHash('#/switchboard')).toEqual({
       tab: 'spaces',

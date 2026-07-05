@@ -15,6 +15,7 @@ import type {
   ConsoleSessionInput,
   ConsoleTransportLane,
 } from "../types.js";
+import { replaceSessionInstructionArtifacts } from "../presets.js";
 
 const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
@@ -282,26 +283,10 @@ export function registerConsoleRoutes(
     }
     const body = parsed.options;
 
-    // Bug: 790433d — Persist presetIds changes to session_presets table
+    // Issue 2181ffd — Persist instruction selections as artifact-version refs.
     if (body.presetIds !== undefined) {
       const db = getDb();
-      db.prepare("DELETE FROM session_presets WHERE session_id = ?").run(id);
-      if (body.presetIds.length > 0) {
-        const insertPreset = db.prepare(
-          `INSERT OR IGNORE INTO session_presets (session_id, preset_id, preset_version, position)
-           VALUES (?, ?, ?, ?)`,
-        );
-        const presetTx = db.transaction(() => {
-          for (let i = 0; i < body.presetIds!.length; i++) {
-            const presetRow = db.prepare("SELECT version FROM presets WHERE id = ?")
-              .get(body.presetIds![i]) as { version: number } | undefined;
-            if (presetRow) {
-              insertPreset.run(id, body.presetIds![i], presetRow.version, i);
-            }
-          }
-        });
-        presetTx();
-      }
+      replaceSessionInstructionArtifacts(db, id, body.presetIds);
     }
 
     const nextSession = manager.updateOptions(id, body);

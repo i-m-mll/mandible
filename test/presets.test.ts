@@ -16,6 +16,11 @@ import {
   computeContentHash,
   estimateTokens,
   computePresetUnion,
+  ensureInstructionArtifactForPreset,
+  listInstructionArtifactPresets,
+  listSessionInstructionArtifacts,
+  presetInstructionSeriesKey,
+  replaceSessionInstructionArtifacts,
   routePresetDiff,
   inferSourceFromPath,
   derivePresetName,
@@ -23,6 +28,8 @@ import {
   type Preset,
   type PresetNode,
 } from "../src/presets.js";
+import { readArtifactBytesFull } from "../src/artifact-content.js";
+import { getArtifactVersion } from "../src/provider-artifacts.js";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -348,6 +355,93 @@ describe("Union Engine", () => {
     // Should only appear once
     const count = (result.text.match(/# Same/g) ?? []).length;
     expect(count).toBe(1);
+  });
+});
+
+describe("Instruction artifact migration", () => {
+  let savedEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    savedEnv = {
+      HOME: process.env.HOME,
+      MANDIBLE_HOME: process.env.MANDIBLE_HOME,
+      MANDIBLE_ARTIFACT_DIR: process.env.MANDIBLE_ARTIFACT_DIR,
+    };
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-instruction-artifacts-test-"));
+    process.env.HOME = path.join(tempDir, "home");
+    process.env.MANDIBLE_ARTIFACT_DIR = path.join(tempDir, "artifacts");
+    delete process.env.MANDIBLE_HOME;
+    db = openDb(path.join(tempDir, "mandible.db"));
+  });
+
+  afterEach(() => {
+    try { db.close(); } catch { /* ignore */ }
+    cleanupTemp();
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  function seedLegacyPreset(): void {
+    insertPreset({ id: "legacy-preset", name: "Global Instructions", description: "Migrated doc" });
+    const now = Date.now();
+    insertNodes([
+      {
+        id: "node-1",
+        preset_id: "legacy-preset",
+        parent_id: null,
+        position: 0,
+        title: "Operating Rules",
+        body: "Use the issue ledger.",
+        level: 1,
+        created_at: now,
+        updated_at: now,
+      },
+    ]);
+  }
+
+  it("migrates legacy preset nodes into managed instruction artifact versions", () => {
+    seedLegacyPreset();
+
+    const migrated = ensureInstructionArtifactForPreset(db, "legacy-preset");
+
+    expect(migrated?.series_id).toMatch(/^artifact-series:/);
+    const series = db.prepare("SELECT series_key FROM artifact_series WHERE id = ?")
+      .get(migrated?.series_id) as { series_key: string };
+    expect(series.series_key).toBe(presetInstructionSeriesKey("legacy-preset"));
+    const version = getArtifactVersion(db, migrated!.version_id);
+    expect(version?.version_no).toBe(1);
+    const bytes = readArtifactBytesFull(db, version!.artifact_id);
+    expect(bytes.ok ? bytes.bytes.toString("utf8") : "").toContain("# Operating Rules");
+
+    const listed = listInstructionArtifactPresets(db);
+    expect(listed).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: migrated?.series_id,
+        name: "Global Instructions",
+        legacy_preset_id: "legacy-preset",
+      }),
+    ]));
+  });
+
+  it("composes unions and session attachments from artifact-version refs", () => {
+    seedLegacyPreset();
+    const migrated = ensureInstructionArtifactForPreset(db, "legacy-preset")!;
+
+    replaceSessionInstructionArtifacts(db, "session-1", ["legacy-preset"]);
+    const attachments = listSessionInstructionArtifacts(db, "session-1");
+
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      artifact_series_id: migrated.series_id,
+      artifact_version_id: migrated.version_id,
+      legacy_preset_id: "legacy-preset",
+      position: 0,
+    });
+    const union = computePresetUnion([attachments[0].artifact_version_id], db);
+    expect(union.text).toContain("Use the issue ledger.");
+    expect(union.tokenEstimate).toBeGreaterThan(0);
   });
 });
 

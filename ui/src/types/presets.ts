@@ -8,6 +8,9 @@ export type Preset = {
   token_estimate: number;
   created_at: number;
   updated_at: number;
+  artifact_series_id?: string;
+  artifact_version_id?: string | null;
+  legacy_preset_id?: string | null;
 };
 
 export type PresetWithNodes = Preset & {

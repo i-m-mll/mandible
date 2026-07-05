@@ -1308,7 +1308,7 @@ function ConversationInfoDialog({
                     key={preset.preset_id}
                     type="button"
                     className="session-preset-badge"
-                    onClick={() => { window.location.hash = `#/presets?id=${encodeURIComponent(preset.preset_id)}`; }}
+                    onClick={() => { window.location.hash = `#/artifacts?role=instructions&series=${encodeURIComponent(preset.preset_id)}`; }}
                   >
                     {preset.preset_name}
                     <span className="session-preset-badge__version">v{preset.version}</span>

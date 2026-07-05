@@ -78,6 +78,7 @@ export const METADATA_BACKUP_TABLES = [
   "artifact_series",
   "artifact_versions",
   "artifact_drafts",
+  "session_instruction_artifacts",
   "project_artifact_associations",
   "knowledge_backrefs",
   // Spaces P1' core four (issue b395083 / umbrella de56ffa). Parent-before-child

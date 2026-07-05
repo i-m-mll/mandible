@@ -63,7 +63,6 @@ import {
   ArtifactsIcon,
   SettingsIcon,
   MonitorIcon,
-  PresetsIcon,
   GraphIcon,
   TimelineIcon,
   LogsIcon,
@@ -117,7 +116,6 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'logs',
   'graph',
   'timeline',
-  'presets',
   'spaces',
 ];
 
@@ -150,9 +148,6 @@ const LazyGraphView = lazy(() =>
 );
 const LazyTimelineView = lazy(() =>
   import('./views/timeline').then((module) => ({ default: module.TimelineView })),
-);
-const LazyPresetsView = lazy(() =>
-  import('./views/presets').then((module) => ({ default: module.PresetsView })),
 );
 const LazySpacesTab = lazy(() =>
   import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab })),
@@ -305,7 +300,6 @@ const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
   'issues',
   'artifacts',
   'inbox',
-  'presets',
   'spaces',
 ]);
 
@@ -318,7 +312,6 @@ const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'graph',
   'inbox',
   'issues',
-  'presets',
   'spaces',
   'timeline',
 ]);
@@ -623,7 +616,7 @@ function App(): JSX.Element {
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
   // Order matches the left app rail: chat(1), graph(2), auth(3), issues(4),
-  // inbox(5), projects(6), presets(7), settings(9), logs(0).
+  // inbox(5), projects(6), instruction artifacts(7), settings(9), logs(0).
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
@@ -633,7 +626,7 @@ function App(): JSX.Element {
       '4': 'issues',
       '5': 'inbox',
       '6': 'work',
-      '7': 'presets',
+      '7': 'artifacts?role=instructions',
       '9': 'settings',
       '0': 'logs',
     };
@@ -1265,8 +1258,8 @@ function App(): JSX.Element {
       });
       dispatch({ type: 'setConsoleActiveSessionId', sessionId: id });
 
-      // Presets are sent with the create request so SDK sessions can configure
-      // immediately and PTY/Channel sessions can apply launch-time prompts.
+      // Instruction selections are sent with the create request so SDK sessions
+      // can configure immediately and PTY/Channel sessions can apply launch-time prompts.
     } catch {
       return;
     }
@@ -1387,13 +1380,6 @@ function App(): JSX.Element {
       label: 'Graph',
       title: 'Graph',
       icon: GraphIcon,
-    },
-    {
-      tab: 'presets',
-      href: '#/presets',
-      label: 'Presets',
-      title: 'Presets',
-      icon: PresetsIcon,
     },
     {
       tab: 'logs',
@@ -1691,6 +1677,7 @@ function App(): JSX.Element {
               initialSeriesRef={tabRoute.params.series}
               initialVersionNo={parseArtifactVersionParam(tabRoute.params.version)}
               initialRepo={tabRoute.params.repo}
+              initialRole={tabRoute.params.role}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );
@@ -1758,13 +1745,6 @@ function App(): JSX.Element {
             />
           );
         })())}
-        {renderTabPanel('presets', (
-          <LazyPresetsView
-            presetsState={state.presetsState}
-            dispatch={dispatch}
-            sidebarHidden={isViewSidebarHidden(routeForTab('presets', route, tabRouteSnapshots))}
-          />
-        ))}
         {renderTabPanel('spaces', (() => {
           const tabRoute = routeForTab('spaces', route, tabRouteSnapshots);
           return (
