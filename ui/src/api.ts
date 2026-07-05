@@ -20,7 +20,6 @@ import type {
   ConversationChild as ContractConversationChild,
   ConversationParent as ContractConversationParent,
   ConversationSource as ContractConversationSource,
-  ReviewSpecResponse,
   Role as ContractRole,
   StoredConversationBlock as ContractConversationBlock,
   WorkUnit as ContractWorkUnit,
@@ -119,6 +118,43 @@ export type InstructionDeliverySettings = {
     stdout: string;
     stderr: string;
   }>;
+};
+
+export type WorkCommitClassification = 'unique' | 'pre-branch-point' | 'merged-elsewhere';
+
+export type WorkCommit = {
+  hash: string;
+  short_hash: string;
+  message: string;
+  author: string;
+  date: string;
+  parents: string[];
+  classification: WorkCommitClassification;
+  is_pre_branch_point: boolean;
+  is_merged_elsewhere: boolean;
+};
+
+export type WorkCommitPage = {
+  repo_root: string;
+  branch: string;
+  default_branch: string;
+  merge_base: string | null;
+  commits: WorkCommit[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type WorkCompareMode = 'merge-base' | 'range';
+
+export type WorkCompareResult = {
+  repo_root: string;
+  from: string;
+  to: string;
+  mode: WorkCompareMode;
+  range: string;
+  raw: string;
+  stat: string;
 };
 
 export type UpdateInstructionDeliveryRequest = {
@@ -541,46 +577,25 @@ export async function getRepoBranches<T>(repoId: string): Promise<T[]> {
   return normalizeList(payload);
 }
 
-export async function getReviewDiff(
-  params: Record<string, string | number | boolean | undefined>,
-): Promise<string> {
-  const response = await apiGet(`/api/review/diff${buildQuery(params)}`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === 'string') {
-    return payload;
-  }
-  if (payload && typeof payload === 'object' && 'html' in payload) {
-    return String((payload as { html?: unknown }).html || '');
-  }
-  return '';
+export async function getRepoBranchCommits(
+  repoId: string,
+  branch: string,
+  params: { limit?: number; offset?: number } = {},
+): Promise<WorkCommitPage> {
+  const response = await apiGet(
+    `/api/work/repos/${encodeURIComponent(repoId)}/branches/${encodeURIComponent(branch)}/commits${buildQuery(params)}`,
+  );
+  return (await response.json()) as WorkCommitPage;
 }
 
-export type ReviewSpecPayload = ReviewSpecResponse;
-
-export async function getReviewSpec(
-  params: Record<string, string | number | boolean | undefined>,
-): Promise<ReviewSpecPayload> {
-  const response = await apiGet(`/api/review/spec${buildQuery(params)}`);
-  const payload = await parseMaybeJson(response);
-  if (typeof payload === 'string') {
-    return { markdown: payload, commits: [], meta: {} };
-  }
-  if (!payload || typeof payload !== 'object') {
-    return { markdown: '', commits: [], meta: {} };
-  }
-  const data = payload as {
-    markdown?: string;
-    raw?: string;
-    spec?: string;
-    commits?: string[];
-    meta?: Record<string, unknown>;
-    content?: string;
-  };
-  return {
-    markdown: data.markdown || data.raw || data.spec || data.content || '',
-    commits: Array.isArray(data.commits) ? data.commits : [],
-    meta: data.meta ?? {},
-  };
+export async function getWorkCompare(
+  repoId: string,
+  params: { from: string; to: string; mode?: WorkCompareMode },
+): Promise<WorkCompareResult> {
+  const response = await apiGet(
+    `/api/work/repos/${encodeURIComponent(repoId)}/compare${buildQuery(params)}`,
+  );
+  return (await response.json()) as WorkCompareResult;
 }
 
 export async function getIssueRepos<T>(): Promise<T[]> {

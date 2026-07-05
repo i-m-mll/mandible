@@ -1,5 +1,16 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { openPath, pushRepos, pushRepo } from '../api';
+import {
+  getRepoBranchCommits,
+  getWorkCompare,
+  openPath,
+  pushRepos,
+  pushRepo,
+  type WorkCommit,
+  type WorkCommitPage,
+  type WorkCompareMode,
+  type WorkCompareResult,
+} from '../api';
+import { DiffView } from '../components/DiffView';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 
 export type WorkRepo = {
@@ -45,6 +56,7 @@ export type WorkOverviewProps = {
   branchesByRepo: Record<string, WorkBranch[]>;
   onRescan: () => void;
   onReposChanged?: (repos: WorkRepo[]) => void;
+  params?: Record<string, string>;
 };
 
 // Bug: b5abaea — Push/sync state types
@@ -170,6 +182,12 @@ function formatRelativeTime(value?: string): string {
 type BranchSortKey = 'recency' | 'name' | 'ahead';
 type RepoSortKey = 'name' | 'activity';
 type SortDirection = 'asc' | 'desc';
+type CommitLoadState = {
+  loading: boolean;
+  error: string | null;
+};
+
+const WORK_COMMIT_LIMIT = 50;
 
 function sortBranches(branches: WorkBranch[], sortKey: BranchSortKey): WorkBranch[] {
   // Separate pinned (protected) from non-pinned
@@ -226,6 +244,40 @@ function useDebounce(value: string, delayMs: number): string {
 
 function copyToClipboard(text: string): void {
   void navigator.clipboard.writeText(text);
+}
+
+function commitKey(repoId: string, branchName: string): string {
+  return `${repoId}\u0000${branchName}`;
+}
+
+function parseCompare(value?: string): { from: string | null; to: string | null } {
+  if (!value) {
+    return { from: null, to: null };
+  }
+  const [from, to] = value.split('..');
+  return {
+    from: from || null,
+    to: to || null,
+  };
+}
+
+function classificationLabel(commit: WorkCommit): string {
+  if (commit.classification === 'pre-branch-point') return 'inherited';
+  if (commit.classification === 'merged-elsewhere') return 'merged elsewhere';
+  return 'unique';
+}
+
+function updateWorkHash(params: Record<string, string | null | undefined>): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const current = new URLSearchParams(window.location.hash.replace(/^#\/?work\??/, ''));
+  Object.entries(params).forEach(([key, value]) => {
+    if (!value) current.delete(key);
+    else current.set(key, value);
+  });
+  const query = current.toString();
+  window.history.replaceState(null, '', `#/work${query ? `?${query}` : ''}`);
 }
 
 // --- Context menu component ---
@@ -511,10 +563,26 @@ export function WorkOverviewView({
   repos: initialRepos,
   branchesByRepo,
   onRescan,
+  params = {},
 }: WorkOverviewProps): JSX.Element {
   const [repos, setRepos] = useState<WorkRepo[]>(initialRepos);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
+  const [selectedRepoId, setSelectedRepoId] = useState<string | null>(params.repo ?? null);
+  const [selectedBranches, setSelectedBranches] = useState<Record<string, string>>(
+    params.repo && params.branch ? { [params.repo]: params.branch } : {},
+  );
+  const [selectedCommits, setSelectedCommits] = useState<Record<string, string>>({});
+  const [commitPages, setCommitPages] = useState<Record<string, WorkCommitPage>>({});
+  const [commitLoadState, setCommitLoadState] = useState<Record<string, CommitLoadState>>({});
+  const initialCompare = parseCompare(params.compare);
+  const [compareFrom, setCompareFrom] = useState<string | null>(initialCompare.from);
+  const [compareTo, setCompareTo] = useState<string | null>(initialCompare.to);
+  const [compareMode, setCompareMode] = useState<WorkCompareMode>(
+    params.mode === 'range' ? 'range' : 'merge-base',
+  );
+  const [compareResult, setCompareResult] = useState<WorkCompareResult | null>(null);
+  const [compareError, setCompareError] = useState<string | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   // Outer-level filters
   const [repoFilterInput, setRepoFilterInput] = useState('');
@@ -545,6 +613,23 @@ export function WorkOverviewView({
   useEffect(() => {
     setRepos(initialRepos);
   }, [initialRepos]);
+
+  useEffect(() => {
+    const nextCompare = parseCompare(params.compare);
+    setSelectedRepoId(params.repo ?? null);
+    if (params.repo && params.branch) {
+      setSelectedBranches((prev) => ({ ...prev, [params.repo as string]: params.branch as string }));
+    }
+    if (params.repo && params.branch && params.commit) {
+      setSelectedCommits((prev) => ({
+        ...prev,
+        [commitKey(params.repo as string, params.branch as string)]: params.commit as string,
+      }));
+    }
+    setCompareFrom(nextCompare.from);
+    setCompareTo(nextCompare.to);
+    setCompareMode(params.mode === 'range' ? 'range' : 'merge-base');
+  }, [params.repo, params.branch, params.commit, params.compare, params.mode]);
 
   // Fetch repos with/without excluded when showExcluded changes
   const fetchRepos = async (withExcluded: boolean) => {
@@ -702,6 +787,89 @@ export function WorkOverviewView({
     }
   }, [repoRows, selectedRepoId]);
 
+  const selectedRepo = repoRows.find((row) => row.repoId === selectedRepoId) ?? repoRows[0] ?? null;
+  const selectedBranchName = selectedRepo
+    ? selectedBranches[selectedRepo.repoId] ?? getBranchName(selectedRepo.branches[0] ?? {})
+    : '';
+  const selectedBranch = selectedRepo
+    ? selectedRepo.branches.find((branch) => getBranchName(branch) === selectedBranchName) ?? selectedRepo.branches[0] ?? null
+    : null;
+
+  useEffect(() => {
+    if (!selectedRepo) {
+      return;
+    }
+    const current = selectedBranches[selectedRepo.repoId];
+    if (current && selectedRepo.branches.some((branch) => getBranchName(branch) === current)) {
+      return;
+    }
+    const fallback = getBranchName(selectedRepo.branches[0] ?? {});
+    if (!fallback || fallback === '\u2014') {
+      return;
+    }
+    setSelectedBranches((prev) => ({ ...prev, [selectedRepo.repoId]: fallback }));
+    updateWorkHash({ repo: selectedRepo.repoId, branch: fallback });
+  }, [selectedRepo, selectedBranches]);
+
+  useEffect(() => {
+    if (!selectedRepo || !selectedBranch) {
+      return;
+    }
+    const branchName = getBranchName(selectedBranch);
+    const key = commitKey(selectedRepo.repoId, branchName);
+    setCommitLoadState((prev) => ({ ...prev, [key]: { loading: true, error: null } }));
+    let cancelled = false;
+    getRepoBranchCommits(selectedRepo.repoId, branchName, { limit: WORK_COMMIT_LIMIT, offset: 0 })
+      .then((page) => {
+        if (cancelled) return;
+        setCommitPages((prev) => ({ ...prev, [key]: page }));
+        setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: null } }));
+        setSelectedCommits((prev) => {
+          const current = prev[key];
+          if (current && page.commits.some((commit) => commit.hash === current)) {
+            return prev;
+          }
+          const first = page.commits[0]?.hash;
+          return first ? { ...prev, [key]: first } : prev;
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setCommitLoadState((prev) => ({ ...prev, [key]: { loading: false, error: message } }));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepo?.repoId, selectedBranchName]);
+
+  useEffect(() => {
+    if (!selectedRepo || !compareFrom || !compareTo) {
+      setCompareResult(null);
+      setCompareError(null);
+      setCompareLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setCompareLoading(true);
+    setCompareError(null);
+    getWorkCompare(selectedRepo.repoId, { from: compareFrom, to: compareTo, mode: compareMode })
+      .then((result) => {
+        if (cancelled) return;
+        setCompareResult(result);
+        setCompareLoading(false);
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setCompareResult(null);
+        setCompareLoading(false);
+        setCompareError(error instanceof Error ? error.message : String(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedRepo?.repoId, compareFrom, compareTo, compareMode]);
+
   const repoTitleCounts = useMemo(() => {
     const counts = new Map<string, number>();
     for (const { repoTitle } of repoRows) {
@@ -809,8 +977,6 @@ export function WorkOverviewView({
   };
 
   const hasActiveFilters = Boolean(globalBranchFilter || repoFilter);
-  const selectedRepo = repoRows.find((row) => row.repoId === selectedRepoId) ?? repoRows[0] ?? null;
-
   return (
     <div className="view work-view">
       {pushState.authPending && (
@@ -905,7 +1071,16 @@ export function WorkOverviewView({
                     key={repoId}
                     type="button"
                     className={`work-repo-item${selected ? ' work-repo-item--active' : ''}${isExcluded ? ' work-repo-item--excluded' : ''}`}
-                    onClick={() => setSelectedRepoId(repoId)}
+                    onClick={() => {
+                      const branchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
+                      setSelectedRepoId(repoId);
+                      updateWorkHash({
+                        repo: repoId,
+                        branch: branchName && branchName !== '\u2014' ? branchName : null,
+                        commit: null,
+                        compare: null,
+                      });
+                    }}
                   >
                     <span className="work-repo-item__main">
                       <span className="work-repo-item__name">
@@ -1169,15 +1344,259 @@ export function WorkOverviewView({
                       <option value="ahead">Ahead/behind</option>
                     </select>
                   </div>
-                  <BranchTableScroller
-                    branches={branches}
-                    repoId={repoId}
-                    defaultBranch={defaultBranch as string}
-                    hasActiveFilters={hasActiveFilters}
-                    perRepoFilter={perRepoFilters[repoId]}
-                    expanded={expanded}
-                    onToggle={toggleBranch}
-                  />
+                  {(() => {
+                    const activeBranchName = selectedBranches[repoId] ?? getBranchName(branches[0] ?? {});
+                    const activeBranch =
+                      branches.find((branch) => getBranchName(branch) === activeBranchName) ??
+                      branches[0] ??
+                      null;
+                    const branchName = activeBranch ? getBranchName(activeBranch) : '';
+                    const commitsKey = branchName ? commitKey(repoId, branchName) : '';
+                    const commitPage = commitsKey ? commitPages[commitsKey] : undefined;
+                    const loadState = commitsKey ? commitLoadState[commitsKey] : undefined;
+                    const selectedCommitHash = commitsKey ? selectedCommits[commitsKey] : undefined;
+                    const selectedCommit =
+                      commitPage?.commits.find((commit) => commit.hash === selectedCommitHash) ??
+                      commitPage?.commits[0] ??
+                      null;
+                    const compareValue = compareFrom ? `${compareFrom}..${compareTo ?? ''}` : null;
+
+                    const writeCompare = (from: string | null, to: string | null, mode: WorkCompareMode = compareMode) => {
+                      setCompareFrom(from);
+                      setCompareTo(to);
+                      setCompareMode(mode);
+                      updateWorkHash({
+                        repo: repoId,
+                        branch: branchName || null,
+                        compare: from ? `${from}..${to ?? ''}` : null,
+                        mode: from ? mode : null,
+                      });
+                    };
+
+                    const selectBranch = (nextBranchName: string) => {
+                      setSelectedBranches((prev) => ({ ...prev, [repoId]: nextBranchName }));
+                      updateWorkHash({ repo: repoId, branch: nextBranchName, commit: null });
+                    };
+
+                    const selectCommit = (commit: WorkCommit) => {
+                      setSelectedCommits((prev) => ({
+                        ...prev,
+                        [commitKey(repoId, branchName)]: commit.hash,
+                      }));
+                      updateWorkHash({ repo: repoId, branch: branchName, commit: commit.hash });
+                    };
+
+                    const addCommitToCompare = (commit: WorkCommit) => {
+                      if (!compareFrom || (compareFrom && compareTo)) {
+                        writeCompare(commit.hash, null);
+                        return;
+                      }
+                      if (compareFrom !== commit.hash) {
+                        writeCompare(compareFrom, commit.hash);
+                      }
+                    };
+
+                    return (
+                      <div className="work-project-browser">
+                        <aside className="work-branch-browser" aria-label="Branches">
+                          {branches.length === 0 ? (
+                            <div className="empty-state">
+                              {hasActiveFilters || perRepoFilters[repoId]
+                                ? 'No branches match this filter.'
+                                : 'No branches reported yet.'}
+                            </div>
+                          ) : (
+                            branches.map((branch) => {
+                              const name = getBranchName(branch);
+                              const selected = name === branchName;
+                              const status = getBranchStatus(branch);
+                              return (
+                                <button
+                                  key={`${repoId}:branch:${name}`}
+                                  type="button"
+                                  className={`work-branch-button${selected ? ' work-branch-button--active' : ''}`}
+                                  onClick={() => selectBranch(name)}
+                                >
+                                  <span className={`work-status-dot work-status-dot--${status}`} aria-hidden="true" />
+                                  <span className="work-branch-button__main">
+                                    <span className="work-branch-button__name">{name}</span>
+                                    <span className="work-branch-button__meta">
+                                      {isProtectedBranch(branch) ? 'protected' : `+${branch.ahead_default ?? 0} / -${branch.behind_default ?? 0}`}
+                                      {isDirty(branch) ? ' dirty' : ''}
+                                    </span>
+                                  </span>
+                                </button>
+                              );
+                            })
+                          )}
+                        </aside>
+                        <section className="work-commit-browser" aria-label="Commits">
+                          {activeBranch ? (
+                            <>
+                              <div className="work-commit-toolbar">
+                                <div>
+                                  <h4>{branchName}</h4>
+                                  <span className="text-muted">
+                                    {commitPage ? `${commitPage.total} commits` : 'Loading commits'}
+                                  </span>
+                                </div>
+                                <div className="work-commit-toolbar__actions">
+                                  <button
+                                    type="button"
+                                    className="btn btn--xs"
+                                    onClick={() => writeCompare(defaultBranch as string, branchName, 'merge-base')}
+                                  >
+                                    Branch point
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn--xs btn--ghost"
+                                    onClick={() => writeCompare(defaultBranch as string, branchName, 'range')}
+                                  >
+                                    vs {defaultBranch}
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="work-compare-tray" aria-label="Compare tray">
+                                <div className="work-compare-tray__endpoints">
+                                  <span>{compareFrom ? compareFrom.slice(0, 12) : 'Select first commit'}</span>
+                                  <span aria-hidden="true">..</span>
+                                  <span>{compareTo ? compareTo.slice(0, 12) : 'Select second commit'}</span>
+                                </div>
+                                <div className="work-compare-tray__actions">
+                                  <select
+                                    className="work-compare-tray__mode"
+                                    value={compareMode}
+                                    onChange={(event) => writeCompare(compareFrom, compareTo, event.currentTarget.value as WorkCompareMode)}
+                                  >
+                                    <option value="merge-base">Merge base</option>
+                                    <option value="range">Range</option>
+                                  </select>
+                                  <button
+                                    type="button"
+                                    className="btn btn--xs btn--ghost"
+                                    disabled={!compareFrom || !compareTo}
+                                    onClick={() => writeCompare(compareTo, compareFrom)}
+                                  >
+                                    Swap
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn--xs btn--ghost"
+                                    disabled={!compareValue}
+                                    onClick={() => writeCompare(null, null)}
+                                  >
+                                    Clear
+                                  </button>
+                                </div>
+                              </div>
+                              {loadState?.error ? (
+                                <div className="empty-state">{loadState.error}</div>
+                              ) : loadState?.loading && !commitPage ? (
+                                <div className="empty-state">Loading commits...</div>
+                              ) : (
+                                <div className="work-commit-layout">
+                                  <div className="work-commit-list" role="list" aria-label={`${branchName} commits`}>
+                                    {(commitPage?.commits ?? []).map((commit) => {
+                                      const selected = selectedCommit?.hash === commit.hash;
+                                      return (
+                                        <button
+                                          key={commit.hash}
+                                          type="button"
+                                          className={`work-commit-row work-commit-row--${commit.classification}${selected ? ' work-commit-row--active' : ''}`}
+                                          onClick={() => selectCommit(commit)}
+                                        >
+                                          <span className="work-commit-row__marker" aria-hidden="true" />
+                                          <span className="work-commit-row__main">
+                                            <span className="work-commit-row__message">{commit.message || commit.short_hash}</span>
+                                            <span className="work-commit-row__meta">
+                                              {commit.short_hash} · {commit.author} · {formatRelativeTime(commit.date)}
+                                            </span>
+                                          </span>
+                                          <span className="work-commit-row__class">{classificationLabel(commit)}</span>
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                  <div className="work-commit-detail">
+                                    {selectedCommit ? (
+                                      <>
+                                        <div className="work-commit-detail__header">
+                                          <div>
+                                            <h4>{selectedCommit.message || selectedCommit.short_hash}</h4>
+                                            <span className="text-muted">
+                                              {selectedCommit.hash} · {selectedCommit.author} · {selectedCommit.date}
+                                            </span>
+                                          </div>
+                                          <div className="work-commit-detail__actions">
+                                            <button
+                                              type="button"
+                                              className="btn btn--xs"
+                                              onClick={() => addCommitToCompare(selectedCommit)}
+                                            >
+                                              Add to compare
+                                            </button>
+                                            <button
+                                              type="button"
+                                              className="btn btn--xs btn--ghost"
+                                              disabled={selectedCommit.parents.length === 0}
+                                              onClick={() => {
+                                                const parent = selectedCommit.parents[0];
+                                                if (parent) writeCompare(parent, selectedCommit.hash, 'range');
+                                              }}
+                                            >
+                                              Diff parent
+                                            </button>
+                                          </div>
+                                        </div>
+                                        <dl className="work-commit-detail__facts">
+                                          <div>
+                                            <dt>Class</dt>
+                                            <dd>{classificationLabel(selectedCommit)}</dd>
+                                          </div>
+                                          <div>
+                                            <dt>Parents</dt>
+                                            <dd>{selectedCommit.parents.length || 0}</dd>
+                                          </div>
+                                        </dl>
+                                      </>
+                                    ) : (
+                                      <div className="empty-state">Select a commit.</div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              <section className="work-compare-output" aria-label="Compare result">
+                                <div className="work-compare-output__header">
+                                  <h4>Compare</h4>
+                                  {compareResult ? <span className="text-muted">{compareResult.range}</span> : null}
+                                </div>
+                                {compareLoading ? (
+                                  <div className="empty-state">Loading diff...</div>
+                                ) : compareError ? (
+                                  <div className="empty-state">{compareError}</div>
+                                ) : compareResult ? (
+                                  <>
+                                    {compareResult.stat ? <pre className="work-compare-stat">{compareResult.stat}</pre> : null}
+                                    <DiffView
+                                      diffText={compareResult.raw}
+                                      ariaLabel="Projects compare diff"
+                                      emptyMessage="No diff for this comparison."
+                                      initialMode="split"
+                                    />
+                                  </>
+                                ) : (
+                                  <div className="empty-state">Select two commits or a branch compare action.</div>
+                                )}
+                              </section>
+                            </>
+                          ) : (
+                            <div className="empty-state">Select a branch to browse commits.</div>
+                          )}
+                        </section>
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             );

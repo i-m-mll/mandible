@@ -19,7 +19,6 @@ import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerChatRoutes } from "./routes/chats.js";
 import { registerWorkRoutes } from "./routes/work.js";
-import { registerReviewRoutes } from "./routes/review.js";
 import { registerIssueRoutes } from "./routes/issues.js";
 import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
@@ -103,7 +102,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const authQueue = registerAuthRoutes(router);
   registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router);
-  registerReviewRoutes(router, workScanner);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
   const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);

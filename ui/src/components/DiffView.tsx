@@ -40,9 +40,6 @@ export type DiffViewProps = {
   onModeChange?: (mode: DiffViewMode) => void;
 };
 
-// ReviewView and PresetDiffView still have legacy renderers. Future migrations
-// should feed raw unified diff text into this component instead of adding a
-// fourth renderer.
 function cx(...values: Array<string | undefined | false>): string {
   return values.filter(Boolean).join(' ');
 }

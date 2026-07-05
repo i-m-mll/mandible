@@ -68,7 +68,6 @@ import {
   TimelineIcon,
   LogsIcon,
   ProjectsIcon,
-  DiffIcon,
 } from './components/icons/TabIcons';
 
 import '@xterm/xterm/css/xterm.css';
@@ -111,7 +110,6 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'auth',
   'artifacts',
   'work',
-  'review',
   'issues',
   'settings',
   'inbox',
@@ -134,9 +132,6 @@ const LazyInboxView = lazy(() =>
 );
 const LazyIssuesView = lazy(() =>
   import('./views/issues').then((module) => ({ default: module.IssuesView })),
-);
-const LazyReviewView = lazy(() =>
-  import('./views/review').then((module) => ({ default: module.ReviewView })),
 );
 const LazyConversationsView = lazy(() =>
   import('./views/conversations').then((module) => ({ default: module.ConversationsView })),
@@ -628,7 +623,7 @@ function App(): JSX.Element {
 
   // Keyboard shortcuts for top-level tabs (Ctrl+1–9).
   // Order matches the left app rail: chat(1), graph(2), auth(3), issues(4),
-  // inbox(5), projects(6), review(7), presets(8), settings(9), logs(0).
+  // inbox(5), projects(6), presets(7), settings(9), logs(0).
   // Settings UI for key bindings is deferred — Bug: 9082b2c
   useEffect(() => {
     const tabRoutes: Record<string, string> = {
@@ -638,8 +633,7 @@ function App(): JSX.Element {
       '4': 'issues',
       '5': 'inbox',
       '6': 'work',
-      '7': 'review',
-      '8': 'presets',
+      '7': 'presets',
       '9': 'settings',
       '0': 'logs',
     };
@@ -1395,13 +1389,6 @@ function App(): JSX.Element {
       icon: GraphIcon,
     },
     {
-      tab: 'review',
-      href: '#/review',
-      label: 'Review',
-      title: 'Review',
-      icon: DiffIcon,
-    },
-    {
       tab: 'presets',
       href: '#/presets',
       label: 'Presets',
@@ -1669,11 +1656,17 @@ function App(): JSX.Element {
           );
         })())}
         {renderTabPanel('work', (
-          <LazyWorkOverviewView
-            repos={state.workRepos}
-            branchesByRepo={state.workBranches}
-            onRescan={handleRescan}
-          />
+          (() => {
+            const tabRoute = routeForTab('work', route, tabRouteSnapshots);
+            return (
+              <LazyWorkOverviewView
+                repos={state.workRepos}
+                branchesByRepo={state.workBranches}
+                onRescan={handleRescan}
+                params={tabRoute.params}
+              />
+            );
+          })()
         ))}
         {renderTabPanel('issues', (() => {
           const tabRoute = routeForTab('issues', route, tabRouteSnapshots);
@@ -1699,18 +1692,6 @@ function App(): JSX.Element {
               initialVersionNo={parseArtifactVersionParam(tabRoute.params.version)}
               initialRepo={tabRoute.params.repo}
               sidebarHidden={isViewSidebarHidden(tabRoute)}
-            />
-          );
-        })())}
-        {renderTabPanel('review', (() => {
-          const tabRoute = routeForTab('review', route, tabRouteSnapshots);
-          return (
-            <LazyReviewView
-              params={{
-                repo: tabRoute.params.repo,
-                base: tabRoute.params.base,
-                head: tabRoute.params.head,
-              }}
             />
           );
         })())}
