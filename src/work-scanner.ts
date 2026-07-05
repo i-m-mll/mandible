@@ -3,6 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { parse as parseToml } from "smol-toml";
+import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
@@ -71,6 +72,8 @@ export interface SqliteDatabase {
   exec(sql: string): void;
   prepare(sql: string): SqliteStatement;
 }
+
+const workScannerLog = getDaemonLogger();
 
 interface WorktreeInfo {
   path: string;
@@ -203,7 +206,11 @@ function readReposToml(monorepoRoot: string): string[] {
     }
     return roots;
   } catch (err) {
-    console.warn(`[work-scanner] Could not read repos.toml at ${tomlPath}:`, err);
+    workScannerLog("warn", "work_scanner_repos_toml_read_failed", {
+      subsystem: "work-scanner",
+      path: tomlPath,
+      error: String(err),
+    });
     return [];
   }
 }
@@ -596,7 +603,12 @@ export class WorkScanner {
         }
       } catch (_error) {
         // Log but continue scanning remaining repos
-        console.error(`[work-scanner] scanRepo failed for ${repo.root}: ${_error}`);
+        workScannerLog("error", "work_scanner_repo_scan_failed", {
+          subsystem: "work-scanner",
+          repo_id: repo.id,
+          path: repo.root,
+          error: String(_error),
+        });
       }
     }
 
@@ -720,7 +732,11 @@ export class WorkScanner {
       }
       fs.writeFileSync(this.configPath, JSON.stringify(config, null, 2), "utf8");
     } catch (err) {
-      console.error(`[work-scanner] addRepo: failed to write repos.json: ${err}`);
+      workScannerLog("error", "work_scanner_repo_config_write_failed", {
+        subsystem: "work-scanner",
+        path: this.configPath,
+        error: String(err),
+      });
     }
 
     const newRepo: RepoInfo = {
@@ -748,7 +764,12 @@ export class WorkScanner {
           this.repoInfos[idx] = { ...this.repoInfos[idx], last_scanned_at: scanNow };
         }
       } catch (err) {
-        console.error(`[work-scanner] addRepo background scan failed: ${err}`);
+        workScannerLog("error", "work_scanner_add_repo_background_scan_failed", {
+          subsystem: "work-scanner",
+          repo_id: newId,
+          path: resolved,
+          error: String(err),
+        });
       }
     })();
 

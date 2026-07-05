@@ -24,6 +24,7 @@ import {
   safeArchiveCodexThread,
   type CodexThreadArchiver,
 } from "./codex-thread-archive.js";
+import { getDaemonLogger } from "./daemon-log.js";
 import { getDb, resolvePrefix } from "./db.js";
 import {
   applyAuthRequestLedgerCompletion,
@@ -66,6 +67,8 @@ const VALID_RELATIONSHIP_TYPES = [
   "implements",
   "tests",
 ];
+
+const authLog = getDaemonLogger();
 
 type MergeTreeResult =
   | { status: "clean"; tree: string; files: string[]; message: string }
@@ -291,9 +294,11 @@ export class AuthQueue {
           event: "auth:resolved",
           data: this.buildResolvedPayload(recovered)
         });
-        console.log(
-          `[auth-queue] recovered stuck request ${id}: merge succeeded but result was not recorded (daemon killed mid-execution)`
-        );
+        authLog("warn", "auth_request_recovered_success", {
+          subsystem: "auth",
+          auth_request_id: id,
+          reason: "merge_succeeded_result_not_recorded",
+        });
       }
     }
 
@@ -305,9 +310,11 @@ export class AuthQueue {
           data: this.buildResolvedPayload(recovered)
         });
       }
-      console.log(
-        `[auth-queue] recovered stuck request ${id}: approved but unfinished after 5min — marking as interrupted`
-      );
+      authLog("warn", "auth_request_recovered_interrupted", {
+        subsystem: "auth",
+        auth_request_id: id,
+        reason: "approved_unfinished_after_5min",
+      });
     }
 
     this.sweepSuccessfulMergeFinalizers();
@@ -568,9 +575,11 @@ export class AuthQueue {
       try {
         return this.approve(request.id, approval);
       } catch (error) {
-        console.warn(
-          `[auth-queue] auto-approval failed for ${request.id}: ${error instanceof Error ? error.message : String(error)}`
-        );
+        authLog("warn", "auth_auto_approval_failed", {
+          subsystem: "auth",
+          auth_request_id: request.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
@@ -1086,7 +1095,7 @@ export class AuthQueue {
   delete(id: string, reason: string): void {
     const request = this.requireRequest(id);
     this.db.prepare("DELETE FROM auth_requests WHERE id = ?").run(id);
-    console.log(`[auth-queue] deleted request ${id} (${reason})`);
+    authLog("info", "auth_request_deleted", { subsystem: "auth", auth_request_id: id, reason });
     this.broadcast({
       event: "auth:deleted",
       data: { request_id: id }
@@ -1251,9 +1260,12 @@ export class AuthQueue {
       try {
         approved.push(this.approve(request.id, approval));
       } catch (error) {
-        console.warn(
-          `[auth-queue] auto-approval failed for pending request ${request.id}: ${error instanceof Error ? error.message : String(error)}`
-        );
+        authLog("warn", "auth_auto_approval_failed", {
+          subsystem: "auth",
+          auth_request_id: request.id,
+          pending: true,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     return approved;
@@ -1442,9 +1454,11 @@ export class AuthQueue {
           data: this.buildResolvedPayload(recovered)
         });
       }
-      console.log(
-        `[auth-queue] periodic recovery: stuck request ${id} approved >10min without merge evidence — marking as interrupted`
-      );
+      authLog("warn", "auth_request_periodic_recovery_interrupted", {
+        subsystem: "auth",
+        auth_request_id: id,
+        reason: "approved_without_merge_evidence_after_10min",
+      });
     }
   }
 
@@ -1516,9 +1530,11 @@ export class AuthQueue {
                 });
               }
             } catch (hookError) {
-              console.warn(
-                `[auth-queue] hook execution failed for request ${request.id}: ${hookError instanceof Error ? hookError.message : String(hookError)}`
-              );
+              authLog("warn", "auth_hook_execution_failed", {
+                subsystem: "auth",
+                auth_request_id: request.id,
+                error: hookError instanceof Error ? hookError.message : String(hookError),
+              });
             }
 
           }
@@ -1536,7 +1552,11 @@ export class AuthQueue {
           if (result.exit_code === 0) {
             const mergedForRestart = { ...request, ...this.getRequest(request.id) } as AuthRequest;
             if (mergedForRestart.repo === "mandible") {
-              console.log("[auth-queue] self-merge detected, scheduling daemon restart (2s delay for event delivery)");
+              authLog("info", "auth_self_merge_restart_scheduled", {
+                subsystem: "auth",
+                auth_request_id: request.id,
+                delay_ms: 2000,
+              });
               setTimeout(() => process.exit(0), 2000);
             }
           }
@@ -1624,9 +1644,11 @@ export class AuthQueue {
       try {
         this.resolveWorkUnitsOnMerge(finalized);
       } catch (err) {
-        console.warn(
-          `[auth-queue] failed to resolve work units after merge: ${err instanceof Error ? err.message : String(err)}`
-        );
+        authLog("warn", "auth_work_units_resolve_failed", {
+          subsystem: "auth",
+          auth_request_id: finalized.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
     }
     this.archiveCompletedWorkerThreads(finalized);
@@ -1875,9 +1897,11 @@ export class AuthQueue {
         approval_lease_id: request.approval_lease_id,
       });
     } catch (error) {
-      console.warn(
-        `[auth-queue] failed to apply ledger completion for ${request.id}: ${error instanceof Error ? error.message : String(error)}`
-      );
+      authLog("warn", "auth_ledger_completion_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -1909,9 +1933,12 @@ export class AuthQueue {
             null,
           );
         }
-        console.warn(
-          `[auth-queue] deferred action ${action.id} failed for request ${request.id}: ${error instanceof Error ? error.message : String(error)}`
-        );
+        authLog("warn", "auth_deferred_action_failed", {
+          subsystem: "auth",
+          auth_request_id: request.id,
+          action_id: action.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
   }
@@ -2161,9 +2188,12 @@ export class AuthQueue {
           event: "auth:resolved",
           data: this.buildResolvedPayload(dismissed)
         });
-        console.log(
-          `[auth-queue] auto-dismissed duplicate request ${row.id} after successful merge of ${completed.head_branch}`
-        );
+        authLog("info", "auth_duplicate_auto_dismissed", {
+          subsystem: "auth",
+          auth_request_id: row.id,
+          completed_request_id: completed.id,
+          head_branch: completed.head_branch,
+        });
       }
     }
   }
@@ -2359,9 +2389,12 @@ export class AuthQueue {
     }
 
     if (resolvedIds.size > 0) {
-      console.log(
-        `[auth-queue] resolved ${resolvedIds.size} work unit(s) after successful merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
-      );
+      authLog("info", "auth_work_units_resolved", {
+        subsystem: "auth",
+        auth_request_id: completed.id,
+        resolved_count: resolvedIds.size,
+        head_branch: completed.head_branch,
+      });
     }
   }
 
@@ -2585,14 +2618,19 @@ export class AuthQueue {
         result.candidates.push({ ...candidate, archived });
       }
       if (logSummary && result.archived > 0) {
-        console.log(
-          `[auth-queue] archived ${result.archived} completed Codex worker thread(s) after merge of ${completed.head_branch ?? completed.id.slice(0, 8)}`
-        );
+        authLog("info", "auth_completed_worker_threads_archived", {
+          subsystem: "auth",
+          auth_request_id: completed.id,
+          archived_count: result.archived,
+          head_branch: completed.head_branch,
+        });
       }
     } catch (err) {
-      console.warn(
-        `[auth-queue] failed to archive completed worker threads: ${err instanceof Error ? err.message : String(err)}`
-      );
+      authLog("warn", "auth_completed_worker_thread_archive_failed", {
+        subsystem: "auth",
+        auth_request_id: completed.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
     return result;
   }

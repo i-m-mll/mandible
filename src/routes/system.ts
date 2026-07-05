@@ -2,6 +2,7 @@ import { exec } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { Db } from "../db.js";
 import { broadcast } from "../sse.js";
 import type { RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
@@ -107,7 +108,7 @@ function completeTailLines(chunks: Buffer[], discardPartialFirstLine: boolean): 
   return lines.filter((line: string) => line.trim());
 }
 
-export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkScanner): void {
+export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkScanner, db?: Db): void {
   // GET /api/system/logs — tail the structured NDJSON daemon log.
   // Query params:
   //   level  = debug | info | warn | error  (minimum level to include; default: info)
@@ -120,6 +121,11 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
     const minLevelIndex = LEVEL_ORDER[rawLevel] ?? LEVEL_ORDER.info;
     const limit = queryNumber(req, "limit", { defaultValue: 200, min: 1, max: 1000 });
     const offset = queryNumber(req, "offset", { defaultValue: 0, min: 0 });
+
+    if (db && tableExists(db, "daemon_log")) {
+      sendJson(res, 200, queryDaemonLog(db, rawLevel, limit, offset));
+      return;
+    }
 
     // Tail more than we need since some lines will be filtered out by level.
     const tailCount = (limit + offset) * 4;
@@ -230,4 +236,88 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       sendJson(res, 200, { ok: true });
     });
   }, { fileRpc: "deny" });
+}
+
+function queryDaemonLog(db: Db, rawLevel: string, limit: number, offset: number): {
+  entries: LogEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+  log_file: string;
+  exists: boolean;
+  source: "daemon_log";
+} {
+  const minLevelIndex = LEVEL_ORDER[rawLevel] ?? LEVEL_ORDER.info;
+  const allowedLevels = Object.entries(LEVEL_ORDER)
+    .filter(([, index]) => index >= minLevelIndex)
+    .map(([level]) => level);
+  const placeholders = allowedLevels.map(() => "?").join(", ");
+  const total = Number((db
+    .prepare(`SELECT COUNT(*) AS count FROM daemon_log WHERE level IN (${placeholders})`)
+    .get(...allowedLevels) as { count?: number } | undefined)?.count ?? 0);
+  const rows = db
+    .prepare(
+      `SELECT *
+       FROM daemon_log
+       WHERE level IN (${placeholders})
+       ORDER BY ts DESC
+       LIMIT ? OFFSET ?`,
+    )
+    .all(...allowedLevels, limit, offset) as Array<{
+      id: string;
+      ts: number;
+      level: string;
+      event: string;
+      subsystem: string;
+      fields_json: string;
+      issue_id: string | null;
+      auth_request_id: string | null;
+      artifact_id: string | null;
+      session_id: string | null;
+      repo_id: string | null;
+    }>;
+  const entries = rows.reverse().map((row) => {
+    const fields = parseFields(row.fields_json);
+    return {
+      ...fields,
+      id: row.id,
+      level: row.level,
+      message: row.event,
+      event: row.event,
+      subsystem: row.subsystem,
+      time: new Date(row.ts).toISOString(),
+      issue_id: row.issue_id,
+      auth_request_id: row.auth_request_id,
+      artifact_id: row.artifact_id,
+      session_id: row.session_id,
+      repo_id: row.repo_id,
+    };
+  });
+  return {
+    entries,
+    total,
+    limit,
+    offset,
+    log_file: LOG_FILE_PATH,
+    exists: true,
+    source: "daemon_log",
+  };
+}
+
+function tableExists(db: Db, table: string): boolean {
+  const row = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(table);
+  return Boolean(row);
+}
+
+function parseFields(raw: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
