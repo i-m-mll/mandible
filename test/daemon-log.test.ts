@@ -242,4 +242,54 @@ describe("system log route daemon_log source", () => {
       issue_id: "issue-route",
     });
   });
+
+  it("applies structured filters and returns facets from daemon_log", async () => {
+    const logger = configureDaemonLogger(db);
+    logger("debug", "reaper_tick", { subsystem: "reconciler", repo_id: "mandible" });
+    logger("info", "http_request", { subsystem: "http", pathname: "/api/issues/abc123", status: 200 });
+    logger("error", "auth_failure", {
+      subsystem: "auth",
+      auth_request_id: "auth-1",
+      issue_id: "issue-1",
+      detail: "needle",
+    });
+    logger("warn", "auth_warning", { subsystem: "auth", auth_request_id: "auth-2" });
+
+    const routes = new TestRoutes();
+    registerSystemRoutes(routes, { getRepos: () => [] }, db);
+    const res = createResponse();
+
+    await routes.handler("GET", "/api/system/logs")(request({
+      levels: "error,warn",
+      subsystem: "auth",
+      q: "needle",
+      related: "auth:auth-1",
+      limit: "10",
+    }), res);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.payload).toMatchObject({ source: "daemon_log", total: 1, exists: true });
+    const payload = res.payload as {
+      entries: Array<Record<string, unknown>>;
+      facets: {
+        levels: Array<{ value: string; count: number }>;
+        subsystems: Array<{ value: string; count: number }>;
+        events: Array<{ value: string; count: number }>;
+        entity_refs: Array<{ type: string; value: string; count: number }>;
+        latest_heartbeat_ts: string | null;
+      };
+    };
+    expect(payload.entries[0]).toMatchObject({
+      level: "error",
+      event: "auth_failure",
+      auth_request_id: "auth-1",
+      issue_id: "issue-1",
+    });
+    expect(payload.facets.levels).toEqual([{ value: "error", count: 1 }]);
+    expect(payload.facets.subsystems).toEqual([{ value: "auth", count: 1 }]);
+    expect(payload.facets.events).toEqual([{ value: "auth_failure", count: 1 }]);
+    expect(payload.facets.entity_refs).toContainEqual({ type: "auth_request", value: "auth-1", count: 1 });
+    expect(payload.facets.entity_refs).toContainEqual({ type: "issue", value: "issue-1", count: 1 });
+    expect(payload.facets.latest_heartbeat_ts).toBeNull();
+  });
 });
