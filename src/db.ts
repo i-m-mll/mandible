@@ -2798,6 +2798,36 @@ const MIGRATIONS: Migration[] = [
       `INSERT OR IGNORE INTO settings (key, value, updated_at)
        VALUES ('stderr_rotation_keep_segments', '5', CAST(strftime('%s','now') * 1000 AS INTEGER))`
     ]
+  },
+  {
+    version: 101,
+    name: "artifact_markdown_drafts",
+    // Issue: 8ad5b95 — server-side artifact edit drafts and parent-version
+    // pointers for immutable versions minted from drafts. Drafts are one active
+    // row per artifact series, explicitly pinned to a base version. Publishing
+    // snapshots edited text through the existing artifact version write path,
+    // then removes the draft. `parent_version_id` is additive and nullable so
+    // historical versions remain valid.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS artifact_drafts (
+        id              TEXT PRIMARY KEY,
+        series_id       TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        content         TEXT NOT NULL,
+        media_type      TEXT,
+        label           TEXT,
+        note            TEXT,
+        metadata_json   TEXT NOT NULL DEFAULT '{}',
+        created_at      INTEGER NOT NULL,
+        updated_at      INTEGER NOT NULL,
+        UNIQUE(series_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_drafts_base
+        ON artifact_drafts(base_version_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_artifact_versions_parent
+        ON artifact_versions(parent_version_id)
+        WHERE parent_version_id IS NOT NULL`
+    ]
   }
 ];
 
@@ -2905,6 +2935,9 @@ export function migrate(db: Db): void {
         }
         if (migration.version === 95) {
           ensureConversationSidechainColumns(db);
+        }
+        if (migration.version === 101) {
+          ensureArtifactVersionParentColumn(db);
         }
         for (const statement of migration.statements) {
           db.exec(statement);
@@ -4569,6 +4602,14 @@ function verifyArtifactVersioningSchema(db: Db): void {
   }
 }
 
+function ensureArtifactVersionParentColumn(db: Db): void {
+  if (!tableExists(db, "artifact_versions")) return;
+  const columns = tableColumnNames(db, "artifact_versions");
+  if (!columns.has("parent_version_id")) {
+    db.exec("ALTER TABLE artifact_versions ADD COLUMN parent_version_id TEXT");
+  }
+}
+
 // Migration 89 (issue c154a27): add the typed-link columns to artifact_links.
 // ALTER TABLE ADD COLUMN cannot be IF NOT EXISTS, so each add is guarded on the
 // live column set (mirrors ensureArtifactCustodyColumns) — a schema-rewind
@@ -5426,6 +5467,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "artifact_blob",
     "artifacts",
     "artifact_links",
+    "artifact_versions",
     "artifact_version",
     "auth_requests",
     "console_sessions",

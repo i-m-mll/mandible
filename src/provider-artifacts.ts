@@ -24,6 +24,8 @@ import type {
   ArtifactIdentitySourceKind,
   ArtifactLinkRecord,
   ArtifactRecord,
+  ArtifactDraftPublishResult,
+  ArtifactDraftRecord,
   ArtifactRecoverability,
   ArtifactResolveResult,
   ArtifactSeriesSummary,
@@ -3696,6 +3698,10 @@ function artifactVersioningTablesExist(db: Db): boolean {
   return tableExists(db, "artifact_series") && tableExists(db, "artifact_versions");
 }
 
+function artifactDraftTablesExist(db: Db): boolean {
+  return artifactVersioningTablesExist(db) && tableExists(db, "artifact_drafts");
+}
+
 function assertVersioningTables(db: Db): void {
   if (!artifactVersioningTablesExist(db)) {
     throw new Error("artifact versioning tables are not present in this database");
@@ -4536,6 +4542,7 @@ function versionFromRow(row: Record<string, unknown>): ArtifactVersionRecord {
     series_id: String(row.series_id),
     artifact_id: String(row.artifact_id),
     version_no: Number(row.version_no),
+    parent_version_id: (row.parent_version_id as string | null) ?? null,
     source_kind: String(row.source_kind) as ArtifactVersionSourceKind,
     content_hash: String(row.content_hash),
     commit_sha: (row.commit_sha as string | null) ?? null,
@@ -4668,6 +4675,7 @@ export function ensureArtifactSeries(
 export interface AppendArtifactVersionInput {
   series_id: string;
   artifact_id: string;
+  parent_version_id?: string | null;
   source_kind: ArtifactVersionSourceKind;
   content_hash: string;
   natural_key?: string;
@@ -4714,13 +4722,16 @@ export function appendArtifactVersion(
       .prepare("SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_versions WHERE series_id = ?")
       .get(series.id) as { n: number };
     const versionNo = Number(nextNoRow.n) + 1;
+    const hasParentVersion = columnExists(db, "artifact_versions", "parent_version_id");
+    const parentColumn = hasParentVersion ? "parent_version_id, " : "";
+    const parentValue = hasParentVersion ? "@parent_version_id, " : "";
     const result = db.prepare(
       `INSERT INTO artifact_versions (
-        id, series_id, artifact_id, version_no, source_kind, content_hash,
+        id, series_id, artifact_id, version_no, ${parentColumn}source_kind, content_hash,
         commit_sha, repo_path, observed_path, custody_mode, label, note,
         metadata_json, created_at
       ) VALUES (
-        @id, @series_id, @artifact_id, @version_no, @source_kind, @content_hash,
+        @id, @series_id, @artifact_id, @version_no, ${parentValue}@source_kind, @content_hash,
         @commit_sha, @repo_path, @observed_path, @custody_mode, @label, @note,
         @metadata_json, @created_at
       )
@@ -4730,6 +4741,7 @@ export function appendArtifactVersion(
       series_id: series.id,
       artifact_id: input.artifact_id,
       version_no: versionNo,
+      parent_version_id: input.parent_version_id ?? null,
       source_kind: input.source_kind,
       content_hash: input.content_hash,
       commit_sha: input.commit_sha ?? null,
@@ -4843,6 +4855,7 @@ export interface RecordArtifactVersionInput {
   repo_id?: string;
   issue?: string;
   metadata?: JsonRecord;
+  parent_version_id?: string | null;
 }
 
 // Explicit version recording. This is the ONLY write path into the version
@@ -4921,6 +4934,7 @@ export function recordArtifactVersion(
       };
       versionInput = {
         artifact_id: artifact.id,
+        parent_version_id: input.parent_version_id ?? null,
         source_kind: "local_only",
         content_hash: artifact.content_hash,
         observed_path: plan.resolved_path,
@@ -4954,6 +4968,7 @@ export function recordArtifactVersion(
       };
       versionInput = {
         artifact_id: reg.artifact.id,
+        parent_version_id: input.parent_version_id ?? null,
         source_kind: "tracked_repo",
         content_hash: reg.artifact.content_hash,
         commit_sha: reg.git_state.commit ?? undefined,
@@ -4985,6 +5000,7 @@ export function recordArtifactVersion(
     };
     versionInput = {
       artifact_id: artifact.id,
+      parent_version_id: input.parent_version_id ?? null,
       source_kind: "local_only",
       content_hash: artifact.content_hash,
       observed_path: observedPath,
@@ -5054,6 +5070,7 @@ export function recordArtifactVersion(
     };
     versionInput = {
       artifact_id: artifact.id,
+      parent_version_id: input.parent_version_id ?? null,
       source_kind: "managed",
       content_hash: artifact.content_hash,
       // Records the managed intent of this version. The shared immutable content
@@ -5085,6 +5102,221 @@ export function recordArtifactVersion(
     created,
     warnings: Array.from(new Set(warnings)),
   };
+}
+
+function artifactDraftId(seriesId: string): string {
+  return `artifact-draft:${crypto.createHash("sha256").update(seriesId).digest("hex")}`;
+}
+
+function draftFromRow(db: Db, row: Record<string, unknown>): ArtifactDraftRecord {
+  const baseVersion = getArtifactVersion(db, String(row.base_version_id));
+  const series = getArtifactSeries(db, String(row.series_id));
+  const latest = series?.latest_version_id ? getArtifactVersion(db, series.latest_version_id) : null;
+  return {
+    id: String(row.id),
+    series_id: String(row.series_id),
+    base_version_id: String(row.base_version_id),
+    base_version_no: baseVersion?.version_no ?? 0,
+    latest_version_id: latest?.id ?? series?.latest_version_id ?? null,
+    latest_version_no: latest?.version_no ?? null,
+    stale: Boolean(series?.latest_version_id && series.latest_version_id !== String(row.base_version_id)),
+    content: String(row.content ?? ""),
+    media_type: (row.media_type as string | null) ?? null,
+    label: (row.label as string | null) ?? null,
+    note: (row.note as string | null) ?? null,
+    metadata: parseJsonRecord(row.metadata_json as string | null),
+    created_at: Number(row.created_at),
+    updated_at: Number(row.updated_at),
+  };
+}
+
+function resolveDraftSeries(db: Db, ref: string): ArtifactSeriesRecord {
+  const history = resolveArtifactVersionHistory(db, ref);
+  if (!history) throw new Error(`artifact series not found for ref: ${ref}`);
+  return history.series;
+}
+
+function readVersionText(db: Db, version: ArtifactVersionRecord): string {
+  const bytes = readArtifactBytesFull(db, version.artifact_id);
+  if (!bytes.ok) throw new Error(`artifact version bytes unavailable: ${bytes.reason}`);
+  return bytes.bytes.toString("utf8");
+}
+
+export interface SaveArtifactDraftInput {
+  ref?: string;
+  series_id?: string;
+  base_version_id?: string;
+  content: string;
+  media_type?: string | null;
+  label?: string | null;
+  note?: string | null;
+  metadata?: JsonRecord;
+}
+
+export function getArtifactDraft(db: Db, ref: string): ArtifactDraftRecord | null {
+  if (!artifactDraftTablesExist(db)) return null;
+  const series = resolveDraftSeries(db, ref);
+  const row = db.prepare("SELECT * FROM artifact_drafts WHERE series_id = ?").get(series.id) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? draftFromRow(db, row) : null;
+}
+
+export function saveArtifactDraft(
+  db: Db,
+  input: SaveArtifactDraftInput,
+  now = Date.now(),
+): ArtifactDraftRecord {
+  if (!artifactDraftTablesExist(db)) throw new Error("artifact draft tables are not present in this database");
+  const ref = input.ref ?? input.series_id;
+  if (!ref) throw new Error("ref or series_id is required");
+  if (typeof input.content !== "string") throw new Error("draft content must be a string");
+  const series = resolveDraftSeries(db, ref);
+  const baseVersionId = input.base_version_id ?? series.latest_version_id;
+  if (!baseVersionId) throw new Error("artifact draft requires a base version");
+  const baseVersion = getArtifactVersion(db, baseVersionId);
+  if (!baseVersion || baseVersion.series_id !== series.id) {
+    throw new Error("artifact draft base version does not belong to the selected series");
+  }
+  const id = artifactDraftId(series.id);
+  db.prepare(
+    `INSERT INTO artifact_drafts (
+      id, series_id, base_version_id, content, media_type, label, note,
+      metadata_json, created_at, updated_at
+    ) VALUES (
+      @id, @series_id, @base_version_id, @content, @media_type, @label, @note,
+      @metadata_json, @created_at, @updated_at
+    )
+    ON CONFLICT(series_id) DO UPDATE SET
+      base_version_id = excluded.base_version_id,
+      content = excluded.content,
+      media_type = excluded.media_type,
+      label = excluded.label,
+      note = excluded.note,
+      metadata_json = excluded.metadata_json,
+      updated_at = excluded.updated_at`,
+  ).run({
+    id,
+    series_id: series.id,
+    base_version_id: baseVersion.id,
+    content: input.content,
+    media_type: input.media_type ?? null,
+    label: input.label ?? null,
+    note: input.note ?? null,
+    metadata_json: jsonStringify(input.metadata ?? {}),
+    created_at: now,
+    updated_at: now,
+  });
+  return getArtifactDraft(db, series.id) as ArtifactDraftRecord;
+}
+
+export function deleteArtifactDraft(db: Db, ref: string): { deleted: boolean } {
+  if (!artifactDraftTablesExist(db)) return { deleted: false };
+  const series = resolveDraftSeries(db, ref);
+  const result = db.prepare("DELETE FROM artifact_drafts WHERE series_id = ?").run(series.id);
+  return { deleted: result.changes > 0 };
+}
+
+function splitLines(value: string): string[] {
+  return value.length === 0 ? [] : value.split("\n");
+}
+
+function simpleLineThreeWayMerge(base: string, ours: string, theirs: string, baseLabel: string, theirsLabel: string): string {
+  if (theirs === base || ours === theirs) return ours;
+  if (ours === base) return theirs;
+  const baseLines = splitLines(base);
+  const oursLines = splitLines(ours);
+  const theirsLines = splitLines(theirs);
+  const max = Math.max(baseLines.length, oursLines.length, theirsLines.length);
+  const merged: string[] = [];
+  for (let i = 0; i < max; i += 1) {
+    const b = baseLines[i] ?? "";
+    const o = oursLines[i] ?? "";
+    const t = theirsLines[i] ?? "";
+    if (o === t) merged.push(o);
+    else if (o === b) merged.push(t);
+    else if (t === b) merged.push(o);
+    else {
+      merged.push("<<<<<<< draft", o, `||||||| ${baseLabel}`, b, "=======", t, `>>>>>>> ${theirsLabel}`);
+    }
+  }
+  return merged.join("\n");
+}
+
+export function rebaseArtifactDraft(db: Db, ref: string, now = Date.now()): ArtifactDraftRecord {
+  const draft = getArtifactDraft(db, ref);
+  if (!draft) throw new Error("artifact draft not found");
+  if (!draft.stale || !draft.latest_version_id) return draft;
+  const baseVersion = getArtifactVersion(db, draft.base_version_id);
+  const latestVersion = getArtifactVersion(db, draft.latest_version_id);
+  if (!baseVersion || !latestVersion) throw new Error("artifact draft base or latest version is missing");
+  const content = simpleLineThreeWayMerge(
+    readVersionText(db, baseVersion),
+    draft.content,
+    readVersionText(db, latestVersion),
+    `base v${draft.base_version_no}`,
+    `latest v${latestVersion.version_no}`,
+  );
+  return saveArtifactDraft(db, {
+    series_id: draft.series_id,
+    base_version_id: latestVersion.id,
+    content,
+    media_type: draft.media_type,
+    label: draft.label,
+    note: draft.note,
+    metadata: mergeJsonRecords(draft.metadata, {
+      rebased_from_version_id: draft.base_version_id,
+      rebased_at: now,
+    }),
+  }, now);
+}
+
+export interface PublishArtifactDraftInput {
+  ref: string;
+  label?: string | null;
+  note?: string | null;
+  allow_stale?: boolean;
+}
+
+export function publishArtifactDraft(
+  db: Db,
+  input: PublishArtifactDraftInput,
+  now = Date.now(),
+): ArtifactDraftPublishResult {
+  const draft = getArtifactDraft(db, input.ref);
+  if (!draft) throw new Error("artifact draft not found");
+  if (draft.stale && !input.allow_stale) {
+    throw new Error("artifact draft is stale; publish with allow_stale to fork from the base version");
+  }
+  const series = getArtifactSeries(db, draft.series_id);
+  const baseVersion = getArtifactVersion(db, draft.base_version_id);
+  if (!series || !baseVersion) throw new Error("artifact draft series or base version is missing");
+  const baseArtifact = getArtifact(db, baseVersion.artifact_id);
+  if (!baseArtifact) throw new Error("artifact draft base artifact is missing");
+  const result = recordArtifactVersion(db, {
+    source_kind: "managed",
+    content: draft.content,
+    media_type: draft.media_type ?? baseArtifact.media_type ?? undefined,
+    role: baseArtifact.role ?? undefined,
+    logical_name: series.logical_name
+      ?? asString(baseArtifact.metadata.logical_name)
+      ?? asString(baseArtifact.metadata.filename),
+    title: series.title ?? undefined,
+    series_key: series.series_key,
+    repo_id: series.repo_id ?? baseArtifact.home_repo_id ?? undefined,
+    provider_id: baseArtifact.provider_id ?? undefined,
+    label: input.label ?? draft.label ?? undefined,
+    note: input.note ?? draft.note ?? undefined,
+    parent_version_id: draft.base_version_id,
+    metadata: mergeJsonRecords(draft.metadata, {
+      recoverability: "mandible_cas",
+      edited_from_version_id: draft.base_version_id,
+      edited_from_version_no: draft.base_version_no,
+      stale_base_published: draft.stale,
+    }),
+  }, now);
+  deleteArtifactDraft(db, draft.series_id);
+  return { draft, result };
 }
 
 // Flexible history resolver for read surfaces. Public callers use canonical
