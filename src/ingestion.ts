@@ -190,14 +190,25 @@ export function startIngestion(log: Logger): void {
       continue;
     }
 
-    const watchPattern = path.join(config.base, config.glob);
-    const watcher = chokidar.watch(watchPattern, {
+    const matchWatchedFile = makeWatchFileMatcher(config.base, config.glob);
+    const watcher = chokidar.watch(config.base, {
       ignoreInitial: true,
       ignorePermissionErrors: true,
+      ignored: (watchedPath, stats) => {
+        if (!stats?.isFile()) {
+          return false;
+        }
+        return !matchWatchedFile(watchedPath);
+      },
     });
 
-    watcher.on("add", (filePath: string) => debouncedIngest(filePath));
-    watcher.on("change", (filePath: string) => debouncedIngest(filePath));
+    const onWatchedFileEvent = (filePath: string) => {
+      if (matchWatchedFile(filePath)) {
+        debouncedIngest(filePath);
+      }
+    };
+    watcher.on("add", onWatchedFileEvent);
+    watcher.on("change", onWatchedFileEvent);
     watcher.on("error", (error: unknown) => {
       logger("warn", "ingestion_watcher_error", {
         error: error instanceof Error ? error.message : String(error),
@@ -206,7 +217,7 @@ export function startIngestion(log: Logger): void {
     });
 
     watchers.push(watcher);
-    logger("info", "ingestion_watcher_started", { pattern: watchPattern });
+    logger("info", "ingestion_watcher_started", { base: config.base, glob: config.glob });
   }
 
   // Run initial reconciliation to pick up files that already exist
@@ -432,6 +443,17 @@ async function drainIngestQueue(runToken: number): Promise<void> {
 
 function isCurrentIngestionRun(runToken: number): boolean {
   return ingestionActive && runToken === ingestionRunToken;
+}
+
+function makeWatchFileMatcher(baseDir: string, glob: string): (filePath: string) => boolean {
+  const pattern = globToMatcher(glob);
+  return (filePath: string) => {
+    const relative = path.relative(baseDir, filePath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      return false;
+    }
+    return pattern(relative.split(path.sep).join("/"));
+  };
 }
 
 export function isAcpIngestSuppressed(source: string, sessionId: string, now = Date.now()): boolean {
