@@ -8,12 +8,15 @@ import {
   repoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../auth-context.js";
+import { getDaemonLogger } from "../daemon-log.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+
+const authRouteLog = getDaemonLogger();
 
 function readBody<T>(req: RequestLike): T {
   return (req.body ?? {}) as T;
@@ -585,7 +588,11 @@ function registeredAuthCheckRepoRoot(repoRef: string): string | null {
       }
     }
   } catch (error) {
-    console.error("Auth check repository resolution failed:", error);
+    authRouteLog("error", "auth_check_repo_resolution_failed", {
+      subsystem: "auth",
+      repo_ref: repoRef,
+      error: String(error),
+    });
   }
   return null;
 }
@@ -911,7 +918,10 @@ function verifyMandibleIssueReferences(
 
     return null;
   } catch (err) {
-    console.error("Mandible issue reference verification failed:", err);
+    authRouteLog("error", "auth_issue_reference_verification_failed", {
+      subsystem: "auth",
+      error: String(err),
+    });
     return "Mandible issue reference verification failed; manual review required.";
   }
 }

@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
+import { configureDaemonLogger, getDaemonLogger } from "./daemon-log.js";
 import { resolveInstanceInfo } from "./instance-policy.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
@@ -45,10 +46,9 @@ import { startIngestion, stopIngestion } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
-import type { Logger, LogLevel, StartupCommitInfo } from "./types.js";
+import type { Logger, StartupCommitInfo } from "./types.js";
 
 const DEFAULT_PORT = 19420;
-const LEVELS: LogLevel[] = ["debug", "info", "warn", "error"];
 const DOTFILES_ROOT = resolveDotfilesRoot();
 const STARTUP_DISCOVERY_DELAY_MS = 1_000;
 
@@ -76,9 +76,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // splash up and auth/dashboard mutations are blocked.
   setDaemonReady(false);
   const port = options.port ?? getPort();
-  const logger = createLogger();
+  let logger = getDaemonLogger();
   const dbPath = options.dbPath ?? getDbPath();
   const db = openDb(dbPath);
+  logger = configureDaemonLogger(db);
   const instance = resolveInstanceInfo({
     dbPath,
     dbPathSource: options.dbPath
@@ -108,7 +109,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
   // Bug: 8a281b3 — inbox routes moved after sessionManager creation for liveness overlay
   registerSettingsRoutes(router);
-  registerSystemRoutes(router, workScanner);
+  registerSystemRoutes(router, workScanner, db);
   registerBackupRoutes(router);
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
@@ -406,23 +407,6 @@ function getPort(): number {
   }
   const parsed = Number(raw);
   return Number.isFinite(parsed) ? parsed : DEFAULT_PORT;
-}
-
-function createLogger(): Logger {
-  const level = (process.env.LOG_LEVEL ?? "info") as LogLevel;
-  const minIndex = LEVELS.indexOf(level);
-  return (msgLevel, message, details) => {
-    if (LEVELS.indexOf(msgLevel) < minIndex) {
-      return;
-    }
-    const payload = {
-      level: msgLevel,
-      message,
-      time: new Date().toISOString(),
-      ...(details ?? {})
-    };
-    process.stderr.write(`${JSON.stringify(payload)}\n`);
-  };
 }
 
 function resolveVersion(): string {

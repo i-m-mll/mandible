@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { performance } from "node:perf_hooks";
 import { normalizeAmbientProviderIdentity } from "./ambient-provider-identity.js";
 import type { InstanceInfo, Logger } from "./types.js";
 import type { Router, RouterInvokeResponse } from "./server.js";
@@ -107,20 +108,27 @@ export class FileRpcTransport {
     }
     this.activeFiles.add(requestPath);
     const attachmentPaths: string[] = [];
+    const startedAt = performance.now();
     try {
       const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as FileRpcRequest;
       const requestId = safeRequestId(request.id, requestPath);
       const method = typeof request.method === "string" ? request.method.toUpperCase() : "GET";
       const requestUrl = buildRequestUrl(request);
+      const pathname = new URL(requestUrl, "http://localhost").pathname;
       const body = this.resolveRequestBody(request, attachmentPaths);
       const response = await this.dispatch(method, requestUrl, body, request.ambient_identity);
       this.writeResponse(requestId, response);
       fs.rmSync(requestPath, { force: true });
       this.logger?.("info", "file_rpc_request", {
+        subsystem: "file-rpc",
+        request_id: requestId,
+        ...extractBodyRefs(body),
         file: path.basename(requestPath),
         method,
-        path: new URL(requestUrl, "http://localhost").pathname,
+        path: pathname,
+        route: pathname,
         status: response.status,
+        duration_ms: Math.round(performance.now() - startedAt),
       });
     } catch (error) {
       const requestId = safeRequestId(undefined, requestPath);
@@ -129,9 +137,12 @@ export class FileRpcTransport {
         body: { error: "bad_file_rpc_request", detail: String(error) },
       });
       fs.rmSync(requestPath, { force: true });
-      this.logger?.("info", "file_rpc_request", {
+      this.logger?.("warn", "file_rpc_request", {
+        subsystem: "file-rpc",
+        request_id: requestId,
         file: path.basename(requestPath),
         status: 400,
+        duration_ms: Math.round(performance.now() - startedAt),
         error: String(error),
       });
     } finally {
@@ -279,6 +290,25 @@ function isSafeAttachmentName(name: string): boolean {
   if (name === "." || name === "..") return false;
   if (name.includes("/") || name.includes("\\") || name.includes("\0")) return false;
   return /^[A-Za-z0-9._-]+$/.test(name);
+}
+
+function extractBodyRefs(body: unknown): Record<string, string> {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return {};
+  }
+  const record = body as Record<string, unknown>;
+  return {
+    ...pickString(record, "issue_id"),
+    ...pickString(record, "auth_request_id"),
+    ...pickString(record, "artifact_id"),
+    ...pickString(record, "session_id"),
+    ...pickString(record, "repo_id"),
+  };
+}
+
+function pickString(record: Record<string, unknown>, key: string): Record<string, string> {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? { [key]: value } : {};
 }
 
 function safeRequestId(id: string | undefined, requestPath: string): string {
