@@ -4,6 +4,7 @@ import type { RouteRegistrar } from "../server.js";
 import { queryString, sendJson } from "./http.js";
 
 type BranchSort = "recency" | "name" | "activity";
+type CompareMode = "merge-base" | "range";
 
 function parseBranchSort(value: string | undefined): BranchSort {
   if (value === "name" || value === "activity") {
@@ -20,6 +21,21 @@ function getBranchTimestamp(branch: BranchData): number {
   const raw = branch.last_commit?.date || branch.last_commit_date || "";
   const parsed = Date.parse(raw);
   return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function parseCompareMode(value: string | undefined): CompareMode {
+  return value === "range" ? "range" : "merge-base";
 }
 
 export function filterAndSortBranches(
@@ -127,6 +143,51 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const filter = queryString(req, "filter");
     const branches = workScanner.getBranches(repo.root);
     sendJson(res, 200, filterAndSortBranches(branches, { sort, filter }));
+  }, { fileRpc: "deny" });
+
+  server.get("/api/work/repos/:id/branches/:branch/commits", (req, res) => {
+    ensureScan();
+    const repoId = req.params.id;
+    const branchName = req.params.branch;
+    if (!repoId || !branchName) {
+      sendJson(res, 400, { error: "missing repo id or branch" });
+      return;
+    }
+    const repo = resolveRepo(repoId);
+    if (!repo) {
+      sendJson(res, 404, { error: "repo not found" });
+      return;
+    }
+    const branch = branchName;
+    if (!workScanner.getBranch(repo.root, branch)) {
+      sendJson(res, 404, { error: "branch not found" });
+      return;
+    }
+    const limit = parsePositiveInteger(queryString(req, "limit"), 50);
+    const offset = parsePositiveInteger(queryString(req, "offset"), 0);
+    sendJson(res, 200, workScanner.getCommits(repo.root, branch, { limit, offset }));
+  }, { fileRpc: "deny" });
+
+  server.get("/api/work/repos/:id/compare", (req, res) => {
+    ensureScan();
+    const repoId = req.params.id;
+    if (!repoId) {
+      sendJson(res, 400, { error: "missing repo id" });
+      return;
+    }
+    const repo = resolveRepo(repoId);
+    if (!repo) {
+      sendJson(res, 404, { error: "repo not found" });
+      return;
+    }
+    const from = queryString(req, "from");
+    const to = queryString(req, "to");
+    if (!from || !to) {
+      sendJson(res, 400, { error: "missing compare endpoints" });
+      return;
+    }
+    const mode = parseCompareMode(queryString(req, "mode"));
+    sendJson(res, 200, workScanner.compareRefs(repo.root, from, to, mode));
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/worktrees", (req, res) => {

@@ -95,12 +95,6 @@ export type SseEvent<TData = unknown> = {
   data: TData;
 };
 
-export type ReviewSpecResponse = {
-  markdown: string;
-  commits: string[];
-  meta: Record<string, unknown>;
-};
-
 export type AuthRequestStatus =
   | "pending"
   | "executing"

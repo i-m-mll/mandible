@@ -1,5 +1,5 @@
 export type Route = {
-  tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'review' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'presets' | 'spaces';
+  tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'presets' | 'spaces';
   params: Record<string, string>;
 };
 
@@ -57,8 +57,9 @@ export function parseRouteFromHash(hashValue: string): Route {
     path === 'chat-history' ||
     path === 'sessions'
   ) ? 'console' : path;
-  const tab = ['auth', 'artifacts', 'chat-history', 'work', 'review', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'presets', 'spaces'].includes(normalizedPath)
-    ? (normalizedPath as Route['tab'])
+  const retiredReviewPath = normalizedPath === 'review' ? 'work' : normalizedPath;
+  const tab = ['auth', 'artifacts', 'chat-history', 'work', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'presets', 'spaces'].includes(retiredReviewPath)
+    ? (retiredReviewPath as Route['tab'])
     : 'spaces';
   return { tab, params };
 }
