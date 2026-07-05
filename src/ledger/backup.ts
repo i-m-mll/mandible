@@ -111,6 +111,7 @@ export const REPRODUCIBLE_OR_RUNTIME_TABLES = [
   "push_history",
   "conversation_blocks",
   "conversation_ingest_state",
+  "workflow_ingest_state",
   "graph_entities",
   "graph_edges",
 ] as const;

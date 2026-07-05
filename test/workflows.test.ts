@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
+import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
 import { registerWorkflowRoutes } from "../src/routes/workflows.js";
 import { Router } from "../src/server.js";
 import { ingestClaudeWorkflowArtifact, listWorkflowRuns } from "../src/workflows.js";
@@ -28,6 +29,28 @@ function transcriptPath(runId: string, agentId: string): string {
     runId,
     `agent-${agentId}.jsonl`,
   );
+}
+
+function journalPath(runId = "wf_fixture-123"): string {
+  return path.join(
+    tempDir,
+    ".claude",
+    "projects",
+    "-tmp-project",
+    sessionId,
+    "subagents",
+    "workflows",
+    runId,
+    "journal.jsonl",
+  );
+}
+
+function workflowWatchConfigs(): Array<{ base: string; glob: string }> {
+  const base = path.join(tempDir, ".claude", "projects");
+  return [
+    { base, glob: "**/*.jsonl" },
+    { base, glob: "**/workflows/wf_*.json" },
+  ];
 }
 
 function writeWorkflowSummary(): void {
@@ -89,6 +112,17 @@ function writeWorkflowSummary(): void {
       },
     ],
   }), "utf8");
+}
+
+function writeWorkflowJournal(runId = "wf_fixture-123"): void {
+  const filePath = journalPath(runId);
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify({ event: "workflow_started", runId })}\n`, "utf8");
+}
+
+function touch(filePath: string, tick: number): void {
+  const date = new Date(1_800_000_000_000 + tick * 1000);
+  fs.utimesSync(filePath, date, date);
 }
 
 beforeEach(() => {
@@ -170,5 +204,54 @@ describe("workflow run ingestion", () => {
         }),
       ],
     });
+  });
+
+  it("lets targeted ingest handle workflow summary artifacts", async () => {
+    writeWorkflowSummary();
+    touch(summaryPath(), 1);
+
+    await expect(triggerTargetedIngest({ transcriptPath: summaryPath(), now: 1_000 })).resolves.toMatchObject({
+      status: "ingested",
+      transcript_path: summaryPath(),
+    });
+
+    expect(listWorkflowRuns(db, { sessionId })).toHaveLength(1);
+    expect(
+      db.prepare("SELECT file_path, source_mtime FROM workflow_ingest_state WHERE file_path = ?")
+        .get(summaryPath()),
+    ).toMatchObject({ file_path: summaryPath(), source_mtime: fs.statSync(summaryPath()).mtimeMs });
+  });
+
+  it("skips unchanged workflow summary and journal artifacts during reconcile", async () => {
+    writeWorkflowSummary();
+    writeWorkflowJournal();
+    touch(summaryPath(), 1);
+    touch(journalPath(), 1);
+
+    const logs: Array<{ event: string; file: string | null }> = [];
+    const log = (_level: string, event: string, fields?: Record<string, unknown>) => {
+      if (event === "workflow_ingestion_complete") {
+        logs.push({ event, file: typeof fields?.file === "string" ? fields.file : null });
+      }
+    };
+
+    await triggerReconcileForTest({ watchConfigs: workflowWatchConfigs(), log });
+    expect(logs.map((entry) => entry.file).sort()).toEqual([journalPath(), summaryPath()].sort());
+    expect(db.prepare("SELECT COUNT(*) AS count FROM workflow_ingest_state").get()).toMatchObject({
+      count: 2,
+    });
+
+    logs.length = 0;
+    await triggerReconcileForTest({ watchConfigs: workflowWatchConfigs(), log });
+    expect(logs).toEqual([]);
+
+    touch(summaryPath(), 2);
+    await triggerReconcileForTest({ watchConfigs: workflowWatchConfigs(), log });
+    expect(logs.map((entry) => entry.file)).toEqual([summaryPath()]);
+
+    logs.length = 0;
+    touch(journalPath(), 3);
+    await triggerReconcileForTest({ watchConfigs: workflowWatchConfigs(), log });
+    expect(logs.map((entry) => entry.file)).toEqual([journalPath()]);
   });
 });

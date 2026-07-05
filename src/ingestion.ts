@@ -20,6 +20,7 @@ import {
   isClaudeWorkflowJournalPath,
   isClaudeWorkflowSummaryPath,
   isClaudeWorkflowTranscriptPath,
+  workflowSummaryPathForArtifact,
 } from "./workflows.js";
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
@@ -144,6 +145,13 @@ type IngestAppendState = {
   line_count: number;
   tail_hash: string;
   partial_line: string;
+};
+
+type WorkflowIngestState = {
+  file_path: string;
+  source_mtime: number;
+  summary_path: string;
+  workflow_id: string | null;
 };
 
 type IngestMode = "full" | "append";
@@ -281,7 +289,7 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
     return { ok: true, status: "no_target", transcript_path: null, session_ref: sessionRef };
   }
 
-  if (!getParserForFile(transcriptPath)) {
+  if (!isWorkflowIngestArtifactPath(transcriptPath) && !getParserForFile(transcriptPath)) {
     logger("debug", "ingestion_targeted_unsupported", { file: transcriptPath, session_ref: sessionRef });
     return { ok: true, status: "unsupported", transcript_path: transcriptPath, session_ref: sessionRef };
   }
@@ -439,6 +447,31 @@ export function isAcpIngestSuppressed(source: string, sessionId: string, now = D
   return true;
 }
 
+export async function triggerReconcileForTest(
+  options: {
+    watchConfigs?: Array<{ base: string; glob: string }>;
+    log?: Logger;
+  } = {},
+): Promise<void> {
+  const previousActive = ingestionActive;
+  const previousLogger = logger;
+  const runToken = ++ingestionRunToken;
+  ingestionActive = true;
+  if (options.log) {
+    logger = options.log;
+  }
+  try {
+    await reconcile(runToken, {
+      ingestChanged: (filePath) => ingestFile(filePath),
+      watchConfigs: options.watchConfigs,
+    });
+  } finally {
+    ingestionActive = previousActive;
+    logger = previousLogger;
+    ingestionRunToken++;
+  }
+}
+
 function acpSuppressionKey(source: string, sessionId: string): string {
   return `${source.trim().toLowerCase()}:${sessionId.trim()}`;
 }
@@ -535,6 +568,48 @@ function writeAppendState(
     state.partial_line,
     Date.now(),
   );
+}
+
+function isWorkflowIngestArtifactPath(filePath: string): boolean {
+  return isClaudeWorkflowSummaryPath(filePath) || isClaudeWorkflowJournalPath(filePath);
+}
+
+function getWorkflowIngestState(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+): WorkflowIngestState | null {
+  const row = db.prepare(`
+    SELECT file_path, source_mtime, summary_path, workflow_id
+    FROM workflow_ingest_state
+    WHERE file_path = ?
+  `).get(filePath) as WorkflowIngestState | undefined;
+  return row ?? null;
+}
+
+function writeWorkflowIngestState(
+  db: ReturnType<typeof getDb>,
+  state: WorkflowIngestState,
+): void {
+  db.prepare(`
+    INSERT INTO workflow_ingest_state (
+      file_path, source_mtime, summary_path, workflow_id, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(file_path) DO UPDATE SET
+      source_mtime = excluded.source_mtime,
+      summary_path = excluded.summary_path,
+      workflow_id = excluded.workflow_id,
+      updated_at = excluded.updated_at
+  `).run(
+    state.file_path,
+    state.source_mtime,
+    state.summary_path,
+    state.workflow_id,
+    Date.now(),
+  );
+}
+
+function deleteWorkflowIngestState(db: ReturnType<typeof getDb>, filePath: string): void {
+  db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
 }
 
 async function refreshAppendState(
@@ -798,8 +873,8 @@ async function ingestFile(
   options: { forceFull?: boolean; fallbackReason?: string } = {},
 ): Promise<void> {
   const ingestStartedAt = Date.now();
-  if (isClaudeWorkflowSummaryPath(filePath) || isClaudeWorkflowJournalPath(filePath)) {
-    await ingestWorkflowArtifact(filePath);
+  if (isWorkflowIngestArtifactPath(filePath)) {
+    await ingestWorkflowArtifact(filePath, { force: options.forceFull === true });
     return;
   }
 
@@ -1454,10 +1529,37 @@ async function ingestFile(
   });
 }
 
-async function ingestWorkflowArtifact(filePath: string): Promise<void> {
+async function ingestWorkflowArtifact(
+  filePath: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
   try {
-    const workflow = await ingestClaudeWorkflowArtifact(getDb(), filePath);
+    const db = getDb();
+    const summaryPath = workflowSummaryPathForArtifact(filePath);
+    if (!summaryPath) return;
+
+    let stat: fs.Stats;
+    try {
+      stat = await fs.promises.stat(filePath);
+    } catch {
+      deleteWorkflowIngestState(db, filePath);
+      logger("debug", "workflow_ingestion_file_gone", { file: filePath });
+      return;
+    }
+
+    const existing = getWorkflowIngestState(db, filePath);
+    if (!options.force && existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100) {
+      return;
+    }
+
+    const workflow = await ingestClaudeWorkflowArtifact(db, filePath);
     if (!workflow) return;
+    writeWorkflowIngestState(db, {
+      file_path: filePath,
+      source_mtime: stat.mtimeMs,
+      summary_path: summaryPath,
+      workflow_id: workflow.id,
+    });
     broadcast("workflow:updated", {
       id: workflow.id,
       session_id: workflow.session_id,
@@ -1482,6 +1584,11 @@ async function ingestWorkflowArtifact(filePath: string): Promise<void> {
 
 let reconciling = false;
 
+type ReconcileOptions = {
+  ingestChanged?: (filePath: string) => void | Promise<void>;
+  watchConfigs?: Array<{ base: string; glob: string }>;
+};
+
 function scheduleReconcile(): void {
   const runToken = ingestionRunToken;
   if (!isCurrentIngestionRun(runToken)) {
@@ -1502,11 +1609,12 @@ function scheduleReconcile(): void {
     });
 }
 
-async function reconcile(runToken: number): Promise<void> {
+async function reconcile(runToken: number, options: ReconcileOptions = {}): Promise<void> {
   if (!isCurrentIngestionRun(runToken)) {
     return;
   }
   const db = getDb();
+  const ingestChanged = options.ingestChanged ?? ((filePath: string) => debouncedIngest(filePath));
 
   // Clean up existing 0-block conversations (except starred ones).
   // Bug: d51fbc8 — empty sessions should not pollute the list
@@ -1535,12 +1643,20 @@ async function reconcile(runToken: number): Promise<void> {
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
   }
+  const workflowRows = db
+    .prepare("SELECT file_path, source_mtime FROM workflow_ingest_state")
+    .all() as Array<{ file_path: string; source_mtime: number }>;
+  const workflowPaths = new Map<string, number>();
+  for (const row of workflowRows) {
+    workflowPaths.set(row.file_path, row.source_mtime);
+    dbPaths.set(row.file_path, row.source_mtime);
+  }
 
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
   // Bug: 737df04 — findFiles() used readdirSync recursively, blocking the event
   // loop for the entire scan before any yielding could occur.
-  for (const config of WATCH_CONFIGS) {
+  for (const config of options.watchConfigs ?? WATCH_CONFIGS) {
     if (!isCurrentIngestionRun(runToken)) {
       return;
     }
@@ -1559,7 +1675,7 @@ async function reconcile(runToken: number): Promise<void> {
 
         if (dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100) {
           // New or modified file — queue for ingestion
-          debouncedIngest(filePath);
+          await ingestChanged(filePath);
         }
       } catch {
         // File inaccessible — skip
@@ -1591,6 +1707,20 @@ async function reconcile(runToken: number): Promise<void> {
     if (removed > 0) {
       logger("info", "ingestion_cleanup_missing_sources", { removed });
     }
+  }
+
+  const missingWorkflowPaths = Array.from(workflowPaths.keys()).filter((sourcePath) =>
+    scannedBases.some((base) => sourcePath === base || sourcePath.startsWith(`${base}${path.sep}`)) &&
+    !knownPaths.has(sourcePath)
+  );
+  if (missingWorkflowPaths.length > 0) {
+    const deleteState = db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?");
+    const cleanupMissingWorkflow = db.transaction(() => {
+      for (const sourcePath of missingWorkflowPaths) {
+        deleteState.run(sourcePath);
+      }
+    });
+    cleanupMissingWorkflow();
   }
 }
 

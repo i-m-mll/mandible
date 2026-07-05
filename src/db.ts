@@ -2732,6 +2732,25 @@ const MIGRATIONS: Migration[] = [
         ON workflow_workers(conversation_id)
         WHERE conversation_id IS NOT NULL`
     ]
+  },
+  {
+    version: 99,
+    name: "workflow_ingest_state",
+    // Issue: 326d1f2 — workflow summary and journal files are not conversations,
+    // so reconcile needs a separate mtime cursor for unchanged workflow artifacts.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS workflow_ingest_state (
+        file_path TEXT PRIMARY KEY,
+        source_mtime REAL NOT NULL DEFAULT 0,
+        summary_path TEXT NOT NULL,
+        workflow_id TEXT,
+        updated_at INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_ingest_state_updated
+        ON workflow_ingest_state(updated_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_workflow_ingest_state_summary
+        ON workflow_ingest_state(summary_path)`
+    ]
   }
 ];
 
@@ -5362,6 +5381,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "session_projects",
     "sessions",
     "work_units",
+    "workflow_ingest_state",
   ]);
   if (!allowed.has(table)) {
     throw new Error(`Unsupported table_info identifier: ${table}`);
