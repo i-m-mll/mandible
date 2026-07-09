@@ -20,7 +20,7 @@ Usage:
 These commands read Mandible's normalized SQLite conversation index. Use
 `mandible logs ...` for provider-native source files.
 
-Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N
+Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N --offset N
 EOF
 }
 
@@ -106,7 +106,7 @@ file_rpc_show() {
 }
 
 file_rpc_blocks() {
-  local ident="${1:-}" type_filter="" role_filter="" content_filter="" limit=100 json=0 conv_id request response
+  local ident="${1:-}" type_filter="" role_filter="" content_filter="" limit=100 offset=0 json=0 conv_id request response
   if [[ -z "$ident" ]]; then echo "conversation id or session id required" >&2; exit 2; fi
   shift
   while (( $# > 0 )); do
@@ -115,6 +115,7 @@ file_rpc_blocks() {
       --role) role_filter="${2:?--role requires a value}"; shift 2 ;;
       --content|--contains) content_filter="${2:?--content requires a value}"; shift 2 ;;
       --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --offset) offset="${2:?--offset requires a value}"; shift 2 ;;
       --json) json=1; shift ;;
       --tool|--tool-kind|--since|--until)
         echo "Error: $1 is not supported through file-RPC conversation blocks yet." >&2
@@ -124,9 +125,10 @@ file_rpc_blocks() {
     esac
   done
   conv_id=$(conversation_resolve_id "$ident")
-  request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")"
+  request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
   if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
   response=$(api_get "$request")
+  file_rpc_warn_truncated_blocks "$response"
   if (( json )); then
     printf '%s\n' "$response" | jq \
       --arg role "$role_filter" \
@@ -137,6 +139,20 @@ file_rpc_blocks() {
       --arg role "$role_filter" \
       --arg content "$content_filter" \
       '.blocks[] | select($role == "" or .role == $role) | select($content == "" or (.content | contains($content))) | "\(.position)\t\(.type)\t\(.role)\t\((.content | gsub("\\s+"; " ")) | if length > 220 then .[0:217] + "..." else . end)"'
+  fi
+}
+
+file_rpc_warn_truncated_blocks() {
+  local response="$1" total returned offset limit next_offset truncated
+  total=$(printf '%s\n' "$response" | jq -r '.total // 0')
+  returned=$(printf '%s\n' "$response" | jq -r '.blocks | length')
+  offset=$(printf '%s\n' "$response" | jq -r '.offset // 0')
+  limit=$(printf '%s\n' "$response" | jq -r '.limit // 0')
+  truncated=$(printf '%s\n' "$response" | jq -r '((.truncated // false) or (((.offset // 0) + (.blocks | length)) < (.total // 0)))')
+  if [[ "$truncated" == "true" ]]; then
+    next_offset=$(( offset + returned ))
+    printf 'Warning: output truncated: returned %s of %s blocks from offset %s (limit %s). Use --offset %s for the next window.\n' \
+      "$returned" "$total" "$offset" "$limit" "$next_offset" >&2
   fi
 }
 
@@ -186,6 +202,9 @@ file_rpc_main() {
     list) shift; file_rpc_list "$@" ;;
     show) shift; file_rpc_show "$@" ;;
     blocks) shift; file_rpc_blocks "$@" ;;
+    export)
+      echo "Error: conversations export is not supported through file-RPC. Use the main Mandible daemon or unset MANDIBLE_BASE=file://..." >&2
+      exit 2 ;;
     search) shift; file_rpc_search "$@" ;;
     ""|-h|--help|help) usage; exit 0 ;;
     *) echo "Unknown conversations subcommand: $command" >&2; usage >&2; exit 1 ;;

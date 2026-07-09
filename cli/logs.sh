@@ -15,7 +15,7 @@ Usage:
   mandible logs orphans [--provider codex|claude|gemini|all] [--json]
   mandible logs inspect <path|session-id> [--provider codex|claude|gemini|all] [--parse] [filters] [--json] [--head N]
 
-Filters for --parse: --role ROLE --type TYPE --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N
+Filters for --parse: --role ROLE --type TYPE --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N --offset N
 
 Raw provider source logs are the veridical transcript source. These commands do
 not import, reconcile, or mutate the Mandible database.
@@ -79,7 +79,7 @@ file_rpc_inventory() {
 }
 
 file_rpc_inspect() {
-  local target="${1:-}" provider="all" head=20 parse=0 json=0 role_filter="" type_filter="" content_filter="" limit=50 conv_id request response
+  local target="${1:-}" provider="all" head=20 parse=0 json=0 role_filter="" type_filter="" content_filter="" limit=50 offset=0 conv_id request response
   if [[ -z "$target" ]]; then echo "log path, conversation id, or session id required" >&2; exit 2; fi
   shift
   while (( $# > 0 )); do
@@ -91,6 +91,7 @@ file_rpc_inspect() {
       --type) type_filter="${2:?--type requires a value}"; shift 2 ;;
       --content|--contains) content_filter="${2:?--content requires a value}"; shift 2 ;;
       --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --offset) offset="${2:?--offset requires a value}"; shift 2 ;;
       --json) json=1; shift ;;
       --tool|--tool-kind|--since|--until)
         echo "Error: $1 is not supported through file-RPC logs inspect." >&2
@@ -101,9 +102,10 @@ file_rpc_inspect() {
   done
   conv_id=$(logs_resolve_conversation_id "$target")
   if (( parse )); then
-    request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")"
+    request="/api/conversations/$(urlencode "$conv_id")/blocks?limit=$(urlencode "$limit")&offset=$(urlencode "$offset")"
     if [[ -n "$type_filter" ]]; then request="${request}&type=$(urlencode "$type_filter")"; fi
     response=$(api_get "$request")
+    file_rpc_warn_truncated_blocks "$response"
     if (( json )); then
       printf '%s\n' "$response" | jq \
         --arg role "$role_filter" \
@@ -129,6 +131,20 @@ file_rpc_inspect() {
       "mtime: \($c.updated_at // $c.started_at)",
       "records shown: \([.blocks[0:$head][]] | length)",
       (.blocks[0:$head][] | (.content | gsub("\\s+"; " ") | if length > 500 then .[0:497] + "..." else . end))'
+  fi
+}
+
+file_rpc_warn_truncated_blocks() {
+  local response="$1" total returned offset limit next_offset truncated
+  total=$(printf '%s\n' "$response" | jq -r '.total // 0')
+  returned=$(printf '%s\n' "$response" | jq -r '.blocks | length')
+  offset=$(printf '%s\n' "$response" | jq -r '.offset // 0')
+  limit=$(printf '%s\n' "$response" | jq -r '.limit // 0')
+  truncated=$(printf '%s\n' "$response" | jq -r '((.truncated // false) or (((.offset // 0) + (.blocks | length)) < (.total // 0)))')
+  if [[ "$truncated" == "true" ]]; then
+    next_offset=$(( offset + returned ))
+    printf 'Warning: output truncated: returned %s of %s blocks from offset %s (limit %s). Use --offset %s for the next window.\n' \
+      "$returned" "$total" "$offset" "$limit" "$next_offset" >&2
   fi
 }
 
