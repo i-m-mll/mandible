@@ -931,8 +931,12 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
     const query = req.query ?? {};
     const page = Math.max(1, parseInt(query.page || "1", 10) || 1);
-    const limit = Math.min(500, Math.max(1, parseInt(query.limit || "100", 10) || 100));
-    const offset = (page - 1) * limit;
+    const requestedLimit = Math.max(1, parseInt(query.limit || "100", 10) || 100);
+    const limit = Math.min(500, requestedLimit);
+    const offsetRaw = parseInt(query.offset || "", 10);
+    const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0
+      ? offsetRaw
+      : (page - 1) * limit;
 
     const conditions: string[] = ["conversation_id = ?"];
     const params: unknown[] = [id];
@@ -961,9 +965,13 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
     sendJson(res, 200, {
       blocks: blocks.map(mapBlock),
       total: countRow.total,
-      page,
+      offset,
+      page: Math.floor(offset / limit) + 1,
       limit,
+      requested_limit: requestedLimit,
+      cap: 500,
       pages: Math.ceil(countRow.total / limit),
+      truncated: offset + blocks.length < countRow.total,
     });
   }, { fileRpc: "allow" });
 

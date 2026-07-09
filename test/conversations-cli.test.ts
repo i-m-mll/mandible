@@ -124,6 +124,113 @@ describe("conversations CLI file RPC", () => {
     }
   });
 
+  it("forwards block offsets and warns when the file-RPC window is truncated", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-offset-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const seenPaths: string[] = [];
+    const laterBlock = { ...block, id: "block-501", position: 501, content: "Later block" };
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      const requestPath = String(request.path ?? "");
+      seenPaths.push(requestPath);
+      if (requestPath.startsWith("/api/conversations?")) {
+        return { status: 200, body: { conversations: [conversation], total: 1, page: 1, limit: 1, pages: 1 } };
+      }
+      if (requestPath.startsWith("/api/conversations/conv-1/blocks")) {
+        return {
+          status: 200,
+          body: {
+            blocks: [laterBlock],
+            total: 907,
+            offset: 500,
+            page: 2,
+            limit: 500,
+            requested_limit: 999,
+            cap: 500,
+            pages: 2,
+            truncated: true,
+          },
+        };
+      }
+      return { status: 404, body: { error: "not_found", path: requestPath } };
+    });
+
+    try {
+      const result = await run(["conversations", "blocks", "session-1", "--limit", "999", "--offset", "500", "--json"], {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([expect.objectContaining({ id: "block-501", position: 501 })]);
+      expect(result.stderr).toContain("output truncated");
+      expect(result.stderr).toContain("907 blocks");
+      expect(result.stderr).toContain("--offset 501");
+      expect(seenPaths).toContain("/api/conversations/conv-1/blocks?limit=999&offset=500");
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
+  it("returns a clear unsupported error for file-RPC conversation export", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-export-file-rpc-"));
+    tempRoots.push(spoolDir);
+
+    const result = await run(["conversations", "export", "session-1"], {
+      MANDIBLE_BASE: `file://${spoolDir}`,
+      MANDIBLE_FILE_RPC_TIMEOUT: "5",
+    });
+
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("conversations export is not supported through file-RPC");
+  });
+
+  it("forwards log parse offsets through file RPC and warns on truncation", async () => {
+    const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-logs-offset-file-rpc-"));
+    tempRoots.push(spoolDir);
+    const seenPaths: string[] = [];
+    const laterBlock = { ...block, id: "block-251", position: 251, content: "Later log block" };
+    const timer = startFileRpcResponder(spoolDir, (request) => {
+      const requestPath = String(request.path ?? "");
+      seenPaths.push(requestPath);
+      if (requestPath.startsWith("/api/conversations?")) {
+        return { status: 200, body: { conversations: [conversation], total: 1, page: 1, limit: 1, pages: 1 } };
+      }
+      if (requestPath.startsWith("/api/conversations/conv-1/blocks")) {
+        return {
+          status: 200,
+          body: {
+            blocks: [laterBlock],
+            total: 300,
+            offset: 250,
+            page: 6,
+            limit: 50,
+            requested_limit: 50,
+            cap: 500,
+            pages: 6,
+            truncated: true,
+          },
+        };
+      }
+      return { status: 404, body: { error: "not_found", path: requestPath } };
+    });
+
+    try {
+      const result = await run(["logs", "inspect", "session-1", "--parse", "--limit", "50", "--offset", "250", "--json"], {
+        MANDIBLE_BASE: `file://${spoolDir}`,
+        MANDIBLE_FILE_RPC_TIMEOUT: "5",
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual([expect.objectContaining({ id: "block-251", position: 251 })]);
+      expect(result.stderr).toContain("output truncated");
+      expect(result.stderr).toContain("--offset 251");
+      expect(seenPaths).toContain("/api/conversations/conv-1/blocks?limit=50&offset=250");
+    } finally {
+      clearInterval(timer);
+    }
+  });
+
   it("searches the daemon conversation index through file RPC", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-search-file-rpc-"));
     tempRoots.push(spoolDir);
