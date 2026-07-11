@@ -59,7 +59,7 @@ Uses SQLite via better-sqlite3. Schema migrations live in `src/db.ts` in the `MI
 
 ## Work units
 
-The `work_units` table tracks the dispatch state of issues through their lifecycle: open → committed → resolved (+ abandoned). Work units join the issue ledger, branch tree (git worktrees), and session tree (agent sessions) into a single reconciliation layer. See umbrella issue f3dbb3e for the full design.
+The `work_units` table tracks the dispatch state of issues through their lifecycle: open → committed → resolved (+ abandoned). Work units join the issue ledger, branch tree (git worktrees), and session tree (agent sessions) into a single reconciliation layer. The work-unit table was designed as part of umbrella issue f3dbb3e ("Inbox redesign: work-queue dispatch model") — its body contains the full design, not just the inbox UI.
 
 Key conventions:
 - `wt --issue <id>` registers a work unit and writes a `.issue` file for auto-discovery
