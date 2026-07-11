@@ -254,13 +254,13 @@ describe("subtree digests", () => {
     expect(batch.get(x.id)?.subtree_digest).toBe(single.subtree_digest);
   });
 
-  it("orders same-timestamp events by code units to match the single path (case-mixed ids)", () => {
+  it("orders same-timestamp events by UTF-8 bytes to match the single path (case-mixed ids)", () => {
     // Two events sharing occurred_at AND observed_at are tie-broken by id. The
-    // single path relies on SQLite's BINARY collation (`ORDER BY ... id`), which
-    // is a UTF-16 code-unit comparison: 'B...' sorts before 'a...'. A
+    // single path relies on SQLite's BINARY collation (`ORDER BY ... id`), a
+    // memcmp over the stored UTF-8 bytes: 'B...' sorts before 'a...'. A
     // locale-aware comparator (`localeCompare`) reverses that pair, so the batch
-    // path must use a code-unit tie-break to stay byte-identical. This test fails
-    // against the `localeCompare` comparator.
+    // path must use a byte-order tie-break to stay byte-identical. This test
+    // fails against the `localeCompare` comparator.
     const issue = makeIssue("Tie ordering", "feature", ["feature"]);
     const ts = Date.now() + 1_000_000;
     const insert = db.prepare(
@@ -270,6 +270,30 @@ describe("subtree digests", () => {
     );
     insert.run("Btie-event", issue.id, "issue.updated", JSON.stringify({ n: 1 }), ts, ts);
     insert.run("atie-event", issue.id, "issue.updated", JSON.stringify({ n: 2 }), ts, ts);
+
+    const single = getLedgerIssueHead(db, issue.id);
+    const batch = batchLedgerIssueHeads(db, [issue.id]);
+    expect(batch.get(issue.id)?.digest).toBe(single.digest);
+    expect(batch.get(issue.id)?.subtree_digest).toBe(single.subtree_digest);
+  });
+
+  it("orders same-timestamp events with non-BMP ids by UTF-8 bytes, not UTF-16 code units", () => {
+    // UTF-8 byte order and UTF-16 code-unit order diverge across the surrogate
+    // range: U+E000 is UTF-8 `EE 80 80` / UTF-16 `E000`, while U+10000 is UTF-8
+    // `F0 90 80 80` / UTF-16 `D800 DC00`. SQLite's BINARY collation (memcmp
+    // over UTF-8) puts U+E000 first; a JS `<` string comparison (UTF-16 code
+    // units) puts U+10000 first because D800 < E000. The batch tie-break must
+    // compare UTF-8 bytes to match the single path's SQLite ordering, so this
+    // test fails against a plain `<` code-unit comparator.
+    const issue = makeIssue("Non-BMP tie ordering", "feature", ["feature"]);
+    const ts = Date.now() + 2_000_000;
+    const insert = db.prepare(
+      `INSERT INTO ledger_events
+         (id, entity_type, entity_id, event_type, actor_type, source, payload_json, occurred_at, observed_at)
+       VALUES (?, 'issue', ?, ?, 'agent', 'mandible', ?, ?, ?)`,
+    );
+    insert.run("tie-\u{E000}-event", issue.id, "issue.updated", JSON.stringify({ n: 1 }), ts, ts);
+    insert.run("tie-\u{10000}-event", issue.id, "issue.updated", JSON.stringify({ n: 2 }), ts, ts);
 
     const single = getLedgerIssueHead(db, issue.id);
     const batch = batchLedgerIssueHeads(db, [issue.id]);

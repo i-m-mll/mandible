@@ -32,7 +32,7 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   "cli/inbox.sh:84 api_get \"$url\")",
   "cli/issue.sh:920 api_get \"$checkpoint_path\") \\",
   "cli/issue.sh:930 api_get \"$checkpoint_path\") \\",
-  "cli/issue.sh:1197 api_get \"$path\") \\",
+  "cli/issue.sh:1201 api_get \"$path\") \\",
   "cli/ledger-client.sh:40 api_send_capture \"$method\" \"$request_path\" \"$data\" \"$tmp_response\")",
   "cli/logs.sh:63 api_get \"$request\")",
   "cli/logs.sh:107 api_get \"$request\")",

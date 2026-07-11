@@ -936,20 +936,25 @@ cmd_changed() {
     checkpoint_created_at=$(printf '%s\n' "$checkpoint_response" | jq -r '.created_at // empty')
     [[ -n "$checkpoint_created_at" ]] \
       || die "Checkpoint response must include created_at to compare the umbrella head." 2
-    # Reconstruct the umbrella's own head as of the checkpoint time to synthesize
-    # the self-entry baseline. `head?at=<checkpoint_created_at>` filters events by
-    # `occurred_at <= at`, so events recorded after the checkpoint are excluded;
-    # the reconstructed digests therefore represent the umbrella's state AT
-    # checkpoint time, which is the correct baseline for post-upgrade checkpoints.
+    # Baseline for the umbrella's own (self) entry:
     #
-    # The subtree_digest reconstruction is only meaningful when the checkpoint was
-    # itself written after subtree digests existed. A pre-upgrade checkpoint's
-    # child entries carry no subtree_digest; in that case the reconstructed
-    # subtree_digest is a value the checkpoint never actually observed, so we must
-    # NOT use it as the self-entry baseline (it would let the self-entry classify
-    # "unchanged"/"subtree_changed" when the honest answer is "unknown"). Detect
-    # pre-upgrade checkpoints by the absence of any child subtree_digest and give
-    # the self-entry a null subtree baseline so it classifies "unknown".
+    # Post-upgrade checkpoints (written by refreshDelegationManifest since
+    # subtree digests landed) store the umbrella's own head in the payload as an
+    # explicit self-baseline entry marked `"self": true`. When that entry is
+    # present -- or any payload entry otherwise matches the umbrella's ids --
+    # the stored digests are compared directly and nothing is synthesized here.
+    # This makes pre-upgrade detection explicit rather than inferred: a
+    # post-upgrade ZERO-CHILD checkpoint still carries its self entry, so a
+    # stable umbrella correctly classifies "unchanged" instead of being
+    # misdetected as pre-upgrade by an empty child list.
+    #
+    # Legacy checkpoints (no self entry) predate the stored baseline. For those
+    # we synthesize a self entry whose own-digest baseline is reconstructed from
+    # /head?at=<checkpoint-time> (`at` filters events by occurred_at <= at, so
+    # the reconstruction reflects the umbrella's state at checkpoint time), but
+    # whose subtree baseline is null: the checkpoint never observed a subtree
+    # digest, so subtree drift is indeterminate and the self entry classifies
+    # "unknown", never silently "unchanged".
     local issue_head_at_checkpoint
     issue_head_at_checkpoint=$(api_get "/api/ledger/issues/$(urlencode "$since_issue")/head?at=$(urlencode "$checkpoint_created_at")") \
       || die "${RED}Failed to fetch historical head for ${since_issue}${RESET}" 1
@@ -958,20 +963,19 @@ cmd_changed() {
       --arg issue_id "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.issue_id')" \
       --arg short_id "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.short_id')" \
       --arg digest "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.digest')" \
-      --arg subtree_digest "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.subtree_digest // ""')" \
       '
         .payload as $payload
-        | ($payload | any((.subtree_digest // "") != "")) as $payload_has_subtree
-        | if $payload | any((.issue // .short_id // .id // "") as $entry
-            | $entry == $issue or $entry == $issue_id or $entry == $short_id)
+        | if $payload | any(
+            (.self == true)
+            or ((.issue // .short_id // .id // "") as $entry
+              | $entry == $issue or $entry == $issue_id or $entry == $short_id))
           then $payload
           else $payload + [{
             issue: $issue,
             short_id: $short_id,
             id: $issue_id,
             digest: $digest,
-            subtree_digest: (if $payload_has_subtree and $subtree_digest != ""
-                             then $subtree_digest else null end)
+            subtree_digest: null
           }]
           end
       ' > "$checkpoint_tmp"

@@ -566,7 +566,18 @@ function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection):
 }
 
 function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[]): Record<string, unknown> {
-  const payload = childIds.map((childId) => getLedgerIssueHead(db, childId));
+  // The first payload entry is the umbrella's own head, marked `self: true`.
+  // It is an explicit stored baseline for the umbrella itself, not a child
+  // entry: `mandible issue changed --since-issue` compares it directly and its
+  // presence is the trusted marker that the checkpoint post-dates subtree
+  // digests. Legacy checkpoints without a self entry get an "unknown" subtree
+  // classification for the umbrella (never a silently reconstructed baseline),
+  // including the previously ambiguous zero-child case where an empty payload
+  // is indistinguishable from a pre-upgrade one.
+  const payload: Array<Record<string, unknown>> = [
+    { ...getLedgerIssueHead(db, umbrellaId), self: true },
+    ...childIds.map((childId) => ({ ...getLedgerIssueHead(db, childId) })),
+  ];
   const checkpoint = new LedgerStore(db).addIssueCheckpoint(umbrellaId, {
     kind: "delegation-manifest",
     payload,
@@ -648,15 +659,19 @@ interface BatchHeadEventRow {
 }
 
 function compareBatchHeadEvents(a: BatchHeadEventRow, b: BatchHeadEventRow): number {
-  // Tie-break on `id` with a UTF-16 code-unit comparison to match SQLite's
-  // default BINARY collation used by the single path's
-  // `ORDER BY occurred_at, observed_at, id`. `localeCompare` would order
-  // case-mixed ids differently (locale/case-insensitive), so batch digests
-  // must not use it — they have to be byte-identical to the single path AND to
-  // pre-upgrade stored `digest` values.
+  // Tie-break on `id` by comparing UTF-8 bytes to match SQLite's default
+  // BINARY collation (a memcmp over the stored UTF-8 encoding) used by the
+  // single path's `ORDER BY occurred_at, observed_at, id`. Neither JS string
+  // comparison matches it in general: `localeCompare` is locale/case-aware,
+  // and `<` compares UTF-16 code units, which diverge from UTF-8 byte order
+  // across the surrogate range (e.g. U+E000 = UTF-8 `EE 80 80` sorts before
+  // U+10000 = UTF-8 `F0 90 80 80` in SQLite, but after it in UTF-16 because
+  // its code unit E000 > the D800 high surrogate). Batch digests must be
+  // byte-identical to the single path AND to pre-upgrade stored `digest`
+  // values, so only a byte comparison is correct.
   return a.occurred_at - b.occurred_at
     || a.observed_at - b.observed_at
-    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    || Buffer.compare(Buffer.from(a.id, "utf8"), Buffer.from(b.id, "utf8"));
 }
 
 function digestBatchHeadEvents(events: BatchHeadEventRow[]): {

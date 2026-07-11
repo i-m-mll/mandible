@@ -1198,10 +1198,10 @@ describe("issue CLI body revisions", () => {
 
   it("classifies the umbrella self-entry as unknown for a pre-upgrade checkpoint", async () => {
     const port = await listen();
-    // Pre-upgrade checkpoint: no payload entry carries a subtree_digest. The
-    // /head?at reconstruction still returns one (the head endpoint always
-    // computes a subtree digest now), but the synthesized self-entry must ignore
-    // it and take a null subtree baseline so it classifies "unknown" rather than
+    // Pre-upgrade checkpoint: no stored self-baseline entry (`self: true`). The
+    // /head?at reconstruction still returns a subtree_digest (the head endpoint
+    // always computes one now), but the synthesized self-entry must ignore it
+    // and take a null subtree baseline so it classifies "unknown" rather than
     // "subtree_changed" or "unchanged".
     issueCheckpoints.abc = [
       {
@@ -1246,6 +1246,137 @@ describe("issue CLI body revisions", () => {
     expect(body.unknown.map((entry: { issue: string }) => entry.issue).sort()).toEqual(["abc", "def"]);
     // The self-entry must NOT be reported as subtree_changed despite the drift.
     expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
+  it("keeps the self-entry unknown when a legacy checkpoint has child subtree digests but no self marker", async () => {
+    const port = await listen();
+    // A checkpoint whose child entries carry subtree digests but which lacks
+    // the stored self-baseline entry must still classify the umbrella self-entry
+    // as unknown. Detection is the explicit `self: true` marker, not an
+    // inference from whether other entries carry subtree digests -- this test
+    // fails against the "any entry has a subtree_digest" heuristic, which would
+    // adopt the /head?at reconstruction as the subtree baseline and classify
+    // the stable umbrella "unchanged".
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-no-marker",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        payload: [{ issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" }],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Defaults: abc's current head equals the checkpoint-time reconstruction
+    // (digest-before / subtree-abc-before), i.e. fully stable.
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
+  it("classifies a stable self-entry as unchanged for a post-upgrade zero-child checkpoint", async () => {
+    const port = await listen();
+    // Post-upgrade zero-child checkpoint: the payload contains only the stored
+    // self-baseline entry. The umbrella is stable against it, so it classifies
+    // "unchanged" -- an empty child list must not be misdetected as a
+    // pre-upgrade checkpoint (which would classify "unknown").
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-zero-child",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        payload: [
+          {
+            issue_id: "issue-1",
+            short_id: "abc",
+            digest: "digest-before",
+            subtree_digest: "subtree-abc-before",
+            self: true,
+          },
+        ],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Defaults: abc's current head is digest-before / subtree-abc-before, so
+    // both digests are stable against the stored baseline.
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
+  it("compares the stored self baseline directly for a post-upgrade checkpoint", async () => {
+    const port = await listen();
+    // Normal post-upgrade checkpoint: self-baseline entry plus a child entry.
+    // The self-entry's stored subtree baseline differs from the current subtree
+    // digest while its own digest is stable -> subtree_changed, proving the
+    // stored baseline (not a /head?at reconstruction) drives classification.
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-post-upgrade",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        payload: [
+          {
+            issue_id: "issue-1",
+            short_id: "abc",
+            digest: "digest-before",
+            subtree_digest: "subtree-abc-at-checkpoint",
+            self: true,
+          },
+          { issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" },
+        ],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Defaults: abc's current head is digest-before / subtree-abc-before. Own
+    // digest matches the stored baseline; the subtree digest drifted from
+    // "subtree-abc-at-checkpoint".
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.subtree_changed[0].expected_subtree_digest).toBe("subtree-abc-at-checkpoint");
+    expect(body.subtree_changed[0].current_subtree_digest).toBe("subtree-abc-before");
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual([]);
     expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
   });
 

@@ -843,10 +843,18 @@ describe("ledger issue route gate", () => {
     expect(store.listRelationshipEdges({ source_issue_id: umbrella.id })).toHaveLength(2);
     const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
     expect(manifest).not.toBeNull();
-    expect(JSON.parse(manifest!.payload_json)).toEqual(expect.arrayContaining([
+    const manifestPayload = JSON.parse(manifest!.payload_json) as Array<Record<string, unknown>>;
+    expect(manifestPayload).toEqual(expect.arrayContaining([
       expect.objectContaining({ short_id: first.short_id }),
       expect.objectContaining({ short_id: second.short_id }),
     ]));
+    // The umbrella's own head is stored as an explicit self-baseline entry;
+    // child entries never carry the self flag.
+    expect(manifestPayload.filter((entry) => entry.self === true))
+      .toEqual([expect.objectContaining({ short_id: umbrella.short_id, self: true })]);
+    expect(manifestPayload
+      .filter((entry) => entry.short_id !== umbrella.short_id)
+      .every((entry) => !("self" in entry))).toBe(true);
   });
 
   it("reconciles only canonical Children table rows into edges and a manifest", async () => {
@@ -903,7 +911,11 @@ describe("ledger issue route gate", () => {
     expect(targets).toEqual([child.id]);
     expect(targets).not.toContain(nonChild.id);
     const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
-    expect(JSON.parse(manifest!.payload_json)).toMatchObject([{ short_id: child.short_id }]);
+    // Payload = the umbrella's self-baseline entry followed by child entries.
+    expect(JSON.parse(manifest!.payload_json)).toMatchObject([
+      { short_id: umbrella.short_id, self: true },
+      { short_id: child.short_id },
+    ]);
   });
 
   it("refreshes an umbrella manifest without changing child edges", async () => {
@@ -949,7 +961,40 @@ describe("ledger issue route gate", () => {
     expect(store.listRelationshipEdges({ source_issue_id: umbrella.id }).map((edge) => edge.id))
       .toEqual(beforeEdges);
     const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
-    expect(JSON.parse(manifest!.payload_json)).toMatchObject([{ short_id: child.short_id }]);
+    // Payload = the umbrella's self-baseline entry followed by child entries.
+    expect(JSON.parse(manifest!.payload_json)).toMatchObject([
+      { short_id: umbrella.short_id, self: true },
+      { short_id: child.short_id },
+    ]);
+  });
+
+  it("stores the self-baseline entry even for a zero-child manifest refresh", async () => {
+    const repoInfo = repo("repo-1", "mandible");
+    const { issue: umbrella, store } = createLedgerIssue({
+      repo: repoInfo,
+      alias: "umbzero",
+      title: "Zero-child umbrella",
+      labels: ["umbrella"],
+    });
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
+
+    const response = await server.invoke("POST", "/api/ledger/issues/:issueId/umbrella-manifest-refresh", {
+      params: { issueId: "umbzero" },
+    });
+
+    expect(response.statusCode).toBe(200);
+    const manifest = store.getLatestIssueCheckpoint(umbrella.id, "delegation-manifest");
+    // A zero-child manifest still carries the umbrella's self-baseline entry
+    // (with subtree_digest), so `issue changed --since-issue` can distinguish
+    // it from a pre-upgrade checkpoint and classify a stable umbrella
+    // "unchanged" instead of "unknown". An empty payload would be
+    // indistinguishable from a legacy one.
+    const payload = JSON.parse(manifest!.payload_json) as Array<Record<string, unknown>>;
+    expect(payload).toHaveLength(1);
+    expect(payload[0]).toMatchObject({ short_id: umbrella.short_id, self: true });
+    expect(typeof payload[0].digest).toBe("string");
+    expect(typeof payload[0].subtree_digest).toBe("string");
   });
 
   it("refuses parent-role assumption when the child table needs explicit reconcile", async () => {
