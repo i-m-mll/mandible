@@ -1196,6 +1196,59 @@ describe("issue CLI body revisions", () => {
     expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
   });
 
+  it("classifies the umbrella self-entry as unknown for a pre-upgrade checkpoint", async () => {
+    const port = await listen();
+    // Pre-upgrade checkpoint: no payload entry carries a subtree_digest. The
+    // /head?at reconstruction still returns one (the head endpoint always
+    // computes a subtree digest now), but the synthesized self-entry must ignore
+    // it and take a null subtree baseline so it classifies "unknown" rather than
+    // "subtree_changed" or "unchanged".
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-legacy",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        // abc (the umbrella) is not in the payload, so it is synthesized as the
+        // self-entry. def has an own digest but no subtree_digest.
+        payload: [{ issue: "def", digest: "digest-current" }],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Own digest of abc is stable against the checkpoint-time reconstruction
+    // (both "digest-before"), but its subtree digest has drifted. With a null
+    // baseline this is "unknown"; a non-null reconstructed baseline would wrongly
+    // read as "subtree_changed".
+    (issueHeads as Record<string, unknown>).abc = {
+      issue_id: "issue-1",
+      short_id: "abc",
+      digest: "digest-before",
+      subtree_digest: "subtree-abc-drifted",
+      last_event_at: 1_700_000_020_000,
+      last_event_kind: "issue.checkpoint.created",
+      subtree_last_event_at: 1_700_000_060_000,
+      subtree_last_event_kind: "comment.created",
+    };
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/head?at=1700000020000");
+    const body = JSON.parse(result.stdout);
+    // Both the self-entry (abc) and def lack a subtree baseline -> unknown.
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue).sort()).toEqual(["abc", "def"]);
+    // The self-entry must NOT be reported as subtree_changed despite the drift.
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
   it("can pin a non-latest checkpoint as the changed-since baseline", async () => {
     const port = await listen();
     issueHeads.abc = {

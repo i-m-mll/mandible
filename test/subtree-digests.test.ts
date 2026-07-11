@@ -178,6 +178,104 @@ describe("subtree digests", () => {
     // grandchild comment lives below it.
     expect(batchUmbrella?.subtree_digest).not.toBe(batchUmbrella?.digest);
   });
+
+  it("matches single-path digests for a descendant shared between two roots", () => {
+    const u1 = makeIssue("Shared U1", "umbrella", ["umbrella"]);
+    const u2 = makeIssue("Shared U2", "umbrella", ["umbrella"]);
+    const shared = makeIssue("Shared child", "feature", ["feature"]);
+    let clock = Date.now();
+    linkParentChild(u1.id, shared.id, (clock += 1));
+    linkParentChild(u2.id, shared.id, (clock += 1));
+    store.addComment(shared.id, {
+      body: "Activity under a shared descendant",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (clock += 1),
+    });
+
+    const singleU1 = getLedgerIssueHead(db, u1.id);
+    const singleU2 = getLedgerIssueHead(db, u2.id);
+    const batch = batchLedgerIssueHeads(db, [u1.id, u2.id]);
+    expect(batch.get(u1.id)?.digest).toBe(singleU1.digest);
+    expect(batch.get(u1.id)?.subtree_digest).toBe(singleU1.subtree_digest);
+    expect(batch.get(u2.id)?.digest).toBe(singleU2.digest);
+    expect(batch.get(u2.id)?.subtree_digest).toBe(singleU2.subtree_digest);
+    // Both roots see the shared child in their subtree.
+    expect(batch.get(u1.id)?.subtree_digest).not.toBe(batch.get(u1.id)?.digest);
+    expect(batch.get(u2.id)?.subtree_digest).not.toBe(batch.get(u2.id)?.digest);
+  });
+
+  it("matches single-path digests when a root is also a descendant of another root", () => {
+    const outer = makeIssue("Outer root", "umbrella", ["umbrella"]);
+    const inner = makeIssue("Inner root", "umbrella", ["umbrella"]);
+    const leaf = makeIssue("Nested leaf", "feature", ["feature"]);
+    let clock = Date.now();
+    linkParentChild(outer.id, inner.id, (clock += 1));
+    linkParentChild(inner.id, leaf.id, (clock += 1));
+    store.addComment(leaf.id, {
+      body: "Activity two levels below the outer root",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (clock += 1),
+    });
+
+    const singleOuter = getLedgerIssueHead(db, outer.id);
+    const singleInner = getLedgerIssueHead(db, inner.id);
+    // `inner` is passed as a batch root AND is a descendant of `outer`.
+    const batch = batchLedgerIssueHeads(db, [outer.id, inner.id]);
+    expect(batch.get(outer.id)?.digest).toBe(singleOuter.digest);
+    expect(batch.get(outer.id)?.subtree_digest).toBe(singleOuter.subtree_digest);
+    expect(batch.get(inner.id)?.digest).toBe(singleInner.digest);
+    expect(batch.get(inner.id)?.subtree_digest).toBe(singleInner.subtree_digest);
+  });
+
+  it("matches single-path own digest for a self-referential parent_child link", () => {
+    // `issue link X X --type parent_child` is not rejected, so the relationship
+    // event is attached to X as both endpoints. The batch path fetches it under
+    // the source and target keys via UNION ALL; without (issue_id, event_id)
+    // de-duplication the own-head digest double-counts it while the single path
+    // counts it once. This asserts they stay byte-identical.
+    const x = makeIssue("Self link", "umbrella", ["umbrella"]);
+    let clock = Date.now();
+    linkParentChild(x.id, x.id, (clock += 1));
+    store.addComment(x.id, {
+      body: "Comment alongside a self-link",
+      actor_type: "agent",
+      author_display: "Codex",
+      source: "mandible",
+      created_at: (clock += 1),
+    });
+
+    const single = getLedgerIssueHead(db, x.id);
+    const batch = batchLedgerIssueHeads(db, [x.id]);
+    expect(batch.get(x.id)?.digest).toBe(single.digest);
+    expect(batch.get(x.id)?.subtree_digest).toBe(single.subtree_digest);
+  });
+
+  it("orders same-timestamp events by code units to match the single path (case-mixed ids)", () => {
+    // Two events sharing occurred_at AND observed_at are tie-broken by id. The
+    // single path relies on SQLite's BINARY collation (`ORDER BY ... id`), which
+    // is a UTF-16 code-unit comparison: 'B...' sorts before 'a...'. A
+    // locale-aware comparator (`localeCompare`) reverses that pair, so the batch
+    // path must use a code-unit tie-break to stay byte-identical. This test fails
+    // against the `localeCompare` comparator.
+    const issue = makeIssue("Tie ordering", "feature", ["feature"]);
+    const ts = Date.now() + 1_000_000;
+    const insert = db.prepare(
+      `INSERT INTO ledger_events
+         (id, entity_type, entity_id, event_type, actor_type, source, payload_json, occurred_at, observed_at)
+       VALUES (?, 'issue', ?, ?, 'agent', 'mandible', ?, ?, ?)`,
+    );
+    insert.run("Btie-event", issue.id, "issue.updated", JSON.stringify({ n: 1 }), ts, ts);
+    insert.run("atie-event", issue.id, "issue.updated", JSON.stringify({ n: 2 }), ts, ts);
+
+    const single = getLedgerIssueHead(db, issue.id);
+    const batch = batchLedgerIssueHeads(db, [issue.id]);
+    expect(batch.get(issue.id)?.digest).toBe(single.digest);
+    expect(batch.get(issue.id)?.subtree_digest).toBe(single.subtree_digest);
+  });
 });
 
 describe("umbrella child flags", () => {
@@ -226,5 +324,44 @@ describe("umbrella child flags", () => {
     };
     // The umbrella has exactly one distinct child even though it is linked twice.
     expect(status.children).toHaveLength(1);
+    // And the reported count reflects that single distinct child, not two.
+    expect(status.children[0]?.child_count).toBe(0);
+  });
+
+  it("reports child_count directly, deduping both-surface links and excluding soft-deleted edges", () => {
+    const umbrella = makeIssue("Count umbrella", "umbrella", ["umbrella"]);
+    const child = makeIssue("Count child", "umbrella", ["umbrella"]);
+    const dual = makeIssue("Grandchild dual", "feature", ["feature"]);
+    const removed = makeIssue("Grandchild removed", "feature", ["feature"]);
+    const live = makeIssue("Grandchild live", "feature", ["feature"]);
+    let clock = Date.now();
+    linkParentChild(umbrella.id, child.id, (clock += 1));
+    // `dual` is linked to `child` through both the structured edge graph and the
+    // legacy relationship table; it must be counted once.
+    linkParentChild(child.id, dual.id, (clock += 1));
+    store.upsertIssueRelationship({
+      source_issue_id: child.id,
+      target_issue_id: dual.id,
+      relationship_type: "parent_child",
+      provenance: "manual",
+      created_at: (clock += 1),
+    });
+    // `removed` is linked then soft-deleted; it must NOT be counted.
+    linkParentChild(child.id, removed.id, (clock += 1));
+    store.unlinkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: child.id },
+      target_entities: [{ entity_type: "issue", entity_id: removed.id }],
+      link_type: "parent_child",
+      occurred_at: (clock += 1),
+    });
+    // `live` is a normal remaining edge.
+    linkParentChild(child.id, live.id, (clock += 1));
+
+    const status = buildUmbrellaStatus(db, umbrella.id) as {
+      children: Array<{ id: string; child_count: number }>;
+    };
+    const summary = status.children.find((entry) => entry.id === child.id);
+    // dual (deduped to 1) + live (1); removed is excluded → 2.
+    expect(summary?.child_count).toBe(2);
   });
 });

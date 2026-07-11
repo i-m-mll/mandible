@@ -648,9 +648,15 @@ interface BatchHeadEventRow {
 }
 
 function compareBatchHeadEvents(a: BatchHeadEventRow, b: BatchHeadEventRow): number {
+  // Tie-break on `id` with a UTF-16 code-unit comparison to match SQLite's
+  // default BINARY collation used by the single path's
+  // `ORDER BY occurred_at, observed_at, id`. `localeCompare` would order
+  // case-mixed ids differently (locale/case-insensitive), so batch digests
+  // must not use it — they have to be byte-identical to the single path AND to
+  // pre-upgrade stored `digest` values.
   return a.occurred_at - b.occurred_at
     || a.observed_at - b.observed_at
-    || a.id.localeCompare(b.id);
+    || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 }
 
 function digestBatchHeadEvents(events: BatchHeadEventRow[]): {
@@ -712,15 +718,29 @@ export function batchLedgerIssueHeads(db: Db, issueIds: string[]): Map<string, R
   const allIdList = Array.from(allIds);
   const { sql: allSql, bindings: allBindings } = placeholders(allIdList, "sub");
   const rowsByIssue = new Map<string, BatchHeadEventRow[]>();
-  for (const id of allIdList) rowsByIssue.set(id, []);
+  const seenByIssue = new Map<string, Set<string>>();
+  for (const id of allIdList) {
+    rowsByIssue.set(id, []);
+    seenByIssue.set(id, new Set<string>());
+  }
 
   const appendRows = (rows: Array<Record<string, unknown>>): void => {
     for (const row of rows) {
       const issueId = String(row.issue_id ?? "");
       const group = rowsByIssue.get(issueId);
-      if (!group) continue;
+      const seen = seenByIssue.get(issueId);
+      if (!group || !seen) continue;
+      // De-duplicate by (issue_id, event_id). Relationship events are attached
+      // to both endpoints via UNION ALL, so a self-referential parent_child link
+      // (source_issue_id === target_issue_id) yields the same event id twice
+      // under the SAME issue key. The single path counts such an event once, so
+      // the batch own-head assembly must not double-count it. A non-self link
+      // legitimately appears under two DIFFERENT issue keys and is preserved.
+      const eventId = String(row.id ?? "");
+      if (seen.has(eventId)) continue;
+      seen.add(eventId);
       group.push({
-        id: String(row.id ?? ""),
+        id: eventId,
         event_type: String(row.event_type ?? ""),
         entity_type: String(row.entity_type ?? ""),
         entity_id: String(row.entity_id ?? ""),

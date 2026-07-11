@@ -936,6 +936,20 @@ cmd_changed() {
     checkpoint_created_at=$(printf '%s\n' "$checkpoint_response" | jq -r '.created_at // empty')
     [[ -n "$checkpoint_created_at" ]] \
       || die "Checkpoint response must include created_at to compare the umbrella head." 2
+    # Reconstruct the umbrella's own head as of the checkpoint time to synthesize
+    # the self-entry baseline. `head?at=<checkpoint_created_at>` filters events by
+    # `occurred_at <= at`, so events recorded after the checkpoint are excluded;
+    # the reconstructed digests therefore represent the umbrella's state AT
+    # checkpoint time, which is the correct baseline for post-upgrade checkpoints.
+    #
+    # The subtree_digest reconstruction is only meaningful when the checkpoint was
+    # itself written after subtree digests existed. A pre-upgrade checkpoint's
+    # child entries carry no subtree_digest; in that case the reconstructed
+    # subtree_digest is a value the checkpoint never actually observed, so we must
+    # NOT use it as the self-entry baseline (it would let the self-entry classify
+    # "unchanged"/"subtree_changed" when the honest answer is "unknown"). Detect
+    # pre-upgrade checkpoints by the absence of any child subtree_digest and give
+    # the self-entry a null subtree baseline so it classifies "unknown".
     local issue_head_at_checkpoint
     issue_head_at_checkpoint=$(api_get "/api/ledger/issues/$(urlencode "$since_issue")/head?at=$(urlencode "$checkpoint_created_at")") \
       || die "${RED}Failed to fetch historical head for ${since_issue}${RESET}" 1
@@ -947,6 +961,7 @@ cmd_changed() {
       --arg subtree_digest "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.subtree_digest // ""')" \
       '
         .payload as $payload
+        | ($payload | any((.subtree_digest // "") != "")) as $payload_has_subtree
         | if $payload | any((.issue // .short_id // .id // "") as $entry
             | $entry == $issue or $entry == $issue_id or $entry == $short_id)
           then $payload
@@ -955,7 +970,8 @@ cmd_changed() {
             short_id: $short_id,
             id: $issue_id,
             digest: $digest,
-            subtree_digest: (if $subtree_digest == "" then null else $subtree_digest end)
+            subtree_digest: (if $payload_has_subtree and $subtree_digest != ""
+                             then $subtree_digest else null end)
           }]
           end
       ' > "$checkpoint_tmp"
