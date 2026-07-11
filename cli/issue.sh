@@ -769,8 +769,8 @@ print_issue_heads() {
     jq -s '.' "$file"
   else
     jq -r '
-      "issue\tdigest\tlast_event_at\tlast_event_kind",
-      (.[] | "\(.short_id)\t\(.digest)\t\(.last_event_at // "-")\t\(.last_event_kind // "-")")
+      "issue\tdigest\tsubtree_digest\tlast_event_at\tlast_event_kind",
+      (.[] | "\(.short_id)\t\(.digest)\t\(.subtree_digest // "-")\t\(.last_event_at // "-")\t\(.last_event_kind // "-")")
     ' "$file"
   fi
 }
@@ -811,24 +811,40 @@ cmd_heads() {
 print_changed_result() {
   local json="$1"
   local changed_file="$2"
-  local unchanged_file="$3"
-  local missing_file="$4"
+  local subtree_changed_file="$3"
+  local unchanged_file="$4"
+  local unknown_file="$5"
+  local missing_file="$6"
 
   if (( json )); then
     jq -n \
       --slurpfile changed "$changed_file" \
+      --slurpfile subtree_changed "$subtree_changed_file" \
       --slurpfile unchanged "$unchanged_file" \
+      --slurpfile unknown "$unknown_file" \
       --slurpfile missing "$missing_file" \
-      '{changed: $changed, unchanged: $unchanged, missing: $missing}'
+      '{
+        changed: $changed,
+        subtree_changed: $subtree_changed,
+        unchanged: $unchanged,
+        unknown: $unknown,
+        missing: $missing
+      }'
   else
     jq -n -r \
       --slurpfile changed "$changed_file" \
+      --slurpfile subtree_changed "$subtree_changed_file" \
       --slurpfile unchanged "$unchanged_file" \
+      --slurpfile unknown "$unknown_file" \
       --slurpfile missing "$missing_file" '
         "changed:",
         (if ($changed | length) == 0 then "  -" else ($changed[] | "  \(.issue)\t\(.expected_digest // "null") -> \(.current_digest)\t\(.last_event_kind // "-")") end),
+        "subtree_changed:",
+        (if ($subtree_changed | length) == 0 then "  -" else ($subtree_changed[] | "  \(.issue)\t\(.expected_subtree_digest // "null") -> \(.current_subtree_digest)\t\(.subtree_last_event_kind // "-")") end),
         "unchanged:",
         (if ($unchanged | length) == 0 then "  -" else ($unchanged[] | "  \(.issue)\t\(.current_digest)") end),
+        "unknown:",
+        (if ($unknown | length) == 0 then "  -" else ($unknown[] | "  \(.issue)\t\(.current_digest)\t(no baseline subtree digest)") end),
         "missing:",
         (if ($missing | length) == 0 then "  -" else ($missing[] | "  \(.issue)") end)
       '
@@ -920,6 +936,25 @@ cmd_changed() {
     checkpoint_created_at=$(printf '%s\n' "$checkpoint_response" | jq -r '.created_at // empty')
     [[ -n "$checkpoint_created_at" ]] \
       || die "Checkpoint response must include created_at to compare the umbrella head." 2
+    # Baseline for the umbrella's own (self) entry:
+    #
+    # Post-upgrade checkpoints (written by refreshDelegationManifest since
+    # subtree digests landed) store the umbrella's own head in the payload as an
+    # explicit self-baseline entry marked `"self": true`. When that entry is
+    # present -- or any payload entry otherwise matches the umbrella's ids --
+    # the stored digests are compared directly and nothing is synthesized here.
+    # This makes pre-upgrade detection explicit rather than inferred: a
+    # post-upgrade ZERO-CHILD checkpoint still carries its self entry, so a
+    # stable umbrella correctly classifies "unchanged" instead of being
+    # misdetected as pre-upgrade by an empty child list.
+    #
+    # Legacy checkpoints (no self entry) predate the stored baseline. For those
+    # we synthesize a self entry whose own-digest baseline is reconstructed from
+    # /head?at=<checkpoint-time> (`at` filters events by occurred_at <= at, so
+    # the reconstruction reflects the umbrella's state at checkpoint time), but
+    # whose subtree baseline is null: the checkpoint never observed a subtree
+    # digest, so subtree drift is indeterminate and the self entry classifies
+    # "unknown", never silently "unchanged".
     local issue_head_at_checkpoint
     issue_head_at_checkpoint=$(api_get "/api/ledger/issues/$(urlencode "$since_issue")/head?at=$(urlencode "$checkpoint_created_at")") \
       || die "${RED}Failed to fetch historical head for ${since_issue}${RESET}" 1
@@ -930,10 +965,18 @@ cmd_changed() {
       --arg digest "$(printf '%s\n' "$issue_head_at_checkpoint" | jq -r '.digest')" \
       '
         .payload as $payload
-        | if $payload | any((.issue // .short_id // .id // "") as $entry
-            | $entry == $issue or $entry == $issue_id or $entry == $short_id)
+        | if $payload | any(
+            (.self == true)
+            or ((.issue // .short_id // .id // "") as $entry
+              | $entry == $issue or $entry == $issue_id or $entry == $short_id))
           then $payload
-          else $payload + [{issue: $issue, short_id: $short_id, id: $issue_id, digest: $digest}]
+          else $payload + [{
+            issue: $issue,
+            short_id: $short_id,
+            id: $issue_id,
+            digest: $digest,
+            subtree_digest: null
+          }]
           end
       ' > "$checkpoint_tmp"
     manifest="$checkpoint_tmp"
@@ -944,46 +987,81 @@ cmd_changed() {
   jq -e 'type == "array"' "$manifest" >/dev/null \
     || die "Manifest must be a JSON array." 2
 
-  local tmpdir changed_file unchanged_file missing_file
+  local tmpdir changed_file subtree_changed_file unchanged_file unknown_file missing_file
   tmpdir=$(mktemp -d)
   changed_file="$tmpdir/changed.jsonl"
+  subtree_changed_file="$tmpdir/subtree_changed.jsonl"
   unchanged_file="$tmpdir/unchanged.jsonl"
+  unknown_file="$tmpdir/unknown.jsonl"
   missing_file="$tmpdir/missing.jsonl"
   : > "$changed_file"
+  : > "$subtree_changed_file"
   : > "$unchanged_file"
+  : > "$unknown_file"
   : > "$missing_file"
 
-  local issue expected response current target_file
-  while IFS=$'\t' read -r issue expected; do
+  # Classify each manifest entry against the current head:
+  #   changed         - the entry's own digest drifted
+  #   subtree_changed - own digest stable, subtree digest drifted
+  #   unchanged       - own and subtree digests both stable
+  #   unknown         - own digest stable but the manifest predates subtree
+  #                     digests, so subtree drift cannot be determined
+  # An empty expected subtree digest (pre-upgrade manifest) never falls through
+  # to "unchanged"; it is reported as "unknown".
+  local issue expected expected_subtree response current current_subtree
+  local classification subtree_state target_file
+  while IFS=$'\t' read -r issue expected expected_subtree; do
     if [[ -z "$issue" ]]; then
       rm -rf "$tmpdir"
       die "Manifest entries must include issue, short_id, or id." 2
     fi
     if response=$(api_get "/api/ledger/issues/$(urlencode "$issue")/head"); then
       current=$(printf '%s\n' "$response" | jq -r '.digest')
-      if [[ "$expected" == "$current" ]]; then
-        target_file="$unchanged_file"
-      else
+      current_subtree=$(printf '%s\n' "$response" | jq -r '.subtree_digest // ""')
+      if [[ "$expected" != "$current" ]]; then
+        classification="changed"
+        subtree_state="changed"
         target_file="$changed_file"
+      elif [[ -z "$expected_subtree" ]]; then
+        classification="unknown"
+        subtree_state="unknown"
+        target_file="$unknown_file"
+      elif [[ "$expected_subtree" != "$current_subtree" ]]; then
+        classification="subtree_changed"
+        subtree_state="changed"
+        target_file="$subtree_changed_file"
+      else
+        classification="unchanged"
+        subtree_state="unchanged"
+        target_file="$unchanged_file"
       fi
       jq -n \
         --arg issue "$issue" \
         --arg expected "$expected" \
+        --arg expected_subtree "$expected_subtree" \
+        --arg classification "$classification" \
+        --arg subtree_state "$subtree_state" \
         --argjson head "$response" \
         '{
           issue: $issue,
+          classification: $classification,
+          subtree_state: $subtree_state,
           expected_digest: (if $expected == "" then null else $expected end),
           current_digest: $head.digest,
+          expected_subtree_digest: (if $expected_subtree == "" then null else $expected_subtree end),
+          current_subtree_digest: $head.subtree_digest,
           last_event_at: $head.last_event_at,
           last_event_kind: $head.last_event_kind,
+          subtree_last_event_at: $head.subtree_last_event_at,
+          subtree_last_event_kind: $head.subtree_last_event_kind,
           head: $head
         }' >> "$target_file"
     else
       jq -n --arg issue "$issue" '{issue: $issue}' >> "$missing_file"
     fi
-  done < <(jq -r '.[] | [(.issue // .short_id // .id // ""), (.digest // "")] | @tsv' "$manifest")
+  done < <(jq -r '.[] | [(.issue // .short_id // .id // ""), (.digest // ""), (.subtree_digest // "")] | @tsv' "$manifest")
 
-  print_changed_result "$json" "$changed_file" "$unchanged_file" "$missing_file"
+  print_changed_result "$json" "$changed_file" "$subtree_changed_file" "$unchanged_file" "$unknown_file" "$missing_file"
   rm -rf "$tmpdir"
   if [[ -n "$checkpoint_tmp" ]]; then
     rm -f "$checkpoint_tmp"

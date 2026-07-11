@@ -190,15 +190,21 @@ function listen(): Promise<number> {
       issue_id: "issue-1",
       short_id: "abc",
       digest: "digest-before",
+      subtree_digest: "subtree-abc-before",
       last_event_at: 1_700_000_000_000,
       last_event_kind: "issue.created",
+      subtree_last_event_at: 1_700_000_000_000,
+      subtree_last_event_kind: "issue.created",
     },
     def: {
       issue_id: "issue-2",
       short_id: "def",
       digest: "digest-current",
+      subtree_digest: "subtree-def-current",
       last_event_at: 1_700_000_010_000,
       last_event_kind: "comment.created",
+      subtree_last_event_at: 1_700_000_010_000,
+      subtree_last_event_kind: "comment.created",
     },
   };
   issueHeadsAt = {
@@ -207,8 +213,11 @@ function listen(): Promise<number> {
         issue_id: "issue-1",
         short_id: "abc",
         digest: "digest-before",
+        subtree_digest: "subtree-abc-before",
         last_event_at: 1_700_000_020_000,
         last_event_kind: "issue.checkpoint.created",
+        subtree_last_event_at: 1_700_000_020_000,
+        subtree_last_event_kind: "issue.checkpoint.created",
       },
     },
   };
@@ -219,7 +228,7 @@ function listen(): Promise<number> {
         issue_id: "issue-1",
         kind: "delegation-manifest",
         payload: [
-          { issue: "abc", digest: "digest-before" },
+          { issue: "abc", digest: "digest-before", subtree_digest: "subtree-abc-before" },
           { issue: "def", digest: "digest-stale" },
           { issue: "missing", digest: "digest-missing" },
         ],
@@ -1060,7 +1069,7 @@ describe("issue CLI body revisions", () => {
     const port = await listen();
     const manifest = path.join(os.tmpdir(), `mandible-manifest-${Date.now()}.json`);
     fs.writeFileSync(manifest, JSON.stringify([
-      { issue: "abc", digest: "digest-before" },
+      { issue: "abc", digest: "digest-before", subtree_digest: "subtree-abc-before" },
       { issue: "def", digest: "digest-stale" },
       { issue: "missing", digest: "digest-missing" },
     ]), "utf8");
@@ -1079,6 +1088,51 @@ describe("issue CLI body revisions", () => {
     expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
     expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
     expect(body.missing.map((entry: { issue: string }) => entry.issue)).toEqual(["missing"]);
+  });
+
+  it("classifies subtree_changed and unknown entries in issue changed", async () => {
+    const port = await listen();
+    // ghi: own head stable, subtree digest drifted -> subtree_changed.
+    (issueHeads as Record<string, unknown>).ghi = {
+      issue_id: "issue-3",
+      short_id: "ghi",
+      digest: "digest-ghi-stable",
+      subtree_digest: "subtree-ghi-current",
+      last_event_at: 1_700_000_000_000,
+      last_event_kind: "issue.created",
+      subtree_last_event_at: 1_700_000_050_000,
+      subtree_last_event_kind: "comment.created",
+    };
+    const manifest = path.join(os.tmpdir(), `mandible-manifest-subtree-${Date.now()}.json`);
+    fs.writeFileSync(manifest, JSON.stringify([
+      // own + subtree both match current -> unchanged
+      { issue: "abc", digest: "digest-before", subtree_digest: "subtree-abc-before" },
+      // own drifted -> changed
+      { issue: "def", digest: "digest-stale", subtree_digest: "subtree-def-current" },
+      // own stable, subtree drifted -> subtree_changed
+      { issue: "ghi", digest: "digest-ghi-stable", subtree_digest: "subtree-ghi-stale" },
+      // no baseline subtree digest, own stable -> unknown (never silently unchanged)
+      { issue: "abc", digest: "digest-before" },
+    ]), "utf8");
+    tempRoots.push(manifest);
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-manifest",
+      manifest,
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual(["ghi"]);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.subtree_changed[0].expected_subtree_digest).toBe("subtree-ghi-stale");
+    expect(body.subtree_changed[0].current_subtree_digest).toBe("subtree-ghi-current");
+    expect(body.unknown[0].subtree_state).toBe("unknown");
   });
 
   it("compares issue heads against the latest checkpoint on an issue", async () => {
@@ -1107,8 +1161,11 @@ describe("issue CLI body revisions", () => {
       issue_id: "issue-1",
       short_id: "abc",
       digest: "digest-after-umbrella-comment",
+      subtree_digest: "subtree-abc-after",
       last_event_at: 1_700_000_030_000,
       last_event_kind: "comment.created",
+      subtree_last_event_at: 1_700_000_030_000,
+      subtree_last_event_kind: "comment.created",
     };
     issueCheckpoints.abc = [
       {
@@ -1116,7 +1173,7 @@ describe("issue CLI body revisions", () => {
         issue_id: "issue-1",
         kind: "delegation-manifest",
         payload: [
-          { issue: "def", digest: "digest-current" },
+          { issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" },
         ],
         author: { id: null, type: "mandible_user", display: "Mandible" },
         source: "mandible",
@@ -1139,14 +1196,201 @@ describe("issue CLI body revisions", () => {
     expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
   });
 
+  it("classifies the umbrella self-entry as unknown for a pre-upgrade checkpoint", async () => {
+    const port = await listen();
+    // Pre-upgrade checkpoint: no stored self-baseline entry (`self: true`). The
+    // /head?at reconstruction still returns a subtree_digest (the head endpoint
+    // always computes one now), but the synthesized self-entry must ignore it
+    // and take a null subtree baseline so it classifies "unknown" rather than
+    // "subtree_changed" or "unchanged".
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-legacy",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        // abc (the umbrella) is not in the payload, so it is synthesized as the
+        // self-entry. def has an own digest but no subtree_digest.
+        payload: [{ issue: "def", digest: "digest-current" }],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Own digest of abc is stable against the checkpoint-time reconstruction
+    // (both "digest-before"), but its subtree digest has drifted. With a null
+    // baseline this is "unknown"; a non-null reconstructed baseline would wrongly
+    // read as "subtree_changed".
+    (issueHeads as Record<string, unknown>).abc = {
+      issue_id: "issue-1",
+      short_id: "abc",
+      digest: "digest-before",
+      subtree_digest: "subtree-abc-drifted",
+      last_event_at: 1_700_000_020_000,
+      last_event_kind: "issue.checkpoint.created",
+      subtree_last_event_at: 1_700_000_060_000,
+      subtree_last_event_kind: "comment.created",
+    };
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(requestedPaths).toContain("/api/ledger/issues/abc/head?at=1700000020000");
+    const body = JSON.parse(result.stdout);
+    // Both the self-entry (abc) and def lack a subtree baseline -> unknown.
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue).sort()).toEqual(["abc", "def"]);
+    // The self-entry must NOT be reported as subtree_changed despite the drift.
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
+  it("keeps the self-entry unknown when a legacy checkpoint has child subtree digests but no self marker", async () => {
+    const port = await listen();
+    // A checkpoint whose child entries carry subtree digests but which lacks
+    // the stored self-baseline entry must still classify the umbrella self-entry
+    // as unknown. Detection is the explicit `self: true` marker, not an
+    // inference from whether other entries carry subtree digests -- this test
+    // fails against the "any entry has a subtree_digest" heuristic, which would
+    // adopt the /head?at reconstruction as the subtree baseline and classify
+    // the stable umbrella "unchanged".
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-no-marker",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        payload: [{ issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" }],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Defaults: abc's current head equals the checkpoint-time reconstruction
+    // (digest-before / subtree-abc-before), i.e. fully stable.
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
+  it("classifies a stable self-entry as unchanged for a post-upgrade zero-child checkpoint", async () => {
+    const port = await listen();
+    // Post-upgrade zero-child checkpoint: the payload contains only the stored
+    // self-baseline entry. The umbrella is stable against it, so it classifies
+    // "unchanged" -- an empty child list must not be misdetected as a
+    // pre-upgrade checkpoint (which would classify "unknown").
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-zero-child",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        payload: [
+          {
+            issue_id: "issue-1",
+            short_id: "abc",
+            digest: "digest-before",
+            subtree_digest: "subtree-abc-before",
+            self: true,
+          },
+        ],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Defaults: abc's current head is digest-before / subtree-abc-before, so
+    // both digests are stable against the stored baseline.
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
+  it("compares the stored self baseline directly for a post-upgrade checkpoint", async () => {
+    const port = await listen();
+    // Normal post-upgrade checkpoint: self-baseline entry plus a child entry.
+    // The self-entry's stored subtree baseline differs from the current subtree
+    // digest while its own digest is stable -> subtree_changed, proving the
+    // stored baseline (not a /head?at reconstruction) drives classification.
+    issueCheckpoints.abc = [
+      {
+        id: "checkpoint-post-upgrade",
+        issue_id: "issue-1",
+        kind: "delegation-manifest",
+        payload: [
+          {
+            issue_id: "issue-1",
+            short_id: "abc",
+            digest: "digest-before",
+            subtree_digest: "subtree-abc-at-checkpoint",
+            self: true,
+          },
+          { issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" },
+        ],
+        author: { id: null, type: "mandible_user", display: "Mandible" },
+        source: "mandible",
+        created_at: 1_700_000_020_000,
+      },
+    ];
+    // Defaults: abc's current head is digest-before / subtree-abc-before. Own
+    // digest matches the stored baseline; the subtree digest drifted from
+    // "subtree-abc-at-checkpoint".
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-issue",
+      "abc",
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.subtree_changed[0].expected_subtree_digest).toBe("subtree-abc-at-checkpoint");
+    expect(body.subtree_changed[0].current_subtree_digest).toBe("subtree-abc-before");
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual([]);
+  });
+
   it("can pin a non-latest checkpoint as the changed-since baseline", async () => {
     const port = await listen();
     issueHeads.abc = {
       issue_id: "issue-1",
       short_id: "abc",
       digest: "digest-after-newer-parent",
+      subtree_digest: "subtree-abc-after-newer-parent",
       last_event_at: 1_700_000_040_000,
       last_event_kind: "comment.created",
+      subtree_last_event_at: 1_700_000_040_000,
+      subtree_last_event_kind: "comment.created",
     };
     issueHeadsAt.abc = {
       ...issueHeadsAt.abc,
@@ -1154,15 +1398,21 @@ describe("issue CLI body revisions", () => {
         issue_id: "issue-1",
         short_id: "abc",
         digest: "digest-old-parent-baseline",
+        subtree_digest: "subtree-abc-old-baseline",
         last_event_at: 1_700_000_010_000,
         last_event_kind: "issue.checkpoint.created",
+        subtree_last_event_at: 1_700_000_010_000,
+        subtree_last_event_kind: "issue.checkpoint.created",
       },
       "1700000030000": {
         issue_id: "issue-1",
         short_id: "abc",
         digest: "digest-new-parent-baseline",
+        subtree_digest: "subtree-abc-new-baseline",
         last_event_at: 1_700_000_030_000,
         last_event_kind: "issue.checkpoint.created",
+        subtree_last_event_at: 1_700_000_030_000,
+        subtree_last_event_kind: "issue.checkpoint.created",
       },
     };
     issueCheckpoints.abc = [
@@ -1170,7 +1420,7 @@ describe("issue CLI body revisions", () => {
         id: "checkpoint-new",
         issue_id: "issue-1",
         kind: "delegation-manifest",
-        payload: [{ issue: "def", digest: "digest-current" }],
+        payload: [{ issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" }],
         author: { id: null, type: "mandible_user", display: "Mandible" },
         source: "mandible",
         created_at: 1_700_000_030_000,
@@ -1179,7 +1429,7 @@ describe("issue CLI body revisions", () => {
         id: "checkpoint-old",
         issue_id: "issue-1",
         kind: "delegation-manifest",
-        payload: [{ issue: "def", digest: "digest-current" }],
+        payload: [{ issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" }],
         author: { id: null, type: "mandible_user", display: "Mandible" },
         source: "mandible",
         created_at: 1_700_000_010_000,

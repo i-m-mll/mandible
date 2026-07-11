@@ -566,7 +566,18 @@ function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection):
 }
 
 function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[]): Record<string, unknown> {
-  const payload = childIds.map((childId) => getLedgerIssueHead(db, childId));
+  // The first payload entry is the umbrella's own head, marked `self: true`.
+  // It is an explicit stored baseline for the umbrella itself, not a child
+  // entry: `mandible issue changed --since-issue` compares it directly and its
+  // presence is the trusted marker that the checkpoint post-dates subtree
+  // digests. Legacy checkpoints without a self entry get an "unknown" subtree
+  // classification for the umbrella (never a silently reconstructed baseline),
+  // including the previously ambiguous zero-child case where an empty payload
+  // is indistinguishable from a pre-upgrade one.
+  const payload: Array<Record<string, unknown>> = [
+    { ...getLedgerIssueHead(db, umbrellaId), self: true },
+    ...childIds.map((childId) => ({ ...getLedgerIssueHead(db, childId) })),
+  ];
   const checkpoint = new LedgerStore(db).addIssueCheckpoint(umbrellaId, {
     kind: "delegation-manifest",
     payload,
@@ -637,22 +648,114 @@ function parseJsonObject(value: unknown): Record<string, unknown> {
   }
 }
 
-function batchLedgerIssueHeads(db: Db, issueIds: string[]): Map<string, ReturnType<typeof getLedgerIssueHead>> {
+interface BatchHeadEventRow {
+  id: string;
+  event_type: string;
+  entity_type: string;
+  entity_id: string;
+  payload_json: string;
+  occurred_at: number;
+  observed_at: number;
+}
+
+function compareBatchHeadEvents(a: BatchHeadEventRow, b: BatchHeadEventRow): number {
+  // Tie-break on `id` by comparing UTF-8 bytes to match SQLite's default
+  // BINARY collation (a memcmp over the stored UTF-8 encoding) used by the
+  // single path's `ORDER BY occurred_at, observed_at, id`. Neither JS string
+  // comparison matches it in general: `localeCompare` is locale/case-aware,
+  // and `<` compares UTF-16 code units, which diverge from UTF-8 byte order
+  // across the surrogate range (e.g. U+E000 = UTF-8 `EE 80 80` sorts before
+  // U+10000 = UTF-8 `F0 90 80 80` in SQLite, but after it in UTF-16 because
+  // its code unit E000 > the D800 high surrogate). Batch digests must be
+  // byte-identical to the single path AND to pre-upgrade stored `digest`
+  // values, so only a byte comparison is correct.
+  return a.occurred_at - b.occurred_at
+    || a.observed_at - b.observed_at
+    || Buffer.compare(Buffer.from(a.id, "utf8"), Buffer.from(b.id, "utf8"));
+}
+
+function digestBatchHeadEvents(events: BatchHeadEventRow[]): {
+  digest: string;
+  last: BatchHeadEventRow | undefined;
+} {
+  const digest = createHash("sha256")
+    .update(JSON.stringify(events))
+    .digest("hex");
+  return { digest, last: events.at(-1) };
+}
+
+export function batchLedgerIssueHeads(db: Db, issueIds: string[]): Map<string, ReturnType<typeof getLedgerIssueHead>> {
   if (issueIds.length === 0) return new Map();
   const { sql, bindings } = placeholders(issueIds, "issue");
   const issues = db.prepare(
     `SELECT id, short_id FROM ledger_issues WHERE id IN (${sql}) AND deleted_at IS NULL`,
   ).all(bindings) as Array<{ id: string; short_id: string }>;
-  const rowsByIssue = new Map<string, Array<Record<string, unknown>>>();
-  for (const issue of issues) rowsByIssue.set(issue.id, []);
+
+  // One recursive closure query for every requested root at once: map each root
+  // to its transitive parent_child descendant set (including itself), following
+  // both the structured edge graph and the legacy relationship table. `UNION`
+  // makes the traversal cycle-safe and each (root, descendant) pair unique.
+  const descendantsByRoot = new Map<string, string[]>();
+  const allIds = new Set<string>(issueIds);
+  const closureRows = db.prepare(
+    `WITH RECURSIVE subtree(root_id, issue_id) AS (
+       SELECT id, id FROM ledger_issues WHERE id IN (${sql})
+       UNION
+       SELECT s.root_id, edges.child_id
+         FROM (
+           SELECT source_issue_id AS parent_id, target_issue_id AS child_id
+             FROM ledger_relationship_edges
+            WHERE link_type = 'parent_child'
+              AND target_entity_type = 'issue'
+              AND deleted_at IS NULL
+              AND target_issue_id IS NOT NULL
+           UNION ALL
+           SELECT source_issue_id AS parent_id, target_issue_id AS child_id
+             FROM ledger_issue_relationships
+            WHERE relationship_type = 'parent_child'
+              AND deleted_at IS NULL
+         ) edges
+         JOIN subtree s ON edges.parent_id = s.issue_id
+     )
+     SELECT root_id, issue_id FROM subtree`,
+  ).all(bindings) as Array<{ root_id: string; issue_id: string }>;
+  for (const row of closureRows) {
+    const group = descendantsByRoot.get(row.root_id) ?? [];
+    group.push(row.issue_id);
+    descendantsByRoot.set(row.root_id, group);
+    allIds.add(row.issue_id);
+  }
+
+  // Fetch head-relevant events once for the union of every subtree, keyed by the
+  // issue that owns each event. Relationship events are attached to both
+  // endpoints, so they can appear under two issue keys; the subtree assembly
+  // below de-duplicates by event id.
+  const allIdList = Array.from(allIds);
+  const { sql: allSql, bindings: allBindings } = placeholders(allIdList, "sub");
+  const rowsByIssue = new Map<string, BatchHeadEventRow[]>();
+  const seenByIssue = new Map<string, Set<string>>();
+  for (const id of allIdList) {
+    rowsByIssue.set(id, []);
+    seenByIssue.set(id, new Set<string>());
+  }
 
   const appendRows = (rows: Array<Record<string, unknown>>): void => {
     for (const row of rows) {
       const issueId = String(row.issue_id ?? "");
       const group = rowsByIssue.get(issueId);
-      if (!group) continue;
+      const seen = seenByIssue.get(issueId);
+      if (!group || !seen) continue;
+      // De-duplicate by (issue_id, event_id). Relationship events are attached
+      // to both endpoints via UNION ALL, so a self-referential parent_child link
+      // (source_issue_id === target_issue_id) yields the same event id twice
+      // under the SAME issue key. The single path counts such an event once, so
+      // the batch own-head assembly must not double-count it. A non-self link
+      // legitimately appears under two DIFFERENT issue keys and is preserved.
+      const eventId = String(row.id ?? "");
+      if (seen.has(eventId)) continue;
+      seen.add(eventId);
       group.push({
-        id: String(row.id ?? ""),
+        id: eventId,
         event_type: String(row.event_type ?? ""),
         entity_type: String(row.entity_type ?? ""),
         entity_id: String(row.entity_id ?? ""),
@@ -666,60 +769,70 @@ function batchLedgerIssueHeads(db: Db, issueIds: string[]): Map<string, ReturnTy
   appendRows(db.prepare(
     `SELECT entity_id AS issue_id, id, event_type, entity_type, entity_id, payload_json, occurred_at, observed_at
        FROM ledger_events
-      WHERE entity_type = 'issue' AND entity_id IN (${sql})`,
-  ).all(bindings) as Array<Record<string, unknown>>);
+      WHERE entity_type = 'issue' AND entity_id IN (${allSql})`,
+  ).all(allBindings) as Array<Record<string, unknown>>);
   appendRows(db.prepare(
     `SELECT c.issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
        JOIN ledger_comments c ON c.id = e.entity_id
-      WHERE e.entity_type = 'comment' AND c.deleted_at IS NULL AND c.issue_id IN (${sql})`,
-  ).all(bindings) as Array<Record<string, unknown>>);
+      WHERE e.entity_type = 'comment' AND c.deleted_at IS NULL AND c.issue_id IN (${allSql})`,
+  ).all(allBindings) as Array<Record<string, unknown>>);
   appendRows(db.prepare(
     `SELECT c.issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
        JOIN ledger_issue_checkpoints c ON c.id = e.entity_id
-      WHERE e.entity_type = 'issue_checkpoint' AND c.issue_id IN (${sql})`,
-  ).all(bindings) as Array<Record<string, unknown>>);
+      WHERE e.entity_type = 'issue_checkpoint' AND c.issue_id IN (${allSql})`,
+  ).all(allBindings) as Array<Record<string, unknown>>);
   appendRows(db.prepare(
     `SELECT r.source_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
        JOIN ledger_issue_relationships r ON r.id = e.entity_id
-      WHERE e.entity_type = 'issue_relationship' AND r.source_issue_id IN (${sql})
+      WHERE e.entity_type = 'issue_relationship' AND r.source_issue_id IN (${allSql})
      UNION ALL
      SELECT r.target_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
        JOIN ledger_issue_relationships r ON r.id = e.entity_id
-      WHERE e.entity_type = 'issue_relationship' AND r.target_issue_id IN (${sql})`,
-  ).all(bindings) as Array<Record<string, unknown>>);
+      WHERE e.entity_type = 'issue_relationship' AND r.target_issue_id IN (${allSql})`,
+  ).all(allBindings) as Array<Record<string, unknown>>);
   appendRows(db.prepare(
     `SELECT r.source_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
        JOIN ledger_relationship_edges r ON r.id = e.entity_id
-      WHERE e.entity_type = 'relationship_edge' AND r.source_issue_id IN (${sql})
+      WHERE e.entity_type = 'relationship_edge' AND r.source_issue_id IN (${allSql})
      UNION ALL
      SELECT r.target_issue_id AS issue_id, e.id, e.event_type, e.entity_type, e.entity_id, e.payload_json, e.occurred_at, e.observed_at
        FROM ledger_events e
        JOIN ledger_relationship_edges r ON r.id = e.entity_id
-      WHERE e.entity_type = 'relationship_edge' AND r.target_issue_id IN (${sql})`,
-  ).all(bindings) as Array<Record<string, unknown>>);
+      WHERE e.entity_type = 'relationship_edge' AND r.target_issue_id IN (${allSql})`,
+  ).all(allBindings) as Array<Record<string, unknown>>);
 
   const heads = new Map<string, ReturnType<typeof getLedgerIssueHead>>();
   for (const issue of issues) {
-    const events = (rowsByIssue.get(issue.id) ?? []).sort((a, b) =>
-      Number(a.occurred_at) - Number(b.occurred_at)
-      || Number(a.observed_at) - Number(b.observed_at)
-      || String(a.id).localeCompare(String(b.id))
-    );
-    const digest = createHash("sha256")
-      .update(JSON.stringify(events))
-      .digest("hex");
-    const latest = events.at(-1);
+    const ownEvents = (rowsByIssue.get(issue.id) ?? []).slice().sort(compareBatchHeadEvents);
+    const own = digestBatchHeadEvents(ownEvents);
+
+    const descendantIds = descendantsByRoot.get(issue.id) ?? [issue.id];
+    const seen = new Set<string>();
+    const subtreeEvents: BatchHeadEventRow[] = [];
+    for (const descendantId of descendantIds) {
+      for (const event of rowsByIssue.get(descendantId) ?? []) {
+        if (seen.has(event.id)) continue;
+        seen.add(event.id);
+        subtreeEvents.push(event);
+      }
+    }
+    subtreeEvents.sort(compareBatchHeadEvents);
+    const subtree = digestBatchHeadEvents(subtreeEvents);
+
     heads.set(issue.id, {
       issue_id: issue.id,
       short_id: issue.short_id || issue.id.slice(0, 7),
-      digest,
-      last_event_at: latest ? Number(latest.occurred_at) : null,
-      last_event_kind: latest ? String(latest.event_type) : null,
+      digest: own.digest,
+      subtree_digest: subtree.digest,
+      last_event_at: own.last ? own.last.occurred_at : null,
+      last_event_kind: own.last ? own.last.event_type : null,
+      subtree_last_event_at: subtree.last ? subtree.last.occurred_at : null,
+      subtree_last_event_kind: subtree.last ? subtree.last.event_type : null,
     });
   }
   return heads;
@@ -858,6 +971,38 @@ function authRequestsByIssue(db: Db, issueIds: string[]): Map<string, unknown[]>
   return grouped;
 }
 
+/**
+ * Count each issue's direct parent_child children (structured edges plus legacy
+ * relationships), de-duplicating a child that is linked through both surfaces so
+ * it is counted once. Batched: one query per relationship surface for the whole
+ * id set.
+ */
+function directChildCountsByIssue(db: Db, issueIds: string[]): Map<string, number> {
+  if (issueIds.length === 0) return new Map();
+  const { sql, bindings } = placeholders(issueIds, "issue");
+  const rows = db.prepare(
+    `SELECT source_issue_id, target_issue_id
+       FROM ledger_relationship_edges
+      WHERE link_type = 'parent_child'
+        AND target_entity_type = 'issue'
+        AND deleted_at IS NULL
+        AND target_issue_id IS NOT NULL
+        AND source_issue_id IN (${sql})
+     UNION
+     SELECT source_issue_id, target_issue_id
+       FROM ledger_issue_relationships
+      WHERE relationship_type = 'parent_child'
+        AND deleted_at IS NULL
+        AND source_issue_id IN (${sql})`,
+  ).all(bindings) as Array<{ source_issue_id: string; target_issue_id: string }>;
+  const counts = new Map<string, number>();
+  for (const id of issueIds) counts.set(id, 0);
+  for (const row of rows) {
+    counts.set(row.source_issue_id, (counts.get(row.source_issue_id) ?? 0) + 1);
+  }
+  return counts;
+}
+
 function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<string, unknown>> {
   if (childIds.length === 0) return [];
   const { sql, bindings } = placeholders(childIds, "issue");
@@ -879,18 +1024,22 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
   const authRequests = authRequestsByIssue(db, childIds);
   const latestComments = latestCommentsByIssue(db, childIds);
   const closeouts = latestCloseoutsByIssue(db, childIds);
+  const childCounts = directChildCountsByIssue(db, childIds);
   const summaries: Array<Record<string, unknown>> = [];
   for (const childId of childIds) {
     const row = byId.get(childId);
     if (!row) continue;
     const issueBranches = branches.get(childId) ?? [];
+    const childLabels = labels.get(childId) ?? [];
     summaries.push({
       id: row.id,
       short_id: row.short_id || row.id.slice(0, 7),
       title: row.title,
       status: row.status,
       worker_status: row.worker_status,
-      labels: labels.get(childId) ?? [],
+      labels: childLabels,
+      kind: kindFromLabels(childLabels),
+      child_count: childCounts.get(childId) ?? 0,
       head: heads.get(childId) ?? getLedgerIssueHead(db, childId),
       issue_branches: issueBranches,
       branches: issueBranches,
@@ -902,9 +1051,10 @@ function buildUmbrellaChildSummaries(db: Db, childIds: string[]): Array<Record<s
   return summaries;
 }
 
-function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean } = {}): Record<string, unknown> {
+export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean } = {}): Record<string, unknown> {
   const umbrella = buildLedgerIssueDetailProjection(db, issueId);
   const childIds = listUmbrellaChildEdgeIds(db, umbrella.id);
+  const deepChildCounts = options.deep ? directChildCountsByIssue(db, childIds) : new Map<string, number>();
   const children = options.deep ? childIds.map((childId) => {
     const child = buildLedgerIssueDetailProjection(db, childId);
     const summary: Record<string, unknown> = {
@@ -914,6 +1064,8 @@ function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: boolean 
       status: child.status,
       worker_status: child.worker_status,
       labels: child.labels,
+      kind: child.kind,
+      child_count: deepChildCounts.get(childId) ?? 0,
       head: getLedgerIssueHead(db, child.id),
       issue_branches: child.issue_branches,
       branches: child.issue_branches,
