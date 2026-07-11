@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 3,
+  "version": 4,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -12,7 +12,7 @@
     },
     {
       "name": "mandible umbrella status <id> [--deep] [--json]",
-      "description": "Print one deterministic coordinator fact packet: umbrella body/revision/head, latest delegation manifest, child summaries, parent-role holder state, and repo auth queue summary. --deep includes child bodies, latest closeouts/comments, branch/auth links, and issue state for parent resumption."
+      "description": "Print one deterministic coordinator fact packet: umbrella body/revision/head, latest delegation manifest, child summaries, parent-role holder state, and repo auth queue summary. Every head object carries both its own digest and an additive subtree_digest covering all transitive parent_child descendants. Child summaries include kind and child_count (direct parent_child children) so nested sub-umbrellas are visible without drilling in. --deep includes child bodies, latest closeouts/comments, branch/auth links, and issue state for parent resumption."
     },
     {
       "name": "mandible umbrella adopt <umbrella> <children...> [--json]",
@@ -32,15 +32,15 @@
     },
     {
       "name": "mandible issue heads <id>... [--json]",
-      "description": "Print issue state digests for delegation manifests and resume checks."
+      "description": "Print issue state digests for delegation manifests and resume checks. Each head carries its own digest plus an additive subtree_digest over the issue and all transitive parent_child descendants (cycle-safe, each descendant once), so drift two or more levels down a nested umbrella is detectable."
     },
     {
       "name": "mandible issue changed --since-manifest <file> [--json]",
-      "description": "Compare current issue digests with a legacy saved delegation manifest file."
+      "description": "Compare current issue digests with a legacy saved delegation manifest file. Classifies each entry as changed (own digest drifted), subtree_changed (own stable, subtree digest drifted), unchanged, or unknown (manifest predates subtree digests, so subtree drift is indeterminate)."
     },
     {
       "name": "mandible issue changed --since-issue <umbrella> [--kind delegation-manifest] [--checkpoint <id>] [--json]",
-      "description": "Compare current issue digests and the umbrella's own head with a structured checkpoint on an umbrella issue; omit --checkpoint to use the latest checkpoint."
+      "description": "Compare current issue digests and the umbrella's own head with a structured checkpoint on an umbrella issue; omit --checkpoint to use the latest checkpoint. Classifies each entry as changed, subtree_changed, unchanged, or unknown; unknown means the manifest entry has no baseline subtree digest and never silently reports unchanged."
     },
     {
       "name": "mandible issue checkpoint add <issue-ref> --kind <kind> [--payload <json-or-> | --payload-file <file-or->]",
@@ -203,8 +203,8 @@
   "coordination": [
     "The umbrella issue is the coordinator; sessions are disposable role holders.",
     "Umbrella bodies use a canonical Children table with columns issue, scope, branch, and state; `mandible umbrella reconcile` may derive children from that table only, not from arbitrary issue refs elsewhere in the body.",
-    "Delegation manifests are stored as `delegation-manifest` checkpoints; refresh digests with `mandible umbrella manifest refresh <umbrella>` before resuming.",
-    "`mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.",
+    "Delegation manifests are stored as `delegation-manifest` checkpoints and record both `digest` (the entry's own head) and `subtree_digest` (the entry plus all transitive parent_child descendants) per entry; refresh digests with `mandible umbrella manifest refresh <umbrella>` before resuming.",
+    "`mandible issue changed --since-issue` compares the umbrella's own issue head as well as child manifest entries, classifying each as changed, subtree_changed, unchanged, or unknown. `subtree_changed` flags work that landed on a nested sub-umbrella's descendants even when the direct child's own head is unchanged; `unknown` marks entries from manifests recorded before subtree digests existed. Parent sessions that need their own baseline should pass `--checkpoint <id>` instead of relying on the latest shared checkpoint.",
     "Worker closeout records `worker_status`, branch/auth pointers, blockers, and recommended next action in the child issue.",
     "Mutating work-unit requests may carry allowlisted ambient provider identity as `{provider, provider_session_id}`; Mandible persists only those fields on work units and never stores the caller environment.",
     "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues. Resolved work units with `provider=codex` and a provider session id can archive directly without `console_sessions`; legacy console-session links still work. Live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",

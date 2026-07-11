@@ -190,15 +190,21 @@ function listen(): Promise<number> {
       issue_id: "issue-1",
       short_id: "abc",
       digest: "digest-before",
+      subtree_digest: "subtree-abc-before",
       last_event_at: 1_700_000_000_000,
       last_event_kind: "issue.created",
+      subtree_last_event_at: 1_700_000_000_000,
+      subtree_last_event_kind: "issue.created",
     },
     def: {
       issue_id: "issue-2",
       short_id: "def",
       digest: "digest-current",
+      subtree_digest: "subtree-def-current",
       last_event_at: 1_700_000_010_000,
       last_event_kind: "comment.created",
+      subtree_last_event_at: 1_700_000_010_000,
+      subtree_last_event_kind: "comment.created",
     },
   };
   issueHeadsAt = {
@@ -207,8 +213,11 @@ function listen(): Promise<number> {
         issue_id: "issue-1",
         short_id: "abc",
         digest: "digest-before",
+        subtree_digest: "subtree-abc-before",
         last_event_at: 1_700_000_020_000,
         last_event_kind: "issue.checkpoint.created",
+        subtree_last_event_at: 1_700_000_020_000,
+        subtree_last_event_kind: "issue.checkpoint.created",
       },
     },
   };
@@ -219,7 +228,7 @@ function listen(): Promise<number> {
         issue_id: "issue-1",
         kind: "delegation-manifest",
         payload: [
-          { issue: "abc", digest: "digest-before" },
+          { issue: "abc", digest: "digest-before", subtree_digest: "subtree-abc-before" },
           { issue: "def", digest: "digest-stale" },
           { issue: "missing", digest: "digest-missing" },
         ],
@@ -1060,7 +1069,7 @@ describe("issue CLI body revisions", () => {
     const port = await listen();
     const manifest = path.join(os.tmpdir(), `mandible-manifest-${Date.now()}.json`);
     fs.writeFileSync(manifest, JSON.stringify([
-      { issue: "abc", digest: "digest-before" },
+      { issue: "abc", digest: "digest-before", subtree_digest: "subtree-abc-before" },
       { issue: "def", digest: "digest-stale" },
       { issue: "missing", digest: "digest-missing" },
     ]), "utf8");
@@ -1079,6 +1088,51 @@ describe("issue CLI body revisions", () => {
     expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
     expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
     expect(body.missing.map((entry: { issue: string }) => entry.issue)).toEqual(["missing"]);
+  });
+
+  it("classifies subtree_changed and unknown entries in issue changed", async () => {
+    const port = await listen();
+    // ghi: own head stable, subtree digest drifted -> subtree_changed.
+    (issueHeads as Record<string, unknown>).ghi = {
+      issue_id: "issue-3",
+      short_id: "ghi",
+      digest: "digest-ghi-stable",
+      subtree_digest: "subtree-ghi-current",
+      last_event_at: 1_700_000_000_000,
+      last_event_kind: "issue.created",
+      subtree_last_event_at: 1_700_000_050_000,
+      subtree_last_event_kind: "comment.created",
+    };
+    const manifest = path.join(os.tmpdir(), `mandible-manifest-subtree-${Date.now()}.json`);
+    fs.writeFileSync(manifest, JSON.stringify([
+      // own + subtree both match current -> unchanged
+      { issue: "abc", digest: "digest-before", subtree_digest: "subtree-abc-before" },
+      // own drifted -> changed
+      { issue: "def", digest: "digest-stale", subtree_digest: "subtree-def-current" },
+      // own stable, subtree drifted -> subtree_changed
+      { issue: "ghi", digest: "digest-ghi-stable", subtree_digest: "subtree-ghi-stale" },
+      // no baseline subtree digest, own stable -> unknown (never silently unchanged)
+      { issue: "abc", digest: "digest-before" },
+    ]), "utf8");
+    tempRoots.push(manifest);
+
+    const result = await run([
+      "issue",
+      "changed",
+      "--since-manifest",
+      manifest,
+      "--json",
+    ], port);
+
+    expect(result.status).toBe(0);
+    const body = JSON.parse(result.stdout);
+    expect(body.unchanged.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.changed.map((entry: { issue: string }) => entry.issue)).toEqual(["def"]);
+    expect(body.subtree_changed.map((entry: { issue: string }) => entry.issue)).toEqual(["ghi"]);
+    expect(body.unknown.map((entry: { issue: string }) => entry.issue)).toEqual(["abc"]);
+    expect(body.subtree_changed[0].expected_subtree_digest).toBe("subtree-ghi-stale");
+    expect(body.subtree_changed[0].current_subtree_digest).toBe("subtree-ghi-current");
+    expect(body.unknown[0].subtree_state).toBe("unknown");
   });
 
   it("compares issue heads against the latest checkpoint on an issue", async () => {
@@ -1107,8 +1161,11 @@ describe("issue CLI body revisions", () => {
       issue_id: "issue-1",
       short_id: "abc",
       digest: "digest-after-umbrella-comment",
+      subtree_digest: "subtree-abc-after",
       last_event_at: 1_700_000_030_000,
       last_event_kind: "comment.created",
+      subtree_last_event_at: 1_700_000_030_000,
+      subtree_last_event_kind: "comment.created",
     };
     issueCheckpoints.abc = [
       {
@@ -1116,7 +1173,7 @@ describe("issue CLI body revisions", () => {
         issue_id: "issue-1",
         kind: "delegation-manifest",
         payload: [
-          { issue: "def", digest: "digest-current" },
+          { issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" },
         ],
         author: { id: null, type: "mandible_user", display: "Mandible" },
         source: "mandible",
@@ -1145,8 +1202,11 @@ describe("issue CLI body revisions", () => {
       issue_id: "issue-1",
       short_id: "abc",
       digest: "digest-after-newer-parent",
+      subtree_digest: "subtree-abc-after-newer-parent",
       last_event_at: 1_700_000_040_000,
       last_event_kind: "comment.created",
+      subtree_last_event_at: 1_700_000_040_000,
+      subtree_last_event_kind: "comment.created",
     };
     issueHeadsAt.abc = {
       ...issueHeadsAt.abc,
@@ -1154,15 +1214,21 @@ describe("issue CLI body revisions", () => {
         issue_id: "issue-1",
         short_id: "abc",
         digest: "digest-old-parent-baseline",
+        subtree_digest: "subtree-abc-old-baseline",
         last_event_at: 1_700_000_010_000,
         last_event_kind: "issue.checkpoint.created",
+        subtree_last_event_at: 1_700_000_010_000,
+        subtree_last_event_kind: "issue.checkpoint.created",
       },
       "1700000030000": {
         issue_id: "issue-1",
         short_id: "abc",
         digest: "digest-new-parent-baseline",
+        subtree_digest: "subtree-abc-new-baseline",
         last_event_at: 1_700_000_030_000,
         last_event_kind: "issue.checkpoint.created",
+        subtree_last_event_at: 1_700_000_030_000,
+        subtree_last_event_kind: "issue.checkpoint.created",
       },
     };
     issueCheckpoints.abc = [
@@ -1170,7 +1236,7 @@ describe("issue CLI body revisions", () => {
         id: "checkpoint-new",
         issue_id: "issue-1",
         kind: "delegation-manifest",
-        payload: [{ issue: "def", digest: "digest-current" }],
+        payload: [{ issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" }],
         author: { id: null, type: "mandible_user", display: "Mandible" },
         source: "mandible",
         created_at: 1_700_000_030_000,
@@ -1179,7 +1245,7 @@ describe("issue CLI body revisions", () => {
         id: "checkpoint-old",
         issue_id: "issue-1",
         kind: "delegation-manifest",
-        payload: [{ issue: "def", digest: "digest-current" }],
+        payload: [{ issue: "def", digest: "digest-current", subtree_digest: "subtree-def-current" }],
         author: { id: null, type: "mandible_user", display: "Mandible" },
         source: "mandible",
         created_at: 1_700_000_010_000,
