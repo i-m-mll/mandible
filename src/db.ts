@@ -2850,6 +2850,16 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_session_instruction_artifacts_version
         ON session_instruction_artifacts(artifact_version_id)`
     ]
+  },
+  {
+    version: 103,
+    name: "conversation_empty_ingest_state",
+    // Issue: 861c26c — remember source fingerprints that parsed empty so
+    // reconcile and watcher paths do not repeatedly parse unchanged files.
+    statements: [
+      "ALTER TABLE conversation_ingest_state ADD COLUMN empty_source_mtime REAL",
+      "ALTER TABLE conversation_ingest_state ADD COLUMN empty_source_size INTEGER"
+    ]
   }
 ];
 
