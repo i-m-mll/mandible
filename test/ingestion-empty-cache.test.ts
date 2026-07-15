@@ -64,6 +64,29 @@ afterEach(() => {
 });
 
 describe("empty conversation ingest state", () => {
+  it("repairs legacy orphan ownership once without recurring block-index sweeps", async () => {
+    const insertOrphan = db.prepare(`
+      INSERT INTO conversations (
+        id, source, source_path, source_hash, source_mtime,
+        title, started_at, block_count, session_id
+      ) VALUES (?, 'codex', ?, '', 0, 'legacy orphan', datetime('now'), 1, ?)
+    `);
+    insertOrphan.run("legacy-orphan-1", "/outside/watch/orphan-1.jsonl", "legacy-orphan-1");
+
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get("legacy-orphan-1"))
+      .toBeUndefined();
+    expect(db.prepare("SELECT value FROM meta WHERE key = ?").get("ingestion_orphan_repair_v1"))
+      .toBeDefined();
+
+    insertOrphan.run("legacy-orphan-2", "/outside/watch/orphan-2.jsonl", "legacy-orphan-2");
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(db.prepare("SELECT id FROM conversations WHERE id = ?").get("legacy-orphan-2"))
+      .toBeDefined();
+  });
+
   it("does not re-parse an unchanged empty source during reconcile", async () => {
     await writeAtTick(sessionMeta(), 1);
     const events: string[] = [];

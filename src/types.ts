@@ -42,6 +42,9 @@ export interface HealthResponse {
   // compatibility with older daemons and test servers that do not wire a
   // process-lifetime collector.
   memory?: import("./daemon-memory.js").DaemonMemorySnapshot;
+  // Constant-space request-loop responsiveness diagnostics. Optional for
+  // compatibility with older daemons and lightweight test servers.
+  eventLoop?: import("./daemon-event-loop.js").EventLoopLagSnapshot;
 }
 
 export type InstanceRole = "main" | "preview" | "dev" | "test";
