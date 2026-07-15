@@ -24,6 +24,19 @@ Health check endpoint.
 }
 ```
 
+The real daemon also includes a `memory` object with byte counts matching
+Node's `process.memoryUsage()` (`rss`, `heapUsed`, `heapTotal`, `external`, and
+`arrayBuffers`), process `uptime`, machine `totalMemory`, `rssFraction`, the
+configured warning threshold and state, and process-lifetime `highWater` byte
+counts. Sampling retains only the current high-water values; it does not retain
+a time series.
+
+By default Mandible logs `daemon_memory_warning` when RSS reaches 10% of
+machine memory. Set `MANDIBLE_MEMORY_WARNING_FRACTION` to a fraction in `(0, 1]`
+for a different threshold (for example, `0.15` for 15%). A recovery event is
+logged below 90% of the configured threshold, providing hysteresis so health
+polls do not spam the log around the boundary.
+
 ```bash
 curl http://localhost:19420/api/health
 ```

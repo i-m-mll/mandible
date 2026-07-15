@@ -46,6 +46,7 @@ import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
+import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 
 const DEFAULT_PORT = 19420;
 const DOTFILES_ROOT = resolveDotfilesRoot();
@@ -76,6 +77,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   setDaemonReady(false);
   const port = options.port ?? getPort();
   let logger = getDaemonLogger();
+  const memoryDiagnostics = new DaemonMemoryDiagnostics({
+    logger: (level, message, details) => logger(level, message, details),
+    warningFraction: memoryWarningFractionFromEnv(),
+  });
+  memoryDiagnostics.sample();
   const dbPath = options.dbPath ?? getDbPath();
   const db = openDb(dbPath);
   logger = configureDaemonLogger(db);
@@ -176,6 +182,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     isRebuilding: () => authQueue.isRebuilding,
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
+    getMemoryDiagnostics: () => memoryDiagnostics.sample(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
   });
@@ -215,6 +222,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // silently (e.g., due to an OS-level error that didn't emit an 'error'
   // event) while SSE streams keep the process alive.
   const healthCheckTimer = setInterval(() => {
+    memoryDiagnostics.sample();
     if (!server.listening) {
       logger("error", "self_health_check_failed", {
         message: "server.listening is false, exiting for supervisor restart"
