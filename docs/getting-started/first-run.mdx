@@ -115,7 +115,7 @@ changing daemon state:
 
 ```bash
 launchctl print "gui/$(id -u)/com.mll.mandible"
-curl -fsS http://127.0.0.1:19420/api/health | jq '{status, ready, uptime, memory}'
+curl -fsS http://127.0.0.1:19420/api/health | jq '{status, ready, memory, eventLoop}'
 mandible auth list --json > /tmp/mandible-auth-before-restart.json
 ```
 

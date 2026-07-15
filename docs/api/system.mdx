@@ -37,6 +37,11 @@ for a different threshold (for example, `0.15` for 15%). A recovery event is
 logged below 90% of the configured threshold, providing hysteresis so health
 polls do not spam the log around the boundary.
 
+The response also includes an `eventLoop` object with p50, p95, maximum, and
+process-lifetime high-water delay measurements in milliseconds. Its `warning`
+and `backgroundBackoffMs` fields show when background ingestion is pacing work
+to protect request responsiveness.
+
 ```bash
 curl http://localhost:19420/api/health
 ```
