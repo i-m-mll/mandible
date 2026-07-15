@@ -308,23 +308,28 @@ def db_source(provider: str) -> str | None:
 def db_paths(provider: str) -> dict[str, dict[str, Any]]:
     if not MANDIBLE_DB.exists():
         return {}
-    conn = sqlite3.connect(MANDIBLE_DB)
+    conn = sqlite3.connect(MANDIBLE_DB, timeout=5.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA query_only = ON")
     params: list[Any] = []
     where = ["source_path IS NOT NULL", "source_path != ''"]
     source = db_source(provider)
     if source:
         where.append("source = ?")
         params.append(source)
-    rows = conn.execute(
-        f"""
-        SELECT id, source, source_path, source_hash, source_mtime, session_id, title, block_count, updated_at
-        FROM conversations
-        WHERE {' AND '.join(where)}
-        """,
-        params,
-    ).fetchall()
-    return {row["source_path"]: dict(row) for row in rows}
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, source, source_path, source_hash, source_mtime, session_id, title, block_count, updated_at
+            FROM conversations
+            WHERE {' AND '.join(where)}
+            """,
+            params,
+        ).fetchall()
+        return {row["source_path"]: dict(row) for row in rows}
+    finally:
+        conn.close()
 
 
 def missing(args: argparse.Namespace) -> int:

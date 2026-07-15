@@ -20,6 +20,160 @@ api_file_rpc_dir() {
   esac
 }
 
+api_http_retryable_status() {
+  local http_status="${1:-000}"
+  [[ -n "$http_status" && "$http_status" != "000" && ! "$http_status" =~ ^5 ]] && return 1
+  return 0
+}
+
+api_http_retry_delay_ms() {
+  local retry_index="${1:-0}"
+  local base_ms="${MANDIBLE_HTTP_RETRY_BASE_MS:-100}"
+  local max_ms="${MANDIBLE_HTTP_RETRY_MAX_MS:-1000}"
+  local jitter_ms="${MANDIBLE_HTTP_RETRY_JITTER_MS:-100}"
+  local delay_ms jitter=0 i
+
+  [[ "$base_ms" =~ ^[0-9]+$ ]] || base_ms=100
+  [[ "$max_ms" =~ ^[0-9]+$ ]] || max_ms=1000
+  [[ "$jitter_ms" =~ ^[0-9]+$ ]] || jitter_ms=100
+  [[ "$retry_index" =~ ^[0-9]+$ ]] || retry_index=0
+  delay_ms="$base_ms"
+  for ((i = 0; i < retry_index; i += 1)); do
+    delay_ms=$(( delay_ms * 2 ))
+    (( delay_ms >= max_ms )) && { delay_ms="$max_ms"; break; }
+  done
+  (( delay_ms > max_ms )) && delay_ms="$max_ms"
+  (( jitter_ms > 0 )) && jitter=$(( RANDOM % (jitter_ms + 1) ))
+  printf '%s' "$(( delay_ms + jitter ))"
+}
+
+api_http_sleep_before_retry() {
+  local delay_ms
+  delay_ms=$(api_http_retry_delay_ms "$1")
+  sleep "$(printf '%d.%03d' "$(( delay_ms / 1000 ))" "$(( delay_ms % 1000 ))")"
+}
+
+api_http_probe_health() {
+  local health_base="${1:-$(api_base)}"
+  local health_tmp http_status curl_exit=0 ready rebuilding
+  health_tmp=$(mktemp)
+  if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" -o "$health_tmp" \
+      -w "%{http_code}" "${health_base}/api/health" 2>/dev/null); then
+    :
+  else
+    curl_exit=$?
+  fi
+  http_status="${http_status:-000}"
+  if [[ "$curl_exit" -eq 0 && "$http_status" =~ ^2 ]]; then
+    ready=$(jq -r 'if has("ready") then (.ready | tostring) else "unknown" end' "$health_tmp" 2>/dev/null || printf 'unknown')
+    rebuilding=$(jq -r '.rebuilding // false' "$health_tmp" 2>/dev/null || printf 'false')
+    rm -f "$health_tmp"
+    if [[ "$ready" == "false" || "$rebuilding" == "true" ]]; then
+      printf 'busy_not_ready'
+    elif [[ "$ready" == "true" ]]; then
+      printf 'busy_ready'
+    else
+      printf 'reachable_unknown'
+    fi
+    return 0
+  fi
+  if [[ "$http_status" =~ ^5 ]]; then
+    rm -f "$health_tmp"
+    printf 'busy_not_ready'
+    return 0
+  fi
+  if [[ "$http_status" != "000" ]]; then
+    rm -f "$health_tmp"
+    printf 'reachable_unknown'
+    return 0
+  fi
+  rm -f "$health_tmp"
+  printf 'down_unreachable'
+}
+
+api_report_final_http_failure() {
+  local request_path="$1" http_status="$2" curl_exit="$3" health_state
+  health_state=$(api_http_probe_health)
+  case "$health_state" in
+    busy_not_ready)
+      printf 'Mandible request failed after bounded retries: daemon is reachable but busy or not ready (path=%s, status=%s, curl=%s).\n' \
+        "$request_path" "$http_status" "$curl_exit" >&2
+      ;;
+    busy_ready)
+      printf 'Mandible request failed after bounded retries: daemon is reachable and ready, but this request remained busy or timed out (path=%s, status=%s, curl=%s).\n' \
+        "$request_path" "$http_status" "$curl_exit" >&2
+      ;;
+    reachable_unknown)
+      printf 'Mandible request failed after bounded retries: daemon is reachable, but readiness is unknown (path=%s, status=%s, curl=%s).\n' \
+        "$request_path" "$http_status" "$curl_exit" >&2
+      ;;
+    *)
+      printf 'Mandible request failed after bounded retries: daemon is down or unreachable (path=%s, status=%s, curl=%s).\n' \
+        "$request_path" "$http_status" "$curl_exit" >&2
+      ;;
+  esac
+}
+
+# Execute one API request with bounded retry. The response body always lands in
+# output_file and the final HTTP-equivalent status is the only stdout output.
+api_http_exchange() {
+  local method="$1" request_path="$2" data="$3" output_file="$4"
+  local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
+  local body_tmp="" stderr_tmp retryable empty_response
+  local ambient_headers=() curl_args=()
+
+  [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
+  if [[ "$method" != "GET" ]]; then
+    while IFS= read -r -d '' header_arg; do
+      ambient_headers+=("$header_arg")
+    done < <(api_curl_ambient_headers "$method")
+    body_tmp=$(mktemp)
+    printf '%s' "$data" > "$body_tmp"
+  fi
+  stderr_tmp=$(mktemp)
+
+  while true; do
+    : > "$output_file"
+    : > "$stderr_tmp"
+    curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
+    if [[ "$method" != "GET" ]]; then
+      curl_args+=(-X "$method" -H 'Content-Type: application/json')
+      (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
+      curl_args+=(--data-binary "@$body_tmp")
+    fi
+    curl_args+=("$(api_base)$request_path")
+    if http_status=$(curl "${curl_args[@]}" 2>"$stderr_tmp"); then
+      curl_exit=0
+    else
+      curl_exit=$?
+    fi
+    http_status="${http_status:-000}"
+    empty_response=false
+    [[ ! -s "$output_file" ]] && empty_response=true
+    retryable=false
+    if api_http_retryable_status "$http_status" \
+        || [[ "$empty_response" == "true" && "$http_status" =~ ^2 && "$http_status" != "204" ]]; then
+      retryable=true
+    fi
+
+    if [[ "$retryable" != "true" ]]; then
+      break
+    fi
+    if (( attempt >= retry_limit )); then
+      api_report_final_http_failure "$request_path" "$http_status" "$curl_exit"
+      break
+    fi
+    printf 'Mandible request transient failure; retrying (attempt=%s, path=%s, status=%s, curl=%s).\n' \
+      "$(( attempt + 1 ))" "$request_path" "$http_status" "$curl_exit" >&2
+    api_http_sleep_before_retry "$attempt"
+    attempt=$(( attempt + 1 ))
+  done
+
+  rm -f "$stderr_tmp"
+  [[ -z "$body_tmp" ]] || rm -f "$body_tmp"
+  printf '%s' "$http_status"
+}
+
 api_ambient_provider() {
   if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
     printf 'codex'
@@ -286,7 +440,6 @@ api_capture() {
   local request_path="$2"
   local data="$3"
   local output_file="$4"
-  local ambient_headers=()
 
   if ! api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
     printf '403'
@@ -298,32 +451,7 @@ api_capture() {
     return
   fi
 
-  if [[ "$method" != "GET" ]]; then
-    while IFS= read -r -d '' header_arg; do
-      ambient_headers+=("$header_arg")
-    done < <(api_curl_ambient_headers "$method")
-  fi
-
-  if [[ "$method" == "GET" ]]; then
-    curl -s --max-time 15 -o "$output_file" -w "%{http_code}" \
-      "$(api_base)$request_path" 2>/dev/null || printf ''
-    return
-  fi
-
-  # Route the request body through a temp file (curl --data-binary @file) so it
-  # never travels through argv. Large artifact payloads would otherwise blow the
-  # OS ARG_MAX limit (issue 833e972). Build the curl argv as an array (guarding
-  # the possibly-empty ambient header list) so it stays correct under zsh, which
-  # sources this helper.
-  local body_tmp
-  body_tmp="$(mktemp)"
-  printf '%s' "$data" > "$body_tmp"
-  local curl_args=(-s --max-time 15 -o "$output_file" -w "%{http_code}"
-    -X "$method" "$(api_base)$request_path" -H 'Content-Type: application/json')
-  (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
-  curl_args+=(--data-binary "@$body_tmp")
-  curl "${curl_args[@]}" 2>/dev/null || printf ''
-  rm -f "$body_tmp"
+  api_http_exchange "$method" "$request_path" "$data" "$output_file"
 }
 
 api_file_rpc_cleanup() {
@@ -332,12 +460,20 @@ api_file_rpc_cleanup() {
   rm -f "$1" 2>/dev/null || true
 }
 
+api_file_rpc_consume_response() {
+  local response_file="$1" output_file="$2" response response_status
+  response=$(cat "$response_file")
+  api_file_rpc_cleanup "$response_file"
+  response_status=$(printf '%s' "$response" | jq -r '.status // 500')
+  printf '%s' "$response" | jq -c '.body' > "$output_file"
+  printf '%s' "$response_status"
+}
+
 api_request() {
   local method="$1"
   local request_path="$2"
   local data="${3:-}"
   local tmp_response response_status
-  local ambient_headers=()
 
   api_preflight_operational_mutation "$method" "$request_path" || return 22
 
@@ -353,31 +489,15 @@ api_request() {
     return 22
   fi
 
-  if [[ "$method" == "GET" ]]; then
-    curl -sf --max-time 15 "$(api_base)$request_path"
-  else
-    while IFS= read -r -d '' header_arg; do
-      ambient_headers+=("$header_arg")
-    done < <(api_curl_ambient_headers "$method")
-    # Body via temp file so large payloads never hit argv (issue 833e972).
-    # Build argv as an array, guarding the possibly-empty ambient header list,
-    # so it stays correct under zsh (which sources this helper). NB: avoid the
-    # name `status` — it is a read-only special var under zsh.
-    local body_tmp curl_status
-    body_tmp="$(mktemp)"
-    printf '%s' "$data" > "$body_tmp"
-    local curl_args=(-sf --max-time 15 -X "$method" "$(api_base)$request_path"
-      -H 'Content-Type: application/json')
-    (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
-    curl_args+=(--data-binary "@$body_tmp")
-    if curl "${curl_args[@]}"; then
-      curl_status=0
-    else
-      curl_status=$?
-    fi
-    rm -f "$body_tmp"
-    return "$curl_status"
+  tmp_response=$(mktemp)
+  response_status=$(api_http_exchange "$method" "$request_path" "$data" "$tmp_response")
+  if [[ "$response_status" =~ ^2 ]]; then
+    cat "$tmp_response"
+    rm -f "$tmp_response"
+    return 0
   fi
+  rm -f "$tmp_response"
+  return 22
 }
 
 # Capture-style POST/PATCH where bytes for a body field come from a
@@ -408,7 +528,7 @@ api_file_rpc_exchange() {
   local output_file="$4"
   local attach_field="${5:-}"
   local attach_src="${6:-}"
-  local dir request_id request_tmp request_file response_file deadline response response_status
+  local dir request_id request_tmp request_file response_file deadline late_deadline health_state outcome
   local provider session_id body_tmp attach_name=""
 
   dir=$(api_file_rpc_dir)
@@ -454,18 +574,48 @@ api_file_rpc_exchange() {
   deadline=$(( $(date +%s) + ${MANDIBLE_FILE_RPC_TIMEOUT:-15} ))
   while [[ $(date +%s) -le "$deadline" ]]; do
     if [[ -f "$response_file" ]]; then
-      response=$(cat "$response_file")
-      api_file_rpc_cleanup "$response_file"
-      response_status=$(printf '%s' "$response" | jq -r '.status // 500')
-      printf '%s' "$response" | jq -c '.body' > "$output_file"
-      printf '%s' "$response_status"
+      api_file_rpc_consume_response "$response_file" "$output_file"
       return 0
     fi
     sleep 0.05
   done
 
-  api_file_rpc_cleanup "$request_file"
-  [[ -n "$attach_name" ]] && api_file_rpc_cleanup "${dir}/${attach_name}"
-  printf '{"error":"file_rpc_timeout"}' > "$output_file"
+  # A timeout does not mean the daemon did not execute a mutation: the daemon
+  # keeps the request file until after dispatch and response publication. Keep
+  # the stable request id alive for a short late-response window and never
+  # blindly replay or delete an ambiguous mutation request.
+  late_deadline=$(( $(date +%s) + ${MANDIBLE_FILE_RPC_LATE_RESPONSE_GRACE:-2} ))
+  while [[ $(date +%s) -le "$late_deadline" ]]; do
+    if [[ -f "$response_file" ]]; then
+      api_file_rpc_consume_response "$response_file" "$output_file"
+      return 0
+    fi
+    sleep 0.05
+  done
+
+  health_state=$(api_http_probe_health \
+    "${MANDIBLE_FILE_RPC_HEALTH_BASE:-http://127.0.0.1:${MANDIBLE_PORT}}")
+  if [[ "$method" == "GET" ]]; then
+    outcome="not_returned"
+  else
+    outcome="unknown"
+  fi
+  jq -n \
+    --arg error "file_rpc_timeout" \
+    --arg request_id "$request_id" \
+    --arg outcome "$outcome" \
+    --arg daemon_state "$health_state" \
+    '{error:$error, request_id:$request_id, outcome:$outcome, daemon_state:$daemon_state}' \
+    > "$output_file"
+  case "$health_state" in
+    busy_not_ready|busy_ready|reachable_unknown)
+      printf 'Mandible file-RPC request timed out: daemon is reachable but busy or not ready; request %s remains pending and mutation outcome is %s. Do not replay blindly.\n' \
+        "$request_id" "$outcome" >&2
+      ;;
+    *)
+      printf 'Mandible file-RPC request timed out: daemon is down or unreachable (or health is unavailable); request %s remains pending and mutation outcome is %s. Do not replay blindly.\n' \
+        "$request_id" "$outcome" >&2
+      ;;
+  esac
   printf '000'
 }
