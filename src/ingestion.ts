@@ -24,6 +24,7 @@ import {
 } from "./workflows.js";
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
+import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
 
 // --- Watch configuration ---
 
@@ -36,7 +37,9 @@ const WATCH_CONFIGS = [
 ];
 
 const DEBOUNCE_MS = 200;
-const RECONCILE_INTERVAL_MS = 60_000;
+export const RECONCILE_INTERVAL_MS = 60 * 60_000;
+export const DIRTY_INGEST_BATCH_SIZE = 16;
+export const MAX_DIRTY_INGEST_PATHS = 4096;
 const INGEST_TAIL_HASH_BYTES = 4096;
 export const INGEST_COMPRESSION_CONCURRENCY = 4;
 
@@ -123,9 +126,12 @@ type ChokidarWatcher = ReturnType<typeof chokidar.watch>;
 let watchers: ChokidarWatcher[] = [];
 let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 let logger: Logger = () => {};
+let eventPublisher: (event: string, data: unknown) => void = broadcast;
 let ingestionActive = false;
 let ingestionRunToken = 0;
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let ingestionActor: IngestionActor | null = null;
+let backgroundBackoffMs: () => number = () => 0;
 
 function resolveParentConversationId(
   db: ReturnType<typeof getDb>,
@@ -189,9 +195,41 @@ function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSession
       AND id != ?
   `).run(parentConversationId, workflowPattern, parentConversationId);
 }
-const ingestQueue: string[] = [];
-const queuedIngestPaths = new Set<string>();
+export class BoundedDirtyPathSet {
+  private readonly paths = new Set<string>();
+
+  constructor(private readonly maxPaths = MAX_DIRTY_INGEST_PATHS) {}
+
+  get size(): number {
+    return this.paths.size;
+  }
+
+  add(filePath: string): { added: boolean; replacedPath?: string } {
+    if (this.paths.has(filePath)) return { added: false };
+    let replacedPath: string | undefined;
+    if (this.paths.size >= this.maxPaths) {
+      replacedPath = this.paths.values().next().value as string | undefined;
+      if (replacedPath) this.paths.delete(replacedPath);
+    }
+    this.paths.add(filePath);
+    return { added: true, replacedPath };
+  }
+
+  take(limit: number): string[] {
+    const batch = Array.from(this.paths).slice(0, limit);
+    for (const filePath of batch) this.paths.delete(filePath);
+    return batch;
+  }
+
+  clear(): void {
+    this.paths.clear();
+  }
+}
+
+const queuedIngestPaths = new BoundedDirtyPathSet();
 let ingestDrainRunning = false;
+let ingestDrainPromise: Promise<void> | null = null;
+let reconcileRequiredAfterBackpressure = false;
 const codexSessionIndexSyncMtimes = new Map<string, number>();
 const targetedIngestLastRun = new Map<string, number>();
 const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
@@ -256,10 +294,26 @@ type AppendReadResult =
 
 // --- Public API ---
 
-export function startIngestion(log: Logger): void {
+export interface StartIngestionOptions {
+  dbPath?: string;
+  getBackgroundBackoffMs?: () => number;
+}
+
+export function startIngestion(log: Logger, options: StartIngestionOptions = {}): void {
   logger = log;
+  eventPublisher = broadcast;
+  backgroundBackoffMs = options.getBackgroundBackoffMs ?? (() => 0);
   ingestionActive = true;
   ingestionRunToken++;
+  if (options.dbPath && canUseDefaultIngestionWorker()) {
+    ingestionActor = new IngestionActor({
+      dbPath: options.dbPath,
+      logger,
+      publish: (event, data) => broadcast(event, data),
+    });
+  } else if (options.dbPath) {
+    logger("debug", "ingestion_worker_unavailable_in_source_runtime");
+  }
   logger("info", "ingestion_starting", {
     watch_paths: WATCH_CONFIGS.map((c) => c.base),
   });
@@ -289,6 +343,7 @@ export function startIngestion(log: Logger): void {
     };
     watcher.on("add", onWatchedFileEvent);
     watcher.on("change", onWatchedFileEvent);
+    watcher.on("unlink", onWatchedFileEvent);
     watcher.on("error", (error: unknown) => {
       logger("warn", "ingestion_watcher_error", {
         error: error instanceof Error ? error.message : String(error),
@@ -301,7 +356,7 @@ export function startIngestion(log: Logger): void {
   }
 
   // Run initial reconciliation to pick up files that already exist
-  scheduleReconcile();
+  scheduleReconcile(true);
 
   // Periodic reconciliation
   reconcileTimer = setInterval(() => {
@@ -313,12 +368,16 @@ export function startIngestion(log: Logger): void {
 }
 
 export function stopIngestion(): void {
+  void stopIngestionGracefully().catch((error) => {
+    logger("warn", "ingestion_stop_error", { error: String(error) });
+  });
+}
+
+export async function stopIngestionGracefully(): Promise<void> {
   logger("info", "ingestion_stopping");
   ingestionActive = false;
   ingestionRunToken++;
-  for (const watcher of watchers) {
-    void watcher.close();
-  }
+  const closingWatchers = watchers.map((watcher) => watcher.close());
   watchers = [];
 
   if (reconcileTimer) {
@@ -330,14 +389,28 @@ export function stopIngestion(): void {
     clearTimeout(timer);
   }
   debounceTimers.clear();
-  ingestQueue.length = 0;
   queuedIngestPaths.clear();
   ingestDrainRunning = false;
   reconciling = false;
+  reconcileRequiredAfterBackpressure = false;
+  const actor = ingestionActor;
+  ingestionActor = null;
+  const pendingDrain = ingestDrainPromise;
+  const pendingReconcile = reconcilePromise;
+  await Promise.allSettled(closingWatchers);
+  await actor?.close();
+  await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
 }
 
 /** Manually trigger re-ingestion of all known sources. */
 export async function triggerFullIngest(): Promise<{ processed: number; errors: number }> {
+  if (ingestionActor) {
+    return ingestionActor.fullIngest();
+  }
+  return triggerFullIngestForWorker();
+}
+
+export async function triggerFullIngestForWorker(): Promise<{ processed: number; errors: number }> {
   let processed = 0;
   let errors = 0;
 
@@ -348,6 +421,7 @@ export async function triggerFullIngest(): Promise<{ processed: number; errors: 
         await ingestFile(filePath, { forceFull: true });
         processed++;
       } catch (error) {
+        if (isSqliteBusy(error)) throw error;
         errors++;
         logger("warn", "ingestion_manual_error", {
           file: filePath,
@@ -399,7 +473,11 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
     debounceTimers.delete(transcriptPath);
   }
 
-  await ingestFile(transcriptPath);
+  if (ingestionActor) {
+    await ingestionActor.ingest([transcriptPath]);
+  } else {
+    await ingestFile(transcriptPath);
+  }
   clearHookNotificationAttention({ sessionRef, transcriptPath });
   return { ok: true, status: "ingested", transcript_path: transcriptPath, session_ref: sessionRef };
 }
@@ -475,13 +553,23 @@ function enqueueIngest(filePath: string, runToken = ingestionRunToken): void {
   if (!isCurrentIngestionRun(runToken)) {
     return;
   }
-  if (queuedIngestPaths.has(filePath)) {
+  const result = queuedIngestPaths.add(filePath);
+  if (!result.added) {
     return;
   }
-  queuedIngestPaths.add(filePath);
-  ingestQueue.push(filePath);
+  if (result.replacedPath) {
+    reconcileRequiredAfterBackpressure = true;
+    logger("warn", "ingestion_dirty_backpressure", {
+      max_paths: MAX_DIRTY_INGEST_PATHS,
+      replaced_path: result.replacedPath,
+    });
+  }
   if (!ingestDrainRunning) {
-    void drainIngestQueue(runToken);
+    const drain = drainIngestQueue(runToken).finally(() => {
+      if (ingestDrainPromise === drain) ingestDrainPromise = null;
+    });
+    ingestDrainPromise = drain;
+    void drain;
   }
 }
 
@@ -491,34 +579,59 @@ async function drainIngestQueue(runToken: number): Promise<void> {
   }
   ingestDrainRunning = true;
   try {
-    while (isCurrentIngestionRun(runToken) && ingestQueue.length > 0) {
-      const filePath = ingestQueue.shift();
-      if (!filePath) {
-        continue;
-      }
-      queuedIngestPaths.delete(filePath);
+    while (isCurrentIngestionRun(runToken) && queuedIngestPaths.size > 0) {
+      const paths = queuedIngestPaths.take(DIRTY_INGEST_BATCH_SIZE);
       try {
-        await ingestFile(filePath);
+        if (ingestionActor) {
+          await ingestionActor.ingest(paths);
+        } else {
+          await ingestBatchForWorker(paths);
+        }
       } catch (error) {
         if (!isCurrentIngestionRun(runToken)) {
           break;
         }
         logger("warn", "ingestion_debounced_error", {
-          file: filePath,
+          files: paths,
           error: String(error),
         });
       }
       if (!isCurrentIngestionRun(runToken)) {
         break;
       }
-      // Yield between files so burst ingestion doesn't monopolize the event loop.
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const delayMs = backgroundBackoffMs();
+      if (delayMs > 0) {
+        logger("debug", "ingestion_background_yield", { delay_ms: delayMs, queued: queuedIngestPaths.size });
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      } else {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+    if (isCurrentIngestionRun(runToken) && reconcileRequiredAfterBackpressure) {
+      reconcileRequiredAfterBackpressure = false;
+      scheduleReconcile();
     }
   } finally {
     if (runToken === ingestionRunToken) {
       ingestDrainRunning = false;
     }
   }
+}
+
+export async function ingestBatchForWorker(paths: readonly string[], forceFull = false): Promise<void> {
+  for (const filePath of paths) {
+    await ingestFile(filePath, { forceFull });
+  }
+}
+
+export function configureIngestionWorker(
+  log: Logger,
+  publish: (event: string, data: unknown) => void,
+): void {
+  logger = log;
+  eventPublisher = publish;
+  ingestionActive = true;
+  ingestionRunToken += 1;
 }
 
 function isCurrentIngestionRun(runToken: number): boolean {
@@ -566,6 +679,7 @@ export async function triggerReconcileForTest(
     await reconcile(runToken, {
       ingestChanged: (filePath) => ingestFile(filePath),
       watchConfigs: options.watchConfigs,
+      repairLegacyOrphans: true,
     });
   } finally {
     ingestionActive = previousActive;
@@ -658,6 +772,21 @@ function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestA
 
 function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void {
   db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(filePath);
+}
+
+function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePath: string): void {
+  const remove = db.transaction(() => {
+    const row = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?")
+      .get(filePath) as { id: string; starred: number } | undefined;
+    if (row && row.starred === 0) {
+      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
+      db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+      logger("info", "ingestion_cleanup_missing_source", { file: filePath, id: row.id });
+    }
+    deleteAppendState(db, filePath);
+    db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
+  });
+  remove();
 }
 
 function writeAppendState(
@@ -919,7 +1048,7 @@ async function syncCodexIndexedTitle(
   const db = getDb();
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
     .run(title, existing.id);
-  broadcast("conversation:updated", {
+  eventPublisher("conversation:updated", {
     id: existing.id,
     source: "codex",
     title,
@@ -1014,7 +1143,7 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
         updated_at = datetime('now')
       WHERE id = ?
     `).run(identity.projectPath, identity.cwd, row.id);
-    broadcast("conversation:updated", {
+    eventPublisher("conversation:updated", {
       id: row.id,
       source: "gemini",
       title: row.title,
@@ -1051,7 +1180,7 @@ async function ingestFile(
   } catch {
     logger("debug", "ingestion_file_gone", { file: filePath });
     try {
-      deleteAppendState(getDb(), filePath);
+      removeConversationForMissingSource(getDb(), filePath);
     } catch {
       // Best effort cleanup only.
     }
@@ -1246,9 +1375,11 @@ async function ingestFile(
       if (convId) {
         const isStarred = db.prepare("SELECT starred FROM conversations WHERE id = ?").get(convId) as { starred: number } | undefined;
         if (!isStarred || isStarred.starred === 0) {
-          db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(convId);
-          db.prepare("DELETE FROM conversations WHERE id = ?").run(convId);
-          deleteAppendState(db, filePath);
+          db.transaction(() => {
+            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(convId);
+            db.prepare("DELETE FROM conversations WHERE id = ?").run(convId);
+            deleteAppendState(db, filePath);
+          })();
           logger("info", "ingestion_removed_empty", { file: filePath, id: convId });
         }
       }
@@ -1299,7 +1430,7 @@ async function ingestFile(
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
     }
-    broadcast("conversation:updated", {
+    eventPublisher("conversation:updated", {
       id: existing.id,
       source: result.conversation.source,
       title: result.conversation.title,
@@ -1623,6 +1754,7 @@ async function ingestFile(
           await recoveryCompressedContents.dispose();
         }
       } catch (recoveryError) {
+        if (isSqliteBusy(recoveryError)) throw recoveryError;
         logger("warn", "ingestion_db_error", {
           file: filePath,
           error: errStr,
@@ -1631,6 +1763,7 @@ async function ingestFile(
         return;
       }
     } else {
+      if (isSqliteBusy(error)) throw error;
       logger("warn", "ingestion_db_error", {
         file: filePath,
         error: errStr,
@@ -1670,7 +1803,7 @@ async function ingestFile(
   // Broadcast SSE event
   const eventType = isNew ? "conversation:new" : "conversation:updated";
   const insertedBlocks = newBlocks.map((block) => insertedBlockPayload(conversationId, block));
-  broadcast(eventType, {
+  eventPublisher(eventType, {
     id: conversationId,
     source: result.conversation.source,
     title: result.conversation.title,
@@ -1699,6 +1832,12 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED"
+    || /SQLITE_(?:BUSY|LOCKED)|database is locked/i.test(String(error));
 }
 
 async function ingestWorkflowArtifact(
@@ -1732,7 +1871,7 @@ async function ingestWorkflowArtifact(
       summary_path: summaryPath,
       workflow_id: workflow.id,
     });
-    broadcast("workflow:updated", {
+    eventPublisher("workflow:updated", {
       id: workflow.id,
       session_id: workflow.session_id,
       provider_run_id: workflow.provider_run_id,
@@ -1747,6 +1886,7 @@ async function ingestWorkflowArtifact(
       status: workflow.status,
     });
   } catch (error) {
+    if (isSqliteBusy(error)) throw error;
     logger("warn", "workflow_ingestion_error", {
       file: filePath,
       error: error instanceof Error ? error.message : String(error),
@@ -1755,20 +1895,25 @@ async function ingestWorkflowArtifact(
 }
 
 let reconciling = false;
+let reconcilePromise: Promise<void> | null = null;
 
 type ReconcileOptions = {
   ingestChanged?: (filePath: string) => void | Promise<void>;
   watchConfigs?: Array<{ base: string; glob: string }>;
+  repairLegacyOrphans?: boolean;
 };
 
-function scheduleReconcile(): void {
+function scheduleReconcile(repairLegacyOrphans = false): void {
   const runToken = ingestionRunToken;
   if (!isCurrentIngestionRun(runToken)) {
     return;
   }
   if (reconciling) return;
   reconciling = true;
-  void reconcile(runToken)
+  const operation = ingestionActor
+    ? ingestionActor.reconcile(repairLegacyOrphans)
+    : reconcile(runToken, { repairLegacyOrphans });
+  const scheduled = operation
     .catch((error) => {
       if (isCurrentIngestionRun(runToken)) {
         logger("warn", "ingestion_reconcile_error", { error: String(error) });
@@ -1778,7 +1923,10 @@ function scheduleReconcile(): void {
       if (runToken === ingestionRunToken) {
         reconciling = false;
       }
+      if (reconcilePromise === scheduled) reconcilePromise = null;
     });
+  reconcilePromise = scheduled;
+  void scheduled;
 }
 
 async function reconcile(runToken: number, options: ReconcileOptions = {}): Promise<void> {
@@ -1788,17 +1936,8 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   const db = getDb();
   const ingestChanged = options.ingestChanged ?? ((filePath: string) => debouncedIngest(filePath));
 
-  // Clean up existing 0-block conversations (except starred ones).
-  // Bug: d51fbc8 — empty sessions should not pollute the list
-  // Bug: 212ed66 — also catch conversations where block_count column is wrong
-  const cleaned = db.prepare(
-    `DELETE FROM conversations WHERE starred = 0 AND (
-      block_count = 0
-      OR id NOT IN (SELECT DISTINCT conversation_id FROM conversation_blocks)
-    )`
-  ).run();
-  if (cleaned.changes > 0) {
-    logger("info", "ingestion_cleanup_empty", { removed: cleaned.changes });
+  if (options.repairLegacyOrphans) {
+    repairLegacyOrphanConversations(db);
   }
 
   await syncCodexIndexedTitlesForKnownRows(db);
@@ -1930,6 +2069,51 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       }
     });
     cleanupMissingAppend();
+  }
+}
+
+export async function reconcileForWorker(repairLegacyOrphans = false): Promise<void> {
+  const runToken = ingestionRunToken;
+  await reconcile(runToken, {
+    repairLegacyOrphans,
+    ingestChanged: (filePath) => ingestFile(filePath),
+  });
+}
+
+/**
+ * One-time repair for databases produced before conversation/block ownership
+ * was maintained transactionally. The correlated lookup uses idx_blocks_conv
+ * and never scans the complete block index during ordinary reconciliation.
+ */
+function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
+  const marker = db.prepare("SELECT value FROM meta WHERE key = ?")
+    .get("ingestion_orphan_repair_v1") as { value: string } | undefined;
+  if (marker) return;
+
+  const repair = db.transaction(() => {
+    const orphanRows = db.prepare(`
+      SELECT c.id
+      FROM conversations c
+      WHERE c.starred = 0
+        AND (c.block_count = 0 OR NOT EXISTS (
+          SELECT 1 FROM conversation_blocks b
+          WHERE b.conversation_id = c.id
+          LIMIT 1
+        ))
+    `).all() as Array<{ id: string }>;
+    const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
+    const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
+    for (const row of orphanRows) {
+      deleteBlocks.run(row.id);
+      deleteConversation.run(row.id);
+    }
+    db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
+      .run("ingestion_orphan_repair_v1", String(Date.now()));
+    return orphanRows.length;
+  });
+  const removed = repair();
+  if (removed > 0) {
+    logger("info", "ingestion_legacy_orphan_repair", { removed });
   }
 }
 

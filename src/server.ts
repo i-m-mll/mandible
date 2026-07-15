@@ -12,6 +12,7 @@ import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
 import type { DaemonMemorySnapshot } from "./daemon-memory.js";
+import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const ROOT_DIR = resolveRootDir();
@@ -431,6 +432,7 @@ export interface ServerOptions {
   // flag so health reports false until critical startup work completes.
   isReady?: () => boolean;
   getMemoryDiagnostics?: () => DaemonMemorySnapshot;
+  getEventLoopDiagnostics?: () => EventLoopLagSnapshot;
   instance?: InstanceInfo;
   fileRpcDir?: string;
 }
@@ -461,6 +463,7 @@ export function createServer(options: ServerOptions): http.Server {
       ready,
       ...(rebuilding ? { rebuilding: true } : {}),
       ...(options.getMemoryDiagnostics ? { memory: options.getMemoryDiagnostics() } : {}),
+      ...(options.getEventLoopDiagnostics ? { eventLoop: options.getEventLoopDiagnostics() } : {}),
     };
     res.json(payload);
   }, { fileRpc: "deny" });
