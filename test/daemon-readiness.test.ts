@@ -30,6 +30,27 @@ function startServer(opts: { isReady?: () => boolean; isRebuilding?: () => boole
     getStartupInfo: () => null,
     isReady: opts.isReady,
     isRebuilding: opts.isRebuilding,
+    getMemoryDiagnostics: () => ({
+      rss: 100,
+      heapTotal: 80,
+      heapUsed: 60,
+      external: 20,
+      arrayBuffers: 10,
+      uptime: 5,
+      totalMemory: 1_000,
+      rssFraction: 0.1,
+      warningThresholdFraction: 0.1,
+      warning: true,
+      highWater: { rss: 120, heapTotal: 90, heapUsed: 70, external: 30, arrayBuffers: 15 },
+    }),
+    getEventLoopDiagnostics: () => ({
+      p50Ms: 12,
+      p95Ms: 125,
+      maxMs: 180,
+      highWaterMs: 220,
+      warning: true,
+      backgroundBackoffMs: 100,
+    }),
   });
   return listen(server).then((port) => {
     testServer = { port, server };
@@ -67,6 +88,22 @@ describe("/api/health readiness", () => {
     expect(first.ready).toBe(false);
     // A starting daemon is not rebuilding — readiness is a distinct signal.
     expect(first.rebuilding).toBeUndefined();
+    expect(first.memory).toMatchObject({
+      rss: 100,
+      heapUsed: 60,
+      heapTotal: 80,
+      external: 20,
+      arrayBuffers: 10,
+      uptime: 5,
+      warning: true,
+      highWater: { rss: 120 },
+    });
+    expect(first.eventLoop).toMatchObject({
+      p95Ms: 125,
+      highWaterMs: 220,
+      warning: true,
+      backgroundBackoffMs: 100,
+    });
 
     // Once critical startup work completes, the same listener reports ready.
     ready = true;

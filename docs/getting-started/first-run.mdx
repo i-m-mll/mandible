@@ -107,3 +107,36 @@ The daemon writes a PID file on startup and removes it on shutdown. It handles `
 A periodic self-health-check verifies the server is still accepting connections. If the check fails, the daemon exits so a process supervisor can restart it.
 
 If you need to run Mandible as a persistent service, any process supervisor (launchd on macOS, systemd on Linux) works. Point it at `node dist/index.js` in the Mandible directory.
+
+### launchd status and restart procedure
+
+For the standard macOS service label, inspect the service and readiness without
+changing daemon state:
+
+```bash
+launchctl print "gui/$(id -u)/com.mll.mandible"
+curl -fsS http://127.0.0.1:19420/api/health | jq '{status, ready, memory, eventLoop}'
+mandible auth list --json > /tmp/mandible-auth-before-restart.json
+```
+
+The auth snapshot is an operational safety record. Before restarting, note the
+IDs and statuses of queued (`pending`), active (`executing`), and recently
+completed requests. Restart only through launchd so the configured service
+environment and supervisor remain authoritative:
+
+```bash
+launchctl kickstart -k "gui/$(id -u)/com.mll.mandible"
+until curl -fsS http://127.0.0.1:19420/api/health | jq -e '.ready == true' >/dev/null; do
+  sleep 1
+done
+mandible auth list --json > /tmp/mandible-auth-after-restart.json
+```
+
+Compare the before and after snapshots by request ID. Queued and completed
+requests must still be present, demonstrating that queue state came from the
+database rather than process memory. Requests that were `executing` must be
+reloaded by startup recovery and either remain actively recoverable or reach a
+terminal status; investigate any request left stuck without progress. Finally,
+confirm `/api/health` reports `ready: true` before approving or rejecting new
+requests. These are the supported checks; do not infer restart safety from a
+new PID or a successful TCP connection alone.

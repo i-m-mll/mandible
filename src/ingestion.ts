@@ -9,7 +9,7 @@ import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
-import { compressContent, compressContentAsync } from "./compression.js";
+import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
@@ -24,6 +24,7 @@ import {
 } from "./workflows.js";
 import type { Logger } from "./types.js";
 import type { ConversationBlock, ParseResult } from "./parsers/types.js";
+import { canUseDefaultIngestionWorker, IngestionActor } from "./ingestion-actor.js";
 
 // --- Watch configuration ---
 
@@ -36,8 +37,88 @@ const WATCH_CONFIGS = [
 ];
 
 const DEBOUNCE_MS = 200;
-const RECONCILE_INTERVAL_MS = 60_000;
+export const RECONCILE_INTERVAL_MS = 60 * 60_000;
+export const DIRTY_INGEST_BATCH_SIZE = 16;
+export const MAX_DIRTY_INGEST_PATHS = 4096;
 const INGEST_TAIL_HASH_BYTES = 4096;
+export const INGEST_COMPRESSION_CONCURRENCY = 4;
+
+interface StagedCompressedContents {
+  readonly length: number;
+  read(index: number): Buffer;
+  dispose(): Promise<void>;
+}
+
+interface StagedContentRef {
+  offset: number;
+  length: number;
+}
+
+async function writeBufferAt(handle: fs.promises.FileHandle, buffer: Buffer, offset: number): Promise<void> {
+  let written = 0;
+  while (written < buffer.length) {
+    const result = await handle.write(buffer, written, buffer.length - written, offset + written);
+    written += result.bytesWritten;
+  }
+}
+
+/**
+ * Compress in small ordered batches and spool results outside V8's retained heap.
+ * The final SQLite transaction reads one staged buffer at a time, so a full
+ * re-ingest never keeps every compressed block Buffer alive concurrently.
+ */
+export async function stageCompressedBlockContents(
+  contents: readonly string[],
+  compressor: (content: string) => Promise<Buffer> = compressContentAsync,
+): Promise<StagedCompressedContents> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mandible-ingest-compression-"));
+  const spoolPath = path.join(dir, "blocks.gzpack");
+  const handle = await fs.promises.open(spoolPath, "w+");
+  const refs: StagedContentRef[] = [];
+  let offset = 0;
+  let disposed = false;
+
+  try {
+    for (let start = 0; start < contents.length; start += INGEST_COMPRESSION_CONCURRENCY) {
+      const batch = await Promise.all(
+        contents
+          .slice(start, start + INGEST_COMPRESSION_CONCURRENCY)
+          .map((content) => compressor(content)),
+      );
+      for (const compressed of batch) {
+        await writeBufferAt(handle, compressed, offset);
+        refs.push({ offset, length: compressed.length });
+        offset += compressed.length;
+      }
+    }
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    length: refs.length,
+    read(index: number): Buffer {
+      const ref = refs[index];
+      if (!ref) throw new RangeError(`missing staged compressed content at index ${index}`);
+      const buffer = Buffer.allocUnsafe(ref.length);
+      let read = 0;
+      while (read < buffer.length) {
+        const bytesRead = fs.readSync(handle.fd, buffer, read, buffer.length - read, ref.offset + read);
+        if (bytesRead === 0) throw new Error(`short read for staged compressed content at index ${index}`);
+        read += bytesRead;
+      }
+      return buffer;
+    },
+    async dispose(): Promise<void> {
+      if (disposed) return;
+      disposed = true;
+      await handle.close().catch(() => undefined);
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    },
+  };
+}
 
 // --- State ---
 
@@ -45,9 +126,12 @@ type ChokidarWatcher = ReturnType<typeof chokidar.watch>;
 let watchers: ChokidarWatcher[] = [];
 let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 let logger: Logger = () => {};
+let eventPublisher: (event: string, data: unknown) => void = broadcast;
 let ingestionActive = false;
 let ingestionRunToken = 0;
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+let ingestionActor: IngestionActor | null = null;
+let backgroundBackoffMs: () => number = () => 0;
 
 function resolveParentConversationId(
   db: ReturnType<typeof getDb>,
@@ -111,9 +195,41 @@ function linkExistingClaudeSubagents(db: ReturnType<typeof getDb>, parentSession
       AND id != ?
   `).run(parentConversationId, workflowPattern, parentConversationId);
 }
-const ingestQueue: string[] = [];
-const queuedIngestPaths = new Set<string>();
+export class BoundedDirtyPathSet {
+  private readonly paths = new Set<string>();
+
+  constructor(private readonly maxPaths = MAX_DIRTY_INGEST_PATHS) {}
+
+  get size(): number {
+    return this.paths.size;
+  }
+
+  add(filePath: string): { added: boolean; replacedPath?: string } {
+    if (this.paths.has(filePath)) return { added: false };
+    let replacedPath: string | undefined;
+    if (this.paths.size >= this.maxPaths) {
+      replacedPath = this.paths.values().next().value as string | undefined;
+      if (replacedPath) this.paths.delete(replacedPath);
+    }
+    this.paths.add(filePath);
+    return { added: true, replacedPath };
+  }
+
+  take(limit: number): string[] {
+    const batch = Array.from(this.paths).slice(0, limit);
+    for (const filePath of batch) this.paths.delete(filePath);
+    return batch;
+  }
+
+  clear(): void {
+    this.paths.clear();
+  }
+}
+
+const queuedIngestPaths = new BoundedDirtyPathSet();
 let ingestDrainRunning = false;
+let ingestDrainPromise: Promise<void> | null = null;
+let reconcileRequiredAfterBackpressure = false;
 const codexSessionIndexSyncMtimes = new Map<string, number>();
 const targetedIngestLastRun = new Map<string, number>();
 const TARGETED_INGEST_MIN_INTERVAL_MS = 250;
@@ -145,6 +261,8 @@ type IngestAppendState = {
   line_count: number;
   tail_hash: string;
   partial_line: string;
+  empty_source_mtime: number | null;
+  empty_source_size: number | null;
 };
 
 type WorkflowIngestState = {
@@ -176,10 +294,26 @@ type AppendReadResult =
 
 // --- Public API ---
 
-export function startIngestion(log: Logger): void {
+export interface StartIngestionOptions {
+  dbPath?: string;
+  getBackgroundBackoffMs?: () => number;
+}
+
+export function startIngestion(log: Logger, options: StartIngestionOptions = {}): void {
   logger = log;
+  eventPublisher = broadcast;
+  backgroundBackoffMs = options.getBackgroundBackoffMs ?? (() => 0);
   ingestionActive = true;
   ingestionRunToken++;
+  if (options.dbPath && canUseDefaultIngestionWorker()) {
+    ingestionActor = new IngestionActor({
+      dbPath: options.dbPath,
+      logger,
+      publish: (event, data) => broadcast(event, data),
+    });
+  } else if (options.dbPath) {
+    logger("debug", "ingestion_worker_unavailable_in_source_runtime");
+  }
   logger("info", "ingestion_starting", {
     watch_paths: WATCH_CONFIGS.map((c) => c.base),
   });
@@ -209,6 +343,7 @@ export function startIngestion(log: Logger): void {
     };
     watcher.on("add", onWatchedFileEvent);
     watcher.on("change", onWatchedFileEvent);
+    watcher.on("unlink", onWatchedFileEvent);
     watcher.on("error", (error: unknown) => {
       logger("warn", "ingestion_watcher_error", {
         error: error instanceof Error ? error.message : String(error),
@@ -221,7 +356,7 @@ export function startIngestion(log: Logger): void {
   }
 
   // Run initial reconciliation to pick up files that already exist
-  scheduleReconcile();
+  scheduleReconcile(true);
 
   // Periodic reconciliation
   reconcileTimer = setInterval(() => {
@@ -233,12 +368,16 @@ export function startIngestion(log: Logger): void {
 }
 
 export function stopIngestion(): void {
+  void stopIngestionGracefully().catch((error) => {
+    logger("warn", "ingestion_stop_error", { error: String(error) });
+  });
+}
+
+export async function stopIngestionGracefully(): Promise<void> {
   logger("info", "ingestion_stopping");
   ingestionActive = false;
   ingestionRunToken++;
-  for (const watcher of watchers) {
-    void watcher.close();
-  }
+  const closingWatchers = watchers.map((watcher) => watcher.close());
   watchers = [];
 
   if (reconcileTimer) {
@@ -250,14 +389,28 @@ export function stopIngestion(): void {
     clearTimeout(timer);
   }
   debounceTimers.clear();
-  ingestQueue.length = 0;
   queuedIngestPaths.clear();
   ingestDrainRunning = false;
   reconciling = false;
+  reconcileRequiredAfterBackpressure = false;
+  const actor = ingestionActor;
+  ingestionActor = null;
+  const pendingDrain = ingestDrainPromise;
+  const pendingReconcile = reconcilePromise;
+  await Promise.allSettled(closingWatchers);
+  await actor?.close();
+  await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
 }
 
 /** Manually trigger re-ingestion of all known sources. */
 export async function triggerFullIngest(): Promise<{ processed: number; errors: number }> {
+  if (ingestionActor) {
+    return ingestionActor.fullIngest();
+  }
+  return triggerFullIngestForWorker();
+}
+
+export async function triggerFullIngestForWorker(): Promise<{ processed: number; errors: number }> {
   let processed = 0;
   let errors = 0;
 
@@ -268,6 +421,7 @@ export async function triggerFullIngest(): Promise<{ processed: number; errors: 
         await ingestFile(filePath, { forceFull: true });
         processed++;
       } catch (error) {
+        if (isSqliteBusy(error)) throw error;
         errors++;
         logger("warn", "ingestion_manual_error", {
           file: filePath,
@@ -319,7 +473,11 @@ export async function triggerTargetedIngest(input: TargetedIngestInput): Promise
     debounceTimers.delete(transcriptPath);
   }
 
-  await ingestFile(transcriptPath);
+  if (ingestionActor) {
+    await ingestionActor.ingest([transcriptPath]);
+  } else {
+    await ingestFile(transcriptPath);
+  }
   clearHookNotificationAttention({ sessionRef, transcriptPath });
   return { ok: true, status: "ingested", transcript_path: transcriptPath, session_ref: sessionRef };
 }
@@ -395,13 +553,23 @@ function enqueueIngest(filePath: string, runToken = ingestionRunToken): void {
   if (!isCurrentIngestionRun(runToken)) {
     return;
   }
-  if (queuedIngestPaths.has(filePath)) {
+  const result = queuedIngestPaths.add(filePath);
+  if (!result.added) {
     return;
   }
-  queuedIngestPaths.add(filePath);
-  ingestQueue.push(filePath);
+  if (result.replacedPath) {
+    reconcileRequiredAfterBackpressure = true;
+    logger("warn", "ingestion_dirty_backpressure", {
+      max_paths: MAX_DIRTY_INGEST_PATHS,
+      replaced_path: result.replacedPath,
+    });
+  }
   if (!ingestDrainRunning) {
-    void drainIngestQueue(runToken);
+    const drain = drainIngestQueue(runToken).finally(() => {
+      if (ingestDrainPromise === drain) ingestDrainPromise = null;
+    });
+    ingestDrainPromise = drain;
+    void drain;
   }
 }
 
@@ -411,34 +579,59 @@ async function drainIngestQueue(runToken: number): Promise<void> {
   }
   ingestDrainRunning = true;
   try {
-    while (isCurrentIngestionRun(runToken) && ingestQueue.length > 0) {
-      const filePath = ingestQueue.shift();
-      if (!filePath) {
-        continue;
-      }
-      queuedIngestPaths.delete(filePath);
+    while (isCurrentIngestionRun(runToken) && queuedIngestPaths.size > 0) {
+      const paths = queuedIngestPaths.take(DIRTY_INGEST_BATCH_SIZE);
       try {
-        await ingestFile(filePath);
+        if (ingestionActor) {
+          await ingestionActor.ingest(paths);
+        } else {
+          await ingestBatchForWorker(paths);
+        }
       } catch (error) {
         if (!isCurrentIngestionRun(runToken)) {
           break;
         }
         logger("warn", "ingestion_debounced_error", {
-          file: filePath,
+          files: paths,
           error: String(error),
         });
       }
       if (!isCurrentIngestionRun(runToken)) {
         break;
       }
-      // Yield between files so burst ingestion doesn't monopolize the event loop.
-      await new Promise<void>((resolve) => setImmediate(resolve));
+      const delayMs = backgroundBackoffMs();
+      if (delayMs > 0) {
+        logger("debug", "ingestion_background_yield", { delay_ms: delayMs, queued: queuedIngestPaths.size });
+        await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      } else {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    }
+    if (isCurrentIngestionRun(runToken) && reconcileRequiredAfterBackpressure) {
+      reconcileRequiredAfterBackpressure = false;
+      scheduleReconcile();
     }
   } finally {
     if (runToken === ingestionRunToken) {
       ingestDrainRunning = false;
     }
   }
+}
+
+export async function ingestBatchForWorker(paths: readonly string[], forceFull = false): Promise<void> {
+  for (const filePath of paths) {
+    await ingestFile(filePath, { forceFull });
+  }
+}
+
+export function configureIngestionWorker(
+  log: Logger,
+  publish: (event: string, data: unknown) => void,
+): void {
+  logger = log;
+  eventPublisher = publish;
+  ingestionActive = true;
+  ingestionRunToken += 1;
 }
 
 function isCurrentIngestionRun(runToken: number): boolean {
@@ -486,6 +679,7 @@ export async function triggerReconcileForTest(
     await reconcile(runToken, {
       ingestChanged: (filePath) => ingestFile(filePath),
       watchConfigs: options.watchConfigs,
+      repairLegacyOrphans: true,
     });
   } finally {
     ingestionActive = previousActive;
@@ -550,14 +744,26 @@ async function readTrailingPartialLine(filePath: string, size: number): Promise<
   }
 }
 
-async function countCompleteLines(filePath: string): Promise<number> {
-  const raw = await fs.promises.readFile(filePath, "utf8");
-  return raw.length === 0 ? 0 : (raw.match(/\n/g) ?? []).length;
+export async function countCompleteLines(filePath: string): Promise<number> {
+  let count = 0;
+  for await (const chunk of fs.createReadStream(filePath)) {
+    for (const byte of chunk as Buffer) {
+      if (byte === 0x0a) count += 1;
+    }
+  }
+  return count;
 }
 
 function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestAppendState | null {
   const row = db.prepare(`
-    SELECT file_path, byte_offset, line_count, tail_hash, partial_line
+    SELECT
+      file_path,
+      byte_offset,
+      line_count,
+      tail_hash,
+      partial_line,
+      empty_source_mtime,
+      empty_source_size
     FROM conversation_ingest_state
     WHERE file_path = ?
   `).get(filePath) as IngestAppendState | undefined;
@@ -566,6 +772,21 @@ function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestA
 
 function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void {
   db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(filePath);
+}
+
+function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePath: string): void {
+  const remove = db.transaction(() => {
+    const row = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?")
+      .get(filePath) as { id: string; starred: number } | undefined;
+    if (row && row.starred === 0) {
+      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
+      db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+      logger("info", "ingestion_cleanup_missing_source", { file: filePath, id: row.id });
+    }
+    deleteAppendState(db, filePath);
+    db.prepare("DELETE FROM workflow_ingest_state WHERE file_path = ?").run(filePath);
+  });
+  remove();
 }
 
 function writeAppendState(
@@ -581,6 +802,8 @@ function writeAppendState(
       line_count = excluded.line_count,
       tail_hash = excluded.tail_hash,
       partial_line = excluded.partial_line,
+      empty_source_mtime = NULL,
+      empty_source_size = NULL,
       updated_at = excluded.updated_at
   `).run(
     state.file_path,
@@ -590,6 +813,48 @@ function writeAppendState(
     state.partial_line,
     Date.now(),
   );
+}
+
+function writeEmptyIngestState(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  stat: fs.Stats,
+): void {
+  db.prepare(`
+    INSERT INTO conversation_ingest_state (
+      file_path,
+      byte_offset,
+      line_count,
+      tail_hash,
+      partial_line,
+      updated_at,
+      empty_source_mtime,
+      empty_source_size
+    ) VALUES (?, ?, 0, '', '', ?, ?, ?)
+    ON CONFLICT(file_path) DO UPDATE SET
+      byte_offset = excluded.byte_offset,
+      line_count = 0,
+      tail_hash = '',
+      partial_line = '',
+      updated_at = excluded.updated_at,
+      empty_source_mtime = excluded.empty_source_mtime,
+      empty_source_size = excluded.empty_source_size
+  `).run(filePath, stat.size, Date.now(), stat.mtimeMs, stat.size);
+}
+
+function clearEmptyIngestState(db: ReturnType<typeof getDb>, filePath: string): void {
+  db.prepare(`
+    UPDATE conversation_ingest_state
+    SET empty_source_mtime = NULL,
+        empty_source_size = NULL,
+        updated_at = ?
+    WHERE file_path = ?
+  `).run(Date.now(), filePath);
+}
+
+function matchesEmptyIngestState(state: IngestAppendState | null, stat: fs.Stats): boolean {
+  return state?.empty_source_mtime === stat.mtimeMs
+    && state.empty_source_size === stat.size;
 }
 
 function isWorkflowIngestArtifactPath(filePath: string): boolean {
@@ -648,6 +913,8 @@ async function refreshAppendState(
     line_count: lineCount,
     tail_hash: tailHash ?? await hashFileTailAt(filePath, stat.size),
     partial_line: partialLine ?? await readTrailingPartialLine(filePath, stat.size),
+    empty_source_mtime: null,
+    empty_source_size: null,
   });
 }
 
@@ -781,7 +1048,7 @@ async function syncCodexIndexedTitle(
   const db = getDb();
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
     .run(title, existing.id);
-  broadcast("conversation:updated", {
+  eventPublisher("conversation:updated", {
     id: existing.id,
     source: "codex",
     title,
@@ -876,7 +1143,7 @@ async function syncGeminiProjectIdentityForKnownRows(db: ReturnType<typeof getDb
         updated_at = datetime('now')
       WHERE id = ?
     `).run(identity.projectPath, identity.cwd, row.id);
-    broadcast("conversation:updated", {
+    eventPublisher("conversation:updated", {
       id: row.id,
       source: "gemini",
       title: row.title,
@@ -913,7 +1180,7 @@ async function ingestFile(
   } catch {
     logger("debug", "ingestion_file_gone", { file: filePath });
     try {
-      deleteAppendState(getDb(), filePath);
+      removeConversationForMissingSource(getDb(), filePath);
     } catch {
       // Best effort cleanup only.
     }
@@ -955,6 +1222,14 @@ async function ingestFile(
     });
   }
 
+  const appendState = getAppendState(db, filePath);
+  if (!options.forceFull && matchesEmptyIngestState(appendState, stat)) {
+    return;
+  }
+  if (appendState?.empty_source_mtime !== null && appendState?.empty_source_mtime !== undefined) {
+    clearEmptyIngestState(db, filePath);
+  }
+
   // Quick mtime check first — if mtime hasn't changed, skip the expensive hash
   if (existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100) {
     if (parser.source === "codex") {
@@ -981,7 +1256,6 @@ async function ingestFile(
     }
   }
 
-  const appendState = getAppendState(db, filePath);
   let ingestMode: IngestMode = "full";
   let appendInfo: {
     completeLineCount: number;
@@ -1101,13 +1375,16 @@ async function ingestFile(
       if (convId) {
         const isStarred = db.prepare("SELECT starred FROM conversations WHERE id = ?").get(convId) as { starred: number } | undefined;
         if (!isStarred || isStarred.starred === 0) {
-          db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(convId);
-          db.prepare("DELETE FROM conversations WHERE id = ?").run(convId);
-          deleteAppendState(db, filePath);
+          db.transaction(() => {
+            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(convId);
+            db.prepare("DELETE FROM conversations WHERE id = ?").run(convId);
+            deleteAppendState(db, filePath);
+          })();
           logger("info", "ingestion_removed_empty", { file: filePath, id: convId });
         }
       }
     }
+    writeEmptyIngestState(db, filePath, stat);
     return;
   }
 
@@ -1153,7 +1430,7 @@ async function ingestFile(
     if (!isSidechain && result.conversation.source === "claude_code") {
       linkExistingClaudeSubagents(db, result.conversation.session_id, existing.id);
     }
-    broadcast("conversation:updated", {
+    eventPublisher("conversation:updated", {
       id: existing.id,
       source: result.conversation.source,
       title: result.conversation.title,
@@ -1239,12 +1516,10 @@ async function ingestFile(
     return;
   }
 
-  // Pre-compress block content async before entering the transaction — gzip is
-  // CPU-bound and blocks the event loop if run synchronously inside db.transaction().
-  // With active conversations appending blocks every few seconds this was causing
-  // all HTTP requests to time out. Compress outside the transaction, pass buffers in.
-  const compressedContents = await Promise.all(
-    newBlocks.map((block) => compressContentAsync(block.content))
+  // Pre-compress outside the transaction in bounded batches. Compressed bytes
+  // are staged on disk so full re-ingests do not retain every output Buffer.
+  const compressedContents = await stageCompressedBlockContents(
+    newBlocks.map((block) => block.content),
   );
 
   // Atomic upsert: for full re-ingest, delete old data and re-insert;
@@ -1328,7 +1603,7 @@ async function ingestFile(
 
     // Insert blocks — content is gzip-compressed as BLOB (Bug: e5a945d)
     // In delta mode, newBlocks contains only the newly appended blocks.
-    // compressedContents was pre-computed async above, outside this transaction.
+    // compressedContents was staged async above, outside this transaction.
     const insertBlock = db.prepare(`
       INSERT INTO conversation_blocks (
         id, conversation_id, type, role, content, position,
@@ -1356,7 +1631,7 @@ async function ingestFile(
         conversationId,
         block.type,
         block.role,
-        compressedContents[i],
+        compressedContents.read(i),
         block.position,
         block.timestamp,
         block.parent_id,
@@ -1386,95 +1661,100 @@ async function ingestFile(
         return;
       }
       try {
-        // Pre-compress all blocks async before the recovery transaction.
-        const recoveryCompressedContents = await Promise.all(
-          result.blocks.map((block) => compressContentAsync(block.content))
+        // Re-stage every block for the clean recovery transaction.
+        const recoveryCompressedContents = await stageCompressedBlockContents(
+          result.blocks.map((block) => block.content),
         );
-        const recoveryUpsert = db.transaction(() => {
-          // Purge all stale rows for this source_path, then do a clean full insert
-          const staleIds = db.prepare(
-            "SELECT id FROM conversations WHERE source_path = ?"
-          ).all(filePath) as Array<{ id: string }>;
-          for (const row of staleIds) {
-            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-            db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
-          }
-          // Also purge any blocks that share IDs with the blocks we're about to insert
-          // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
-          const newIds = result.blocks.map((block) =>
-            crypto.createHash("sha256")
-              .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-              .digest("hex").slice(0, 16)
-          );
-          if (newIds.length > 0) {
-            const placeholders = newIds.map(() => "?").join(",");
-            db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
-          }
-          // Re-insert conversation
-          db.prepare(`
-            INSERT INTO conversations (
-              id, source, source_path, source_hash, source_mtime,
-              title, summary, started_at, ended_at, block_count,
-              session_id, project_path, cwd, branch, model, cli_version,
-              starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
-              created_at, updated_at
-            ) VALUES (
-              ?, ?, ?, ?, ?,
-              ?, ?, ?, ?, ?,
-              ?, ?, ?, ?, ?, ?,
-              0, NULL, NULL, ?, ?, ?,
-              datetime('now'), datetime('now')
-            )
-          `).run(
-            conversationId,
-            result.conversation.source,
-            result.conversation.source_path,
-            result.conversation.source_hash,
-            result.conversation.source_mtime,
-            result.conversation.title,
-            result.conversation.summary,
-            result.conversation.started_at,
-            result.conversation.ended_at,
-            result.conversation.block_count,
-            result.conversation.session_id,
-            result.conversation.project_path,
-            result.conversation.cwd,
-            result.conversation.branch,
-            result.conversation.model,
-            result.conversation.cli_version,
-            parentConversationId,
-            isSidechain ? 1 : 0,
-            agentId,
-          );
-          // Re-insert all blocks using pre-compressed buffers.
-          const insertBlock2 = db.prepare(`
-            INSERT INTO conversation_blocks (
-              id, conversation_id, type, role, content, position,
-              timestamp, parent_id, metadata_json, compressed,
-              dag_uuid, dag_parent_uuid
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-          `);
-          for (let i = 0; i < result.blocks.length; i++) {
-            const block = result.blocks[i];
-            const blockHash = crypto
-              .createHash("sha256")
-              .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-              .digest("hex")
-              .slice(0, 16);
-            insertBlock2.run(
-              blockHash, conversationId, block.type, block.role,
-              recoveryCompressedContents[i], block.position,
-              block.timestamp, block.parent_id, JSON.stringify(block.metadata),
-              block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
+        try {
+          const recoveryUpsert = db.transaction(() => {
+            // Purge all stale rows for this source_path, then do a clean full insert
+            const staleIds = db.prepare(
+              "SELECT id FROM conversations WHERE source_path = ?"
+            ).all(filePath) as Array<{ id: string }>;
+            for (const row of staleIds) {
+              db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
+              db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+            }
+            // Also purge any blocks that share IDs with the blocks we're about to insert
+            // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
+            const newIds = result.blocks.map((block) =>
+              crypto.createHash("sha256")
+                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
+                .digest("hex").slice(0, 16)
             );
-          }
-        });
-        recoveryUpsert();
-        logger("info", "ingestion_unique_recovery_succeeded", {
-          file: filePath,
-          blocks: result.blocks.length,
-        });
+            if (newIds.length > 0) {
+              const placeholders = newIds.map(() => "?").join(",");
+              db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
+            }
+            // Re-insert conversation
+            db.prepare(`
+              INSERT INTO conversations (
+                id, source, source_path, source_hash, source_mtime,
+                title, summary, started_at, ended_at, block_count,
+                session_id, project_path, cwd, branch, model, cli_version,
+                starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
+                created_at, updated_at
+              ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                0, NULL, NULL, ?, ?, ?,
+                datetime('now'), datetime('now')
+              )
+            `).run(
+              conversationId,
+              result.conversation.source,
+              result.conversation.source_path,
+              result.conversation.source_hash,
+              result.conversation.source_mtime,
+              result.conversation.title,
+              result.conversation.summary,
+              result.conversation.started_at,
+              result.conversation.ended_at,
+              result.conversation.block_count,
+              result.conversation.session_id,
+              result.conversation.project_path,
+              result.conversation.cwd,
+              result.conversation.branch,
+              result.conversation.model,
+              result.conversation.cli_version,
+              parentConversationId,
+              isSidechain ? 1 : 0,
+              agentId,
+            );
+            // Re-insert all blocks using staged compressed buffers.
+            const insertBlock2 = db.prepare(`
+              INSERT INTO conversation_blocks (
+                id, conversation_id, type, role, content, position,
+                timestamp, parent_id, metadata_json, compressed,
+                dag_uuid, dag_parent_uuid
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            `);
+            for (let i = 0; i < result.blocks.length; i++) {
+              const block = result.blocks[i];
+              const blockHash = crypto
+                .createHash("sha256")
+                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
+                .digest("hex")
+                .slice(0, 16);
+              insertBlock2.run(
+                blockHash, conversationId, block.type, block.role,
+                recoveryCompressedContents.read(i), block.position,
+                block.timestamp, block.parent_id, JSON.stringify(block.metadata),
+                block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
+              );
+            }
+          });
+          recoveryUpsert();
+          logger("info", "ingestion_unique_recovery_succeeded", {
+            file: filePath,
+            blocks: result.blocks.length,
+          });
+        } finally {
+          await recoveryCompressedContents.dispose();
+        }
       } catch (recoveryError) {
+        if (isSqliteBusy(recoveryError)) throw recoveryError;
         logger("warn", "ingestion_db_error", {
           file: filePath,
           error: errStr,
@@ -1483,12 +1763,15 @@ async function ingestFile(
         return;
       }
     } else {
+      if (isSqliteBusy(error)) throw error;
       logger("warn", "ingestion_db_error", {
         file: filePath,
         error: errStr,
       });
       return;
     }
+  } finally {
+    await compressedContents.dispose();
   }
 
   await refreshAppendState(
@@ -1520,7 +1803,7 @@ async function ingestFile(
   // Broadcast SSE event
   const eventType = isNew ? "conversation:new" : "conversation:updated";
   const insertedBlocks = newBlocks.map((block) => insertedBlockPayload(conversationId, block));
-  broadcast(eventType, {
+  eventPublisher(eventType, {
     id: conversationId,
     source: result.conversation.source,
     title: result.conversation.title,
@@ -1549,6 +1832,12 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "SQLITE_BUSY" || code === "SQLITE_LOCKED"
+    || /SQLITE_(?:BUSY|LOCKED)|database is locked/i.test(String(error));
 }
 
 async function ingestWorkflowArtifact(
@@ -1582,7 +1871,7 @@ async function ingestWorkflowArtifact(
       summary_path: summaryPath,
       workflow_id: workflow.id,
     });
-    broadcast("workflow:updated", {
+    eventPublisher("workflow:updated", {
       id: workflow.id,
       session_id: workflow.session_id,
       provider_run_id: workflow.provider_run_id,
@@ -1597,6 +1886,7 @@ async function ingestWorkflowArtifact(
       status: workflow.status,
     });
   } catch (error) {
+    if (isSqliteBusy(error)) throw error;
     logger("warn", "workflow_ingestion_error", {
       file: filePath,
       error: error instanceof Error ? error.message : String(error),
@@ -1605,20 +1895,25 @@ async function ingestWorkflowArtifact(
 }
 
 let reconciling = false;
+let reconcilePromise: Promise<void> | null = null;
 
 type ReconcileOptions = {
   ingestChanged?: (filePath: string) => void | Promise<void>;
   watchConfigs?: Array<{ base: string; glob: string }>;
+  repairLegacyOrphans?: boolean;
 };
 
-function scheduleReconcile(): void {
+function scheduleReconcile(repairLegacyOrphans = false): void {
   const runToken = ingestionRunToken;
   if (!isCurrentIngestionRun(runToken)) {
     return;
   }
   if (reconciling) return;
   reconciling = true;
-  void reconcile(runToken)
+  const operation = ingestionActor
+    ? ingestionActor.reconcile(repairLegacyOrphans)
+    : reconcile(runToken, { repairLegacyOrphans });
+  const scheduled = operation
     .catch((error) => {
       if (isCurrentIngestionRun(runToken)) {
         logger("warn", "ingestion_reconcile_error", { error: String(error) });
@@ -1628,7 +1923,10 @@ function scheduleReconcile(): void {
       if (runToken === ingestionRunToken) {
         reconciling = false;
       }
+      if (reconcilePromise === scheduled) reconcilePromise = null;
     });
+  reconcilePromise = scheduled;
+  void scheduled;
 }
 
 async function reconcile(runToken: number, options: ReconcileOptions = {}): Promise<void> {
@@ -1638,17 +1936,8 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   const db = getDb();
   const ingestChanged = options.ingestChanged ?? ((filePath: string) => debouncedIngest(filePath));
 
-  // Clean up existing 0-block conversations (except starred ones).
-  // Bug: d51fbc8 — empty sessions should not pollute the list
-  // Bug: 212ed66 — also catch conversations where block_count column is wrong
-  const cleaned = db.prepare(
-    `DELETE FROM conversations WHERE starred = 0 AND (
-      block_count = 0
-      OR id NOT IN (SELECT DISTINCT conversation_id FROM conversation_blocks)
-    )`
-  ).run();
-  if (cleaned.changes > 0) {
-    logger("info", "ingestion_cleanup_empty", { removed: cleaned.changes });
+  if (options.repairLegacyOrphans) {
+    repairLegacyOrphanConversations(db);
   }
 
   await syncCodexIndexedTitlesForKnownRows(db);
@@ -1673,6 +1962,22 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     workflowPaths.set(row.file_path, row.source_mtime);
     dbPaths.set(row.file_path, row.source_mtime);
   }
+  const appendRows = db
+    .prepare(`
+      SELECT file_path, empty_source_mtime, empty_source_size
+      FROM conversation_ingest_state
+    `)
+    .all() as Array<{
+      file_path: string;
+      empty_source_mtime: number | null;
+      empty_source_size: number | null;
+    }>;
+  const appendPaths = new Set(appendRows.map((row) => row.file_path));
+  const emptyPaths = new Map(
+    appendRows
+      .filter((row) => row.empty_source_mtime !== null && row.empty_source_size !== null)
+      .map((row) => [row.file_path, row] as const),
+  );
 
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
@@ -1694,7 +1999,14 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       try {
         const stat = await fs.promises.stat(filePath);
         const dbMtime = dbPaths.get(filePath);
+        const emptyState = emptyPaths.get(filePath);
 
+        if (
+          emptyState?.empty_source_mtime === stat.mtimeMs
+          && emptyState.empty_source_size === stat.size
+        ) {
+          continue;
+        }
         if (dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100) {
           // New or modified file — queue for ingestion
           await ingestChanged(filePath);
@@ -1743,6 +2055,65 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       }
     });
     cleanupMissingWorkflow();
+  }
+
+  const missingAppendPaths = Array.from(appendPaths).filter((sourcePath) =>
+    scannedBases.some((base) => sourcePath === base || sourcePath.startsWith(`${base}${path.sep}`)) &&
+    !knownPaths.has(sourcePath)
+  );
+  if (missingAppendPaths.length > 0) {
+    const deleteState = db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?");
+    const cleanupMissingAppend = db.transaction(() => {
+      for (const sourcePath of missingAppendPaths) {
+        deleteState.run(sourcePath);
+      }
+    });
+    cleanupMissingAppend();
+  }
+}
+
+export async function reconcileForWorker(repairLegacyOrphans = false): Promise<void> {
+  const runToken = ingestionRunToken;
+  await reconcile(runToken, {
+    repairLegacyOrphans,
+    ingestChanged: (filePath) => ingestFile(filePath),
+  });
+}
+
+/**
+ * One-time repair for databases produced before conversation/block ownership
+ * was maintained transactionally. The correlated lookup uses idx_blocks_conv
+ * and never scans the complete block index during ordinary reconciliation.
+ */
+function repairLegacyOrphanConversations(db: ReturnType<typeof getDb>): void {
+  const marker = db.prepare("SELECT value FROM meta WHERE key = ?")
+    .get("ingestion_orphan_repair_v1") as { value: string } | undefined;
+  if (marker) return;
+
+  const repair = db.transaction(() => {
+    const orphanRows = db.prepare(`
+      SELECT c.id
+      FROM conversations c
+      WHERE c.starred = 0
+        AND (c.block_count = 0 OR NOT EXISTS (
+          SELECT 1 FROM conversation_blocks b
+          WHERE b.conversation_id = c.id
+          LIMIT 1
+        ))
+    `).all() as Array<{ id: string }>;
+    const deleteBlocks = db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?");
+    const deleteConversation = db.prepare("DELETE FROM conversations WHERE id = ?");
+    for (const row of orphanRows) {
+      deleteBlocks.run(row.id);
+      deleteConversation.run(row.id);
+    }
+    db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)")
+      .run("ingestion_orphan_repair_v1", String(Date.now()));
+    return orphanRows.length;
+  });
+  const removed = repair();
+  if (removed > 0) {
+    logger("info", "ingestion_legacy_orphan_repair", { removed });
   }
 }
 

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import type { WebSocket } from "ws";
 import type {
   AgenticBackend,
@@ -100,6 +101,38 @@ const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
   backend_type: "sdk",
   transport_lane: "sdk",
 };
+
+export const TERMINAL_BACKEND_RETENTION_LIMIT = 64;
+
+/**
+ * Lightweight metadata holder for a backend whose process, terminal ring, and
+ * diagnostic logs have been evicted. SessionManager transparently rehydrates
+ * it before any id-based operation, while list APIs keep returning every row.
+ */
+class DormantBackend extends EventEmitter implements AgenticBackend {
+  readonly id: string;
+  meta: ConsoleSession;
+
+  constructor(meta: ConsoleSession) {
+    super();
+    this.id = meta.id;
+    this.meta = { ...meta };
+  }
+
+  start(): void {}
+  stop(): void {}
+  destroy(): void { this.removeAllListeners(); }
+  clear(): void {}
+  sendPrompt(): void {}
+  write(): void {}
+  resize(): void {}
+  addWsClient(): void {}
+  removeWsClient(): void {}
+  getBufferSnapshot(): Buffer { return Buffer.alloc(0); }
+  getStreamEvents(): ConsoleStreamEvent[] { return []; }
+  ingestStructuredEvent(): void {}
+  ingestText(): void {}
+}
 
 function computeAgentType(
   command: string,
@@ -305,8 +338,20 @@ export class SessionManager {
       .prepare("SELECT * FROM console_sessions")
       .all() as ConsoleSessionRow[];
 
+    const retainedTerminalIds = new Set(
+      rows
+        .filter((row) => row.status !== "running")
+        .sort((a, b) => b.updated_at - a.updated_at)
+        .slice(0, TERMINAL_BACKEND_RETENTION_LIMIT)
+        .map((row) => row.id),
+    );
+
     for (const row of rows) {
       const session = rowToSession(row);
+      if (session.status !== "running" && !retainedTerminalIds.has(session.id)) {
+        this.sessions.set(session.id, new DormantBackend(session));
+        continue;
+      }
       const backend = this.createBackend(session, session.backend_type);
       this.sessions.set(session.id, backend);
       this.wireBackend(backend);
@@ -318,6 +363,8 @@ export class SessionManager {
         backend.meta = { ...backend.meta, status: "stopped", pid: null };
       }
     }
+
+    this.evictExcessTerminalBackends();
 
     const operatorRow = db
       .prepare("SELECT * FROM console_sessions WHERE is_operator = 1 LIMIT 1")
@@ -433,17 +480,39 @@ export class SessionManager {
 
     this.sessions.set(id, backend);
     this.wireBackend(backend);
+    this.evictExcessTerminalBackends(id);
 
     broadcast("console:session:created", { session });
     return session;
   }
 
   get(id: string): AgenticBackend | undefined {
-    return this.sessions.get(id);
+    const existing = this.sessions.get(id);
+    if (!existing || !(existing instanceof DormantBackend)) {
+      return existing;
+    }
+    const backend = this.createBackend(existing.meta, existing.meta.backend_type);
+    this.sessions.set(id, backend);
+    this.wireBackend(backend);
+    this.evictExcessTerminalBackends(id);
+    return backend;
   }
 
   getAll(): AgenticBackend[] {
     return Array.from(this.sessions.values());
+  }
+
+  getRetentionStats(): { retainedTerminal: number; dormant: number } {
+    let retainedTerminal = 0;
+    let dormant = 0;
+    for (const backend of this.sessions.values()) {
+      if (backend instanceof DormantBackend) {
+        dormant += 1;
+      } else if (backend.meta.status !== "running") {
+        retainedTerminal += 1;
+      }
+    }
+    return { retainedTerminal, dormant };
   }
 
   start(id: string): void {
@@ -810,6 +879,7 @@ export class SessionManager {
         id,
         stopped_at: event.stopped_at ?? this.requireSession(id).meta.stopped_at,
       });
+      this.evictExcessTerminalBackends(id);
       return;
     }
     broadcast("console:session:exit", {
@@ -818,6 +888,31 @@ export class SessionManager {
       signal: event.signal ?? null,
       status: event.status,
     });
+    this.evictExcessTerminalBackends(id);
+  }
+
+  private evictExcessTerminalBackends(excludeId?: string): void {
+    const retained = Array.from(this.sessions.values())
+      .filter((backend) => !(backend instanceof DormantBackend) && backend.meta.status !== "running")
+      .sort((a, b) => a.meta.updated_at - b.meta.updated_at);
+
+    while (retained.length > TERMINAL_BACKEND_RETENTION_LIMIT) {
+      const index = retained.findIndex((backend) => backend.id !== excludeId);
+      if (index === -1) return;
+      const [backend] = retained.splice(index, 1);
+      const bridge = this.channelBridges.get(backend.id);
+      if (bridge) {
+        try {
+          bridge.dispose();
+        } catch {
+          // Best effort
+        }
+        this.channelBridges.delete(backend.id);
+      }
+      const meta = { ...backend.meta };
+      backend.destroy();
+      this.sessions.set(backend.id, new DormantBackend(meta));
+    }
   }
 
   private recordUsage(id: string, event: ConsoleStreamEvent): void {

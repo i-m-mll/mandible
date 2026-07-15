@@ -2850,6 +2850,15 @@ const MIGRATIONS: Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_session_instruction_artifacts_version
         ON session_instruction_artifacts(artifact_version_id)`
     ]
+  },
+  {
+    version: 103,
+    name: "conversation_empty_ingest_state",
+    // Issue: 861c26c — remember source fingerprints that parsed empty so
+    // reconcile and watcher paths do not repeatedly parse unchanged files.
+    // The guarded helper makes schema-rewind migration replays idempotent while
+    // rejecting partially applied or otherwise divergent column definitions.
+    statements: []
   }
 ];
 
@@ -2961,8 +2970,14 @@ export function migrate(db: Db): void {
         if (migration.version === 101) {
           ensureArtifactVersionParentColumn(db);
         }
+        if (migration.version === 103) {
+          ensureConversationEmptyIngestColumns(db);
+        }
         for (const statement of migration.statements) {
           db.exec(statement);
+        }
+        if (migration.version === 103) {
+          verifyConversationEmptyIngestSchema(db);
         }
         setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
       }
@@ -4629,6 +4644,58 @@ function ensureArtifactVersionParentColumn(db: Db): void {
   const columns = tableColumnNames(db, "artifact_versions");
   if (!columns.has("parent_version_id")) {
     db.exec("ALTER TABLE artifact_versions ADD COLUMN parent_version_id TEXT");
+  }
+}
+
+function ensureConversationEmptyIngestColumns(db: Db): void {
+  if (!tableExists(db, "conversation_ingest_state")) {
+    throw new Error(
+      "migration 103 precondition: table conversation_ingest_state is missing",
+    );
+  }
+  const columns = tableColumnNames(db, "conversation_ingest_state");
+  const hasMtime = columns.has("empty_source_mtime");
+  const hasSize = columns.has("empty_source_size");
+  if (hasMtime !== hasSize) {
+    throw new Error(
+      "migration 103 precondition: conversation_ingest_state must have either both empty-source columns or neither",
+    );
+  }
+  if (hasMtime) {
+    return;
+  }
+  db.exec("ALTER TABLE conversation_ingest_state ADD COLUMN empty_source_mtime REAL");
+  db.exec("ALTER TABLE conversation_ingest_state ADD COLUMN empty_source_size INTEGER");
+}
+
+function verifyConversationEmptyIngestSchema(db: Db): void {
+  if (!tableExists(db, "conversation_ingest_state")) {
+    throw new Error(
+      "migration 103 verification: table conversation_ingest_state is missing",
+    );
+  }
+  const columns = db.prepare("PRAGMA table_info(conversation_ingest_state)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>;
+  const expected = new Map([
+    ["empty_source_mtime", "REAL"],
+    ["empty_source_size", "INTEGER"],
+  ]);
+  for (const [name, type] of expected) {
+    const column = columns.find((candidate) => candidate.name === name);
+    if (!column) {
+      throw new Error(
+        `migration 103 verification: conversation_ingest_state is missing expected column '${name}'`,
+      );
+    }
+    if (column.type.toUpperCase() !== type || column.notnull !== 0 || column.dflt_value !== null) {
+      throw new Error(
+        `migration 103 verification: conversation_ingest_state.${name} must be nullable ${type} with no default`,
+      );
+    }
   }
 }
 

@@ -5,7 +5,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { openDb, type Db } from "../src/db.js";
-import { configureDaemonLogger, rotateStderrLogSegments } from "../src/daemon-log.js";
+import {
+  configureDaemonLogger,
+  pruneDaemonLogs,
+  rotateStderrLogSegments,
+  runDaemonLogMaintenance,
+} from "../src/daemon-log.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { registerSystemRoutes } from "../src/routes/system.js";
 import { Router, createServer, type RouteHandler, type RouteOptions, type RouteRegistrar } from "../src/server.js";
@@ -88,10 +93,13 @@ function request(query: Record<string, string>): RequestLike {
 }
 
 describe("daemon logger", () => {
-  it("inserts debug rows into daemon_log even when stderr LOG_LEVEL would hide them", () => {
+  it("persists info and above while dropping debug noise", () => {
     const logger = configureDaemonLogger(db);
 
-    logger("debug", "debug_row_kept", {
+    logger("debug", "debug_row_dropped", {
+      subsystem: "test",
+    });
+    logger("info", "info_row_kept", {
       subsystem: "test",
       issue_id: "issue-1",
       auth_request_id: "auth-1",
@@ -100,21 +108,28 @@ describe("daemon logger", () => {
       repo_id: "repo-1",
       value: 42,
     });
+    logger("warn", "warn_row_kept", { subsystem: "test" });
+    logger("error", "error_row_kept", { subsystem: "test" });
 
-    const row = db
-      .prepare("SELECT * FROM daemon_log WHERE event = ?")
-      .get("debug_row_kept") as Record<string, unknown>;
-    expect(row).toMatchObject({
-      level: "debug",
-      event: "debug_row_kept",
-      subsystem: "test",
+    const rows = db
+      .prepare("SELECT level, event FROM daemon_log ORDER BY ts, rowid")
+      .all() as Array<{ level: string; event: string }>;
+    expect(rows).toEqual([
+      { level: "info", event: "info_row_kept" },
+      { level: "warn", event: "warn_row_kept" },
+      { level: "error", event: "error_row_kept" },
+    ]);
+    const info = db
+      .prepare("SELECT * FROM daemon_log WHERE event = 'info_row_kept'")
+      .get() as Record<string, unknown>;
+    expect(info).toMatchObject({
       issue_id: "issue-1",
       auth_request_id: "auth-1",
       artifact_id: "artifact-1",
       session_id: "session-1",
       repo_id: "repo-1",
     });
-    expect(JSON.parse(String(row.fields_json))).toMatchObject({ value: 42 });
+    expect(JSON.parse(String(info.fields_json))).toMatchObject({ value: 42 });
   });
 
   it("rotates stderr log segments without truncating the active file in place", () => {
@@ -131,6 +146,71 @@ describe("daemon logger", () => {
 
     expect(fs.readFileSync(`${logPath}.1`, "utf8")).toBe("second-segment");
     expect(fs.readFileSync(`${logPath}.2`, "utf8")).toBe("first-segment");
+  });
+});
+
+describe("daemon log retention", () => {
+  const dayMs = 24 * 60 * 60 * 1_000;
+  const now = Date.UTC(2026, 6, 14);
+
+  function insertLog(id: string, ts: number): void {
+    db.prepare(
+      `INSERT INTO daemon_log (id, ts, level, event, subsystem, fields_json)
+       VALUES (?, ?, 'info', 'retention_test', 'test', '{}')`,
+    ).run(id, ts);
+  }
+
+  it("deletes only expired rows in bounded resumable batches", async () => {
+    db.prepare("UPDATE settings SET value = '3' WHERE key = 'log_retention_days'").run();
+    for (let index = 0; index < 7; index += 1) {
+      insertLog(`old-${index}`, now - 4 * dayMs - index);
+    }
+    insertLog("cutoff", now - 3 * dayMs);
+    insertLog("new", now - dayMs);
+
+    const first = await pruneDaemonLogs(db, { now, batchSize: 2, maxBatches: 2, yieldMs: 0 });
+    expect(first).toMatchObject({ retentionDays: 3, deleted: 4, batches: 2, hasMore: true });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 5 });
+
+    const second = await pruneDaemonLogs(db, { now, batchSize: 2, maxBatches: 10, yieldMs: 0 });
+    expect(second).toMatchObject({ retentionDays: 3, deleted: 3, hasMore: false });
+    expect(db.prepare("SELECT id FROM daemon_log ORDER BY id").all()).toEqual([
+      { id: "cutoff" },
+      { id: "new" },
+    ]);
+  });
+
+  it.each([undefined, "", "nope", "0", "366"])(
+    "falls back to seven days for missing or invalid setting %s",
+    async (value) => {
+      if (value === undefined) {
+        db.prepare("DELETE FROM settings WHERE key = 'log_retention_days'").run();
+      } else {
+        db.prepare("UPDATE settings SET value = ? WHERE key = 'log_retention_days'").run(value);
+      }
+      insertLog("expired", now - 8 * dayMs);
+      insertLog("kept", now - 6 * dayMs);
+
+      const result = await pruneDaemonLogs(db, { now, yieldMs: 0 });
+
+      expect(result.retentionDays).toBe(7);
+      expect(db.prepare("SELECT id FROM daemon_log").all()).toEqual([{ id: "kept" }]);
+    },
+  );
+
+  it("guards blocking vacuum behind explicit acknowledgement", () => {
+    expect(() => runDaemonLogMaintenance(db, { vacuum: true })).toThrow(/allowBlockingVacuum/);
+
+    const checkpoint = runDaemonLogMaintenance(db, { checkpoint: true });
+    const vacuum = runDaemonLogMaintenance(db, {
+      checkpoint: false,
+      vacuum: true,
+      allowBlockingVacuum: true,
+    });
+
+    expect(checkpoint.vacuumed).toBe(false);
+    expect(checkpoint.checkpoint).toBeInstanceOf(Array);
+    expect(vacuum).toEqual({ checkpoint: null, vacuumed: true });
   });
 });
 

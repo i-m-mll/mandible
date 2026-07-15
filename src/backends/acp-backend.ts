@@ -27,6 +27,7 @@ import {
 import { suppressAcpIngestForSession } from "../ingestion.js";
 
 const EVENT_LOG_LIMIT = 2000;
+export const ACP_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
 const PERMISSION_TIMEOUT_MS = 120_000;
 
 const POLLUTED_ENV_KEYS_PREFIX = ["GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"];
@@ -489,6 +490,7 @@ implements
 
   private handleMessage(message: AcpJsonRpcMessage): void {
     this.handleHandshakeMessage(message);
+    const previousUsage = this.mapper.cumulativeUsage;
     const normalized = normalizeAcpIncoming(message, this.mapper, this.id);
     for (const event of normalized.events) {
       this.storeAndBroadcast(event);
@@ -532,14 +534,17 @@ implements
       this.emit("permission", normalized.permission.request);
     }
 
-    if (this.mapper.cumulativeUsage) {
-      this.usageLog = [{
+    if (this.mapper.cumulativeUsage && this.mapper.cumulativeUsage !== previousUsage) {
+      this.usageLog.push({
         console_session_id: this.id,
         provider_session_id: this.meta.provider_session_id ?? this.mapper.sessionId,
         recorded_at: Date.now(),
         usage: this.mapper.cumulativeUsage,
         ...normalizeAcpUsage(this.mapper.cumulativeUsage),
-      }];
+      });
+      if (this.usageLog.length > ACP_USAGE_LOG_LIMIT) {
+        this.usageLog = this.usageLog.slice(this.usageLog.length - ACP_USAGE_LOG_LIMIT);
+      }
     }
   }
 

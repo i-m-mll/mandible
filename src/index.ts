@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
-import { configureDaemonLogger, getDaemonLogger } from "./daemon-log.js";
+import {
+  configureDaemonLogger,
+  getDaemonLogger,
+  startDaemonLogRetention,
+} from "./daemon-log.js";
 import { resolveInstanceInfo } from "./instance-policy.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
@@ -41,11 +45,13 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
-import { startIngestion, stopIngestion } from "./ingestion.js";
+import { startIngestion, stopIngestionGracefully } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
 import { getChannelRegistry } from "./channel-registry.js";
 import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
+import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
+import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
 
 const DEFAULT_PORT = 19420;
 const DOTFILES_ROOT = resolveDotfilesRoot();
@@ -76,9 +82,21 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   setDaemonReady(false);
   const port = options.port ?? getPort();
   let logger = getDaemonLogger();
+  const memoryDiagnostics = new DaemonMemoryDiagnostics({
+    logger: (level, message, details) => logger(level, message, details),
+    warningFraction: memoryWarningFractionFromEnv(),
+  });
+  memoryDiagnostics.sample();
   const dbPath = options.dbPath ?? getDbPath();
   const db = openDb(dbPath);
+  // Synchronous lock waits happen on the request thread. Clients already retry
+  // transient contention, so keep this bounded while the ingestion actor uses
+  // its own connection and explicit backoff.
+  db.pragma("busy_timeout = 250");
   logger = configureDaemonLogger(db);
+  const eventLoopDiagnostics = new EventLoopLagDiagnostics(
+    (level, message, details) => logger(level, message, details),
+  );
   const instance = resolveInstanceInfo({
     dbPath,
     dbPathSource: options.dbPath
@@ -176,6 +194,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     isRebuilding: () => authQueue.isRebuilding,
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
+    getMemoryDiagnostics: () => memoryDiagnostics.sample(),
+    getEventLoopDiagnostics: () => eventLoopDiagnostics.sample(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
   });
@@ -215,6 +235,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // silently (e.g., due to an OS-level error that didn't emit an 'error'
   // event) while SSE streams keep the process alive.
   const healthCheckTimer = setInterval(() => {
+    memoryDiagnostics.sample();
+    eventLoopDiagnostics.sample();
     if (!server.listening) {
       logger("error", "self_health_check_failed", {
         message: "server.listening is false, exiting for supervisor restart"
@@ -240,7 +262,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Start conversation ingestion watchers
   try {
-    startIngestion(logger);
+    startIngestion(logger, {
+      dbPath,
+      getBackgroundBackoffMs: () => eventLoopDiagnostics.sample().backgroundBackoffMs,
+    });
   } catch (error) {
     logger("warn", "ingestion_start_failed", { error: String(error) });
   }
@@ -336,6 +361,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Start scheduled metadata backups
   startBackupScheduler();
 
+  // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
+  // paced passes. Disk-reclaiming VACUUM remains an explicit maintenance task.
+  const daemonLogRetention = startDaemonLogRetention(db, logger);
+
   let closing = false;
   const close = async () => {
     if (closing) {
@@ -362,8 +391,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     try { sessionManager.close(); } catch { /* best effort */ }
     wss.close();
     sse.closeAll();
-    stopIngestion();
+    await stopIngestionGracefully();
     stopBackupScheduler();
+    daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
@@ -380,6 +410,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     }
     await new Promise<void>((resolve) => server.close(() => resolve()));
     clearInterval(healthCheckTimer);
+    eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);
     db.close();
     removePidFile(options.pidFilePath);

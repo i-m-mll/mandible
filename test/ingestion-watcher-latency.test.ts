@@ -60,6 +60,16 @@ async function waitForBlockCount(filePath: string, expected: number, timeoutMs =
   throw new Error(`Timed out waiting for block_count=${expected}`);
 }
 
+async function waitForConversationGone(filePath: string, timeoutMs = 3000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const existing = db?.prepare("SELECT id FROM conversations WHERE source_path = ?").get(filePath);
+    if (!existing) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for deleted watched conversation cleanup");
+}
+
 beforeEach(async () => {
   savedHome = process.env.HOME;
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ingestion-watch-"));
@@ -123,5 +133,29 @@ describe("watched tail ingestion latency", () => {
         && entry.details?.delta === true
       ),
     ).toBe(true);
+  });
+
+  it("transactionally removes an unstarred conversation when its watched source disappears", async () => {
+    const ingestion = await import("../src/ingestion.js");
+    const sessionDir = path.join(process.env.HOME!, ".codex", "sessions", "2026", "07", "02");
+    await fsp.mkdir(sessionDir, { recursive: true });
+    const sessionPath = path.join(sessionDir, "rollout-2026-07-02T00-00-00-watchdelete.jsonl");
+    await fsp.writeFile(sessionPath, initialRows(), "utf8");
+    await ingestion.triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+    await waitForBlockCount(sessionPath, 1);
+
+    ingestion.startIngestion(() => undefined);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await fsp.rm(sessionPath);
+    await waitForConversationGone(sessionPath);
+
+    expect(
+      db?.prepare(`
+        SELECT COUNT(*) AS count
+        FROM conversation_blocks b
+        LEFT JOIN conversations c ON c.id = b.conversation_id
+        WHERE c.id IS NULL
+      `).get(),
+    ).toMatchObject({ count: 0 });
   });
 });
