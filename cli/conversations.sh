@@ -285,8 +285,10 @@ def decompress(content: bytes | str, compressed: int) -> str:
 
 
 def connect(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=5.0, isolation_level=None)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout = 5000")
+    conn.execute("PRAGMA query_only = ON")
     return conn
 
 
@@ -435,14 +437,17 @@ def main() -> int:
     export_parser.add_argument("--format", default="markdown", choices=["json", "markdown"])
     args = parser.parse_args(argv)
     conn = connect(db_path)
-    if args.command == "list":
-        return list_cmd(conn, args)
-    if args.command == "show":
-        return show_cmd(conn, args)
-    if args.command == "export":
-        return export_cmd(conn, args)
-    usage()
-    return 2
+    try:
+        if args.command == "list":
+            return list_cmd(conn, args)
+        if args.command == "show":
+            return show_cmd(conn, args)
+        if args.command == "export":
+            return export_cmd(conn, args)
+        usage()
+        return 2
+    finally:
+        conn.close()
 
 
 if __name__ == "__main__":

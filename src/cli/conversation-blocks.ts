@@ -108,30 +108,36 @@ function runConversations(args: CliArgs): void {
   const ident = args.positional[1];
   if (!dbPath || !ident) throw new Error("missing database path or conversation id");
   const db = new Database(dbPath, { readonly: true });
-  const conversation = db.prepare(`
-    SELECT * FROM conversations
-    WHERE id = ? OR session_id = ? OR id LIKE ?
-    ORDER BY started_at DESC
-    LIMIT 1
-  `).get(ident, ident, `${ident}%`) as ConversationLike | undefined;
-  if (!conversation?.id) throw new Error(`conversation not found: ${ident}`);
-  const rows = db.prepare(`
-    SELECT id, conversation_id, type, role, content, compressed, position, timestamp, parent_id, metadata_json
-    FROM conversation_blocks
-    WHERE conversation_id = ?
-    ORDER BY position ASC
-  `).all(conversation.id) as Array<InspectableBlock & { compressed: number; content: Buffer | string }>;
-  const blocks = rows.map((row) => ({
-    ...row,
-    content: decompressContent(row.content, row.compressed === 1),
-  }));
-  const filters = filterOptions(args);
-  const filtered = filterBlocks(blocks, filters);
-  if (args.json) {
-    const provider = typeof conversation.source === "string" ? conversation.source : null;
-    console.log(JSON.stringify(makeEnvelope("database", provider, conversation, filters, filtered, provider ? getParserCapability(provider as never) : null), null, 2));
-  } else {
-    printHuman(filtered);
+  db.pragma("busy_timeout = 5000");
+  db.pragma("query_only = ON");
+  try {
+    const conversation = db.prepare(`
+      SELECT * FROM conversations
+      WHERE id = ? OR session_id = ? OR id LIKE ?
+      ORDER BY started_at DESC
+      LIMIT 1
+    `).get(ident, ident, `${ident}%`) as ConversationLike | undefined;
+    if (!conversation?.id) throw new Error(`conversation not found: ${ident}`);
+    const rows = db.prepare(`
+      SELECT id, conversation_id, type, role, content, compressed, position, timestamp, parent_id, metadata_json
+      FROM conversation_blocks
+      WHERE conversation_id = ?
+      ORDER BY position ASC
+    `).all(conversation.id) as Array<InspectableBlock & { compressed: number; content: Buffer | string }>;
+    const blocks = rows.map((row) => ({
+      ...row,
+      content: decompressContent(row.content, row.compressed === 1),
+    }));
+    const filters = filterOptions(args);
+    const filtered = filterBlocks(blocks, filters);
+    if (args.json) {
+      const provider = typeof conversation.source === "string" ? conversation.source : null;
+      console.log(JSON.stringify(makeEnvelope("database", provider, conversation, filters, filtered, provider ? getParserCapability(provider as never) : null), null, 2));
+    } else {
+      printHuman(filtered);
+    }
+  } finally {
+    db.close();
   }
 }
 
