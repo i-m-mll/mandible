@@ -38,6 +38,10 @@ export interface HealthResponse {
   // not strictly true, so a freshly-listening-but-still-starting process does
   // not let users fire actions into a half-initialized daemon.
   ready?: boolean;
+  // Lightweight, constant-space process diagnostics. Optional for response
+  // compatibility with older daemons and test servers that do not wire a
+  // process-lifetime collector.
+  memory?: import("./daemon-memory.js").DaemonMemorySnapshot;
 }
 
 export type InstanceRole = "main" | "preview" | "dev" | "test";
