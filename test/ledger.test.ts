@@ -1034,5 +1034,7 @@ describe("ledger backup contract", () => {
     expect(unclassified, "metadata backup table classification drift").toEqual([]);
     expect(backedUp.has("conversation_blocks")).toBe(false);
     expect(excluded.has("conversation_blocks")).toBe(true);
+    expect(backedUp.has("daemon_log")).toBe(false);
+    expect(excluded.has("daemon_log")).toBe(true);
   });
 });
