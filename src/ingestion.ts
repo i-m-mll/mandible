@@ -145,6 +145,8 @@ type IngestAppendState = {
   line_count: number;
   tail_hash: string;
   partial_line: string;
+  empty_source_mtime: number | null;
+  empty_source_size: number | null;
 };
 
 type WorkflowIngestState = {
@@ -557,7 +559,14 @@ async function countCompleteLines(filePath: string): Promise<number> {
 
 function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestAppendState | null {
   const row = db.prepare(`
-    SELECT file_path, byte_offset, line_count, tail_hash, partial_line
+    SELECT
+      file_path,
+      byte_offset,
+      line_count,
+      tail_hash,
+      partial_line,
+      empty_source_mtime,
+      empty_source_size
     FROM conversation_ingest_state
     WHERE file_path = ?
   `).get(filePath) as IngestAppendState | undefined;
@@ -581,6 +590,8 @@ function writeAppendState(
       line_count = excluded.line_count,
       tail_hash = excluded.tail_hash,
       partial_line = excluded.partial_line,
+      empty_source_mtime = NULL,
+      empty_source_size = NULL,
       updated_at = excluded.updated_at
   `).run(
     state.file_path,
@@ -590,6 +601,48 @@ function writeAppendState(
     state.partial_line,
     Date.now(),
   );
+}
+
+function writeEmptyIngestState(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+  stat: fs.Stats,
+): void {
+  db.prepare(`
+    INSERT INTO conversation_ingest_state (
+      file_path,
+      byte_offset,
+      line_count,
+      tail_hash,
+      partial_line,
+      updated_at,
+      empty_source_mtime,
+      empty_source_size
+    ) VALUES (?, ?, 0, '', '', ?, ?, ?)
+    ON CONFLICT(file_path) DO UPDATE SET
+      byte_offset = excluded.byte_offset,
+      line_count = 0,
+      tail_hash = '',
+      partial_line = '',
+      updated_at = excluded.updated_at,
+      empty_source_mtime = excluded.empty_source_mtime,
+      empty_source_size = excluded.empty_source_size
+  `).run(filePath, stat.size, Date.now(), stat.mtimeMs, stat.size);
+}
+
+function clearEmptyIngestState(db: ReturnType<typeof getDb>, filePath: string): void {
+  db.prepare(`
+    UPDATE conversation_ingest_state
+    SET empty_source_mtime = NULL,
+        empty_source_size = NULL,
+        updated_at = ?
+    WHERE file_path = ?
+  `).run(Date.now(), filePath);
+}
+
+function matchesEmptyIngestState(state: IngestAppendState | null, stat: fs.Stats): boolean {
+  return state?.empty_source_mtime === stat.mtimeMs
+    && state.empty_source_size === stat.size;
 }
 
 function isWorkflowIngestArtifactPath(filePath: string): boolean {
@@ -648,6 +701,8 @@ async function refreshAppendState(
     line_count: lineCount,
     tail_hash: tailHash ?? await hashFileTailAt(filePath, stat.size),
     partial_line: partialLine ?? await readTrailingPartialLine(filePath, stat.size),
+    empty_source_mtime: null,
+    empty_source_size: null,
   });
 }
 
@@ -955,6 +1010,14 @@ async function ingestFile(
     });
   }
 
+  const appendState = getAppendState(db, filePath);
+  if (!options.forceFull && matchesEmptyIngestState(appendState, stat)) {
+    return;
+  }
+  if (appendState?.empty_source_mtime !== null && appendState?.empty_source_mtime !== undefined) {
+    clearEmptyIngestState(db, filePath);
+  }
+
   // Quick mtime check first — if mtime hasn't changed, skip the expensive hash
   if (existing && Math.abs(existing.source_mtime - stat.mtimeMs) < 100) {
     if (parser.source === "codex") {
@@ -981,7 +1044,6 @@ async function ingestFile(
     }
   }
 
-  const appendState = getAppendState(db, filePath);
   let ingestMode: IngestMode = "full";
   let appendInfo: {
     completeLineCount: number;
@@ -1108,6 +1170,7 @@ async function ingestFile(
         }
       }
     }
+    writeEmptyIngestState(db, filePath, stat);
     return;
   }
 
@@ -1673,6 +1736,22 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
     workflowPaths.set(row.file_path, row.source_mtime);
     dbPaths.set(row.file_path, row.source_mtime);
   }
+  const appendRows = db
+    .prepare(`
+      SELECT file_path, empty_source_mtime, empty_source_size
+      FROM conversation_ingest_state
+    `)
+    .all() as Array<{
+      file_path: string;
+      empty_source_mtime: number | null;
+      empty_source_size: number | null;
+    }>;
+  const appendPaths = new Set(appendRows.map((row) => row.file_path));
+  const emptyPaths = new Map(
+    appendRows
+      .filter((row) => row.empty_source_mtime !== null && row.empty_source_size !== null)
+      .map((row) => [row.file_path, row] as const),
+  );
 
   // Scan filesystem using async generator — yields to the event loop every 50
   // directory entries so the HTTP server stays responsive during startup scans.
@@ -1694,7 +1773,14 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       try {
         const stat = await fs.promises.stat(filePath);
         const dbMtime = dbPaths.get(filePath);
+        const emptyState = emptyPaths.get(filePath);
 
+        if (
+          emptyState?.empty_source_mtime === stat.mtimeMs
+          && emptyState.empty_source_size === stat.size
+        ) {
+          continue;
+        }
         if (dbMtime === undefined || Math.abs(dbMtime - stat.mtimeMs) >= 100) {
           // New or modified file — queue for ingestion
           await ingestChanged(filePath);
@@ -1743,6 +1829,20 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       }
     });
     cleanupMissingWorkflow();
+  }
+
+  const missingAppendPaths = Array.from(appendPaths).filter((sourcePath) =>
+    scannedBases.some((base) => sourcePath === base || sourcePath.startsWith(`${base}${path.sep}`)) &&
+    !knownPaths.has(sourcePath)
+  );
+  if (missingAppendPaths.length > 0) {
+    const deleteState = db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?");
+    const cleanupMissingAppend = db.transaction(() => {
+      for (const sourcePath of missingAppendPaths) {
+        deleteState.run(sourcePath);
+      }
+    });
+    cleanupMissingAppend();
   }
 }
 

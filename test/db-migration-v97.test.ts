@@ -49,6 +49,8 @@ describe("migration v97: conversation append ingest state", () => {
       "tail_hash",
       "partial_line",
       "updated_at",
+      "empty_source_mtime",
+      "empty_source_size",
     ]));
     expect(indexNames("conversation_ingest_state")).toContain("idx_conversation_ingest_state_updated");
   });
