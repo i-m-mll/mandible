@@ -91,7 +91,7 @@ describe("backup routes", () => {
     return { routes, db };
   }
 
-  it("runs an in-process metadata dump, keeps ledger rows, and excludes conversation blocks", async () => {
+  it("runs an in-process metadata dump and excludes reproducible or runtime rows", async () => {
     const { routes, db } = await setupBackupRoutes();
     const dotfilesBin = path.join(tempHome, ".dotfiles", "bin");
     const sentinel = path.join(tempHome, "external-script-ran");
@@ -118,6 +118,17 @@ describe("backup routes", () => {
         (id, conversation_id, type, role, content, position)
        VALUES (?, ?, ?, ?, ?, ?)`,
     ).run("block_backup", "conv_backup", "message", "assistant", "large reproducible block", 1);
+    db.prepare(
+      `INSERT INTO daemon_log (id, ts, level, event, subsystem, fields_json)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "log_backup",
+      1,
+      "debug",
+      "backup_runtime_sentinel",
+      "backup-test",
+      '{"payload":"large operational telemetry"}',
+    );
 
     const destination = path.join(tempHome, "configured", "mandible-metadata.sql");
     db.prepare("INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)").run(
@@ -142,6 +153,9 @@ describe("backup routes", () => {
     expect(dump).toContain("Backup Project");
     expect(dump).not.toContain("conversation_blocks");
     expect(dump).not.toContain("large reproducible block");
+    expect(dump).not.toContain("daemon_log");
+    expect(dump).not.toContain("backup_runtime_sentinel");
+    expect(dump).not.toContain("large operational telemetry");
   });
 
   it("uses a non-dotfiles default destination and accepts a settings override", async () => {
