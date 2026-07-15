@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -189,5 +190,38 @@ describe("CodexParser", () => {
       percent: 20,
       approximate: false,
     });
+  });
+
+  it("streams large transcripts and tolerates a truncated final row", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-codex-large-parser-"));
+    tempRoots.push(root);
+    const sessionDir = path.join(root, ".codex", "sessions", "2026", "05", "16");
+    await fs.mkdir(sessionDir, { recursive: true });
+    const sessionPath = path.join(sessionDir, "rollout-large-session.jsonl");
+    const rows = [{
+      type: "session_meta",
+      timestamp: "2026-05-16T00:00:00.000Z",
+      payload: { id: "large-codex", cwd: "/tmp/project" },
+    }, {
+      type: "event_msg",
+      timestamp: "2026-05-16T00:00:00.500Z",
+      payload: { type: "user_message", message: "Large Codex prompt" },
+    }, ...Array.from({ length: 5_000 }, (_, index) => ({
+      type: "response_item",
+      timestamp: `2026-05-16T00:${String(Math.floor(index / 60) % 60).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: `answer-${index}` }],
+      },
+    }))];
+    const raw = `${rows.map((row) => JSON.stringify(row)).join("\n")}\n{"type":"truncated"`;
+    await fs.writeFile(sessionPath, raw, "utf8");
+
+    const result = await new CodexParser().parse(sessionPath);
+
+    expect(result?.blocks).toHaveLength(5_000);
+    expect(result?.conversation.title).toBe("Large Codex prompt");
+    expect(result?.conversation.source_hash).toBe(crypto.createHash("sha256").update(raw).digest("hex"));
   });
 });

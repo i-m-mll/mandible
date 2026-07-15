@@ -1,7 +1,6 @@
 // Parser for Claude Code JSONL conversation files.
 // Format: ~/.claude/projects/<encoded-path>/<uuid>.jsonl
 
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -12,6 +11,7 @@ import type {
   ParseResult,
 } from "./types.js";
 import { buildClaudeApproxContextUsage } from "./context-usage.js";
+import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
 // --- Raw JSONL record shapes ---
 
@@ -139,7 +139,7 @@ export class ClaudeParser implements ConversationParser {
   }
 
   async parse(filePath: string): Promise<ParseResult | null> {
-    const raw = await fs.promises.readFile(filePath, "utf8");
+    const { records, sourceHash } = await readJsonlFileRecords<ClaudeRecord>(filePath);
     let sourceMtime = 0;
     try {
       const stat = await fs.promises.stat(filePath);
@@ -147,39 +147,30 @@ export class ClaudeParser implements ConversationParser {
     } catch {
       // ignore
     }
-    return this.parseRaw(filePath, raw, {
+    return this.parseRecords(filePath, records, {
       baseBlockCount: 0,
-      sourceHash: crypto.createHash("sha256").update(raw).digest("hex"),
+      sourceHash,
       sourceMtime,
     });
   }
 
   async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
-    return this.parseRaw(input.filePath, input.raw, {
+    return this.parseRecords(input.filePath, parseJsonlStringRecords<ClaudeRecord>(input.raw), {
       baseBlockCount: input.baseBlockCount,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
   }
 
-  private async parseRaw(
+  private async parseRecords(
     filePath: string,
-    raw: string,
+    records: ClaudeRecord[],
     options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
-    const lines = raw.split("\n").filter((line) => line.trim().length > 0);
-
-    const records: ClaudeRecord[] = [];
     let hasSidechainRecord = false;
-    for (const line of lines) {
-      try {
-        const record = JSON.parse(line) as ClaudeRecord;
-        if (record.isSidechain) {
-          hasSidechainRecord = true;
-        }
-        records.push(record);
-      } catch {
-        // Skip malformed lines
+    for (const record of records) {
+      if (record.isSidechain) {
+        hasSidechainRecord = true;
       }
     }
     const subagentPath = parseClaudeSubagentPath(filePath);

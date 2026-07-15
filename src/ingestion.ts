@@ -9,7 +9,7 @@ import * as os from "node:os";
 import { randomUUID } from "node:crypto";
 import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
-import { compressContent, compressContentAsync } from "./compression.js";
+import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
 import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
@@ -38,6 +38,84 @@ const WATCH_CONFIGS = [
 const DEBOUNCE_MS = 200;
 const RECONCILE_INTERVAL_MS = 60_000;
 const INGEST_TAIL_HASH_BYTES = 4096;
+export const INGEST_COMPRESSION_CONCURRENCY = 4;
+
+interface StagedCompressedContents {
+  readonly length: number;
+  read(index: number): Buffer;
+  dispose(): Promise<void>;
+}
+
+interface StagedContentRef {
+  offset: number;
+  length: number;
+}
+
+async function writeBufferAt(handle: fs.promises.FileHandle, buffer: Buffer, offset: number): Promise<void> {
+  let written = 0;
+  while (written < buffer.length) {
+    const result = await handle.write(buffer, written, buffer.length - written, offset + written);
+    written += result.bytesWritten;
+  }
+}
+
+/**
+ * Compress in small ordered batches and spool results outside V8's retained heap.
+ * The final SQLite transaction reads one staged buffer at a time, so a full
+ * re-ingest never keeps every compressed block Buffer alive concurrently.
+ */
+export async function stageCompressedBlockContents(
+  contents: readonly string[],
+  compressor: (content: string) => Promise<Buffer> = compressContentAsync,
+): Promise<StagedCompressedContents> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "mandible-ingest-compression-"));
+  const spoolPath = path.join(dir, "blocks.gzpack");
+  const handle = await fs.promises.open(spoolPath, "w+");
+  const refs: StagedContentRef[] = [];
+  let offset = 0;
+  let disposed = false;
+
+  try {
+    for (let start = 0; start < contents.length; start += INGEST_COMPRESSION_CONCURRENCY) {
+      const batch = await Promise.all(
+        contents
+          .slice(start, start + INGEST_COMPRESSION_CONCURRENCY)
+          .map((content) => compressor(content)),
+      );
+      for (const compressed of batch) {
+        await writeBufferAt(handle, compressed, offset);
+        refs.push({ offset, length: compressed.length });
+        offset += compressed.length;
+      }
+    }
+  } catch (error) {
+    await handle.close().catch(() => undefined);
+    await fs.promises.rm(dir, { recursive: true, force: true });
+    throw error;
+  }
+
+  return {
+    length: refs.length,
+    read(index: number): Buffer {
+      const ref = refs[index];
+      if (!ref) throw new RangeError(`missing staged compressed content at index ${index}`);
+      const buffer = Buffer.allocUnsafe(ref.length);
+      let read = 0;
+      while (read < buffer.length) {
+        const bytesRead = fs.readSync(handle.fd, buffer, read, buffer.length - read, ref.offset + read);
+        if (bytesRead === 0) throw new Error(`short read for staged compressed content at index ${index}`);
+        read += bytesRead;
+      }
+      return buffer;
+    },
+    async dispose(): Promise<void> {
+      if (disposed) return;
+      disposed = true;
+      await handle.close().catch(() => undefined);
+      await fs.promises.rm(dir, { recursive: true, force: true });
+    },
+  };
+}
 
 // --- State ---
 
@@ -552,9 +630,14 @@ async function readTrailingPartialLine(filePath: string, size: number): Promise<
   }
 }
 
-async function countCompleteLines(filePath: string): Promise<number> {
-  const raw = await fs.promises.readFile(filePath, "utf8");
-  return raw.length === 0 ? 0 : (raw.match(/\n/g) ?? []).length;
+export async function countCompleteLines(filePath: string): Promise<number> {
+  let count = 0;
+  for await (const chunk of fs.createReadStream(filePath)) {
+    for (const byte of chunk as Buffer) {
+      if (byte === 0x0a) count += 1;
+    }
+  }
+  return count;
 }
 
 function getAppendState(db: ReturnType<typeof getDb>, filePath: string): IngestAppendState | null {
@@ -1302,12 +1385,10 @@ async function ingestFile(
     return;
   }
 
-  // Pre-compress block content async before entering the transaction — gzip is
-  // CPU-bound and blocks the event loop if run synchronously inside db.transaction().
-  // With active conversations appending blocks every few seconds this was causing
-  // all HTTP requests to time out. Compress outside the transaction, pass buffers in.
-  const compressedContents = await Promise.all(
-    newBlocks.map((block) => compressContentAsync(block.content))
+  // Pre-compress outside the transaction in bounded batches. Compressed bytes
+  // are staged on disk so full re-ingests do not retain every output Buffer.
+  const compressedContents = await stageCompressedBlockContents(
+    newBlocks.map((block) => block.content),
   );
 
   // Atomic upsert: for full re-ingest, delete old data and re-insert;
@@ -1391,7 +1472,7 @@ async function ingestFile(
 
     // Insert blocks — content is gzip-compressed as BLOB (Bug: e5a945d)
     // In delta mode, newBlocks contains only the newly appended blocks.
-    // compressedContents was pre-computed async above, outside this transaction.
+    // compressedContents was staged async above, outside this transaction.
     const insertBlock = db.prepare(`
       INSERT INTO conversation_blocks (
         id, conversation_id, type, role, content, position,
@@ -1419,7 +1500,7 @@ async function ingestFile(
         conversationId,
         block.type,
         block.role,
-        compressedContents[i],
+        compressedContents.read(i),
         block.position,
         block.timestamp,
         block.parent_id,
@@ -1449,94 +1530,98 @@ async function ingestFile(
         return;
       }
       try {
-        // Pre-compress all blocks async before the recovery transaction.
-        const recoveryCompressedContents = await Promise.all(
-          result.blocks.map((block) => compressContentAsync(block.content))
+        // Re-stage every block for the clean recovery transaction.
+        const recoveryCompressedContents = await stageCompressedBlockContents(
+          result.blocks.map((block) => block.content),
         );
-        const recoveryUpsert = db.transaction(() => {
-          // Purge all stale rows for this source_path, then do a clean full insert
-          const staleIds = db.prepare(
-            "SELECT id FROM conversations WHERE source_path = ?"
-          ).all(filePath) as Array<{ id: string }>;
-          for (const row of staleIds) {
-            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
-            db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
-          }
-          // Also purge any blocks that share IDs with the blocks we're about to insert
-          // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
-          const newIds = result.blocks.map((block) =>
-            crypto.createHash("sha256")
-              .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-              .digest("hex").slice(0, 16)
-          );
-          if (newIds.length > 0) {
-            const placeholders = newIds.map(() => "?").join(",");
-            db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
-          }
-          // Re-insert conversation
-          db.prepare(`
-            INSERT INTO conversations (
-              id, source, source_path, source_hash, source_mtime,
-              title, summary, started_at, ended_at, block_count,
-              session_id, project_path, cwd, branch, model, cli_version,
-              starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
-              created_at, updated_at
-            ) VALUES (
-              ?, ?, ?, ?, ?,
-              ?, ?, ?, ?, ?,
-              ?, ?, ?, ?, ?, ?,
-              0, NULL, NULL, ?, ?, ?,
-              datetime('now'), datetime('now')
-            )
-          `).run(
-            conversationId,
-            result.conversation.source,
-            result.conversation.source_path,
-            result.conversation.source_hash,
-            result.conversation.source_mtime,
-            result.conversation.title,
-            result.conversation.summary,
-            result.conversation.started_at,
-            result.conversation.ended_at,
-            result.conversation.block_count,
-            result.conversation.session_id,
-            result.conversation.project_path,
-            result.conversation.cwd,
-            result.conversation.branch,
-            result.conversation.model,
-            result.conversation.cli_version,
-            parentConversationId,
-            isSidechain ? 1 : 0,
-            agentId,
-          );
-          // Re-insert all blocks using pre-compressed buffers.
-          const insertBlock2 = db.prepare(`
-            INSERT INTO conversation_blocks (
-              id, conversation_id, type, role, content, position,
-              timestamp, parent_id, metadata_json, compressed,
-              dag_uuid, dag_parent_uuid
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
-          `);
-          for (let i = 0; i < result.blocks.length; i++) {
-            const block = result.blocks[i];
-            const blockHash = crypto
-              .createHash("sha256")
-              .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-              .digest("hex")
-              .slice(0, 16);
-            insertBlock2.run(
-              blockHash, conversationId, block.type, block.role,
-              recoveryCompressedContents[i], block.position,
-              block.timestamp, block.parent_id, JSON.stringify(block.metadata),
-              block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
+        try {
+          const recoveryUpsert = db.transaction(() => {
+            // Purge all stale rows for this source_path, then do a clean full insert
+            const staleIds = db.prepare(
+              "SELECT id FROM conversations WHERE source_path = ?"
+            ).all(filePath) as Array<{ id: string }>;
+            for (const row of staleIds) {
+              db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
+              db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+            }
+            // Also purge any blocks that share IDs with the blocks we're about to insert
+            // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
+            const newIds = result.blocks.map((block) =>
+              crypto.createHash("sha256")
+                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
+                .digest("hex").slice(0, 16)
             );
-          }
-        });
-        recoveryUpsert();
-        logger("info", "ingestion_unique_recovery_succeeded", {
-          file: filePath,
-          blocks: result.blocks.length,
-        });
+            if (newIds.length > 0) {
+              const placeholders = newIds.map(() => "?").join(",");
+              db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
+            }
+            // Re-insert conversation
+            db.prepare(`
+              INSERT INTO conversations (
+                id, source, source_path, source_hash, source_mtime,
+                title, summary, started_at, ended_at, block_count,
+                session_id, project_path, cwd, branch, model, cli_version,
+                starred, label, notes, parent_conversation_id, is_sidechain, agent_id,
+                created_at, updated_at
+              ) VALUES (
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                0, NULL, NULL, ?, ?, ?,
+                datetime('now'), datetime('now')
+              )
+            `).run(
+              conversationId,
+              result.conversation.source,
+              result.conversation.source_path,
+              result.conversation.source_hash,
+              result.conversation.source_mtime,
+              result.conversation.title,
+              result.conversation.summary,
+              result.conversation.started_at,
+              result.conversation.ended_at,
+              result.conversation.block_count,
+              result.conversation.session_id,
+              result.conversation.project_path,
+              result.conversation.cwd,
+              result.conversation.branch,
+              result.conversation.model,
+              result.conversation.cli_version,
+              parentConversationId,
+              isSidechain ? 1 : 0,
+              agentId,
+            );
+            // Re-insert all blocks using staged compressed buffers.
+            const insertBlock2 = db.prepare(`
+              INSERT INTO conversation_blocks (
+                id, conversation_id, type, role, content, position,
+                timestamp, parent_id, metadata_json, compressed,
+                dag_uuid, dag_parent_uuid
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            `);
+            for (let i = 0; i < result.blocks.length; i++) {
+              const block = result.blocks[i];
+              const blockHash = crypto
+                .createHash("sha256")
+                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
+                .digest("hex")
+                .slice(0, 16);
+              insertBlock2.run(
+                blockHash, conversationId, block.type, block.role,
+                recoveryCompressedContents.read(i), block.position,
+                block.timestamp, block.parent_id, JSON.stringify(block.metadata),
+                block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
+              );
+            }
+          });
+          recoveryUpsert();
+          logger("info", "ingestion_unique_recovery_succeeded", {
+            file: filePath,
+            blocks: result.blocks.length,
+          });
+        } finally {
+          await recoveryCompressedContents.dispose();
+        }
       } catch (recoveryError) {
         logger("warn", "ingestion_db_error", {
           file: filePath,
@@ -1552,6 +1637,8 @@ async function ingestFile(
       });
       return;
     }
+  } finally {
+    await compressedContents.dispose();
   }
 
   await refreshAppendState(
