@@ -6,7 +6,11 @@ import { fileURLToPath } from "node:url";
 import type http from "node:http";
 import { WebSocketServer } from "ws";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
-import { configureDaemonLogger, getDaemonLogger } from "./daemon-log.js";
+import {
+  configureDaemonLogger,
+  getDaemonLogger,
+  startDaemonLogRetention,
+} from "./daemon-log.js";
 import { resolveInstanceInfo } from "./instance-policy.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
@@ -344,6 +348,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Start scheduled metadata backups
   startBackupScheduler();
 
+  // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
+  // paced passes. Disk-reclaiming VACUUM remains an explicit maintenance task.
+  const daemonLogRetention = startDaemonLogRetention(db, logger);
+
   let closing = false;
   const close = async () => {
     if (closing) {
@@ -372,6 +380,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     sse.closeAll();
     stopIngestion();
     stopBackupScheduler();
+    daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();
     navEnricher.stop();
