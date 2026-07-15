@@ -45,6 +45,7 @@ import { computePresetUnion } from "../presets.js";
 import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
 
 const EVENT_LOG_LIMIT = 2000;
+export const SDK_USAGE_LOG_LIMIT = EVENT_LOG_LIMIT;
 const PERMISSION_TIMEOUT_MS = 120_000;
 
 type UsageRow = Record<string, unknown>;
@@ -1130,6 +1131,9 @@ implements
       const usageRow = this.buildUsageRow(event);
       if (usageRow) {
         this.usageLog.push(usageRow);
+        if (this.usageLog.length > SDK_USAGE_LOG_LIMIT) {
+          this.usageLog = this.usageLog.slice(this.usageLog.length - SDK_USAGE_LOG_LIMIT);
+        }
       }
     }
 

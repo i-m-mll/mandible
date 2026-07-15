@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -175,5 +176,30 @@ describe("ClaudeParser", () => {
       approximate: true,
       model: "claude-opus",
     });
+  });
+
+  it("streams large transcripts and tolerates a truncated final row", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "mandible-claude-large-parser-"));
+    tempRoots.push(root);
+    const dir = path.join(root, ".claude", "projects", "-tmp-project");
+    await fs.mkdir(dir, { recursive: true });
+    const sessionPath = path.join(dir, "large-session.jsonl");
+    const rows = Array.from({ length: 5_000 }, (_, index) => JSON.stringify({
+      uuid: `row-${index}`,
+      type: index === 0 ? "user" : "assistant",
+      timestamp: `2026-05-16T00:${String(Math.floor(index / 60) % 60).padStart(2, "0")}:${String(index % 60).padStart(2, "0")}.000Z`,
+      sessionId: "large-session",
+      message: index === 0
+        ? { role: "user", content: "Large Claude prompt" }
+        : { role: "assistant", content: `answer-${index}` },
+    }));
+    const raw = `${rows.join("\n")}\n{"uuid":"truncated"`;
+    await fs.writeFile(sessionPath, raw, "utf8");
+
+    const result = await new ClaudeParser().parse(sessionPath);
+
+    expect(result?.blocks).toHaveLength(5_000);
+    expect(result?.conversation.title).toBe("Large Claude prompt");
+    expect(result?.conversation.source_hash).toBe(crypto.createHash("sha256").update(raw).digest("hex"));
   });
 });

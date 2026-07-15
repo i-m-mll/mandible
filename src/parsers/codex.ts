@@ -7,7 +7,6 @@
 //   event_msg     — events (user_message, agent_message, token_count, etc.)
 //   turn_context  — per-turn model/effort/cwd info
 
-import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type {
@@ -17,6 +16,7 @@ import type {
   ParseResult,
 } from "./types.js";
 import { extractCodexTokenCountContextUsage } from "./context-usage.js";
+import { parseJsonlStringRecords, readJsonlFileRecords } from "./jsonl.js";
 
 // --- Raw record shapes ---
 
@@ -158,17 +158,11 @@ export async function loadCodexSessionIndexTitle(filePath: string, sessionId: st
   if (!sessionIndexCache || sessionIndexCache.path !== indexPath || sessionIndexCache.mtimeMs !== stat.mtimeMs) {
     const titles = new Map<string, string>();
     try {
-      const raw = await fs.promises.readFile(indexPath, "utf8");
-      for (const line of raw.split("\n")) {
-        if (!line.trim()) continue;
-        try {
-          const entry = JSON.parse(line) as CodexSessionIndexEntry;
-          const title = typeof entry.thread_name === "string" ? entry.thread_name.trim() : "";
-          if (entry.id && title) {
-            titles.set(entry.id, title);
-          }
-        } catch {
-          // Skip malformed index rows.
+      const { records } = await readJsonlFileRecords<CodexSessionIndexEntry>(indexPath);
+      for (const entry of records) {
+        const title = typeof entry.thread_name === "string" ? entry.thread_name.trim() : "";
+        if (entry.id && title) {
+          titles.set(entry.id, title);
         }
       }
     } catch {
@@ -190,7 +184,7 @@ export class CodexParser implements ConversationParser {
   }
 
   async parse(filePath: string): Promise<ParseResult | null> {
-    const raw = await fs.promises.readFile(filePath, "utf8");
+    const { records, sourceHash } = await readJsonlFileRecords<CodexRecord>(filePath);
     let sourceMtime = 0;
     try {
       const stat = await fs.promises.stat(filePath);
@@ -198,37 +192,26 @@ export class CodexParser implements ConversationParser {
     } catch {
       // ignore
     }
-    return this.parseRaw(filePath, raw, {
+    return this.parseRecords(filePath, records, {
       baseBlockCount: 0,
-      sourceHash: crypto.createHash("sha256").update(raw).digest("hex"),
+      sourceHash,
       sourceMtime,
     });
   }
 
   async parseIncremental(input: IncrementalParseInput): Promise<ParseResult | null> {
-    return this.parseRaw(input.filePath, input.raw, {
+    return this.parseRecords(input.filePath, parseJsonlStringRecords<CodexRecord>(input.raw), {
       baseBlockCount: input.baseBlockCount,
       sourceHash: input.sourceHash,
       sourceMtime: input.sourceMtime,
     });
   }
 
-  private async parseRaw(
+  private async parseRecords(
     filePath: string,
-    raw: string,
+    records: CodexRecord[],
     options: { baseBlockCount: number; sourceHash: string; sourceMtime: number },
   ): Promise<ParseResult | null> {
-    const lines = raw.split("\n").filter((line) => line.trim().length > 0);
-
-    const records: CodexRecord[] = [];
-    for (const line of lines) {
-      try {
-        records.push(JSON.parse(line) as CodexRecord);
-      } catch {
-        // Skip malformed lines
-      }
-    }
-
     // Extract session metadata
     let sessionId = "";
     let cwd: string | null = null;
