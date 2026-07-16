@@ -1,7 +1,7 @@
 import type { AuthRequest } from './views/auth';
 import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
-import type { SessionRecord } from './views/sessions';
+import type { SessionRecord } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { Conversation } from './api';
 import type { SSEPayload } from './sse-client';

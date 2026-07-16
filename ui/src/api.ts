@@ -1219,34 +1219,6 @@ export async function spawnIssueAgent(
   return (await parseMaybeJson(response)) as SpawnIssueAgentResult;
 }
 
-export async function getStarredChats<T>(): Promise<T[]> {
-  const response = await apiGet('/api/chats/starred');
-  const payload = (await parseMaybeJson(response)) as ApiList<T>;
-  return normalizeList(payload);
-}
-
-export async function starChat(
-  data: {
-    session_id?: string;
-    label: string;
-    notes?: string;
-    transcript_path?: string;
-    cwd?: string;
-    branch?: string;
-  },
-): Promise<{ id: string }> {
-  const response = await apiPost('/api/chats/star', data);
-  const payload = await parseMaybeJson(response);
-  if (payload && typeof payload === 'object' && 'id' in payload) {
-    return payload as { id: string };
-  }
-  return { id: '' };
-}
-
-export async function unstarChat(id: string): Promise<void> {
-  await apiDelete(`/api/chats/starred/${encodeURIComponent(id)}`);
-}
-
 export async function updateStarredChat(
   id: string,
   data: { label?: string; notes?: string },

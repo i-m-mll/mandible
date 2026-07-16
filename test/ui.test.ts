@@ -32,7 +32,6 @@ import {
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
-import { SessionsView } from '../ui/src/views/sessions';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
@@ -308,25 +307,6 @@ const previewInstance: InstanceInfo = {
   source_db_path: '/tmp/mandible-main.db',
   source_db_path_source: 'env',
 };
-
-describe('SessionsView', () => {
-  it('renders session data and triggers navigate', () => {
-    const onNavigate = vi.fn();
-    render(
-      h(SessionsView, {
-        sessions: [{ id: 's1', status: 'active', task: 'Plan work', branch: 'main' }],
-        newSessionIds: {},
-        onNavigate,
-        onKill: () => undefined,
-      }),
-    );
-
-    expect(screen.getByText('Plan work')).toBeTruthy();
-    fireEvent.click(screen.getByLabelText('Actions'));
-    fireEvent.click(screen.getByText('Go to'));
-    expect(onNavigate).toHaveBeenCalledWith('s1');
-  });
-});
 
 describe('App routing', () => {
   it('routes legacy monitor hashes into console', () => {
