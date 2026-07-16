@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { GraphEdge, GraphNode, GraphNodeType, SimGraphEdge, SimGraphNode } from '../../types/graph';
 import { GraphTooltip } from './GraphTooltip';
 import { appColors } from '../../theme';
+import { truncate } from '../../lib/format';
 
 export interface GraphCanvasProps {
   nodes: GraphNode[]
@@ -12,10 +13,6 @@ export interface GraphCanvasProps {
 
 const NODE_RADIUS_SESSION = 10;
 const NODE_RADIUS_ISSUE = 14;
-
-function truncate(s: string, max = 20): string {
-  return s.length > max ? s.slice(0, max) + '…' : s;
-}
 
 function getNodeColor(node: GraphNode): string {
   switch (node.type) {

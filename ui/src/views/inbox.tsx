@@ -2,13 +2,12 @@
 // Bug: 4fa87d9 — inbox sidebar redesign
 
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { EntityPill } from '../components/shared/EntityPill';
 import { spawnIssueAgent } from '../api';
+import { formatRelativeTime } from '../lib/format';
+import { renderInlineMarkdown } from '../lib/markdown';
 import { appColors } from '../theme';
-
-marked.setOptions({ async: false, gfm: true, breaks: false });
 
 const INBOX_TONES = {
   continuation: {
@@ -40,35 +39,6 @@ const INBOX_TONES = {
     bg: appColors.authResultNeutralBg,
   },
 } as const;
-
-/**
- * Strip dangerous tags and attributes from HTML produced by marked.
- * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
- * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
- */
-function sanitizeInlineHtml(html: string): string {
-  let out = html.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    '',
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
-  return out;
-}
-
-/**
- * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
- * input so text flows inline in compact contexts (sidebar item titles).
- * Bug: 387ae46 — markdown rendering in inbox sidebar titles
- */
-function renderInlineMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  const html = typeof result === 'string' ? result : '';
-  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
-  return sanitizeInlineHtml(stripped);
-}
 
 export interface InboxContinuation {
   session_id: string;
@@ -148,23 +118,6 @@ interface UnifiedItem {
 }
 
 // ── Helpers ──
-
-function formatRelativeTime(value: string | number | null): string {
-  if (value === null || value === undefined) return '';
-  const parsed = typeof value === 'number' ? value : Date.parse(value as string);
-  if (Number.isNaN(parsed)) return String(value);
-  const delta = Date.now() - parsed;
-  if (delta < 0) return 'just now';
-  const seconds = Math.floor(delta / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 1) return `${days}d ago`;
-  if (days === 1) return 'yesterday';
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return `${seconds}s ago`;
-}
 
 function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'continuation') return INBOX_TONES.continuation.fg;

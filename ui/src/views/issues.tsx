@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 import {
   addLedgerIssueComment,
   getLedgerIssueDetailByIssueId,
@@ -11,10 +10,10 @@ import {
   spawnIssueAgent,
   type LedgerIssueDetailProjection,
 } from '../api';
-import { sanitizeHtml } from '../sanitize';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { renderInlineMarkdown } from '../lib/markdown';
 
 // --- Types ---
 
@@ -111,27 +110,6 @@ function getVisualState(issue: { status: string; labels: string[] }): VisualStat
   if (issue.status === 'open') return 'open';
   if (issue.labels.includes('merged')) return 'merged';
   return 'closed';
-}
-
-/**
- * Sanitize inline markdown HTML produced by marked before inserting it into the
- * local issue UI. Bug: 387ae46.
- */
-function sanitizeInlineHtml(html: string): string {
-  return sanitizeHtml(html);
-}
-
-/**
- * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
- * input so text flows inline in compact contexts (sidebar titles, list items).
- * Bug: a44fd6a — markdown rendering in issues sidebar titles
- */
-function renderInlineMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  const html = typeof result === 'string' ? result : '';
-  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
-  return sanitizeInlineHtml(stripped);
 }
 
 // Reverse map: display name → internal label (for filter pills)
