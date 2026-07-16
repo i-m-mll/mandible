@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -69,6 +70,7 @@ import {
 } from "../ledger/sync-runner.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 import type { RouteOptions } from "../server.js";
+import { sendJson } from "./http.js";
 
 export interface RouteHandler<Request = unknown, Response = unknown> {
   (req: Request, res: Response): void | Promise<void>;
@@ -139,30 +141,6 @@ function getStringArray(value: unknown): string[] | undefined {
   }
   if (typeof value === "string" && value.trim()) return [value.trim()];
   return undefined;
-}
-
-function sendJson(res: unknown, status: number, payload: unknown): void {
-  if (!res || typeof res !== "object") {
-    return;
-  }
-  const record = res as Record<string, unknown>;
-  if (typeof record.status === "function") {
-    (record.status as (code: number) => void)(status);
-  } else if (typeof record.code === "function") {
-    (record.code as (code: number) => void)(status);
-  }
-
-  if (typeof record.json === "function") {
-    (record.json as (body: unknown) => void)(payload);
-    return;
-  }
-  if (typeof record.send === "function") {
-    (record.send as (body: unknown) => void)(payload);
-    return;
-  }
-  if (typeof record.end === "function") {
-    (record.end as (body: string) => void)(JSON.stringify(payload));
-  }
 }
 
 function isBodyRevisionConflict(error: unknown): boolean {
@@ -1228,11 +1206,6 @@ function kindFromLabels(labels: string[]): LedgerIssueKind {
   if (labels.includes("deferred")) return "deferred";
   if (labels.includes("feature")) return "feature";
   return "unknown";
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  return Boolean(row);
 }
 
 function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): string | null {

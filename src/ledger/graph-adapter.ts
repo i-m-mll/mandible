@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { Db } from "../db.js";
+import { columnExists, tableExists } from "../db-introspection.js";
 import type { GraphEdge, GraphNode, GraphQueryParams } from "../types.js";
 
 interface ProjectInfo {
@@ -64,26 +65,6 @@ export interface LedgerIssueProjection {
   edges: GraphEdge[];
   issueNodeIds: Set<string>;
   issueNodeIdByLedgerId: Map<string, string>;
-}
-
-function tableExists(db: Db, table: string): boolean {
-  try {
-    const row = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(table);
-    return Boolean(row);
-  } catch {
-    return false;
-  }
-}
-
-function columnExists(db: Db, table: string, column: string): boolean {
-  try {
-    const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-    return columns.some((entry) => entry.name === column);
-  } catch {
-    return false;
-  }
 }
 
 function parseJsonObject(value: string | null | undefined): Record<string, unknown> {

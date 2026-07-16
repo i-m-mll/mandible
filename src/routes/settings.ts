@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { getDb } from "../db.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { RouteRegistrar } from "../server.js";
+import { readBody, sendJson } from "./http.js";
 
 const DEFAULT_PROTECTED_BRANCHES = ["main", "develop"];
 const INSTRUCTION_TARGETS_KEY = "instructions.targets";
@@ -35,14 +36,6 @@ type InstructionDeliveryResult = {
     stderr: string;
   }>;
 };
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
 
 function normalizeInstructionTargets(value: unknown): InstructionTarget[] {
   if (!Array.isArray(value)) {

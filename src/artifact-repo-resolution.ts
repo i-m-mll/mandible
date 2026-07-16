@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "./db.js";
+import { columnExists, tableExists } from "./db-introspection.js";
 import { normalizeRemoteIdentity } from "./ledger/projects.js";
 
 type MatchKind = "project_ref" | "checkout_root" | "git_common_dir" | "remote_identity" | "checkout_ancestry";
@@ -30,16 +31,6 @@ interface ProjectCheckoutRow {
   remote_identity: string | null;
   upstream_identity: string | null;
   remote_url: string | null;
-}
-
-function tableExists(db: Db, name: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name);
-  return Boolean(row);
-}
-
-function columnExists(db: Db, table: string, column: string): boolean {
-  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  return columns.some((entry) => entry.name === column);
 }
 
 function projectKeyExpr(db: Db): string {

@@ -40,10 +40,7 @@ import {
   snapshotArtifactBytes,
 } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
+import { sendJson } from "./http.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
   return req.body && typeof req.body === "object" && !Array.isArray(req.body)

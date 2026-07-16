@@ -6,6 +6,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import type { Db } from "./db.js";
+import { tableExists } from "./db-introspection.js";
 import { readArtifactBytesFull } from "./artifact-content.js";
 import {
   getArtifactVersion,
@@ -369,13 +370,6 @@ export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
 // ---------------------------------------------------------------------------
 // Instruction Artifact Compatibility
 // ---------------------------------------------------------------------------
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(table) as { name: string } | undefined;
-  return Boolean(row);
-}
 
 function artifactVersioningAvailable(db: Db): boolean {
   return tableExists(db, "artifact_series")

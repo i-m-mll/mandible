@@ -1,11 +1,31 @@
-import type { RequestLike, ResponseLike } from "../server.js";
+import type { RequestLike } from "../server.js";
 
 export function readBody<T>(req: RequestLike): T {
   return (req.body ?? {}) as T;
 }
 
-export function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
+export function sendJson(res: unknown, code: number, payload: unknown): void {
+  if (!res || typeof res !== "object") {
+    return;
+  }
+  const record = res as Record<string, unknown>;
+  if (typeof record.status === "function") {
+    (record.status as (status: number) => void)(code);
+  } else if (typeof record.code === "function") {
+    (record.code as (status: number) => void)(code);
+  }
+
+  if (typeof record.json === "function") {
+    (record.json as (body: unknown) => void)(payload);
+    return;
+  }
+  if (typeof record.send === "function") {
+    (record.send as (body: unknown) => void)(payload);
+    return;
+  }
+  if (typeof record.end === "function") {
+    (record.end as (body: string) => void)(JSON.stringify(payload));
+  }
 }
 
 export function queryString(req: RequestLike, key: string): string | undefined {
