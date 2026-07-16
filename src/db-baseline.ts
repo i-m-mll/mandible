@@ -1,0 +1,491 @@
+import type { Db } from "./db.js";
+
+/**
+ * Schema snapshot generated from a full v1-v103 migration replay.
+ * Regenerate whenever a migration is appended; the equivalence test guards drift.
+ */
+export const BASELINE_SCHEMA_VERSION = 103;
+
+const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
+  "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
+  "CREATE TABLE artifact_aliases (\n        id                TEXT PRIMARY KEY,\n        artifact_id       TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        scheme            TEXT NOT NULL,\n        alias             TEXT NOT NULL,\n        normalized_ref    TEXT NOT NULL,\n        locator_json      TEXT NOT NULL DEFAULT '{}',\n        resolution_status TEXT NOT NULL DEFAULT 'resolved'\n          CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),\n        source            TEXT NOT NULL DEFAULT 'artifact_registry',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL\n      )",
+  "CREATE TABLE artifact_blob (\n        id             TEXT PRIMARY KEY,\n        algorithm      TEXT NOT NULL DEFAULT 'sha256',\n        content_hash   TEXT NOT NULL,\n        storage_uri    TEXT,\n        media_type     TEXT,\n        role           TEXT,\n        size_bytes     INTEGER NOT NULL DEFAULT 0,\n        provider_id    TEXT,\n        manifest_id    TEXT,\n        metadata_json  TEXT NOT NULL DEFAULT '{}',\n        custody_mode   TEXT NOT NULL DEFAULT 'managed'\n          CHECK(custody_mode IN ('link','copy','managed','external')),\n        availability   TEXT NOT NULL DEFAULT 'unchecked'\n          CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),\n        retention_json TEXT NOT NULL DEFAULT '{}',\n        reference_json TEXT NOT NULL DEFAULT '{}',\n        created_at     INTEGER NOT NULL,\n        UNIQUE(algorithm, content_hash)\n      )",
+  "CREATE TABLE artifact_drafts (\n        id              TEXT PRIMARY KEY,\n        series_id       TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,\n        base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,\n        content         TEXT NOT NULL,\n        media_type      TEXT,\n        label           TEXT,\n        note            TEXT,\n        metadata_json   TEXT NOT NULL DEFAULT '{}',\n        created_at      INTEGER NOT NULL,\n        updated_at      INTEGER NOT NULL,\n        UNIQUE(series_id)\n      )",
+  "CREATE TABLE artifact_links (\n        id            TEXT PRIMARY KEY,\n        artifact_id   TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,\n        entity_type   TEXT NOT NULL,\n        entity_id     TEXT NOT NULL,\n        link_type     TEXT NOT NULL DEFAULT 'references',\n        role          TEXT,\n        repo_id       TEXT,\n        provider_id   TEXT,\n        source        TEXT NOT NULL DEFAULT 'artifact_registry',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL\n      , link_kind TEXT NOT NULL DEFAULT 'pinned'\n        CHECK(link_kind IN ('pinned','living')), series_id TEXT, series_ref TEXT, target_type TEXT\n        CHECK(target_type IS NULL OR target_type IN ('artifact','artifact_version')), target_id TEXT, fallback_version_id TEXT, legacy_blob_id TEXT)",
+  "CREATE TABLE artifact_series (\n        id                TEXT PRIMARY KEY,\n        series_key        TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','mixed')),\n        title             TEXT,\n        repo_id           TEXT,\n        logical_name      TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(series_key)\n      )",
+  "CREATE TABLE artifact_version (\n        id                  TEXT PRIMARY KEY,\n        artifact_id         TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,\n        version_no          INTEGER NOT NULL,\n        blob_id             TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,\n        source_kind         TEXT NOT NULL\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external')),\n        content_hash        TEXT NOT NULL,\n        source_project_id   TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id      TEXT,\n        repo_path           TEXT,\n        commit_sha          TEXT,\n        observed_path       TEXT,\n        source_locator_json TEXT NOT NULL DEFAULT '{}',\n        custody_mode        TEXT\n          CHECK(custody_mode IS NULL OR custody_mode IN ('link','copy','managed','external')),\n        label               TEXT,\n        note                TEXT,\n        metadata_json       TEXT NOT NULL DEFAULT '{}',\n        created_at          INTEGER NOT NULL,\n        UNIQUE(artifact_id, version_no)\n      )",
+  "CREATE TABLE artifact_versions (\n        id            TEXT PRIMARY KEY,\n        series_id     TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,\n        artifact_id   TEXT NOT NULL REFERENCES artifacts(id) ON DELETE RESTRICT,\n        version_no    INTEGER NOT NULL,\n        source_kind   TEXT NOT NULL\n          CHECK(source_kind IN ('tracked_repo','local_only','managed')),\n        content_hash  TEXT NOT NULL,\n        commit_sha    TEXT,\n        repo_path     TEXT,\n        observed_path TEXT,\n        custody_mode  TEXT,\n        label         TEXT,\n        note          TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER NOT NULL, parent_version_id TEXT,\n        UNIQUE(series_id, version_no)\n      )",
+  "CREATE TABLE artifacts (\n        id            TEXT PRIMARY KEY,\n        algorithm     TEXT NOT NULL DEFAULT 'sha256',\n        content_hash  TEXT NOT NULL,\n        uri           TEXT NOT NULL,\n        media_type    TEXT,\n        role          TEXT,\n        size_bytes    INTEGER NOT NULL DEFAULT 0,\n        provider_id   TEXT,\n        manifest_id   TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        pinned        INTEGER NOT NULL DEFAULT 1,\n        created_at    INTEGER NOT NULL, custody_mode TEXT NOT NULL DEFAULT 'managed'\n        CHECK(custody_mode IN ('link','copy','managed','external')), home_repo_id TEXT, repo_locator_json TEXT NOT NULL DEFAULT '{}', availability TEXT NOT NULL DEFAULT 'unchecked'\n        CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')), retention_json TEXT NOT NULL DEFAULT '{}', reference_json TEXT NOT NULL DEFAULT '{}',\n        UNIQUE(algorithm, content_hash)\n      )",
+  "CREATE TABLE auth_hooks (\n        id            TEXT PRIMARY KEY,\n        repo_pattern  TEXT NOT NULL DEFAULT '*',\n        auth_type     TEXT NOT NULL DEFAULT 'merge',\n        command       TEXT NOT NULL,\n        label         TEXT NOT NULL DEFAULT '',\n        enabled       INTEGER NOT NULL DEFAULT 1,\n        builtin       INTEGER NOT NULL DEFAULT 0,\n        position      INTEGER NOT NULL DEFAULT 0,\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL\n      )",
+  "CREATE TABLE \"auth_request_actions\" (\n        id TEXT PRIMARY KEY,\n        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,\n        ordinal INTEGER NOT NULL,\n        kind TEXT NOT NULL CHECK(kind IN ('comment_add','issue_close','worker_status_set','label_add','label_rm','checkpoint_add','link_add')),\n        target_issue_ref TEXT NOT NULL,\n        payload TEXT NOT NULL,\n        state TEXT NOT NULL DEFAULT 'staged' CHECK(state IN ('staged','applied','failed','vetoed','skipped_stale')),\n        target_digest TEXT,\n        staged_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        applied_at INTEGER,\n        outcome_detail TEXT\n      )",
+  "CREATE TABLE auth_requests (\n        id            TEXT PRIMARY KEY,\n        session_id    TEXT,\n        command       TEXT NOT NULL,\n        title         TEXT NOT NULL,\n        cwd           TEXT,\n        diff_summary  TEXT,\n        spec_content  TEXT,\n        status        TEXT NOT NULL DEFAULT 'pending',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        approved_at   INTEGER,\n        resolved_at   INTEGER,\n        skipped_at    INTEGER,\n        expires_at    INTEGER NOT NULL,\n        exit_code     INTEGER,\n        output        TEXT NOT NULL DEFAULT '',\n        error         TEXT\n      , repo TEXT, base_branch TEXT, head_branch TEXT, files_changed INTEGER DEFAULT 0, additions INTEGER DEFAULT 0, deletions INTEGER DEFAULT 0, execution_mode TEXT NOT NULL DEFAULT 'daemon', commit_message TEXT, last_executed_at INTEGER, acknowledged_by TEXT, post_merge_handoff TEXT, issue_ids TEXT, depends_on_id TEXT, issues TEXT, type TEXT NOT NULL DEFAULT 'merge', target_session_id TEXT, target_repo_root TEXT, delivered_at INTEGER, conversation_id TEXT, approval_source TEXT NOT NULL DEFAULT 'manual', approval_lease_id TEXT, issue_references TEXT, issue_closures TEXT, merge_preflight_base_sha TEXT, merge_preflight_queue_fingerprint TEXT, merge_head_sha TEXT, merge_finalized_at INTEGER)",
+  "CREATE TABLE branches (\n        repo_root     TEXT NOT NULL,\n        branch        TEXT NOT NULL,\n        is_current    INTEGER NOT NULL DEFAULT 0,\n        is_worktree   INTEGER DEFAULT 0,\n        worktree_path TEXT,\n        is_dirty      INTEGER DEFAULT 0,\n        ahead         INTEGER DEFAULT 0,\n        behind        INTEGER DEFAULT 0,\n        last_commit_hash    TEXT,\n        last_commit_message TEXT,\n        last_commit_author  TEXT,\n        last_commit_date    TEXT,\n        diff_stat     TEXT,\n        updated_at    TEXT NOT NULL DEFAULT (datetime('now')), ahead_default INTEGER DEFAULT 0, behind_default INTEGER DEFAULT 0, default_branch TEXT DEFAULT '',\n        PRIMARY KEY (repo_root, branch)\n      )",
+  "CREATE TABLE console_session_telemetry (\n        telemetry_key TEXT PRIMARY KEY,\n        console_session_id TEXT REFERENCES console_sessions(id) ON DELETE CASCADE,\n        provider_session_id TEXT,\n        transcript_path TEXT,\n        model TEXT,\n        context_used_percentage REAL,\n        context_window_size INTEGER,\n        context_input_tokens INTEGER,\n        context_output_tokens INTEGER,\n        context_cache_creation_input_tokens INTEGER,\n        context_cache_read_input_tokens INTEGER,\n        rate_limit_five_hour_used_percentage REAL,\n        rate_limit_five_hour_resets_at TEXT,\n        rate_limit_seven_day_used_percentage REAL,\n        rate_limit_seven_day_resets_at TEXT,\n        raw_payload_json TEXT NOT NULL,\n        received_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE console_session_usage (\n        id                            TEXT PRIMARY KEY,\n        console_session_id            TEXT NOT NULL,\n        provider_session_id           TEXT,\n        recorded_at                   INTEGER NOT NULL,\n        input_tokens                  INTEGER NOT NULL DEFAULT 0,\n        cache_creation_input_tokens   INTEGER NOT NULL DEFAULT 0,\n        cache_read_input_tokens       INTEGER NOT NULL DEFAULT 0,\n        output_tokens                 INTEGER NOT NULL DEFAULT 0,\n        web_search_requests           INTEGER NOT NULL DEFAULT 0,\n        cost_usd                      REAL NOT NULL DEFAULT 0,\n        total_cost_usd                REAL NOT NULL DEFAULT 0,\n        duration_ms                   INTEGER NOT NULL DEFAULT 0,\n        num_turns                     INTEGER NOT NULL DEFAULT 0,\n        is_error                      INTEGER NOT NULL DEFAULT 0,\n        result_subtype                TEXT,\n        usage_json                    TEXT NOT NULL DEFAULT '{}',\n        model_usage_json              TEXT NOT NULL DEFAULT '{}',\n        errors_json                   TEXT NOT NULL DEFAULT '[]',\n        FOREIGN KEY (console_session_id) REFERENCES console_sessions(id) ON DELETE CASCADE\n      )",
+  "CREATE TABLE console_sessions (\n        id            TEXT PRIMARY KEY,\n        label         TEXT NOT NULL,\n        command       TEXT NOT NULL,\n        args_json     TEXT NOT NULL DEFAULT '[]',\n        cwd           TEXT,\n        env_json      TEXT NOT NULL DEFAULT '{}',\n        cols          INTEGER NOT NULL DEFAULT 120,\n        rows          INTEGER NOT NULL DEFAULT 30,\n        status        TEXT NOT NULL DEFAULT 'stopped',\n        pid           INTEGER,\n        exit_code     INTEGER,\n        auto_restart  INTEGER NOT NULL DEFAULT 0,\n        is_operator   INTEGER NOT NULL DEFAULT 0,\n        interaction_mode TEXT NOT NULL DEFAULT 'both',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        started_at    INTEGER,\n        stopped_at    INTEGER\n      , provider_session_id TEXT, backend_type TEXT NOT NULL DEFAULT 'pty', allowed_tools TEXT, mandible_session_id TEXT, resume_at_message TEXT, channel_enabled INTEGER NOT NULL DEFAULT 0, transport_lane TEXT NOT NULL DEFAULT 'pty')",
+  "CREATE TABLE convention_setting_links (\n        id              TEXT PRIMARY KEY,\n        node_id         TEXT NOT NULL REFERENCES preset_nodes(id) ON DELETE CASCADE,\n        setting_key     TEXT NOT NULL,\n        link_type       TEXT NOT NULL DEFAULT 'references'\n                        CHECK(link_type IN ('references', 'requires', 'configures')),\n        created_at      INTEGER NOT NULL, source TEXT NOT NULL DEFAULT 'manual',\n        UNIQUE(node_id, setting_key)\n      )",
+  "CREATE TABLE conversation_blocks (\n        id TEXT PRIMARY KEY,\n        conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,\n        type TEXT NOT NULL,\n        role TEXT NOT NULL,\n        content TEXT NOT NULL DEFAULT '',\n        position INTEGER NOT NULL,\n        timestamp TEXT,\n        parent_id TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        dag_uuid TEXT,\n        dag_parent_uuid TEXT, compressed INTEGER NOT NULL DEFAULT 0, timestamp_ms INTEGER,\n        UNIQUE(conversation_id, position)\n      )",
+  "CREATE TABLE conversation_ingest_state (\n        file_path TEXT PRIMARY KEY,\n        byte_offset INTEGER NOT NULL DEFAULT 0,\n        line_count INTEGER NOT NULL DEFAULT 0,\n        tail_hash TEXT NOT NULL DEFAULT '',\n        partial_line TEXT NOT NULL DEFAULT '',\n        updated_at INTEGER NOT NULL\n      , empty_source_mtime REAL, empty_source_size INTEGER)",
+  "CREATE TABLE conversations (\n        id TEXT PRIMARY KEY,\n        source TEXT NOT NULL CHECK(source IN ('claude_code', 'codex', 'gemini')),\n        source_path TEXT NOT NULL,\n        source_hash TEXT NOT NULL,\n        source_mtime INTEGER NOT NULL,\n        title TEXT NOT NULL DEFAULT '',\n        summary TEXT,\n        started_at TEXT NOT NULL,\n        ended_at TEXT,\n        block_count INTEGER NOT NULL DEFAULT 0,\n        session_id TEXT NOT NULL,\n        project_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        model TEXT,\n        cli_version TEXT,\n        starred INTEGER NOT NULL DEFAULT 0,\n        label TEXT,\n        notes TEXT,\n        created_at TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at TEXT NOT NULL DEFAULT (datetime('now'))\n      , parent_conversation_id TEXT REFERENCES conversations(id) ON DELETE SET NULL, is_sidechain INTEGER NOT NULL DEFAULT 0, agent_id TEXT, started_at_ms INTEGER, ended_at_ms INTEGER, created_at_ms INTEGER, updated_at_ms INTEGER)",
+  "CREATE TABLE daemon_log (\n        id              TEXT PRIMARY KEY,\n        ts              INTEGER NOT NULL,\n        level           TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),\n        event           TEXT NOT NULL,\n        subsystem       TEXT NOT NULL DEFAULT 'daemon',\n        fields_json     TEXT NOT NULL DEFAULT '{}',\n        issue_id        TEXT,\n        auth_request_id TEXT,\n        artifact_id     TEXT,\n        session_id      TEXT,\n        repo_id         TEXT\n      )",
+  "CREATE TABLE graph_edges (\n        id            TEXT PRIMARY KEY,\n        source_id     TEXT NOT NULL,\n        target_id     TEXT NOT NULL,\n        edge_type     TEXT NOT NULL,\n        edge_class    TEXT NOT NULL DEFAULT 'provenance',\n        provenance    TEXT NOT NULL DEFAULT 'system',\n        confidence    TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER,\n        observed_at   INTEGER NOT NULL,\n        source        TEXT NOT NULL\n      )",
+  "CREATE TABLE graph_entities (\n        id                  TEXT PRIMARY KEY,\n        entity_type         TEXT NOT NULL,\n        repo_id             TEXT,\n        provider_id         TEXT,\n        external_id         TEXT,\n        title               TEXT NOT NULL,\n        status              TEXT,\n        labels_json         TEXT NOT NULL DEFAULT '[]',\n        summary_json        TEXT NOT NULL DEFAULT '{}',\n        detail_ref_json     TEXT NOT NULL DEFAULT '{}',\n        action_context_json TEXT NOT NULL DEFAULT '{}',\n        visual_json         TEXT NOT NULL DEFAULT '{}',\n        created_at          INTEGER,\n        updated_at          INTEGER,\n        observed_at         INTEGER NOT NULL,\n        source              TEXT NOT NULL\n      )",
+  "CREATE TABLE issue_branches (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        branch TEXT NOT NULL,\n        role TEXT NOT NULL DEFAULT 'primary'\n          CHECK(role IN ('primary','superseded')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        PRIMARY KEY (issue_id, branch)\n      )",
+  "CREATE TABLE issue_resolutions (\n        issue_id    TEXT NOT NULL,\n        commit_sha  TEXT NOT NULL,\n        repo_id     TEXT NOT NULL,\n        resolved_at INTEGER NOT NULL,\n        PRIMARY KEY (issue_id, commit_sha)\n      )",
+  "CREATE TABLE knowledge_backrefs (\n        id            TEXT PRIMARY KEY,\n        source_type   TEXT NOT NULL CHECK(source_type IN ('artifact','document')),\n        source_id     TEXT NOT NULL,\n        provider_id   TEXT NOT NULL DEFAULT 'humbleb',\n        ref_type      TEXT NOT NULL CHECK(ref_type IN ('document','entity','claim')),\n        external_id   TEXT NOT NULL,\n        external_ref  TEXT NOT NULL,\n        status        TEXT NOT NULL DEFAULT 'returned'\n          CHECK(status IN ('offered','indexed','returned')),\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        UNIQUE(source_type, source_id, provider_id, ref_type, external_id)\n      )",
+  "CREATE TABLE ledger_auth_issue_links (\n        auth_request_id TEXT NOT NULL REFERENCES auth_requests(id) ON DELETE CASCADE,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'references',\n        source TEXT NOT NULL DEFAULT 'auth_queue',\n        created_at INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (auth_request_id, issue_id, link_type)\n      )",
+  "CREATE TABLE ledger_body_revisions (\n        id TEXT PRIMARY KEY,\n        entity_type TEXT NOT NULL CHECK(entity_type IN ('issue_body','comment_body')),\n        entity_id TEXT NOT NULL,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        revision_no INTEGER NOT NULL,\n        event_id TEXT UNIQUE REFERENCES ledger_events(id) ON DELETE SET NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        reason TEXT NOT NULL DEFAULT 'edit'\n          CHECK(reason IN ('create','edit','import_snapshot','external_update','normalize','migration_snapshot','restore')),\n        occurred_at INTEGER NOT NULL,\n        observed_at INTEGER NOT NULL,\n        base_revision_id TEXT REFERENCES ledger_body_revisions(id) ON DELETE SET NULL,\n        base_hash TEXT,\n        new_hash TEXT NOT NULL,\n        snapshot_body TEXT NOT NULL,\n        patch_format TEXT,\n        patch_text TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        redacted_at INTEGER,\n        redacted_by_actor_id TEXT,\n        redaction_reason TEXT,\n        UNIQUE(entity_type, entity_id, revision_no)\n      )",
+  "CREATE TABLE ledger_comments (\n        id TEXT PRIMARY KEY,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        ordinal INTEGER NOT NULL DEFAULT 0,\n        body TEXT NOT NULL,\n        author_actor_id TEXT,\n        author_actor_type TEXT NOT NULL\n          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),\n        author_display TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER,\n        deleted_at INTEGER\n      )",
+  "CREATE TABLE ledger_commit_issue_links (\n        commit_sha TEXT NOT NULL,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'fixed_by',\n        source TEXT NOT NULL DEFAULT 'auth_queue',\n        created_at INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (commit_sha, issue_id, link_type)\n      )",
+  "CREATE TABLE ledger_conflicts (\n        id TEXT PRIMARY KEY,\n        adapter TEXT NOT NULL,\n        project_id TEXT NOT NULL DEFAULT '',\n        entity_type TEXT NOT NULL,\n        entity_id TEXT NOT NULL,\n        field TEXT NOT NULL,\n        local_value_json TEXT NOT NULL,\n        remote_value_json TEXT NOT NULL,\n        base_value_json TEXT NOT NULL DEFAULT 'null',\n        status TEXT NOT NULL CHECK(status IN ('open','resolved','dismissed')),\n        resolution TEXT,\n        created_at INTEGER NOT NULL,\n        resolved_at INTEGER\n      )",
+  "CREATE TABLE ledger_events (\n        id TEXT PRIMARY KEY,\n        entity_type TEXT NOT NULL,\n        entity_id TEXT NOT NULL,\n        event_type TEXT NOT NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL\n          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        payload_json TEXT NOT NULL DEFAULT '{}',\n        occurred_at INTEGER NOT NULL,\n        observed_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE ledger_external_refs (\n        id TEXT PRIMARY KEY,\n        entity_type TEXT NOT NULL,\n        entity_id TEXT NOT NULL,\n        adapter TEXT NOT NULL,\n        project_id TEXT NOT NULL DEFAULT '',\n        external_id TEXT NOT NULL,\n        external_kind TEXT NOT NULL,\n        remote_version TEXT NOT NULL DEFAULT '',\n        remote_hash TEXT NOT NULL DEFAULT '',\n        last_imported_at INTEGER,\n        last_exported_at INTEGER,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        UNIQUE(adapter, project_id, external_kind, external_id)\n      )",
+  "CREATE TABLE ledger_issue_aliases (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        alias_kind TEXT NOT NULL,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE CASCADE,\n        alias TEXT NOT NULL,\n        external_id TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL,\n        is_primary INTEGER NOT NULL DEFAULT 0,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (alias_kind, project_id, alias)\n      )",
+  "CREATE TABLE ledger_issue_checkpoints (\n        id TEXT PRIMARY KEY,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        kind TEXT NOT NULL,\n        payload_json TEXT NOT NULL,\n        author_actor_id TEXT,\n        author_actor_type TEXT NOT NULL CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),\n        author_display TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        created_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE ledger_issue_relationship_sources (\n          id TEXT PRIMARY KEY,\n          relationship_id TEXT NOT NULL REFERENCES ledger_issue_relationships(id) ON DELETE CASCADE,\n          source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue_body','comment')),\n          source_entity_id TEXT NOT NULL,\n          source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n          target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n          relationship_type TEXT NOT NULL\n            CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n          ref_kind TEXT NOT NULL CHECK(ref_kind IN ('issue','comment')),\n          raw_ref TEXT NOT NULL,\n          normalized_ref TEXT NOT NULL,\n          metadata_json TEXT NOT NULL DEFAULT '{}',\n          created_at INTEGER NOT NULL,\n          updated_at INTEGER NOT NULL,\n          deleted_at INTEGER,\n          UNIQUE(source_entity_type, source_entity_id, target_issue_id, relationship_type, ref_kind, normalized_ref)\n        )",
+  "CREATE TABLE ledger_issue_relationships (\n        id TEXT PRIMARY KEY,\n        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        relationship_type TEXT NOT NULL\n          CHECK(relationship_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n        provenance TEXT NOT NULL DEFAULT 'manual'\n          CHECK(provenance IN ('manual','imported','derived','system')),\n        confidence TEXT NOT NULL DEFAULT 'observed',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        deleted_at INTEGER,\n        UNIQUE(source_issue_id, target_issue_id, relationship_type)\n      )",
+  "CREATE TABLE ledger_issues (\n        id TEXT PRIMARY KEY,\n        short_id TEXT NOT NULL DEFAULT '',\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        title TEXT NOT NULL,\n        body TEXT NOT NULL DEFAULT '',\n        status TEXT NOT NULL CHECK(status IN ('open','closed')),\n        resolution TEXT CHECK(resolution IN ('fixed','merged','duplicate','wontfix','invalid','obsolete','unknown') OR resolution IS NULL),\n        kind TEXT NOT NULL DEFAULT 'unknown'\n          CHECK(kind IN ('bug','feature','umbrella','task','question','maintenance','deferred','unknown')),\n        priority TEXT NOT NULL DEFAULT 'unknown'\n          CHECK(priority IN ('low','normal','high','urgent','unknown')),\n        author_actor_id TEXT,\n        author_actor_type TEXT NOT NULL DEFAULT 'external_adapter'\n          CHECK(author_actor_type IN ('mandible_user','agent','system','external_adapter')),\n        author_display TEXT NOT NULL DEFAULT '',\n        source TEXT NOT NULL DEFAULT 'mandible'\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        closed_at INTEGER,\n        deleted_at INTEGER\n      , worker_status TEXT NOT NULL DEFAULT 'none'\n        CHECK(worker_status IN ('none','in_progress','done','blocked','pivot-needed')))",
+  "CREATE TABLE ledger_labels (\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        label TEXT NOT NULL,\n        source TEXT NOT NULL DEFAULT 'mandible',\n        created_at INTEGER NOT NULL,\n        deleted_at INTEGER,\n        PRIMARY KEY (issue_id, label)\n      )",
+  "CREATE TABLE ledger_operational_link_mismatches (\n        id TEXT PRIMARY KEY,\n        report_id TEXT NOT NULL REFERENCES ledger_operational_link_reports(id) ON DELETE CASCADE,\n        source_table TEXT NOT NULL,\n        source_id TEXT NOT NULL,\n        repo_id TEXT NOT NULL DEFAULT '',\n        issue_ref TEXT NOT NULL DEFAULT '',\n        mismatch_type TEXT NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE ledger_operational_link_reports (\n        id TEXT PRIMARY KEY,\n        status TEXT NOT NULL CHECK(status IN ('clean','incomplete','failed')),\n        resolved_count INTEGER NOT NULL DEFAULT 0,\n        unresolved_count INTEGER NOT NULL DEFAULT 0,\n        ambiguous_count INTEGER NOT NULL DEFAULT 0,\n        source_counts_json TEXT NOT NULL DEFAULT '{}',\n        error TEXT,\n        started_at INTEGER NOT NULL,\n        finished_at INTEGER\n      )",
+  "CREATE TABLE ledger_outbox (\n        id TEXT PRIMARY KEY,\n        event_id TEXT NOT NULL REFERENCES ledger_events(id) ON DELETE CASCADE,\n        adapter TEXT NOT NULL,\n        project_id TEXT NOT NULL DEFAULT '',\n        status TEXT NOT NULL\n          CHECK(status IN ('pending','processing','applied','failed','conflicted','skipped')),\n        attempt_count INTEGER NOT NULL DEFAULT 0,\n        available_at INTEGER NOT NULL,\n        last_attempt_at INTEGER,\n        error TEXT,\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        UNIQUE(event_id, adapter)\n      )",
+  "CREATE TABLE ledger_project_checkouts (\n        id TEXT PRIMARY KEY,\n        project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        work_repo_id TEXT,\n        root TEXT NOT NULL,\n        name TEXT NOT NULL,\n        default_branch TEXT NOT NULL DEFAULT '',\n        remote_url TEXT NOT NULL DEFAULT '',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        UNIQUE(root)\n      )",
+  "CREATE TABLE ledger_projects (\n        id TEXT PRIMARY KEY,\n        display_name TEXT NOT NULL,\n        remote_identity TEXT NOT NULL DEFAULT '',\n        upstream_identity TEXT NOT NULL DEFAULT '',\n        namespace_policy TEXT NOT NULL DEFAULT 'remote'\n          CHECK(namespace_policy IN ('remote','upstream','local')),\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL\n      , project_key TEXT NOT NULL DEFAULT '')",
+  "CREATE TABLE ledger_reconciliation_mismatches (\n        id TEXT PRIMARY KEY,\n        report_id TEXT NOT NULL REFERENCES ledger_reconciliation_reports(id) ON DELETE CASCADE,\n        project_id TEXT NOT NULL DEFAULT '',\n        repo_id TEXT NOT NULL DEFAULT '',\n        issue_ref TEXT NOT NULL DEFAULT '',\n        mismatch_type TEXT NOT NULL,\n        scanner_value_json TEXT NOT NULL DEFAULT 'null',\n        ledger_value_json TEXT NOT NULL DEFAULT 'null',\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE ledger_reconciliation_reports (\n        id TEXT PRIMARY KEY,\n        read_mode TEXT NOT NULL CHECK(read_mode IN ('scanner','shadow','ledger')),\n        status TEXT NOT NULL CHECK(status IN ('running','clean','mismatch','failed')),\n        scanner_issue_count INTEGER NOT NULL DEFAULT 0,\n        ledger_issue_count INTEGER NOT NULL DEFAULT 0,\n        scanner_open_count INTEGER NOT NULL DEFAULT 0,\n        ledger_open_count INTEGER NOT NULL DEFAULT 0,\n        scanner_closed_count INTEGER NOT NULL DEFAULT 0,\n        ledger_closed_count INTEGER NOT NULL DEFAULT 0,\n        mismatch_count INTEGER NOT NULL DEFAULT 0,\n        summary_json TEXT NOT NULL DEFAULT '{}',\n        error TEXT,\n        started_at INTEGER NOT NULL,\n        finished_at INTEGER\n      )",
+  "CREATE TABLE ledger_relationship_edges (\n        id TEXT PRIMARY KEY,\n        source_entity_type TEXT NOT NULL CHECK(source_entity_type IN ('issue','comment')),\n        source_entity_id TEXT NOT NULL,\n        source_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        target_entity_type TEXT NOT NULL CHECK(target_entity_type IN ('issue','comment')),\n        target_entity_id TEXT NOT NULL,\n        target_project_id TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        target_issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE CASCADE,\n        link_type TEXT NOT NULL\n          CHECK(link_type IN ('parent_child','blocks','duplicate_of','related','references','fixed_by','caused_by','implements','tests')),\n        provenance TEXT NOT NULL DEFAULT 'manual'\n          CHECK(provenance IN ('manual','imported','derived','system')),\n        note TEXT,\n        action_id TEXT NOT NULL,\n        actor_id TEXT,\n        actor_type TEXT NOT NULL\n          CHECK(actor_type IN ('mandible_user','agent','system','external_adapter')),\n        source TEXT NOT NULL\n          CHECK(source IN ('mandible','git_bug','auth_queue','session','work_unit','import','system')),\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL,\n        deleted_at INTEGER,\n        UNIQUE(source_entity_type, source_entity_id, target_entity_type, target_entity_id, link_type)\n      )",
+  "CREATE TABLE ledger_session_issue_links (\n        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'worked_on',\n        source TEXT NOT NULL DEFAULT 'system',\n        created_at INTEGER NOT NULL,\n        last_seen_at INTEGER,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (session_id, issue_id, link_type)\n      )",
+  "CREATE TABLE ledger_sync_jobs (\n        id TEXT PRIMARY KEY,\n        adapter TEXT NOT NULL,\n        project_id TEXT NOT NULL DEFAULT '',\n        checkout_id TEXT,\n        root TEXT NOT NULL DEFAULT '',\n        direction TEXT NOT NULL CHECK(direction IN ('import','export','full')),\n        status TEXT NOT NULL CHECK(status IN ('pending','running','completed','failed','retryable','conflicted')),\n        attempt_count INTEGER NOT NULL DEFAULT 0,\n        next_retry_at INTEGER,\n        started_at INTEGER,\n        finished_at INTEGER,\n        last_error TEXT,\n        stats_json TEXT NOT NULL DEFAULT '{}',\n        created_at INTEGER NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE ledger_work_unit_issue_links (\n        work_unit_id TEXT NOT NULL REFERENCES work_units(id) ON DELETE CASCADE,\n        issue_id TEXT NOT NULL REFERENCES ledger_issues(id) ON DELETE RESTRICT,\n        link_type TEXT NOT NULL DEFAULT 'work_unit_tracks',\n        source TEXT NOT NULL DEFAULT 'system',\n        created_at INTEGER NOT NULL,\n        last_seen_at INTEGER,\n        metadata_json TEXT NOT NULL DEFAULT '{}',\n        PRIMARY KEY (work_unit_id, issue_id, link_type)\n      )",
+  "CREATE TABLE message_params (\n        id              INTEGER PRIMARY KEY AUTOINCREMENT,\n        session_id      TEXT NOT NULL,\n        message_index   INTEGER NOT NULL,\n        model           TEXT,\n        permission_mode TEXT,\n        max_turns       INTEGER,\n        max_cost_usd    REAL,\n        preset_ids      TEXT,\n        allowed_tools   TEXT,\n        created_at      INTEGER NOT NULL DEFAULT (unixepoch()), thinking_effort TEXT,\n        UNIQUE(session_id, message_index)\n      )",
+  "CREATE TABLE meta (\n      key   TEXT PRIMARY KEY,\n      value TEXT NOT NULL\n    )",
+  "CREATE TABLE preset_diffs (\n        id          TEXT PRIMARY KEY,\n        session_id  TEXT NOT NULL,\n        preset_id   TEXT,\n        node_id     TEXT,\n        diff_type   TEXT NOT NULL CHECK(diff_type IN ('add', 'remove', 'modify')),\n        old_content TEXT,\n        new_content TEXT,\n        status      TEXT NOT NULL DEFAULT 'proposed'\n                    CHECK(status IN ('proposed', 'accepted', 'rejected', 'promoted')),\n        created_at  INTEGER NOT NULL\n      )",
+  "CREATE TABLE preset_nodes (\n        id          TEXT PRIMARY KEY,\n        preset_id   TEXT NOT NULL REFERENCES presets(id) ON DELETE CASCADE,\n        parent_id   TEXT REFERENCES preset_nodes(id) ON DELETE CASCADE,\n        position    INTEGER NOT NULL DEFAULT 0,\n        title       TEXT NOT NULL DEFAULT '',\n        body        TEXT NOT NULL DEFAULT '',\n        level       INTEGER NOT NULL DEFAULT 1,\n        created_at  INTEGER NOT NULL,\n        updated_at  INTEGER NOT NULL\n      )",
+  "CREATE TABLE presets (\n        id          TEXT PRIMARY KEY,\n        name        TEXT NOT NULL,\n        description TEXT NOT NULL DEFAULT '',\n        source      TEXT NOT NULL DEFAULT 'manual'\n                    CHECK(source IN ('manual', 'claude_md_global', 'claude_md_project', 'claude_md_local')),\n        source_path TEXT,\n        content_hash TEXT NOT NULL DEFAULT '',\n        version     INTEGER NOT NULL DEFAULT 1,\n        created_at  INTEGER NOT NULL,\n        updated_at  INTEGER NOT NULL\n      )",
+  "CREATE TABLE project_artifact_associations (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        target_type      TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version')),\n        target_id        TEXT NOT NULL,\n        association_kind TEXT NOT NULL DEFAULT 'associated'\n          CHECK(association_kind IN ('associated','canonical')),\n        role             TEXT NOT NULL DEFAULT '',\n        title            TEXT,\n        description      TEXT,\n        rank             INTEGER,\n        status           TEXT NOT NULL DEFAULT 'active'\n          CHECK(status IN ('active','superseded','archived')),\n        source           TEXT NOT NULL DEFAULT 'user'\n          CHECK(source IN ('user','agent_explicit','space_rule','migration','system')),\n        source_ref_type  TEXT,\n        source_ref_id    TEXT,\n        metadata_json    TEXT NOT NULL DEFAULT '{}',\n        created_at       INTEGER NOT NULL,\n        updated_at       INTEGER NOT NULL,\n        UNIQUE(project_id, target_type, target_id, role)\n      )",
+  "CREATE TABLE provider_manifests (\n        id            TEXT PRIMARY KEY,\n        provider_id   TEXT NOT NULL,\n        manifest_type TEXT NOT NULL DEFAULT 'provider_manifest',\n        version       TEXT,\n        content_hash  TEXT NOT NULL,\n        artifact_id   TEXT,\n        source        TEXT NOT NULL DEFAULT 'ingest',\n        content_json  TEXT NOT NULL,\n        created_at    INTEGER NOT NULL\n      )",
+  "CREATE TABLE providers (\n        id                TEXT PRIMARY KEY,\n        display_name      TEXT NOT NULL,\n        version           TEXT,\n        status            TEXT NOT NULL DEFAULT 'active',\n        transport         TEXT NOT NULL DEFAULT 'manifest',\n        endpoint          TEXT,\n        capabilities_json TEXT NOT NULL DEFAULT '{}',\n        actions_json      TEXT NOT NULL DEFAULT '[]',\n        source            TEXT NOT NULL DEFAULT 'local',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        last_seen_at      INTEGER\n      )",
+  "CREATE TABLE push_history (\n        id TEXT PRIMARY KEY,\n        repo_id TEXT NOT NULL,\n        repo_root TEXT NOT NULL,\n        scope TEXT NOT NULL,\n        status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),\n        result_json TEXT,\n        started_at INTEGER NOT NULL,\n        completed_at INTEGER\n      )",
+  "CREATE TABLE runtime_patches (\n        id            TEXT PRIMARY KEY,\n        fingerprint   TEXT,\n        commit_hash   TEXT NOT NULL,\n        parent_hash   TEXT,\n        diff_summary  TEXT,\n        diff_stat     TEXT,\n        applied_at    INTEGER NOT NULL,\n        reverted_at   INTEGER,\n        source        TEXT NOT NULL CHECK(source IN ('agent','known_fix','manual','upstream_update')),\n        session_id    TEXT,\n        submitted     INTEGER NOT NULL DEFAULT 0,\n        submission_url TEXT\n      )",
+  "CREATE TABLE session_instruction_artifacts (\n        session_id          TEXT NOT NULL,\n        artifact_series_id  TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,\n        artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,\n        legacy_preset_id    TEXT,\n        position            INTEGER NOT NULL DEFAULT 0,\n        created_at          INTEGER NOT NULL,\n        updated_at          INTEGER NOT NULL,\n        PRIMARY KEY (session_id, artifact_series_id)\n      )",
+  "CREATE TABLE session_issues (\n        session_id  TEXT NOT NULL,\n        issue_id    TEXT NOT NULL,\n        repo_id     TEXT NOT NULL,\n        created_at  INTEGER NOT NULL,\n        PRIMARY KEY (session_id, issue_id, repo_id)\n      )",
+  "CREATE TABLE session_presets (\n        session_id      TEXT NOT NULL,\n        preset_id       TEXT NOT NULL,\n        preset_version  INTEGER NOT NULL DEFAULT 1,\n        position        INTEGER NOT NULL DEFAULT 0,\n        PRIMARY KEY (session_id, preset_id)\n      )",
+  "CREATE TABLE session_projects (\n        session_id TEXT NOT NULL,\n        repo_id TEXT NOT NULL,\n        repo_name TEXT NOT NULL,\n        created_at INTEGER NOT NULL,\n        PRIMARY KEY (session_id, repo_id)\n      )",
+  "CREATE TABLE sessions (\n        id            TEXT PRIMARY KEY,\n        app           TEXT NOT NULL,\n        parent_id     TEXT REFERENCES sessions(id) ON DELETE CASCADE,\n        status        TEXT NOT NULL DEFAULT 'active',\n        pid           INTEGER,\n        pid_start     TEXT,\n        cwd           TEXT,\n        branch        TEXT,\n        worktree      TEXT,\n        task          TEXT,\n        terminal      TEXT,\n        multiplexer   TEXT,\n        nav_session   TEXT,\n        nav_tab       TEXT,\n        nav_pane_id   TEXT,\n        nav_extra     TEXT,\n        agent_type    TEXT,\n        description   TEXT,\n        created_at    TEXT NOT NULL DEFAULT (datetime('now')),\n        ended_at      TEXT,\n        updated_at    TEXT NOT NULL DEFAULT (datetime('now'))\n      , nav_metadata_status TEXT NOT NULL DEFAULT 'not_applicable', nav_metadata_attempts INTEGER NOT NULL DEFAULT 0, nav_metadata_last_error TEXT, nav_metadata_last_attempt_at TEXT, nav_metadata_next_retry_at TEXT, continuation TEXT, continuation_acked_by TEXT, pinned INTEGER DEFAULT 0, last_active TEXT, channel_connected_at INTEGER, channel_last_tool_call INTEGER, conversation_id TEXT)",
+  "CREATE TABLE settings (\n        key TEXT PRIMARY KEY,\n        value TEXT NOT NULL,\n        updated_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE space_blocks (\n        id                 TEXT NOT NULL,\n        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        parent_id          TEXT,\n        block_type         TEXT NOT NULL\n                             CHECK(block_type IN (\n                               'heading','paragraph','reference','artifact_embed',\n                               'issue_embed','comment_embed','todo'\n                             )),\n        item_id            TEXT,\n        item_snapshot_json TEXT\n                             CHECK(item_snapshot_json IS NULL\n                               OR (json_valid(item_snapshot_json)\n                                   AND json_type(item_snapshot_json)='object')),\n        sort_key           TEXT NOT NULL,\n        markdown           TEXT NOT NULL DEFAULT '',\n        metadata_json      TEXT NOT NULL DEFAULT '{}'\n                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at         INTEGER NOT NULL,\n        updated_at         INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE RESTRICT\n      )",
+  "CREATE TABLE space_edges (\n        id            TEXT PRIMARY KEY,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        source        TEXT NOT NULL,\n        target        TEXT NOT NULL,\n        label         TEXT,\n        style         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        FOREIGN KEY (space_id, source)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, target)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
+  "CREATE TABLE space_exports (\n        id                              TEXT PRIMARY KEY,\n        space_id                        TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        repo_id                         TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,\n        branch                          TEXT NOT NULL,\n        path                            TEXT NOT NULL,\n        authority                       TEXT NOT NULL DEFAULT 'mandible'\n                                          CHECK(authority IN ('mandible','repo')),\n        status                          TEXT NOT NULL DEFAULT 'clean'\n                                          CHECK(status IN ('clean','stale','repo_changed','worktree_dirty','conflict')),\n        last_export_artifact_id         TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        pre_export_snapshot_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        last_export_commit              TEXT,\n        last_export_blob_sha            TEXT,\n        last_export_content_sha256      TEXT,\n        last_seen_commit                TEXT,\n        last_seen_content_sha256        TEXT,\n        created_at                      INTEGER NOT NULL,\n        updated_at                      INTEGER NOT NULL,\n        UNIQUE (repo_id, branch, path)\n      )",
+  "CREATE TABLE space_items (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        ref_type      TEXT NOT NULL\n                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space')),\n        ref_id        TEXT NOT NULL CHECK(ref_id != ''),\n        ref_uri       TEXT,\n        title         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        UNIQUE (space_id, ref_type, ref_id),\n        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)\n      )",
+  "CREATE TABLE space_occurrences (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        item_id       TEXT,\n        renderer      TEXT NOT NULL DEFAULT 'canvas'\n                        CHECK(renderer IN ('canvas','board','collection')),\n        parent_id     TEXT,\n        x             REAL,\n        y             REAL,\n        width         REAL,\n        height        REAL,\n        z_index       INTEGER,\n        sort_key      TEXT,\n        section_id    TEXT,\n        note          TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
+  "CREATE TABLE spaces (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        title            TEXT NOT NULL,\n        default_renderer TEXT NOT NULL DEFAULT 'canvas'\n                           CHECK(default_renderer IN ('canvas','document','board','collection')),\n        description      TEXT,\n        metadata_json    TEXT NOT NULL DEFAULT '{}'\n                           CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at       INTEGER NOT NULL,\n        updated_at       INTEGER NOT NULL\n      )",
+  "CREATE TABLE starred_chats (\n        id TEXT PRIMARY KEY,\n        session_id TEXT,\n        label TEXT NOT NULL,\n        notes TEXT,\n        transcript_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)\n      )",
+  "CREATE TABLE webhook_events (\n        id             TEXT PRIMARY KEY,\n        source         TEXT NOT NULL,\n        event_type     TEXT NOT NULL,\n        title          TEXT,\n        data_json      TEXT NOT NULL,\n        target_session TEXT,\n        target_issue   TEXT,\n        target_branch  TEXT,\n        priority       TEXT NOT NULL DEFAULT 'normal',\n        status         TEXT NOT NULL DEFAULT 'pending',\n        created_at     INTEGER NOT NULL,\n        delivered_at   INTEGER,\n        delivered_to   TEXT\n      )",
+  "CREATE TABLE work_repos (\n        id              TEXT NOT NULL,\n        root            TEXT NOT NULL,\n        name            TEXT NOT NULL,\n        default_branch  TEXT NOT NULL DEFAULT '',\n        dir_exists      INTEGER NOT NULL DEFAULT 1,\n        excluded        INTEGER NOT NULL DEFAULT 0,\n        user_modified   INTEGER NOT NULL DEFAULT 0,\n        last_scanned_at TEXT,\n        created_at      TEXT NOT NULL DEFAULT (datetime('now')),\n        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),\n        PRIMARY KEY (root)\n      )",
+  "CREATE TABLE work_units (\n        id TEXT PRIMARY KEY,\n        issue_id TEXT NOT NULL,\n        repo_id TEXT NOT NULL,\n        branch TEXT,\n        parent_branch TEXT,\n        kind TEXT NOT NULL DEFAULT 'solo',\n        state TEXT NOT NULL DEFAULT 'open',\n        assigned_session_id TEXT,\n        provider TEXT,\n        provider_session_id TEXT,\n        continuation TEXT,\n        continuation_by TEXT,\n        continuation_at INTEGER,\n        created_at INTEGER NOT NULL,\n        activated_at INTEGER,\n        last_commit_at INTEGER,\n        resolved_at INTEGER,\n        auth_request_id TEXT\n      , ledger_issue_id TEXT REFERENCES ledger_issues(id))",
+  "CREATE TABLE workflow_ingest_state (\n        file_path TEXT PRIMARY KEY,\n        source_mtime REAL NOT NULL DEFAULT 0,\n        summary_path TEXT NOT NULL,\n        workflow_id TEXT,\n        updated_at INTEGER NOT NULL\n      )",
+  "CREATE TABLE workflow_phases (\n        id              TEXT PRIMARY KEY,\n        workflow_id     TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,\n        phase_index     INTEGER NOT NULL,\n        title           TEXT NOT NULL,\n        status          TEXT NOT NULL\n          CHECK(status IN ('pending','running','completed','failed','warning')),\n        worker_count    INTEGER NOT NULL DEFAULT 0,\n        completed_count INTEGER NOT NULL DEFAULT 0,\n        UNIQUE(workflow_id, phase_index)\n      )",
+  "CREATE TABLE workflow_runs (\n        id                TEXT PRIMARY KEY,\n        provider          TEXT NOT NULL DEFAULT 'claude_code'\n          CHECK(provider IN ('claude_code')),\n        provider_run_id   TEXT NOT NULL,\n        session_id        TEXT NOT NULL,\n        project_path      TEXT,\n        summary_path      TEXT NOT NULL UNIQUE,\n        summary_mtime     REAL NOT NULL DEFAULT 0,\n        summary_hash      TEXT NOT NULL DEFAULT '',\n        workflow_name     TEXT NOT NULL,\n        status            TEXT NOT NULL\n          CHECK(status IN ('pending','running','completed','failed','warning')),\n        started_at        INTEGER,\n        updated_at        INTEGER,\n        completed_at      INTEGER,\n        duration_ms       INTEGER,\n        total_tokens      INTEGER,\n        total_tool_calls  INTEGER,\n        agent_count       INTEGER NOT NULL DEFAULT 0,\n        completed_workers INTEGER NOT NULL DEFAULT 0,\n        total_workers     INTEGER NOT NULL DEFAULT 0,\n        format_version    TEXT NOT NULL,\n        script_path       TEXT,\n        warnings_json     TEXT NOT NULL DEFAULT '[]',\n        created_at        INTEGER NOT NULL,\n        ingested_at       INTEGER NOT NULL\n      )",
+  "CREATE TABLE workflow_workers (\n        id                TEXT PRIMARY KEY,\n        workflow_id       TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,\n        phase_id          TEXT REFERENCES workflow_phases(id) ON DELETE SET NULL,\n        worker_index      INTEGER NOT NULL,\n        agent_id          TEXT,\n        label             TEXT NOT NULL,\n        status            TEXT NOT NULL\n          CHECK(status IN ('pending','running','completed','failed','warning')),\n        model             TEXT,\n        queued_at         INTEGER,\n        started_at        INTEGER,\n        last_progress_at  INTEGER,\n        completed_at      INTEGER,\n        duration_ms       INTEGER,\n        tokens            INTEGER,\n        tool_calls        INTEGER,\n        last_tool_name    TEXT,\n        last_tool_summary TEXT,\n        prompt_preview    TEXT,\n        result_preview    TEXT,\n        transcript_path   TEXT,\n        conversation_id   TEXT REFERENCES conversations(id) ON DELETE SET NULL,\n        warnings_json     TEXT NOT NULL DEFAULT '[]',\n        UNIQUE(workflow_id, agent_id)\n      )",
+  "CREATE INDEX idx_artifact_aliases_artifact\n        ON artifact_aliases(artifact_id)\n        WHERE artifact_id IS NOT NULL",
+  "CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref\n        ON artifact_aliases(scheme, normalized_ref)",
+  "CREATE INDEX idx_artifact_aliases_status\n        ON artifact_aliases(resolution_status, scheme)",
+  "CREATE INDEX idx_artifact_blob_custody\n        ON artifact_blob(custody_mode, availability)",
+  "CREATE INDEX idx_artifact_blob_provider\n        ON artifact_blob(provider_id)\n        WHERE provider_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_blob_role\n        ON artifact_blob(role)\n        WHERE role IS NOT NULL",
+  "CREATE INDEX idx_artifact_drafts_base\n        ON artifact_drafts(base_version_id)",
+  "CREATE INDEX idx_artifact_links_artifact\n        ON artifact_links(artifact_id, link_type)",
+  "CREATE INDEX idx_artifact_links_entity\n        ON artifact_links(entity_type, entity_id)",
+  "CREATE INDEX idx_artifact_links_fallback_version\n      ON artifact_links(fallback_version_id)\n      WHERE fallback_version_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_links_kind\n      ON artifact_links(link_kind)",
+  "CREATE INDEX idx_artifact_links_legacy_blob\n      ON artifact_links(legacy_blob_id)\n      WHERE legacy_blob_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_links_provider\n        ON artifact_links(provider_id)\n        WHERE provider_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_links_repo\n        ON artifact_links(repo_id)\n        WHERE repo_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_links_role\n        ON artifact_links(role)\n        WHERE role IS NOT NULL",
+  "CREATE INDEX idx_artifact_links_series\n      ON artifact_links(series_id)\n      WHERE series_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_links_target\n      ON artifact_links(target_type, target_id)\n      WHERE target_type IS NOT NULL AND target_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_series_kind\n        ON artifact_series(source_kind)",
+  "CREATE INDEX idx_artifact_series_repo\n        ON artifact_series(repo_id)\n        WHERE repo_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_source_kind\n        ON artifact(source_kind)",
+  "CREATE INDEX idx_artifact_source_project\n        ON artifact(source_project_id)\n        WHERE source_project_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_source_repo\n        ON artifact(source_repo_id)\n        WHERE source_repo_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_version_artifact\n        ON artifact_version(artifact_id, version_no DESC)",
+  "CREATE INDEX idx_artifact_version_blob\n        ON artifact_version(blob_id)",
+  "CREATE INDEX idx_artifact_version_hash\n        ON artifact_version(content_hash)",
+  "CREATE INDEX idx_artifact_version_source_project\n        ON artifact_version(source_project_id)\n        WHERE source_project_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_versions_artifact\n        ON artifact_versions(artifact_id)",
+  "CREATE INDEX idx_artifact_versions_hash\n        ON artifact_versions(content_hash)",
+  "CREATE INDEX idx_artifact_versions_parent\n        ON artifact_versions(parent_version_id)\n        WHERE parent_version_id IS NOT NULL",
+  "CREATE INDEX idx_artifact_versions_series\n        ON artifact_versions(series_id, version_no DESC)",
+  "CREATE INDEX idx_artifacts_custody\n      ON artifacts(custody_mode, availability)",
+  "CREATE INDEX idx_artifacts_home_repo\n      ON artifacts(home_repo_id)",
+  "CREATE INDEX idx_artifacts_provider\n        ON artifacts(provider_id)",
+  "CREATE INDEX idx_artifacts_role\n        ON artifacts(role)",
+  "CREATE INDEX idx_auth_hooks_repo_type\n        ON auth_hooks(repo_pattern, auth_type)",
+  "CREATE INDEX idx_auth_request_actions_request_ordinal\n        ON auth_request_actions(auth_request_id, ordinal)",
+  "CREATE INDEX idx_auth_request_actions_state\n        ON auth_request_actions(state, auth_request_id)",
+  "CREATE INDEX idx_auth_requests_conversation_id\n        ON auth_requests(conversation_id) WHERE conversation_id IS NOT NULL",
+  "CREATE INDEX idx_auth_requests_queue\n        ON auth_requests(status, skipped_at, created_at)",
+  "CREATE INDEX idx_auth_requests_status_created\n        ON auth_requests(status, created_at)",
+  "CREATE INDEX idx_auth_requests_target_repo\n        ON auth_requests(target_repo_root) WHERE target_repo_root IS NOT NULL",
+  "CREATE INDEX idx_auth_requests_target_session\n        ON auth_requests(target_session_id) WHERE target_session_id IS NOT NULL",
+  "CREATE INDEX idx_blocks_conv ON conversation_blocks(conversation_id)",
+  "CREATE INDEX idx_blocks_dag_parent\n      ON conversation_blocks(conversation_id, dag_parent_uuid)\n      WHERE dag_parent_uuid IS NOT NULL",
+  "CREATE INDEX idx_blocks_parent ON conversation_blocks(parent_id) WHERE parent_id IS NOT NULL",
+  "CREATE INDEX idx_blocks_timestamp_ms\n        ON conversation_blocks(timestamp_ms) WHERE timestamp_ms IS NOT NULL",
+  "CREATE INDEX idx_blocks_type ON conversation_blocks(conversation_id, type)",
+  "CREATE INDEX idx_console_session_telemetry_console\n        ON console_session_telemetry(console_session_id)\n        WHERE console_session_id IS NOT NULL",
+  "CREATE INDEX idx_console_session_telemetry_provider\n        ON console_session_telemetry(provider_session_id)\n        WHERE provider_session_id IS NOT NULL",
+  "CREATE INDEX idx_console_session_usage_session\n        ON console_session_usage(console_session_id, recorded_at DESC)",
+  "CREATE INDEX idx_console_sessions_operator\n         ON console_sessions(is_operator) WHERE is_operator = 1",
+  "CREATE INDEX idx_console_sessions_status\n         ON console_sessions(status)",
+  "CREATE INDEX idx_conv_agent\n      ON conversations(agent_id)\n      WHERE agent_id IS NOT NULL",
+  "CREATE INDEX idx_conv_ended_ms\n        ON conversations(ended_at_ms) WHERE ended_at_ms IS NOT NULL",
+  "CREATE INDEX idx_conv_parent ON conversations(parent_conversation_id) WHERE parent_conversation_id IS NOT NULL",
+  "CREATE INDEX idx_conv_session ON conversations(session_id)",
+  "CREATE INDEX idx_conv_sidechain_parent\n      ON conversations(parent_conversation_id, is_sidechain)\n      WHERE is_sidechain = 1",
+  "CREATE INDEX idx_conv_source ON conversations(source)",
+  "CREATE INDEX idx_conv_source_path ON conversations(source_path)",
+  "CREATE INDEX idx_conv_starred ON conversations(starred) WHERE starred = 1",
+  "CREATE INDEX idx_conv_started ON conversations(started_at)",
+  "CREATE INDEX idx_conv_started_ms\n        ON conversations(started_at_ms) WHERE started_at_ms IS NOT NULL",
+  "CREATE INDEX idx_conversation_ingest_state_updated\n        ON conversation_ingest_state(updated_at)",
+  "CREATE INDEX idx_csl_node ON convention_setting_links(node_id)",
+  "CREATE INDEX idx_csl_setting ON convention_setting_links(setting_key)",
+  "CREATE INDEX idx_daemon_log_artifact\n        ON daemon_log(artifact_id, ts DESC)\n        WHERE artifact_id IS NOT NULL",
+  "CREATE INDEX idx_daemon_log_auth_request\n        ON daemon_log(auth_request_id, ts DESC)\n        WHERE auth_request_id IS NOT NULL",
+  "CREATE INDEX idx_daemon_log_facets\n        ON daemon_log(subsystem, level, event, ts DESC)",
+  "CREATE INDEX idx_daemon_log_issue\n        ON daemon_log(issue_id, ts DESC)\n        WHERE issue_id IS NOT NULL",
+  "CREATE INDEX idx_daemon_log_repo\n        ON daemon_log(repo_id, ts DESC)\n        WHERE repo_id IS NOT NULL",
+  "CREATE INDEX idx_daemon_log_session\n        ON daemon_log(session_id, ts DESC)\n        WHERE session_id IS NOT NULL",
+  "CREATE INDEX idx_daemon_log_ts\n        ON daemon_log(ts DESC)",
+  "CREATE INDEX idx_graph_edges_class\n        ON graph_edges(edge_class)",
+  "CREATE INDEX idx_graph_edges_source\n        ON graph_edges(source_id)",
+  "CREATE INDEX idx_graph_edges_target\n        ON graph_edges(target_id)",
+  "CREATE INDEX idx_graph_edges_type\n        ON graph_edges(edge_type)",
+  "CREATE INDEX idx_graph_entities_provider\n        ON graph_entities(provider_id)",
+  "CREATE INDEX idx_graph_entities_repo\n        ON graph_entities(repo_id)",
+  "CREATE INDEX idx_graph_entities_type\n        ON graph_entities(entity_type)",
+  "CREATE INDEX idx_issue_branches_branch\n        ON issue_branches(branch)",
+  "CREATE INDEX idx_issue_branches_role\n        ON issue_branches(role)",
+  "CREATE INDEX idx_issue_resolutions_issue\n        ON issue_resolutions(issue_id)",
+  "CREATE INDEX idx_knowledge_backrefs_external_ref\n        ON knowledge_backrefs(external_ref)",
+  "CREATE INDEX idx_knowledge_backrefs_provider\n        ON knowledge_backrefs(provider_id, ref_type)",
+  "CREATE INDEX idx_knowledge_backrefs_source\n        ON knowledge_backrefs(source_type, source_id)",
+  "CREATE INDEX idx_ledger_auth_issue_issue\n        ON ledger_auth_issue_links(issue_id)",
+  "CREATE INDEX idx_ledger_body_revisions_entity\n        ON ledger_body_revisions(entity_type, entity_id, revision_no)",
+  "CREATE INDEX idx_ledger_body_revisions_event\n        ON ledger_body_revisions(event_id)\n        WHERE event_id IS NOT NULL",
+  "CREATE INDEX idx_ledger_body_revisions_issue\n        ON ledger_body_revisions(issue_id, occurred_at)",
+  "CREATE INDEX idx_ledger_comments_issue_created\n        ON ledger_comments(issue_id, created_at)",
+  "CREATE UNIQUE INDEX idx_ledger_comments_issue_ordinal\n        ON ledger_comments(issue_id, ordinal)\n        WHERE ordinal > 0",
+  "CREATE INDEX idx_ledger_commit_issue_issue\n        ON ledger_commit_issue_links(issue_id)",
+  "CREATE INDEX idx_ledger_conflicts_entity\n        ON ledger_conflicts(entity_type, entity_id)",
+  "CREATE INDEX idx_ledger_conflicts_status\n        ON ledger_conflicts(status, adapter, project_id)",
+  "CREATE INDEX idx_ledger_events_entity\n        ON ledger_events(entity_type, entity_id, occurred_at)",
+  "CREATE INDEX idx_ledger_events_occurred\n        ON ledger_events(occurred_at DESC)",
+  "CREATE INDEX idx_ledger_external_refs_entity\n        ON ledger_external_refs(entity_type, entity_id)",
+  "CREATE INDEX idx_ledger_issue_aliases_alias\n        ON ledger_issue_aliases(alias)",
+  "CREATE INDEX idx_ledger_issue_aliases_issue\n        ON ledger_issue_aliases(issue_id)",
+  "CREATE INDEX idx_ledger_issue_checkpoints_issue_created\n        ON ledger_issue_checkpoints(issue_id, created_at DESC)",
+  "CREATE INDEX idx_ledger_issue_checkpoints_issue_kind_created\n        ON ledger_issue_checkpoints(issue_id, kind, created_at DESC)",
+  "CREATE INDEX idx_ledger_issues_kind\n        ON ledger_issues(kind)",
+  "CREATE UNIQUE INDEX idx_ledger_issues_project_short_id\n        ON ledger_issues(project_id, short_id)\n        WHERE short_id != ''",
+  "CREATE INDEX idx_ledger_issues_project_status_updated\n        ON ledger_issues(project_id, status, updated_at DESC)",
+  "CREATE INDEX idx_ledger_labels_label\n        ON ledger_labels(label)",
+  "CREATE INDEX idx_ledger_operational_link_mismatches_report\n        ON ledger_operational_link_mismatches(report_id, source_table, mismatch_type)",
+  "CREATE INDEX idx_ledger_operational_link_reports_status\n        ON ledger_operational_link_reports(status, finished_at DESC)",
+  "CREATE INDEX idx_ledger_outbox_adapter_status\n        ON ledger_outbox(adapter, status, available_at)",
+  "CREATE INDEX idx_ledger_outbox_project\n        ON ledger_outbox(project_id)",
+  "CREATE INDEX idx_ledger_project_checkouts_project\n        ON ledger_project_checkouts(project_id)",
+  "CREATE UNIQUE INDEX idx_ledger_projects_project_key\n      ON ledger_projects(project_key)\n      WHERE project_key != ''",
+  "CREATE UNIQUE INDEX idx_ledger_projects_remote_identity\n        ON ledger_projects(remote_identity)\n        WHERE remote_identity != ''",
+  "CREATE INDEX idx_ledger_reconciliation_mismatches_issue\n        ON ledger_reconciliation_mismatches(repo_id, issue_ref)",
+  "CREATE INDEX idx_ledger_reconciliation_mismatches_report\n        ON ledger_reconciliation_mismatches(report_id, mismatch_type)",
+  "CREATE INDEX idx_ledger_reconciliation_reports_status\n        ON ledger_reconciliation_reports(status, finished_at DESC)",
+  "CREATE INDEX idx_ledger_relationship_edges_action\n        ON ledger_relationship_edges(action_id)",
+  "CREATE INDEX idx_ledger_relationship_edges_source\n        ON ledger_relationship_edges(source_entity_type, source_entity_id, deleted_at)",
+  "CREATE INDEX idx_ledger_relationship_edges_source_issue\n        ON ledger_relationship_edges(source_issue_id, deleted_at)",
+  "CREATE INDEX idx_ledger_relationship_edges_target\n        ON ledger_relationship_edges(target_entity_type, target_entity_id, deleted_at)",
+  "CREATE INDEX idx_ledger_relationship_edges_target_issue\n        ON ledger_relationship_edges(target_issue_id, deleted_at)",
+  "CREATE INDEX idx_ledger_relationship_sources_relationship\n          ON ledger_issue_relationship_sources(relationship_id)",
+  "CREATE INDEX idx_ledger_relationship_sources_source\n          ON ledger_issue_relationship_sources(source_entity_type, source_entity_id)",
+  "CREATE INDEX idx_ledger_relationship_sources_target\n          ON ledger_issue_relationship_sources(target_issue_id)",
+  "CREATE INDEX idx_ledger_relationships_source\n        ON ledger_issue_relationships(source_issue_id)",
+  "CREATE INDEX idx_ledger_relationships_target\n        ON ledger_issue_relationships(target_issue_id)",
+  "CREATE INDEX idx_ledger_relationships_type\n        ON ledger_issue_relationships(relationship_type)",
+  "CREATE INDEX idx_ledger_session_issue_issue\n        ON ledger_session_issue_links(issue_id)",
+  "CREATE INDEX idx_ledger_sync_jobs_adapter_status\n        ON ledger_sync_jobs(adapter, status, next_retry_at)",
+  "CREATE INDEX idx_ledger_sync_jobs_project\n        ON ledger_sync_jobs(project_id, checkout_id, updated_at DESC)",
+  "CREATE INDEX idx_ledger_work_unit_issue_issue\n        ON ledger_work_unit_issue_links(issue_id)",
+  "CREATE INDEX idx_message_params_session\n        ON message_params(session_id, message_index DESC)",
+  "CREATE INDEX idx_preset_diffs_session ON preset_diffs(session_id)",
+  "CREATE INDEX idx_preset_nodes_parent ON preset_nodes(parent_id)",
+  "CREATE INDEX idx_preset_nodes_preset ON preset_nodes(preset_id)",
+  "CREATE INDEX idx_project_artifact_assoc_project\n        ON project_artifact_associations(project_id, association_kind, status)",
+  "CREATE INDEX idx_project_artifact_assoc_source\n        ON project_artifact_associations(source_ref_type, source_ref_id)\n        WHERE source_ref_type IS NOT NULL AND source_ref_id IS NOT NULL",
+  "CREATE INDEX idx_project_artifact_assoc_target\n        ON project_artifact_associations(target_type, target_id)",
+  "CREATE INDEX idx_provider_manifests_provider\n        ON provider_manifests(provider_id, created_at DESC)",
+  "CREATE INDEX idx_providers_status\n        ON providers(status)",
+  "CREATE INDEX idx_push_history_repo ON push_history(repo_id)",
+  "CREATE INDEX idx_push_history_status ON push_history(status)",
+  "CREATE INDEX idx_runtime_patches_applied\n        ON runtime_patches(applied_at DESC)",
+  "CREATE INDEX idx_runtime_patches_source\n        ON runtime_patches(source)",
+  "CREATE INDEX idx_session_instruction_artifacts_session\n        ON session_instruction_artifacts(session_id, position)",
+  "CREATE INDEX idx_session_instruction_artifacts_version\n        ON session_instruction_artifacts(artifact_version_id)",
+  "CREATE INDEX idx_session_issues_issue\n        ON session_issues(issue_id, repo_id)",
+  "CREATE INDEX idx_session_issues_session\n        ON session_issues(session_id)",
+  "CREATE INDEX idx_session_presets_session ON session_presets(session_id)",
+  "CREATE INDEX idx_session_projects_session\n        ON session_projects(session_id)",
+  "CREATE INDEX idx_sessions_conversation_id\n        ON sessions(conversation_id) WHERE conversation_id IS NOT NULL",
+  "CREATE INDEX idx_space_blocks_item\n        ON space_blocks(space_id, item_id) WHERE item_id IS NOT NULL",
+  "CREATE INDEX idx_space_blocks_tree\n        ON space_blocks(space_id, parent_id, sort_key)",
+  "CREATE INDEX idx_space_edges_source ON space_edges(space_id, source)",
+  "CREATE INDEX idx_space_edges_target ON space_edges(space_id, target)",
+  "CREATE INDEX idx_space_exports_repo\n        ON space_exports(repo_id, branch, path)",
+  "CREATE INDEX idx_space_exports_space\n        ON space_exports(space_id)",
+  "CREATE INDEX idx_space_items_by_ref\n        ON space_items(ref_type, ref_id, space_id)",
+  "CREATE INDEX idx_space_items_lookup\n        ON space_items(space_id, ref_type, ref_id)",
+  "CREATE INDEX idx_space_occurrences_item\n        ON space_occurrences(space_id, item_id) WHERE item_id IS NOT NULL",
+  "CREATE INDEX idx_space_occurrences_render\n        ON space_occurrences(space_id, renderer, sort_key)",
+  "CREATE INDEX idx_space_occurrences_tree\n        ON space_occurrences(space_id, parent_id, sort_key)",
+  "CREATE INDEX idx_spaces_project_updated\n        ON spaces(project_id, updated_at DESC)",
+  "CREATE INDEX idx_starred_chats_created\n        ON starred_chats(created_at)",
+  "CREATE INDEX idx_webhook_events_created\n        ON webhook_events(created_at DESC)",
+  "CREATE INDEX idx_webhook_events_status\n        ON webhook_events(status)",
+  "CREATE INDEX idx_work_units_ledger_issue\n      ON work_units(ledger_issue_id) WHERE ledger_issue_id IS NOT NULL",
+  "CREATE INDEX idx_work_units_provider_session\n      ON work_units(provider, provider_session_id)\n      WHERE provider IS NOT NULL AND provider_session_id IS NOT NULL",
+  "CREATE INDEX idx_work_units_repo_branch ON work_units(repo_id, branch)",
+  "CREATE INDEX idx_work_units_repo_issue ON work_units(repo_id, issue_id)",
+  "CREATE INDEX idx_work_units_state ON work_units(state)",
+  "CREATE INDEX idx_workflow_ingest_state_summary\n        ON workflow_ingest_state(summary_path)",
+  "CREATE INDEX idx_workflow_ingest_state_updated\n        ON workflow_ingest_state(updated_at)",
+  "CREATE INDEX idx_workflow_phases_run\n        ON workflow_phases(workflow_id, phase_index)",
+  "CREATE INDEX idx_workflow_runs_session\n        ON workflow_runs(session_id, updated_at DESC)",
+  "CREATE INDEX idx_workflow_runs_status\n        ON workflow_runs(status, updated_at DESC)",
+  "CREATE INDEX idx_workflow_workers_conversation\n        ON workflow_workers(conversation_id)\n        WHERE conversation_id IS NOT NULL",
+  "CREATE INDEX idx_workflow_workers_phase\n        ON workflow_workers(phase_id, worker_index)",
+  "CREATE INDEX idx_workflow_workers_run\n        ON workflow_workers(workflow_id, worker_index)",
+  "CREATE INDEX sessions_app_idx ON sessions(app)",
+  "CREATE INDEX sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL",
+  "CREATE INDEX sessions_channel_idx\n        ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL",
+  "CREATE INDEX sessions_nav_metadata_idx\n        ON sessions(nav_metadata_status, nav_metadata_next_retry_at)",
+  "CREATE INDEX sessions_parent_idx ON sessions(parent_id)",
+  "CREATE INDEX sessions_status_idx ON sessions(status)",
+  "CREATE INDEX work_repos_excluded_idx ON work_repos(excluded)",
+  "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
+  "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
+  "CREATE TRIGGER trg_work_units_assigned_session_update_normalize\n     AFTER UPDATE OF assigned_session_id ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END"
+];
+
+const COMPLETED_POST_MIGRATIONS: readonly string[] = [
+  "post_migration.v19_compress_existing_blocks.complete",
+  "post_migration.v24_backfill_project_repo_names.complete",
+  "post_migration.v25_backfill_project_repo_names_v2.complete",
+  "post_migration.v29_backfill_issue_ids.complete",
+  "post_migration.v36_ensure_conversation_block_dag_columns.complete",
+  "post_migration.v58_ensure_work_unit_ledger_issue_column.complete",
+  "post_migration.v80_ensure_work_unit_assigned_session_normalization.complete",
+  "post_migration.v81_ensure_work_unit_provider_identity.complete",
+  "post_migration.v61_ensure_ledger_hash_id_columns.complete",
+  "post_migration.v62_migrate_ledger_event_hash_ids.complete",
+  "post_migration.v66_ensure_artifact_custody_columns.complete",
+  "post_migration.v69_backfill_ledger_body_revisions.complete",
+  "post_migration.v70_remove_legacy_issue_relationship_source_kinds.complete",
+  "post_migration.v74_ensure_conversation_integer_timestamps.complete",
+  "post_migration.v95_backfill_conversation_sidechains.complete",
+  "post_migration.v86_spaces_nullable_project_id.complete",
+  "post_migration.v87_backfill_project_keys.complete",
+  "post_migration.v89_backfill_orphan_artifact_series.complete",
+  "post_migration.v90_space_items_link_space_refs.complete",
+  "post_migration.v91_backfill_artifact_identity.complete"
+];
+
+const DEFAULT_SETTINGS: ReadonlyArray<readonly [string, string]> = [
+  [
+    "protected_branches",
+    "main,develop"
+  ],
+  [
+    "subagent_panes_enabled",
+    "false"
+  ],
+  [
+    "claude_notifications_enabled",
+    "true"
+  ],
+  [
+    "codex_notifications_enabled",
+    "true"
+  ],
+  [
+    "notification_sound",
+    "Blow"
+  ],
+  [
+    "quiet_hours",
+    ""
+  ],
+  [
+    "pretool_hooks_enabled",
+    "true"
+  ],
+  [
+    "log_retention_days",
+    "7"
+  ],
+  [
+    "theme",
+    "catppuccin-mocha"
+  ],
+  [
+    "prompt",
+    "powerlevel10k"
+  ],
+  [
+    "multiplexer",
+    "both"
+  ],
+  [
+    "auto_close_issues_on_merge",
+    "true"
+  ],
+  [
+    "console_pinned_sessions",
+    "[]"
+  ],
+  [
+    "console_operator_session_id",
+    ""
+  ],
+  [
+    "push_same_name_upstream",
+    "true"
+  ],
+  [
+    "inbox.project_grace_days",
+    "7"
+  ],
+  [
+    "inbox.global_grace_days",
+    "30"
+  ],
+  [
+    "auth_auto_approve_duration_minutes",
+    "60"
+  ],
+  [
+    "ledger.issues.read_mode",
+    "scanner"
+  ],
+  [
+    "ledger.issues.write_mode",
+    "git_bug"
+  ],
+  [
+    "ledger.issues.shadow_report_enabled",
+    "true"
+  ],
+  [
+    "ledger.issues.fallback_on_ledger_error",
+    "true"
+  ],
+  [
+    "app_theme",
+    "system"
+  ],
+  [
+    "stderr_rotation_max_bytes",
+    "16777216"
+  ],
+  [
+    "stderr_rotation_keep_segments",
+    "5"
+  ]
+];
+
+interface BaselineAuthHook {
+  id: string;
+  repo_pattern: string;
+  auth_type: string;
+  command: string;
+  label: string;
+  enabled: number;
+  builtin: number;
+  position: number;
+}
+
+const BUILTIN_AUTH_HOOKS: readonly BaselineAuthHook[] = [
+  {
+    "id": "builtin-mandible-rebuild",
+    "repo_pattern": "mandible",
+    "auth_type": "merge",
+    "command": "bash cli/post-merge-build-dist.sh",
+    "label": "Build Mandible and install instructions after merge",
+    "enabled": 1,
+    "builtin": 1,
+    "position": 0
+  },
+  {
+    "id": "builtin-dotfiles-agent-instructions",
+    "repo_pattern": ".dotfiles",
+    "auth_type": "merge",
+    "command": "if [[ -x bin/agent-instruction-symlink-doctor ]]; then bash bin/agent-instruction-symlink-doctor; elif [[ -x bin/compile-agent-instructions ]]; then bash bin/compile-agent-instructions; else echo \"dotfiles agent instruction hook missing repair script\" >&2; exit 1; fi",
+    "label": "Compile agent instructions and repair home symlinks",
+    "enabled": 1,
+    "builtin": 1,
+    "position": 0
+  },
+  {
+    "id": "builtin-dotfiles-agent-instructions-nodot",
+    "repo_pattern": "dotfiles",
+    "auth_type": "merge",
+    "command": "if [[ -x bin/agent-instruction-symlink-doctor ]]; then bash bin/agent-instruction-symlink-doctor; elif [[ -x bin/compile-agent-instructions ]]; then bash bin/compile-agent-instructions; else echo \"dotfiles agent instruction hook missing repair script\" >&2; exit 1; fi",
+    "label": "Compile agent instructions and repair home symlinks",
+    "enabled": 1,
+    "builtin": 1,
+    "position": 0
+  }
+];
+
+export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
+  if (schemaVersion !== BASELINE_SCHEMA_VERSION) {
+    throw new Error(
+      `Fresh schema baseline is v${BASELINE_SCHEMA_VERSION}, but migration head is v${schemaVersion}`,
+    );
+  }
+
+  const create = db.transaction(() => {
+    for (const statement of HEAD_SCHEMA_STATEMENTS) {
+      db.exec(statement);
+    }
+
+    const setMeta = db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)");
+    setMeta.run("schema_version", String(schemaVersion));
+    for (const key of COMPLETED_POST_MIGRATIONS) {
+      setMeta.run(key, "done");
+    }
+
+    const now = Date.now();
+    const insertSetting = db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
+    );
+    for (const [key, value] of DEFAULT_SETTINGS) {
+      insertSetting.run(key, value, now);
+    }
+
+    const insertAuthHook = db.prepare(`
+      INSERT INTO auth_hooks (
+        id, repo_pattern, auth_type, command, label, enabled, builtin, position,
+        created_at, updated_at
+      ) VALUES (
+        @id, @repo_pattern, @auth_type, @command, @label, @enabled, @builtin, @position,
+        @created_at, @updated_at
+      )
+    `);
+    for (const hook of BUILTIN_AUTH_HOOKS) {
+      insertAuthHook.run({ ...hook, created_at: now, updated_at: now });
+    }
+  });
+
+  create();
+}
