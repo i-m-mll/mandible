@@ -916,6 +916,77 @@ describe('TimelineView', () => {
     expect(document.querySelector('.timeline-grid--compact')).toBeTruthy();
   });
 
+  it('normalizes untrusted browser-local timeline state before restoring it', async () => {
+    window.localStorage.setItem(
+      'mandible_timeline_view_state:v1:mandible',
+      JSON.stringify({
+        density: 'illegible',
+        includeClosed: 'yes',
+        explicitRootIssueIds: ['root-a', 42, 'root-a'],
+        visibleEventTypes: ['body', 'unknown'],
+        expandedPaths: 'row:not-an-array',
+        filterRows: [{ id: 5, chips: 'not-an-array' }],
+        panes: { inspectorWidth: 1, rowListWidth: 9999 },
+      }),
+    );
+    const fetchMock = stubTimelineFetch(projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(screen.getByText('Build shared axis')).toBeTruthy());
+    const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body));
+    expect(body.explicit_root_issue_ids).toEqual(['root-a']);
+    expect(body.expanded_paths).toEqual([]);
+    expect(body.event_kinds).toEqual(['body']);
+    expect(body.include_closed).toBe(false);
+    expect(document.querySelector('.timeline-grid--comfortable')).toBeTruthy();
+
+    await waitFor(() => {
+      const canonical = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(canonical).toBeTruthy();
+      const stored = JSON.parse(String(canonical));
+      expect(stored.filterRows).toEqual([]);
+      expect(stored.panes.inspectorWidth).toBe(280);
+      expect(stored.panes.rowListWidth).toBe(520);
+    });
+  });
+
+  it('preserves an explicitly empty event-type selection across refetch and reload', async () => {
+    const storageKey = 'mandible_timeline_view_state:v1:mandible';
+    window.localStorage.setItem(storageKey, JSON.stringify({ visibleEventTypes: [] }));
+    const fetchMock = stubTimelineFetch(projection(), projection());
+
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body)).event_kinds).toEqual([]);
+
+    fireEvent.click(screen.getByLabelText('Closed'));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    const refetchBody = JSON.parse(String(fetchMock.mock.calls[1][1]?.body));
+    expect(refetchBody.include_closed).toBe(true);
+    expect(refetchBody.event_kinds).toEqual([]);
+    await waitFor(() => {
+      const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
+      expect(stored.visibleEventTypes).toEqual([]);
+    });
+
+    cleanup();
+    const reloadFetchMock = stubTimelineFetch(projection());
+    render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+    await waitFor(() => expect(reloadFetchMock.mock.calls.length).toBe(1));
+    expect(JSON.parse(String(reloadFetchMock.mock.calls[0][1]?.body)).event_kinds).toEqual([]);
+  });
+
   it('requests only the currently visible event kinds from the projection', async () => {
     let resolveSecond: (value: ProjectTimelineProjection) => void = () => undefined;
     const second = new Promise<ProjectTimelineProjection>((resolve) => {

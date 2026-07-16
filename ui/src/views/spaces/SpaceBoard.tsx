@@ -36,6 +36,7 @@ import {
   displayResourceRef,
 } from '../../resource-refs';
 import { createSSEClient } from '../../sse-client';
+import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import {
   IssuePredicateFilter,
 } from '../filters/IssuePredicateFilter';
@@ -66,11 +67,10 @@ import {
   type IssueFactsByItemId,
 } from './boardModel';
 import {
-  readBoardViewState,
-  writeBoardViewState,
+  boardStorageKey,
+  normalizeBoardViewState,
   reconcileBoardViewState,
   EMPTY_BOARD_VIEW_STATE,
-  type BoardViewState,
 } from './boardViewState';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import './space-board.css';
@@ -482,7 +482,11 @@ function AddColumnMenu({
 
 export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
-  const [viewState, setViewState] = useState<BoardViewState>(EMPTY_BOARD_VIEW_STATE);
+  const [viewState, setViewState] = usePersistedViewState(
+    spaceId ? boardStorageKey(projectId, spaceId) : '',
+    normalizeBoardViewState,
+    EMPTY_BOARD_VIEW_STATE,
+  );
   const [boardMeta, setBoardMeta] = useState<BoardMetadata>(EMPTY_BOARD_METADATA);
   const [factsByItemId, setFactsByItemId] = useState<IssueFactsByItemId>({});
   const [busy, setBusy] = useState(false);
@@ -497,24 +501,17 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   // re-resolve the same issue on every reconciliation pass.
   const resolvedItemsRef = useRef<Set<string>>(new Set());
 
-  // Hydrate persisted view-state on Space change (explicit navigation only).
+  // Reset canonical board inputs on Space change (explicit navigation only).
+  // Browser-local view state follows the keyed persistence hook above.
   useEffect(() => {
     if (!spaceId) {
-      setViewState(EMPTY_BOARD_VIEW_STATE);
       setBoardMeta(EMPTY_BOARD_METADATA);
       return;
     }
-    setViewState(readBoardViewState(projectId, spaceId));
     setBoardMeta(EMPTY_BOARD_METADATA);
     resolvedItemsRef.current = new Set();
     setFactsByItemId({});
   }, [projectId, spaceId]);
-
-  // Persist view-state on change so it survives tab switches / refreshes.
-  useEffect(() => {
-    if (!spaceId) return;
-    writeBoardViewState(projectId, spaceId, viewState);
-  }, [projectId, spaceId, viewState]);
 
   const loadPacket = useCallback(
     async (reconcile: boolean) => {

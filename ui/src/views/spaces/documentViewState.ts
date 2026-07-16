@@ -3,7 +3,7 @@
 // The read-only document renderer's ONLY user-visible view state is which
 // heading sub-trees are collapsed. Per the project Dataful-UX rule this is
 // BROWSER-LOCAL state (never ledger/canonical): it is persisted per-Space to
-// localStorage and survives tab switches, refetches, SSE `space:*`
+// browser storage and survives tab switches, refetches, SSE `space:*`
 // reconciliation, and remounts. It is never promoted to a contract request and
 // is only ever changed by an explicit user toggle.
 //
@@ -41,32 +41,6 @@ export function normalizeDocumentViewState(raw: unknown): DocumentViewState {
     }
   }
   return { collapsed };
-}
-
-/** Read persisted document view state for a Space; tolerant of malformed JSON. */
-export function readDocumentViewState(projectId: string, spaceId: string): DocumentViewState {
-  if (typeof window === 'undefined' || !spaceId) return { collapsed: {} };
-  try {
-    const raw = window.localStorage.getItem(documentStorageKey(projectId, spaceId));
-    if (!raw) return { collapsed: {} };
-    return normalizeDocumentViewState(JSON.parse(raw));
-  } catch {
-    return { collapsed: {} };
-  }
-}
-
-/** Persist document view state for a Space. No-op outside the browser. */
-export function writeDocumentViewState(
-  projectId: string,
-  spaceId: string,
-  state: DocumentViewState,
-): void {
-  if (typeof window === 'undefined' || !spaceId) return;
-  try {
-    window.localStorage.setItem(documentStorageKey(projectId, spaceId), JSON.stringify(state));
-  } catch {
-    // Storage may be unavailable (private mode, quota); view state is best-effort.
-  }
 }
 
 /**
