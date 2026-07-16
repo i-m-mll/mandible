@@ -258,19 +258,25 @@ describe("NO SILENT RETARGET: artifact_id is never rewritten on conflict", () =>
 });
 
 describe("backward compatibility / idempotency", () => {
-  it("re-POSTing a pre-migration pinned link computes the same id and updates in place", () => {
+  it("re-POSTing a minimally seeded v104 pinned link computes the same id and updates in place", () => {
     const issueId = createLedgerIssue("issuecompat");
     const art = makeArtifact("compat\n");
 
-    // Learn the canonical id, then re-create a faithful PRE-migration row: only
-    // the 12 legacy columns, link_kind via the column DEFAULT, series_* NULL.
+    // Learn the canonical id and target, then re-create a minimal valid v104
+    // row. Genuine pre-v104 replay coverage lives in the migration fixture;
+    // this test isolates idempotent re-POST behavior on the current schema.
     const seed = registerArtifactLink(db, art.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 1000)!;
+    const canonicalTarget = db.prepare(
+      "SELECT blob_id, target_type, target_id FROM artifact_links WHERE id = ?",
+    ).get(seed.id) as { blob_id: string; target_type: string; target_id: string };
     db.prepare("DELETE FROM artifact_links WHERE id = ?").run(seed.id);
     db.prepare(
       `INSERT INTO artifact_links
-        (id, artifact_id, entity_type, entity_id, link_type, role, repo_id, provider_id, source, metadata_json, created_at, updated_at)
-       VALUES (@id, @artifact_id, 'issue', @entity_id, 'references', NULL, NULL, NULL, 'legacy', '{}', 1, 1)`,
-    ).run({ id: seed.id, artifact_id: art.id, entity_id: issueId });
+        (id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
+         provider_id, source, metadata_json, created_at, updated_at, target_type, target_id)
+       VALUES (@id, @artifact_id, @blob_id, 'issue', @entity_id, 'references', NULL, NULL,
+         NULL, 'legacy', '{}', 1, 1, @target_type, @target_id)`,
+    ).run({ id: seed.id, artifact_id: art.id, entity_id: issueId, ...canonicalTarget });
     const legacy = db
       .prepare("SELECT link_kind, series_id, series_ref FROM artifact_links WHERE id = ?")
       .get(seed.id);
