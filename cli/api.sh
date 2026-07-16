@@ -333,38 +333,84 @@ api_write_instance_metadata_unknown() {
   fi
 }
 
+api_write_instance_metadata_unavailable() {
+  local category="$1"
+  local output_file="${2:-}"
+  local message
+
+  message="Mandible ${category} mutation was not sent because instance metadata remained temporarily unavailable after bounded retries. Retry after the main daemon is responsive."
+  printf '%s\n' "$message" >&2
+  if [[ -n "$output_file" ]]; then
+    jq -n \
+      --arg error "cli_instance_metadata_unavailable" \
+      --arg message "$message" \
+      --arg category "$category" \
+      '{error:$error, message:$message, category:$category, retryable:true}' \
+      > "$output_file"
+  fi
+}
+
 api_fetch_instance_payload() {
   local output_file="$1"
   local http_status
+  local instance_transient=false
 
   if api_is_file_rpc; then
     return 1
   fi
 
-  http_status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
-    "$(api_base)/api/instance" 2>/dev/null || printf '')
-  if [[ "$http_status" =~ ^2 ]] && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
-    return 0
+  http_status=$(api_http_exchange GET "/api/instance" "" "$output_file")
+  if [[ "$http_status" =~ ^2 ]]; then
+    if jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    # An empty successful response is a transient exchange failure. A non-empty
+    # authoritative response without an instance object is malformed and must
+    # remain fail-closed instead of being hidden by the compatibility route.
+    [[ ! -s "$output_file" ]] || return 1
+    instance_transient=true
+  elif api_http_retryable_status "$http_status"; then
+    instance_transient=true
   fi
 
-  http_status=$(curl -s --max-time 5 -o "$output_file" -w "%{http_code}" \
-    "$(api_base)/api/health" 2>/dev/null || printf '')
-  [[ "$http_status" =~ ^2 ]] \
-    && jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1
+  http_status=$(api_http_exchange GET "/api/health" "" "$output_file")
+  if [[ "$http_status" =~ ^2 ]]; then
+    if jq -e '.instance and (.instance | type == "object")' "$output_file" >/dev/null 2>&1; then
+      return 0
+    fi
+    if [[ ! -s "$output_file" || "$instance_transient" == "true" ]]; then
+      return 75
+    fi
+    return 1
+  fi
+  if api_http_retryable_status "$http_status" || [[ "$instance_transient" == "true" ]]; then
+    return 75
+  fi
+  return 1
 }
 
 api_preflight_operational_mutation() {
   local method="$1"
   local request_path="$2"
   local output_file="${3:-}"
-  local category tmp_response role policy db_path source_db_path message
+  local category tmp_response fetch_status role policy db_path source_db_path message
 
   category=$(api_operational_mutation_category "$method" "$request_path") || return 0
   api_is_file_rpc && return 0
   api_non_main_operational_mutation_override_enabled && return 0
 
   tmp_response="$(mktemp)"
-  if ! api_fetch_instance_payload "$tmp_response"; then
+  if api_fetch_instance_payload "$tmp_response"; then
+    fetch_status=0
+  else
+    fetch_status=$?
+  fi
+  if [[ "$fetch_status" -eq 75 ]]; then
+    rm -f "$tmp_response"
+    api_write_instance_metadata_unavailable "$category" "$output_file"
+    return 75
+  fi
+  if [[ "$fetch_status" -ne 0 ]]; then
     rm -f "$tmp_response"
     api_write_instance_metadata_unknown "$category" "$output_file"
     return 22
@@ -441,8 +487,18 @@ api_capture() {
   local data="$3"
   local output_file="$4"
 
-  if ! api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
-    printf '403'
+  local preflight_status
+  if api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
+    preflight_status=0
+  else
+    preflight_status=$?
+  fi
+  if [[ "$preflight_status" -ne 0 ]]; then
+    if [[ "$preflight_status" -eq 75 ]]; then
+      printf '503'
+    else
+      printf '403'
+    fi
     return 0
   fi
 
@@ -473,9 +529,14 @@ api_request() {
   local method="$1"
   local request_path="$2"
   local data="${3:-}"
-  local tmp_response response_status
+  local tmp_response response_status preflight_status
 
-  api_preflight_operational_mutation "$method" "$request_path" || return 22
+  if api_preflight_operational_mutation "$method" "$request_path"; then
+    preflight_status=0
+  else
+    preflight_status=$?
+  fi
+  [[ "$preflight_status" -eq 0 ]] || return "$preflight_status"
 
   if api_is_file_rpc; then
     tmp_response=$(mktemp)
@@ -508,8 +569,18 @@ api_request() {
 # - HTTP (shared filesystem): FIELD is set to the daemon-visible absolute path.
 api_send_content() {
   local method="$1" request_path="$2" data="$3" field="$4" src="$5" output_file="$6"
-  if ! api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
-    printf '403'
+  local preflight_status
+  if api_preflight_operational_mutation "$method" "$request_path" "$output_file"; then
+    preflight_status=0
+  else
+    preflight_status=$?
+  fi
+  if [[ "$preflight_status" -ne 0 ]]; then
+    if [[ "$preflight_status" -eq 75 ]]; then
+      printf '503'
+    else
+      printf '403'
+    fi
     return 0
   fi
   if api_is_file_rpc; then

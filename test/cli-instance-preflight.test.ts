@@ -11,6 +11,19 @@ type RecordedRequest = {
   body: string;
 };
 
+type StubResponse = {
+  status: number;
+  body?: unknown;
+};
+
+const MAIN_INSTANCE = {
+  role: "main",
+  operational_mutations: "allow",
+  operational_mutations_overridden: false,
+  db_path: "/tmp/mandible-main.db",
+  db_path_source: "env",
+};
+
 let server: http.Server | null = null;
 let tempRoots: string[] = [];
 
@@ -65,6 +78,8 @@ function runMandible(args: string[], port: number, extraEnv: Record<string, stri
 function listenForInstancePreflight(options: {
   instance?: Record<string, unknown> | null;
   healthInstance?: Record<string, unknown> | null;
+  instanceResponses?: StubResponse[];
+  healthResponses?: StubResponse[];
 } = {}) {
   const instance = options.instance === undefined ? {
     role: "preview",
@@ -76,7 +91,17 @@ function listenForInstancePreflight(options: {
     source_db_path_source: "env",
   } : options.instance;
   const healthInstance = options.healthInstance ?? null;
+  let instanceRequestIndex = 0;
+  let healthRequestIndex = 0;
   const requests: RecordedRequest[] = [];
+  const sendResponse = (res: http.ServerResponse, response: StubResponse) => {
+    res.writeHead(response.status, { "Content-Type": "application/json" });
+    if (Object.hasOwn(response, "body")) {
+      res.end(JSON.stringify(response.body));
+    } else {
+      res.end();
+    }
+  };
   server = http.createServer((req, res) => {
     let raw = "";
     req.setEncoding("utf8");
@@ -86,6 +111,11 @@ function listenForInstancePreflight(options: {
     req.on("end", () => {
       requests.push({ method: req.method ?? "GET", url: req.url ?? "/", body: raw });
       if (req.method === "GET" && req.url === "/api/instance") {
+        const response = options.instanceResponses?.[instanceRequestIndex++];
+        if (response) {
+          sendResponse(res, response);
+          return;
+        }
         if (!instance) {
           res.writeHead(404, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ error: "not_found" }));
@@ -96,6 +126,11 @@ function listenForInstancePreflight(options: {
         return;
       }
       if (req.method === "GET" && req.url === "/api/health") {
+        const response = options.healthResponses?.[healthRequestIndex++];
+        if (response) {
+          sendResponse(res, response);
+          return;
+        }
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(healthInstance ? { ready: true, instance: healthInstance } : { ready: true }));
         return;
@@ -108,6 +143,11 @@ function listenForInstancePreflight(options: {
       if (req.method === "POST" && req.url === "/api/ledger/issues/abc/comments") {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ id: "comment-1" }));
+        return;
+      }
+      if (req.method === "POST" && req.url === "/api/work-units/claim") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ id: "work-unit-1", state: "open" }));
         return;
       }
       if (req.method === "POST" && req.url?.startsWith("/api/issues/")) {
@@ -309,6 +349,142 @@ describe("CLI instance mutation preflight", () => {
       expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
         "POST /api/ledger/issues/abc/comments",
       ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("retries transient metadata failures before work-unit, session-link, and comment mutations", async () => {
+    const mainPayload = { instance: MAIN_INSTANCE };
+    const target = await listenForInstancePreflight({
+      instance: MAIN_INSTANCE,
+      instanceResponses: [
+        { status: 503, body: { error: "busy" } },
+        { status: 200, body: mainPayload },
+        { status: 200 },
+        { status: 200, body: mainPayload },
+        { status: 503, body: { error: "restarting" } },
+        { status: 200, body: mainPayload },
+      ],
+    });
+    const retryEnv = {
+      MANDIBLE_HTTP_RETRIES: "1",
+      MANDIBLE_HTTP_RETRY_BASE_MS: "1",
+      MANDIBLE_HTTP_RETRY_MAX_MS: "1",
+      MANDIBLE_HTTP_RETRY_JITTER_MS: "0",
+    };
+    try {
+      const claim = await runMandible([
+        "work-unit",
+        "claim",
+        "--issue",
+        "abc123",
+        "--repo",
+        "mandible",
+        "--branch",
+        "feature/abc123",
+      ], target.port, retryEnv);
+      const sessionLink = await runMandible([
+        "session",
+        "link-issue",
+        "session-1",
+        "--issue",
+        "abc123",
+        "--repo",
+        "mandible",
+      ], target.port, retryEnv);
+      const comment = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Recovered\"}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port, retryEnv);
+
+      expect(claim.status).toBe(0);
+      expect(sessionLink.status).toBe(0);
+      expect(comment.status).toBe(0);
+      expect(comment.stdout).toBe("200\n{\"id\":\"comment-1\"}");
+      expect(claim.stderr).toContain("Mandible request transient failure; retrying");
+      expect(sessionLink.stderr).toContain("Mandible request transient failure; retrying");
+      expect(comment.stderr).toContain("Mandible request transient failure; retrying");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+        "GET /api/instance",
+        "POST /api/work-units/claim",
+        "GET /api/instance",
+        "GET /api/instance",
+        "POST /api/sessions/session-1/issues",
+        "GET /api/instance",
+        "GET /api/instance",
+        "POST /api/ledger/issues/abc/comments",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("uses health instance metadata as a compatibility fallback", async () => {
+    const target = await listenForInstancePreflight({
+      instance: null,
+      healthInstance: MAIN_INSTANCE,
+    });
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Fallback\"}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port);
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("200\n{\"id\":\"comment-1\"}");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+        "GET /api/health",
+        "POST /api/ledger/issues/abc/comments",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
+  it("reports exhausted transient metadata unavailability as retryable without sending the mutation", async () => {
+    const busyResponses = Array.from({ length: 2 }, () => ({
+      status: 503,
+      body: { error: "busy" },
+    }));
+    const target = await listenForInstancePreflight({
+      instance: MAIN_INSTANCE,
+      instanceResponses: busyResponses,
+    });
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Not sent\"}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port, {
+        MANDIBLE_HTTP_RETRIES: "1",
+        MANDIBLE_HTTP_RETRY_BASE_MS: "1",
+        MANDIBLE_HTTP_RETRY_MAX_MS: "1",
+        MANDIBLE_HTTP_RETRY_JITTER_MS: "0",
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("503\n");
+      expect(result.stdout).toContain("cli_instance_metadata_unavailable");
+      expect(result.stdout).toContain('"retryable": true');
+      expect(result.stdout).not.toContain("cli_instance_metadata_unknown");
+      expect(result.stderr).toContain("temporarily unavailable after bounded retries");
+      expect(target.requests.some((request) => request.method === "POST")).toBe(false);
+      expect(target.requests.filter((request) => request.url === "/api/instance")).toHaveLength(2);
+      expect(target.requests.filter((request) => request.url === "/api/health").length).toBeGreaterThanOrEqual(2);
     } finally {
       await target.close();
     }
