@@ -5,6 +5,7 @@ import { getProjectTimeline } from '../api';
 import { useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import type { WorkRepo } from './work';
 import {
   TIMELINE_DAY_MS,
@@ -325,22 +326,94 @@ function projectionDepthForExpandedEvents(
   return Math.min(MAX_TIMELINE_PROJECTION_DEPTH, Math.max(1, depth));
 }
 
-function readStoredState(projectId: string): Partial<TimelineViewState> {
-  if (typeof window === 'undefined' || !projectId) return {};
-  try {
-    const raw = window.localStorage.getItem(storageKey(projectId));
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as Partial<TimelineViewState>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
+function normalizeStringArray(value: unknown, fallback: readonly string[]): string[] {
+  if (!Array.isArray(value)) return [...fallback];
+  return unique(value.filter((item): item is string => typeof item === 'string'));
 }
 
-function writeStoredState(projectId: string, state: TimelineViewState): void {
-  if (typeof window === 'undefined' || !projectId) return;
+function normalizeNullableString(value: unknown, fallback: string | null): string | null {
+  return value === null || typeof value === 'string' ? value : fallback;
+}
+
+function normalizeTimelineViewState(
+  value: unknown,
+  defaults: Readonly<TimelineViewState>,
+): TimelineViewState {
+  const stored = value && typeof value === 'object'
+    ? value as Partial<TimelineViewState>
+    : {};
+  const storedWindow = stored.timeWindow && typeof stored.timeWindow === 'object'
+    ? stored.timeWindow
+    : defaults.timeWindow;
+  const storedFilterRows = Array.isArray(stored.filterRows)
+    ? parseFilterRows(JSON.stringify(stored.filterRows)) ?? [...defaults.filterRows]
+    : [...defaults.filterRows];
+  const visibleEventTypes = normalizeStringArray(
+    stored.visibleEventTypes,
+    defaults.visibleEventTypes,
+  ).filter((eventType): eventType is TimelineEventKind => (
+    EVENT_TYPES.includes(eventType as TimelineEventKind)
+  ));
+  const storedAllEventTypesHidden = Array.isArray(stored.visibleEventTypes)
+    && stored.visibleEventTypes.length === 0;
+
+  return {
+    rootPolicy: stored.rootPolicy === 'coordination'
+      || stored.rootPolicy === 'explicit'
+      || stored.rootPolicy === 'coordination_and_explicit'
+      ? stored.rootPolicy
+      : defaults.rootPolicy,
+    explicitRootIssueIds: normalizeStringArray(
+      stored.explicitRootIssueIds,
+      defaults.explicitRootIssueIds,
+    ),
+    promotedRootIssueIds: normalizeStringArray(
+      stored.promotedRootIssueIds,
+      defaults.promotedRootIssueIds,
+    ),
+    expandedEventIds: normalizeStringArray(stored.expandedEventIds, defaults.expandedEventIds),
+    expandedPaths: normalizeStringArray(stored.expandedPaths, defaults.expandedPaths),
+    selectedRowOccurrenceId: normalizeNullableString(
+      stored.selectedRowOccurrenceId,
+      defaults.selectedRowOccurrenceId,
+    ),
+    selectedEventId: normalizeNullableString(stored.selectedEventId, defaults.selectedEventId),
+    selectedClusterId: normalizeNullableString(stored.selectedClusterId, defaults.selectedClusterId),
+    timeWindow: {
+      from: typeof storedWindow.from === 'number' && Number.isFinite(storedWindow.from)
+        ? storedWindow.from
+        : null,
+      to: typeof storedWindow.to === 'number' && Number.isFinite(storedWindow.to)
+        ? storedWindow.to
+        : null,
+    },
+    density: DENSITIES.includes(stored.density as TimelineDensity)
+      ? stored.density as TimelineDensity
+      : defaults.density,
+    visibleEventTypes: storedAllEventTypesHidden
+      ? []
+      : visibleEventTypes.length > 0
+        ? visibleEventTypes
+        : [...defaults.visibleEventTypes],
+    includeClosed: typeof stored.includeClosed === 'boolean'
+      ? stored.includeClosed
+      : defaults.includeClosed,
+    filterRows: storedFilterRows,
+    panes: mergePanes(defaults.panes, stored.panes),
+  };
+}
+
+/** Keep the historical route-ref and canonical-project-id aliases coherent. */
+function writeTimelineProjectStorageAliases(
+  projectRefs: readonly string[],
+  state: TimelineViewState,
+): void {
+  if (typeof window === 'undefined') return;
   try {
-    window.localStorage.setItem(storageKey(projectId), JSON.stringify(state));
+    const serialized = JSON.stringify(state);
+    unique([...projectRefs]).forEach((projectRef) => {
+      if (projectRef) window.localStorage.setItem(storageKey(projectRef), serialized);
+    });
   } catch {
     return;
   }
@@ -723,9 +796,21 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
   const [projectRef, setProjectRef] = useState(initialProjectRef);
-  const [viewState, setViewState] = useState<TimelineViewState>(() => (
-    mergeTimelineState(DEFAULT_TIMELINE_VIEW_STATE, readStoredState(initialProjectRef), urlState)
-  ));
+  const normalizePersistedTimelineState = useCallback((
+    value: unknown,
+    defaults: Readonly<TimelineViewState>,
+  ) => {
+    const normalized = normalizeTimelineViewState(value, defaults);
+    const routedProjectRef = defaultProjectRef(repos, urlState.projectRef);
+    return projectRef === routedProjectRef
+      ? mergeTimelineState(normalized, {}, urlState)
+      : normalized;
+  }, [projectRef, repos, urlState]);
+  const [viewState, setViewState] = usePersistedViewState(
+    storageKey(projectRef),
+    normalizePersistedTimelineState,
+    DEFAULT_TIMELINE_VIEW_STATE,
+  );
   const [projection, setProjection] = useState<ProjectTimelineProjection | null>(null);
   const lastProjectionRef = useRef<ProjectTimelineProjection | null>(null);
   const [status, setStatus] = useState<ProjectionStatus>('loading');
@@ -743,6 +828,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const laneCacheRef = useRef<TimelineLaneCache>({});
   const requestGeneration = useRef(0);
   const appliedRouteProjectRef = useRef(initialProjectRef);
+  const viewStateProjectRef = useRef(initialProjectRef);
 
   const resetLoadedProjection = useCallback(() => {
     requestGeneration.current += 1;
@@ -753,19 +839,10 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     setStatus('loading');
   }, []);
 
-  const stateForProjectSelection = useCallback((nextProjectRef: string) => (
-    clearTimelineSelection(mergeTimelineState(
-      DEFAULT_TIMELINE_VIEW_STATE,
-      readStoredState(nextProjectRef),
-      {},
-    ))
-  ), []);
-
   const handleProjectChange = useCallback((nextProjectRef: string) => {
     resetLoadedProjection();
     setProjectRef(nextProjectRef);
-    setViewState(stateForProjectSelection(nextProjectRef));
-  }, [resetLoadedProjection, stateForProjectSelection]);
+  }, [resetLoadedProjection]);
   const projectionDepth = useMemo(
     () => projectionDepthForExpandedEvents(projection, viewState.expandedEventIds),
     [projection, viewState.expandedEventIds],
@@ -782,26 +859,28 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
       if (nextProjectRef !== projectRef) {
         resetLoadedProjection();
         setProjectRef(nextProjectRef);
-        setViewState(clearTimelineSelection(mergeTimelineState(
-          DEFAULT_TIMELINE_VIEW_STATE,
-          readStoredState(nextProjectRef),
-          urlState,
-        )));
         return;
       }
     }
+    const projectChanged = viewStateProjectRef.current !== projectRef;
+    if (projectChanged) viewStateProjectRef.current = projectRef;
     if (nextProjectRef === projectRef) {
-      setViewState((current) => mergeTimelineState(current, {}, urlState));
+      setViewState((current) => {
+        const merged = mergeTimelineState(current, {}, urlState);
+        return projectChanged ? clearTimelineSelection(merged) : merged;
+      });
+    } else if (projectChanged) {
+      setViewState(clearTimelineSelection);
     }
   }, [projectRef, repos, resetLoadedProjection, urlState]);
 
   useEffect(() => {
-    const canonicalProjectId = projection?.project.id ?? projectRef;
-    const timers = [window.setTimeout(() => writeStoredState(canonicalProjectId, viewState), 250)];
-    if (projection?.project.id && projection.project.id !== projectRef) {
-      timers.push(window.setTimeout(() => writeStoredState(projectRef, viewState), 250));
-    }
-    return () => timers.forEach((timer) => window.clearTimeout(timer));
+    const canonicalProjectId = projection?.project.id;
+    if (!canonicalProjectId) return undefined;
+    const timer = window.setTimeout(() => {
+      writeTimelineProjectStorageAliases([projectRef, canonicalProjectId], viewState);
+    }, 250);
+    return () => window.clearTimeout(timer);
   }, [projectRef, projection?.project.id, viewState]);
 
   useEffect(() => {

@@ -5,24 +5,7 @@
 //   - the UNPLACED SHELF (item-only membership is never lost; review2 C7)
 //   - dangling occurrences (item_id set, item missing) are surfaced
 //   - view-state persistence + SSE reconciliation never resets surviving state
-import { describe, expect, it, beforeEach, vi } from 'vitest';
-
-function stubLocalStorage(): void {
-  const store = new Map<string, string>();
-  Object.defineProperty(window, 'localStorage', {
-    configurable: true,
-    value: {
-      getItem: vi.fn((key: string) => store.get(key) ?? null),
-      setItem: vi.fn((key: string, value: string) => {
-        store.set(key, value);
-      }),
-      removeItem: vi.fn((key: string) => {
-        store.delete(key);
-      }),
-      clear: vi.fn(() => store.clear()),
-    },
-  });
-}
+import { describe, expect, it } from 'vitest';
 
 import type { Space, SpaceItem, SpaceOccurrence, SpaceEdge } from '../ui/src/api';
 import {
@@ -33,12 +16,9 @@ import {
   itemRefString,
 } from '../ui/src/views/spaces/collectionModel';
 import {
-  readCollectionViewState,
-  writeCollectionViewState,
   reconcileCollectionViewState,
   normalizeCollectionViewState,
   collectionStorageKey,
-  EMPTY_COLLECTION_VIEW_STATE,
 } from '../ui/src/views/spaces/collectionViewState';
 
 const NOW = 1_700_000_000_000;
@@ -227,26 +207,9 @@ describe('label / ref helpers', () => {
 });
 
 describe('collection view-state persistence', () => {
-  beforeEach(() => {
-    stubLocalStorage();
-  });
-
-  it('round-trips filter, selection, and collapse through localStorage per space', () => {
-    const state = {
-      itemFilter: 'auth',
-      selection: { kind: 'occurrence' as const, ids: ['o1'] },
-      collapsed: { o1: true },
-    };
-    writeCollectionViewState('prj1', 'sp1', state);
-    expect(readCollectionViewState('prj1', 'sp1')).toEqual(state);
-    // A different space keeps its own empty state.
-    expect(readCollectionViewState('prj1', 'sp2')).toEqual(EMPTY_COLLECTION_VIEW_STATE);
-    expect(collectionStorageKey('prj1', 'sp1')).toContain('sp1');
-  });
-
-  it('tolerates malformed stored JSON', () => {
-    window.localStorage.setItem(collectionStorageKey('prj1', 'sp1'), '{ not json');
-    expect(readCollectionViewState('prj1', 'sp1')).toEqual(EMPTY_COLLECTION_VIEW_STATE);
+  it('keeps the established per-space storage key', () => {
+    expect(collectionStorageKey('prj1', 'sp1')).toBe('mandible.spaces.collection:prj1:sp1');
+    expect(collectionStorageKey('', 'sp1')).toBe('mandible.spaces.collection:_:sp1');
   });
 
   it('normalizes partial/garbage shapes into a safe view state', () => {

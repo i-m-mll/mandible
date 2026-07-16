@@ -6,24 +6,7 @@
 //   - custom column definitions read/write to spaces.metadata (no new table)
 //   - sort_key generation orders strictly between neighbors
 //   - view-state persistence + SSE reconciliation never reset surviving state
-import { describe, expect, it, beforeEach, vi } from 'vitest';
-
-function stubLocalStorage(): void {
-  const store = new Map<string, string>();
-  Object.defineProperty(window, 'localStorage', {
-    configurable: true,
-    value: {
-      getItem: vi.fn((key: string) => store.get(key) ?? null),
-      setItem: vi.fn((key: string, value: string) => {
-        store.set(key, value);
-      }),
-      removeItem: vi.fn((key: string) => {
-        store.delete(key);
-      }),
-      clear: vi.fn(() => store.clear()),
-    },
-  });
-}
+import { describe, expect, it } from 'vitest';
 
 import type { Space, SpaceItem, SpaceOccurrence, SpaceEdge } from '../ui/src/api';
 import { buildSpaceViewModel } from '../ui/src/views/spaces/collectionModel';
@@ -46,8 +29,6 @@ import {
   type IssueFactsByItemId,
 } from '../ui/src/views/spaces/boardModel';
 import {
-  readBoardViewState,
-  writeBoardViewState,
   reconcileBoardViewState,
   normalizeBoardViewState,
   boardStorageKey,
@@ -367,21 +348,9 @@ describe('sort_key generation', () => {
 });
 
 describe('board view-state persistence + reconciliation', () => {
-  beforeEach(() => {
-    stubLocalStorage();
-  });
-
-  it('round-trips per-space view state through localStorage', () => {
-    const state = {
-      cardFilter: 'auth',
-      selection: { kind: 'occurrence' as const, ids: ['o1'] },
-      collapsedColumns: { 'worker_status:done': true },
-    };
-    writeBoardViewState('prj1', 'sp1', state);
-    expect(readBoardViewState('prj1', 'sp1')).toEqual(state);
-    // distinct per space
-    expect(readBoardViewState('prj1', 'sp2')).toEqual(EMPTY_BOARD_VIEW_STATE);
-    expect(boardStorageKey('prj1', 'sp1')).toContain('sp1');
+  it('keeps the established per-space storage key', () => {
+    expect(boardStorageKey('prj1', 'sp1')).toBe('mandible.spaces.board:prj1:sp1');
+    expect(boardStorageKey('', 'sp1')).toBe('mandible.spaces.board:_:sp1');
   });
 
   it('normalizes malformed stored JSON to a safe state', () => {

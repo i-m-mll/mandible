@@ -5,7 +5,7 @@ import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/pr
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthHooksPanel, AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
-import type { InstanceInfo } from '../ui/src/api';
+import type { AuthRequestAction, InstanceInfo } from '../ui/src/api';
 
 // jsdom in this build ships a localStorage stub whose setItem throws; install a
 // working in-memory localStorage so the sidebar-width persistence round-trips.
@@ -48,6 +48,21 @@ const executingRequest: AuthRequest = {
   id: 'req-executing',
   status: 'executing',
   approved_at: 2,
+};
+
+const deferredAction: AuthRequestAction = {
+  id: 'action-1',
+  auth_request_id: 'req-1',
+  ordinal: 0,
+  kind: 'comment_add',
+  state: 'staged',
+  target_issue_ref: 'issue-1',
+  target_digest: null,
+  payload: { body: 'Persist this expanded action detail.' },
+  staged_at: 1,
+  updated_at: 1,
+  applied_at: null,
+  outcome_detail: 'Expanded action detail',
 };
 
 const previewInstance: InstanceInfo = {
@@ -246,5 +261,56 @@ describe('AuthQueueView daemon readiness gate', () => {
     await waitFor(() => {
       expect(screen.queryByPlaceholderText('Shell command to run after auth action')).toBeNull();
     });
+  });
+});
+
+describe('AuthQueueView persisted action expansion', () => {
+  it('restores normalized per-request expansion and preserves it through queue refetches', async () => {
+    const storageKey = 'auth-action-expanded:req-1';
+    localStorage.setItem(storageKey, JSON.stringify(['action-1', 42, 'action-1']));
+    const request = { ...pendingRequest, actions: [deferredAction] };
+    const props = {
+      historyQueue: [],
+      outputs: {},
+      selectedAuthId: 'req-1',
+      daemonReady: true,
+      onApprove: () => undefined,
+      onReject: () => undefined,
+      onRetry: () => undefined,
+      onDismiss: () => undefined,
+    };
+    const { rerender } = render(<AuthQueueView {...props} queue={[request]} />);
+
+    expect(await screen.findByText('Expanded action detail')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Collapse Comment action' }));
+    await waitFor(() => expect(localStorage.getItem(storageKey)).toBe('[]'));
+
+    rerender(<AuthQueueView {...props} queue={[{ ...request, updated_at: 2 }]} />);
+    expect(screen.queryByText('Expanded action detail')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Expand Comment action' })).toBeTruthy();
+    expect(localStorage.getItem(storageKey)).toBe('[]');
+  });
+
+  it('falls back from malformed action expansion storage and writes an array of strings', async () => {
+    const storageKey = 'auth-action-expanded:req-1';
+    localStorage.setItem(storageKey, '{malformed');
+    const request = { ...pendingRequest, actions: [deferredAction] };
+    render(
+      <AuthQueueView
+        queue={[request]}
+        historyQueue={[]}
+        outputs={{}}
+        selectedAuthId="req-1"
+        daemonReady={true}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+        onRetry={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    );
+
+    expect(screen.queryByText('Expanded action detail')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Comment action' }));
+    await waitFor(() => expect(localStorage.getItem(storageKey)).toBe('["action-1"]'));
   });
 });

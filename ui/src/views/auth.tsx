@@ -16,6 +16,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
 import { formatRelativeTime } from '../lib/format';
 import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
@@ -394,22 +395,11 @@ function truncateSummary(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
 }
 
-function loadExpandedActionIds(requestId: string): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(`auth-action-expanded:${requestId}`);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
+const DEFAULT_EXPANDED_ACTION_IDS: string[] = [];
 
-function storeExpandedActionIds(requestId: string, ids: Set<string>): void {
-  try {
-    window.localStorage.setItem(`auth-action-expanded:${requestId}`, JSON.stringify(Array.from(ids)));
-  } catch {
-    // Ignore storage failures; expansion still works for the current render.
-  }
+function normalizeExpandedActionIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((item): item is string => typeof item === 'string')));
 }
 
 function AuthActionBundle({
@@ -427,14 +417,15 @@ function AuthActionBundle({
 }): JSX.Element | null {
   const requestId = getAuthId(request);
   const repoId = request.repo ?? '';
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => loadExpandedActionIds(requestId));
+  const [expandedActionIds, setExpandedActionIds] = usePersistedViewState(
+    `auth-action-expanded:${requestId}`,
+    normalizeExpandedActionIds,
+    DEFAULT_EXPANDED_ACTION_IDS,
+  );
+  const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const [targetTitles, setTargetTitles] = useState<Record<string, string>>({});
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
-
-  useEffect(() => {
-    setExpandedIds(loadExpandedActionIds(requestId));
-  }, [requestId]);
 
   useEffect(() => {
     const refs = uniqueStrings(actions.map((action) => action.target_issue_ref));
@@ -460,12 +451,11 @@ function AuthActionBundle({
   }
 
   const toggleExpanded = (actionId: string) => {
-    setExpandedIds((prev) => {
+    setExpandedActionIds((prev) => {
       const next = new Set(prev);
       if (next.has(actionId)) next.delete(actionId);
       else next.add(actionId);
-      storeExpandedActionIds(requestId, next);
-      return next;
+      return Array.from(next);
     });
   };
 

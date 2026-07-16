@@ -3,7 +3,7 @@
 // The editor's transient UI state — which block is open for editing and any
 // in-progress draft text — is BROWSER-LOCAL (project Dataful-UX rule): it is
 // never promoted to the ledger and is only ever changed by explicit user
-// action. It is persisted per-Space to localStorage so an accidental refetch,
+// action. It is persisted per-Space in browser storage so an accidental refetch,
 // SSE reconciliation, tab switch, or remount does not silently drop a draft the
 // user is mid-edit on.
 //
@@ -46,38 +46,6 @@ export function normalizeBlockEditorViewState(raw: unknown): BlockEditorViewStat
   }
   const editingId = typeof raw.editingId === 'string' ? raw.editingId : null;
   return { editingId, drafts };
-}
-
-/** Read persisted editor view state for a Space; tolerant of malformed JSON. */
-export function readBlockEditorViewState(
-  projectId: string,
-  spaceId: string,
-): BlockEditorViewState {
-  if (typeof window === 'undefined' || !spaceId) return { editingId: null, drafts: {} };
-  try {
-    const raw = window.localStorage.getItem(blockEditorStorageKey(projectId, spaceId));
-    if (!raw) return { editingId: null, drafts: {} };
-    return normalizeBlockEditorViewState(JSON.parse(raw));
-  } catch {
-    return { editingId: null, drafts: {} };
-  }
-}
-
-/** Persist editor view state for a Space. No-op outside the browser. */
-export function writeBlockEditorViewState(
-  projectId: string,
-  spaceId: string,
-  state: BlockEditorViewState,
-): void {
-  if (typeof window === 'undefined' || !spaceId) return;
-  try {
-    window.localStorage.setItem(
-      blockEditorStorageKey(projectId, spaceId),
-      JSON.stringify(state),
-    );
-  } catch {
-    // Storage may be unavailable (private mode, quota); view state is best-effort.
-  }
 }
 
 /**
