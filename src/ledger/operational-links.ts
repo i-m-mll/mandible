@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import type { LedgerIssueResolution } from "./types.js";
@@ -860,11 +861,6 @@ function parseStringArray(value: unknown): string[] | null {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  return Boolean(row);
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {

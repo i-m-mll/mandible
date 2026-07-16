@@ -4,16 +4,13 @@
  */
 
 import { AuthHookManager } from "../auth-hooks.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { RouteRegistrar } from "../server.js";
 import type { AuthHookInput, AuthRequestType } from "../types.js";
+import { readBody } from "./http.js";
 
 const VALID_AUTH_TYPES: AuthRequestType[] = [
   "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
 ];
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
 
 export function registerAuthHookRoutes(app: RouteRegistrar, manager?: AuthHookManager): AuthHookManager {
   const hookManager = manager ?? new AuthHookManager();

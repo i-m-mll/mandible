@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "./db.js";
+import { columnExists, tableExists } from "./db-introspection.js";
 import {
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
@@ -417,18 +418,6 @@ function parseJsonArray<T>(value: string | null | undefined): T[] {
   } catch {
     return [];
   }
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?"
-  ).get(table) as { name: string } | undefined;
-  return Boolean(row);
-}
-
-function columnExists(db: Db, table: string, column: string): boolean {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  return rows.some((row) => row.name === column);
 }
 
 function artifactRootFromSettings(db?: Db): string | undefined {

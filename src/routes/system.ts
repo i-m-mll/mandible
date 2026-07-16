@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { WorkScanner } from "../work-scanner.js";
@@ -588,13 +589,6 @@ function matchesFallbackFilters(entry: LogEntry, filters: LogFilters): boolean {
     }
   }
   return true;
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(table);
-  return Boolean(row);
 }
 
 function parseFields(raw: string): Record<string, unknown> {

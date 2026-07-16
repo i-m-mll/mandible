@@ -273,7 +273,7 @@ export class Router implements RouteRegistrar {
     const method = req.method ?? "GET";
     let body: unknown = undefined;
     if (method === "POST" || method === "PATCH" || method === "PUT" || method === "DELETE") {
-      const rawBody = await readBody(req);
+      const rawBody = await readIncomingBody(req);
       if (rawBody) {
         try { body = JSON.parse(rawBody); } catch { body = rawBody; }
       }
@@ -506,7 +506,7 @@ export function createServer(options: ServerOptions): http.Server {
     const boundary = validateDaemonWriteBoundary(req, method, isApi);
     if (!boundary.ok) {
       logger("warn", "request_forbidden", { method, pathname, reason: boundary.reason });
-      sendJson(res, 403, { error: "forbidden", reason: boundary.reason });
+      writeJsonResponse(res, 403, { error: "forbidden", reason: boundary.reason });
       return;
     }
 
@@ -518,7 +518,7 @@ export function createServer(options: ServerOptions): http.Server {
     }
 
     if (pathname === "/api/events/subscribe" && method === "POST") {
-      const body = await readBody(req);
+      const body = await readIncomingBody(req);
       const topics = parseTopics(url?.searchParams, body);
       sse.addClient(req, res, topics);
       return;
@@ -537,7 +537,7 @@ export function createServer(options: ServerOptions): http.Server {
       }
     } catch (error) {
       logger("error", "handler_error", { error: String(error) });
-      sendJson(res, 500, { error: "internal_error" });
+      writeJsonResponse(res, 500, { error: "internal_error" });
     }
   });
 }
@@ -633,7 +633,7 @@ function parseTopics(searchParams: URLSearchParams | null | undefined, body: str
   return topics;
 }
 
-function readBody(req: http.IncomingMessage): Promise<string | null> {
+function readIncomingBody(req: http.IncomingMessage): Promise<string | null> {
   return new Promise((resolve) => {
     let total = 0;
     let data = "";
@@ -651,7 +651,7 @@ function readBody(req: http.IncomingMessage): Promise<string | null> {
   });
 }
 
-function sendJson(res: http.ServerResponse, status: number, payload: unknown): void {
+function writeJsonResponse(res: http.ServerResponse, status: number, payload: unknown): void {
   const body = JSON.stringify(payload);
   res.writeHead(status, {
     "Content-Type": "application/json",
@@ -662,7 +662,7 @@ function sendJson(res: http.ServerResponse, status: number, payload: unknown): v
 
 function sendNotFound(res: http.ServerResponse, isApi: boolean): void {
   if (isApi) {
-    sendJson(res, 404, { error: "not_found" });
+    writeJsonResponse(res, 404, { error: "not_found" });
     return;
   }
   const body = "Not Found";
