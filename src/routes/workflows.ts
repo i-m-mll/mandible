@@ -1,10 +1,7 @@
 import { getDb } from "../db.js";
 import { getWorkflowRun, listWorkflowRuns } from "../workflows.js";
-import type { ResponseLike, RouteRegistrar } from "../server.js";
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
+import type { RouteRegistrar } from "../server.js";
+import { sendJson } from "./http.js";
 
 export function registerWorkflowRoutes(server: RouteRegistrar): void {
   const db = getDb();

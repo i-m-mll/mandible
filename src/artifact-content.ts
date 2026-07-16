@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
+import { tableExists } from "./db-introspection.js";
 import { checkoutRootForCanonicalArtifactRepo } from "./artifact-repo-resolution.js";
 import {
   ARTIFACT_CONTENT_WORKER_MIN_BYTES,
@@ -709,13 +710,6 @@ function reasonCode(reason: string): string {
 
 function checkoutRootForRepo(db: Db, repoId: string): string | null {
   return checkoutRootForCanonicalArtifactRepo(db, repoId);
-}
-
-function tableExists(db: Db, name: string): boolean {
-  const row = db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(name) as { 1: number } | undefined;
-  return Boolean(row);
 }
 
 function validateContentHash(

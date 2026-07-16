@@ -49,7 +49,7 @@ import {
 } from './app-shell';
 import type { AuthRequest } from './views/auth';
 import type { IssueRepoSummary } from './views/issues';
-import type { SessionRecord } from './views/sessions';
+import type { SessionRecord } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { GraphNodeType } from './views/graph';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
