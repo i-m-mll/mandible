@@ -10,6 +10,7 @@ import {
   resolveCanonicalArtifactRepoRef,
 } from "./artifact-repo-resolution.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
+import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
 // Cyclic import (artifact-content also imports from this module). Safe: both
 // sides reference each other only from inside functions, never at module-eval
 // top level. Used by recordArtifactVersion's managed-`ref` path to read the
@@ -409,22 +410,12 @@ function jsonStringify(value: unknown): string {
 }
 
 function parseJsonRecord(value: string | null | undefined): JsonRecord {
-  if (!value) return {};
-  try {
-    return asRecord(JSON.parse(value));
-  } catch {
-    return {};
-  }
+  return asRecord(parseJsonOr(value, {}));
 }
 
 function parseJsonArray<T>(value: string | null | undefined): T[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch {
-    return [];
-  }
+  const parsed = parseJsonOr<unknown>(value, []);
+  return Array.isArray(parsed) ? (parsed as T[]) : [];
 }
 
 function artifactRootFromSettings(db?: Db): string | undefined {
@@ -4384,12 +4375,22 @@ export function projectCanonicalArtifactRecord(
   };
 }
 
-function resolutionForCanonicalVersion(
-  db: Db,
-  ref: string,
-  lookup: PrefixLookupResult<CanonicalArtifactVersionRecord>,
-): ArtifactResolveResult {
-  const base = {
+type ResolutionBase = Pick<
+  ArtifactResolveResult,
+  | "ref"
+  | "scheme"
+  | "normalized_ref"
+  | "artifact"
+  | "alias"
+  | "logical_artifact"
+  | "artifact_version"
+  | "artifact_blob"
+  | "version"
+  | "series"
+>;
+
+function makeResolutionBase(ref: string): ResolutionBase {
+  return {
     ref,
     scheme: schemeFromRef(ref),
     normalized_ref: ref,
@@ -4401,6 +4402,14 @@ function resolutionForCanonicalVersion(
     version: null,
     series: null,
   };
+}
+
+function resolutionForCanonicalVersion(
+  db: Db,
+  ref: string,
+  lookup: PrefixLookupResult<CanonicalArtifactVersionRecord>,
+): ArtifactResolveResult {
+  const base = makeResolutionBase(ref);
   if (lookup.status !== "resolved") {
     return {
       ...base,
@@ -4436,18 +4445,7 @@ function resolutionForLogicalArtifact(
   ref: string,
   lookup: PrefixLookupResult<ArtifactIdentityRecord>,
 ): ArtifactResolveResult {
-  const base = {
-    ref,
-    scheme: schemeFromRef(ref),
-    normalized_ref: ref,
-    artifact: null,
-    alias: null,
-    logical_artifact: null,
-    artifact_version: null,
-    artifact_blob: null,
-    version: null,
-    series: null,
-  };
+  const base = makeResolutionBase(ref);
   if (lookup.status !== "resolved") {
     return {
       ...base,
@@ -4480,18 +4478,7 @@ function resolutionForArtifactBlob(
   lookup: PrefixLookupResult<ArtifactBlobRecord>,
   legacy: boolean,
 ): ArtifactResolveResult {
-  const base = {
-    ref,
-    scheme: schemeFromRef(ref),
-    normalized_ref: ref,
-    artifact: null,
-    alias: null,
-    logical_artifact: null,
-    artifact_version: null,
-    artifact_blob: null,
-    version: null,
-    series: null,
-  };
+  const base = makeResolutionBase(ref);
   const legacyWarnings = legacy ? ["legacy_artifact_ref_read_only", "repair_to_artifact_blob_ref"] : [];
   if (lookup.status !== "resolved") {
     return {
@@ -5076,10 +5063,10 @@ function seriesFromRow(row: Record<string, unknown>): ArtifactSeriesRecord {
     id: String(row.id),
     series_key: String(row.series_key),
     source_kind: String(row.source_kind) as ArtifactSeriesSourceKind,
-    title: (row.title as string | null) ?? null,
-    repo_id: (row.repo_id as string | null) ?? null,
-    logical_name: (row.logical_name as string | null) ?? null,
-    latest_version_id: (row.latest_version_id as string | null) ?? null,
+    title: nullableString(row.title),
+    repo_id: nullableString(row.repo_id),
+    logical_name: nullableString(row.logical_name),
+    latest_version_id: nullableString(row.latest_version_id),
     version_count: Number(row.version_count ?? 0),
     metadata: parseJsonRecord(row.metadata_json as string | null),
     created_at: Number(row.created_at),
@@ -5091,10 +5078,11 @@ function artifactSeriesSummaryFromRow(
   row: Record<string, unknown>,
   links: ArtifactLinkRecord[],
 ): ArtifactSeriesSummary {
-  const latestArtifact = row.artifact_id === null || row.artifact_id === undefined
+  const artifactId = nullableString(row.artifact_id);
+  const latestArtifact = artifactId === null
     ? null
     : summaryArtifactFromRow({
-        id: row.artifact_id,
+        id: artifactId,
         algorithm: row.algorithm,
         content_hash: row.content_hash,
         uri: row.uri,
@@ -5113,10 +5101,11 @@ function artifactSeriesSummaryFromRow(
         reference_json: row.reference_json,
         created_at: row.artifact_created_at,
       });
-  const latestVersion = row.version_id === null || row.version_id === undefined
+  const versionId = nullableString(row.version_id);
+  const latestVersion = versionId === null
     ? null
     : versionFromRow({
-        id: row.version_id,
+        id: versionId,
         series_id: row.series_id,
         artifact_id: row.version_artifact_id,
         version_no: row.version_no,
@@ -5137,14 +5126,10 @@ function artifactSeriesSummaryFromRow(
     ref: id,
     series_key: String(row.series_key),
     source_kind: String(row.series_source_kind) as ArtifactSeriesSourceKind,
-    title: row.series_title === null || row.series_title === undefined ? null : String(row.series_title),
-    repo_id: row.series_repo_id === null || row.series_repo_id === undefined ? null : String(row.series_repo_id),
-    logical_name: row.series_logical_name === null || row.series_logical_name === undefined
-      ? null
-      : String(row.series_logical_name),
-    latest_version_id: row.latest_version_id === null || row.latest_version_id === undefined
-      ? null
-      : String(row.latest_version_id),
+    title: nullableString(row.series_title),
+    repo_id: nullableString(row.series_repo_id),
+    logical_name: nullableString(row.series_logical_name),
+    latest_version_id: nullableString(row.latest_version_id),
     version_count: Number(row.version_count ?? 0),
     metadata: parseJsonRecord(row.series_metadata_json as string | null),
     created_at: Number(row.series_created_at),
@@ -5161,15 +5146,15 @@ function versionFromRow(row: Record<string, unknown>): ArtifactVersionRecord {
     series_id: String(row.series_id),
     artifact_id: String(row.artifact_id),
     version_no: Number(row.version_no),
-    parent_version_id: (row.parent_version_id as string | null) ?? null,
+    parent_version_id: nullableString(row.parent_version_id),
     source_kind: String(row.source_kind) as ArtifactVersionSourceKind,
     content_hash: String(row.content_hash),
-    commit_sha: (row.commit_sha as string | null) ?? null,
-    repo_path: (row.repo_path as string | null) ?? null,
-    observed_path: (row.observed_path as string | null) ?? null,
-    custody_mode: (row.custody_mode as string | null) ?? null,
-    label: (row.label as string | null) ?? null,
-    note: (row.note as string | null) ?? null,
+    commit_sha: nullableString(row.commit_sha),
+    repo_path: nullableString(row.repo_path),
+    observed_path: nullableString(row.observed_path),
+    custody_mode: nullableString(row.custody_mode),
+    label: nullableString(row.label),
+    note: nullableString(row.note),
     metadata: parseJsonRecord(row.metadata_json as string | null),
     created_at: Number(row.created_at),
   };
@@ -5990,20 +5975,17 @@ function draftFromRow(db: Db, row: Record<string, unknown>): ArtifactDraftRecord
       latest_version_id: latest?.id ?? series?.latest_version_id ?? null,
       latest_version_no: latest?.version_no ?? null,
       stale: Boolean(series?.latest_version_id && series.latest_version_id !== legacyBaseId),
-      content: String(row.content ?? ""), media_type: (row.media_type as string | null) ?? null,
-      label: (row.label as string | null) ?? null, note: (row.note as string | null) ?? null,
+      content: String(row.content ?? ""), media_type: nullableString(row.media_type),
+      label: nullableString(row.label), note: nullableString(row.note),
       metadata: parseJsonRecord(row.metadata_json as string | null),
       created_at: Number(row.created_at), updated_at: Number(row.updated_at),
     };
   }
   const canonicalArtifactId = String(row.artifact_id);
   const canonicalBaseVersionId = String(row.version_id);
-  const seriesId = row.series_id === null || row.series_id === undefined
-    ? legacySeriesIdFromCanonicalArtifact(canonicalArtifactId)
-    : String(row.series_id);
-  const baseVersionId = row.base_version_id === null || row.base_version_id === undefined
-    ? canonicalBaseVersionId
-    : String(row.base_version_id);
+  const seriesId = nullableString(row.series_id)
+    ?? legacySeriesIdFromCanonicalArtifact(canonicalArtifactId);
+  const baseVersionId = nullableString(row.base_version_id) ?? canonicalBaseVersionId;
   const baseVersion = getArtifactVersion(db, baseVersionId);
   const series = getArtifactSeries(db, seriesId);
   const canonicalArtifact = getLogicalArtifact(db, canonicalArtifactId);
@@ -6020,9 +6002,9 @@ function draftFromRow(db: Db, row: Record<string, unknown>): ArtifactDraftRecord
     latest_version_no: latestCanonical?.version_no ?? latest?.version_no ?? null,
     stale: Boolean(latestId && latestId !== canonicalBaseVersionId),
     content: String(row.content ?? ""),
-    media_type: (row.media_type as string | null) ?? null,
-    label: (row.label as string | null) ?? null,
-    note: (row.note as string | null) ?? null,
+    media_type: nullableString(row.media_type),
+    label: nullableString(row.label),
+    note: nullableString(row.note),
     metadata: parseJsonRecord(row.metadata_json as string | null),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
@@ -6809,16 +6791,16 @@ function providerFromRow(row: Record<string, unknown>): ProviderRecord {
   return {
     id: String(row.id),
     display_name: String(row.display_name),
-    version: row.version === null ? null : String(row.version),
+    version: nullableString(row.version),
     status: String(row.status),
     transport: String(row.transport),
-    endpoint: row.endpoint === null ? null : String(row.endpoint),
+    endpoint: nullableString(row.endpoint),
     capabilities: parseJsonRecord(row.capabilities_json as string),
     actions: parseJsonArray<GraphAction>(row.actions_json as string),
     source: String(row.source),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
-    last_seen_at: row.last_seen_at === null ? null : Number(row.last_seen_at),
+    last_seen_at: nullableNumber(row.last_seen_at),
   };
 }
 
@@ -6828,15 +6810,15 @@ function artifactFromRow(row: Record<string, unknown>): ArtifactRecord {
     algorithm: String(row.algorithm),
     content_hash: String(row.content_hash),
     uri: String(row.uri),
-    media_type: row.media_type === null ? null : String(row.media_type),
-    role: row.role === null ? null : String(row.role),
+    media_type: nullableString(row.media_type),
+    role: nullableString(row.role),
     size_bytes: Number(row.size_bytes),
-    provider_id: row.provider_id === null ? null : String(row.provider_id),
-    manifest_id: row.manifest_id === null ? null : String(row.manifest_id),
+    provider_id: nullableString(row.provider_id),
+    manifest_id: nullableString(row.manifest_id),
     metadata: parseJsonRecord(row.metadata_json as string),
     pinned: Number(row.pinned) !== 0,
     custody_mode: asCustodyMode(row.custody_mode, "managed"),
-    home_repo_id: row.home_repo_id === null || row.home_repo_id === undefined ? null : String(row.home_repo_id),
+    home_repo_id: nullableString(row.home_repo_id),
     repo_locator: parseJsonRecord(row.repo_locator_json as string),
     availability: asAvailability(row.availability, "unchecked"),
     retention: parseJsonRecord(row.retention_json as string),
@@ -6864,12 +6846,12 @@ function artifactBlobFromRow(row: Record<string, unknown>): ArtifactBlobRecord {
     id: String(row.id),
     algorithm: String(row.algorithm ?? "sha256"),
     content_hash: String(row.content_hash),
-    storage_uri: row.storage_uri === null || row.storage_uri === undefined ? null : String(row.storage_uri),
-    media_type: row.media_type === null || row.media_type === undefined ? null : String(row.media_type),
-    role: row.role === null || row.role === undefined ? null : String(row.role),
+    storage_uri: nullableString(row.storage_uri),
+    media_type: nullableString(row.media_type),
+    role: nullableString(row.role),
     size_bytes: Number(row.size_bytes ?? 0),
-    provider_id: row.provider_id === null || row.provider_id === undefined ? null : String(row.provider_id),
-    manifest_id: row.manifest_id === null || row.manifest_id === undefined ? null : String(row.manifest_id),
+    provider_id: nullableString(row.provider_id),
+    manifest_id: nullableString(row.manifest_id),
     metadata: parseJsonRecord(row.metadata_json as string),
     custody_mode: asCustodyMode(row.custody_mode, "managed"),
     availability: asAvailability(row.availability, "unchecked"),
@@ -6884,16 +6866,12 @@ function artifactIdentityFromRow(row: Record<string, unknown>): ArtifactIdentity
     id: String(row.id),
     identity_key: String(row.identity_key),
     source_kind: asArtifactIdentitySourceKind(row.source_kind),
-    title: row.title === null || row.title === undefined ? null : String(row.title),
-    source_project_id: row.source_project_id === null || row.source_project_id === undefined
-      ? null
-      : String(row.source_project_id),
-    source_repo_id: row.source_repo_id === null || row.source_repo_id === undefined ? null : String(row.source_repo_id),
-    logical_name: row.logical_name === null || row.logical_name === undefined ? null : String(row.logical_name),
-    source_path: row.source_path === null || row.source_path === undefined ? null : String(row.source_path),
-    latest_version_id: row.latest_version_id === null || row.latest_version_id === undefined
-      ? null
-      : String(row.latest_version_id),
+    title: nullableString(row.title),
+    source_project_id: nullableString(row.source_project_id),
+    source_repo_id: nullableString(row.source_repo_id),
+    logical_name: nullableString(row.logical_name),
+    source_path: nullableString(row.source_path),
+    latest_version_id: nullableString(row.latest_version_id),
     version_count: Number(row.version_count ?? 0),
     metadata: parseJsonRecord(row.metadata_json as string),
     created_at: Number(row.created_at),
@@ -6902,6 +6880,7 @@ function artifactIdentityFromRow(row: Record<string, unknown>): ArtifactIdentity
 }
 
 function canonicalArtifactVersionFromRow(row: Record<string, unknown>): CanonicalArtifactVersionRecord {
+  const custodyMode = nullableString(row.custody_mode);
   return {
     id: String(row.id),
     artifact_id: String(row.artifact_id),
@@ -6909,19 +6888,15 @@ function canonicalArtifactVersionFromRow(row: Record<string, unknown>): Canonica
     blob_id: String(row.blob_id),
     source_kind: asCanonicalVersionSourceKind(row.source_kind),
     content_hash: String(row.content_hash),
-    source_project_id: row.source_project_id === null || row.source_project_id === undefined
-      ? null
-      : String(row.source_project_id),
-    source_repo_id: row.source_repo_id === null || row.source_repo_id === undefined ? null : String(row.source_repo_id),
-    repo_path: row.repo_path === null || row.repo_path === undefined ? null : String(row.repo_path),
-    commit_sha: row.commit_sha === null || row.commit_sha === undefined ? null : String(row.commit_sha),
-    observed_path: row.observed_path === null || row.observed_path === undefined ? null : String(row.observed_path),
+    source_project_id: nullableString(row.source_project_id),
+    source_repo_id: nullableString(row.source_repo_id),
+    repo_path: nullableString(row.repo_path),
+    commit_sha: nullableString(row.commit_sha),
+    observed_path: nullableString(row.observed_path),
     source_locator: parseJsonRecord(row.source_locator_json as string),
-    custody_mode: row.custody_mode === null || row.custody_mode === undefined
-      ? null
-      : asCustodyMode(row.custody_mode, "managed"),
-    label: row.label === null || row.label === undefined ? null : String(row.label),
-    note: row.note === null || row.note === undefined ? null : String(row.note),
+    custody_mode: custodyMode === null ? null : asCustodyMode(custodyMode, "managed"),
+    label: nullableString(row.label),
+    note: nullableString(row.note),
     metadata: parseJsonRecord(row.metadata_json as string),
     created_at: Number(row.created_at),
   };
@@ -6945,15 +6920,13 @@ function projectArtifactAssociationFromRow(row: Record<string, unknown>): Projec
     target_id: String(row.target_id),
     association_kind: associationKind,
     role: String(row.role ?? ""),
-    title: row.title === null || row.title === undefined ? null : String(row.title),
-    description: row.description === null || row.description === undefined ? null : String(row.description),
-    rank: row.rank === null || row.rank === undefined ? null : Number(row.rank),
+    title: nullableString(row.title),
+    description: nullableString(row.description),
+    rank: nullableNumber(row.rank),
     status,
     source,
-    source_ref_type: row.source_ref_type === null || row.source_ref_type === undefined
-      ? null
-      : String(row.source_ref_type),
-    source_ref_id: row.source_ref_id === null || row.source_ref_id === undefined ? null : String(row.source_ref_id),
+    source_ref_type: nullableString(row.source_ref_type),
+    source_ref_id: nullableString(row.source_ref_id),
     metadata: parseJsonRecord(row.metadata_json as string),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
@@ -6992,11 +6965,12 @@ function summaryRepoLocator(locator: Record<string, unknown>): Record<string, un
 }
 
 function compatibilityArtifactIdFromAssociationRow(db: Db, row: Record<string, unknown>): string | null {
-  if (row.blob_id !== null && row.blob_id !== undefined) {
-    const blob = getArtifactBlob(db, String(row.blob_id));
+  const blobId = nullableString(row.blob_id);
+  if (blobId !== null) {
+    const blob = getArtifactBlob(db, blobId);
     if (blob) return projectCanonicalArtifactRecord(db, blob).id;
   }
-  return row.artifact_id === null || row.artifact_id === undefined ? null : String(row.artifact_id);
+  return nullableString(row.artifact_id);
 }
 
 function artifactAliasFromRow(db: Db, row: Record<string, unknown>): ArtifactAliasRecord {
@@ -7027,14 +7001,14 @@ function artifactLinkFromRow(db: Db, row: Record<string, unknown>): ArtifactLink
     entity_type: String(row.entity_type),
     entity_id: String(row.entity_id),
     link_type: String(row.link_type),
-    role: row.role === null || row.role === undefined ? null : String(row.role),
-    repo_id: row.repo_id === null || row.repo_id === undefined ? null : String(row.repo_id),
-    provider_id: row.provider_id === null || row.provider_id === undefined ? null : String(row.provider_id),
+    role: nullableString(row.role),
+    repo_id: nullableString(row.repo_id),
+    provider_id: nullableString(row.provider_id),
     source: String(row.source),
     metadata: parseJsonRecord(row.metadata_json as string),
     link_kind: row.link_kind === "living" ? "living" : "pinned",
-    series_id: row.series_id === null || row.series_id === undefined ? null : String(row.series_id),
-    series_ref: row.series_ref === null || row.series_ref === undefined ? null : String(row.series_ref),
+    series_id: nullableString(row.series_id),
+    series_ref: nullableString(row.series_ref),
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   };
@@ -7124,7 +7098,7 @@ function listArtifactSeriesLinksForSeries(db: Db, seriesIds: string[]): Map<stri
       ORDER BY series_id, entity_type, entity_id, link_type, role`
   ).all(...uniqueSeriesIds) as Array<Record<string, unknown>>;
   for (const row of rows) {
-    const seriesId = row.series_id === null || row.series_id === undefined ? null : String(row.series_id);
+    const seriesId = nullableString(row.series_id);
     if (!seriesId) continue;
     const links = linksBySeriesId.get(seriesId) ?? [];
     links.push(artifactLinkFromRow(db, row));
@@ -7138,9 +7112,9 @@ function manifestFromRow(row: Record<string, unknown>): ProviderManifestRecord {
     id: String(row.id),
     provider_id: String(row.provider_id),
     manifest_type: String(row.manifest_type),
-    version: row.version === null ? null : String(row.version),
+    version: nullableString(row.version),
     content_hash: String(row.content_hash),
-    artifact_id: row.artifact_id === null ? null : String(row.artifact_id),
+    artifact_id: nullableString(row.artifact_id),
     source: String(row.source),
     content: parseJsonRecord(row.content_json as string),
     created_at: Number(row.created_at),
