@@ -2357,8 +2357,8 @@ export class AuthQueue {
       }
     }
 
-    // 5. Match by canonical ledger links, covering auth requests that were
-    // linked by ledger issue ID rather than by legacy git-bug prefixes.
+    // 5. Match by canonical ledger links, covering auth requests linked by a
+    // ledger issue ID rather than by historical compatibility prefixes.
     if (
       this.tableExists("ledger_auth_issue_links") &&
       this.tableExists("ledger_work_unit_issue_links")

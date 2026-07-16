@@ -6,28 +6,11 @@ import { openDb, setDb, type Db } from "../src/db.js";
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
-  getLedgerIssueMigrationConfig,
-  getReconciliationReport,
   listLedgerIssueSummaries,
-  parseMigrationConfigPatch,
-  reconcileIssueSummaries,
-  runIssueReconciliation,
-  updateLedgerIssueMigrationConfig,
-} from "../src/ledger/issue-migration.js";
+} from "../src/ledger/issue-projection.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
-import {
-  runGitBugSyncForRepos,
-} from "../src/ledger/sync-runner.js";
-import type {
-  GitBugClient,
-  GitBugCreateIssueInput,
-  GitBugIssueDetail,
-  GitBugIssueSummary,
-  GitBugResult,
-} from "../src/ledger/git-bug-client.js";
 import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../src/routes/issues.js";
-import type { IssueRepoSummary } from "../src/types.js";
 import type { RepoInfo } from "../src/work-scanner.js";
 
 let tempDir = "";
@@ -181,53 +164,7 @@ function setMarkdownBodyEscapePolicy(value: "allow" | "warn" | "reject"): void {
   ).run(value, Date.now());
 }
 
-function summary(repoInfo: RepoInfo, issues: IssueRepoSummary["issues"]): IssueRepoSummary {
-  return {
-    repo_id: repoInfo.id,
-    repo_name: repoInfo.name,
-    repo_root: repoInfo.root,
-    open_count: issues.filter((issue) => issue.status === "open").length,
-    merged_count: 0,
-    closed_count: issues.filter((issue) => issue.status === "closed").length,
-    issues,
-  };
-}
-
-describe("ledger issue migration config", () => {
-  it("defaults to scanner reads, git-bug writes, shadow reports, and fallback", () => {
-    expect(getLedgerIssueMigrationConfig(db)).toEqual({
-      read_mode: "scanner",
-      write_mode: "git_bug",
-      shadow_report_enabled: true,
-      fallback_on_ledger_error: true,
-    });
-
-    expect(updateLedgerIssueMigrationConfig(db, {
-      read_mode: "shadow",
-      write_mode: "ledger",
-      fallback_on_ledger_error: false,
-    })).toMatchObject({
-      read_mode: "shadow",
-      write_mode: "ledger",
-      fallback_on_ledger_error: false,
-    });
-  });
-
-  it("ignores invalid config mode strings instead of silently rolling back", () => {
-    const patch = parseMigrationConfigPatch({
-      read_mode: "scaner",
-      write_mode: "ledger",
-      shadow_report_enabled: false,
-    });
-
-    expect(patch).toEqual({
-      write_mode: "ledger",
-      shadow_report_enabled: false,
-    });
-  });
-});
-
-describe("ledger legacy issue projection", () => {
+describe("ledger issue projection", () => {
   it("maps ledger issues to existing issue API shapes", () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue, store } = createLedgerIssue({
@@ -263,7 +200,6 @@ describe("ledger legacy issue projection", () => {
       title: "Feedbax synthesized issue",
     });
     db.prepare("UPDATE ledger_projects SET project_key = ? WHERE id = ?").run("feedbax", issue.project_id);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger" });
     const workScanner = fakeWorkScanner([repoInfo]);
 
     const summaries = listLedgerIssueSummaries(db, workScanner);
@@ -298,158 +234,8 @@ describe("ledger legacy issue projection", () => {
   });
 });
 
-describe("ledger reconciliation reports", () => {
-  it("detects clean and mismatched issue projections", () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const clean = summary(repoInfo, [{
-      id: "abc123",
-      repo_id: repoInfo.id,
-      repo_name: repoInfo.name,
-      title: "Same",
-      status: "open",
-      labels: ["feature"],
-      author: "Codex",
-      created_at: "2026-05-16T12:00:00.000Z",
-      description: "Body",
-    }]);
-    const matching = summary(repoInfo, [{ ...clean.issues[0] }]);
-    const mismatched = summary(repoInfo, [{ ...clean.issues[0], title: "Different", labels: ["bug"] }]);
-
-    expect(reconcileIssueSummaries([clean], [matching]).status).toBe("clean");
-    const report = reconcileIssueSummaries([clean], [mismatched]);
-    expect(report.status).toBe("mismatch");
-    expect(report.mismatches.map((mismatch) => mismatch.mismatch_type)).toEqual([
-      "title_mismatch",
-      "label_set_mismatch",
-    ]);
-  });
-
-  it("does not report body or comment mismatches for list-only scanner summaries", () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const scanner = summary(repoInfo, [{
-      id: "abc123",
-      repo_id: repoInfo.id,
-      repo_name: repoInfo.name,
-      title: "Same",
-      status: "open",
-      labels: ["feature"],
-      author: "Codex",
-      created_at: "2026-05-16T12:00:00.000Z",
-      description: "",
-    }]);
-    const ledger = summary(repoInfo, [{
-      ...scanner.issues[0],
-      description: "Ledger body from imported first git-bug comment",
-    }]);
-
-    expect(reconcileIssueSummaries([scanner], [ledger]).mismatches).toEqual([]);
-  });
-
-  it("reports comment mismatches when detailed issue shapes are compared", () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const scanner = summary(repoInfo, [{
-      id: "abc123",
-      repo_id: repoInfo.id,
-      repo_name: repoInfo.name,
-      title: "Same",
-      status: "open",
-      labels: ["feature"],
-      author: "Codex",
-      created_at: "2026-05-16T12:00:00.000Z",
-      description: "Body",
-      comments: [],
-    }]);
-    const ledger = summary(repoInfo, [{
-      ...scanner.issues[0],
-      comments: [{ id: "c1", author: "Codex", date: "2026-05-16T12:00:00.000Z", body: "Note" }],
-    }]);
-
-    expect(reconcileIssueSummaries([scanner], [ledger]).mismatches).toMatchObject([
-      { mismatch_type: "comment_count_mismatch" },
-    ]);
-  });
-
-  it("persists reconciliation reports and mismatch entries", () => {
-    const repoInfo = repo("repo-1", "mandible");
-    createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Ledger only" });
-    const scannerSummary = summary(repoInfo, []);
-    const fakeScanner = { getRepoSummaries: () => [scannerSummary] };
-
-    const report = runIssueReconciliation(db, fakeScanner, fakeWorkScanner([repoInfo]), "shadow");
-    const persisted = getReconciliationReport(db, report.id);
-
-    expect(report.status).toBe("mismatch");
-    expect(persisted?.mismatches).toHaveLength(1);
-    expect(persisted?.mismatches[0].mismatch_type).toBe("extra_in_ledger");
-  });
-});
-
-describe("ledger migration sync", () => {
-  it("imports registered repo issues into the registered project/checkout", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    // Issue 70cf59d: discovery sync is NO-MINT. The repo must be registered
-    // (here via explicit resolveProjectForCheckout) before sync resolves it;
-    // an unregistered root is skipped, not minted.
-    resolveProjectForCheckout(db, { root: repoInfo.root, workRepoId: repoInfo.id });
-    const client = new FakeGitBugClient([
-      makeDetail({
-        id: "git-1",
-        human_id: "abc123",
-        title: "Imported issue",
-        body: "Imported body",
-        labels: ["feature"],
-      }),
-    ]);
-
-    const sync = await runGitBugSyncForRepos({
-      db,
-      client,
-      repos: [repoInfo],
-      direction: "import",
-    });
-    const workScanner = fakeWorkScanner([repoInfo]);
-    const summaries = listLedgerIssueSummaries(db, workScanner);
-    const report = runIssueReconciliation(
-      db,
-      { getRepoSummaries: () => summaries },
-      workScanner,
-      "shadow",
-    );
-
-    expect(sync).toMatchObject({ total: 1, completed: 1, failed: 0 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_projects").get()).toMatchObject({ count: 1 });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM ledger_project_checkouts").get()).toMatchObject({ count: 1 });
-    expect(summaries).toMatchObject([{
-      repo_id: "repo-1",
-      issues: [{ id: expect.stringMatching(/^[0-9a-f]{7,64}$/), title: "Imported issue" }],
-    }]);
-    expect(report.status).toBe("clean");
-  });
-
-  it("skips missing or excluded repos without blocking other imports", async () => {
-    const active = repo("repo-1", "active");
-    // Register the active repo so no-mint discovery resolves it (issue 70cf59d).
-    resolveProjectForCheckout(db, { root: active.root, workRepoId: active.id });
-    const missing = { ...repo("repo-2", "missing"), exists: false };
-    const excluded = { ...repo("repo-3", "excluded"), excluded: true };
-    const client = new FakeGitBugClient([
-      makeDetail({ id: "git-1", human_id: "abc123", title: "Active issue" }),
-    ]);
-
-    const sync = await runGitBugSyncForRepos({
-      db,
-      client,
-      repos: [active, missing, excluded],
-      direction: "import",
-    });
-
-    expect(sync).toMatchObject({ total: 3, completed: 1, skipped: 2, failed: 0 });
-    expect(sync.results.map((result) => result.status)).toEqual(["completed", "skipped", "skipped"]);
-  });
-});
-
-describe("ledger issue route gate", () => {
-  it("serves list, detail, context, and session routes from ledger read mode", async () => {
+describe("ledger issue routes", () => {
+  it("serves list, detail, context, and session routes from the ledger", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue } = createLedgerIssue({
       repo: repoInfo,
@@ -464,8 +250,6 @@ describe("ledger issue route gate", () => {
     db.prepare(
       "INSERT INTO session_issues (session_id, issue_id, repo_id, created_at) VALUES (?, ?, ?, ?)",
     ).run("sess-1", issue.short_id, repoInfo.id, 1);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger" });
-
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 
@@ -493,37 +277,6 @@ describe("ledger issue route gate", () => {
     });
     expect(sessions.statusCode).toBe(200);
     expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: issue.short_id }]);
-  });
-
-  it("returns a clear gone response for legacy git-bug mutation endpoints", async () => {
-    const repoInfo = repo("repo-1", "mandible");
-    const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
-    const server = new TestIssueServer();
-    registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-
-    const guarded = await server.invoke("POST", "/api/issues/:repoId/:issueId/status", {
-      params: { repoId: repoInfo.id, issueId: "abc123" },
-      body: { status: "closed" },
-    });
-    const comment = await server.invoke("POST", "/api/issues/:repoId/:issueId/comment", {
-      params: { repoId: repoInfo.id, issueId: "abc123" },
-      body: { message: "Mandible note" },
-    });
-    const label = await server.invoke("POST", "/api/issues/:repoId/:issueId/label", {
-      params: { repoId: repoInfo.id, issueId: "abc123" },
-      body: { action: "add", label: "reviewed" },
-    });
-
-    expect(guarded.statusCode).toBe(410);
-    expect(comment.statusCode).toBe(410);
-    expect(label.statusCode).toBe(410);
-    expect(guarded.body).toMatchObject({
-      error: expect.stringContaining("legacy git-bug issue endpoint is disabled"),
-    });
-    const detail = new LedgerStore(db).getIssueDetail(issue.id);
-    expect(detail.status).toBe("open");
-    expect(detail.comments.map((row) => row.body)).not.toContain("Mandible note");
-    expect(detail.labels.map((row) => row.label)).not.toContain("reviewed");
   });
 
   it("atomically reopens and comments through the ledger comment route", async () => {
@@ -1039,10 +792,8 @@ describe("ledger issue route gate", () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
     // Issue 3d85f43: issue creation resolves against the registered ledger
-    // checkout (the live daemon registers it via git-bug sync); register it here
-    // so the route does not reject an unknown root.
+    // checkout, so register it here before invoking the route.
     resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
 
     const created = await server.invoke("POST", "/api/issues/:repoId", {
@@ -1072,8 +823,6 @@ describe("ledger issue route gate", () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
-
     resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
     const escapedBody = "Created through API.\\n\\nDetails:\\n- item";
     const created = await server.invoke("POST", "/api/issues/:repoId", {
@@ -1111,7 +860,6 @@ describe("ledger issue route gate", () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
     setMarkdownBodyEscapePolicy("reject");
 
     resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
@@ -1136,7 +884,6 @@ describe("ledger issue route gate", () => {
     const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
     setMarkdownBodyEscapePolicy("reject");
 
     const rejectedIssue = await server.invoke("POST", "/api/issues/:repoId", {
@@ -1167,7 +914,6 @@ describe("ledger issue route gate", () => {
     const { issue } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Writable" });
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
     setMarkdownBodyEscapePolicy("allow");
 
     const escapedBody = "Allowed escaped comment.\\n\\nDetails:\\n- item";
@@ -1181,94 +927,3 @@ describe("ledger issue route gate", () => {
     expect(new LedgerStore(db).getIssueDetail(issue.id).comments.map((row) => row.body)).toEqual([escapedBody]);
   });
 });
-
-class FakeGitBugClient implements GitBugClient {
-  private details = new Map<string, GitBugIssueDetail>();
-
-  constructor(details: GitBugIssueDetail[]) {
-    for (const detail of details) {
-      this.details.set(detail.id, detail);
-      this.details.set(detail.human_id, detail);
-    }
-  }
-
-  async hasGitBugRefs(): Promise<GitBugResult<boolean>> {
-    return ok(this.details.size > 0);
-  }
-
-  async listIssues(): Promise<GitBugResult<GitBugIssueSummary[]>> {
-    const unique = Array.from(new Set(this.details.values()));
-    return ok(unique.map(({ description: _description, comments: _comments, raw: _raw, ...summary }) => summary));
-  }
-
-  async getIssue(_repoRoot: string, ref: string): Promise<GitBugResult<GitBugIssueDetail>> {
-    const detail = this.details.get(ref);
-    return detail ? ok(detail) : fail("not found");
-  }
-
-  async createIssue(_repoRoot: string, _input: GitBugCreateIssueInput): Promise<GitBugResult<{ id: string }>> {
-    return fail("not implemented");
-  }
-
-  async editTitle(): Promise<GitBugResult<void>> {
-    return fail("not implemented");
-  }
-
-  async editComment(): Promise<GitBugResult<void>> {
-    return fail("not implemented");
-  }
-
-  async setStatus(): Promise<GitBugResult<void>> {
-    return fail("not implemented");
-  }
-
-  async addComment(): Promise<GitBugResult<{ id?: string }>> {
-    return fail("not implemented");
-  }
-
-  async addLabel(): Promise<GitBugResult<void>> {
-    return fail("not implemented");
-  }
-
-  async removeLabel(): Promise<GitBugResult<void>> {
-    return fail("not implemented");
-  }
-}
-
-function makeDetail(input: {
-  id: string;
-  human_id: string;
-  title: string;
-  body?: string;
-  status?: "open" | "closed";
-  labels?: string[];
-  comments?: Array<{ id: string; body: string }>;
-}): GitBugIssueDetail {
-  return {
-    id: input.id,
-    human_id: input.human_id,
-    title: input.title,
-    status: input.status ?? "open",
-    labels: input.labels ?? [],
-    author_name: "Codex",
-    created_at: "2026-05-16T12:00:00.000Z",
-    description: input.body ?? "",
-    description_comment_id: `${input.human_id}-desc`,
-    comments: (input.comments ?? []).map((comment) => ({
-      id: comment.id,
-      human_id: comment.id,
-      author_name: "Codex",
-      body: comment.body,
-      created_at: "2026-05-16T12:00:00.000Z",
-    })),
-    raw: input,
-  };
-}
-
-function ok<T>(value: T): GitBugResult<T> {
-  return { ok: true, value, stdout: "", stderr: "", exit_code: 0 };
-}
-
-function fail<T>(error: string): GitBugResult<T> {
-  return { ok: false, error, retry: "fatal", stdout: "", stderr: error, exit_code: 1 };
-}
