@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import type { Db } from "./db.js";
+import { tableExists } from "./db-introspection.js";
 import type { AuthRequest } from "./types.js";
 
 export interface CodexThreadArchiver {
@@ -442,13 +443,6 @@ function parseJsonObject(raw: string): Record<string, unknown> | null {
 
 function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare(
-    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-  ).get(table);
-  return Boolean(row);
 }
 
 function tableHasColumn(db: Db, table: string, column: string): boolean {

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import type { Db } from "./db.js";
+import { tableExists } from "./db-introspection.js";
 import type { AgenticBackend } from "./agentic-backend.js";
 import type {
   ConversationAttachState,
@@ -69,13 +70,6 @@ function getOwnedSession(
     }
   }
   return null;
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(table) as { name?: string } | undefined;
-  return Boolean(row?.name);
 }
 
 function getExternalSession(db: Db, providerSessionId: string): ExternalSessionRow | null {

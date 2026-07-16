@@ -15,16 +15,9 @@ import {
 import { linkSessionToLedgerIssue, resolveOperationalIssueRef } from "../ledger/operational-links.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
+import { readBody, sendJson } from "./http.js";
 
 function linkSessionLedgerIssue(
   sessionId: string,

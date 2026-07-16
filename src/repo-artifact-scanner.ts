@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "./db.js";
+import { tableExists } from "./db-introspection.js";
 import {
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
@@ -135,11 +136,6 @@ const ARTIFACT_DIR_SEGMENTS = new Set([
 const ARTIFACT_FILENAME_RE =
   /(?:^|[-_.])(analysis|artifact|config|eval|evaluation|experiment|manifest|metric|report|result|run|summary)(?:[-_.]|$)/i;
 const ISSUE_ID_RE = /^[0-9a-f]{7,64}$/i;
-
-function tableExists(db: Db, name: string): boolean {
-  const row = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?").get(name);
-  return Boolean(row);
-}
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;

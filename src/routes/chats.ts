@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { RouteRegistrar } from "../server.js";
 import type { StarredChat } from "../types.js";
+import { readBody, sendJson } from "./http.js";
 
 type StarredChatInput = {
   session_id?: string | null;
@@ -11,14 +12,6 @@ type StarredChatInput = {
   cwd?: string | null;
   branch?: string | null;
 };
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
 
 function normalizeOptionalText(value: unknown): string | null {
   if (typeof value !== "string") {

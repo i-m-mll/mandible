@@ -8,15 +8,8 @@ import { deriveConversationAttachState } from "../conversation-attach-state.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
 import type { SessionManager } from "../session-manager.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
+import type { RouteRegistrar } from "../server.js";
+import { readBody, sendJson } from "./http.js";
 
 // --- Row mapping helpers ---
 
