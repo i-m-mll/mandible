@@ -48,6 +48,144 @@ function indexNames(table: string): Set<string> {
   );
 }
 
+function restorePreV104ArtifactTargetSchema(): void {
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.exec(`
+      CREATE TEMP TABLE migration_v91_aliases AS
+        SELECT id, artifact_id, scheme, alias, normalized_ref, locator_json,
+               resolution_status, source, created_at, updated_at
+          FROM artifact_aliases;
+      CREATE TEMP TABLE migration_v91_links AS
+        SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+               provider_id, source, metadata_json, created_at, updated_at,
+               link_kind, series_id, series_ref, target_type, target_id,
+               fallback_version_id, legacy_blob_id
+          FROM artifact_links;
+      CREATE TEMP TABLE migration_v91_session_artifacts AS
+        SELECT session_id, artifact_series_id, artifact_version_id,
+               legacy_preset_id, position, created_at, updated_at
+          FROM session_instruction_artifacts
+         WHERE artifact_series_id IS NOT NULL AND artifact_version_id IS NOT NULL;
+      CREATE TEMP TABLE migration_v91_drafts AS
+        SELECT id, series_id, base_version_id, content, media_type, label, note,
+               metadata_json, created_at, updated_at
+          FROM artifact_drafts
+         WHERE series_id IS NOT NULL AND base_version_id IS NOT NULL;
+      DROP TABLE artifact_aliases;
+      DROP TABLE artifact_links;
+      DROP TABLE session_instruction_artifacts;
+      DROP TABLE artifact_drafts;
+      CREATE TABLE artifact_aliases (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        scheme TEXT NOT NULL,
+        alias TEXT NOT NULL,
+        normalized_ref TEXT NOT NULL,
+        locator_json TEXT NOT NULL DEFAULT '{}',
+        resolution_status TEXT NOT NULL DEFAULT 'resolved'
+          CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
+        source TEXT NOT NULL DEFAULT 'artifact_registry',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref
+        ON artifact_aliases(scheme, normalized_ref);
+      CREATE INDEX idx_artifact_aliases_artifact
+        ON artifact_aliases(artifact_id) WHERE artifact_id IS NOT NULL;
+      CREATE INDEX idx_artifact_aliases_status
+        ON artifact_aliases(resolution_status, scheme);
+      CREATE TABLE artifact_links (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        link_type TEXT NOT NULL DEFAULT 'references',
+        role TEXT,
+        repo_id TEXT,
+        provider_id TEXT,
+        source TEXT NOT NULL DEFAULT 'artifact_registry',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        link_kind TEXT NOT NULL DEFAULT 'pinned'
+          CHECK(link_kind IN ('pinned','living')),
+        series_id TEXT,
+        series_ref TEXT,
+        target_type TEXT CHECK(
+          target_type IS NULL OR target_type IN ('artifact','artifact_version')
+        ),
+        target_id TEXT,
+        fallback_version_id TEXT,
+        legacy_blob_id TEXT
+      );
+      CREATE INDEX idx_artifact_links_artifact ON artifact_links(artifact_id, link_type);
+      CREATE INDEX idx_artifact_links_entity ON artifact_links(entity_type, entity_id);
+      CREATE INDEX idx_artifact_links_kind ON artifact_links(link_kind);
+      CREATE INDEX idx_artifact_links_series
+        ON artifact_links(series_id) WHERE series_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_target
+        ON artifact_links(target_type, target_id)
+        WHERE target_type IS NOT NULL AND target_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_fallback_version
+        ON artifact_links(fallback_version_id) WHERE fallback_version_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_legacy_blob
+        ON artifact_links(legacy_blob_id) WHERE legacy_blob_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_provider
+        ON artifact_links(provider_id) WHERE provider_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_repo
+        ON artifact_links(repo_id) WHERE repo_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_role
+        ON artifact_links(role) WHERE role IS NOT NULL;
+      CREATE TABLE session_instruction_artifacts (
+        session_id TEXT NOT NULL,
+        artifact_series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        legacy_preset_id TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, artifact_series_id)
+      );
+      CREATE INDEX idx_session_instruction_artifacts_session
+        ON session_instruction_artifacts(session_id, position);
+      CREATE INDEX idx_session_instruction_artifacts_version
+        ON session_instruction_artifacts(artifact_version_id);
+      CREATE TABLE artifact_drafts (
+        id TEXT PRIMARY KEY,
+        series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        content TEXT NOT NULL,
+        media_type TEXT,
+        label TEXT,
+        note TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(series_id)
+      );
+      CREATE INDEX idx_artifact_drafts_base ON artifact_drafts(base_version_id);
+      INSERT INTO artifact_aliases
+        SELECT * FROM migration_v91_aliases;
+      INSERT INTO artifact_links
+        SELECT * FROM migration_v91_links;
+      INSERT INTO session_instruction_artifacts
+        SELECT * FROM migration_v91_session_artifacts;
+      INSERT INTO artifact_drafts
+        SELECT * FROM migration_v91_drafts;
+      DROP TABLE migration_v91_aliases;
+      DROP TABLE migration_v91_links;
+      DROP TABLE migration_v91_session_artifacts;
+      DROP TABLE migration_v91_drafts;
+      UPDATE meta SET value = '103' WHERE key = 'schema_version';
+      DELETE FROM meta
+       WHERE key = 'post_migration.v104_artifact_canonical_targets.complete';
+    `);
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
 function insertLegacyFixture(): void {
   db.prepare(
     `INSERT INTO ledger_projects (
@@ -151,6 +289,7 @@ describe("migration v91: artifact identity and project associations", () => {
   });
 
   it("backfills legacy rows into new names, repairs link targets, and creates no inferred associations", () => {
+    restorePreV104ArtifactTargetSchema();
     insertLegacyFixture();
     db.prepare("UPDATE meta SET value = '90' WHERE key = 'schema_version'").run();
 
@@ -235,6 +374,7 @@ describe("migration v91: artifact identity and project associations", () => {
   it("resolves legacy-only rows through canonical refs after migration", () => {
     const hash = "a".repeat(64);
     const blobId = `artifact-blob:${hash}`;
+    restorePreV104ArtifactTargetSchema();
     insertLegacyFixture();
     db.prepare("UPDATE meta SET value = '90' WHERE key = 'schema_version'").run();
 
@@ -330,6 +470,7 @@ describe("migration v91: artifact identity and project associations", () => {
   });
 
   it("is idempotent when v91 is replayed on a current database", () => {
+    restorePreV104ArtifactTargetSchema();
     insertLegacyFixture();
     db.prepare("UPDATE meta SET value = '90' WHERE key = 'schema_version'").run();
     migrate(db);
@@ -341,6 +482,7 @@ describe("migration v91: artifact identity and project associations", () => {
       links: db.prepare("SELECT id, target_type, target_id, fallback_version_id, legacy_blob_id FROM artifact_links ORDER BY id").all(),
     };
 
+    restorePreV104ArtifactTargetSchema();
     db.prepare("UPDATE meta SET value = '90' WHERE key = 'schema_version'").run();
     migrate(db);
     migrate(db);
