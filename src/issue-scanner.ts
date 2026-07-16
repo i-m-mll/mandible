@@ -6,8 +6,8 @@ import type {
 
 /**
  * Legacy scanner facade retained for compatibility while issue reads are
- * served from the Mandible ledger. git-bug subprocess execution is now owned
- * exclusively by the explicit manual import/sync path in ledger/sync-runner.
+ * served from the Mandible ledger. This facade remains for callers that still
+ * need the established scanner-shaped read interface.
  */
 export class IssueScanner {
   public readonly workScanner: WorkScanner;

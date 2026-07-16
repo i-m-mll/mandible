@@ -995,8 +995,8 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 55,
     name: "ledger_core",
     // Bug: ff6a2bc — canonical Mandible work ledger substrate. This migration
-    // is intentionally shadow-only; existing issue routes continue to use the
-    // git-bug scanner until later gated cutover work.
+    // is intentionally shadow-only; existing issue routes continued to use the
+    // compatibility scanner until later gated cutover work.
     statements: [
       `CREATE TABLE IF NOT EXISTS ledger_projects (
         id TEXT PRIMARY KEY,
@@ -1263,7 +1263,7 @@ export const MIGRATIONS: readonly Migration[] = [
     version: 56,
     name: "ledger_sync_jobs",
     // Bug: aac782a — adapter sync status/retry records. Normal ledger reads
-    // and writes must not depend on git-bug lock availability.
+    // and writes must not depend on compatibility-adapter lock availability.
     statements: [
       `CREATE TABLE IF NOT EXISTS ledger_sync_jobs (
         id TEXT PRIMARY KEY,

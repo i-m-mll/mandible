@@ -124,7 +124,7 @@ const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
 // A Mandible daemon running INSIDE a sandboxed session (Cowork/Codex container)
 // sees the host's repositories through a per-session bind mount such as
 // `/sessions/<session-id>/mnt/...`. If discovery scans those mounted roots and
-// the legacy git-bug sync then resolves them, it mints duplicate `local:`
+// the retired compatibility sync then resolves them, it mints duplicate `local:`
 // projects for repos that already exist canonically on the host (this is what
 // produced the feedbax-2/-3/-4, humbleb-2 and dotfiles-2 duplicates).
 //
@@ -144,7 +144,7 @@ const EPHEMERAL_MOUNT_PATTERNS: RegExp[] = [
  * True when `root` lives under an ephemeral sandbox/container session mount.
  * Such roots are host repositories seen through a session bind mount and must
  * not be discovered or synced (see issue 70cf59d). Exported for reuse by the
- * git-bug sync runner's root-selection guard.
+ * retired sync runner's root-selection guard.
  */
 export function isEphemeralMountPath(root: string): boolean {
   if (!root) return false;

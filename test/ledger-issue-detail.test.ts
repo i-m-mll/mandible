@@ -8,7 +8,7 @@ import {
   buildLedgerIssueDetailProjection,
   buildLedgerIssueDetailProjectionWithProfile,
 } from "../src/ledger/issue-detail.js";
-import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-migration.js";
+import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-projection.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,

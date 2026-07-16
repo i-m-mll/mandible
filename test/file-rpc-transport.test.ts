@@ -128,7 +128,7 @@ function buildPolicyRouter(): Router {
   router.post(
     "/api/issues/:repoId",
     noop,
-    { fileRpc: { allowWhen: ({ params }) => !["migration", "reconcile", "scan"].includes(params.repoId ?? "") } },
+    { fileRpc: "allow" },
   );
   return router;
 }
@@ -511,7 +511,6 @@ describe("file RPC transport", () => {
     expect(allowsFileRpcRoute("POST", "/api/conversations/conv-1/fork")).toBe(false);
     expect(allowsFileRpcRoute("DELETE", "/api/sessions/session-1/issues")).toBe(false);
     expect(allowsFileRpcRoute("PUT", "/api/settings/auto_close_issues_on_merge")).toBe(false);
-    expect(allowsFileRpcRoute("POST", "/api/issues/scan")).toBe(false);
   });
 
   it("keeps the daemon-backed CLI route examples available over file RPC", () => {

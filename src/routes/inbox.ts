@@ -2,7 +2,7 @@ import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
-import { listLedgerIssueSummaries } from "../ledger/issue-migration.js";
+import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";

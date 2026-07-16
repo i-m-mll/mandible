@@ -132,7 +132,7 @@ function runGitAsync(
 }
 
 /**
- * Check whether a local git ref namespace exists (e.g. refs/bugs/, refs/notes/).
+ * Check whether a local Git notes ref namespace exists.
  */
 function refsExist(repoRoot: string, refPrefix: string): boolean {
   try {
@@ -319,24 +319,7 @@ async function pushRepo(
       }
     }
 
-    // 4. Push git-bug refs if they exist
-    if (refsExist(repo.root, "refs/bugs/")) {
-      try {
-        await runGitAsync(
-          ["push", "origin", "refs/bugs/*:refs/bugs/*"],
-          repo.root,
-          gitSshEnv
-        );
-        result.refs_pushed.push("refs/bugs/*");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        result.error = result.error
-          ? `${result.error}; refs/bugs: ${msg}`
-          : `refs/bugs: ${msg}`;
-      }
-    }
-
-    // 5. Push git notes
+    // 4. Push git notes
     if (refsExist(repo.root, "refs/notes/")) {
       try {
         await runGitAsync(
