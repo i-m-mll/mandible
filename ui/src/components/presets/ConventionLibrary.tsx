@@ -1,8 +1,7 @@
 // Bug: e20c88e — Convention library flat view
 // Bug: 8baedeb — setting link badges on convention cards
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
-import { sanitizeHtml } from '../../sanitize';
+import { renderMarkdown } from '../../lib/markdown';
 import type { LibraryConvention } from '../../types/presets';
 import type { ConventionSettingLink } from '../../types/presets';
 import { fetchConventionLibrary, getNodeLinks } from '../../api';
@@ -11,13 +10,6 @@ export type ConventionLibraryProps = {
   selectedPresetId: string | null;
   onAddToPreset: (convention: LibraryConvention) => void;
 };
-
-function renderMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  return typeof result === 'string' ? result : '';
-}
-
 
 export function ConventionLibrary({
   selectedPresetId,
@@ -209,7 +201,7 @@ export function ConventionLibrary({
                   <div
                     className="convention-library__card-body"
                     dangerouslySetInnerHTML={{
-                      __html: sanitizeHtml(renderMarkdown(conv.body)),
+                      __html: renderMarkdown(conv.body),
                     }}
                   />
                 )}
