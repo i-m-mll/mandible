@@ -364,10 +364,10 @@ describe("canonical ref resolution and no silent retarget", () => {
 
     // The existing issue link still points at the pinned immutable artifact A.
     const linkRows = db
-      .prepare("SELECT artifact_id FROM artifact_links WHERE entity_type = 'issue' AND entity_id = ?")
-      .all(issueId) as Array<{ artifact_id: string }>;
+      .prepare("SELECT artifact_id, target_type, target_id FROM artifact_links WHERE entity_type = 'issue' AND entity_id = ?")
+      .all(issueId) as Array<{ artifact_id: string | null; target_type: string; target_id: string }>;
     expect(linkRows).toHaveLength(1);
-    expect(linkRows[0].artifact_id).toBe(artifactA);
+    expect(linkRows[0]).toEqual({ artifact_id: null, target_type: "artifact_version", target_id: r1.version.id });
 
     // Logical artifact resolution floats to B without accepting artifact-series refs.
     const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
@@ -416,32 +416,32 @@ describe("backup/export coverage", () => {
     expect(idxVersions).toBeGreaterThan(idxSeries);
   });
 
-  it("round-trips artifact_series and artifact_versions through backup/restore", () => {
+  it("round-trips canonical artifact and artifact_version rows through backup/restore", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b1\n", media_type: "text/plain", logical_name: "bk" }, 1000);
     const r2 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "b2\n", media_type: "text/plain", logical_name: "bk" }, 2000);
     const sql = buildMetadataBackupSql(db);
-    expect(sql).toContain("-- Table: artifact_series");
-    expect(sql).toContain("-- Table: artifact_versions");
+    expect(sql).toContain("-- Table: artifact");
+    expect(sql).toContain("-- Table: artifact_version");
 
     const restored = new Database(path.join(tempDir, "restored.db"));
     restored.pragma("foreign_keys = ON");
     restored.exec(sql);
 
-    const series = restored.prepare("SELECT * FROM artifact_series").all() as Array<{ id: string; series_key: string; version_count: number }>;
+    const series = restored.prepare("SELECT * FROM artifact").all() as Array<{ id: string; identity_key: string; version_count: number }>;
     expect(series).toHaveLength(1);
-    expect(series[0].series_key).toBe("managed:test:bk");
+    expect(series[0].identity_key).toBe("managed:test:bk");
     expect(series[0].version_count).toBe(2);
     const versions = restored
-      .prepare("SELECT id, version_no, content_hash FROM artifact_versions ORDER BY version_no")
+      .prepare("SELECT id, version_no, content_hash FROM artifact_version ORDER BY version_no")
       .all() as Array<{ id: string; version_no: number; content_hash: string }>;
     expect(versions.map((v) => v.version_no)).toEqual([1, 2]);
     expect(versions[0].id).toBe(r1.version.id);
     expect(versions[1].id).toBe(r2.version.id);
 
-    // UNIQUE(series_key) survives the round-trip.
+    // UNIQUE(identity_key) survives the round-trip.
     expect(() =>
       restored.prepare(
-        `INSERT INTO artifact_series (id, series_key, source_kind, version_count, created_at, updated_at)
+        `INSERT INTO artifact (id, identity_key, source_kind, version_count, created_at, updated_at)
          VALUES ('dup', 'managed:test:bk', 'managed', 0, 1, 1)`,
       ).run(),
     ).toThrow(/UNIQUE/i);
@@ -584,8 +584,9 @@ describe("codex review fixes", () => {
     const restored = new Database(path.join(tempDir, "cache-restored.db"));
     restored.pragma("foreign_keys = ON");
     restored.exec(buildMetadataBackupSql(db));
-    const rSeries = restored.prepare("SELECT latest_version_id, version_count FROM artifact_series WHERE id = ?").get(series.id) as { latest_version_id: string; version_count: number };
-    const rMax = restored.prepare("SELECT id FROM artifact_versions WHERE series_id = ? ORDER BY version_no DESC LIMIT 1").get(series.id) as { id: string };
+    const logicalId = series.id.replace(/^artifact-series:/, "artifact:");
+    const rSeries = restored.prepare("SELECT latest_version_id, version_count FROM artifact WHERE id = ?").get(logicalId) as { latest_version_id: string; version_count: number };
+    const rMax = restored.prepare("SELECT id FROM artifact_version WHERE artifact_id = ? ORDER BY version_no DESC LIMIT 1").get(logicalId) as { id: string };
     expect(rSeries.version_count).toBe(2);
     expect(rSeries.latest_version_id).toBe(rMax.id);
     restored.close();

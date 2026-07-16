@@ -77,7 +77,8 @@ function createSchema(database: Database.Database): void {
     );
     CREATE TABLE artifact_aliases (
       id TEXT PRIMARY KEY,
-      artifact_id TEXT,
+      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+      blob_id TEXT REFERENCES artifact_blob(id) ON DELETE RESTRICT,
       scheme TEXT NOT NULL,
       alias TEXT NOT NULL,
       normalized_ref TEXT NOT NULL,
@@ -85,7 +86,11 @@ function createSchema(database: Database.Database): void {
       resolution_status TEXT NOT NULL DEFAULT 'resolved',
       source TEXT NOT NULL DEFAULT 'artifact_registry',
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      CHECK (
+        (resolution_status = 'resolved' AND blob_id IS NOT NULL) OR
+        (resolution_status != 'resolved' AND blob_id IS NULL)
+      )
     );
     CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref
       ON artifact_aliases(scheme, normalized_ref);
@@ -96,7 +101,8 @@ function createSchema(database: Database.Database): void {
       ON artifact_aliases(resolution_status, scheme);
     CREATE TABLE artifact_links (
       id TEXT PRIMARY KEY,
-      artifact_id TEXT NOT NULL,
+      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+      blob_id TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,
       entity_type TEXT NOT NULL,
       entity_id TEXT NOT NULL,
       link_type TEXT NOT NULL DEFAULT 'references',
@@ -108,8 +114,16 @@ function createSchema(database: Database.Database): void {
       link_kind TEXT NOT NULL DEFAULT 'pinned' CHECK(link_kind IN ('pinned','living')),
       series_id TEXT,
       series_ref TEXT,
+      target_type TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version','artifact_blob')),
+      target_id TEXT NOT NULL,
+      fallback_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,
+      legacy_blob_id TEXT,
       created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
+      updated_at INTEGER NOT NULL,
+      CHECK (
+        (link_kind = 'living' AND target_type = 'artifact') OR
+        (link_kind = 'pinned' AND target_type IN ('artifact_version','artifact_blob'))
+      )
     );
     CREATE INDEX idx_artifact_links_artifact
       ON artifact_links(artifact_id, link_type);
@@ -970,7 +984,7 @@ describe("provider/artifact substrate", () => {
       scheme: "zotero",
       normalized_ref: "zotero://library/items/ABC123",
       resolution_status: "resolved",
-      artifact_id: resolution.artifact?.id,
+      artifact_id: null,
     });
     expect(listArtifacts(db, { scheme: "zotero" }).map((item) => item.id)).toEqual([
       resolution.artifact?.id,

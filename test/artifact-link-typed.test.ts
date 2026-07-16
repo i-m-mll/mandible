@@ -252,8 +252,11 @@ describe("NO SILENT RETARGET: artifact_id is never rewritten on conflict", () =>
     const lb = registerArtifactLink(db, b.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 1001)!;
     expect(la.id).not.toBe(lb.id);
     // The original pinned row still points at a — it was never rewritten.
-    const reread = db.prepare("SELECT artifact_id FROM artifact_links WHERE id = ?").get(la.id) as { artifact_id: string };
-    expect(reread.artifact_id).toBe(a.id);
+    const reread = db.prepare("SELECT artifact_id, blob_id FROM artifact_links WHERE id = ?").get(la.id) as {
+      artifact_id: string | null;
+      blob_id: string;
+    };
+    expect(reread).toEqual({ artifact_id: null, blob_id: `artifact-blob:${a.content_hash}` });
   });
 });
 
@@ -276,7 +279,7 @@ describe("backward compatibility / idempotency", () => {
          provider_id, source, metadata_json, created_at, updated_at, target_type, target_id)
        VALUES (@id, @artifact_id, @blob_id, 'issue', @entity_id, 'references', NULL, NULL,
          NULL, 'legacy', '{}', 1, 1, @target_type, @target_id)`,
-    ).run({ id: seed.id, artifact_id: art.id, entity_id: issueId, ...canonicalTarget });
+    ).run({ id: seed.id, artifact_id: null, entity_id: issueId, ...canonicalTarget });
     const legacy = db
       .prepare("SELECT link_kind, series_id, series_ref FROM artifact_links WHERE id = ?")
       .get(seed.id);
@@ -526,7 +529,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
 
   it("still accepts a valid living link via resolveAndLinkArtifact (no regression)", () => {
     const issueId = createLedgerIssue("issuenoreg");
-    const { seriesId, head } = makeSeriesWithHead("series-noreg", "v1\n");
+    const { seriesId } = makeSeriesWithHead("series-noreg", "v1\n");
     expect(() =>
       resolveAndLinkArtifact(db, {
         ref: seriesId,
@@ -538,7 +541,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     const row = db
       .prepare("SELECT link_kind, series_id, artifact_id FROM artifact_links WHERE entity_id = ?")
       .get(issueId) as { link_kind: string; series_id: string; artifact_id: string };
-    expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: head.id });
+    expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: null });
   });
 
   it("leaves the pinned ingest path unaffected (default link_kind, no series required)", () => {

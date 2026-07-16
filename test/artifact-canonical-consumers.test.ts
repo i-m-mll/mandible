@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -10,14 +11,17 @@ import {
   getArtifactDraft,
   ingestArtifact,
   listArtifacts,
+  listArtifactSeries,
   publishArtifactDraft,
   rebaseArtifactDraft,
   recordArtifactVersion,
   registerArtifactAlias,
   registerArtifactLink,
   resolveAndLinkArtifact,
+  resolveArtifactRef,
   resolveArtifactRefReadonlyFull,
   saveArtifactDraft,
+  snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
 import {
   appendSessionInstructionArtifacts,
@@ -73,6 +77,88 @@ function recordManaged(name: string, content: string, now: number, repoId?: stri
 }
 
 describe("canonical artifact compatibility consumers", () => {
+  it("paginates canonical series and filtered matches beyond the first 500 blobs", () => {
+    const insertBlob = db.prepare(
+      `INSERT INTO artifact_blob (id, content_hash, role, created_at)
+       VALUES (?, ?, 'bulk-filter', ?)`,
+    );
+    const insertArtifact = db.prepare(
+      `INSERT INTO artifact (
+        id, identity_key, source_kind, latest_version_id, version_count, created_at, updated_at
+      ) VALUES (?, ?, 'managed', ?, 1, ?, ?)`,
+    );
+    const insertVersion = db.prepare(
+      `INSERT INTO artifact_version (
+        id, artifact_id, version_no, blob_id, source_kind, content_hash, created_at
+      ) VALUES (?, ?, 1, ?, 'managed', ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let index = 0; index < 505; index += 1) {
+        const suffix = index.toString().padStart(3, "0");
+        const hash = index.toString(16).padStart(64, "0");
+        const blobId = `artifact-blob:${hash}`;
+        const artifactId = `artifact:bulk-${suffix}`;
+        const versionId = `artifact-version:bulk-${suffix}`;
+        insertBlob.run(blobId, hash, index);
+        insertArtifact.run(artifactId, `bulk:${suffix}`, versionId, index, index);
+        insertVersion.run(versionId, artifactId, blobId, hash, index);
+      }
+    })();
+
+    const expected = [4, 3, 2, 1, 0].map((index) =>
+      `artifact-series:bulk-${index.toString().padStart(3, "0")}`
+    );
+    expect(listArtifactSeries(db, { offset: 500, limit: 5 }).map((series) => series.id)).toEqual(expected);
+    expect(listArtifactSeries(db, { role: "bulk-filter", offset: 500, limit: 5 })
+      .map((series) => series.id)).toEqual(expected);
+  });
+
+  it("keeps new ingest, reference, snapshot, and version writes out of legacy authority tables", () => {
+    const ingested = ingestArtifact(db, {
+      content: "canonical ingest\n",
+      custody_mode: "copy",
+      media_type: "text/plain",
+    }, 900, tempDir);
+    const reference = resolveArtifactRef(db, "https://example.invalid/report.md", 901);
+    expect(reference.artifact?.id).toMatch(/^artifact:ref:/);
+
+    const promotableBytes = Buffer.from("promote me\n", "utf8");
+    const promotableHash = crypto.createHash("sha256").update(promotableBytes).digest("hex");
+    ingestArtifact(db, {
+      sha256: promotableHash,
+      uri: "https://example.invalid/promote.txt",
+      custody_mode: "external",
+      availability: "remote_only",
+    }, 902, tempDir);
+    const promoted = snapshotArtifactBytes(db, {
+      ref: `artifact-blob:${promotableHash}`,
+      content_buffer: promotableBytes,
+      custody_mode: "managed",
+    }, 903, tempDir);
+    expect(promoted).toMatchObject({
+      id: `artifact:sha256:${promotableHash}`,
+      custody_mode: "managed",
+      availability: "present",
+    });
+
+    const first = recordManaged("writer-authority", "v1\n", 904);
+    const repeated = recordManaged("writer-authority", "v1\n", 905);
+    const second = recordManaged("writer-authority", "v2\n", 906);
+    expect(repeated).toMatchObject({ created: false, version: { id: first.version.id, version_no: 1 } });
+    expect(second).toMatchObject({ created: true, version: { version_no: 2 } });
+    expect(second.series.version_count).toBe(2);
+
+    for (const table of ["artifacts", "artifact_series", "artifact_versions"]) {
+      expect((db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n).toBe(0);
+    }
+    expect(getArtifact(db, ingested.id)).toMatchObject({ id: ingested.id, content_hash: ingested.content_hash });
+    expect(resolveArtifactRefReadonlyFull(db, second.version.id)).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      artifact_version: { version_no: 2 },
+    });
+  });
+
   it("projects canonical-only blobs through legacy get, alias, list, link, and content contracts", () => {
     const artifact = ingestArtifact(db, {
       content: "canonical bytes\n",
@@ -91,7 +177,7 @@ describe("canonical artifact compatibility consumers", () => {
     ).get(link?.id) as Record<string, unknown>;
 
     expect(association).toMatchObject({
-      artifact_id: artifact.id,
+      artifact_id: null,
       blob_id: `artifact-blob:${artifact.content_hash}`,
       target_type: "artifact_blob",
       target_id: `artifact-blob:${artifact.content_hash}`,
@@ -306,6 +392,13 @@ describe("canonical artifact compatibility consumers", () => {
       content: "unrelated legacy pointer\n",
       custody_mode: "copy",
     }, 3401, tempDir);
+    for (const artifact of [canonical, unrelated]) {
+      db.prepare(
+        `INSERT INTO artifacts (
+          id, algorithm, content_hash, uri, pinned, custody_mode, retention_json, created_at
+        ) VALUES (?, 'sha256', ?, ?, 0, 'copy', '{"policy":"legacy"}', ?)`,
+      ).run(artifact.id, artifact.content_hash, artifact.uri, artifact.created_at);
+    }
     const alias = registerArtifactAlias(db, {
       artifactId: canonical.id,
       ref: "file:///canonical-association.txt",
@@ -415,6 +508,24 @@ describe("canonical artifact compatibility consumers", () => {
 
   it("uses legacy-only draft and session attachment SQL against pre-v104 association tables", () => {
     const recorded = recordManaged("pre-v104", "# Pre v104\n", 3600);
+    db.prepare(
+      `INSERT INTO artifacts (id, algorithm, content_hash, uri, custody_mode, created_at)
+       VALUES (?, 'sha256', ?, ?, 'managed', ?)`,
+    ).run(recorded.artifact.id, recorded.artifact.content_hash, recorded.artifact.uri, recorded.artifact.created_at);
+    db.prepare(
+      `INSERT INTO artifact_series (
+        id, series_key, source_kind, title, logical_name, latest_version_id,
+        version_count, metadata_json, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, 1, '{}', ?, ?)`,
+    ).run(recorded.series.id, recorded.series.series_key, recorded.series.source_kind,
+      recorded.series.title, recorded.series.logical_name, recorded.version.id, 3600, 3600);
+    db.prepare(
+      `INSERT INTO artifact_versions (
+        id, series_id, artifact_id, version_no, source_kind, content_hash,
+        custody_mode, metadata_json, created_at
+      ) VALUES (?, ?, ?, 1, ?, ?, ?, '{}', ?)`,
+    ).run(recorded.version.id, recorded.series.id, recorded.artifact.id,
+      recorded.version.source_kind, recorded.version.content_hash, recorded.version.custody_mode, 3600);
     db.pragma("foreign_keys = OFF");
     db.exec(`
       DROP TABLE session_instruction_artifacts;

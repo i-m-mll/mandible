@@ -407,9 +407,10 @@ describe("Instruction artifact migration", () => {
     const migrated = ensureInstructionArtifactForPreset(db, "legacy-preset");
 
     expect(migrated?.series_id).toMatch(/^artifact-series:/);
-    const series = db.prepare("SELECT series_key FROM artifact_series WHERE id = ?")
-      .get(migrated?.series_id) as { series_key: string };
-    expect(series.series_key).toBe(presetInstructionSeriesKey("legacy-preset"));
+    const logicalId = migrated!.series_id.replace(/^artifact-series:/, "artifact:");
+    const series = db.prepare("SELECT identity_key FROM artifact WHERE id = ?")
+      .get(logicalId) as { identity_key: string };
+    expect(series.identity_key).toBe(presetInstructionSeriesKey("legacy-preset"));
     const version = getArtifactVersion(db, migrated!.version_id);
     expect(version?.version_no).toBe(1);
     const bytes = readArtifactBytesFull(db, version!.artifact_id);
