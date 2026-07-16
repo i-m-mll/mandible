@@ -4896,7 +4896,7 @@ function ensureArtifactLinkTargetColumns(db: Db): void {
   );
 }
 
-function artifactBlobIdFromLegacy(id: string): string {
+function canonicalBlobIdForCompatibilityRef(id: string): string {
   const trimmed = id.trim();
   const shaNamespaced = /^artifact:sha256:(.+)$/i.exec(trimmed);
   if (shaNamespaced) return `artifact-blob:${shaNamespaced[1]}`;
@@ -4908,7 +4908,7 @@ function artifactBlobIdFromLegacy(id: string): string {
   return `artifact-blob:${trimmed}`;
 }
 
-function artifactIdFromLegacySeries(id: string): string {
+function canonicalArtifactIdForCompatibilitySeries(id: string): string {
   const trimmed = id.trim();
   const series = /^artifact-series:(.+)$/i.exec(trimmed);
   if (series) return `artifact:${series[1]}`;
@@ -4916,7 +4916,7 @@ function artifactIdFromLegacySeries(id: string): string {
   return `artifact:${trimmed}`;
 }
 
-function artifactVersionIdFromLegacy(id: string): string {
+function canonicalVersionIdForCompatibilityVersion(id: string): string {
   const trimmed = id.trim();
   if (/^artifact-version:/i.test(trimmed)) return trimmed;
   return `artifact-version:${trimmed}`;
@@ -5010,7 +5010,7 @@ function backfillArtifactIdentityTables(db: Db): void {
       const legacyId = String(row.id);
       const uri = typeof row.uri === "string" ? row.uri : null;
       insert.run({
-        id: artifactBlobIdFromLegacy(legacyId),
+        id: canonicalBlobIdForCompatibilityRef(legacyId),
         algorithm: typeof row.algorithm === "string" && row.algorithm ? row.algorithm : "sha256",
         content_hash: String(row.content_hash ?? legacyId),
         storage_uri: uri?.startsWith("repo://") ? null : uri,
@@ -5045,7 +5045,7 @@ function backfillArtifactIdentityTables(db: Db): void {
     for (const row of rows) {
       const repoId = row.repo_id;
       insert.run({
-        id: artifactIdFromLegacySeries(String(row.id)),
+        id: canonicalArtifactIdForCompatibilitySeries(String(row.id)),
         identity_key: String(row.series_key ?? row.id),
         source_kind: normalizeArtifactSourceKind(row.source_kind),
         title: row.title ?? null,
@@ -5054,7 +5054,7 @@ function backfillArtifactIdentityTables(db: Db): void {
         logical_name: row.logical_name ?? null,
         source_path: row.logical_name ?? null,
         latest_version_id: typeof row.latest_version_id === "string"
-          ? artifactVersionIdFromLegacy(row.latest_version_id)
+          ? canonicalVersionIdForCompatibilityVersion(row.latest_version_id)
           : null,
         version_count: Number(row.version_count ?? 0),
         metadata_json: typeof row.metadata_json === "string" ? row.metadata_json : "{}",
@@ -5102,10 +5102,10 @@ function backfillArtifactIdentityTables(db: Db): void {
         series_logical_name: row.series_logical_name ?? null,
       };
       insert.run({
-        id: artifactVersionIdFromLegacy(String(row.id)),
-        artifact_id: artifactIdFromLegacySeries(String(row.series_id)),
+        id: canonicalVersionIdForCompatibilityVersion(String(row.id)),
+        artifact_id: canonicalArtifactIdForCompatibilitySeries(String(row.series_id)),
         version_no: Number(row.version_no ?? 0),
-        blob_id: artifactBlobIdFromLegacy(String(row.artifact_id)),
+        blob_id: canonicalBlobIdForCompatibilityRef(String(row.artifact_id)),
         source_kind: normalizeArtifactVersionSourceKind(row.source_kind),
         content_hash: String(row.content_hash ?? ""),
         source_project_id: resolveArtifactSourceProjectId(db, sourceRepoId),
@@ -5133,7 +5133,7 @@ function backfillArtifactLinkTargets(db: Db): void {
     ? db.prepare("SELECT id FROM artifacts").all() as Array<{ id: string }>
     : [];
   const blobIdByLegacyArtifact = new Map(
-    oldArtifactRows.map((row) => [row.id, artifactBlobIdFromLegacy(row.id)]),
+    oldArtifactRows.map((row) => [row.id, canonicalBlobIdForCompatibilityRef(row.id)]),
   );
   const versions = tableExists(db, "artifact_versions")
     ? db.prepare("SELECT id, series_id, artifact_id FROM artifact_versions").all() as Array<{
@@ -5178,7 +5178,7 @@ function backfillArtifactLinkTargets(db: Db): void {
 
   for (const link of links) {
     const legacyBlobId = blobIdByLegacyArtifact.get(link.artifact_id)
-      ?? artifactBlobIdFromLegacy(link.artifact_id);
+      ?? canonicalBlobIdForCompatibilityRef(link.artifact_id);
     let targetType: string | null = null;
     let targetId: string | null = null;
     let fallbackVersionId: string | null = null;
@@ -5188,7 +5188,7 @@ function backfillArtifactLinkTargets(db: Db): void {
     const blobVersions = byBlob.get(link.artifact_id) ?? [];
 
     if (link.link_kind === "living" && link.series_id) {
-      const artifactId = artifactIdFromLegacySeries(link.series_id);
+      const artifactId = canonicalArtifactIdForCompatibilitySeries(link.series_id);
       if (newArtifactIds.has(artifactId)) {
         targetType = "artifact";
         targetId = artifactId;
@@ -5198,12 +5198,12 @@ function backfillArtifactLinkTargets(db: Db): void {
         : blobVersions.length === 1
           ? blobVersions[0]
           : null;
-      fallbackVersionId = fallback ? artifactVersionIdFromLegacy(fallback.id) : null;
+      fallbackVersionId = fallback ? canonicalVersionIdForCompatibilityVersion(fallback.id) : null;
     } else {
       const candidates = seriesVersions.length > 0 ? seriesVersions : blobVersions;
       if (candidates.length === 1) {
         targetType = "artifact_version";
-        targetId = artifactVersionIdFromLegacy(candidates[0].id);
+        targetId = canonicalVersionIdForCompatibilityVersion(candidates[0].id);
       }
     }
 
