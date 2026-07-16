@@ -17,8 +17,8 @@
 //   - Directives are surfaced as structured data (block identity + classified
 //     resource refs) that downstream fixed components (C14b renderer) render.
 //     The pipeline itself emits no live HTML for directive nodes.
-//   - Prose is rendered to HTML through the existing `marked` instance and then
-//     passed through the shared DOMPurify sanitizer (`ui/src/sanitize.ts`).
+//   - Prose is rendered to HTML through the shared Markdown utility, which
+//     applies the shared DOMPurify sanitizer (`ui/src/sanitize.ts`).
 //     DOMPurify strips `<script>`, inline event handlers, and
 //     `javascript:`-scheme hrefs, so no script executes from document content.
 //   - Script-enabled iframes are reserved for the standalone artifact-preview
@@ -32,8 +32,7 @@
 import { unified } from 'unified';
 import remarkParse from 'remark-parse';
 import remarkDirective from 'remark-directive';
-import { marked } from 'marked';
-import { sanitizeHtml } from '../sanitize';
+import { renderMarkdown } from '../lib/markdown';
 import {
   SPACES_DOC_VERSION,
   FORMAT_KEY,
@@ -199,8 +198,8 @@ function stripDirectiveSyntax(markdown: string): string {
 
 /**
  * Render a markdown prose string to SANITIZED HTML. Directive syntax is stripped
- * first (directives are data, not inline HTML), then the existing `marked`
- * instance renders markdown->HTML, then DOMPurify (`sanitizeHtml`) strips any
+ * first (directives are data, not inline HTML), then the shared Markdown
+ * renderer converts markdown to HTML and DOMPurify strips any
  * scriptable surface (`<script>`, event handlers, `javascript:` hrefs,
  * `<iframe>`). This is the only HTML-producing path in the pipeline.
  */
@@ -208,8 +207,7 @@ export function renderProseToSafeHtml(markdown: string): string {
   if (!markdown || !markdown.trim()) return '';
   const prose = stripDirectiveSyntax(markdown);
   if (!prose.trim()) return '';
-  const rawHtml = marked.parse(prose, { async: false }) as string;
-  return sanitizeHtml(rawHtml);
+  return renderMarkdown(prose);
 }
 
 // --- directive attribute access (verbatim strings) ---------------------------

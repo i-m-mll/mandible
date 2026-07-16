@@ -60,6 +60,7 @@ import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
+import { artifactLinkBadgeLabel } from '../lib/format';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -1918,12 +1919,6 @@ function seriesRecordRef(series: ArtifactSeriesRecord | ArtifactSeriesSummary): 
 
 function artifactLinkKind(link: ArtifactLinkRecord): 'pinned' | 'living' {
   return link.link_kind === 'living' ? 'living' : 'pinned';
-}
-
-function artifactLinkBadgeLabel(link: ArtifactLinkRecord): string {
-  const version = typeof link.resolved_version_no === 'number' ? `v${link.resolved_version_no}` : null;
-  if (link.link_kind === 'living') return version ? `latest → ${version}` : 'latest';
-  return version ? `${version} pinned` : 'pinned';
 }
 
 function artifactLinkBadgeHref(link: ArtifactLinkRecord): string {

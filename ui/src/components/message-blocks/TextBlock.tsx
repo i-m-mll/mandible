@@ -5,11 +5,7 @@
 // Bug: bce7370 — Unified markdown text renderer
 
 import { useMemo } from 'preact/hooks';
-import { marked } from 'marked';
-import { sanitizeHtml } from '../../sanitize';
-
-// Configure marked to be synchronous
-marked.setOptions({ async: false });
+import { renderMarkdown } from '../../lib/markdown';
 
 export type TextBlockProps = {
   content: string;
@@ -17,15 +13,7 @@ export type TextBlockProps = {
 
 export function TextBlock({ content }: TextBlockProps): JSX.Element {
   const html = useMemo(() => {
-    try {
-      const result = marked.parse(content);
-      if (typeof result === 'string') {
-        return sanitizeHtml(result);
-      }
-      return content;
-    } catch {
-      return content;
-    }
+    return renderMarkdown(content);
   }, [content]);
 
   return (

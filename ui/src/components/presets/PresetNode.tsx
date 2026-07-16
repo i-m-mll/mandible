@@ -1,7 +1,6 @@
 // Bug: e20c88e — Preset tree node component
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
-import { sanitizeHtml } from '../../sanitize';
+import { renderMarkdown } from '../../lib/markdown';
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter';
 import { attachClosestEdge, extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge';
 import type { Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/types';
@@ -29,13 +28,6 @@ export type PresetNodeProps = {
   isExpanded: boolean;
   onToggleExpand: (nodeId: string) => void;
 };
-
-function renderMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  return typeof result === 'string' ? result : '';
-}
-
 
 export function PresetNodeView({
   node,
@@ -192,8 +184,7 @@ export function PresetNodeView({
 
   const HeadingTag = `h${Math.min(node.level + 1, 6)}` as keyof JSX.IntrinsicElements;
 
-  const renderedBody = renderMarkdown(node.body);
-  const sanitizedBody = sanitizeHtml(renderedBody);
+  const sanitizedBody = renderMarkdown(node.body);
 
   const hasChildren = !isLeaf;
 

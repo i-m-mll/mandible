@@ -12,6 +12,7 @@ import {
 } from '../api';
 import { DiffView } from '../components/DiffView';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { formatRelativeTime } from '../lib/format';
 
 export type WorkRepo = {
   id?: string;
@@ -146,37 +147,6 @@ function getBranchTimestamp(branch: WorkBranch): number {
   }
   const parsed = Date.parse(value);
   return Number.isNaN(parsed) ? 0 : parsed;
-}
-
-function formatRelativeTime(value?: string): string {
-  if (!value) {
-    return '\u2014';
-  }
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    return value;
-  }
-  const delta = Date.now() - parsed;
-  if (delta < 0) {
-    return 'just now';
-  }
-  const seconds = Math.floor(delta / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 1) {
-    return `${days}d ago`;
-  }
-  if (days === 1) {
-    return 'yesterday';
-  }
-  if (hours > 0) {
-    return `${hours}h ago`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ago`;
-  }
-  return `${seconds}s ago`;
 }
 
 type BranchSortKey = 'recency' | 'name' | 'ahead';
@@ -456,7 +426,7 @@ function BranchRow({ branch, repoId, defaultBranch: _defaultBranch, expanded, on
         <td>
           <div className="cell-stack">
             <span>{lastMessage}</span>
-            <span className="branch-timestamp">{formatRelativeTime(lastTime)}</span>
+            <span className="branch-timestamp">{formatRelativeTime(lastTime, { empty: '\u2014' })}</span>
           </div>
         </td>
         <td className="work-col-actions">
@@ -1093,7 +1063,9 @@ export function WorkOverviewView({
                     </span>
                     <span className="work-repo-item__meta">
                       <span>{totalBranches} {totalBranches === 1 ? 'branch' : 'branches'}</span>
-                      <span>{activity ? formatRelativeTime(new Date(activity).toISOString()) : '\u2014'}</span>
+                      <span>{activity
+                        ? formatRelativeTime(new Date(activity).toISOString(), { empty: '\u2014' })
+                        : '\u2014'}</span>
                     </span>
                   </button>
                 );
@@ -1510,7 +1482,7 @@ export function WorkOverviewView({
                                           <span className="work-commit-row__main">
                                             <span className="work-commit-row__message">{commit.message || commit.short_hash}</span>
                                             <span className="work-commit-row__meta">
-                                              {commit.short_hash} · {commit.author} · {formatRelativeTime(commit.date)}
+                                              {commit.short_hash} · {commit.author} · {formatRelativeTime(commit.date, { empty: '\u2014' })}
                                             </span>
                                           </span>
                                           <span className="work-commit-row__class">{classificationLabel(commit)}</span>

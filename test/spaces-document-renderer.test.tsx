@@ -26,7 +26,7 @@ import {
 } from '../ui/src/views/spaces/DocumentRenderer';
 import {
   documentStorageKey,
-  readDocumentViewState,
+  normalizeDocumentViewState,
 } from '../ui/src/views/spaces/documentViewState';
 import type { SpaceBlock } from '../ui/src/api';
 import { __resetResourceRefRecognizers } from '../ui/src/resource-refs';
@@ -304,15 +304,20 @@ describe('DocumentRenderer (mounted, read-only)', () => {
     await waitFor(() => expect(screen.queryByText('Child prose.')).toBeNull());
 
     // The collapse is persisted to per-Space browser-local storage.
-    const persisted = readDocumentViewState('prj1', 'sp1');
+    const persisted = normalizeDocumentViewState(JSON.parse(
+      window.localStorage.getItem(documentStorageKey('prj1', 'sp1'))!,
+    ));
     expect(persisted.collapsed.h1).toBe(true);
+    expect(documentStorageKey('prj1', 'sp1')).toBe('mandible.spaces.document:prj1:sp1');
     expect(window.localStorage.getItem(documentStorageKey('prj1', 'sp1'))).toBeTruthy();
 
     // An SSE reconcile refetches blocks but MUST NOT reset the collapse state.
     MockEventSource.instances[0].emit({ type: 'space:blocks:changed', space_id: 'sp1' });
     await waitFor(() => expect(screen.getByTestId('spaces-doc-block-toggle')).toBeTruthy());
     expect(screen.queryByText('Child prose.')).toBeNull();
-    expect(readDocumentViewState('prj1', 'sp1').collapsed.h1).toBe(true);
+    expect(normalizeDocumentViewState(JSON.parse(
+      window.localStorage.getItem(documentStorageKey('prj1', 'sp1'))!,
+    )).collapsed.h1).toBe(true);
   });
 
   it('shows a select-a-space prompt when no Space is open', () => {

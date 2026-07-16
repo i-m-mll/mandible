@@ -38,7 +38,6 @@ import {
 } from '../ui/src/views/spaces/blockEditorModel';
 import {
   blockEditorStorageKey,
-  readBlockEditorViewState,
   reconcileBlockEditorViewState,
   normalizeBlockEditorViewState,
 } from '../ui/src/views/spaces/blockEditorViewState';
@@ -429,6 +428,10 @@ describe('deriveDocumentCustody', () => {
 // --- view-state persistence + reconciliation (standing AC #2) ----------------
 
 describe('blockEditorViewState', () => {
+  it('keeps the established per-space storage key', () => {
+    expect(blockEditorStorageKey('prj1', 'sp1')).toBe('mandible.spaces.blockEditor:prj1:sp1');
+  });
+
   it('normalizes malformed stored state to a safe empty state', () => {
     expect(normalizeBlockEditorViewState(null)).toEqual({ editingId: null, drafts: {} });
     expect(normalizeBlockEditorViewState({ editingId: 5, drafts: { a: 1, b: 'x' } })).toEqual({
@@ -1202,12 +1205,16 @@ describe('DocumentBlockEditor (editable)', () => {
 
     await waitFor(() => expect(backend.calls.some((c) => c.method === 'PATCH')).toBe(true));
     await waitFor(() => expect(releaseReload).not.toBeNull());
-    expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBe(nextValue);
+    expect(normalizeBlockEditorViewState(JSON.parse(
+      window.localStorage.getItem(blockEditorStorageKey('prj1', 'sp1'))!,
+    )).drafts.b1).toBe(nextValue);
     expect(sourceText()).toBe(nextValue);
     expect(sourceView().state.selection.main.from).toBe(nextValue.length);
 
     releaseReload?.();
-    await waitFor(() => expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBeUndefined());
+    await waitFor(() => expect(normalizeBlockEditorViewState(JSON.parse(
+      window.localStorage.getItem(blockEditorStorageKey('prj1', 'sp1'))!,
+    )).drafts.b1).toBeUndefined());
     expect(sourceText()).toBe(nextValue);
   });
 
@@ -1233,7 +1240,9 @@ describe('DocumentBlockEditor (editable)', () => {
     setSourceText(0, nextValue, nextValue.length);
     blurSource();
 
-    await waitFor(() => expect(readBlockEditorViewState('prj1', 'sp1').drafts.b1).toBeUndefined());
+    await waitFor(() => expect(normalizeBlockEditorViewState(JSON.parse(
+      window.localStorage.getItem(blockEditorStorageKey('prj1', 'sp1'))!,
+    )).drafts.b1).toBeUndefined());
     expect(sourceText()).toBe(nextValue);
     expect(sourceView().state.selection.main.from).toBe(nextValue.length);
   });
@@ -1396,7 +1405,9 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     setSourceText(0, 'work in progress');
 
     // Persisted browser-local for this space.
-    const stored = readBlockEditorViewState('prj1', 'sp1');
+    const stored = normalizeBlockEditorViewState(JSON.parse(
+      window.localStorage.getItem(blockEditorStorageKey('prj1', 'sp1'))!,
+    ));
     expect(stored.drafts.b1).toBe('work in progress');
     expect(stored.editingId).toBe('b1');
 
@@ -1408,6 +1419,6 @@ describe('DocumentBlockEditor draft persistence (UI-state-persistence)', () => {
     await waitFor(() => {
       expect(sourceText()).toBe('work in progress');
     });
-    expect(blockEditorStorageKey('prj1', 'sp1')).toContain('sp1');
+    expect(blockEditorStorageKey('prj1', 'sp1')).toBe('mandible.spaces.blockEditor:prj1:sp1');
   });
 });

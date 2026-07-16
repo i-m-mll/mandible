@@ -3,7 +3,7 @@
 // Per the project Dataful-UX rule, this is the BROWSER-LOCAL side of the state
 // split: active selection, item filter, and collapsed sub-trees. It is NOT
 // ledger/canonical state and is never promoted to a contract request without an
-// explicit user action. It is persisted to localStorage + reflected in the URL
+// explicit user action. It is persisted in browser storage + reflected in the URL
 // hash, mirroring the Timeline pattern (ui/src/views/timeline.tsx), so it
 // survives tab switches, refreshes, and SSE reconciliation.
 
@@ -61,35 +61,6 @@ export function normalizeCollectionViewState(raw: unknown): CollectionViewState 
   }
 
   return { itemFilter, selection, collapsed };
-}
-
-/** Read persisted collection view state for a Space; tolerant of malformed JSON. */
-export function readCollectionViewState(projectId: string, spaceId: string): CollectionViewState {
-  if (typeof window === 'undefined' || !spaceId) return { ...EMPTY_COLLECTION_VIEW_STATE };
-  try {
-    const raw = window.localStorage.getItem(collectionStorageKey(projectId, spaceId));
-    if (!raw) return { ...EMPTY_COLLECTION_VIEW_STATE };
-    return normalizeCollectionViewState(JSON.parse(raw));
-  } catch {
-    return { ...EMPTY_COLLECTION_VIEW_STATE };
-  }
-}
-
-/** Persist collection view state for a Space. No-op outside the browser. */
-export function writeCollectionViewState(
-  projectId: string,
-  spaceId: string,
-  state: CollectionViewState,
-): void {
-  if (typeof window === 'undefined' || !spaceId) return;
-  try {
-    window.localStorage.setItem(
-      collectionStorageKey(projectId, spaceId),
-      JSON.stringify(state),
-    );
-  } catch {
-    /* storage may be unavailable (private mode/quota); view-state is best-effort. */
-  }
 }
 
 /**

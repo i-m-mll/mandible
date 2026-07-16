@@ -47,6 +47,8 @@ import {
   type ShelfItem,
 } from '../chat';
 import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
+import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
+import { createSSEClient } from '../sse-client';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -202,35 +204,6 @@ const VIRTUAL_BUFFER = 10;
 const ESTIMATED_BLOCK_HEIGHT = 120;
 
 // ── Helpers ──
-
-function formatRelativeTime(dateStr: string | null): string {
-  if (!dateStr) return '\u2014';
-  const ts = Date.parse(dateStr);
-  if (Number.isNaN(ts)) return '\u2014';
-  const diffMs = Date.now() - ts;
-  const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 5) return 'just now';
-  if (seconds < 60) return `${seconds}s ago`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return new Date(ts).toLocaleDateString();
-}
-
-function formatAbsoluteTime(dateStr: string | null): string {
-  if (!dateStr) return '';
-  const ts = Date.parse(dateStr);
-  if (Number.isNaN(ts)) return '';
-  return new Date(ts).toLocaleString();
-}
-
-function truncate(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen) + '\u2026';
-}
 
 function stripMarkdownText(src: string | null | undefined): string {
   if (!src) return '';
@@ -720,8 +693,16 @@ function BlockRenderer({
           </div>
           <div className="block-header__right">
             <CopyButton content={block.content} />
-            <span className="block-timestamp" title={formatAbsoluteTime(block.timestamp)}>
-              {formatRelativeTime(block.timestamp)}
+            <span
+              className="block-timestamp"
+              title={formatAbsoluteTime(block.timestamp, { invalid: '' })}
+            >
+              {formatRelativeTime(block.timestamp, {
+                style: 'recent',
+                empty: '\u2014',
+                invalid: '\u2014',
+                absoluteAfterDays: 30,
+              })}
             </span>
           </div>
         </div>
@@ -740,8 +721,16 @@ function BlockRenderer({
           </div>
           <div className="block-header__right">
             <CopyButton content={block.content} />
-            <span className="block-timestamp" title={formatAbsoluteTime(block.timestamp)}>
-              {formatRelativeTime(block.timestamp)}
+            <span
+              className="block-timestamp"
+              title={formatAbsoluteTime(block.timestamp, { invalid: '' })}
+            >
+              {formatRelativeTime(block.timestamp, {
+                style: 'recent',
+                empty: '\u2014',
+                invalid: '\u2014',
+                absoluteAfterDays: 30,
+              })}
             </span>
           </div>
         </div>
@@ -1280,7 +1269,7 @@ function ConversationInfoDialog({
           </div>
           <div>
             <span className="conv-info-grid__label">Started</span>
-            <span>{formatAbsoluteTime(conversation.started_at) || 'unknown'}</span>
+            <span>{formatAbsoluteTime(conversation.started_at, { invalid: '' }) || 'unknown'}</span>
           </div>
           <div>
             <span className="conv-info-grid__label">Session</span>
@@ -1413,7 +1402,7 @@ function ConversationDetail({
   useEffect(() => {
     if (typeof EventSource === 'undefined') return undefined;
     let refreshTimer: number | null = null;
-    const source = new EventSource('/api/events');
+    const client = createSSEClient();
     const scheduleRefresh = () => {
       if (refreshTimer !== null) {
         window.clearTimeout(refreshTimer);
@@ -1422,25 +1411,20 @@ function ConversationDetail({
         setLoadNonce((prev) => prev + 1);
       }, 150);
     };
-    const onMessage = (event: MessageEvent) => {
-      try {
-        const payload = JSON.parse(event.data) as { type?: string };
-        if (payload.type === 'conversation:new' || payload.type === 'conversation:updated') {
-          scheduleRefresh();
-        } else if (payload.type === 'workflow:updated') {
-          setWorkflowNonce((prev) => prev + 1);
-        }
-      } catch {
-        // Ignore malformed SSE payloads.
-      }
-    };
-    source.addEventListener('message', onMessage);
+    const offConversationNew = client.on('conversation:new', scheduleRefresh);
+    const offConversationUpdated = client.on('conversation:updated', scheduleRefresh);
+    const offWorkflowUpdated = client.on('workflow:updated', () => {
+      setWorkflowNonce((prev) => prev + 1);
+    });
+    client.connect();
     return () => {
       if (refreshTimer !== null) {
         window.clearTimeout(refreshTimer);
       }
-      source.removeEventListener('message', onMessage);
-      source.close();
+      offConversationNew();
+      offConversationUpdated();
+      offWorkflowUpdated();
+      client.close();
     };
   }, [conversationId]);
 

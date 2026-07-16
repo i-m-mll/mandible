@@ -53,13 +53,13 @@ import {
 } from '../../../../src/spaces/serialize';
 import type { SpaceBlock } from '../../api';
 import { createSSEClient } from '../../sse-client';
+import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import {
-  readDocumentViewState,
-  writeDocumentViewState,
+  documentStorageKey,
+  normalizeDocumentViewState,
   reconcileDocumentViewState,
   EMPTY_DOCUMENT_VIEW_STATE,
-  type DocumentViewState,
 } from './documentViewState';
 import './DocumentRenderer.css';
 
@@ -568,21 +568,13 @@ export function DocumentRenderer({
   fetchImpl,
 }: DocumentRendererProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
-  const [viewState, setViewState] = useState<DocumentViewState>(() =>
-    readDocumentViewState(projectId, spaceId ?? ''),
+  const [viewState, setViewState] = usePersistedViewState(
+    spaceId ? documentStorageKey(projectId, spaceId) : '',
+    normalizeDocumentViewState,
+    EMPTY_DOCUMENT_VIEW_STATE,
   );
   const fetchRef = useRef(fetchImpl);
   fetchRef.current = fetchImpl;
-
-  // Re-hydrate per-space collapse state whenever the open Space changes.
-  useEffect(() => {
-    setViewState(readDocumentViewState(projectId, spaceId ?? ''));
-  }, [projectId, spaceId]);
-
-  // Persist collapse state (browser-local only; never promoted to the ledger).
-  useEffect(() => {
-    if (spaceId) writeDocumentViewState(projectId, spaceId, viewState);
-  }, [projectId, spaceId, viewState]);
 
   const loadBlocks = useCallback(
     async (isReconcile: boolean) => {

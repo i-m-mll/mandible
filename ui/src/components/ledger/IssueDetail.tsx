@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
-import { sanitizeHtml } from '../../sanitize';
+import { artifactLinkBadgeLabel, formatAbsoluteTime, formatRelativeTime } from '../../lib/format';
+import { renderInlineMarkdown } from '../../lib/markdown';
 import {
   artifactDetailHref,
   compactArtifactBlobRef,
@@ -24,6 +24,8 @@ import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneShell } from '../shared/DetailPaneShell';
+
+const LEDGER_TIME_OPTIONS = { zeroIsEmpty: true } as const;
 
 type EntityType = 'issue' | 'session' | 'auth_request' | 'conversation';
 type IssueMetadataRow = [label: string, value: string, copyable?: boolean, copyValue?: string];
@@ -214,7 +216,7 @@ export function LedgerIssueDetail({
             />
           </DetailHeaderIdentity>
           <div className="ledger-issue-detail__title-row">
-            <h2 dangerouslySetInnerHTML={{ __html: inlineMarkdown(detail.title) }} />
+            <h2 dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(detail.title) }} />
             {hasIssueActions && (
               <IssueActionsMenu
                 menuRef={actionMenuRef}
@@ -237,7 +239,7 @@ export function LedgerIssueDetail({
           </div>
           <div className="ledger-issue-detail__meta">
             <span className="ledger-issue-detail__byline-author">{detail.author.display}</span>
-            <time>{formatRelativeTime(detail.created_at)}</time>
+            <time>{formatRelativeTime(detail.created_at, LEDGER_TIME_OPTIONS)}</time>
             {displayLabels.length > 0 && (
               <>
                 <span className="ledger-issue-detail__meta-separator" aria-hidden="true" />
@@ -407,12 +409,6 @@ function logicalArtifactRefFromSeriesId(ref: string): string {
   const trimmed = ref.trim();
   if (/^artifact-series:/i.test(trimmed)) return trimmed;
   return `artifact-series:${trimmed.replace(/^artifact:/i, '')}`;
-}
-
-function artifactLinkBadgeLabel(link: LedgerIssueDetailArtifactLink): string {
-  const version = typeof link.resolved_version_no === 'number' ? `v${link.resolved_version_no}` : null;
-  if (link.link_kind === 'living') return version ? `latest → ${version}` : 'latest';
-  return version ? `${version} pinned` : 'pinned';
 }
 
 function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
@@ -730,7 +726,7 @@ function TimelineEntryCard({
           <strong>{authEvidenceLinkLabel(entry.auth)}</strong>
           <span>{entry.auth.title || entry.auth.id}</span>
         </span>
-        <time>{formatRelativeTime(entry.created_at)}</time>
+        <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
       </button>
     );
   }
@@ -741,7 +737,7 @@ function TimelineEntryCard({
         <span className="ledger-timeline-event__text">
           <strong>{stateEntryLabel(entry)}</strong>
         </span>
-        <time>{formatRelativeTime(entry.created_at)}</time>
+        <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label="Timeline metadata">
           <MetadataRows rows={stateMetadataRows(entry)} />
         </MetadataDisclosure>
@@ -756,7 +752,7 @@ function TimelineEntryCard({
           <strong>{checkpointEntryLabel(entry.checkpoint_kind)}</strong>
           <span>{entry.author.display}</span>
         </span>
-        <time>{formatRelativeTime(entry.created_at)}</time>
+        <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label="Checkpoint payload">
           <MetadataRows rows={checkpointMetadataRows(entry)} />
         </MetadataDisclosure>
@@ -770,7 +766,7 @@ function TimelineEntryCard({
         <span className="ledger-timeline-event__text">
           <strong>{timelineEventLabel(entry)}</strong>
         </span>
-        <time>{formatRelativeTime(entry.created_at)}</time>
+        <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label="Timeline metadata">
           <MetadataRows rows={eventMetadataRows(entry)} />
         </MetadataDisclosure>
@@ -786,7 +782,7 @@ function TimelineEntryCard({
     >
       <div className="ledger-comment-card__header">
         <span>{entry.author.display}</span>
-        <time>{formatRelativeTime(entry.created_at)}</time>
+        <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label={isBody ? 'Opening metadata' : 'Comment metadata'}>
           <MetadataRows rows={isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry)} />
         </MetadataDisclosure>
@@ -1123,11 +1119,13 @@ function issueMetadataRows(detail: LedgerIssueDetailProjection): Array<[string, 
     ['Priority', detail.priority],
     ['Source', detail.source || 'unknown'],
     ['Project', detail.project.repo_name ?? detail.project.display_name],
-    ['Created', formatAbsoluteTime(detail.created_at)],
-    ['Updated', formatAbsoluteTime(detail.updated_at)],
+    ['Created', formatAbsoluteTime(detail.created_at, LEDGER_TIME_OPTIONS)],
+    ['Updated', formatAbsoluteTime(detail.updated_at, LEDGER_TIME_OPTIONS)],
   ];
   if (detail.id !== detail.display_id) rows.push(['Canonical ID', detail.id]);
-  if (detail.closed_at) rows.push(['Closed', formatAbsoluteTime(detail.closed_at)]);
+  if (detail.closed_at) {
+    rows.push(['Closed', formatAbsoluteTime(detail.closed_at, LEDGER_TIME_OPTIONS)]);
+  }
   const alternateAliases = detail.aliases
     .map((alias) => alias.alias || alias.external_id)
     .filter((alias) => alias && alias !== detail.id && alias !== detail.display_id);
@@ -1164,8 +1162,8 @@ function bodyMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'body
     ['Entry', '#0'],
     ['Author type', entry.author.type.replace(/_/g, ' ')],
     ['Source', entry.source || 'unknown'],
-    ['Created', formatAbsoluteTime(entry.created_at)],
-    ['Updated', formatAbsoluteTime(entry.updated_at)],
+    ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
+    ['Updated', formatAbsoluteTime(entry.updated_at, LEDGER_TIME_OPTIONS)],
   ].filter(([, value]) => Boolean(value));
 }
 
@@ -1175,9 +1173,11 @@ function commentMetadataRows(comment: Extract<LedgerIssueTimelineEntry, { kind: 
     ['Comment ID', comment.comment_id],
     ['Author type', comment.author.type.replace(/_/g, ' ')],
     ['Source', comment.source || 'unknown'],
-    ['Created', formatAbsoluteTime(comment.created_at)],
+    ['Created', formatAbsoluteTime(comment.created_at, LEDGER_TIME_OPTIONS)],
   ];
-  if (comment.updated_at) rows.push(['Updated', formatAbsoluteTime(comment.updated_at)]);
+  if (comment.updated_at) {
+    rows.push(['Updated', formatAbsoluteTime(comment.updated_at, LEDGER_TIME_OPTIONS)]);
+  }
   if (comment.author.id) rows.push(['Author ID', comment.author.id]);
   return rows;
 }
@@ -1187,7 +1187,7 @@ function stateMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'sta
     ['Event ID', entry.id],
     ['Event type', entry.event_type],
     ['Source', entry.source || 'unknown'],
-    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
   ].filter(([, value]) => Boolean(value));
 }
 
@@ -1197,7 +1197,7 @@ function eventMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind: 'eve
     ['Event type', entry.event_type],
     ['Author type', entry.author.type.replace(/_/g, ' ')],
     ['Source', entry.source || 'unknown'],
-    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
     ['Payload', formatJsonValue(entry.payload)],
   ];
   if (entry.author.id) rows.push(['Author ID', entry.author.id]);
@@ -1210,7 +1210,7 @@ function checkpointMetadataRows(entry: Extract<LedgerIssueTimelineEntry, { kind:
     ['Kind', entry.checkpoint_kind],
     ['Author type', entry.author.type.replace(/_/g, ' ')],
     ['Source', entry.source || 'unknown'],
-    ['Created', formatAbsoluteTime(entry.created_at)],
+    ['Created', formatAbsoluteTime(entry.created_at, LEDGER_TIME_OPTIONS)],
     ['Payload', formatJsonValue(entry.payload)],
   ];
   if (entry.author.id) rows.push(['Author ID', entry.author.id]);
@@ -1239,36 +1239,6 @@ function formatJsonValue(value: unknown): string {
   } catch {
     return String(value);
   }
-}
-
-function inlineMarkdown(source: string): string {
-  const parsed = marked.parse(source || '', { async: false });
-  const html = typeof parsed === 'string' ? parsed : '';
-  return sanitizeHtml(html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim());
-}
-
-function formatRelativeTime(value?: number | string | null): string {
-  if (!value) return '';
-  const parsed = typeof value === 'number' ? value : Date.parse(value);
-  if (Number.isNaN(parsed)) return String(value);
-  const delta = Date.now() - parsed;
-  if (delta < 0) return 'just now';
-  const seconds = Math.floor(delta / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-  const days = Math.floor(hours / 24);
-  if (days > 1) return `${days}d ago`;
-  if (days === 1) return 'yesterday';
-  if (hours > 0) return `${hours}h ago`;
-  if (minutes > 0) return `${minutes}m ago`;
-  return `${seconds}s ago`;
-}
-
-function formatAbsoluteTime(value?: number | string | null): string {
-  if (!value) return '';
-  const parsed = typeof value === 'number' ? value : Date.parse(value);
-  if (Number.isNaN(parsed)) return String(value);
-  return new Date(parsed).toLocaleString();
 }
 
 function displayLabel(label: string): string {

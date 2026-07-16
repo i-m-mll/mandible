@@ -5,8 +5,7 @@
 // Bug: bce7370 — User message bubble
 
 import { useMemo } from 'preact/hooks';
-import { marked } from 'marked';
-import { sanitizeHtml } from '../../sanitize';
+import { renderMarkdown } from '../../lib/markdown';
 
 export type UserBubbleProps = {
   text: string;
@@ -14,15 +13,7 @@ export type UserBubbleProps = {
 
 export function UserBubble({ text }: UserBubbleProps): JSX.Element {
   const html = useMemo(() => {
-    try {
-      const result = marked.parse(text);
-      if (typeof result === 'string') {
-        return sanitizeHtml(result);
-      }
-      return text;
-    } catch {
-      return text;
-    }
+    return renderMarkdown(text);
   }, [text]);
 
   return (

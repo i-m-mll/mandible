@@ -29,6 +29,7 @@ import { AddToSpace, type AddToSpaceTarget } from '../components/spaces/AddToSpa
 import { appColors } from '../theme';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { useRegisterAppBottomPanel } from '../app-shell';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -252,28 +253,16 @@ function compactId(id: string): string {
   return parts[parts.length - 1]?.slice(0, 12) || id.slice(0, 12);
 }
 
-function readStoredBoolean(key: string, fallback: boolean): boolean {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const stored = window.localStorage.getItem(key);
-    if (stored === null) return fallback;
-    return stored === 'true';
-  } catch {
-    return fallback;
-  }
+function normalizeStoredBoolean(value: unknown, fallback: Readonly<boolean>): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
-function readStoredNumber(key: string, fallback: number, min: number, max: number): number {
-  if (typeof window === 'undefined') return fallback;
-  try {
-    const stored = window.localStorage.getItem(key);
-    if (stored === null) return fallback;
-    const value = Number.parseInt(stored, 10);
-    if (!Number.isFinite(value)) return fallback;
-    return Math.min(max, Math.max(min, value));
-  } catch {
-    return fallback;
-  }
+function normalizeGraphDetailPanelHeight(value: unknown, fallback: Readonly<number>): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(
+    MAX_GRAPH_DETAIL_PANEL_HEIGHT,
+    Math.max(MIN_GRAPH_DETAIL_PANEL_HEIGHT, Math.trunc(value)),
+  );
 }
 
 function reactFlowId(id: string): string {
@@ -959,40 +948,21 @@ export function GraphView({
     branches: [],
   });
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [detailPanelOpen, setDetailPanelOpen] = useState(() => (
-    readStoredBoolean(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, true)
-  ));
-  const [detailPanelHeight, setDetailPanelHeight] = useState(() => (
-    readStoredNumber(
-      GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY,
-      DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT,
-      MIN_GRAPH_DETAIL_PANEL_HEIGHT,
-      MAX_GRAPH_DETAIL_PANEL_HEIGHT,
-    )
-  ));
+  const [detailPanelOpen, setDetailPanelOpen] = usePersistedViewState(
+    GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY,
+    normalizeStoredBoolean,
+    true,
+  );
+  const [detailPanelHeight, setDetailPanelHeight] = usePersistedViewState(
+    GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY,
+    normalizeGraphDetailPanelHeight,
+    DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT,
+  );
   const lastFocusedNodeOpenedRef = useRef<string | null>(null);
 
   useEffect(() => {
     setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));
   }, [routeMode]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(GRAPH_DETAIL_PANEL_OPEN_STORAGE_KEY, String(detailPanelOpen));
-    } catch {
-      // Ignore storage failures; the in-memory state remains authoritative for this session.
-    }
-  }, [detailPanelOpen]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.setItem(GRAPH_DETAIL_PANEL_HEIGHT_STORAGE_KEY, String(detailPanelHeight));
-    } catch {
-      // Ignore storage failures; the in-memory state remains authoritative for this session.
-    }
-  }, [detailPanelHeight]);
 
   useEffect(() => {
     let active = true;
