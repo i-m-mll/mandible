@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
+import { resolveArtifactRef } from "../src/provider-artifacts.js";
 
 let tempDir = "";
 let db: Db;
@@ -229,6 +230,103 @@ describe("migration v91: artifact identity and project associations", () => {
         legacy_blob_id: "artifact-blob:art_x",
       },
     ]);
+  });
+
+  it("resolves legacy-only rows through canonical refs after migration", () => {
+    const hash = "a".repeat(64);
+    const blobId = `artifact-blob:${hash}`;
+    insertLegacyFixture();
+    db.prepare("UPDATE meta SET value = '90' WHERE key = 'schema_version'").run();
+
+    migrate(db);
+
+    const logical = resolveArtifactRef(db, "artifact:report", 1_000);
+    expect(logical).toMatchObject({
+      status: "resolved",
+      normalized_ref: "artifact:report",
+      target_type: "artifact",
+      target_id: "artifact:report",
+      logical_artifact: {
+        id: "artifact:report",
+        identity_key: "repo:mandible:docs/report.md",
+        source_kind: "tracked_repo",
+        title: "Report",
+        source_project_id: "prj_mandible",
+        source_repo_id: "mandible",
+        logical_name: "docs/report.md",
+        source_path: "docs/report.md",
+        latest_version_id: "artifact-version:v1",
+        version_count: 1,
+        metadata: {},
+        created_at: 100,
+        updated_at: 101,
+      },
+      artifact_version: {
+        id: "artifact-version:v1",
+        artifact_id: "artifact:report",
+        version_no: 1,
+        blob_id: blobId,
+        source_kind: "tracked_repo",
+        content_hash: hash,
+        source_project_id: "prj_mandible",
+        source_repo_id: "mandible",
+        repo_path: "docs/report.md",
+        commit_sha: "abc",
+        observed_path: null,
+        source_locator: {
+          migrated_from: "artifact_versions",
+          legacy_series_id: "artifact-series:report",
+          legacy_blob_id: `artifact:sha256:${hash}`,
+          legacy_uri: "repo://mandible@abc/docs/report.md",
+          legacy_repo_locator: '{"repo":"mandible","path":"docs/report.md"}',
+          series_logical_name: "docs/report.md",
+        },
+        custody_mode: "managed",
+        label: "v1",
+        note: null,
+        metadata: {},
+        created_at: 110,
+      },
+      artifact_blob: {
+        id: blobId,
+        algorithm: "sha256",
+        content_hash: hash,
+        storage_uri: null,
+        media_type: "text/markdown",
+        role: "report",
+        size_bytes: 12,
+        provider_id: null,
+        manifest_id: null,
+        metadata: {},
+        custody_mode: "managed",
+        availability: "present",
+        retention: {},
+        reference: {},
+        created_at: 10,
+      },
+    });
+
+    expect(resolveArtifactRef(db, "artifact-version:v1", 1_000)).toMatchObject({
+      status: "resolved",
+      normalized_ref: "artifact-version:v1",
+      target_type: "artifact_version",
+      target_id: "artifact-version:v1",
+      logical_artifact: { id: "artifact:report" },
+      artifact_version: {
+        id: "artifact-version:v1",
+        artifact_id: "artifact:report",
+        blob_id: blobId,
+      },
+      artifact_blob: { id: blobId, content_hash: hash },
+    });
+
+    expect(resolveArtifactRef(db, blobId, 1_000)).toMatchObject({
+      status: "resolved",
+      normalized_ref: blobId,
+      target_type: "artifact_blob",
+      target_id: blobId,
+      artifact_blob: { id: blobId, content_hash: hash },
+    });
   });
 
   it("is idempotent when v91 is replayed on a current database", () => {
