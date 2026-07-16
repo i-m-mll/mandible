@@ -1219,13 +1219,6 @@ export async function spawnIssueAgent(
   return (await parseMaybeJson(response)) as SpawnIssueAgentResult;
 }
 
-export async function updateStarredChat(
-  id: string,
-  data: { label?: string; notes?: string },
-): Promise<void> {
-  await apiPatch(`/api/chats/starred/${encodeURIComponent(id)}`, data);
-}
-
 export async function getSettings(): Promise<Record<string, string>> {
   const payload = await cachedApiGetJson<unknown>('/api/settings');
   if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
