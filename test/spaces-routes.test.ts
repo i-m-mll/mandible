@@ -54,10 +54,23 @@ function insertArtifact(_id: string, hash: string): string {
 }
 
 function linkArtifactToIssue(artifactId: string, issueId: string): void {
+  const hash = artifactId.replace(/^artifact:sha256:/, "");
   db.prepare(
-    `INSERT INTO artifact_links (id, artifact_id, entity_type, entity_id, link_type, source, created_at, updated_at)
-     VALUES (?, ?, 'issue', ?, 'references', 'test', ?, ?)`,
-  ).run(`link-${artifactId}-${issueId}`, artifactId, issueId, Date.now(), Date.now());
+    `INSERT INTO artifact_links (
+       id, artifact_id, blob_id, entity_type, entity_id, link_type, source,
+       target_type, target_id, created_at, updated_at
+     ) VALUES (
+       ?, ?, ?, 'issue', ?, 'references', 'test', 'artifact_blob', ?, ?, ?
+     )`,
+  ).run(
+    `link-${artifactId}-${issueId}`,
+    artifactId,
+    `artifact-blob:${hash}`,
+    issueId,
+    `artifact-blob:${hash}`,
+    Date.now(),
+    Date.now(),
+  );
 }
 
 async function call(method: string, url: string, body?: unknown) {

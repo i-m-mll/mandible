@@ -2864,6 +2864,13 @@ export const MIGRATIONS: readonly Migration[] = [
     // SQLite cannot relax the legacy foreign keys in place, so the four tables
     // are rebuilt together by the marker-gated post migration below.
     statements: []
+  },
+  {
+    version: 105,
+    name: "space_export_canonical_artifacts",
+    // Issue: 9ceb090 — Spaces export tracking stores canonical blob targets.
+    // The historical artifact ids remain nullable read-compatibility provenance.
+    statements: []
   }
 ];
 
@@ -2892,6 +2899,57 @@ assertMigrationSequence();
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
 
+function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
+  if (migrations.length === 0) return;
+  db.transaction(() => {
+    for (const migration of migrations) {
+      if (migration.version === 71) {
+        ensureIssueCoordinationColumns(db);
+      }
+      if (migration.version === 76) {
+        ensureAuthRequestActionPrerequisites(db);
+      }
+      if (migration.version === 79) {
+        ensureAuthRequestMergeFinalizerColumns(db);
+      }
+      if (migration.version === 87) {
+        ensureLedgerProjectKeyColumn(db);
+      }
+      if (migration.version === 89) {
+        ensureArtifactLinkSeriesColumns(db);
+      }
+      if (migration.version === 91) {
+        ensureArtifactLinkTargetColumns(db);
+      }
+      if (migration.version === 92) {
+        ensureAuthRequestPreflightReuseColumns(db);
+      }
+      if (migration.version === 93) {
+        ensureConsoleTransportLaneColumn(db);
+      }
+      if (migration.version === 94) {
+        ensureMessageParamsThinkingEffortColumn(db);
+      }
+      if (migration.version === 95) {
+        ensureConversationSidechainColumns(db);
+      }
+      if (migration.version === 101) {
+        ensureArtifactVersionParentColumn(db);
+      }
+      if (migration.version === 103) {
+        ensureConversationEmptyIngestColumns(db);
+      }
+      for (const statement of migration.statements) {
+        db.exec(statement);
+      }
+      if (migration.version === 103) {
+        verifyConversationEmptyIngestSchema(db);
+      }
+      setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
+    }
+  })();
+}
+
 export function migrate(db: Db): void {
   assertMigrationSequence();
   if (isFreshDatabase(db)) {
@@ -2913,58 +2971,11 @@ export function migrate(db: Db): void {
 
   const currentVersion = getSchemaVersion(db);
   const pending = MIGRATIONS.filter((migration) => migration.version > currentVersion);
-
-  if (pending.length > 0) {
-    const apply = db.transaction(() => {
-      for (const migration of pending) {
-        if (migration.version === 71) {
-          ensureIssueCoordinationColumns(db);
-        }
-        if (migration.version === 76) {
-          ensureAuthRequestActionPrerequisites(db);
-        }
-        if (migration.version === 79) {
-          ensureAuthRequestMergeFinalizerColumns(db);
-        }
-        if (migration.version === 87) {
-          ensureLedgerProjectKeyColumn(db);
-        }
-        if (migration.version === 89) {
-          ensureArtifactLinkSeriesColumns(db);
-        }
-        if (migration.version === 91) {
-          ensureArtifactLinkTargetColumns(db);
-        }
-        if (migration.version === 92) {
-          ensureAuthRequestPreflightReuseColumns(db);
-        }
-        if (migration.version === 93) {
-          ensureConsoleTransportLaneColumn(db);
-        }
-        if (migration.version === 94) {
-          ensureMessageParamsThinkingEffortColumn(db);
-        }
-        if (migration.version === 95) {
-          ensureConversationSidechainColumns(db);
-        }
-        if (migration.version === 101) {
-          ensureArtifactVersionParentColumn(db);
-        }
-        if (migration.version === 103) {
-          ensureConversationEmptyIngestColumns(db);
-        }
-        for (const statement of migration.statements) {
-          db.exec(statement);
-        }
-        if (migration.version === 103) {
-          verifyConversationEmptyIngestSchema(db);
-        }
-        setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
-      }
-    });
-
-    apply();
-  }
+  // Migration 105 depends on Node post-migrations through v104. Apply only the
+  // earlier SQL/hooks now; later migrations remain pending until v105 commits.
+  const beforeV105 = pending.filter((migration) => migration.version < 105);
+  const afterV105 = pending.filter((migration) => migration.version > 105);
+  applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
   // tables use CREATE TABLE IF NOT EXISTS (idempotent for fresh DBs and
@@ -3201,6 +3212,26 @@ export function migrate(db: Db): void {
       }
     }
   }
+  // Issue 9ceb090 (migration 105): space_exports legacy artifact references
+  // can only be mapped after all existing post-DDL work, including v91's
+  // deterministic artifact_blob backfill and v104's canonical-target rebuild.
+  // Add the columns, backfill and verify, and record both completion facts in
+  // one transaction so a failure leaves schema version 104 and no partial v105
+  // schema/data/marker behind.
+  if (
+    pending.some((migration) => migration.version === 105) ||
+    getMeta(db, postMigrationKey("v105_space_export_canonical_artifacts")) !== "done"
+  ) {
+    db.transaction(() => {
+      migrateSpaceExportCanonicalArtifacts(db);
+      setMeta(db, postMigrationKey("v105_space_export_canonical_artifacts"), "done");
+      setMeta(db, SCHEMA_VERSION_KEY, String(Math.max(getSchemaVersion(db), 105)));
+    }).immediate();
+  }
+  // Preserve global ordering across the dependency boundary: no migration
+  // newer than v105 may execute until every older post-DDL migration and v105
+  // itself have completed successfully.
+  applySchemaMigrations(db, afterV105);
 }
 
 /**
@@ -6266,6 +6297,281 @@ function verifyArtifactCanonicalTargetSchema(db: Db): void {
   );
 }
 
+const SPACE_EXPORT_CANONICAL_COLUMNS = [
+  ["last_export_artifact_id", "last_export_blob_id"],
+  ["pre_export_snapshot_artifact_id", "pre_export_snapshot_blob_id"],
+] as const;
+
+interface SpaceExportSchemaInventory {
+  tableSql: string;
+  columns: Array<{
+    cid: number;
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  indexes: Array<{ name: string; sql: string | null }>;
+  indexList: Array<{
+    name: string;
+    unique: number;
+    origin: string;
+    partial: number;
+    columns: string[];
+  }>;
+  triggers: Array<{ name: string; sql: string | null }>;
+}
+
+function spaceExportSchemaInventory(db: Db): SpaceExportSchemaInventory {
+  const table = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'space_exports'",
+  ).get() as { sql: string | null } | undefined;
+  if (!table?.sql) {
+    throw new Error("migration 105 precondition: required table space_exports is missing");
+  }
+  const indexList = (db.pragma("index_list(space_exports)") as Array<{
+    name: string;
+    unique: number;
+    origin: string;
+    partial: number;
+  }>).map((index) => ({
+    ...index,
+    columns: (db.pragma(`index_info(${JSON.stringify(index.name)})`) as Array<{ name: string }>)
+      .map((column) => column.name),
+  }));
+  return {
+    tableSql: table.sql,
+    columns: db.pragma("table_info(space_exports)") as SpaceExportSchemaInventory["columns"],
+    indexes: db.prepare(
+      `SELECT name, sql FROM sqlite_master
+        WHERE type = 'index' AND tbl_name = 'space_exports'
+        ORDER BY name`,
+    ).all() as SpaceExportSchemaInventory["indexes"],
+    indexList: indexList.sort((left, right) => left.name.localeCompare(right.name)),
+    triggers: db.prepare(
+      `SELECT name, sql FROM sqlite_master
+        WHERE type = 'trigger' AND tbl_name = 'space_exports'
+        ORDER BY name`,
+    ).all() as SpaceExportSchemaInventory["triggers"],
+  };
+}
+
+function requireSpaceExportForeignKey(
+  db: Db,
+  column: string,
+  target: string,
+  onDelete: string,
+  phase: "precondition" | "verification",
+): void {
+  const matches = (db.pragma("foreign_key_list(space_exports)") as Array<{
+    from: string;
+    table: string;
+    to: string;
+    on_delete: string;
+  }>).filter((foreignKey) =>
+    foreignKey.from === column &&
+    foreignKey.table === target &&
+    foreignKey.to === "id" &&
+    foreignKey.on_delete.toUpperCase() === onDelete
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `migration 105 ${phase}: space_exports.${column} must reference ` +
+      `${target}(id) ON DELETE ${onDelete}`,
+    );
+  }
+}
+
+function verifySpaceExportCanonicalColumn(db: Db, column: string): void {
+  const matches = (db.pragma("table_info(space_exports)") as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>).filter((candidate) => candidate.name === column);
+  if (
+    matches.length !== 1 ||
+    matches[0].type.toUpperCase() !== "TEXT" ||
+    matches[0].notnull !== 0 ||
+    matches[0].dflt_value !== null ||
+    matches[0].pk !== 0
+  ) {
+    throw new Error(
+      `migration 105 verification: space_exports.${column} must be nullable TEXT with no default`,
+    );
+  }
+  requireSpaceExportForeignKey(db, column, "artifact_blob", "SET NULL", "verification");
+}
+
+function assertSpaceExportMappingPreconditions(db: Db): void {
+  for (const table of ["artifacts", "artifact_blob"]) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 105 precondition: required mapping table ${table} is missing`);
+    }
+  }
+  const violations = db.pragma("foreign_key_check") as unknown[];
+  if (violations.length > 0) {
+    throw new Error(
+      `migration 105 preflight: database has ${violations.length} foreign key violation(s)`,
+    );
+  }
+
+  for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    const rows = db.prepare(
+      `SELECT export.id,
+              export.${legacyColumn} AS legacy_id,
+              export.${canonicalColumn} AS canonical_id,
+              (SELECT COUNT(*) FROM artifacts legacy
+                WHERE legacy.id = export.${legacyColumn}) AS legacy_count,
+              (SELECT COUNT(*)
+                 FROM artifacts legacy
+                 JOIN artifact_blob canonical
+                   ON canonical.algorithm = legacy.algorithm
+                  AND canonical.content_hash = legacy.content_hash
+                WHERE legacy.id = export.${legacyColumn}) AS mapping_count,
+              (SELECT canonical.id
+                 FROM artifacts legacy
+                 JOIN artifact_blob canonical
+                   ON canonical.algorithm = legacy.algorithm
+                  AND canonical.content_hash = legacy.content_hash
+                WHERE legacy.id = export.${legacyColumn}
+                LIMIT 1) AS mapped_id
+         FROM space_exports export
+        WHERE export.${legacyColumn} IS NOT NULL
+        ORDER BY export.id`,
+    ).all() as Array<{
+      id: string;
+      legacy_id: string;
+      canonical_id: string | null;
+      legacy_count: number;
+      mapping_count: number;
+      mapped_id: string | null;
+    }>;
+    for (const row of rows) {
+      if (row.legacy_count !== 1 || row.mapping_count !== 1 || !row.mapped_id) {
+        throw new Error(
+          `migration 105 preflight: ${legacyColumn} must map to exactly one canonical blob; ` +
+          `offending id: ${row.id}`,
+        );
+      }
+      if (row.canonical_id !== null && row.canonical_id !== row.mapped_id) {
+        throw new Error(
+          `migration 105 preflight: ${canonicalColumn} contradicts legacy artifact bytes; ` +
+          `offending id: ${row.id}`,
+        );
+      }
+    }
+  }
+}
+
+function verifySpaceExportCanonicalData(db: Db): void {
+  for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    const invalid = db.prepare(
+      `SELECT export.id
+         FROM space_exports export
+        WHERE (export.${canonicalColumn} IS NOT NULL AND NOT EXISTS (
+                 SELECT 1 FROM artifact_blob canonical
+                  WHERE canonical.id = export.${canonicalColumn}
+               ))
+           OR (export.${legacyColumn} IS NOT NULL AND NOT EXISTS (
+                 SELECT 1
+                   FROM artifacts legacy
+                   JOIN artifact_blob canonical
+                     ON canonical.algorithm = legacy.algorithm
+                    AND canonical.content_hash = legacy.content_hash
+                  WHERE legacy.id = export.${legacyColumn}
+                    AND canonical.id = export.${canonicalColumn}
+               ))
+        ORDER BY export.id`,
+    ).all() as Array<{ id: string }>;
+    if (invalid.length > 0) {
+      throw new Error(
+        `migration 105 verification: ${canonicalColumn} has missing or cross-byte targets; ` +
+        `offending ids: ${invalid.map((row) => row.id).join(", ")}`,
+      );
+    }
+  }
+}
+
+function migrateSpaceExportCanonicalArtifacts(db: Db): void {
+  if (!db.inTransaction) {
+    throw new Error("migration 105 precondition: migration must run inside its schema transaction");
+  }
+  const before = spaceExportSchemaInventory(db);
+  const names = new Set(before.columns.map((column) => column.name));
+  for (const [legacyColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    if (!names.has(legacyColumn)) {
+      throw new Error(
+        `migration 105 precondition: required column space_exports.${legacyColumn} is missing`,
+      );
+    }
+    requireSpaceExportForeignKey(db, legacyColumn, "artifacts", "SET NULL", "precondition");
+  }
+
+  const canonicalStates = SPACE_EXPORT_CANONICAL_COLUMNS.map(([, column]) => names.has(column));
+  if (canonicalStates.some(Boolean) && !canonicalStates.every(Boolean)) {
+    throw new Error("migration 105 precondition: canonical columns are only partially applied");
+  }
+  if (canonicalStates.every(Boolean)) {
+    for (const [, column] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+      verifySpaceExportCanonicalColumn(db, column);
+    }
+  } else {
+    db.exec(
+      "ALTER TABLE space_exports ADD COLUMN last_export_blob_id " +
+      "TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL",
+    );
+    db.exec(
+      "ALTER TABLE space_exports ADD COLUMN pre_export_snapshot_blob_id " +
+      "TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL",
+    );
+  }
+
+  assertSpaceExportMappingPreconditions(db);
+  for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    db.exec(
+      `UPDATE space_exports
+          SET ${canonicalColumn} = (
+            SELECT canonical.id
+              FROM artifacts legacy
+              JOIN artifact_blob canonical
+                ON canonical.algorithm = legacy.algorithm
+               AND canonical.content_hash = legacy.content_hash
+             WHERE legacy.id = space_exports.${legacyColumn}
+          )
+        WHERE ${legacyColumn} IS NOT NULL
+          AND ${canonicalColumn} IS NULL`,
+    );
+    verifySpaceExportCanonicalColumn(db, canonicalColumn);
+  }
+  verifySpaceExportCanonicalData(db);
+
+  const after = spaceExportSchemaInventory(db);
+  const originalColumns = after.columns.filter((column) => names.has(column.name));
+  if (JSON.stringify(originalColumns) !== JSON.stringify(before.columns)) {
+    throw new Error("migration 105 verification: existing space_exports columns changed");
+  }
+  if (
+    JSON.stringify(after.indexes) !== JSON.stringify(before.indexes) ||
+    JSON.stringify(after.indexList) !== JSON.stringify(before.indexList) ||
+    JSON.stringify(after.triggers) !== JSON.stringify(before.triggers)
+  ) {
+    throw new Error("migration 105 verification: space_exports index or trigger inventory changed");
+  }
+  const violations = db.pragma("foreign_key_check") as unknown[];
+  if (violations.length > 0) {
+    throw new Error(
+      `migration 105 verification: ${violations.length} foreign key violation(s)`,
+    );
+  }
+  const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+    throw new Error("migration 105 verification: integrity_check failed");
+  }
+}
+
 function tableColumnNames(db: Db, table: string): Set<string> {
   const allowed = new Set([
     "artifact",
@@ -6288,6 +6594,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "session_instruction_artifacts",
     "session_projects",
     "sessions",
+    "space_exports",
     "work_units",
     "workflow_ingest_state",
   ]);

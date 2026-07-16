@@ -46,11 +46,12 @@ describe("issue detail living artifact links", () => {
     db.pragma("foreign_keys = OFF");
     db.prepare(
       `INSERT INTO artifact_links (
-        id, artifact_id, entity_type, entity_id, link_type, source,
-        metadata_json, link_kind, created_at, updated_at
+        id, artifact_id, blob_id, entity_type, entity_id, link_type, source,
+        metadata_json, link_kind, target_type, target_id, created_at, updated_at
       ) VALUES (
-        'missing_link', 'artifact:sha256:${"0".repeat(64)}',
-        'issue', ?, 'references', 'test', '{}', 'pinned', 10, 10
+        'missing_link', NULL, 'artifact-blob:${"0".repeat(64)}',
+        'issue', ?, 'references', 'test', '{}', 'pinned',
+        'artifact_blob', 'artifact-blob:${"0".repeat(64)}', 10, 10
       )`,
     ).run(issueId);
     db.pragma("foreign_keys = ON");
@@ -180,13 +181,15 @@ describe("issue detail living artifact links", () => {
     }, 1000);
     db.prepare(
       `INSERT INTO artifact_links (
-        id, artifact_id, entity_type, entity_id, link_type, source,
-        metadata_json, link_kind, series_id, series_ref, created_at, updated_at
+        id, artifact_id, blob_id, entity_type, entity_id, link_type, source,
+        metadata_json, link_kind, series_id, series_ref, target_type, target_id,
+        created_at, updated_at
       ) VALUES (
-        'living_missing', ?, 'issue', ?, 'references', 'test', '{}',
-        'living', 'artifact-series:missing', 'artifact-series:missing', 10, 10
+        'living_missing', NULL, ?, 'issue', ?, 'references', 'test', '{}',
+        'living', 'artifact-series:missing', 'artifact-series:missing',
+        'artifact', 'artifact:missing', 10, 10
       )`,
-    ).run(v1.artifact.id, issueId);
+    ).run(`artifact-blob:${v1.artifact.content_hash}`, issueId);
 
     const artifacts = buildLedgerIssueDetailProjection(db, issueId).associated_artifacts;
 

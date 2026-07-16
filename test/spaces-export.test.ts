@@ -161,6 +161,8 @@ describe('export-and-track (linked commit + tracking row)', () => {
     expect(row.last_export_content_sha256).toBe(result.document_content_sha256);
     expect(row.pre_export_snapshot_artifact_id).toMatch(/^artifact:sha256:/);
     expect(row.last_export_artifact_id).toMatch(/^artifact:sha256:/);
+    expect(row).not.toHaveProperty('last_export_blob_id');
+    expect(row).not.toHaveProperty('pre_export_snapshot_blob_id');
 
     // The serialized file actually landed in the managed worktree.
     const written = fs.readFileSync(path.join(worktreeDir, 'docs/spaces/doc.md'), 'utf8');
