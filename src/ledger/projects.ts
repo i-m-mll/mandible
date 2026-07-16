@@ -132,8 +132,8 @@ export type ResolveProjectReadOnlyResult =
 // carrying the id of a project that matches the resolved remote identity so the
 // caller can surface an explicit registration suggestion. This mirrors the
 // issue-creation guard's philosophy (reject unknown targets with suggestions
-// instead of minting) and is the resolver used by the git-bug sync discovery
-// path, which must not auto-mint projects from unregistered roots.
+// instead of minting) and was the resolver used by the compatibility sync
+// discovery path, which must not auto-mint projects from unregistered roots.
 export function resolveProjectForCheckoutReadOnly(
   db: Db,
   input: ResolveProjectInput,

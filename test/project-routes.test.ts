@@ -1,7 +1,6 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
-import { updateLedgerIssueMigrationConfig } from "../src/ledger/issue-migration.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -216,7 +215,6 @@ describe("project routes", () => {
 describe("issue route project rejection", () => {
   beforeEach(() => {
     registerIssueRoutes(router as never, fakeScanner);
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
   });
 
   it("rejects unknown repo ref with error mentioning registered and a suggestions array", async () => {
@@ -331,7 +329,6 @@ describe("canonical project_key round-trip", () => {
 
   it("GET /api/issues?repo=<project_key> returns the project's issues", async () => {
     seedFeedbax();
-    updateLedgerIssueMigrationConfig(db, { read_mode: "ledger", write_mode: "ledger" });
     registerIssueRoutes(router, fakeScanner);
 
     const byKey = await router.invoke({ method: "GET", url: "/api/issues?repo=feedbax" });
