@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { compressContent } from "./compression.js";
 import { getDaemonLogger } from "./daemon-log.js";
+import { tableExists } from "./db-introspection.js";
 import { createStableEventId, isSha256Hex } from "./ledger/ids.js";
 import { backfillProjectKeys } from "./ledger/project-registry.js";
 import { backfillOrphanArtifactSeries } from "./provider-artifacts.js";
@@ -5541,13 +5542,6 @@ function ensureMessageParamsThinkingEffortColumn(db: Db): void {
   if (columns.has("thinking_effort")) return;
 
   db.exec("ALTER TABLE message_params ADD COLUMN thinking_effort TEXT");
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(table);
-  return Boolean(row);
 }
 
 function tableColumnNames(db: Db, table: string): Set<string> {

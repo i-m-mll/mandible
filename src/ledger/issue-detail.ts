@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import {
   resolveArtifactLinkRef,
   resolveArtifactSurfaceRefReadonlyFull,
@@ -1551,11 +1552,6 @@ function parseJsonValue(value: string): unknown {
   } catch {
     return value;
   }
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  return Boolean(row);
 }
 
 function stringOr(value: unknown, fallback: string): string {

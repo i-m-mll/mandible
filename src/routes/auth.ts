@@ -10,17 +10,14 @@ import {
 } from "../auth-context.js";
 import { getDaemonLogger } from "../daemon-log.js";
 import { getDb, resolvePrefix } from "../db.js";
-import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
+import { readBody } from "./http.js";
 
 const authRouteLog = getDaemonLogger();
-
-function readBody<T>(req: RequestLike): T {
-  return (req.body ?? {}) as T;
-}
 
 export function registerAuthRoutes(
   app: RouteRegistrar,

@@ -16,13 +16,10 @@ import type {
   ConsoleTransportLane,
 } from "../types.js";
 import { replaceSessionInstructionArtifacts } from "../presets.js";
+import { sendJson } from "./http.js";
 
 const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
-
-function sendJson(res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void }, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
 
 function stripModelArgs(args: string[]): string[] {
   const next: string[] = [];
