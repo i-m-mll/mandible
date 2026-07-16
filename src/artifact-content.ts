@@ -4,7 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Db } from "./db.js";
-import { tableExists } from "./db-introspection.js";
+import { columnExists, tableExists } from "./db-introspection.js";
 import { checkoutRootForCanonicalArtifactRepo } from "./artifact-repo-resolution.js";
 import {
   ARTIFACT_CONTENT_WORKER_MIN_BYTES,
@@ -506,14 +506,21 @@ function resolveLocalFileAliasArtifact(
   if (!tableExists(db, "artifact_aliases")) {
     return { ok: false, reason: "artifact has no resolved local file alias" };
   }
+  const hasBlobId = columnExists(db, "artifact_aliases", "blob_id");
   const rows = db.prepare(
     `SELECT normalized_ref
        FROM artifact_aliases
-      WHERE artifact_id = ?
+      WHERE (artifact_id = ? ${hasBlobId ? "OR blob_id = ?" : ""})
         AND scheme = 'file'
         AND resolution_status = 'resolved'
       ORDER BY CASE WHEN normalized_ref = ? THEN 1 ELSE 0 END, updated_at DESC, normalized_ref`,
-  ).all(artifact.id, artifact.uri) as Array<{ normalized_ref: string }>;
+  ).all(
+    ...(hasBlobId
+      ? [artifact.id, `artifact-blob:${artifact.content_hash.toLowerCase()}`, artifact.uri]
+      : [artifact.id, artifact.uri]),
+  ) as Array<{
+    normalized_ref: string;
+  }>;
 
   for (const row of rows) {
     const resolved = resolveFileUriPath(row.normalized_ref, row.normalized_ref);

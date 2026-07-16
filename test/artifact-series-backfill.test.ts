@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5,9 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, openDb, type Db } from "../src/db.js";
 import {
-  appendArtifactVersion,
   backfillOrphanArtifactSeries,
-  ensureArtifactSeries,
   getArtifactSeries,
   listArtifactVersions,
 } from "../src/provider-artifacts.js";
@@ -57,6 +56,151 @@ function orphanCount(): number {
     .get() as { n: number }).n;
 }
 
+function legacyRegistryId(prefix: string, parts: unknown[]): string {
+  return `${prefix}:${crypto.createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32)}`;
+}
+
+function insertLegacySeriesVersion(input: {
+  seriesKey: string;
+  artifactId: string;
+  sourceKind: "managed" | "local_only";
+  contentHash: string;
+  naturalKey: string;
+  custodyMode?: string;
+  createdAt?: number;
+}): { seriesId: string; versionId: string } {
+  const createdAt = input.createdAt ?? 1;
+  const seriesId = legacyRegistryId("artifact-series", [input.seriesKey]);
+  db.prepare(
+    `INSERT INTO artifact_series (
+      id, series_key, source_kind, title, repo_id, logical_name,
+      latest_version_id, version_count, metadata_json, created_at, updated_at
+    ) VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 0, '{}', ?, ?)
+    ON CONFLICT(series_key) DO NOTHING`,
+  ).run(seriesId, input.seriesKey, input.sourceKind, createdAt, createdAt);
+  const storedSeries = db.prepare("SELECT id FROM artifact_series WHERE series_key = ?")
+    .get(input.seriesKey) as { id: string };
+  const versionId = legacyRegistryId(
+    "artifact-version",
+    [storedSeries.id, input.sourceKind, input.naturalKey],
+  );
+  const versionNo = Number((db.prepare(
+    "SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_versions WHERE series_id = ?",
+  ).get(storedSeries.id) as { n: number }).n) + 1;
+  const inserted = db.prepare(
+    `INSERT INTO artifact_versions (
+      id, series_id, artifact_id, version_no, parent_version_id, source_kind,
+      content_hash, commit_sha, repo_path, observed_path, custody_mode, label,
+      note, metadata_json, created_at
+    ) VALUES (?, ?, ?, ?, NULL, ?, ?, NULL, NULL, NULL, ?, NULL, NULL, '{}', ?)
+    ON CONFLICT(id) DO NOTHING`,
+  ).run(
+    versionId,
+    storedSeries.id,
+    input.artifactId,
+    versionNo,
+    input.sourceKind,
+    input.contentHash,
+    input.custodyMode ?? null,
+    createdAt,
+  );
+  if (inserted.changes > 0) {
+    db.prepare(
+      `UPDATE artifact_series
+          SET latest_version_id = ?, version_count = version_count + 1, updated_at = ?
+        WHERE id = ?`,
+    ).run(versionId, createdAt, storedSeries.id);
+  }
+  return { seriesId: storedSeries.id, versionId };
+}
+
+function restorePreV89ArtifactAssociationSchema(): void {
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.exec(`
+      DROP TABLE artifact_aliases;
+      DROP TABLE artifact_links;
+      DROP TABLE session_instruction_artifacts;
+      DROP TABLE artifact_drafts;
+      CREATE TABLE artifact_aliases (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+        scheme TEXT NOT NULL,
+        alias TEXT NOT NULL,
+        normalized_ref TEXT NOT NULL,
+        locator_json TEXT NOT NULL DEFAULT '{}',
+        resolution_status TEXT NOT NULL DEFAULT 'resolved'
+          CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
+        source TEXT NOT NULL DEFAULT 'artifact_registry',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref
+        ON artifact_aliases(scheme, normalized_ref);
+      CREATE INDEX idx_artifact_aliases_artifact
+        ON artifact_aliases(artifact_id) WHERE artifact_id IS NOT NULL;
+      CREATE INDEX idx_artifact_aliases_status
+        ON artifact_aliases(resolution_status, scheme);
+      CREATE TABLE artifact_links (
+        id            TEXT PRIMARY KEY,
+        artifact_id   TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+        entity_type   TEXT NOT NULL,
+        entity_id     TEXT NOT NULL,
+        link_type     TEXT NOT NULL DEFAULT 'references',
+        role          TEXT,
+        repo_id       TEXT,
+        provider_id   TEXT,
+        source        TEXT NOT NULL DEFAULT 'artifact_registry',
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL
+      );
+      CREATE INDEX idx_artifact_links_artifact
+        ON artifact_links(artifact_id, link_type);
+      CREATE INDEX idx_artifact_links_entity
+        ON artifact_links(entity_type, entity_id);
+      CREATE INDEX idx_artifact_links_repo
+        ON artifact_links(repo_id) WHERE repo_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_provider
+        ON artifact_links(provider_id) WHERE provider_id IS NOT NULL;
+      CREATE INDEX idx_artifact_links_role
+        ON artifact_links(role) WHERE role IS NOT NULL;
+      CREATE TABLE session_instruction_artifacts (
+        session_id TEXT NOT NULL,
+        artifact_series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        legacy_preset_id TEXT,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (session_id, artifact_series_id)
+      );
+      CREATE INDEX idx_session_instruction_artifacts_session
+        ON session_instruction_artifacts(session_id, position);
+      CREATE INDEX idx_session_instruction_artifacts_version
+        ON session_instruction_artifacts(artifact_version_id);
+      CREATE TABLE artifact_drafts (
+        id TEXT PRIMARY KEY,
+        series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+        base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+        content TEXT NOT NULL,
+        media_type TEXT,
+        label TEXT,
+        note TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE(series_id)
+      );
+      CREATE INDEX idx_artifact_drafts_base ON artifact_drafts(base_version_id);
+      DELETE FROM meta
+       WHERE key = 'post_migration.v104_artifact_canonical_targets.complete';
+    `);
+  } finally {
+    db.pragma("foreign_keys = ON");
+  }
+}
+
 describe("backfillOrphanArtifactSeries (migration v89)", () => {
   it("wraps every series-less artifact into a deterministic 1-version series", () => {
     insertArtifact("art_1", "managed", "hash_1");
@@ -65,6 +209,7 @@ describe("backfillOrphanArtifactSeries (migration v89)", () => {
     const wrapped = backfillOrphanArtifactSeries(db);
     expect(wrapped).toBe(2);
     expect(orphanCount()).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM artifact_blob").get() as { n: number }).n).toBe(0);
 
     for (const id of ["art_1", "art_2"]) {
       const series = getArtifactSeries(db, id);
@@ -134,16 +279,12 @@ describe("backfillOrphanArtifactSeries (migration v89)", () => {
     insertArtifact("art_orphan", "managed", "hash_orphan");
 
     // Give art_existing its own (non-default-keyed) series + version.
-    const existingSeries = ensureArtifactSeries(db, {
-      series_key: "managed:custom:report",
-      source_kind: "managed",
-    });
-    appendArtifactVersion(db, {
-      series_id: existingSeries.id,
-      artifact_id: "art_existing",
-      source_kind: "managed",
-      content_hash: "hash_existing",
-      natural_key: "art_existing",
+    insertLegacySeriesVersion({
+      seriesKey: "managed:custom:report",
+      artifactId: "art_existing",
+      sourceKind: "managed",
+      contentHash: "hash_existing",
+      naturalKey: "art_existing",
     });
 
     expect(backfillOrphanArtifactSeries(db)).toBe(1); // only art_orphan
@@ -168,6 +309,7 @@ describe("backfillOrphanArtifactSeries (migration v89)", () => {
 
     // Rewind the schema version so migrate() replays v89 (its post-DDL backfill
     // gate sees v89 pending and runs even though openDb already marked it done).
+    restorePreV89ArtifactAssociationSchema();
     db.prepare("UPDATE meta SET value = '88' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
 
@@ -188,23 +330,23 @@ describe("backfillOrphanArtifactSeries (migration v89)", () => {
     // v88 allows an explicit series_key, so a real multi-version series can carry
     // a key that equals an artifact id. v89 must NOT assume such a series is a
     // 1-version backfill.
-    const series = ensureArtifactSeries(db, { series_key: "art_multi", source_kind: "managed" });
-    appendArtifactVersion(db, {
-      series_id: series.id,
-      artifact_id: "art_multi",
-      source_kind: "managed",
-      content_hash: "hash_multi",
-      natural_key: "k1",
+    insertLegacySeriesVersion({
+      seriesKey: "art_multi",
+      artifactId: "art_multi",
+      sourceKind: "managed",
+      contentHash: "hash_multi",
+      naturalKey: "k1",
     });
-    appendArtifactVersion(db, {
-      series_id: series.id,
-      artifact_id: "art_multi_v2",
-      source_kind: "managed",
-      content_hash: "hash_multi_v2",
-      natural_key: "k2",
+    insertLegacySeriesVersion({
+      seriesKey: "art_multi",
+      artifactId: "art_multi_v2",
+      sourceKind: "managed",
+      contentHash: "hash_multi_v2",
+      naturalKey: "k2",
     });
     expect(getArtifactSeries(db, "art_multi")!.version_count).toBe(2);
 
+    restorePreV89ArtifactAssociationSchema();
     db.prepare("UPDATE meta SET value = '88' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).not.toThrow();
 
@@ -222,13 +364,12 @@ describe("backfillOrphanArtifactSeries (migration v89)", () => {
     // pointing at a DIFFERENT artifact. The backfill's ON CONFLICT(id) DO NOTHING
     // then leaves art_x uncovered, so verifyEveryArtifactHasSeries throws and the
     // whole immediate transaction (including art_z's successful wrap) rolls back.
-    const series = ensureArtifactSeries(db, { series_key: "art_x", source_kind: "managed" });
-    appendArtifactVersion(db, {
-      series_id: series.id,
-      artifact_id: "art_other",
-      source_kind: "managed",
-      content_hash: "hash_other",
-      natural_key: "art_x",
+    insertLegacySeriesVersion({
+      seriesKey: "art_x",
+      artifactId: "art_other",
+      sourceKind: "managed",
+      contentHash: "hash_other",
+      naturalKey: "art_x",
     });
 
     // Model a first-time v88 -> v89 upgrade: the gate was never set (openDb set
@@ -236,6 +377,7 @@ describe("backfillOrphanArtifactSeries (migration v89)", () => {
     db.prepare("DELETE FROM meta WHERE key = ?").run(
       "post_migration.v89_backfill_orphan_artifact_series.complete",
     );
+    restorePreV89ArtifactAssociationSchema();
     db.prepare("UPDATE meta SET value = '88' WHERE key = 'schema_version'").run();
     expect(() => migrate(db)).toThrow(/migration 89 verification/i);
 

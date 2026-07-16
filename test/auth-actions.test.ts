@@ -98,6 +98,56 @@ describe("auth request action schema", () => {
           value TEXT NOT NULL,
           updated_at INTEGER NOT NULL
         );
+        CREATE TABLE artifacts (
+          id TEXT PRIMARY KEY,
+          algorithm TEXT NOT NULL DEFAULT 'sha256',
+          content_hash TEXT NOT NULL,
+          uri TEXT NOT NULL,
+          media_type TEXT,
+          role TEXT,
+          size_bytes INTEGER NOT NULL DEFAULT 0,
+          provider_id TEXT,
+          manifest_id TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          pinned INTEGER NOT NULL DEFAULT 1,
+          created_at INTEGER NOT NULL,
+          custody_mode TEXT NOT NULL DEFAULT 'managed'
+            CHECK(custody_mode IN ('link','copy','managed','external')),
+          home_repo_id TEXT,
+          repo_locator_json TEXT NOT NULL DEFAULT '{}',
+          availability TEXT NOT NULL DEFAULT 'unchecked'
+            CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned')),
+          retention_json TEXT NOT NULL DEFAULT '{}',
+          reference_json TEXT NOT NULL DEFAULT '{}',
+          UNIQUE(algorithm, content_hash)
+        );
+        CREATE TABLE artifact_aliases (
+          id TEXT PRIMARY KEY,
+          artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+          scheme TEXT NOT NULL,
+          alias TEXT NOT NULL,
+          normalized_ref TEXT NOT NULL,
+          locator_json TEXT NOT NULL DEFAULT '{}',
+          resolution_status TEXT NOT NULL DEFAULT 'resolved'
+            CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
+          source TEXT NOT NULL DEFAULT 'artifact_registry',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE artifact_links (
+          id TEXT PRIMARY KEY,
+          artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL,
+          link_type TEXT NOT NULL DEFAULT 'references',
+          role TEXT,
+          repo_id TEXT,
+          provider_id TEXT,
+          source TEXT NOT NULL DEFAULT 'artifact_registry',
+          metadata_json TEXT NOT NULL DEFAULT '{}',
+          created_at INTEGER NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
       `);
       migrate(db);
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())

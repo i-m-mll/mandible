@@ -2855,6 +2855,22 @@ export const MIGRATIONS: readonly Migration[] = [
     // The guarded helper makes schema-rewind migration replays idempotent while
     // rejecting partially applied or otherwise divergent column definitions.
     statements: []
+  },
+  {
+    version: 104,
+    name: "artifact_canonical_targets",
+    // Issue: 9ceb090 — canonical artifact identity, version, and blob rows are
+    // authoritative for new links, aliases, session attachments, and drafts.
+    // SQLite cannot relax the legacy foreign keys in place, so the four tables
+    // are rebuilt together by the marker-gated post migration below.
+    statements: []
+  },
+  {
+    version: 105,
+    name: "space_export_canonical_artifacts",
+    // Issue: 9ceb090 — Spaces export tracking stores canonical blob targets.
+    // The historical artifact ids remain nullable read-compatibility provenance.
+    statements: []
   }
 ];
 
@@ -2883,6 +2899,57 @@ assertMigrationSequence();
 
 export const CURRENT_SCHEMA_VERSION = MIGRATIONS.at(-1)?.version ?? 0;
 
+function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
+  if (migrations.length === 0) return;
+  db.transaction(() => {
+    for (const migration of migrations) {
+      if (migration.version === 71) {
+        ensureIssueCoordinationColumns(db);
+      }
+      if (migration.version === 76) {
+        ensureAuthRequestActionPrerequisites(db);
+      }
+      if (migration.version === 79) {
+        ensureAuthRequestMergeFinalizerColumns(db);
+      }
+      if (migration.version === 87) {
+        ensureLedgerProjectKeyColumn(db);
+      }
+      if (migration.version === 89) {
+        ensureArtifactLinkSeriesColumns(db);
+      }
+      if (migration.version === 91) {
+        ensureArtifactLinkTargetColumns(db);
+      }
+      if (migration.version === 92) {
+        ensureAuthRequestPreflightReuseColumns(db);
+      }
+      if (migration.version === 93) {
+        ensureConsoleTransportLaneColumn(db);
+      }
+      if (migration.version === 94) {
+        ensureMessageParamsThinkingEffortColumn(db);
+      }
+      if (migration.version === 95) {
+        ensureConversationSidechainColumns(db);
+      }
+      if (migration.version === 101) {
+        ensureArtifactVersionParentColumn(db);
+      }
+      if (migration.version === 103) {
+        ensureConversationEmptyIngestColumns(db);
+      }
+      for (const statement of migration.statements) {
+        db.exec(statement);
+      }
+      if (migration.version === 103) {
+        verifyConversationEmptyIngestSchema(db);
+      }
+      setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
+    }
+  })();
+}
+
 export function migrate(db: Db): void {
   assertMigrationSequence();
   if (isFreshDatabase(db)) {
@@ -2904,58 +2971,11 @@ export function migrate(db: Db): void {
 
   const currentVersion = getSchemaVersion(db);
   const pending = MIGRATIONS.filter((migration) => migration.version > currentVersion);
-
-  if (pending.length > 0) {
-    const apply = db.transaction(() => {
-      for (const migration of pending) {
-        if (migration.version === 71) {
-          ensureIssueCoordinationColumns(db);
-        }
-        if (migration.version === 76) {
-          ensureAuthRequestActionPrerequisites(db);
-        }
-        if (migration.version === 79) {
-          ensureAuthRequestMergeFinalizerColumns(db);
-        }
-        if (migration.version === 87) {
-          ensureLedgerProjectKeyColumn(db);
-        }
-        if (migration.version === 89) {
-          ensureArtifactLinkSeriesColumns(db);
-        }
-        if (migration.version === 91) {
-          ensureArtifactLinkTargetColumns(db);
-        }
-        if (migration.version === 92) {
-          ensureAuthRequestPreflightReuseColumns(db);
-        }
-        if (migration.version === 93) {
-          ensureConsoleTransportLaneColumn(db);
-        }
-        if (migration.version === 94) {
-          ensureMessageParamsThinkingEffortColumn(db);
-        }
-        if (migration.version === 95) {
-          ensureConversationSidechainColumns(db);
-        }
-        if (migration.version === 101) {
-          ensureArtifactVersionParentColumn(db);
-        }
-        if (migration.version === 103) {
-          ensureConversationEmptyIngestColumns(db);
-        }
-        for (const statement of migration.statements) {
-          db.exec(statement);
-        }
-        if (migration.version === 103) {
-          verifyConversationEmptyIngestSchema(db);
-        }
-        setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
-      }
-    });
-
-    apply();
-  }
+  // Migration 105 depends on Node post-migrations through v104. Apply only the
+  // earlier SQL/hooks now; later migrations remain pending until v105 commits.
+  const beforeV105 = pending.filter((migration) => migration.version < 105);
+  const afterV105 = pending.filter((migration) => migration.version > 105);
+  applySchemaMigrations(db, beforeV105);
 
   // Issue f7a994e (migration 88): the new artifact_series / artifact_versions
   // tables use CREATE TABLE IF NOT EXISTS (idempotent for fresh DBs and
@@ -3164,6 +3184,17 @@ export function migrate(db: Db): void {
       }).immediate();
     });
   }
+  if (shouldRunPostMigration(
+    db,
+    "v104_artifact_canonical_targets",
+    pending,
+    104,
+    () => needsArtifactCanonicalTargetMigration(db),
+  )) {
+    runPostMigration(db, "v104_artifact_canonical_targets", () => {
+      rebuildArtifactCanonicalTargets(db);
+    });
+  }
   // Bug: 3aaf10d — strip leading dots from repo names (.dotfiles → dotfiles)
   if (pending.some((m) => m.version === 26)) {
     const rows = db.prepare(
@@ -3181,6 +3212,26 @@ export function migrate(db: Db): void {
       }
     }
   }
+  // Issue 9ceb090 (migration 105): space_exports legacy artifact references
+  // can only be mapped after all existing post-DDL work, including v91's
+  // deterministic artifact_blob backfill and v104's canonical-target rebuild.
+  // Add the columns, backfill and verify, and record both completion facts in
+  // one transaction so a failure leaves schema version 104 and no partial v105
+  // schema/data/marker behind.
+  if (
+    pending.some((migration) => migration.version === 105) ||
+    getMeta(db, postMigrationKey("v105_space_export_canonical_artifacts")) !== "done"
+  ) {
+    db.transaction(() => {
+      migrateSpaceExportCanonicalArtifacts(db);
+      setMeta(db, postMigrationKey("v105_space_export_canonical_artifacts"), "done");
+      setMeta(db, SCHEMA_VERSION_KEY, String(Math.max(getSchemaVersion(db), 105)));
+    }).immediate();
+  }
+  // Preserve global ordering across the dependency boundary: no migration
+  // newer than v105 may execute until every older post-DDL migration and v105
+  // itself have completed successfully.
+  applySchemaMigrations(db, afterV105);
 }
 
 /**
@@ -4876,7 +4927,7 @@ function ensureArtifactLinkTargetColumns(db: Db): void {
   );
 }
 
-function artifactBlobIdFromLegacy(id: string): string {
+function canonicalBlobIdForCompatibilityRef(id: string): string {
   const trimmed = id.trim();
   const shaNamespaced = /^artifact:sha256:(.+)$/i.exec(trimmed);
   if (shaNamespaced) return `artifact-blob:${shaNamespaced[1]}`;
@@ -4888,7 +4939,7 @@ function artifactBlobIdFromLegacy(id: string): string {
   return `artifact-blob:${trimmed}`;
 }
 
-function artifactIdFromLegacySeries(id: string): string {
+function canonicalArtifactIdForCompatibilitySeries(id: string): string {
   const trimmed = id.trim();
   const series = /^artifact-series:(.+)$/i.exec(trimmed);
   if (series) return `artifact:${series[1]}`;
@@ -4896,7 +4947,7 @@ function artifactIdFromLegacySeries(id: string): string {
   return `artifact:${trimmed}`;
 }
 
-function artifactVersionIdFromLegacy(id: string): string {
+function canonicalVersionIdForCompatibilityVersion(id: string): string {
   const trimmed = id.trim();
   if (/^artifact-version:/i.test(trimmed)) return trimmed;
   return `artifact-version:${trimmed}`;
@@ -4990,7 +5041,7 @@ function backfillArtifactIdentityTables(db: Db): void {
       const legacyId = String(row.id);
       const uri = typeof row.uri === "string" ? row.uri : null;
       insert.run({
-        id: artifactBlobIdFromLegacy(legacyId),
+        id: canonicalBlobIdForCompatibilityRef(legacyId),
         algorithm: typeof row.algorithm === "string" && row.algorithm ? row.algorithm : "sha256",
         content_hash: String(row.content_hash ?? legacyId),
         storage_uri: uri?.startsWith("repo://") ? null : uri,
@@ -5025,7 +5076,7 @@ function backfillArtifactIdentityTables(db: Db): void {
     for (const row of rows) {
       const repoId = row.repo_id;
       insert.run({
-        id: artifactIdFromLegacySeries(String(row.id)),
+        id: canonicalArtifactIdForCompatibilitySeries(String(row.id)),
         identity_key: String(row.series_key ?? row.id),
         source_kind: normalizeArtifactSourceKind(row.source_kind),
         title: row.title ?? null,
@@ -5034,7 +5085,7 @@ function backfillArtifactIdentityTables(db: Db): void {
         logical_name: row.logical_name ?? null,
         source_path: row.logical_name ?? null,
         latest_version_id: typeof row.latest_version_id === "string"
-          ? artifactVersionIdFromLegacy(row.latest_version_id)
+          ? canonicalVersionIdForCompatibilityVersion(row.latest_version_id)
           : null,
         version_count: Number(row.version_count ?? 0),
         metadata_json: typeof row.metadata_json === "string" ? row.metadata_json : "{}",
@@ -5082,10 +5133,10 @@ function backfillArtifactIdentityTables(db: Db): void {
         series_logical_name: row.series_logical_name ?? null,
       };
       insert.run({
-        id: artifactVersionIdFromLegacy(String(row.id)),
-        artifact_id: artifactIdFromLegacySeries(String(row.series_id)),
+        id: canonicalVersionIdForCompatibilityVersion(String(row.id)),
+        artifact_id: canonicalArtifactIdForCompatibilitySeries(String(row.series_id)),
         version_no: Number(row.version_no ?? 0),
-        blob_id: artifactBlobIdFromLegacy(String(row.artifact_id)),
+        blob_id: canonicalBlobIdForCompatibilityRef(String(row.artifact_id)),
         source_kind: normalizeArtifactVersionSourceKind(row.source_kind),
         content_hash: String(row.content_hash ?? ""),
         source_project_id: resolveArtifactSourceProjectId(db, sourceRepoId),
@@ -5113,7 +5164,7 @@ function backfillArtifactLinkTargets(db: Db): void {
     ? db.prepare("SELECT id FROM artifacts").all() as Array<{ id: string }>
     : [];
   const blobIdByLegacyArtifact = new Map(
-    oldArtifactRows.map((row) => [row.id, artifactBlobIdFromLegacy(row.id)]),
+    oldArtifactRows.map((row) => [row.id, canonicalBlobIdForCompatibilityRef(row.id)]),
   );
   const versions = tableExists(db, "artifact_versions")
     ? db.prepare("SELECT id, series_id, artifact_id FROM artifact_versions").all() as Array<{
@@ -5158,7 +5209,7 @@ function backfillArtifactLinkTargets(db: Db): void {
 
   for (const link of links) {
     const legacyBlobId = blobIdByLegacyArtifact.get(link.artifact_id)
-      ?? artifactBlobIdFromLegacy(link.artifact_id);
+      ?? canonicalBlobIdForCompatibilityRef(link.artifact_id);
     let targetType: string | null = null;
     let targetId: string | null = null;
     let fallbackVersionId: string | null = null;
@@ -5168,7 +5219,7 @@ function backfillArtifactLinkTargets(db: Db): void {
     const blobVersions = byBlob.get(link.artifact_id) ?? [];
 
     if (link.link_kind === "living" && link.series_id) {
-      const artifactId = artifactIdFromLegacySeries(link.series_id);
+      const artifactId = canonicalArtifactIdForCompatibilitySeries(link.series_id);
       if (newArtifactIds.has(artifactId)) {
         targetType = "artifact";
         targetId = artifactId;
@@ -5178,12 +5229,12 @@ function backfillArtifactLinkTargets(db: Db): void {
         : blobVersions.length === 1
           ? blobVersions[0]
           : null;
-      fallbackVersionId = fallback ? artifactVersionIdFromLegacy(fallback.id) : null;
+      fallbackVersionId = fallback ? canonicalVersionIdForCompatibilityVersion(fallback.id) : null;
     } else {
       const candidates = seriesVersions.length > 0 ? seriesVersions : blobVersions;
       if (candidates.length === 1) {
         targetType = "artifact_version";
-        targetId = artifactVersionIdFromLegacy(candidates[0].id);
+        targetId = canonicalVersionIdForCompatibilityVersion(candidates[0].id);
       }
     }
 
@@ -5499,10 +5550,1034 @@ function ensureMessageParamsThinkingEffortColumn(db: Db): void {
   db.exec("ALTER TABLE message_params ADD COLUMN thinking_effort TEXT");
 }
 
+const ARTIFACT_CANONICAL_TARGET_TABLES = [
+  "artifact_aliases",
+  "artifact_links",
+  "session_instruction_artifacts",
+  "artifact_drafts",
+] as const;
+
+const ARTIFACT_CANONICAL_TARGET_INDEXES = new Set([
+  "idx_artifact_aliases_artifact",
+  "idx_artifact_aliases_blob",
+  "idx_artifact_aliases_scheme_ref",
+  "idx_artifact_aliases_status",
+  "idx_artifact_links_artifact",
+  "idx_artifact_links_blob",
+  "idx_artifact_links_entity",
+  "idx_artifact_links_fallback_version",
+  "idx_artifact_links_kind",
+  "idx_artifact_links_legacy_blob",
+  "idx_artifact_links_provider",
+  "idx_artifact_links_repo",
+  "idx_artifact_links_role",
+  "idx_artifact_links_series",
+  "idx_artifact_links_target",
+  "idx_artifact_drafts_base",
+  "idx_artifact_drafts_legacy_series",
+  "idx_artifact_drafts_version",
+  "idx_session_instruction_artifacts_legacy_series",
+  "idx_session_instruction_artifacts_legacy_version",
+  "idx_session_instruction_artifacts_session",
+  "idx_session_instruction_artifacts_version",
+]);
+
+function needsArtifactCanonicalTargetMigration(db: Db): boolean {
+  const canonicalColumns: ReadonlyArray<readonly [string, string[]]> = [
+    ["artifact_aliases", ["blob_id"]],
+    ["artifact_links", ["blob_id"]],
+    ["session_instruction_artifacts", ["artifact_id", "version_id"]],
+    ["artifact_drafts", ["artifact_id", "version_id"]],
+  ];
+  const states = canonicalColumns.map(([table, columns]) => {
+    if (!tableExists(db, table)) return false;
+    const names = tableColumnNames(db, table);
+    return columns.every((column) => names.has(column));
+  });
+  if (states.every(Boolean)) {
+    verifyArtifactCanonicalTargetSchema(db);
+    return false;
+  }
+  if (states.some(Boolean)) {
+    throw new Error(
+      "migration 104 precondition: canonical target columns are only partially applied",
+    );
+  }
+  return true;
+}
+
+function migration104FailureIds(
+  db: Db,
+  label: string,
+  sql: string,
+): void {
+  const rows = db.prepare(sql).all() as Array<{ id: string }>;
+  if (rows.length === 0) return;
+  throw new Error(
+    `migration 104 preflight: ${label}; offending ids: ${rows.map((row) => row.id).join(", ")}`,
+  );
+}
+
+function assertMigration104Preconditions(db: Db): void {
+  for (const table of ARTIFACT_CANONICAL_TARGET_TABLES) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 104 precondition: required table ${table} is missing`);
+    }
+  }
+  const mappingTables = [
+    "artifacts",
+    "artifact_series",
+    "artifact_versions",
+    "artifact_blob",
+    "artifact",
+    "artifact_version",
+  ];
+  for (const table of mappingTables) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 104 precondition: required mapping table ${table} is missing`);
+    }
+  }
+
+  const triggers = db.prepare(
+    `SELECT name AS id
+       FROM sqlite_master
+      WHERE type = 'trigger'
+        AND tbl_name IN ('artifact_aliases', 'artifact_links',
+                         'session_instruction_artifacts', 'artifact_drafts')
+      ORDER BY name`,
+  ).all() as Array<{ id: string }>;
+  if (triggers.length > 0) {
+    const triggerIds = triggers.map((row) => row.id).join(", ");
+    throw new Error(
+      `migration 104 precondition: affected tables have triggers that cannot be lost; ` +
+      `offending ids: ${triggerIds}`,
+    );
+  }
+  for (const table of ARTIFACT_CANONICAL_TARGET_TABLES) {
+    if (tableExists(db, `${table}_v104`)) {
+      throw new Error(`migration 104 precondition: unexpected staging table ${table}_v104 exists`);
+    }
+  }
+
+  migration104FailureIds(
+    db,
+    "resolved aliases must map to exactly one canonical blob",
+    `SELECT aa.id
+       FROM artifact_aliases aa
+      WHERE aa.resolution_status = 'resolved'
+        AND (
+          aa.artifact_id IS NULL OR
+          (SELECT COUNT(*)
+             FROM artifacts legacy_blob
+             JOIN artifact_blob canonical_blob
+               ON canonical_blob.algorithm = legacy_blob.algorithm
+              AND canonical_blob.content_hash = legacy_blob.content_hash
+            WHERE legacy_blob.id = aa.artifact_id) != 1
+        )
+      ORDER BY aa.id`,
+  );
+  migration104FailureIds(
+    db,
+    "links must map to exactly one canonical blob",
+    `SELECT link.id
+       FROM artifact_links link
+      WHERE (SELECT COUNT(*)
+               FROM artifacts legacy_blob
+               JOIN artifact_blob canonical_blob
+                 ON canonical_blob.algorithm = legacy_blob.algorithm
+                AND canonical_blob.content_hash = legacy_blob.content_hash
+              WHERE legacy_blob.id = link.artifact_id) != 1
+      ORDER BY link.id`,
+  );
+  migration104FailureIds(
+    db,
+    "living links must map to exactly one canonical artifact",
+    `SELECT link.id
+       FROM artifact_links link
+      WHERE link.link_kind = 'living'
+        AND (
+          link.series_id IS NULL OR
+          (SELECT COUNT(*)
+             FROM artifact_series legacy_series
+             JOIN artifact canonical_artifact
+               ON canonical_artifact.identity_key = legacy_series.series_key
+            WHERE legacy_series.id = link.series_id) != 1
+        )
+      ORDER BY link.id`,
+  );
+  migration104FailureIds(
+    db,
+    "existing link targets contradict canonical identity or bytes",
+    `WITH link_map AS (
+       SELECT link.*,
+              canonical_blob.id AS mapped_blob_id,
+              canonical_artifact.id AS mapped_artifact_id
+         FROM artifact_links link
+         JOIN artifacts legacy_blob ON legacy_blob.id = link.artifact_id
+         JOIN artifact_blob canonical_blob
+           ON canonical_blob.algorithm = legacy_blob.algorithm
+          AND canonical_blob.content_hash = legacy_blob.content_hash
+         LEFT JOIN artifact_series legacy_series ON legacy_series.id = link.series_id
+         LEFT JOIN artifact canonical_artifact
+           ON canonical_artifact.identity_key = legacy_series.series_key
+     )
+     SELECT link_map.id
+       FROM link_map
+      WHERE (target_type IS NULL) != (target_id IS NULL)
+         OR (legacy_blob_id IS NOT NULL AND legacy_blob_id != mapped_blob_id)
+         OR (fallback_version_id IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM artifact_version version
+                WHERE version.id = fallback_version_id
+                  AND version.blob_id = mapped_blob_id
+                  AND version.content_hash = (
+                    SELECT content_hash FROM artifact_blob WHERE id = mapped_blob_id
+                  )
+             ))
+         OR (link_kind = 'living' AND (
+               mapped_artifact_id IS NULL OR
+               (target_type IS NOT NULL AND
+                (target_type != 'artifact' OR target_id != mapped_artifact_id))
+             ))
+         OR (link_kind = 'pinned' AND target_type IS NOT NULL AND NOT (
+               (target_type = 'artifact_blob' AND target_id = mapped_blob_id) OR
+               (target_type = 'artifact_version' AND EXISTS (
+                 SELECT 1 FROM artifact_version version
+                  WHERE version.id = target_id
+                    AND version.blob_id = mapped_blob_id
+                    AND version.content_hash = (
+                      SELECT content_hash FROM artifact_blob WHERE id = mapped_blob_id
+                    )
+               ))
+             ))
+      ORDER BY link_map.id`,
+  );
+  migration104FailureIds(
+    db,
+    "session attachments must map one-to-one to canonical versions",
+    `SELECT attachment.session_id || ':' || attachment.artifact_series_id AS id
+       FROM session_instruction_artifacts attachment
+      WHERE (SELECT COUNT(*)
+               FROM artifact_series legacy_series
+               JOIN artifact_versions legacy_version
+                 ON legacy_version.id = attachment.artifact_version_id
+                AND legacy_version.series_id = legacy_series.id
+               JOIN artifact canonical_artifact
+                 ON canonical_artifact.identity_key = legacy_series.series_key
+               JOIN artifacts legacy_blob ON legacy_blob.id = legacy_version.artifact_id
+               JOIN artifact_blob canonical_blob
+                 ON canonical_blob.algorithm = legacy_blob.algorithm
+                AND canonical_blob.content_hash = legacy_blob.content_hash
+               JOIN artifact_version canonical_version
+                 ON canonical_version.artifact_id = canonical_artifact.id
+                AND canonical_version.version_no = legacy_version.version_no
+                AND canonical_version.content_hash = legacy_version.content_hash
+                AND canonical_version.blob_id = canonical_blob.id
+                AND canonical_version.content_hash = canonical_blob.content_hash
+              WHERE legacy_series.id = attachment.artifact_series_id) != 1
+      ORDER BY id`,
+  );
+  migration104FailureIds(
+    db,
+    "drafts must map one-to-one to canonical versions",
+    `SELECT draft.id
+       FROM artifact_drafts draft
+      WHERE (SELECT COUNT(*)
+               FROM artifact_series legacy_series
+               JOIN artifact_versions legacy_version
+                 ON legacy_version.id = draft.base_version_id
+                AND legacy_version.series_id = legacy_series.id
+               JOIN artifact canonical_artifact
+                 ON canonical_artifact.identity_key = legacy_series.series_key
+               JOIN artifacts legacy_blob ON legacy_blob.id = legacy_version.artifact_id
+               JOIN artifact_blob canonical_blob
+                 ON canonical_blob.algorithm = legacy_blob.algorithm
+                AND canonical_blob.content_hash = legacy_blob.content_hash
+               JOIN artifact_version canonical_version
+                 ON canonical_version.artifact_id = canonical_artifact.id
+                AND canonical_version.version_no = legacy_version.version_no
+                AND canonical_version.content_hash = legacy_version.content_hash
+                AND canonical_version.blob_id = canonical_blob.id
+                AND canonical_version.content_hash = canonical_blob.content_hash
+              WHERE legacy_series.id = draft.series_id) != 1
+      ORDER BY draft.id`,
+  );
+  migration104FailureIds(
+    db,
+    "canonical session attachment keys collide",
+    `SELECT attachment.session_id || ':' || canonical_artifact.id AS id
+       FROM session_instruction_artifacts attachment
+       JOIN artifact_series legacy_series ON legacy_series.id = attachment.artifact_series_id
+       JOIN artifact canonical_artifact
+         ON canonical_artifact.identity_key = legacy_series.series_key
+      GROUP BY attachment.session_id, canonical_artifact.id
+     HAVING COUNT(*) > 1
+      ORDER BY id`,
+  );
+  migration104FailureIds(
+    db,
+    "canonical draft artifact keys collide",
+    `SELECT canonical_artifact.id AS id
+       FROM artifact_drafts draft
+       JOIN artifact_series legacy_series ON legacy_series.id = draft.series_id
+       JOIN artifact canonical_artifact
+         ON canonical_artifact.identity_key = legacy_series.series_key
+      GROUP BY canonical_artifact.id
+     HAVING COUNT(*) > 1
+      ORDER BY id`,
+  );
+}
+
+function explicitMigration104Indexes(db: Db): string[] {
+  return (db.prepare(
+    `SELECT name, sql
+       FROM sqlite_master
+      WHERE type = 'index'
+        AND tbl_name IN ('artifact_aliases', 'artifact_links',
+                         'session_instruction_artifacts', 'artifact_drafts')
+        AND sql IS NOT NULL
+      ORDER BY name`,
+  ).all() as Array<{ name: string; sql: string }>)
+    .filter((row) => !ARTIFACT_CANONICAL_TARGET_INDEXES.has(row.name))
+    .map((row) => row.sql);
+}
+
+function createMigration104Indexes(db: Db, preservedIndexes: readonly string[]): void {
+  db.exec(`
+    CREATE UNIQUE INDEX idx_artifact_aliases_scheme_ref
+      ON artifact_aliases(scheme, normalized_ref);
+    CREATE INDEX idx_artifact_aliases_artifact
+      ON artifact_aliases(artifact_id) WHERE artifact_id IS NOT NULL;
+    CREATE INDEX idx_artifact_aliases_blob
+      ON artifact_aliases(blob_id) WHERE blob_id IS NOT NULL;
+    CREATE INDEX idx_artifact_aliases_status
+      ON artifact_aliases(resolution_status, scheme);
+    CREATE INDEX idx_artifact_links_artifact
+      ON artifact_links(artifact_id, link_type) WHERE artifact_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_blob
+      ON artifact_links(blob_id, link_type);
+    CREATE INDEX idx_artifact_links_entity
+      ON artifact_links(entity_type, entity_id);
+    CREATE INDEX idx_artifact_links_fallback_version
+      ON artifact_links(fallback_version_id) WHERE fallback_version_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_kind ON artifact_links(link_kind);
+    CREATE INDEX idx_artifact_links_legacy_blob
+      ON artifact_links(legacy_blob_id) WHERE legacy_blob_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_provider
+      ON artifact_links(provider_id) WHERE provider_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_repo
+      ON artifact_links(repo_id) WHERE repo_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_role
+      ON artifact_links(role) WHERE role IS NOT NULL;
+    CREATE INDEX idx_artifact_links_series
+      ON artifact_links(series_id) WHERE series_id IS NOT NULL;
+    CREATE INDEX idx_artifact_links_target
+      ON artifact_links(target_type, target_id);
+    CREATE INDEX idx_artifact_drafts_base
+      ON artifact_drafts(base_version_id) WHERE base_version_id IS NOT NULL;
+    CREATE UNIQUE INDEX idx_artifact_drafts_legacy_series
+      ON artifact_drafts(series_id) WHERE series_id IS NOT NULL;
+    CREATE INDEX idx_artifact_drafts_version ON artifact_drafts(version_id);
+    CREATE INDEX idx_session_instruction_artifacts_session
+      ON session_instruction_artifacts(session_id, position);
+    CREATE INDEX idx_session_instruction_artifacts_version
+      ON session_instruction_artifacts(version_id);
+    CREATE UNIQUE INDEX idx_session_instruction_artifacts_legacy_series
+      ON session_instruction_artifacts(session_id, artifact_series_id)
+      WHERE artifact_series_id IS NOT NULL;
+    CREATE INDEX idx_session_instruction_artifacts_legacy_version
+      ON session_instruction_artifacts(artifact_version_id)
+      WHERE artifact_version_id IS NOT NULL;
+  `);
+  for (const indexSql of preservedIndexes) db.exec(indexSql);
+}
+
+function rebuildArtifactCanonicalTargets(db: Db): void {
+  if (!needsArtifactCanonicalTargetMigration(db)) return;
+  if (db.inTransaction) {
+    throw new Error("migration 104 precondition: rebuild cannot start inside a transaction");
+  }
+
+  const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+  try {
+    if (!previousForeignKeys) db.pragma("foreign_keys = ON");
+    const initialViolations = db.pragma("foreign_key_check") as unknown[];
+    if (initialViolations.length > 0) {
+      throw new Error(
+        `migration 104 preflight: database has ${initialViolations.length} ` +
+        "foreign key violation(s)",
+      );
+    }
+    assertMigration104Preconditions(db);
+    const preservedIndexes = explicitMigration104Indexes(db);
+
+    db.pragma("foreign_keys = OFF");
+    db.transaction(() => {
+      db.exec(`
+        CREATE TABLE artifact_aliases_v104 (
+          id                TEXT PRIMARY KEY,
+          artifact_id       TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+          blob_id           TEXT REFERENCES artifact_blob(id) ON DELETE RESTRICT,
+          scheme            TEXT NOT NULL,
+          alias             TEXT NOT NULL,
+          normalized_ref    TEXT NOT NULL,
+          locator_json      TEXT NOT NULL DEFAULT '{}',
+          resolution_status TEXT NOT NULL DEFAULT 'resolved'
+            CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
+          source            TEXT NOT NULL DEFAULT 'artifact_registry',
+          created_at        INTEGER NOT NULL,
+          updated_at        INTEGER NOT NULL,
+          CHECK (
+            (resolution_status = 'resolved' AND blob_id IS NOT NULL) OR
+            (resolution_status != 'resolved' AND blob_id IS NULL)
+          )
+        );
+        CREATE TABLE artifact_links_v104 (
+          id                  TEXT PRIMARY KEY,
+          artifact_id         TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+          blob_id             TEXT NOT NULL REFERENCES artifact_blob(id) ON DELETE RESTRICT,
+          entity_type         TEXT NOT NULL,
+          entity_id           TEXT NOT NULL,
+          link_type           TEXT NOT NULL DEFAULT 'references',
+          role                TEXT,
+          repo_id             TEXT,
+          provider_id         TEXT,
+          source              TEXT NOT NULL DEFAULT 'artifact_registry',
+          metadata_json       TEXT NOT NULL DEFAULT '{}',
+          created_at          INTEGER NOT NULL,
+          updated_at          INTEGER NOT NULL,
+          link_kind           TEXT NOT NULL DEFAULT 'pinned'
+            CHECK(link_kind IN ('pinned','living')),
+          series_id           TEXT,
+          series_ref          TEXT,
+          target_type         TEXT NOT NULL
+            CHECK(target_type IN ('artifact','artifact_version','artifact_blob')),
+          target_id           TEXT NOT NULL,
+          fallback_version_id TEXT REFERENCES artifact_version(id) ON DELETE RESTRICT,
+          legacy_blob_id      TEXT,
+          CHECK (
+            (link_kind = 'living' AND target_type = 'artifact') OR
+            (link_kind = 'pinned' AND target_type IN ('artifact_version','artifact_blob'))
+          )
+        );
+        CREATE TABLE session_instruction_artifacts_v104 (
+          session_id          TEXT NOT NULL,
+          artifact_id         TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,
+          version_id          TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+          artifact_series_id  TEXT REFERENCES artifact_series(id) ON DELETE SET NULL,
+          artifact_version_id TEXT REFERENCES artifact_versions(id) ON DELETE SET NULL,
+          legacy_preset_id    TEXT,
+          position            INTEGER NOT NULL DEFAULT 0,
+          created_at          INTEGER NOT NULL,
+          updated_at          INTEGER NOT NULL,
+          PRIMARY KEY (session_id, artifact_id)
+        );
+        CREATE TABLE artifact_drafts_v104 (
+          id              TEXT PRIMARY KEY,
+          artifact_id     TEXT NOT NULL REFERENCES artifact(id) ON DELETE CASCADE,
+          version_id      TEXT NOT NULL REFERENCES artifact_version(id) ON DELETE RESTRICT,
+          series_id       TEXT REFERENCES artifact_series(id) ON DELETE SET NULL,
+          base_version_id TEXT REFERENCES artifact_versions(id) ON DELETE SET NULL,
+          content         TEXT NOT NULL,
+          media_type      TEXT,
+          label           TEXT,
+          note            TEXT,
+          metadata_json   TEXT NOT NULL DEFAULT '{}',
+          created_at      INTEGER NOT NULL,
+          updated_at      INTEGER NOT NULL,
+          UNIQUE(artifact_id)
+        );
+      `);
+
+      db.exec(`
+        INSERT INTO artifact_aliases_v104 (
+          id, artifact_id, blob_id, scheme, alias, normalized_ref, locator_json,
+          resolution_status, source, created_at, updated_at
+        )
+        SELECT alias.id, alias.artifact_id,
+               CASE WHEN alias.resolution_status = 'resolved' THEN canonical_blob.id END,
+               alias.scheme, alias.alias, alias.normalized_ref, alias.locator_json,
+               alias.resolution_status, alias.source, alias.created_at, alias.updated_at
+          FROM artifact_aliases alias
+          LEFT JOIN artifacts legacy_blob ON legacy_blob.id = alias.artifact_id
+          LEFT JOIN artifact_blob canonical_blob
+            ON canonical_blob.algorithm = legacy_blob.algorithm
+           AND canonical_blob.content_hash = legacy_blob.content_hash;
+
+        INSERT INTO artifact_links_v104 (
+          id, artifact_id, blob_id, entity_type, entity_id, link_type, role,
+          repo_id, provider_id, source, metadata_json, created_at, updated_at,
+          link_kind, series_id, series_ref, target_type, target_id,
+          fallback_version_id, legacy_blob_id
+        )
+        SELECT link.id, link.artifact_id, canonical_blob.id, link.entity_type,
+               link.entity_id, link.link_type, link.role, link.repo_id,
+               link.provider_id, link.source, link.metadata_json, link.created_at,
+               link.updated_at, link.link_kind, link.series_id, link.series_ref,
+               CASE
+                 WHEN link.link_kind = 'living' THEN 'artifact'
+                 WHEN link.target_type = 'artifact_version' THEN 'artifact_version'
+                 ELSE 'artifact_blob'
+               END,
+               CASE
+                 WHEN link.link_kind = 'living' THEN canonical_artifact.id
+                 WHEN link.target_type = 'artifact_version' THEN link.target_id
+                 ELSE canonical_blob.id
+               END,
+               link.fallback_version_id, COALESCE(link.legacy_blob_id, canonical_blob.id)
+          FROM artifact_links link
+          JOIN artifacts legacy_blob ON legacy_blob.id = link.artifact_id
+          JOIN artifact_blob canonical_blob
+            ON canonical_blob.algorithm = legacy_blob.algorithm
+           AND canonical_blob.content_hash = legacy_blob.content_hash
+          LEFT JOIN artifact_series legacy_series ON legacy_series.id = link.series_id
+          LEFT JOIN artifact canonical_artifact
+            ON canonical_artifact.identity_key = legacy_series.series_key;
+
+        INSERT INTO session_instruction_artifacts_v104 (
+          session_id, artifact_id, version_id, artifact_series_id,
+          artifact_version_id, legacy_preset_id, position, created_at, updated_at
+        )
+        SELECT attachment.session_id, canonical_artifact.id, canonical_version.id,
+               attachment.artifact_series_id, attachment.artifact_version_id,
+               attachment.legacy_preset_id, attachment.position,
+               attachment.created_at, attachment.updated_at
+          FROM session_instruction_artifacts attachment
+          JOIN artifact_series legacy_series
+            ON legacy_series.id = attachment.artifact_series_id
+          JOIN artifact_versions legacy_version
+            ON legacy_version.id = attachment.artifact_version_id
+           AND legacy_version.series_id = legacy_series.id
+          JOIN artifact canonical_artifact
+            ON canonical_artifact.identity_key = legacy_series.series_key
+          JOIN artifacts legacy_blob ON legacy_blob.id = legacy_version.artifact_id
+          JOIN artifact_blob canonical_blob
+            ON canonical_blob.algorithm = legacy_blob.algorithm
+           AND canonical_blob.content_hash = legacy_blob.content_hash
+          JOIN artifact_version canonical_version
+            ON canonical_version.artifact_id = canonical_artifact.id
+           AND canonical_version.version_no = legacy_version.version_no
+           AND canonical_version.content_hash = legacy_version.content_hash
+           AND canonical_version.blob_id = canonical_blob.id
+           AND canonical_version.content_hash = canonical_blob.content_hash;
+
+        INSERT INTO artifact_drafts_v104 (
+          id, artifact_id, version_id, series_id, base_version_id, content,
+          media_type, label, note, metadata_json, created_at, updated_at
+        )
+        SELECT draft.id, canonical_artifact.id, canonical_version.id,
+               draft.series_id, draft.base_version_id, draft.content,
+               draft.media_type, draft.label, draft.note, draft.metadata_json,
+               draft.created_at, draft.updated_at
+          FROM artifact_drafts draft
+          JOIN artifact_series legacy_series ON legacy_series.id = draft.series_id
+          JOIN artifact_versions legacy_version
+            ON legacy_version.id = draft.base_version_id
+           AND legacy_version.series_id = legacy_series.id
+          JOIN artifact canonical_artifact
+            ON canonical_artifact.identity_key = legacy_series.series_key
+          JOIN artifacts legacy_blob ON legacy_blob.id = legacy_version.artifact_id
+          JOIN artifact_blob canonical_blob
+            ON canonical_blob.algorithm = legacy_blob.algorithm
+           AND canonical_blob.content_hash = legacy_blob.content_hash
+          JOIN artifact_version canonical_version
+            ON canonical_version.artifact_id = canonical_artifact.id
+           AND canonical_version.version_no = legacy_version.version_no
+           AND canonical_version.content_hash = legacy_version.content_hash
+           AND canonical_version.blob_id = canonical_blob.id
+           AND canonical_version.content_hash = canonical_blob.content_hash;
+      `);
+
+      for (const table of ARTIFACT_CANONICAL_TARGET_TABLES) db.exec(`DROP TABLE ${table}`);
+      for (const table of ARTIFACT_CANONICAL_TARGET_TABLES) {
+        db.exec(`ALTER TABLE ${table}_v104 RENAME TO ${table}`);
+      }
+      createMigration104Indexes(db, preservedIndexes);
+      verifyArtifactCanonicalTargetSchema(db);
+      const violations = db.pragma("foreign_key_check") as unknown[];
+      if (violations.length > 0) {
+        throw new Error(
+          `migration 104 verification: ${violations.length} foreign key violation(s)`,
+        );
+      }
+      const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+      if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+        throw new Error("migration 104 verification: integrity_check failed");
+      }
+    }).immediate();
+  } finally {
+    db.pragma(`foreign_keys = ${previousForeignKeys ? "ON" : "OFF"}`);
+  }
+
+  const violations = db.pragma("foreign_key_check") as unknown[];
+  if (violations.length > 0) {
+    throw new Error(
+      `migration 104 verification: ${violations.length} foreign key violation(s) after restore`,
+    );
+  }
+  const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+    throw new Error("migration 104 verification: integrity_check failed after restore");
+  }
+}
+
+function verifyArtifactCanonicalTargetSchema(db: Db): void {
+  const requiredColumns: ReadonlyArray<readonly [string, string, number]> = [
+    ["artifact_aliases", "blob_id", 0],
+    ["artifact_links", "artifact_id", 0],
+    ["artifact_links", "blob_id", 1],
+    ["artifact_links", "target_type", 1],
+    ["artifact_links", "target_id", 1],
+    ["session_instruction_artifacts", "artifact_id", 1],
+    ["session_instruction_artifacts", "version_id", 1],
+    ["session_instruction_artifacts", "artifact_series_id", 0],
+    ["session_instruction_artifacts", "artifact_version_id", 0],
+    ["artifact_drafts", "artifact_id", 1],
+    ["artifact_drafts", "version_id", 1],
+    ["artifact_drafts", "series_id", 0],
+    ["artifact_drafts", "base_version_id", 0],
+  ];
+  for (const [table, name, notnull] of requiredColumns) {
+    const column = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+      name: string;
+      notnull: number;
+    }>).find((candidate) => candidate.name === name);
+    if (!column || column.notnull !== notnull) {
+      throw new Error(
+        `migration 104 verification: ${table}.${name} must have notnull=${notnull}`,
+      );
+    }
+  }
+  const requireForeignKey = (
+    table: string,
+    from: string,
+    target: string,
+    onDelete: string,
+  ): void => {
+    const matches = (db.prepare(`PRAGMA foreign_key_list(${table})`).all() as Array<{
+      from: string;
+      table: string;
+      on_delete: string;
+    }>).some((foreignKey) =>
+      foreignKey.from === from &&
+      foreignKey.table === target &&
+      foreignKey.on_delete.toUpperCase() === onDelete
+    );
+    if (!matches) {
+      throw new Error(
+        `migration 104 verification: ${table}.${from} must reference ${target} ON DELETE ${onDelete}`,
+      );
+    }
+  };
+  requireForeignKey("artifact_aliases", "artifact_id", "artifacts", "SET NULL");
+  requireForeignKey("artifact_aliases", "blob_id", "artifact_blob", "RESTRICT");
+  requireForeignKey("artifact_links", "artifact_id", "artifacts", "SET NULL");
+  requireForeignKey("artifact_links", "blob_id", "artifact_blob", "RESTRICT");
+  requireForeignKey(
+    "artifact_links",
+    "fallback_version_id",
+    "artifact_version",
+    "RESTRICT",
+  );
+  requireForeignKey("session_instruction_artifacts", "artifact_id", "artifact", "CASCADE");
+  requireForeignKey(
+    "session_instruction_artifacts",
+    "version_id",
+    "artifact_version",
+    "RESTRICT",
+  );
+  requireForeignKey(
+    "session_instruction_artifacts",
+    "artifact_series_id",
+    "artifact_series",
+    "SET NULL",
+  );
+  requireForeignKey(
+    "session_instruction_artifacts",
+    "artifact_version_id",
+    "artifact_versions",
+    "SET NULL",
+  );
+  requireForeignKey("artifact_drafts", "artifact_id", "artifact", "CASCADE");
+  requireForeignKey("artifact_drafts", "version_id", "artifact_version", "RESTRICT");
+  requireForeignKey("artifact_drafts", "series_id", "artifact_series", "SET NULL");
+  requireForeignKey("artifact_drafts", "base_version_id", "artifact_versions", "SET NULL");
+
+  const tableSql = (table: string): string => (
+    db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as
+      | { sql: string }
+      | undefined
+  )?.sql ?? "";
+  if (!/resolution_status\s*=\s*'resolved'\s+AND\s+blob_id\s+IS\s+NOT\s+NULL/i.test(
+    tableSql("artifact_aliases"),
+  )) {
+    throw new Error("migration 104 verification: artifact_aliases resolution/blob CHECK is missing");
+  }
+  const linkSql = tableSql("artifact_links");
+  if (
+    !/target_type\s+IN\s*\(\s*'artifact'\s*,\s*'artifact_version'\s*,\s*'artifact_blob'/i.test(
+      linkSql,
+    ) ||
+    !/link_kind\s*=\s*'living'\s+AND\s+target_type\s*=\s*'artifact'/i.test(linkSql)
+  ) {
+    throw new Error("migration 104 verification: artifact_links target CHECKs are missing");
+  }
+  const sessionPk = (db.prepare("PRAGMA table_info(session_instruction_artifacts)").all() as Array<{
+    name: string;
+    pk: number;
+  }>).filter((column) => column.pk > 0).sort((left, right) => left.pk - right.pk);
+  if (sessionPk.map((column) => column.name).join(",") !== "session_id,artifact_id") {
+    throw new Error("migration 104 verification: session attachment canonical primary key is missing");
+  }
+  const draftArtifactUnique = (db.prepare("PRAGMA index_list(artifact_drafts)").all() as Array<{
+    name: string;
+    unique: number;
+  }>).some((index) => {
+    if (!index.unique) return false;
+    const columns = db.prepare(`PRAGMA index_info(${index.name})`).all() as Array<{ name: string }>;
+    return columns.length === 1 && columns[0]?.name === "artifact_id";
+  });
+  if (!draftArtifactUnique) {
+    throw new Error("migration 104 verification: artifact_drafts canonical uniqueness is missing");
+  }
+  for (const index of ARTIFACT_CANONICAL_TARGET_INDEXES) {
+    if (!indexExists(db, index)) {
+      throw new Error(`migration 104 verification: missing index ${index}`);
+    }
+  }
+  migration104FailureIds(
+    db,
+    "canonical link targets are invalid after rebuild",
+    `SELECT link.id
+       FROM artifact_links link
+      WHERE (link.target_type = 'artifact' AND NOT EXISTS (
+               SELECT 1 FROM artifact WHERE artifact.id = link.target_id
+             ))
+         OR (link.target_type = 'artifact_version' AND NOT EXISTS (
+               SELECT 1 FROM artifact_version version
+                WHERE version.id = link.target_id
+                  AND version.blob_id = link.blob_id
+                  AND version.content_hash = (
+                    SELECT content_hash FROM artifact_blob WHERE id = link.blob_id
+                  )
+             ))
+         OR (link.target_type = 'artifact_blob' AND link.target_id != link.blob_id)
+         OR (link.fallback_version_id IS NOT NULL AND NOT EXISTS (
+               SELECT 1 FROM artifact_version version
+                WHERE version.id = link.fallback_version_id
+                  AND version.blob_id = link.blob_id
+                  AND version.content_hash = (
+                    SELECT content_hash FROM artifact_blob WHERE id = link.blob_id
+                  )
+             ))
+      ORDER BY link.id`,
+  );
+  migration104FailureIds(
+    db,
+    "canonical session version ownership is invalid after rebuild",
+    `SELECT attachment.session_id || ':' || attachment.artifact_id AS id
+       FROM session_instruction_artifacts attachment
+      WHERE NOT EXISTS (
+        SELECT 1 FROM artifact_version version
+         WHERE version.id = attachment.version_id
+           AND version.artifact_id = attachment.artifact_id
+      )
+      ORDER BY id`,
+  );
+  migration104FailureIds(
+    db,
+    "canonical draft version ownership is invalid after rebuild",
+    `SELECT draft.id
+       FROM artifact_drafts draft
+      WHERE NOT EXISTS (
+        SELECT 1 FROM artifact_version version
+         WHERE version.id = draft.version_id
+           AND version.artifact_id = draft.artifact_id
+      )
+      ORDER BY draft.id`,
+  );
+}
+
+const SPACE_EXPORT_CANONICAL_COLUMNS = [
+  ["last_export_artifact_id", "last_export_blob_id"],
+  ["pre_export_snapshot_artifact_id", "pre_export_snapshot_blob_id"],
+] as const;
+
+interface SpaceExportSchemaInventory {
+  tableSql: string;
+  columns: Array<{
+    cid: number;
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>;
+  indexes: Array<{ name: string; sql: string | null }>;
+  indexList: Array<{
+    name: string;
+    unique: number;
+    origin: string;
+    partial: number;
+    columns: string[];
+  }>;
+  triggers: Array<{ name: string; sql: string | null }>;
+}
+
+function spaceExportSchemaInventory(db: Db): SpaceExportSchemaInventory {
+  const table = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'space_exports'",
+  ).get() as { sql: string | null } | undefined;
+  if (!table?.sql) {
+    throw new Error("migration 105 precondition: required table space_exports is missing");
+  }
+  const indexList = (db.pragma("index_list(space_exports)") as Array<{
+    name: string;
+    unique: number;
+    origin: string;
+    partial: number;
+  }>).map((index) => ({
+    ...index,
+    columns: (db.pragma(`index_info(${JSON.stringify(index.name)})`) as Array<{ name: string }>)
+      .map((column) => column.name),
+  }));
+  return {
+    tableSql: table.sql,
+    columns: db.pragma("table_info(space_exports)") as SpaceExportSchemaInventory["columns"],
+    indexes: db.prepare(
+      `SELECT name, sql FROM sqlite_master
+        WHERE type = 'index' AND tbl_name = 'space_exports'
+        ORDER BY name`,
+    ).all() as SpaceExportSchemaInventory["indexes"],
+    indexList: indexList.sort((left, right) => left.name.localeCompare(right.name)),
+    triggers: db.prepare(
+      `SELECT name, sql FROM sqlite_master
+        WHERE type = 'trigger' AND tbl_name = 'space_exports'
+        ORDER BY name`,
+    ).all() as SpaceExportSchemaInventory["triggers"],
+  };
+}
+
+function requireSpaceExportForeignKey(
+  db: Db,
+  column: string,
+  target: string,
+  onDelete: string,
+  phase: "precondition" | "verification",
+): void {
+  const matches = (db.pragma("foreign_key_list(space_exports)") as Array<{
+    from: string;
+    table: string;
+    to: string;
+    on_delete: string;
+  }>).filter((foreignKey) =>
+    foreignKey.from === column &&
+    foreignKey.table === target &&
+    foreignKey.to === "id" &&
+    foreignKey.on_delete.toUpperCase() === onDelete
+  );
+  if (matches.length !== 1) {
+    throw new Error(
+      `migration 105 ${phase}: space_exports.${column} must reference ` +
+      `${target}(id) ON DELETE ${onDelete}`,
+    );
+  }
+}
+
+function verifySpaceExportCanonicalColumn(db: Db, column: string): void {
+  const matches = (db.pragma("table_info(space_exports)") as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>).filter((candidate) => candidate.name === column);
+  if (
+    matches.length !== 1 ||
+    matches[0].type.toUpperCase() !== "TEXT" ||
+    matches[0].notnull !== 0 ||
+    matches[0].dflt_value !== null ||
+    matches[0].pk !== 0
+  ) {
+    throw new Error(
+      `migration 105 verification: space_exports.${column} must be nullable TEXT with no default`,
+    );
+  }
+  requireSpaceExportForeignKey(db, column, "artifact_blob", "SET NULL", "verification");
+}
+
+function assertSpaceExportMappingPreconditions(db: Db): void {
+  for (const table of ["artifacts", "artifact_blob"]) {
+    if (!tableExists(db, table)) {
+      throw new Error(`migration 105 precondition: required mapping table ${table} is missing`);
+    }
+  }
+  const violations = db.pragma("foreign_key_check") as unknown[];
+  if (violations.length > 0) {
+    throw new Error(
+      `migration 105 preflight: database has ${violations.length} foreign key violation(s)`,
+    );
+  }
+
+  for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    const rows = db.prepare(
+      `SELECT export.id,
+              export.${legacyColumn} AS legacy_id,
+              export.${canonicalColumn} AS canonical_id,
+              (SELECT COUNT(*) FROM artifacts legacy
+                WHERE legacy.id = export.${legacyColumn}) AS legacy_count,
+              (SELECT COUNT(*)
+                 FROM artifacts legacy
+                 JOIN artifact_blob canonical
+                   ON canonical.algorithm = legacy.algorithm
+                  AND canonical.content_hash = legacy.content_hash
+                WHERE legacy.id = export.${legacyColumn}) AS mapping_count,
+              (SELECT canonical.id
+                 FROM artifacts legacy
+                 JOIN artifact_blob canonical
+                   ON canonical.algorithm = legacy.algorithm
+                  AND canonical.content_hash = legacy.content_hash
+                WHERE legacy.id = export.${legacyColumn}
+                LIMIT 1) AS mapped_id
+         FROM space_exports export
+        WHERE export.${legacyColumn} IS NOT NULL
+        ORDER BY export.id`,
+    ).all() as Array<{
+      id: string;
+      legacy_id: string;
+      canonical_id: string | null;
+      legacy_count: number;
+      mapping_count: number;
+      mapped_id: string | null;
+    }>;
+    for (const row of rows) {
+      if (row.legacy_count !== 1 || row.mapping_count !== 1 || !row.mapped_id) {
+        throw new Error(
+          `migration 105 preflight: ${legacyColumn} must map to exactly one canonical blob; ` +
+          `offending id: ${row.id}`,
+        );
+      }
+      if (row.canonical_id !== null && row.canonical_id !== row.mapped_id) {
+        throw new Error(
+          `migration 105 preflight: ${canonicalColumn} contradicts legacy artifact bytes; ` +
+          `offending id: ${row.id}`,
+        );
+      }
+    }
+  }
+}
+
+function verifySpaceExportCanonicalData(db: Db): void {
+  for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    const invalid = db.prepare(
+      `SELECT export.id
+         FROM space_exports export
+        WHERE (export.${canonicalColumn} IS NOT NULL AND NOT EXISTS (
+                 SELECT 1 FROM artifact_blob canonical
+                  WHERE canonical.id = export.${canonicalColumn}
+               ))
+           OR (export.${legacyColumn} IS NOT NULL AND NOT EXISTS (
+                 SELECT 1
+                   FROM artifacts legacy
+                   JOIN artifact_blob canonical
+                     ON canonical.algorithm = legacy.algorithm
+                    AND canonical.content_hash = legacy.content_hash
+                  WHERE legacy.id = export.${legacyColumn}
+                    AND canonical.id = export.${canonicalColumn}
+               ))
+        ORDER BY export.id`,
+    ).all() as Array<{ id: string }>;
+    if (invalid.length > 0) {
+      throw new Error(
+        `migration 105 verification: ${canonicalColumn} has missing or cross-byte targets; ` +
+        `offending ids: ${invalid.map((row) => row.id).join(", ")}`,
+      );
+    }
+  }
+}
+
+function migrateSpaceExportCanonicalArtifacts(db: Db): void {
+  if (!db.inTransaction) {
+    throw new Error("migration 105 precondition: migration must run inside its schema transaction");
+  }
+  const before = spaceExportSchemaInventory(db);
+  const names = new Set(before.columns.map((column) => column.name));
+  for (const [legacyColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    if (!names.has(legacyColumn)) {
+      throw new Error(
+        `migration 105 precondition: required column space_exports.${legacyColumn} is missing`,
+      );
+    }
+    requireSpaceExportForeignKey(db, legacyColumn, "artifacts", "SET NULL", "precondition");
+  }
+
+  const canonicalStates = SPACE_EXPORT_CANONICAL_COLUMNS.map(([, column]) => names.has(column));
+  if (canonicalStates.some(Boolean) && !canonicalStates.every(Boolean)) {
+    throw new Error("migration 105 precondition: canonical columns are only partially applied");
+  }
+  if (canonicalStates.every(Boolean)) {
+    for (const [, column] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+      verifySpaceExportCanonicalColumn(db, column);
+    }
+  } else {
+    db.exec(
+      "ALTER TABLE space_exports ADD COLUMN last_export_blob_id " +
+      "TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL",
+    );
+    db.exec(
+      "ALTER TABLE space_exports ADD COLUMN pre_export_snapshot_blob_id " +
+      "TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL",
+    );
+  }
+
+  assertSpaceExportMappingPreconditions(db);
+  for (const [legacyColumn, canonicalColumn] of SPACE_EXPORT_CANONICAL_COLUMNS) {
+    db.exec(
+      `UPDATE space_exports
+          SET ${canonicalColumn} = (
+            SELECT canonical.id
+              FROM artifacts legacy
+              JOIN artifact_blob canonical
+                ON canonical.algorithm = legacy.algorithm
+               AND canonical.content_hash = legacy.content_hash
+             WHERE legacy.id = space_exports.${legacyColumn}
+          )
+        WHERE ${legacyColumn} IS NOT NULL
+          AND ${canonicalColumn} IS NULL`,
+    );
+    verifySpaceExportCanonicalColumn(db, canonicalColumn);
+  }
+  verifySpaceExportCanonicalData(db);
+
+  const after = spaceExportSchemaInventory(db);
+  const originalColumns = after.columns.filter((column) => names.has(column.name));
+  if (JSON.stringify(originalColumns) !== JSON.stringify(before.columns)) {
+    throw new Error("migration 105 verification: existing space_exports columns changed");
+  }
+  if (
+    JSON.stringify(after.indexes) !== JSON.stringify(before.indexes) ||
+    JSON.stringify(after.indexList) !== JSON.stringify(before.indexList) ||
+    JSON.stringify(after.triggers) !== JSON.stringify(before.triggers)
+  ) {
+    throw new Error("migration 105 verification: space_exports index or trigger inventory changed");
+  }
+  const violations = db.pragma("foreign_key_check") as unknown[];
+  if (violations.length > 0) {
+    throw new Error(
+      `migration 105 verification: ${violations.length} foreign key violation(s)`,
+    );
+  }
+  const integrity = db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+  if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
+    throw new Error("migration 105 verification: integrity_check failed");
+  }
+}
+
 function tableColumnNames(db: Db, table: string): Set<string> {
   const allowed = new Set([
     "artifact",
     "artifact_blob",
+    "artifact_aliases",
+    "artifact_drafts",
     "artifacts",
     "artifact_links",
     "artifact_versions",
@@ -5516,8 +6591,10 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "ledger_issues",
     "message_params",
     "project_artifact_associations",
+    "session_instruction_artifacts",
     "session_projects",
     "sessions",
+    "space_exports",
     "work_units",
     "workflow_ingest_state",
   ]);

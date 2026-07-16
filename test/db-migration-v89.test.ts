@@ -69,6 +69,11 @@ function insertArtifact(target: Db, id: string, custody: string, hash: string): 
        VALUES (?, 'sha256', ?, ?, 0, ?, 1)`,
     )
     .run(id, hash, `file:///tmp/${id}`, custody);
+  target.prepare(
+    `INSERT OR IGNORE INTO artifact_blob (
+       id, algorithm, content_hash, storage_uri, custody_mode, availability, created_at
+     ) VALUES (?, 'sha256', ?, ?, ?, 'present', 1)`,
+  ).run(`artifact-blob:${id}`, hash, `file:///tmp/${id}`, custody);
 }
 
 function insertLink(target: Db, id: string, artifactId: string): void {
@@ -85,8 +90,35 @@ function insertLink(target: Db, id: string, artifactId: string): void {
 // backfill completion flag intact (set during openDb on the empty DB) so the
 // column-add assertions are isolated from the orphan backfill.
 function rewindArtifactLinksToV67(target: Db): void {
+  target.exec("DROP TABLE IF EXISTS artifact_aliases");
   target.exec("DROP TABLE IF EXISTS artifact_links");
+  target.exec("DROP TABLE IF EXISTS session_instruction_artifacts");
+  target.exec("DROP TABLE IF EXISTS artifact_drafts");
+  target.exec(`CREATE TABLE artifact_aliases (
+    id TEXT PRIMARY KEY,
+    artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+    scheme TEXT NOT NULL, alias TEXT NOT NULL, normalized_ref TEXT NOT NULL,
+    locator_json TEXT NOT NULL DEFAULT '{}', resolution_status TEXT NOT NULL DEFAULT 'resolved',
+    source TEXT NOT NULL DEFAULT 'artifact_registry', created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`);
   target.exec(ARTIFACT_LINKS_V67_DDL);
+  target.exec(`CREATE TABLE session_instruction_artifacts (
+    session_id TEXT NOT NULL,
+    artifact_series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+    artifact_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    legacy_preset_id TEXT, position INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+    PRIMARY KEY (session_id, artifact_series_id)
+  )`);
+  target.exec(`CREATE TABLE artifact_drafts (
+    id TEXT PRIMARY KEY,
+    series_id TEXT NOT NULL REFERENCES artifact_series(id) ON DELETE CASCADE,
+    base_version_id TEXT NOT NULL REFERENCES artifact_versions(id) ON DELETE RESTRICT,
+    content TEXT NOT NULL, media_type TEXT, label TEXT, note TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}', created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL, UNIQUE(series_id)
+  )`);
   target.prepare("UPDATE meta SET value = '88' WHERE key = 'schema_version'").run();
 }
 
@@ -152,10 +184,16 @@ describe("migration v89: artifact_links typed-series columns", () => {
     const probe = (linkId: string, kind: string) =>
       db
         .prepare(
-          `INSERT INTO artifact_links (id, artifact_id, entity_type, entity_id, link_kind, created_at, updated_at)
-           VALUES (?, 'art_chk', 'issue', 'iss', ?, 1, 1)`,
+          `INSERT INTO artifact_links (
+             id, artifact_id, blob_id, entity_type, entity_id, link_kind,
+             target_type, target_id, created_at, updated_at
+           ) VALUES (
+             ?, 'art_chk', 'artifact-blob:art_chk', 'issue', 'iss', ?,
+             CASE WHEN ? = 'living' THEN 'artifact' ELSE 'artifact_blob' END,
+             CASE WHEN ? = 'living' THEN 'artifact:probe' ELSE 'artifact-blob:art_chk' END, 1, 1
+           )`,
         )
-        .run(linkId, kind);
+        .run(linkId, kind, kind, kind);
     // Both declared link kinds are accepted.
     expect(() => probe("lnk_pinned", "pinned")).not.toThrow();
     expect(() => probe("lnk_living", "living")).not.toThrow();
@@ -258,8 +296,12 @@ describe("migration v89: artifact_links typed-series columns", () => {
     insertArtifact(db, "art_x", "managed", "hash_x");
     db.prepare(
       `INSERT INTO artifact_links
-         (id, artifact_id, entity_type, entity_id, link_kind, series_id, series_ref, created_at, updated_at)
-       VALUES ('lnk_x', 'art_x', 'issue', 'iss', 'living', 'series-1', 'artifact-series:foo', 1, 1)`,
+         (id, artifact_id, blob_id, entity_type, entity_id, link_kind, series_id,
+          series_ref, target_type, target_id, created_at, updated_at)
+       VALUES (
+         'lnk_x', 'art_x', 'artifact-blob:art_x', 'issue', 'iss', 'living', 'series-1',
+         'artifact-series:foo', 'artifact', 'artifact:foo', 1, 1
+       )`,
     ).run();
 
     const dump = buildMetadataBackupSql(db);

@@ -252,6 +252,11 @@ interface ArtifactLinkInput {
   link_kind?: "pinned" | "living";
   series_id?: string;
   series_ref?: string;
+  target_type?: "artifact" | "artifact_version" | "artifact_blob";
+  target_id?: string;
+  canonical_artifact_id?: string;
+  canonical_version_id?: string;
+  canonical_blob_id?: string;
 }
 
 export interface ArtifactListOptions {
@@ -266,6 +271,8 @@ export interface ArtifactListOptions {
   location?: string;
   linkedEntityType?: string;
   linkedEntityId?: string;
+  linkedTargetType?: "artifact" | "artifact_version" | "artifact_blob";
+  linkedTargetId?: string;
   limit?: number;
   offset?: number;
   summary?: boolean;
@@ -542,7 +549,7 @@ function hashFromArtifactRef(input: ArtifactInput): string | undefined {
 }
 
 function artifactHashFromRef(ref: string): string | undefined {
-  const match = /^artifact-blob:([a-f0-9]{64})$/i.exec(ref.trim());
+  const match = /^(?:artifact-blob:|artifact:sha256:)([a-f0-9]{64})$/i.exec(ref.trim());
   return match?.[1]?.toLowerCase();
 }
 
@@ -1384,6 +1391,35 @@ function artifactAliasTablesExist(db: Db): boolean {
   return tableExists(db, "artifact_aliases") && tableExists(db, "artifact_links");
 }
 
+function canonicalBlobForCompatibilityRef(
+  db: Db,
+  ref: string,
+): { blob: ArtifactBlobRecord | null; legacyArtifactId: string | null } {
+  const legacy = getLegacyArtifact(db, ref);
+  if (legacy) {
+    return { blob: getArtifactBlob(db, legacy.content_hash), legacyArtifactId: legacy.id };
+  }
+  const hash = artifactHashFromRef(ref);
+  if (hash) return { blob: getArtifactBlob(db, hash), legacyArtifactId: null };
+  if (/^artifact-blob:/i.test(ref)) return { blob: getArtifactBlob(db, ref), legacyArtifactId: null };
+  if (/^artifact-version:/i.test(ref)) {
+    const version = getCanonicalArtifactVersion(db, ref);
+    return { blob: version ? getArtifactBlob(db, version.blob_id) : null, legacyArtifactId: null };
+  }
+  if (/^artifact:ref:/i.test(ref) && artifactIdentityTablesExist(db)) {
+    const row = db.prepare(
+      "SELECT * FROM artifact_blob WHERE json_extract(metadata_json, '$.compatibility_artifact_id') = ? LIMIT 1",
+    ).get(ref) as Record<string, unknown> | undefined;
+    return { blob: row ? artifactBlobFromRow(row) : null, legacyArtifactId: null };
+  }
+  if (/^artifact:/i.test(ref)) {
+    const logical = getLogicalArtifact(db, ref);
+    const version = logical?.latest_version_id ? getCanonicalArtifactVersion(db, logical.latest_version_id) : null;
+    return { blob: version ? getArtifactBlob(db, version.blob_id) : null, legacyArtifactId: null };
+  }
+  return { blob: null, legacyArtifactId: null };
+}
+
 export function registerArtifactAlias(db: Db, args: {
   artifactId?: string | null;
   ref: string;
@@ -1397,23 +1433,80 @@ export function registerArtifactAlias(db: Db, args: {
   }
   const now = args.now ?? Date.now();
   const normalized = normalizeRef(args.ref, { db });
-  const artifactId = args.artifactId ?? null;
-  const status = artifactId ? "resolved" : (args.resolutionStatus ?? "unresolved");
+  if (!columnExists(db, "artifact_aliases", "blob_id")) {
+    const artifactId = args.artifactId ?? null;
+    const status = artifactId ? "resolved" : (args.resolutionStatus ?? "unresolved");
+    const id = artifactRegistryId("artifact_alias", [normalized.scheme, normalized.normalizedRef]);
+    db.prepare(
+      `INSERT INTO artifact_aliases (
+        id, artifact_id, scheme, alias, normalized_ref, locator_json,
+        resolution_status, source, created_at, updated_at
+      ) VALUES (
+        @id, @artifact_id, @scheme, @alias, @normalized_ref, @locator_json,
+        @resolution_status, @source, @created_at, @updated_at
+      )
+      ON CONFLICT(scheme, normalized_ref) DO UPDATE SET
+        artifact_id = CASE
+          WHEN artifact_aliases.artifact_id IS NULL THEN excluded.artifact_id
+          WHEN excluded.artifact_id IS NULL THEN artifact_aliases.artifact_id
+          WHEN artifact_aliases.artifact_id = excluded.artifact_id THEN artifact_aliases.artifact_id
+          ELSE NULL
+        END,
+        alias = excluded.alias,
+        locator_json = CASE
+          WHEN excluded.locator_json != '{}' THEN excluded.locator_json
+          ELSE artifact_aliases.locator_json
+        END,
+        resolution_status = CASE
+          WHEN artifact_aliases.artifact_id IS NOT NULL
+           AND excluded.artifact_id IS NOT NULL
+           AND artifact_aliases.artifact_id != excluded.artifact_id THEN 'ambiguous'
+          WHEN COALESCE(excluded.artifact_id, artifact_aliases.artifact_id) IS NOT NULL THEN 'resolved'
+          ELSE excluded.resolution_status
+        END,
+        source = excluded.source,
+        updated_at = excluded.updated_at`,
+    ).run({
+      id,
+      artifact_id: artifactId,
+      scheme: normalized.scheme,
+      alias: normalized.alias,
+      normalized_ref: normalized.normalizedRef,
+      locator_json: jsonStringify({ ...normalized.locator, ...(args.locator ?? {}) }),
+      resolution_status: status,
+      source: args.source ?? "artifact_registry",
+      created_at: now,
+      updated_at: now,
+    });
+    return getArtifactAlias(db, normalized.scheme, normalized.normalizedRef) as ArtifactAliasRecord;
+  }
+  const canonical = args.artifactId
+    ? canonicalBlobForCompatibilityRef(db, args.artifactId)
+    : { blob: null, legacyArtifactId: null };
+  const artifactId = canonical.legacyArtifactId;
+  const blobId = canonical.blob?.id ?? null;
+  const status = blobId ? "resolved" : (args.resolutionStatus ?? "unresolved");
   const id = artifactRegistryId("artifact_alias", [normalized.scheme, normalized.normalizedRef]);
   db.prepare(
     `INSERT INTO artifact_aliases (
-      id, artifact_id, scheme, alias, normalized_ref, locator_json,
+      id, artifact_id, blob_id, scheme, alias, normalized_ref, locator_json,
       resolution_status, source, created_at, updated_at
     ) VALUES (
-      @id, @artifact_id, @scheme, @alias, @normalized_ref, @locator_json,
+      @id, @artifact_id, @blob_id, @scheme, @alias, @normalized_ref, @locator_json,
       @resolution_status, @source, @created_at, @updated_at
     )
     ON CONFLICT(scheme, normalized_ref) DO UPDATE SET
-      artifact_id = CASE
-        WHEN artifact_aliases.artifact_id IS NULL THEN excluded.artifact_id
-        WHEN excluded.artifact_id IS NULL THEN artifact_aliases.artifact_id
-        WHEN artifact_aliases.artifact_id = excluded.artifact_id THEN artifact_aliases.artifact_id
+      blob_id = CASE
+        WHEN artifact_aliases.blob_id IS NULL THEN excluded.blob_id
+        WHEN excluded.blob_id IS NULL THEN artifact_aliases.blob_id
+        WHEN artifact_aliases.blob_id = excluded.blob_id THEN artifact_aliases.blob_id
         ELSE NULL
+      END,
+      artifact_id = CASE
+        WHEN artifact_aliases.blob_id IS NOT NULL
+         AND excluded.blob_id IS NOT NULL
+         AND artifact_aliases.blob_id != excluded.blob_id THEN NULL
+        ELSE COALESCE(artifact_aliases.artifact_id, excluded.artifact_id)
       END,
       alias = excluded.alias,
       locator_json = CASE
@@ -1421,10 +1514,10 @@ export function registerArtifactAlias(db: Db, args: {
         ELSE artifact_aliases.locator_json
       END,
       resolution_status = CASE
-        WHEN artifact_aliases.artifact_id IS NOT NULL
-         AND excluded.artifact_id IS NOT NULL
-         AND artifact_aliases.artifact_id != excluded.artifact_id THEN 'ambiguous'
-        WHEN COALESCE(excluded.artifact_id, artifact_aliases.artifact_id) IS NOT NULL THEN 'resolved'
+        WHEN artifact_aliases.blob_id IS NOT NULL
+         AND excluded.blob_id IS NOT NULL
+         AND artifact_aliases.blob_id != excluded.blob_id THEN 'ambiguous'
+        WHEN COALESCE(excluded.blob_id, artifact_aliases.blob_id) IS NOT NULL THEN 'resolved'
         ELSE excluded.resolution_status
       END,
       source = excluded.source,
@@ -1432,6 +1525,7 @@ export function registerArtifactAlias(db: Db, args: {
   ).run({
     id,
     artifact_id: artifactId,
+    blob_id: blobId,
     scheme: normalized.scheme,
     alias: normalized.alias,
     normalized_ref: normalized.normalizedRef,
@@ -1446,6 +1540,16 @@ export function registerArtifactAlias(db: Db, args: {
 
 // Whether `artifactId` is a genuine member of `seriesId` (has a version row).
 function seriesContainsArtifact(db: Db, seriesId: string, artifactId: string): boolean {
+  if (artifactIdentityTablesExist(db)) {
+    const logicalId = canonicalArtifactIdForSeriesRef(seriesId);
+    const blob = canonicalBlobForCompatibilityRef(db, artifactId).blob;
+    if (blob) {
+      const row = db.prepare(
+        "SELECT 1 FROM artifact_version WHERE artifact_id = ? AND blob_id = ? LIMIT 1",
+      ).get(logicalId, blob.id);
+      if (row) return true;
+    }
+  }
   if (!artifactVersioningTablesExist(db)) return false;
   const row = db.prepare(
     "SELECT 1 FROM artifact_versions WHERE series_id = ? AND artifact_id = ? LIMIT 1",
@@ -1468,8 +1572,9 @@ export function registerArtifactLink(
   const linkType = asString(input.link_type) ?? "references";
   const role = asString(input.role) ?? null;
   const linkKind: "pinned" | "living" = input.link_kind === "living" ? "living" : "pinned";
-  const seriesId = asString(input.series_id) ?? null;
+  let seriesId = asString(input.series_id) ?? null;
   const seriesRef = asString(input.series_ref) ?? null;
+  const requestedCanonicalArtifactId = asString(input.canonical_artifact_id) ?? null;
   // AUTHORITATIVE typed-link invariants, enforced at this low-level chokepoint so
   // EVERY write path is covered — including /api/artifacts/ingest, which forwards
   // caller-supplied `link`/`links` straight here and would otherwise bypass the
@@ -1479,16 +1584,20 @@ export function registerArtifactLink(
     if (entityType === "issue" && linkType === "evidence") {
       throw new Error("evidence_links_must_be_pinned");
     }
+    if (!seriesId && requestedCanonicalArtifactId) {
+      seriesId = legacySeriesIdFromCanonicalArtifact(requestedCanonicalArtifactId);
+    }
+    if (!seriesId) throw new Error("living_link_requires_series");
     // A living link must name a real series, and its stored artifact_id (the
     // latest-at-creation fallback anchor) must be a genuine member of that
     // series; a bogus/non-member series_id could otherwise freeze a wrong or
     // dangling fallback. resolveAndLinkArtifact supplies a resolved series id and
     // a member artifact, so it passes unchanged.
-    if (!seriesId) {
-      throw new Error("living_link_requires_series");
-    }
-    if (!getArtifactSeries(db, seriesId) || !seriesContainsArtifact(db, seriesId, artifactId)) {
-      throw new Error("living_link_series_mismatch");
+    if (!columnExists(db, "artifact_links", "blob_id")) {
+      if (!seriesId) throw new Error("living_link_requires_series");
+      if (!getArtifactSeries(db, seriesId) || !seriesContainsArtifact(db, seriesId, artifactId)) {
+        throw new Error("living_link_series_mismatch");
+      }
     }
   }
   // PINNED keeps the byte-identical legacy identity: [artifactId, entityType,
@@ -1499,19 +1608,140 @@ export function registerArtifactLink(
   const id = linkKind === "living"
     ? artifactRegistryId("artifact_link", [seriesId, entityType, entityId, linkType, role ?? "", "living"])
     : artifactRegistryId("artifact_link", [artifactId, entityType, entityId, linkType, role ?? ""]);
+  if (!columnExists(db, "artifact_links", "blob_id")) {
+    db.prepare(
+      `INSERT INTO artifact_links (
+        id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+        provider_id, source, metadata_json, link_kind, series_id, series_ref,
+        created_at, updated_at
+      ) VALUES (
+        @id, @artifact_id, @entity_type, @entity_id, @link_type, @role, @repo_id,
+        @provider_id, @source, @metadata_json, @link_kind, @series_id, @series_ref,
+        @created_at, @updated_at
+      )
+      ON CONFLICT(id) DO UPDATE SET
+        role = excluded.role,
+        repo_id = COALESCE(excluded.repo_id, artifact_links.repo_id),
+        provider_id = COALESCE(excluded.provider_id, artifact_links.provider_id),
+        source = excluded.source,
+        metadata_json = excluded.metadata_json,
+        link_kind = excluded.link_kind,
+        series_id = excluded.series_id,
+        series_ref = excluded.series_ref,
+        updated_at = excluded.updated_at`,
+    ).run({
+      id,
+      artifact_id: artifactId,
+      entity_type: entityType,
+      entity_id: entityId,
+      link_type: linkType,
+      role,
+      repo_id: asString(input.repo_id) ?? null,
+      provider_id: asString(input.provider_id) ?? null,
+      source: asString(input.source) ?? "artifact_registry",
+      metadata_json: jsonStringify(input.metadata ?? {}),
+      link_kind: linkKind,
+      series_id: seriesId,
+      series_ref: seriesRef,
+      created_at: now,
+      updated_at: now,
+    });
+    return getArtifactLink(db, id);
+  }
+  let canonicalArtifactId = requestedCanonicalArtifactId;
+  let canonicalVersion = asString(input.canonical_version_id)
+    ? getCanonicalArtifactVersion(db, String(input.canonical_version_id))
+    : null;
+  let canonicalBlob = asString(input.canonical_blob_id)
+    ? getArtifactBlob(db, String(input.canonical_blob_id))
+    : null;
+  if (!canonicalArtifactId && canonicalVersion) canonicalArtifactId = canonicalVersion.artifact_id;
+  if (!canonicalBlob && canonicalVersion) canonicalBlob = getArtifactBlob(db, canonicalVersion.blob_id);
+  if (!canonicalBlob) canonicalBlob = canonicalBlobForCompatibilityRef(db, artifactId).blob;
+
+  if (linkKind === "living") {
+    // Compatibility-only upgrade path for callers that still provide a legacy
+    // series/member pair. Validate membership first, then backfill that exact
+    // version into the canonical identity tables so the canonical target is
+    // authoritative for the stored link.
+    if (!canonicalArtifactId) {
+      const logical = seriesId ? getLogicalArtifact(db, canonicalArtifactIdForSeriesRef(seriesId)) : null;
+      const requestedBlob = canonicalBlob ?? canonicalBlobForCompatibilityRef(db, artifactId).blob;
+      if (logical && requestedBlob) {
+        const row = db.prepare(
+          `SELECT * FROM artifact_version
+            WHERE artifact_id = ? AND blob_id = ?
+            ORDER BY version_no DESC LIMIT 1`,
+        ).get(logical.id, requestedBlob.id) as Record<string, unknown> | undefined;
+        if (!row) throw new Error("living_link_series_mismatch");
+        canonicalArtifactId = logical.id;
+        canonicalVersion = canonicalArtifactVersionFromRow(row);
+        canonicalBlob = requestedBlob;
+      }
+    }
+    if (!canonicalArtifactId) {
+      const legacySeries = seriesId ? getArtifactSeries(db, seriesId) : null;
+      if (!legacySeries || !seriesContainsArtifact(db, seriesId as string, artifactId)) {
+        throw new Error("living_link_series_mismatch");
+      }
+      const legacyVersionRow = db.prepare(
+        "SELECT * FROM artifact_versions WHERE series_id = ? AND artifact_id = ? ORDER BY version_no DESC LIMIT 1",
+      ).get(seriesId, artifactId) as Record<string, unknown> | undefined;
+      const legacyArtifact = getLegacyArtifact(db, artifactId);
+      if (!legacyVersionRow || !legacyArtifact) throw new Error("living_link_series_mismatch");
+      const legacyVersion = versionFromRow(legacyVersionRow);
+      backfillCanonicalIdentityForCompatibilityLink(db, legacySeries, legacyVersion, legacyArtifact, now);
+      canonicalArtifactId = canonicalArtifactIdForSeriesRef(seriesId as string);
+      if (!canonicalVersion) {
+        canonicalVersion = getCanonicalArtifactVersion(db, canonicalVersionIdForVersionRef(legacyVersion.id));
+      }
+      if (!canonicalBlob && canonicalVersion) {
+        canonicalBlob = getArtifactBlob(db, canonicalVersion.blob_id);
+      }
+    }
+    const logical = canonicalArtifactId ? getLogicalArtifact(db, canonicalArtifactId) : null;
+    if (!logical) throw new Error("living_link_requires_canonical_artifact");
+    if (!canonicalVersion && logical.latest_version_id) {
+      canonicalVersion = getCanonicalArtifactVersion(db, logical.latest_version_id);
+    }
+    if (!canonicalVersion || canonicalVersion.artifact_id !== logical.id) {
+      throw new Error("living_link_series_mismatch");
+    }
+    canonicalBlob = getArtifactBlob(db, canonicalVersion.blob_id);
+  }
+  if (!canonicalBlob) throw new Error("artifact_link_requires_canonical_blob");
+
+  const requestedTargetType = input.target_type;
+  const requestedTargetId = asString(input.target_id);
+  const targetType = linkKind === "living"
+    ? "artifact"
+    : requestedTargetType === "artifact_version" && canonicalVersion
+      ? "artifact_version"
+      : requestedTargetType === "artifact_blob"
+        ? "artifact_blob"
+        : canonicalVersion
+          ? "artifact_version"
+          : "artifact_blob";
+  const targetId = linkKind === "living"
+    ? canonicalArtifactId as string
+    : targetType === "artifact_version"
+      ? canonicalVersion!.id
+      : requestedTargetId && requestedTargetType === "artifact_blob"
+        ? requestedTargetId
+        : canonicalBlob.id;
   db.prepare(
     // NOTE: artifact_id is intentionally NOT in the ON CONFLICT DO UPDATE SET.
     // A re-submission MUST NOT silently retarget an existing link's stored
     // artifact id (no silent retarget) — for living links the stored
     // latest-at-creation fallback stays pinned to its first write.
     `INSERT INTO artifact_links (
-      id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+      id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
       provider_id, source, metadata_json, link_kind, series_id, series_ref,
-      created_at, updated_at
+      target_type, target_id, fallback_version_id, created_at, updated_at
     ) VALUES (
-      @id, @artifact_id, @entity_type, @entity_id, @link_type, @role, @repo_id,
+      @id, @artifact_id, @blob_id, @entity_type, @entity_id, @link_type, @role, @repo_id,
       @provider_id, @source, @metadata_json, @link_kind, @series_id, @series_ref,
-      @created_at, @updated_at
+      @target_type, @target_id, @fallback_version_id, @created_at, @updated_at
     )
     ON CONFLICT(id) DO UPDATE SET
       role = excluded.role,
@@ -1525,7 +1755,8 @@ export function registerArtifactLink(
       updated_at = excluded.updated_at`
   ).run({
     id,
-    artifact_id: artifactId,
+    artifact_id: getLegacyArtifact(db, artifactId)?.id ?? null,
+    blob_id: canonicalBlob.id,
     entity_type: entityType,
     entity_id: entityId,
     link_type: linkType,
@@ -1537,6 +1768,9 @@ export function registerArtifactLink(
     link_kind: linkKind,
     series_id: seriesId,
     series_ref: seriesRef,
+    target_type: targetType,
+    target_id: targetId,
+    fallback_version_id: linkKind === "living" ? canonicalVersion?.id ?? null : null,
     created_at: now,
     updated_at: now,
   });
@@ -2058,6 +2292,19 @@ function resolveIssueEntity(
 // touches the resolver core — it is a link-write-time lookup only.
 function livingSeriesCandidates(db: Db, resolution: ArtifactResolveResult): ArtifactSeriesRecord[] {
   if (resolution.series) return [resolution.series];
+  if (artifactIdentityTablesExist(db)) {
+    const blob = resolution.artifact_blob
+      ?? (resolution.artifact ? canonicalBlobForCompatibilityRef(db, resolution.artifact.id).blob : null);
+    if (blob) {
+      const rows = db.prepare(
+        "SELECT DISTINCT artifact_id FROM artifact_version WHERE blob_id = ?",
+      ).all(blob.id) as Array<{ artifact_id: string }>;
+      return rows
+        .map((row) => getLogicalArtifact(db, row.artifact_id))
+        .filter((logical): logical is ArtifactIdentityRecord => Boolean(logical))
+        .map(projectCanonicalSeriesRecord);
+    }
+  }
   if (!resolution.artifact || !artifactVersioningTablesExist(db)) return [];
   const rows = db.prepare(
     `SELECT DISTINCT series_id FROM artifact_versions WHERE artifact_id = ?`,
@@ -2098,15 +2345,25 @@ export function resolveAndLinkArtifact(
   // way — the route also pre-validates this for a clean HTTP-edge contract.
   let seriesId: string | undefined;
   let seriesRef: string | undefined;
+  let canonicalArtifact = resolution.logical_artifact
+    ?? (resolution.artifact_version ? getLogicalArtifact(db, resolution.artifact_version.artifact_id) : null);
+  let canonicalVersion = resolution.artifact_version
+    ?? (resolution.version ? getCanonicalArtifactVersion(db, resolution.version.id) : null);
+  if (!canonicalArtifact && canonicalVersion) canonicalArtifact = getLogicalArtifact(db, canonicalVersion.artifact_id);
+  if (!canonicalVersion && canonicalArtifact?.latest_version_id) {
+    canonicalVersion = getCanonicalArtifactVersion(db, canonicalArtifact.latest_version_id);
+  }
   if (linkKind === "living") {
     if (entityType === "issue" && linkType === "evidence") {
       throw new Error("evidence_links_must_be_pinned");
     }
-    const candidates = livingSeriesCandidates(db, resolution);
-    if (candidates.length !== 1) {
-      throw new Error("living_link_requires_series");
+    if (canonicalArtifact) {
+      seriesId = legacySeriesIdFromCanonicalArtifact(canonicalArtifact.id);
+    } else {
+      const candidates = livingSeriesCandidates(db, resolution);
+      if (candidates.length !== 1) throw new Error("living_link_requires_series");
+      seriesId = candidates[0].id;
     }
-    seriesId = candidates[0].id;
     // `series_ref` records the author-facing ref exactly as supplied; the stored
     // artifact_id is the latest-at-creation fallback (resolution.artifact.id).
     seriesRef = ref;
@@ -2126,6 +2383,15 @@ export function resolveAndLinkArtifact(
     link_kind: linkKind,
     series_id: seriesId,
     series_ref: seriesRef,
+    target_type: resolution.target_type === "artifact_version"
+      || resolution.target_type === "artifact_blob"
+      || resolution.target_type === "artifact"
+      ? resolution.target_type
+      : undefined,
+    target_id: resolution.target_id ?? undefined,
+    canonical_artifact_id: canonicalArtifact?.id,
+    canonical_version_id: canonicalVersion?.id,
+    canonical_blob_id: resolution.artifact_blob?.id ?? canonicalVersion?.blob_id,
     metadata: mergeJsonRecords(input.metadata, issueResolution?.metadata, {
       artifact_ref: ref,
       normalized_ref: resolution.normalized_ref,
@@ -2200,64 +2466,7 @@ export function snapshotArtifactBytes(
     }),
   }, now, artifactRoot);
 
-  const stored = promoteSnapshotArtifactCustody(db, artifact.id, {
-    uri: `file://${filePath}`,
-    custodyMode,
-    sizeBytes: bytes.byteLength,
-    metadata: {
-      recoverability: "mandible_cas",
-      snapshot_source_ref: ref ?? null,
-      snapshot_source_path: input.path ? path.resolve(expandHomePath(input.path)) : null,
-    },
-    reference: {
-      recoverability: "mandible_cas",
-      snapshot_source_ref: ref ?? null,
-      uri: `file://${filePath}`,
-    },
-    now,
-  });
-  mirrorLegacyArtifactBlob(db, stored, now);
-  return stored;
-}
-
-function promoteSnapshotArtifactCustody(db: Db, artifactId: string, input: {
-  uri: string;
-  custodyMode: "copy" | "managed";
-  sizeBytes: number;
-  metadata: JsonRecord;
-  reference: JsonRecord;
-  now: number;
-}): ArtifactRecord {
-  const current = getArtifact(db, artifactId) as ArtifactRecord | null;
-  if (!current) {
-    throw new Error("snapshot artifact was not stored");
-  }
-  const metadata = mergeJsonRecords(current.metadata, input.metadata, {
-    custody_mode: input.custodyMode,
-    availability: "present",
-  });
-  const reference = mergeJsonRecords(current.reference, input.reference);
-  db.prepare(
-    `UPDATE artifacts
-        SET uri = @uri,
-            size_bytes = CASE
-              WHEN size_bytes = 0 OR @size_bytes > 0 THEN @size_bytes
-              ELSE size_bytes
-            END,
-            custody_mode = @custody_mode,
-            availability = 'present',
-            metadata_json = @metadata_json,
-            reference_json = @reference_json
-      WHERE id = @id`
-  ).run({
-    id: artifactId,
-    uri: input.uri,
-    size_bytes: input.sizeBytes,
-    custody_mode: input.custodyMode,
-    metadata_json: jsonStringify(metadata),
-    reference_json: jsonStringify(reference),
-  });
-  return getArtifact(db, artifactId) as ArtifactRecord;
+  return artifact;
 }
 
 function linkBundleMember(
@@ -2426,8 +2635,9 @@ export function addArtifactBundleMembers(
 
 export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBundleMemberRecord[] {
   if (!tableExists(db, "artifact_links")) return [];
+  const blobColumn = columnExists(db, "artifact_links", "blob_id") ? "blob_id" : "NULL AS blob_id";
   const rows = db.prepare(
-    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+    `SELECT id, artifact_id, ${blobColumn}, entity_type, entity_id, link_type, role, repo_id,
             provider_id, source, metadata_json, link_kind, series_id, series_ref,
             created_at, updated_at
        FROM artifact_links
@@ -2437,7 +2647,7 @@ export function listArtifactBundleMembers(db: Db, bundleId: string): ArtifactBun
       ORDER BY CAST(json_extract(metadata_json, '$.order') AS INTEGER), artifact_id`,
   ).all(bundleId) as Array<Record<string, unknown>>;
   return rows.map((row, index) => {
-    const link = artifactLinkFromRow(row);
+    const link = artifactLinkFromRow(db, row);
     return {
       artifact: getArtifact(db, link.artifact_id) as ArtifactRecord,
       link,
@@ -2454,24 +2664,37 @@ export function getArtifactBundle(db: Db, bundleRef: string): ArtifactBundleReco
 }
 
 function getArtifactAlias(db: Db, scheme: string, normalizedRef: string): ArtifactAliasRecord | null {
+  const blobColumn = columnExists(db, "artifact_aliases", "blob_id") ? "blob_id" : "NULL AS blob_id";
   const row = db.prepare(
-    `SELECT id, artifact_id, scheme, alias, normalized_ref, locator_json,
+    `SELECT id, artifact_id, ${blobColumn}, scheme, alias, normalized_ref, locator_json,
             resolution_status, source, created_at, updated_at
        FROM artifact_aliases
       WHERE scheme = ? AND normalized_ref = ?`
   ).get(scheme, normalizedRef) as Record<string, unknown> | undefined;
-  return row ? artifactAliasFromRow(row) : null;
+  return row ? artifactAliasFromRow(db, row) : null;
+}
+
+function compatibilityArtifactForAlias(db: Db, alias: ArtifactAliasRecord): ArtifactRecord | null {
+  if (columnExists(db, "artifact_aliases", "blob_id")) {
+    const row = db.prepare("SELECT blob_id FROM artifact_aliases WHERE id = ?").get(alias.id) as
+      | { blob_id: string | null }
+      | undefined;
+    const blob = row?.blob_id ? getArtifactBlob(db, row.blob_id) : null;
+    if (blob) return projectCanonicalArtifactRecord(db, blob);
+  }
+  return alias.artifact_id ? getArtifact(db, alias.artifact_id) : null;
 }
 
 function getArtifactLink(db: Db, id: string): ArtifactLinkRecord | null {
+  const blobColumn = columnExists(db, "artifact_links", "blob_id") ? "blob_id" : "NULL AS blob_id";
   const row = db.prepare(
-    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+    `SELECT id, artifact_id, ${blobColumn}, entity_type, entity_id, link_type, role, repo_id,
             provider_id, source, metadata_json, link_kind, series_id, series_ref,
             created_at, updated_at
        FROM artifact_links
       WHERE id = ?`
   ).get(id) as Record<string, unknown> | undefined;
-  return row ? artifactLinkFromRow(row) : null;
+  return row ? artifactLinkFromRow(db, row) : null;
 }
 
 function materializeReferenceArtifact(
@@ -2496,6 +2719,9 @@ function materializeReferenceArtifact(
     scheme: normalized.scheme,
     identity_kind: "reference",
     locator: normalized.locator,
+    compatibility_artifact_id: id,
+    home_repo_id: repoId,
+    repo_locator: normalized.scheme === "repo" ? normalized.locator : {},
   };
   const reference = {
     owner_system: normalized.scheme,
@@ -2506,42 +2732,27 @@ function materializeReferenceArtifact(
   };
   const repoLocator = normalized.scheme === "repo" ? normalized.locator : {};
 
-  db.prepare(
-    `INSERT INTO artifacts (
-      id, algorithm, content_hash, uri, media_type, role, size_bytes,
-      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
-      repo_locator_json, availability, retention_json, reference_json, created_at
-    ) VALUES (
-      @id, 'ref-sha256', @content_hash, @uri, @media_type, @role, 0,
-      NULL, NULL, @metadata_json, 0, @custody_mode, @home_repo_id,
-      @repo_locator_json, @availability, @retention_json, @reference_json, @created_at
-    )
-    ON CONFLICT(id) DO UPDATE SET
-      uri = excluded.uri,
-      metadata_json = excluded.metadata_json,
-      custody_mode = excluded.custody_mode,
-      home_repo_id = COALESCE(excluded.home_repo_id, artifacts.home_repo_id),
-      repo_locator_json = CASE
-        WHEN excluded.repo_locator_json != '{}' THEN excluded.repo_locator_json
-        ELSE artifacts.repo_locator_json
-      END,
-      availability = excluded.availability,
-      reference_json = excluded.reference_json`
-  ).run({
+  const blob = upsertCanonicalArtifactBlob(db, {
     id,
+    algorithm: "ref-sha256",
     content_hash: identityHash,
     uri: normalized.normalizedRef,
     media_type: null,
     role,
-    metadata_json: jsonStringify(metadata),
+    size_bytes: 0,
+    provider_id: null,
+    manifest_id: null,
+    metadata,
+    pinned: false,
     custody_mode: custodyMode,
     home_repo_id: repoId,
-    repo_locator_json: jsonStringify(repoLocator),
+    repo_locator: repoLocator,
     availability,
-    retention_json: jsonStringify({ pinned: false }),
-    reference_json: jsonStringify(reference),
+    retention: { pinned: false },
+    reference,
     created_at: now,
-  });
+  }, now);
+  if (!blob) throw new Error("canonical artifact blob tables are unavailable");
 
   upsertGraphEntity(db, {
     id,
@@ -2582,13 +2793,13 @@ function materializeReferenceArtifact(
   });
 
   const alias = registerArtifactAlias(db, {
-    artifactId: id,
+    artifactId: blob.id,
     ref,
     locator: normalized.locator,
     source: "artifact_resolver",
     now,
   });
-  return { artifact: getArtifact(db, id) as ArtifactRecord, alias };
+  return { artifact: projectCanonicalArtifactRecord(db, blob), alias };
 }
 
 export function registerProvider(db: Db, input: ProviderInput, now = Date.now()): ProviderRecord {
@@ -2722,72 +2933,9 @@ export function ingestArtifact(
     custody_mode: custodyMode,
     availability,
   };
-  db.prepare(
-    `INSERT INTO artifacts (
-      id, algorithm, content_hash, uri, media_type, role, size_bytes,
-      provider_id, manifest_id, metadata_json, pinned, custody_mode, home_repo_id,
-      repo_locator_json, availability, retention_json, reference_json, created_at
-    ) VALUES (
-      @id, 'sha256', @content_hash, @uri, @media_type, @role, @size_bytes,
-      @provider_id, @manifest_id, @metadata_json, @pinned, @custody_mode, @home_repo_id,
-      @repo_locator_json, @availability, @retention_json, @reference_json, @created_at
-    )
-    ON CONFLICT(algorithm, content_hash) DO UPDATE SET
-      media_type = COALESCE(excluded.media_type, artifacts.media_type),
-      role = COALESCE(excluded.role, artifacts.role),
-      provider_id = COALESCE(excluded.provider_id, artifacts.provider_id),
-      manifest_id = COALESCE(excluded.manifest_id, artifacts.manifest_id),
-      metadata_json = CASE
-        WHEN artifacts.metadata_json = '{}' THEN excluded.metadata_json
-        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present'
-         AND excluded.uri LIKE 'file://%'
-          THEN excluded.metadata_json
-        ELSE artifacts.metadata_json
-      END,
-      uri = CASE
-        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present'
-         AND excluded.uri LIKE 'file://%' THEN excluded.uri
-        ELSE COALESCE(artifacts.uri, excluded.uri)
-      END,
-      custody_mode = CASE
-        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present'
-         AND excluded.uri LIKE 'file://%' THEN excluded.custody_mode
-        ELSE artifacts.custody_mode
-      END,
-      home_repo_id = COALESCE(excluded.home_repo_id, artifacts.home_repo_id),
-      repo_locator_json = CASE
-        WHEN artifacts.repo_locator_json = '{}' THEN excluded.repo_locator_json
-        ELSE artifacts.repo_locator_json
-      END,
-      availability = CASE
-        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present'
-         AND excluded.uri LIKE 'file://%' THEN excluded.availability
-        ELSE artifacts.availability
-      END,
-      retention_json = CASE
-        WHEN artifacts.retention_json = '{}' THEN excluded.retention_json
-        ELSE artifacts.retention_json
-      END,
-      reference_json = CASE
-        WHEN artifacts.reference_json = '{}' THEN excluded.reference_json
-        WHEN artifacts.availability IN ('remote_only', 'missing', 'unchecked')
-         AND excluded.availability = 'present'
-         AND excluded.uri LIKE 'file://%'
-          THEN excluded.reference_json
-        ELSE artifacts.reference_json
-      END,
-      size_bytes = CASE
-        WHEN artifacts.size_bytes = 0
-          OR (excluded.availability = 'present' AND excluded.uri LIKE 'file://%') THEN excluded.size_bytes
-        ELSE artifacts.size_bytes
-      END,
-      pinned = MAX(artifacts.pinned, excluded.pinned)`
-  ).run({
+  const blob = upsertCanonicalArtifactBlob(db, {
     id,
+    algorithm: "sha256",
     content_hash: hash,
     uri,
     media_type: input.media_type ?? ("json" in input ? "application/json" : "application/octet-stream"),
@@ -2795,16 +2943,17 @@ export function ingestArtifact(
     size_bytes: sizeBytes,
     provider_id: input.provider_id ?? null,
     manifest_id: input.manifest_id ?? null,
-    metadata_json: jsonStringify(metadata),
-    pinned: input.pinned === false ? 0 : 1,
+    metadata: mergeJsonRecords(metadata, { home_repo_id: homeRepoId, repo_locator: repoLocator }),
+    pinned: input.pinned !== false,
     custody_mode: custodyMode,
     home_repo_id: homeRepoId,
-    repo_locator_json: jsonStringify(repoLocator),
+    repo_locator: repoLocator,
     availability,
-    retention_json: jsonStringify(retention),
-    reference_json: jsonStringify(reference),
+    retention,
+    reference,
     created_at: now,
-  });
+  }, now);
+  if (!blob) throw new Error("canonical artifact blob tables are unavailable");
 
   upsertGraphEntity(db, {
     id,
@@ -2902,9 +3051,7 @@ export function ingestArtifact(
     }
   }
 
-  const stored = getArtifact(db, id) as ArtifactRecord;
-  mirrorLegacyArtifactBlob(db, stored, now);
-  return stored;
+  return getArtifact(db, id) ?? projectCanonicalArtifactRecord(db, blob);
 }
 
 export function ingestProviderManifest(
@@ -3381,7 +3528,7 @@ export function getProviderHealth(db: Db, id: string): {
   };
 }
 
-export function getArtifact(db: Db, id: string): ArtifactRecord | null {
+function getLegacyArtifact(db: Db, id: string): ArtifactRecord | null {
   const artifactHash = artifactHashFromRef(id);
   const lookupId = artifactHash ? `artifact:sha256:${artifactHash}` : id;
   const row = db.prepare(
@@ -3392,15 +3539,255 @@ export function getArtifact(db: Db, id: string): ArtifactRecord | null {
        FROM artifacts WHERE id = ?`
   ).get(lookupId) as Record<string, unknown> | undefined;
   if (!row) return null;
-  const artifact = artifactFromRow(row);
+  return row ? artifactFromRow(row) : null;
+}
+
+export function getArtifact(db: Db, id: string): ArtifactRecord | null {
+  const legacy = getLegacyArtifact(db, id);
+  let artifact = legacy;
+  if (artifactIdentityTablesExist(db)) {
+    let logical: ArtifactIdentityRecord | null = null;
+    let version: CanonicalArtifactVersionRecord | null = null;
+    let blob: ArtifactBlobRecord | null = null;
+    if (legacy) {
+      blob = getArtifactBlob(db, legacy.content_hash);
+    } else if (artifactHashFromRef(id)) {
+      blob = getArtifactBlob(db, artifactHashFromRef(id) as string);
+    } else if (/^artifact-blob:/i.test(id)) {
+      blob = getArtifactBlob(db, id);
+    } else if (/^artifact-version:/i.test(id)) {
+      version = getCanonicalArtifactVersion(db, id);
+      logical = version ? getLogicalArtifact(db, version.artifact_id) : null;
+      blob = version ? getArtifactBlob(db, version.blob_id) : null;
+    } else if (/^artifact:ref:/i.test(id)) {
+      const row = db.prepare(
+        "SELECT * FROM artifact_blob WHERE json_extract(metadata_json, '$.compatibility_artifact_id') = ? LIMIT 1",
+      ).get(id) as Record<string, unknown> | undefined;
+      blob = row ? artifactBlobFromRow(row) : null;
+    } else if (/^artifact:/i.test(id) && !/^artifact:sha256:/i.test(id)) {
+      logical = getLogicalArtifact(db, id);
+      version = logical?.latest_version_id ? getCanonicalArtifactVersion(db, logical.latest_version_id) : null;
+      blob = version ? getArtifactBlob(db, version.blob_id) : null;
+    }
+    if (blob) artifact = projectCanonicalArtifactRecord(db, blob, logical, version);
+  }
+  if (!artifact) return null;
   if (artifactAliasTablesExist(db)) {
-    artifact.aliases = listArtifactAliases(db, artifact.id);
-    artifact.links = listArtifactLinks(db, artifact.id);
+    artifact.aliases = listArtifactAliases(db, artifact.id, artifact.content_hash);
+    artifact.links = listArtifactLinks(db, artifact.id, artifact.content_hash);
   }
   return artifact;
 }
 
+function listCanonicalArtifactCompatibility(db: Db, options: ArtifactListOptions): ArtifactRecord[] {
+  const where: string[] = [];
+  const bindings: Record<string, unknown> = {};
+  const q = asString(options.q);
+  if (q) {
+    bindings.q = `%${escapeLike(q)}%`;
+    where.push(`(
+      b.id LIKE @q ESCAPE '\\' OR ('artifact:sha256:' || b.content_hash) LIKE @q ESCAPE '\\'
+      OR b.content_hash LIKE @q ESCAPE '\\'
+      OR b.storage_uri LIKE @q ESCAPE '\\' OR b.provider_id LIKE @q ESCAPE '\\'
+      OR b.role LIKE @q ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1 FROM artifact_version cv JOIN artifact ca ON ca.id = cv.artifact_id
+         WHERE cv.blob_id = b.id
+           AND (ca.id LIKE @q ESCAPE '\\' OR ca.identity_key LIKE @q ESCAPE '\\'
+             OR ca.title LIKE @q ESCAPE '\\' OR ca.logical_name LIKE @q ESCAPE '\\')
+      )
+      OR EXISTS (
+        SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
+          AND (aa.alias LIKE @q ESCAPE '\\' OR aa.normalized_ref LIKE @q ESCAPE '\\')
+      )
+      OR EXISTS (SELECT 1 FROM artifacts la WHERE la.content_hash = b.content_hash
+        AND (la.id LIKE @q ESCAPE '\\' OR la.metadata_json LIKE @q ESCAPE '\\'
+          OR la.repo_locator_json LIKE @q ESCAPE '\\'))
+    )`);
+  }
+  if (asString(options.hashPrefix)) {
+    bindings.hashPrefix = `${escapeLike(options.hashPrefix!.toLowerCase())}%`;
+    where.push("lower(b.content_hash) LIKE @hashPrefix ESCAPE '\\'");
+  }
+  if (asString(options.repo)) {
+    bindings.repo = options.repo;
+    where.push(`(
+      EXISTS (SELECT 1 FROM artifact_version cv JOIN artifact ca ON ca.id = cv.artifact_id
+        WHERE cv.blob_id = b.id AND (cv.source_repo_id = @repo OR ca.source_repo_id = @repo))
+      OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.repo_id = @repo)
+      OR json_extract(b.metadata_json, '$.home_repo_id') = @repo
+      OR EXISTS (SELECT 1 FROM artifacts la WHERE la.content_hash = b.content_hash AND la.home_repo_id = @repo)
+    )`);
+  }
+  if (asString(options.provider)) {
+    bindings.provider = options.provider;
+    where.push(`(b.provider_id = @provider
+      OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.provider_id = @provider))`);
+  }
+  if (asString(options.role)) {
+    bindings.role = options.role;
+    where.push(`(b.role = @role
+      OR EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.role = @role))`);
+  }
+  if (asString(options.custody)) {
+    bindings.custody = options.custody;
+    where.push("b.custody_mode = @custody");
+  }
+  if (asString(options.availability)) {
+    bindings.availability = options.availability;
+    where.push("b.availability = @availability");
+  }
+  if (asString(options.scheme)) {
+    bindings.scheme = options.scheme!.toLowerCase();
+    where.push("EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id AND aa.scheme = @scheme)");
+  }
+  if (asString(options.location)) {
+    bindings.location = `%${escapeLike(options.location!.trim())}%`;
+    where.push(`(
+      b.storage_uri LIKE @location ESCAPE '\\' OR b.reference_json LIKE @location ESCAPE '\\'
+      OR EXISTS (SELECT 1 FROM artifact_version cv WHERE cv.blob_id = b.id
+        AND (cv.repo_path LIKE @location ESCAPE '\\' OR cv.observed_path LIKE @location ESCAPE '\\'
+          OR cv.source_locator_json LIKE @location ESCAPE '\\'))
+      OR EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
+        AND (aa.alias LIKE @location ESCAPE '\\' OR aa.normalized_ref LIKE @location ESCAPE '\\'))
+      OR EXISTS (SELECT 1 FROM artifacts la WHERE la.content_hash = b.content_hash
+        AND (la.uri LIKE @location ESCAPE '\\' OR la.repo_locator_json LIKE @location ESCAPE '\\'
+          OR la.reference_json LIKE @location ESCAPE '\\'))
+    )`);
+  }
+  if (asString(options.linkedEntityType) || asString(options.linkedEntityId)) {
+    if (asString(options.linkedEntityType) && asString(options.linkedEntityId)) {
+      bindings.linkedEntityType = options.linkedEntityType;
+      bindings.linkedEntityId = options.linkedEntityId;
+      where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id
+        AND al.entity_type = @linkedEntityType AND al.entity_id = @linkedEntityId)`);
+    } else if (asString(options.linkedEntityType)) {
+      bindings.linkedEntityType = options.linkedEntityType;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.entity_type = @linkedEntityType)");
+    } else {
+      bindings.linkedEntityId = options.linkedEntityId;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.entity_id = @linkedEntityId)");
+    }
+  }
+  if (options.linkedTargetType || asString(options.linkedTargetId)) {
+    if (options.linkedTargetType && asString(options.linkedTargetId)) {
+      bindings.linkedTargetType = options.linkedTargetType;
+      bindings.linkedTargetId = options.linkedTargetId;
+      where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id
+        AND al.target_type = @linkedTargetType AND al.target_id = @linkedTargetId)`);
+    } else if (options.linkedTargetType) {
+      bindings.linkedTargetType = options.linkedTargetType;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.target_type = @linkedTargetType)");
+    } else {
+      bindings.linkedTargetId = options.linkedTargetId;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.blob_id = b.id AND al.target_id = @linkedTargetId)");
+    }
+  }
+  bindings.limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  bindings.offset = Math.max(options.offset ?? 0, 0);
+  const rows = db.prepare(
+    `SELECT b.* FROM artifact_blob b
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY b.created_at DESC, b.id
+      LIMIT @limit OFFSET @offset`,
+  ).all(bindings) as Array<Record<string, unknown>>;
+  return rows.map((row) => {
+    const blob = artifactBlobFromRow(row);
+    const artifact = projectCanonicalArtifactRecord(db, blob);
+    if (options.summary) {
+      artifact.metadata = summaryArtifactMetadata(artifact.metadata);
+      artifact.repo_locator = summaryRepoLocator(artifact.repo_locator);
+      artifact.retention = {};
+      artifact.reference = {};
+      artifact.alias_schemes = [...new Set(listArtifactAliases(db, artifact.id, artifact.content_hash)
+        .map((alias) => alias.scheme))].sort();
+    } else {
+      artifact.aliases = listArtifactAliases(db, artifact.id, artifact.content_hash);
+      artifact.links = listArtifactLinks(db, artifact.id, artifact.content_hash);
+    }
+    return artifact;
+  });
+}
+
 export function listArtifacts(db: Db, options: ArtifactListOptions = {}): ArtifactRecord[] {
+  if (artifactIdentityTablesExist(db)
+    && columnExists(db, "artifact_aliases", "blob_id")
+    && columnExists(db, "artifact_links", "blob_id")) {
+    const canonicalCount = db.prepare("SELECT COUNT(*) AS count FROM artifact_blob").get() as { count: number };
+    if (canonicalCount.count > 0) {
+      const offset = Math.max(options.offset ?? 0, 0);
+      const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+      const pageSize = 500;
+      const baseOptions = { ...options, offset: undefined, limit: undefined };
+      let canonicalOffset = 0;
+      let legacyOffset = 0;
+      let canonicalPage: ArtifactRecord[] = [];
+      let legacyPage: ArtifactRecord[] = [];
+      let canonicalIndex = 0;
+      let legacyIndex = 0;
+      let canonicalDone = false;
+      let legacyDone = false;
+
+      const nextCanonical = (): ArtifactRecord | null => {
+        while (canonicalIndex >= canonicalPage.length && !canonicalDone) {
+          canonicalPage = listCanonicalArtifactCompatibility(db, {
+            ...baseOptions,
+            offset: canonicalOffset,
+            limit: pageSize,
+          });
+          canonicalOffset += canonicalPage.length;
+          canonicalIndex = 0;
+          canonicalDone = canonicalPage.length < pageSize;
+        }
+        return canonicalPage[canonicalIndex] ?? null;
+      };
+      const nextUnmatchedLegacy = (): ArtifactRecord | null => {
+        while (!legacyDone || legacyIndex < legacyPage.length) {
+          while (legacyIndex >= legacyPage.length && !legacyDone) {
+            legacyPage = listLegacyArtifacts(db, {
+              ...baseOptions,
+              offset: legacyOffset,
+              limit: pageSize,
+            });
+            legacyOffset += legacyPage.length;
+            legacyIndex = 0;
+            legacyDone = legacyPage.length < pageSize;
+          }
+          const candidate = legacyPage[legacyIndex];
+          if (!candidate) return null;
+          if (!getArtifactBlob(db, candidate.content_hash)) return candidate;
+          legacyIndex += 1;
+        }
+        return null;
+      };
+
+      const output: ArtifactRecord[] = [];
+      let seen = 0;
+      let canonicalHead = nextCanonical();
+      let legacyHead = nextUnmatchedLegacy();
+      while ((canonicalHead || legacyHead) && output.length < limit) {
+        const takeCanonical = Boolean(canonicalHead) && (!legacyHead
+          || canonicalHead!.created_at > legacyHead.created_at
+          || (canonicalHead!.created_at === legacyHead.created_at
+            && canonicalHead!.id.localeCompare(legacyHead.id) <= 0));
+        const selected = takeCanonical ? canonicalHead as ArtifactRecord : legacyHead as ArtifactRecord;
+        if (seen >= offset) output.push(selected);
+        seen += 1;
+        if (takeCanonical) {
+          canonicalIndex += 1;
+          canonicalHead = nextCanonical();
+        } else {
+          legacyIndex += 1;
+          legacyHead = nextUnmatchedLegacy();
+        }
+      }
+      return output;
+    }
+  }
+  return listLegacyArtifacts(db, options);
+}
+
+function listLegacyArtifacts(db: Db, options: ArtifactListOptions = {}): ArtifactRecord[] {
   const where: string[] = [];
   const bindings: Record<string, unknown> = {};
   const hasAliases = tableExists(db, "artifact_aliases");
@@ -3485,6 +3872,21 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
       where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.entity_id = @linkedEntityId)");
     }
   }
+  if ((options.linkedTargetType || asString(options.linkedTargetId))
+    && hasLinks && columnExists(db, "artifact_links", "target_type")) {
+    if (options.linkedTargetType && asString(options.linkedTargetId)) {
+      bindings.linkedTargetType = options.linkedTargetType;
+      bindings.linkedTargetId = options.linkedTargetId;
+      where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id
+        AND al.target_type = @linkedTargetType AND al.target_id = @linkedTargetId)`);
+    } else if (options.linkedTargetType) {
+      bindings.linkedTargetType = options.linkedTargetType;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.target_type = @linkedTargetType)");
+    } else {
+      bindings.linkedTargetId = options.linkedTargetId;
+      where.push("EXISTS (SELECT 1 FROM artifact_links al WHERE al.artifact_id = a.id AND al.target_id = @linkedTargetId)");
+    }
+  }
 
   const limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
   const offset = Math.max(options.offset ?? 0, 0);
@@ -3515,7 +3917,130 @@ export function listArtifacts(db: Db, options: ArtifactListOptions = {}): Artifa
   });
 }
 
+function listCanonicalArtifactSeriesCompatibility(
+  db: Db,
+  options: ArtifactListOptions,
+): ArtifactSeriesSummary[] {
+  const where: string[] = [];
+  const bindings: Record<string, unknown> = {};
+  const linkScope = `(al.blob_id = b.id OR al.target_id = a.id OR al.target_id = v.id
+    OR al.series_id = replace(a.id, 'artifact:', 'artifact-series:'))`;
+  const q = asString(options.q);
+  if (q) {
+    bindings.q = `%${escapeLike(q)}%`;
+    where.push(`(
+      a.id LIKE @q ESCAPE '\\' OR a.identity_key LIKE @q ESCAPE '\\'
+      OR a.title LIKE @q ESCAPE '\\' OR a.logical_name LIKE @q ESCAPE '\\'
+      OR a.source_repo_id LIKE @q ESCAPE '\\' OR b.id LIKE @q ESCAPE '\\'
+      OR b.content_hash LIKE @q ESCAPE '\\' OR b.storage_uri LIKE @q ESCAPE '\\'
+      OR b.provider_id LIKE @q ESCAPE '\\' OR b.role LIKE @q ESCAPE '\\'
+      OR EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
+        AND (aa.alias LIKE @q ESCAPE '\\' OR aa.normalized_ref LIKE @q ESCAPE '\\'))
+    )`);
+  }
+  if (asString(options.hashPrefix)) {
+    bindings.hashPrefix = `${escapeLike(options.hashPrefix!.toLowerCase())}%`;
+    where.push("lower(b.content_hash) LIKE @hashPrefix ESCAPE '\\'");
+  }
+  if (asString(options.repo)) {
+    bindings.repo = options.repo;
+    where.push(`(v.source_repo_id = @repo OR a.source_repo_id = @repo
+      OR json_extract(b.metadata_json, '$.home_repo_id') = @repo
+      OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope} AND al.repo_id = @repo))`);
+  }
+  if (asString(options.provider)) {
+    bindings.provider = options.provider;
+    where.push(`(b.provider_id = @provider
+      OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope} AND al.provider_id = @provider))`);
+  }
+  if (asString(options.role)) {
+    bindings.role = options.role;
+    where.push(`(b.role = @role
+      OR EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope} AND al.role = @role))`);
+  }
+  if (asString(options.custody)) {
+    bindings.custody = options.custody;
+    where.push("b.custody_mode = @custody");
+  }
+  if (asString(options.availability)) {
+    bindings.availability = options.availability;
+    where.push("b.availability = @availability");
+  }
+  if (asString(options.scheme)) {
+    bindings.scheme = options.scheme!.toLowerCase();
+    where.push("EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id AND aa.scheme = @scheme)");
+  }
+  if (asString(options.location)) {
+    bindings.location = `%${escapeLike(options.location!.trim())}%`;
+    where.push(`(b.storage_uri LIKE @location ESCAPE '\\'
+      OR b.reference_json LIKE @location ESCAPE '\\'
+      OR v.repo_path LIKE @location ESCAPE '\\' OR v.observed_path LIKE @location ESCAPE '\\'
+      OR v.source_locator_json LIKE @location ESCAPE '\\'
+      OR EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
+        AND (aa.alias LIKE @location ESCAPE '\\' OR aa.normalized_ref LIKE @location ESCAPE '\\')))`);
+  }
+  if (asString(options.linkedEntityType) && asString(options.linkedEntityId)) {
+    bindings.linkedEntityType = options.linkedEntityType;
+    bindings.linkedEntityId = options.linkedEntityId;
+    where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope}
+      AND al.entity_type = @linkedEntityType AND al.entity_id = @linkedEntityId)`);
+  } else if (asString(options.linkedEntityType)) {
+    bindings.linkedEntityType = options.linkedEntityType;
+    where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope}
+      AND al.entity_type = @linkedEntityType)`);
+  } else if (asString(options.linkedEntityId)) {
+    bindings.linkedEntityId = options.linkedEntityId;
+    where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope}
+      AND al.entity_id = @linkedEntityId)`);
+  }
+  if (options.linkedTargetType && asString(options.linkedTargetId)) {
+    bindings.linkedTargetType = options.linkedTargetType;
+    bindings.linkedTargetId = options.linkedTargetId;
+    where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope}
+      AND al.target_type = @linkedTargetType AND al.target_id = @linkedTargetId)`);
+  } else if (options.linkedTargetType) {
+    bindings.linkedTargetType = options.linkedTargetType;
+    where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope}
+      AND al.target_type = @linkedTargetType)`);
+  } else if (asString(options.linkedTargetId)) {
+    bindings.linkedTargetId = options.linkedTargetId;
+    where.push(`EXISTS (SELECT 1 FROM artifact_links al WHERE ${linkScope}
+      AND al.target_id = @linkedTargetId)`);
+  }
+  bindings.limit = Math.min(Math.max(options.limit ?? 100, 1), 500);
+  bindings.offset = Math.max(options.offset ?? 0, 0);
+  const rows = db.prepare(
+    `SELECT a.id AS artifact_id, v.id AS version_id, b.id AS blob_id
+       FROM artifact a
+       LEFT JOIN artifact_version v ON v.id = a.latest_version_id
+       LEFT JOIN artifact_blob b ON b.id = v.blob_id
+      ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+      ORDER BY a.updated_at DESC, a.id
+      LIMIT @limit OFFSET @offset`,
+  ).all(bindings) as Array<{ artifact_id: string; version_id: string | null; blob_id: string | null }>;
+  return rows.map((row) => {
+    const logical = getLogicalArtifact(db, row.artifact_id) as ArtifactIdentityRecord;
+    const version = row.version_id ? getCanonicalArtifactVersion(db, row.version_id) : null;
+    const blob = row.blob_id ? getArtifactBlob(db, row.blob_id) : null;
+    const series = projectCanonicalSeriesRecord(logical);
+    const latestVersion = version ? projectCanonicalVersionRecord(db, version) : null;
+    const latestArtifact = blob ? projectCanonicalArtifactRecord(db, blob, logical, version) : null;
+    return {
+      ...series,
+      ref: series.id,
+      latest_version: latestVersion,
+      latest_artifact: latestArtifact,
+      links: listArtifactSeriesLinks(db, series.id),
+    };
+  });
+}
+
 export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): ArtifactSeriesSummary[] {
+  if (artifactIdentityTablesExist(db)
+    && columnExists(db, "artifact_aliases", "blob_id")
+    && columnExists(db, "artifact_links", "blob_id")) {
+    return listCanonicalArtifactSeriesCompatibility(db, options);
+  }
   if (!artifactVersioningTablesExist(db)) return [];
   const where: string[] = [];
   const bindings: Record<string, unknown> = {};
@@ -3691,6 +4216,13 @@ function artifactDraftTablesExist(db: Db): boolean {
   return artifactVersioningTablesExist(db) && tableExists(db, "artifact_drafts");
 }
 
+function canonicalDraftColumnsAvailable(db: Db): boolean {
+  return artifactDraftTablesExist(db)
+    && columnExists(db, "artifact_drafts", "artifact_id")
+    && columnExists(db, "artifact_drafts", "version_id")
+    && artifactIdentityTablesExist(db);
+}
+
 function assertVersioningTables(db: Db): void {
   if (!artifactVersioningTablesExist(db)) {
     throw new Error("artifact versioning tables are not present in this database");
@@ -3780,9 +4312,76 @@ function getArtifactBlobPrefix(db: Db, ref: string): PrefixLookupResult<Artifact
   return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
 }
 
-function legacyArtifactForBlob(db: Db, blob: ArtifactBlobRecord | null): ArtifactRecord | null {
-  if (!blob) return null;
-  return getArtifact(db, `artifact:sha256:${blob.content_hash}`) ?? getArtifact(db, `artifact:${blob.content_hash}`);
+function compatibilityArtifactId(blob: ArtifactBlobRecord): string {
+  return `artifact:sha256:${blob.content_hash}`;
+}
+
+/**
+ * Project canonical blob/identity/version state through the historical
+ * ArtifactRecord contract. Canonical fields win when a legacy row also exists;
+ * the legacy row contributes only compatibility-only fields with no canonical
+ * equivalent.
+ */
+export function projectCanonicalArtifactRecord(
+  db: Db,
+  blob: ArtifactBlobRecord,
+  logical: ArtifactIdentityRecord | null = null,
+  version: CanonicalArtifactVersionRecord | null = null,
+): ArtifactRecord {
+  const legacy = getLegacyArtifact(db, compatibilityArtifactId(blob))
+    ?? getLegacyArtifact(db, `artifact:${blob.content_hash}`);
+  // A blob may belong to multiple logical artifacts. Generic blob/list
+  // projections must not borrow an arbitrary logical/version context; callers
+  // resolving a specific logical artifact/version pass that context explicitly.
+  const canonicalLogical = logical;
+  const canonicalVersion = version;
+  const sourceLocator = canonicalVersion?.source_locator ?? {};
+  const compatibilityId = asString(blob.metadata.compatibility_artifact_id)
+    ?? compatibilityArtifactId(blob);
+  const repoLocator = {
+    ...(legacy?.repo_locator ?? {}),
+    ...asRecord(blob.metadata.repo_locator),
+    ...sourceLocator,
+    ...(canonicalVersion?.source_repo_id ? { repo_id: canonicalVersion.source_repo_id } : {}),
+    ...(canonicalVersion?.repo_path ? { path: canonicalVersion.repo_path } : {}),
+    ...(canonicalVersion?.commit_sha ? { commit: canonicalVersion.commit_sha } : {}),
+    ...(canonicalVersion?.observed_path ? { observed_path: canonicalVersion.observed_path } : {}),
+  };
+  return {
+    id: legacy?.id ?? compatibilityId,
+    algorithm: blob.algorithm,
+    content_hash: blob.content_hash,
+    uri: blob.storage_uri ?? asString(blob.reference.uri) ?? legacy?.uri ?? blob.id,
+    media_type: blob.media_type,
+    role: blob.role,
+    size_bytes: blob.size_bytes,
+    provider_id: blob.provider_id,
+    manifest_id: blob.manifest_id,
+    metadata: mergeJsonRecords(
+      legacy?.metadata,
+      blob.metadata,
+      canonicalLogical?.metadata,
+      canonicalVersion?.metadata,
+    ),
+    pinned: typeof blob.retention.pinned === "boolean"
+      ? blob.retention.pinned
+      : legacy?.pinned ?? blob.availability === "pinned",
+    custody_mode: canonicalVersion?.custody_mode ?? blob.custody_mode,
+    home_repo_id: canonicalVersion?.source_repo_id
+      ?? canonicalLogical?.source_repo_id
+      ?? asString(blob.metadata.home_repo_id)
+      ?? legacy?.home_repo_id
+      ?? null,
+    repo_locator: repoLocator,
+    availability: blob.availability,
+    retention: blob.retention,
+    reference: mergeJsonRecords(legacy?.reference, blob.reference, {
+      canonical_blob_id: blob.id,
+      canonical_artifact_id: canonicalLogical?.id ?? null,
+      canonical_version_id: canonicalVersion?.id ?? null,
+    }),
+    created_at: blob.created_at,
+  };
 }
 
 function resolutionForCanonicalVersion(
@@ -3822,7 +4421,7 @@ function resolutionForCanonicalVersion(
     normalized_ref: version.id,
     target_type: "artifact_version",
     target_id: version.id,
-    artifact: legacyArtifactForBlob(db, blob),
+    artifact: blob ? projectCanonicalArtifactRecord(db, blob, logical, version) : null,
     logical_artifact: logical,
     artifact_version: version,
     artifact_blob: blob,
@@ -3867,7 +4466,7 @@ function resolutionForLogicalArtifact(
     normalized_ref: logical.id,
     target_type: "artifact",
     target_id: logical.id,
-    artifact: legacyArtifactForBlob(db, blob),
+    artifact: blob ? projectCanonicalArtifactRecord(db, blob, logical, version) : null,
     logical_artifact: logical,
     artifact_version: version,
     artifact_blob: blob,
@@ -3913,7 +4512,7 @@ function resolutionForArtifactBlob(
     normalized_ref: blob.id,
     target_type: "artifact_blob",
     target_id: blob.id,
-    artifact: legacyArtifactForBlob(db, blob),
+    artifact: projectCanonicalArtifactRecord(db, blob),
     artifact_blob: blob,
     warnings: legacyWarnings,
   };
@@ -4105,18 +4704,18 @@ export function listCanonicalArtifactVersions(db: Db, artifactId: string): Canon
   return rows.map(canonicalArtifactVersionFromRow);
 }
 
-function logicalArtifactIdFromLegacySeries(seriesId: string): string {
+function canonicalArtifactIdForSeriesRef(seriesId: string): string {
   const trimmed = seriesId.trim();
   const match = /^artifact-series:(.+)$/i.exec(trimmed);
   return match ? `artifact:${match[1]}` : `artifact:${trimmed.replace(/^artifact:/i, "")}`;
 }
 
-function canonicalVersionIdFromLegacy(versionId: string): string {
+function canonicalVersionIdForVersionRef(versionId: string): string {
   const trimmed = versionId.trim();
   return /^artifact-version:/i.test(trimmed) ? trimmed : `artifact-version:${trimmed}`;
 }
 
-function mirrorLegacyArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.now()): ArtifactBlobRecord | null {
+function upsertCanonicalArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.now()): ArtifactBlobRecord | null {
   if (!artifactIdentityTablesExist(db)) return null;
   const blobId = artifactBlobIdFromHash(artifact.content_hash);
   db.prepare(
@@ -4130,16 +4729,31 @@ function mirrorLegacyArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.n
       @retention_json, @reference_json, @created_at
     )
     ON CONFLICT(algorithm, content_hash) DO UPDATE SET
-      storage_uri = COALESCE(excluded.storage_uri, artifact_blob.storage_uri),
+      storage_uri = CASE
+        WHEN artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
+         AND excluded.availability = 'present' THEN excluded.storage_uri
+        WHEN artifact_blob.custody_mode IN ('link', 'external')
+         AND excluded.custody_mode IN ('copy', 'managed') THEN excluded.storage_uri
+        ELSE COALESCE(artifact_blob.storage_uri, excluded.storage_uri)
+      END,
       media_type = COALESCE(excluded.media_type, artifact_blob.media_type),
       role = COALESCE(excluded.role, artifact_blob.role),
       size_bytes = CASE WHEN artifact_blob.size_bytes = 0 THEN excluded.size_bytes ELSE artifact_blob.size_bytes END,
       provider_id = COALESCE(excluded.provider_id, artifact_blob.provider_id),
       manifest_id = COALESCE(excluded.manifest_id, artifact_blob.manifest_id),
-      metadata_json = CASE WHEN artifact_blob.metadata_json = '{}' THEN excluded.metadata_json ELSE artifact_blob.metadata_json END,
+      metadata_json = CASE
+        WHEN artifact_blob.metadata_json = '{}'
+          OR (artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
+            AND excluded.availability = 'present')
+          OR (artifact_blob.custody_mode IN ('link', 'external')
+            AND excluded.custody_mode IN ('copy', 'managed')) THEN excluded.metadata_json
+        ELSE artifact_blob.metadata_json
+      END,
       custody_mode = CASE
         WHEN artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
          AND excluded.availability = 'present' THEN excluded.custody_mode
+        WHEN artifact_blob.custody_mode IN ('link', 'external')
+         AND excluded.custody_mode IN ('copy', 'managed') THEN excluded.custody_mode
         ELSE artifact_blob.custody_mode
       END,
       availability = CASE
@@ -4147,8 +4761,22 @@ function mirrorLegacyArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.n
          AND excluded.availability = 'present' THEN excluded.availability
         ELSE artifact_blob.availability
       END,
-      retention_json = CASE WHEN artifact_blob.retention_json = '{}' THEN excluded.retention_json ELSE artifact_blob.retention_json END,
-      reference_json = CASE WHEN artifact_blob.reference_json = '{}' THEN excluded.reference_json ELSE artifact_blob.reference_json END`,
+      retention_json = CASE
+        WHEN artifact_blob.retention_json = '{}'
+          OR (artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
+            AND excluded.availability = 'present')
+          OR (artifact_blob.custody_mode IN ('link', 'external')
+            AND excluded.custody_mode IN ('copy', 'managed')) THEN excluded.retention_json
+        ELSE artifact_blob.retention_json
+      END,
+      reference_json = CASE
+        WHEN artifact_blob.reference_json = '{}'
+          OR (artifact_blob.availability IN ('remote_only', 'missing', 'unchecked')
+            AND excluded.availability = 'present')
+          OR (artifact_blob.custody_mode IN ('link', 'external')
+            AND excluded.custody_mode IN ('copy', 'managed')) THEN excluded.reference_json
+        ELSE artifact_blob.reference_json
+      END`,
   ).run({
     id: blobId,
     algorithm: artifact.algorithm,
@@ -4169,7 +4797,9 @@ function mirrorLegacyArtifactBlob(db: Db, artifact: ArtifactRecord, now = Date.n
   return getArtifactBlob(db, blobId);
 }
 
-function mirrorLegacyVersionIdentity(
+// Historical link repair only: backfill canonical identity for a legacy-only
+// series/member pair. This writes canonical tables and never updates legacy rows.
+function backfillCanonicalIdentityForCompatibilityLink(
   db: Db,
   series: ArtifactSeriesRecord,
   version: ArtifactVersionRecord,
@@ -4177,10 +4807,10 @@ function mirrorLegacyVersionIdentity(
   now = Date.now(),
 ): void {
   if (!artifactIdentityTablesExist(db)) return;
-  const blob = mirrorLegacyArtifactBlob(db, artifact, now);
+  const blob = upsertCanonicalArtifactBlob(db, artifact, now);
   if (!blob) return;
-  const logicalId = logicalArtifactIdFromLegacySeries(series.id);
-  const canonicalVersionId = canonicalVersionIdFromLegacy(version.id);
+  const logicalId = canonicalArtifactIdForSeriesRef(series.id);
+  const canonicalVersionId = canonicalVersionIdForVersionRef(version.id);
   db.prepare(
     `INSERT INTO artifact (
       id, identity_key, source_kind, title, source_project_id, source_repo_id,
@@ -4545,7 +5175,58 @@ function versionFromRow(row: Record<string, unknown>): ArtifactVersionRecord {
   };
 }
 
+function projectCanonicalSeriesRecord(logical: ArtifactIdentityRecord): ArtifactSeriesRecord {
+  return {
+    id: legacySeriesIdFromCanonicalArtifact(logical.id),
+    series_key: logical.identity_key,
+    source_kind: logical.source_kind as ArtifactSeriesSourceKind,
+    title: logical.title,
+    repo_id: logical.source_repo_id,
+    logical_name: logical.logical_name,
+    latest_version_id: logical.latest_version_id,
+    version_count: logical.version_count,
+    metadata: logical.metadata,
+    created_at: logical.created_at,
+    updated_at: logical.updated_at,
+  };
+}
+
+function projectCanonicalVersionRecord(
+  db: Db,
+  version: CanonicalArtifactVersionRecord,
+): ArtifactVersionRecord {
+  const blob = getArtifactBlob(db, version.blob_id);
+  return {
+    id: version.id,
+    series_id: legacySeriesIdFromCanonicalArtifact(version.artifact_id),
+    artifact_id: blob ? projectCanonicalArtifactRecord(db, blob).id : `artifact:sha256:${version.content_hash}`,
+    version_no: version.version_no,
+    parent_version_id: asString(version.source_locator.parent_version_id) ?? null,
+    source_kind: version.source_kind as ArtifactVersionSourceKind,
+    content_hash: version.content_hash,
+    commit_sha: version.commit_sha,
+    repo_path: version.repo_path,
+    observed_path: version.observed_path,
+    custody_mode: version.custody_mode,
+    label: version.label,
+    note: version.note,
+    metadata: version.metadata,
+    created_at: version.created_at,
+  };
+}
+
 export function getArtifactSeries(db: Db, idOrKey: string): ArtifactSeriesRecord | null {
+  if (artifactIdentityTablesExist(db)) {
+    const logicalId = /^artifact-series:/i.test(idOrKey)
+      ? canonicalArtifactIdForSeriesRef(idOrKey)
+      : /^artifact:/i.test(idOrKey)
+        ? idOrKey
+        : null;
+    const row = logicalId
+      ? db.prepare("SELECT * FROM artifact WHERE id = ?").get(logicalId)
+      : db.prepare("SELECT * FROM artifact WHERE identity_key = ?").get(idOrKey);
+    if (row) return projectCanonicalSeriesRecord(artifactIdentityFromRow(row as Record<string, unknown>));
+  }
   if (!artifactVersioningTablesExist(db)) return null;
   const row = db
     .prepare("SELECT * FROM artifact_series WHERE id = ? OR series_key = ? LIMIT 1")
@@ -4554,7 +5235,9 @@ export function getArtifactSeries(db: Db, idOrKey: string): ArtifactSeriesRecord
 }
 
 function resolveArtifactSeriesPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactSeriesRecord> {
-  if (!artifactVersioningTablesExist(db)) return { status: "unsupported", value: null };
+  if (!artifactIdentityTablesExist(db) && !artifactVersioningTablesExist(db)) {
+    return { status: "unsupported", value: null };
+  }
   const trimmed = ref.trim();
   const key = trimmed.replace(/^artifact-series:/i, "");
   const exact = getArtifactSeries(db, trimmed) ?? getArtifactSeries(db, key);
@@ -4563,6 +5246,27 @@ function resolveArtifactSeriesPrefix(db: Db, ref: string): PrefixLookupResult<Ar
 
   const idPrefix = trimmed.startsWith("artifact-series:") ? trimmed : `artifact-series:${key}`;
   const keyPrefix = key;
+  if (artifactIdentityTablesExist(db)) {
+    const logicalIdPrefix = canonicalArtifactIdForSeriesRef(idPrefix);
+    const rows = db.prepare(
+      `SELECT * FROM artifact
+        WHERE id LIKE ? ESCAPE '\\'
+           OR identity_key LIKE ? ESCAPE '\\'
+        ORDER BY id ASC
+        LIMIT 2`,
+    ).all(
+      `${escapeLike(logicalIdPrefix)}%`,
+      `${escapeLike(keyPrefix)}%`,
+    ) as Array<Record<string, unknown>>;
+    if (rows.length === 1) {
+      return {
+        status: "resolved",
+        value: projectCanonicalSeriesRecord(artifactIdentityFromRow(rows[0])),
+      };
+    }
+    if (rows.length > 1) return { status: "ambiguous", value: null };
+  }
+  if (!artifactVersioningTablesExist(db)) return { status: "unresolved", value: null };
   const rows = db
     .prepare(
       `SELECT * FROM artifact_series
@@ -4577,6 +5281,8 @@ function resolveArtifactSeriesPrefix(db: Db, ref: string): PrefixLookupResult<Ar
 }
 
 export function getArtifactVersion(db: Db, id: string): ArtifactVersionRecord | null {
+  const canonical = getCanonicalArtifactVersion(db, id);
+  if (canonical) return projectCanonicalVersionRecord(db, canonical);
   if (!artifactVersioningTablesExist(db)) return null;
   const row = db
     .prepare("SELECT * FROM artifact_versions WHERE id = ?")
@@ -4606,6 +5312,15 @@ function resolveArtifactVersionPrefix(db: Db, ref: string): PrefixLookupResult<A
 }
 
 export function listArtifactVersions(db: Db, seriesId: string): ArtifactVersionRecord[] {
+  if (artifactIdentityTablesExist(db)) {
+    const logicalId = /^artifact:/i.test(seriesId) && !/^artifact-series:/i.test(seriesId)
+      ? seriesId
+      : canonicalArtifactIdForSeriesRef(seriesId);
+    const canonical = listCanonicalArtifactVersions(db, logicalId);
+    if (canonical.length > 0 || getLogicalArtifact(db, logicalId)) {
+      return canonical.map((version) => projectCanonicalVersionRecord(db, version));
+    }
+  }
   if (!artifactVersioningTablesExist(db)) return [];
   const rows = db
     .prepare("SELECT * FROM artifact_versions WHERE series_id = ? ORDER BY version_no ASC")
@@ -4627,6 +5342,41 @@ export function ensureArtifactSeries(
   input: EnsureArtifactSeriesInput,
   now = Date.now(),
 ): ArtifactSeriesRecord {
+  if (artifactIdentityTablesExist(db)) {
+    const seriesKey = input.series_key.trim();
+    if (!seriesKey) throw new Error("series_key is required");
+    const seriesId = seriesIdFromKey(seriesKey);
+    const id = canonicalArtifactIdForSeriesRef(seriesId);
+    db.prepare(
+      `INSERT INTO artifact (
+        id, identity_key, source_kind, title, source_project_id, source_repo_id,
+        logical_name, source_path, latest_version_id, version_count, metadata_json,
+        created_at, updated_at
+      ) VALUES (
+        @id, @identity_key, @source_kind, @title, NULL, @source_repo_id,
+        @logical_name, NULL, NULL, 0, @metadata_json, @created_at, @created_at
+      )
+      ON CONFLICT(identity_key) DO UPDATE SET
+        title = COALESCE(excluded.title, artifact.title),
+        source_repo_id = COALESCE(excluded.source_repo_id, artifact.source_repo_id),
+        logical_name = COALESCE(excluded.logical_name, artifact.logical_name),
+        metadata_json = CASE
+          WHEN artifact.metadata_json = '{}' THEN excluded.metadata_json
+          ELSE artifact.metadata_json
+        END,
+        updated_at = excluded.updated_at`,
+    ).run({
+      id,
+      identity_key: seriesKey,
+      source_kind: input.source_kind,
+      title: input.title ?? null,
+      source_repo_id: input.repo_id ?? null,
+      logical_name: input.logical_name ?? null,
+      metadata_json: jsonStringify(input.metadata ?? {}),
+      created_at: now,
+    });
+    return getArtifactSeries(db, seriesId) as ArtifactSeriesRecord;
+  }
   assertVersioningTables(db);
   const seriesKey = input.series_key.trim();
   if (!seriesKey) throw new Error("series_key is required");
@@ -4685,6 +5435,85 @@ export function appendArtifactVersion(
   assertVersioningTables(db);
   if (!VERSION_SOURCE_KINDS.has(input.source_kind)) {
     throw new Error(`unsupported version source_kind: ${input.source_kind}`);
+  }
+  if (artifactIdentityTablesExist(db)) {
+    const body = (): { version: ArtifactVersionRecord; created: boolean } => {
+      const series = getArtifactSeries(db, input.series_id);
+      if (!series) throw new Error(`artifact series not found: ${input.series_id}`);
+      const logicalId = canonicalArtifactIdForSeriesRef(series.id);
+      const blob = canonicalBlobForCompatibilityRef(db, input.artifact_id).blob;
+      if (!blob) throw new Error(`canonical artifact blob not found: ${input.artifact_id}`);
+      const naturalKey = input.natural_key
+        ?? (input.source_kind === "tracked_repo"
+          ? `${input.commit_sha ?? ""}:${input.repo_path ?? ""}`
+          : input.content_hash);
+      const versionId = versionIdFor(series.id, input.source_kind, naturalKey);
+      const existing = getCanonicalArtifactVersion(db, versionId);
+      if (existing) return { version: projectCanonicalVersionRecord(db, existing), created: false };
+      const nextNo = Number((db.prepare(
+        "SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_version WHERE artifact_id = ?",
+      ).get(logicalId) as { n: number }).n) + 1;
+      const result = db.prepare(
+        `INSERT INTO artifact_version (
+          id, artifact_id, version_no, blob_id, source_kind, content_hash,
+          source_project_id, source_repo_id, repo_path, commit_sha, observed_path,
+          source_locator_json, custody_mode, label, note, metadata_json, created_at
+        ) VALUES (
+          @id, @artifact_id, @version_no, @blob_id, @source_kind, @content_hash,
+          NULL, @source_repo_id, @repo_path, @commit_sha, @observed_path,
+          @source_locator_json, @custody_mode, @label, @note, @metadata_json, @created_at
+        ) ON CONFLICT(id) DO NOTHING`,
+      ).run({
+        id: versionId,
+        artifact_id: logicalId,
+        version_no: nextNo,
+        blob_id: blob.id,
+        source_kind: input.source_kind,
+        content_hash: input.content_hash,
+        source_repo_id: series.repo_id,
+        repo_path: input.repo_path ?? null,
+        commit_sha: input.commit_sha ?? null,
+        observed_path: input.observed_path ?? null,
+        source_locator_json: jsonStringify({ parent_version_id: input.parent_version_id ?? null }),
+        custody_mode: input.custody_mode ?? null,
+        label: input.label ?? null,
+        note: input.note ?? null,
+        metadata_json: jsonStringify(input.metadata ?? {}),
+        created_at: now,
+      });
+      const created = result.changes > 0;
+      if (created) {
+        const nextSourceKind: ArtifactSeriesSourceKind = series.version_count === 0
+          ? input.source_kind
+          : series.source_kind === "mixed" || series.source_kind === input.source_kind
+            ? series.source_kind
+            : "mixed";
+        db.prepare(
+          `UPDATE artifact
+              SET latest_version_id = @version_id,
+                  version_count = version_count + 1,
+                  source_kind = @source_kind,
+                  source_path = COALESCE(@source_path, source_path),
+                  updated_at = @now
+            WHERE id = @artifact_id`,
+        ).run({
+          version_id: versionId,
+          source_kind: nextSourceKind,
+          source_path: input.repo_path ?? input.observed_path ?? null,
+          now,
+          artifact_id: logicalId,
+        });
+      }
+      return {
+        version: projectCanonicalVersionRecord(
+          db,
+          getCanonicalArtifactVersion(db, versionId) as CanonicalArtifactVersionRecord,
+        ),
+        created,
+      };
+    };
+    if (db.inTransaction) return body();
+    return db.transaction(body).immediate();
   }
   // The MAX(version_no) read, the version insert, and the series-counter update
   // must be one atomic unit so a crash never leaves version_count /
@@ -4777,11 +5606,12 @@ export function appendArtifactVersion(
 // artifact's custody_mode (managed/copy -> managed, link/external -> local_only)
 // while the version row preserves the TRUE custody_mode. series_key = the artifact
 // id, so the series id (seriesIdFromKey) and version id (versionIdFor) are
-// deterministic: re-runs are no-ops (ensureArtifactSeries ON CONFLICT(series_key)
-// DO UPDATE + appendArtifactVersion ON CONFLICT(id) DO NOTHING, and a re-run also
-// finds zero orphans). Runs as ONE immediate transaction (the nested
-// appendArtifactVersion runs inline because db.inTransaction is true) so it is not
-// one transaction per artifact. Returns the number of artifacts wrapped.
+// deterministic: re-runs are no-ops (the bounded legacy inserts use
+// ON CONFLICT, and a re-run also finds zero orphans). This migration-only path
+// deliberately writes the legacy tables directly even when canonical tables
+// exist; canonical writers must not depend on it. Runs as ONE immediate
+// transaction, not one transaction per artifact. Returns the number of artifacts
+// wrapped.
 export function backfillOrphanArtifactSeries(db: Db, now = Date.now()): number {
   if (!artifactVersioningTablesExist(db)) return 0;
   if (!tableExists(db, "artifacts")) return 0;
@@ -4798,19 +5628,66 @@ export function backfillOrphanArtifactSeries(db: Db, now = Date.now()): number {
     const custody = orphan.custody_mode ?? "managed";
     const sourceKind: ArtifactVersionSourceKind =
       custody === "managed" || custody === "copy" ? "managed" : "local_only";
-    const series = ensureArtifactSeries(db, { series_key: orphan.id, source_kind: sourceKind }, now);
-    appendArtifactVersion(
-      db,
-      {
-        series_id: series.id,
-        artifact_id: orphan.id,
-        source_kind: sourceKind,
-        content_hash: orphan.content_hash ?? "",
-        natural_key: orphan.id,
-        custody_mode: custody,
-      },
-      now,
-    );
+    const seriesId = seriesIdFromKey(orphan.id);
+    db.prepare(
+      `INSERT INTO artifact_series (
+        id, series_key, source_kind, title, repo_id, logical_name,
+        latest_version_id, version_count, metadata_json, created_at, updated_at
+      ) VALUES (
+        @id, @series_key, @source_kind, NULL, NULL, NULL,
+        NULL, 0, '{}', @created_at, @created_at
+      )
+      ON CONFLICT(series_key) DO UPDATE SET updated_at = excluded.updated_at`,
+    ).run({ id: seriesId, series_key: orphan.id, source_kind: sourceKind, created_at: now });
+
+    const seriesRow = db.prepare("SELECT * FROM artifact_series WHERE series_key = ?")
+      .get(orphan.id) as Record<string, unknown>;
+    const series = seriesFromRow(seriesRow);
+    const versionId = versionIdFor(series.id, sourceKind, orphan.id);
+    const existing = db.prepare("SELECT 1 FROM artifact_versions WHERE id = ?").get(versionId);
+    if (existing) return;
+
+    const nextNo = Number((db.prepare(
+      "SELECT COALESCE(MAX(version_no), 0) AS n FROM artifact_versions WHERE series_id = ?",
+    ).get(series.id) as { n: number }).n) + 1;
+    const hasParentVersion = columnExists(db, "artifact_versions", "parent_version_id");
+    const parentColumn = hasParentVersion ? "parent_version_id, " : "";
+    const parentValue = hasParentVersion ? "NULL, " : "";
+    const inserted = db.prepare(
+      `INSERT INTO artifact_versions (
+        id, series_id, artifact_id, version_no, ${parentColumn}source_kind, content_hash,
+        commit_sha, repo_path, observed_path, custody_mode, label, note,
+        metadata_json, created_at
+      ) VALUES (
+        @id, @series_id, @artifact_id, @version_no, ${parentValue}@source_kind, @content_hash,
+        NULL, NULL, NULL, @custody_mode, NULL, NULL, '{}', @created_at
+      )
+      ON CONFLICT(id) DO NOTHING`,
+    ).run({
+      id: versionId,
+      series_id: series.id,
+      artifact_id: orphan.id,
+      version_no: nextNo,
+      source_kind: sourceKind,
+      content_hash: orphan.content_hash ?? "",
+      custody_mode: custody,
+      created_at: now,
+    });
+    if (inserted.changes > 0) {
+      const nextSourceKind: ArtifactSeriesSourceKind = series.version_count === 0
+        ? sourceKind
+        : series.source_kind === "mixed" || series.source_kind === sourceKind
+          ? series.source_kind
+          : "mixed";
+      db.prepare(
+        `UPDATE artifact_series
+            SET latest_version_id = @version_id,
+                version_count = version_count + 1,
+                source_kind = @source_kind,
+                updated_at = @now
+          WHERE id = @series_id`,
+      ).run({ version_id: versionId, source_kind: nextSourceKind, now, series_id: series.id });
+    }
   };
 
   const run = (): void => {
@@ -5073,14 +5950,13 @@ export function recordArtifactVersion(
     };
   }
 
-  // Atomic ensure-series + append-version (+ counter update inside append) and
-  // mirror into the v91 artifact identity tables when they are present.
+  // Atomic canonical ensure-series + append-version (+ counter update inside
+  // append). Legacy series/version tables remain read-only compatibility data.
   const write = db.transaction(() => {
     const series = ensureArtifactSeries(db, seriesInput, now);
     const appended = appendArtifactVersion(db, { ...versionInput, series_id: series.id }, now);
     const storedSeries = getArtifactSeries(db, series.id) as ArtifactSeriesRecord;
     const storedArtifact = getArtifact(db, artifact.id) as ArtifactRecord;
-    mirrorLegacyVersionIdentity(db, storedSeries, appended.version, storedArtifact, now);
     return { series: storedSeries, artifact: storedArtifact, ...appended };
   });
   const { series, version, artifact: storedArtifact, created } = write.immediate();
@@ -5097,18 +5973,52 @@ function artifactDraftId(seriesId: string): string {
   return `artifact-draft:${crypto.createHash("sha256").update(seriesId).digest("hex")}`;
 }
 
+function legacySeriesIdFromCanonicalArtifact(artifactId: string): string {
+  return artifactId.replace(/^artifact:/i, "artifact-series:");
+}
+
 function draftFromRow(db: Db, row: Record<string, unknown>): ArtifactDraftRecord {
-  const baseVersion = getArtifactVersion(db, String(row.base_version_id));
-  const series = getArtifactSeries(db, String(row.series_id));
-  const latest = series?.latest_version_id ? getArtifactVersion(db, series.latest_version_id) : null;
+  if (!canonicalDraftColumnsAvailable(db)) {
+    const legacyBaseId = String(row.base_version_id);
+    const legacySeriesId = String(row.series_id);
+    const base = getArtifactVersion(db, legacyBaseId);
+    const series = getArtifactSeries(db, legacySeriesId);
+    const latest = series?.latest_version_id ? getArtifactVersion(db, series.latest_version_id) : null;
+    return {
+      id: String(row.id), series_id: legacySeriesId, base_version_id: legacyBaseId,
+      base_version_no: base?.version_no ?? 0,
+      latest_version_id: latest?.id ?? series?.latest_version_id ?? null,
+      latest_version_no: latest?.version_no ?? null,
+      stale: Boolean(series?.latest_version_id && series.latest_version_id !== legacyBaseId),
+      content: String(row.content ?? ""), media_type: (row.media_type as string | null) ?? null,
+      label: (row.label as string | null) ?? null, note: (row.note as string | null) ?? null,
+      metadata: parseJsonRecord(row.metadata_json as string | null),
+      created_at: Number(row.created_at), updated_at: Number(row.updated_at),
+    };
+  }
+  const canonicalArtifactId = String(row.artifact_id);
+  const canonicalBaseVersionId = String(row.version_id);
+  const seriesId = row.series_id === null || row.series_id === undefined
+    ? legacySeriesIdFromCanonicalArtifact(canonicalArtifactId)
+    : String(row.series_id);
+  const baseVersionId = row.base_version_id === null || row.base_version_id === undefined
+    ? canonicalBaseVersionId
+    : String(row.base_version_id);
+  const baseVersion = getArtifactVersion(db, baseVersionId);
+  const series = getArtifactSeries(db, seriesId);
+  const canonicalArtifact = getLogicalArtifact(db, canonicalArtifactId);
+  const canonicalBaseVersion = getCanonicalArtifactVersion(db, canonicalBaseVersionId);
+  const latestId = canonicalArtifact?.latest_version_id ?? series?.latest_version_id ?? null;
+  const latestCanonical = latestId ? getCanonicalArtifactVersion(db, latestId) : null;
+  const latest = latestId ? getArtifactVersion(db, latestId) : null;
   return {
     id: String(row.id),
-    series_id: String(row.series_id),
-    base_version_id: String(row.base_version_id),
-    base_version_no: baseVersion?.version_no ?? 0,
-    latest_version_id: latest?.id ?? series?.latest_version_id ?? null,
-    latest_version_no: latest?.version_no ?? null,
-    stale: Boolean(series?.latest_version_id && series.latest_version_id !== String(row.base_version_id)),
+    series_id: seriesId,
+    base_version_id: baseVersionId,
+    base_version_no: canonicalBaseVersion?.version_no ?? baseVersion?.version_no ?? 0,
+    latest_version_id: latestCanonical?.id ?? latest?.id ?? latestId,
+    latest_version_no: latestCanonical?.version_no ?? latest?.version_no ?? null,
+    stale: Boolean(latestId && latestId !== canonicalBaseVersionId),
     content: String(row.content ?? ""),
     media_type: (row.media_type as string | null) ?? null,
     label: (row.label as string | null) ?? null,
@@ -5117,6 +6027,17 @@ function draftFromRow(db: Db, row: Record<string, unknown>): ArtifactDraftRecord
     created_at: Number(row.created_at),
     updated_at: Number(row.updated_at),
   };
+}
+
+function canonicalDraftArtifactId(db: Db, ref: string): string | null {
+  const trimmed = ref.trim();
+  if (/^artifact-series:/i.test(trimmed)) return canonicalArtifactIdForSeriesRef(trimmed);
+  const logical = getLogicalArtifact(db, trimmed);
+  if (logical) return logical.id;
+  const version = getCanonicalArtifactVersion(db, trimmed);
+  if (version) return version.artifact_id;
+  const history = resolveArtifactVersionHistory(db, trimmed);
+  return history ? canonicalArtifactIdForSeriesRef(history.series.id) : null;
 }
 
 function resolveDraftSeries(db: Db, ref: string): ArtifactSeriesRecord {
@@ -5142,10 +6063,49 @@ export interface SaveArtifactDraftInput {
   metadata?: JsonRecord;
 }
 
+function resolveCanonicalDraftContext(
+  db: Db,
+  ref: string,
+  baseVersionRef?: string,
+): { logical: ArtifactIdentityRecord; base: CanonicalArtifactVersionRecord; seriesId: string } {
+  const trimmed = ref.trim();
+  let logical = getLogicalArtifact(db, trimmed);
+  let selected = getCanonicalArtifactVersion(db, trimmed);
+  if (!logical && selected) logical = getLogicalArtifact(db, selected.artifact_id);
+  if (!logical && /^artifact-series:/i.test(trimmed)) {
+    logical = getLogicalArtifact(db, canonicalArtifactIdForSeriesRef(trimmed));
+  }
+  if (!logical && /^artifact-blob:/i.test(trimmed)) {
+    const blob = getArtifactBlob(db, trimmed);
+    const rows = blob ? db.prepare(
+      "SELECT DISTINCT artifact_id FROM artifact_version WHERE blob_id = ? LIMIT 2",
+    ).all(blob.id) as Array<{ artifact_id: string }> : [];
+    if (rows.length === 1) logical = getLogicalArtifact(db, rows[0].artifact_id);
+  }
+  if (!logical) throw new Error(`artifact series not found for ref: ${ref}`);
+  const base = baseVersionRef
+    ? getCanonicalArtifactVersion(db, baseVersionRef)
+    : selected ?? (logical.latest_version_id ? getCanonicalArtifactVersion(db, logical.latest_version_id) : null);
+  if (!base || base.artifact_id !== logical.id) {
+    throw new Error("artifact draft base version does not belong to the selected artifact");
+  }
+  return { logical, base, seriesId: legacySeriesIdFromCanonicalArtifact(logical.id) };
+}
+
 export function getArtifactDraft(db: Db, ref: string): ArtifactDraftRecord | null {
   if (!artifactDraftTablesExist(db)) return null;
-  const series = resolveDraftSeries(db, ref);
-  const row = db.prepare("SELECT * FROM artifact_drafts WHERE series_id = ?").get(series.id) as
+  if (!canonicalDraftColumnsAvailable(db)) {
+    const series = resolveDraftSeries(db, ref);
+    const row = db.prepare("SELECT * FROM artifact_drafts WHERE series_id = ?").get(series.id) as
+      | Record<string, unknown> | undefined;
+    return row ? draftFromRow(db, row) : null;
+  }
+  const canonicalArtifactId = canonicalDraftArtifactId(db, ref);
+  if (!canonicalArtifactId) return null;
+  const seriesId = legacySeriesIdFromCanonicalArtifact(canonicalArtifactId);
+  const row = db.prepare(
+    "SELECT * FROM artifact_drafts WHERE artifact_id = ? OR series_id = ? LIMIT 1",
+  ).get(canonicalArtifactId, seriesId) as
     | Record<string, unknown>
     | undefined;
   return row ? draftFromRow(db, row) : null;
@@ -5160,23 +6120,41 @@ export function saveArtifactDraft(
   const ref = input.ref ?? input.series_id;
   if (!ref) throw new Error("ref or series_id is required");
   if (typeof input.content !== "string") throw new Error("draft content must be a string");
-  const series = resolveDraftSeries(db, ref);
-  const baseVersionId = input.base_version_id ?? series.latest_version_id;
-  if (!baseVersionId) throw new Error("artifact draft requires a base version");
-  const baseVersion = getArtifactVersion(db, baseVersionId);
-  if (!baseVersion || baseVersion.series_id !== series.id) {
-    throw new Error("artifact draft base version does not belong to the selected series");
+  if (!canonicalDraftColumnsAvailable(db)) {
+    const series = resolveDraftSeries(db, ref);
+    const baseVersionId = input.base_version_id ?? series.latest_version_id;
+    if (!baseVersionId) throw new Error("artifact draft requires a base version");
+    const baseVersion = getArtifactVersion(db, baseVersionId);
+    if (!baseVersion || baseVersion.series_id !== series.id) {
+      throw new Error("artifact draft base version does not belong to the selected series");
+    }
+    const id = artifactDraftId(series.id);
+    db.prepare(
+      `INSERT INTO artifact_drafts (
+        id, series_id, base_version_id, content, media_type, label, note,
+        metadata_json, created_at, updated_at
+      ) VALUES (@id, @series_id, @base_version_id, @content, @media_type, @label, @note,
+        @metadata_json, @created_at, @updated_at)
+      ON CONFLICT(series_id) DO UPDATE SET base_version_id = excluded.base_version_id,
+        content = excluded.content, media_type = excluded.media_type, label = excluded.label,
+        note = excluded.note, metadata_json = excluded.metadata_json, updated_at = excluded.updated_at`,
+    ).run({ id, series_id: series.id, base_version_id: baseVersion.id, content: input.content,
+      media_type: input.media_type ?? null, label: input.label ?? null, note: input.note ?? null,
+      metadata_json: jsonStringify(input.metadata ?? {}), created_at: now, updated_at: now });
+    return getArtifactDraft(db, series.id) as ArtifactDraftRecord;
   }
-  const id = artifactDraftId(series.id);
+  const context = resolveCanonicalDraftContext(db, ref, input.base_version_id);
+  const id = artifactDraftId(context.seriesId);
   db.prepare(
     `INSERT INTO artifact_drafts (
-      id, series_id, base_version_id, content, media_type, label, note,
+      id, artifact_id, version_id, series_id, base_version_id, content, media_type, label, note,
       metadata_json, created_at, updated_at
     ) VALUES (
-      @id, @series_id, @base_version_id, @content, @media_type, @label, @note,
+      @id, @artifact_id, @version_id, @series_id, @base_version_id, @content, @media_type, @label, @note,
       @metadata_json, @created_at, @updated_at
     )
-    ON CONFLICT(series_id) DO UPDATE SET
+    ON CONFLICT(artifact_id) DO UPDATE SET
+      version_id = excluded.version_id,
       base_version_id = excluded.base_version_id,
       content = excluded.content,
       media_type = excluded.media_type,
@@ -5186,8 +6164,10 @@ export function saveArtifactDraft(
       updated_at = excluded.updated_at`,
   ).run({
     id,
-    series_id: series.id,
-    base_version_id: baseVersion.id,
+    artifact_id: context.logical.id,
+    version_id: context.base.id,
+    series_id: null,
+    base_version_id: null,
     content: input.content,
     media_type: input.media_type ?? null,
     label: input.label ?? null,
@@ -5196,13 +6176,19 @@ export function saveArtifactDraft(
     created_at: now,
     updated_at: now,
   });
-  return getArtifactDraft(db, series.id) as ArtifactDraftRecord;
+  return getArtifactDraft(db, context.logical.id) as ArtifactDraftRecord;
 }
 
 export function deleteArtifactDraft(db: Db, ref: string): { deleted: boolean } {
   if (!artifactDraftTablesExist(db)) return { deleted: false };
-  const series = resolveDraftSeries(db, ref);
-  const result = db.prepare("DELETE FROM artifact_drafts WHERE series_id = ?").run(series.id);
+  if (!canonicalDraftColumnsAvailable(db)) {
+    const series = resolveDraftSeries(db, ref);
+    return { deleted: db.prepare("DELETE FROM artifact_drafts WHERE series_id = ?").run(series.id).changes > 0 };
+  }
+  const canonicalArtifactId = canonicalDraftArtifactId(db, ref);
+  if (!canonicalArtifactId) return { deleted: false };
+  const result = db.prepare("DELETE FROM artifact_drafts WHERE artifact_id = ? OR series_id = ?")
+    .run(canonicalArtifactId, legacySeriesIdFromCanonicalArtifact(canonicalArtifactId));
   return { deleted: result.changes > 0 };
 }
 
@@ -5236,19 +6222,30 @@ export function rebaseArtifactDraft(db: Db, ref: string, now = Date.now()): Arti
   const draft = getArtifactDraft(db, ref);
   if (!draft) throw new Error("artifact draft not found");
   if (!draft.stale || !draft.latest_version_id) return draft;
+  const canonical = canonicalDraftColumnsAvailable(db);
+  const baseCanonical = canonical ? getCanonicalArtifactVersion(db, draft.base_version_id) : null;
+  const latestCanonical = canonical ? getCanonicalArtifactVersion(db, draft.latest_version_id) : null;
   const baseVersion = getArtifactVersion(db, draft.base_version_id);
   const latestVersion = getArtifactVersion(db, draft.latest_version_id);
-  if (!baseVersion || !latestVersion) throw new Error("artifact draft base or latest version is missing");
+  if ((!baseVersion && !baseCanonical) || (!latestVersion && !latestCanonical)) {
+    throw new Error("artifact draft base or latest version is missing");
+  }
+  const readText = (versionId: string): string => {
+    const bytes = readArtifactBytesFull(db, versionId);
+    if (!bytes.ok) throw new Error(`artifact version bytes unavailable: ${bytes.reason}`);
+    return bytes.bytes.toString("utf8");
+  };
+  const latestNo = latestCanonical?.version_no ?? latestVersion?.version_no ?? 0;
   const content = simpleLineThreeWayMerge(
-    readVersionText(db, baseVersion),
+    canonical ? readText(draft.base_version_id) : readVersionText(db, baseVersion as ArtifactVersionRecord),
     draft.content,
-    readVersionText(db, latestVersion),
+    canonical ? readText(draft.latest_version_id) : readVersionText(db, latestVersion as ArtifactVersionRecord),
     `base v${draft.base_version_no}`,
-    `latest v${latestVersion.version_no}`,
+    `latest v${latestNo}`,
   );
   return saveArtifactDraft(db, {
-    series_id: draft.series_id,
-    base_version_id: latestVersion.id,
+    ref: canonical ? (baseCanonical?.artifact_id ?? ref) : draft.series_id,
+    base_version_id: draft.latest_version_id,
     content,
     media_type: draft.media_type,
     label: draft.label,
@@ -5276,6 +6273,63 @@ export function publishArtifactDraft(
   if (!draft) throw new Error("artifact draft not found");
   if (draft.stale && !input.allow_stale) {
     throw new Error("artifact draft is stale; publish with allow_stale to fork from the base version");
+  }
+  if (canonicalDraftColumnsAvailable(db)) {
+    const base = getCanonicalArtifactVersion(db, draft.base_version_id);
+    const logical = base ? getLogicalArtifact(db, base.artifact_id) : null;
+    const baseBlob = base ? getArtifactBlob(db, base.blob_id) : null;
+    if (!base || !logical || !baseBlob) throw new Error("artifact draft canonical base is missing");
+    const stored = snapshotArtifactBytes(db, {
+      content: draft.content,
+      custody_mode: "managed",
+      media_type: draft.media_type ?? baseBlob.media_type ?? undefined,
+      role: baseBlob.role ?? undefined,
+      logical_name: logical.logical_name ?? undefined,
+      metadata: mergeJsonRecords(draft.metadata, {
+        recoverability: "mandible_cas",
+        edited_from_version_id: draft.base_version_id,
+        edited_from_version_no: draft.base_version_no,
+        stale_base_published: draft.stale,
+      }),
+    }, now);
+    const blob = getArtifactBlob(db, stored.content_hash) as ArtifactBlobRecord;
+    const seriesId = legacySeriesIdFromCanonicalArtifact(logical.id);
+    const versionId = versionIdFor(seriesId, "managed", blob.content_hash);
+    const existing = getCanonicalArtifactVersion(db, versionId);
+    const nextNo = existing?.version_no ?? ((db.prepare(
+      "SELECT COALESCE(MAX(version_no), 0) + 1 AS n FROM artifact_version WHERE artifact_id = ?",
+    ).get(logical.id) as { n: number }).n);
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO artifact_version (
+          id, artifact_id, version_no, blob_id, source_kind, content_hash,
+          source_project_id, source_repo_id, source_locator_json, custody_mode,
+          label, note, metadata_json, created_at
+        ) VALUES (?, ?, ?, ?, 'managed', ?, ?, ?, '{}', 'managed', ?, ?, ?, ?)`,
+      ).run(
+        versionId, logical.id, nextNo, blob.id, blob.content_hash,
+        logical.source_project_id, logical.source_repo_id,
+        input.label ?? draft.label ?? null, input.note ?? draft.note ?? null,
+        jsonStringify(draft.metadata), now,
+      );
+      db.prepare(
+        `UPDATE artifact SET latest_version_id = ?, version_count = ?, updated_at = ? WHERE id = ?`,
+      ).run(versionId, nextNo, now, logical.id);
+    }
+    const canonicalVersion = getCanonicalArtifactVersion(db, versionId) as CanonicalArtifactVersionRecord;
+    const history = canonicalArtifactVersionHistory(db, getLogicalArtifact(db, logical.id) as ArtifactIdentityRecord);
+    const projectedVersion = history.versions.find((version) => version.id === versionId) as ArtifactVersionRecord;
+    deleteArtifactDraft(db, logical.id);
+    return {
+      draft,
+      result: {
+        series: history.series,
+        version: projectedVersion,
+        artifact: projectCanonicalArtifactRecord(db, blob, logical, canonicalVersion),
+        created: !existing,
+        warnings: [],
+      },
+    };
   }
   const series = getArtifactSeries(db, draft.series_id);
   const baseVersion = getArtifactVersion(db, draft.base_version_id);
@@ -5313,6 +6367,21 @@ export function publishArtifactDraft(
 // ref that resolves to an already-registered immutable artifact. Old
 // artifact-series/hash refs are repair inputs only and are not accepted here.
 export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVersionHistory | null {
+  const canonicalResolution = resolveArtifactIdentityRef(db, ref.trim());
+  const canonicalLogical = canonicalResolution?.logical_artifact
+    ?? (canonicalResolution?.artifact_version
+      ? getLogicalArtifact(db, canonicalResolution.artifact_version.artifact_id)
+      : null);
+  if (canonicalLogical) return canonicalArtifactVersionHistory(db, canonicalLogical);
+  if (canonicalResolution?.artifact_blob) {
+    const owners = db.prepare(
+      "SELECT DISTINCT artifact_id FROM artifact_version WHERE blob_id = ? LIMIT 2",
+    ).all(canonicalResolution.artifact_blob.id) as Array<{ artifact_id: string }>;
+    if (owners.length === 1) {
+      const owner = getLogicalArtifact(db, owners[0].artifact_id);
+      if (owner) return canonicalArtifactVersionHistory(db, owner);
+    }
+  }
   if (!artifactVersioningTablesExist(db)) return null;
   const trimmed = ref.trim();
   let series: ArtifactSeriesRecord | null = null;
@@ -5341,6 +6410,62 @@ export function resolveArtifactVersionHistory(db: Db, ref: string): ArtifactVers
   }
   if (!series) return null;
   return { series, versions: listArtifactVersions(db, series.id), links: listArtifactSeriesLinks(db, series.id) };
+}
+
+function canonicalArtifactVersionHistory(
+  db: Db,
+  logical: ArtifactIdentityRecord,
+): ArtifactVersionHistory {
+  const canonicalVersions = listCanonicalArtifactVersions(db, logical.id);
+  const seriesId = legacySeriesIdFromCanonicalArtifact(logical.id);
+  const versions: ArtifactVersionRecord[] = canonicalVersions.map((version, index) => {
+    const blob = getArtifactBlob(db, version.blob_id);
+    return {
+      id: version.id,
+      series_id: seriesId,
+      artifact_id: blob ? compatibilityArtifactId(blob) : version.blob_id,
+      version_no: version.version_no,
+      parent_version_id: index > 0 ? canonicalVersions[index - 1].id : null,
+      source_kind: version.source_kind === "external" ? "managed" : version.source_kind,
+      content_hash: version.content_hash,
+      commit_sha: version.commit_sha,
+      repo_path: version.repo_path,
+      observed_path: version.observed_path,
+      custody_mode: version.custody_mode,
+      label: version.label,
+      note: version.note,
+      metadata: version.metadata,
+      created_at: version.created_at,
+    };
+  });
+  const series: ArtifactSeriesRecord = {
+    id: seriesId,
+    series_key: logical.identity_key,
+    source_kind: logical.source_kind === "external" ? "managed" : logical.source_kind,
+    title: logical.title,
+    repo_id: logical.source_repo_id,
+    logical_name: logical.logical_name,
+    latest_version_id: logical.latest_version_id,
+    version_count: canonicalVersions.length,
+    metadata: logical.metadata,
+    created_at: logical.created_at,
+    updated_at: logical.updated_at,
+  };
+  const targetIds = [logical.id, ...canonicalVersions.map((version) => version.id)];
+  const blobIds = canonicalVersions.map((version) => version.blob_id);
+  const links = columnExists(db, "artifact_links", "blob_id")
+    && targetIds.length + blobIds.length > 0
+    ? (db.prepare(
+        `SELECT id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
+                provider_id, source, metadata_json, link_kind, series_id, series_ref,
+                created_at, updated_at
+           FROM artifact_links
+          WHERE target_id IN (${[...targetIds, ...blobIds].map(() => "?").join(",")})
+          ORDER BY entity_type, entity_id, link_type, role`,
+      ).all(...targetIds, ...blobIds) as Array<Record<string, unknown>>)
+        .map((row) => artifactLinkFromRow(db, row))
+    : listArtifactSeriesLinks(db, seriesId);
+  return { series, versions, links };
 }
 
 // Non-mutating ref resolution for read-only surfaces (history/diff GETs). Unlike
@@ -5388,8 +6513,8 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
   }
   if (tableExists(db, "artifact_aliases")) {
     const alias = getArtifactAlias(db, normalized.scheme, normalized.normalizedRef);
-    if (alias?.artifact_id) {
-      const artifact = getArtifact(db, alias.artifact_id);
+    if (alias) {
+      const artifact = compatibilityArtifactForAlias(db, alias);
       return {
         status: artifact ? "resolved" : "unresolved",
         ref,
@@ -5524,10 +6649,7 @@ function resolveArtifactSeriesSelectorRef(db: Db, ref: string, _now: number): Ar
         warnings: ["artifact_series_version_invalid"],
       };
     }
-    const row = db.prepare(
-      "SELECT * FROM artifact_versions WHERE series_id = ? AND version_no = ?",
-    ).get(series.id, versionNo) as Record<string, unknown> | undefined;
-    version = row ? versionFromRow(row) : null;
+    version = listArtifactVersions(db, series.id).find((candidate) => candidate.version_no === versionNo) ?? null;
   } else if (series.latest_version_id) {
     version = getArtifactVersion(db, series.latest_version_id);
   }
@@ -5561,8 +6683,35 @@ export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): A
   if (/^artifact-series:/i.test(trimmed)) {
     return resolveArtifactSeriesSelectorRef(db, trimmed, now);
   }
+  // Public link endpoints retain legacy content-hash refs as an explicit
+  // boundary projection even though the canonical identity resolver rejects
+  // them. Resolve the hash to its canonical blob before entering that strict
+  // resolver.
+  if (/^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
+    const direct = getArtifact(db, trimmed);
+    if (direct) {
+      const blob = canonicalBlobForCompatibilityRef(db, trimmed).blob;
+      return {
+        status: "resolved",
+        ref,
+        scheme: schemeFromRef(trimmed),
+        normalized_ref: direct.id,
+        artifact: direct,
+        alias: null,
+        target_type: blob ? "artifact_blob" : "legacy_artifact",
+        target_id: blob?.id ?? direct.id,
+        artifact_blob: blob,
+        series: null,
+        version: null,
+        warnings: [],
+      };
+    }
+  }
+  const canonical = resolveArtifactIdentityRef(db, trimmed);
+  if (canonical) return canonical;
   const direct = getArtifact(db, trimmed);
   if (direct) {
+    const blob = canonicalBlobForCompatibilityRef(db, trimmed).blob;
     return {
       status: "resolved",
       ref,
@@ -5570,6 +6719,9 @@ export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): A
       normalized_ref: direct.id,
       artifact: direct,
       alias: null,
+      target_type: blob ? "artifact_blob" : "legacy_artifact",
+      target_id: blob?.id ?? direct.id,
+      artifact_blob: blob,
       series: null,
       version: null,
       warnings: [],
@@ -5601,7 +6753,7 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
   const existing = tableExists(db, "artifact_aliases")
     ? getArtifactAlias(db, normalized.scheme, normalized.normalizedRef)
     : null;
-  let artifact = existing?.artifact_id ? getArtifact(db, existing.artifact_id) : null;
+  let artifact = existing ? compatibilityArtifactForAlias(db, existing) : null;
   let alias = existing;
   if (!artifact) {
     const materialized = materializeReferenceArtifact(db, ref, now);
@@ -5839,11 +6991,19 @@ function summaryRepoLocator(locator: Record<string, unknown>): Record<string, un
   return summary;
 }
 
-function artifactAliasFromRow(row: Record<string, unknown>): ArtifactAliasRecord {
+function compatibilityArtifactIdFromAssociationRow(db: Db, row: Record<string, unknown>): string | null {
+  if (row.blob_id !== null && row.blob_id !== undefined) {
+    const blob = getArtifactBlob(db, String(row.blob_id));
+    if (blob) return projectCanonicalArtifactRecord(db, blob).id;
+  }
+  return row.artifact_id === null || row.artifact_id === undefined ? null : String(row.artifact_id);
+}
+
+function artifactAliasFromRow(db: Db, row: Record<string, unknown>): ArtifactAliasRecord {
   const status = String(row.resolution_status);
   return {
     id: String(row.id),
-    artifact_id: row.artifact_id === null || row.artifact_id === undefined ? null : String(row.artifact_id),
+    artifact_id: compatibilityArtifactIdFromAssociationRow(db, row),
     scheme: String(row.scheme),
     alias: String(row.alias),
     normalized_ref: String(row.normalized_ref),
@@ -5858,10 +7018,12 @@ function artifactAliasFromRow(row: Record<string, unknown>): ArtifactAliasRecord
   };
 }
 
-function artifactLinkFromRow(row: Record<string, unknown>): ArtifactLinkRecord {
+function artifactLinkFromRow(db: Db, row: Record<string, unknown>): ArtifactLinkRecord {
+  const artifactId = compatibilityArtifactIdFromAssociationRow(db, row);
+  if (!artifactId) throw new Error(`artifact link ${String(row.id)} has no canonical blob target`);
   return {
     id: String(row.id),
-    artifact_id: String(row.artifact_id),
+    artifact_id: artifactId,
     entity_type: String(row.entity_type),
     entity_id: String(row.entity_id),
     link_type: String(row.link_type),
@@ -5904,49 +7066,57 @@ function attachArtifactAliasSchemes(db: Db, artifacts: ArtifactRecord[]): void {
   }
 }
 
-function listArtifactAliases(db: Db, artifactId: string): ArtifactAliasRecord[] {
+function listArtifactAliases(db: Db, artifactId: string, contentHash?: string): ArtifactAliasRecord[] {
+  const hasBlobId = columnExists(db, "artifact_aliases", "blob_id");
+  const blobId = contentHash ? artifactBlobIdFromHash(contentHash) : null;
   const rows = db.prepare(
-    `SELECT id, artifact_id, scheme, alias, normalized_ref, locator_json,
+    `SELECT id, artifact_id, ${hasBlobId ? "blob_id" : "NULL AS blob_id"},
+            scheme, alias, normalized_ref, locator_json,
             resolution_status, source, created_at, updated_at
        FROM artifact_aliases
-      WHERE artifact_id = ?
+      WHERE artifact_id = ? ${hasBlobId ? "OR (? IS NOT NULL AND blob_id = ?)" : ""}
       ORDER BY scheme, normalized_ref`
-  ).all(artifactId) as Array<Record<string, unknown>>;
-  return rows.map(artifactAliasFromRow);
+  ).all(...(hasBlobId ? [artifactId, blobId, blobId] : [artifactId])) as Array<Record<string, unknown>>;
+  return rows.map((row) => artifactAliasFromRow(db, row));
 }
 
-function listArtifactLinks(db: Db, artifactId: string): ArtifactLinkRecord[] {
+function listArtifactLinks(db: Db, artifactId: string, contentHash?: string): ArtifactLinkRecord[] {
+  const hasBlobId = columnExists(db, "artifact_links", "blob_id");
+  const blobId = contentHash ? artifactBlobIdFromHash(contentHash) : null;
   const rows = db.prepare(
-    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+    `SELECT id, artifact_id, ${hasBlobId ? "blob_id" : "NULL AS blob_id"},
+            entity_type, entity_id, link_type, role, repo_id,
             provider_id, source, metadata_json, link_kind, series_id, series_ref,
             created_at, updated_at
        FROM artifact_links
-      WHERE artifact_id = ?
+      WHERE artifact_id = ? ${hasBlobId ? "OR (? IS NOT NULL AND blob_id = ?)" : ""}
       ORDER BY entity_type, entity_id, link_type, role`
-  ).all(artifactId) as Array<Record<string, unknown>>;
-  return rows.map(artifactLinkFromRow);
+  ).all(...(hasBlobId ? [artifactId, blobId, blobId] : [artifactId])) as Array<Record<string, unknown>>;
+  return rows.map((row) => artifactLinkFromRow(db, row));
 }
 
 function listArtifactSeriesLinks(db: Db, seriesId: string): ArtifactLinkRecord[] {
   if (!tableExists(db, "artifact_links")) return [];
+  const blobColumn = columnExists(db, "artifact_links", "blob_id") ? "blob_id" : "NULL AS blob_id";
   const rows = db.prepare(
-    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+    `SELECT id, artifact_id, ${blobColumn}, entity_type, entity_id, link_type, role, repo_id,
             provider_id, source, metadata_json, link_kind, series_id, series_ref,
             created_at, updated_at
        FROM artifact_links
       WHERE series_id = ?
       ORDER BY entity_type, entity_id, link_type, role`
   ).all(seriesId) as Array<Record<string, unknown>>;
-  return rows.map(artifactLinkFromRow);
+  return rows.map((row) => artifactLinkFromRow(db, row));
 }
 
 function listArtifactSeriesLinksForSeries(db: Db, seriesIds: string[]): Map<string, ArtifactLinkRecord[]> {
   const linksBySeriesId = new Map<string, ArtifactLinkRecord[]>();
   if (seriesIds.length === 0 || !tableExists(db, "artifact_links")) return linksBySeriesId;
+  const blobColumn = columnExists(db, "artifact_links", "blob_id") ? "blob_id" : "NULL AS blob_id";
   const uniqueSeriesIds = [...new Set(seriesIds)];
   const placeholders = uniqueSeriesIds.map(() => "?").join(",");
   const rows = db.prepare(
-    `SELECT id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
+    `SELECT id, artifact_id, ${blobColumn}, entity_type, entity_id, link_type, role, repo_id,
             provider_id, source, metadata_json, link_kind, series_id, series_ref,
             created_at, updated_at
        FROM artifact_links
@@ -5957,7 +7127,7 @@ function listArtifactSeriesLinksForSeries(db: Db, seriesIds: string[]): Map<stri
     const seriesId = row.series_id === null || row.series_id === undefined ? null : String(row.series_id);
     if (!seriesId) continue;
     const links = linksBySeriesId.get(seriesId) ?? [];
-    links.push(artifactLinkFromRow(row));
+    links.push(artifactLinkFromRow(db, row));
     linksBySeriesId.set(seriesId, links);
   }
   return linksBySeriesId;

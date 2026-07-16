@@ -252,25 +252,34 @@ describe("NO SILENT RETARGET: artifact_id is never rewritten on conflict", () =>
     const lb = registerArtifactLink(db, b.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 1001)!;
     expect(la.id).not.toBe(lb.id);
     // The original pinned row still points at a — it was never rewritten.
-    const reread = db.prepare("SELECT artifact_id FROM artifact_links WHERE id = ?").get(la.id) as { artifact_id: string };
-    expect(reread.artifact_id).toBe(a.id);
+    const reread = db.prepare("SELECT artifact_id, blob_id FROM artifact_links WHERE id = ?").get(la.id) as {
+      artifact_id: string | null;
+      blob_id: string;
+    };
+    expect(reread).toEqual({ artifact_id: null, blob_id: `artifact-blob:${a.content_hash}` });
   });
 });
 
 describe("backward compatibility / idempotency", () => {
-  it("re-POSTing a pre-migration pinned link computes the same id and updates in place", () => {
+  it("re-POSTing a minimally seeded v104 pinned link computes the same id and updates in place", () => {
     const issueId = createLedgerIssue("issuecompat");
     const art = makeArtifact("compat\n");
 
-    // Learn the canonical id, then re-create a faithful PRE-migration row: only
-    // the 12 legacy columns, link_kind via the column DEFAULT, series_* NULL.
+    // Learn the canonical id and target, then re-create a minimal valid v104
+    // row. Genuine pre-v104 replay coverage lives in the migration fixture;
+    // this test isolates idempotent re-POST behavior on the current schema.
     const seed = registerArtifactLink(db, art.id, { entity_type: "issue", entity_id: issueId, link_type: "references" }, 1000)!;
+    const canonicalTarget = db.prepare(
+      "SELECT blob_id, target_type, target_id FROM artifact_links WHERE id = ?",
+    ).get(seed.id) as { blob_id: string; target_type: string; target_id: string };
     db.prepare("DELETE FROM artifact_links WHERE id = ?").run(seed.id);
     db.prepare(
       `INSERT INTO artifact_links
-        (id, artifact_id, entity_type, entity_id, link_type, role, repo_id, provider_id, source, metadata_json, created_at, updated_at)
-       VALUES (@id, @artifact_id, 'issue', @entity_id, 'references', NULL, NULL, NULL, 'legacy', '{}', 1, 1)`,
-    ).run({ id: seed.id, artifact_id: art.id, entity_id: issueId });
+        (id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
+         provider_id, source, metadata_json, created_at, updated_at, target_type, target_id)
+       VALUES (@id, @artifact_id, @blob_id, 'issue', @entity_id, 'references', NULL, NULL,
+         NULL, 'legacy', '{}', 1, 1, @target_type, @target_id)`,
+    ).run({ id: seed.id, artifact_id: null, entity_id: issueId, ...canonicalTarget });
     const legacy = db
       .prepare("SELECT link_kind, series_id, series_ref FROM artifact_links WHERE id = ?")
       .get(seed.id);
@@ -520,7 +529,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
 
   it("still accepts a valid living link via resolveAndLinkArtifact (no regression)", () => {
     const issueId = createLedgerIssue("issuenoreg");
-    const { seriesId, head } = makeSeriesWithHead("series-noreg", "v1\n");
+    const { seriesId } = makeSeriesWithHead("series-noreg", "v1\n");
     expect(() =>
       resolveAndLinkArtifact(db, {
         ref: seriesId,
@@ -532,7 +541,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     const row = db
       .prepare("SELECT link_kind, series_id, artifact_id FROM artifact_links WHERE entity_id = ?")
       .get(issueId) as { link_kind: string; series_id: string; artifact_id: string };
-    expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: head.id });
+    expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: null });
   });
 
   it("leaves the pinned ingest path unaffected (default link_kind, no series required)", () => {

@@ -221,6 +221,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.get("/api/artifacts", (req, res) => {
     const linked = linkedEntityQuery(req);
+    const linkedTargetType = queryString(req, "linked_target_type");
     const artifacts = listArtifacts(getDb(), {
       q: queryString(req, "q"),
       hashPrefix: queryString(req, "hash") ?? queryString(req, "hash_prefix"),
@@ -233,6 +234,12 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       location: queryString(req, "location"),
       linkedEntityType: linked.type,
       linkedEntityId: linked.id,
+      linkedTargetType: linkedTargetType === "artifact"
+        || linkedTargetType === "artifact_version"
+        || linkedTargetType === "artifact_blob"
+        ? linkedTargetType
+        : undefined,
+      linkedTargetId: queryString(req, "linked_target_id"),
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
       summary: queryBoolean(req, "summary"),
@@ -364,7 +371,11 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       const checks = refs.map((ref) => {
         const resolution = resolveArtifactRef(getDb(), ref);
         const check = resolution.artifact
-          ? checkArtifactMaterialization(getDb(), resolution.artifact.id, { ref })
+          ? checkArtifactMaterialization(
+              getDb(),
+              resolution.target_id ?? resolution.artifact.id,
+              { ref },
+            )
           : null;
         return { ref, resolution, check };
       });

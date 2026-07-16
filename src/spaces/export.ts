@@ -45,7 +45,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Db } from "../db.js";
-import { ingestArtifact } from "../provider-artifacts.js";
+import { getArtifact, ingestArtifact } from "../provider-artifacts.js";
 import { getSpace, type SpaceRecord } from "../ledger/spaces.js";
 import { listSpaceBlocks, toDocBlock } from "../ledger/space-blocks.js";
 import { exportDocument, SPACES_DOC_VERSION, type DocBlock, type DocTree } from "./serialize.js";
@@ -424,11 +424,39 @@ export interface SpaceExportRow {
   updated_at: number;
 }
 
+interface SpaceExportStoredRow extends SpaceExportRow {
+  last_export_blob_id: string | null;
+  pre_export_snapshot_blob_id: string | null;
+}
+
+function projectSpaceExportRow(db: Db, row: SpaceExportStoredRow): SpaceExportRow {
+  const compatibilityRef = (blobId: string | null, legacyId: string | null): string | null => {
+    if (!blobId) return legacyId;
+    return getArtifact(db, blobId)?.id ?? legacyId;
+  };
+  const {
+    last_export_blob_id: lastExportBlobId,
+    pre_export_snapshot_blob_id: preExportSnapshotBlobId,
+    ...compatibility
+  } = row;
+  return {
+    ...compatibility,
+    last_export_artifact_id: compatibilityRef(
+      lastExportBlobId,
+      row.last_export_artifact_id,
+    ),
+    pre_export_snapshot_artifact_id: compatibilityRef(
+      preExportSnapshotBlobId,
+      row.pre_export_snapshot_artifact_id,
+    ),
+  };
+}
+
 export function getSpaceExport(db: Db, exportId: string): SpaceExportRow | null {
   const row = db.prepare("SELECT * FROM space_exports WHERE id = ?").get(exportId) as
-    | SpaceExportRow
+    | SpaceExportStoredRow
     | undefined;
-  return row ?? null;
+  return row ? projectSpaceExportRow(db, row) : null;
 }
 
 export function findSpaceExport(
@@ -439,14 +467,15 @@ export function findSpaceExport(
 ): SpaceExportRow | null {
   const row = db
     .prepare("SELECT * FROM space_exports WHERE repo_id = ? AND branch = ? AND path = ?")
-    .get(repoId, branch, relativePath) as SpaceExportRow | undefined;
-  return row ?? null;
+    .get(repoId, branch, relativePath) as SpaceExportStoredRow | undefined;
+  return row ? projectSpaceExportRow(db, row) : null;
 }
 
 export function listSpaceExportsForSpace(db: Db, spaceId: string): SpaceExportRow[] {
-  return db
+  const rows = db
     .prepare("SELECT * FROM space_exports WHERE space_id = ? ORDER BY created_at ASC")
-    .all(spaceId) as SpaceExportRow[];
+    .all(spaceId) as SpaceExportStoredRow[];
+  return rows.map((row) => projectSpaceExportRow(db, row));
 }
 
 /**
@@ -552,8 +581,8 @@ export async function exportAndTrack(
       path: relativePath,
       authority: "repo",
       status: "clean",
-      last_export_artifact_id: lastExport.id,
-      pre_export_snapshot_artifact_id: preExport.id,
+      last_export_blob_id: `artifact-blob:${lastExport.content_hash}`,
+      pre_export_snapshot_blob_id: `artifact-blob:${preExport.content_hash}`,
       last_export_commit: commit,
       last_export_blob_sha: blobSha,
       last_export_content_sha256: contentSha,
@@ -579,10 +608,31 @@ export async function exportAndTrack(
  */
 function upsertSpaceExport(
   db: Db,
-  input: Omit<SpaceExportRow, "id" | "created_at" | "updated_at"> & { now: number },
+  input: Omit<
+    SpaceExportStoredRow,
+    "id" | "created_at" | "updated_at" |
+    "last_export_artifact_id" | "pre_export_snapshot_artifact_id"
+  > & { now: number },
 ): SpaceExportRow {
   const existing = findSpaceExport(db, input.repo_id, input.branch, input.path);
   const now = input.now;
+  const legacyArtifactId = (blobId: string | null): string | null => {
+    if (!blobId) return null;
+    const rows = db.prepare(
+      `SELECT legacy.id
+         FROM artifact_blob canonical
+         JOIN artifacts legacy
+           ON legacy.algorithm = canonical.algorithm
+          AND legacy.content_hash = canonical.content_hash
+        WHERE canonical.id = ?`,
+    ).all(blobId) as Array<{ id: string }>;
+    return rows.length === 1 ? rows[0].id : null;
+  };
+  const stored = {
+    ...input,
+    last_export_artifact_id: legacyArtifactId(input.last_export_blob_id),
+    pre_export_snapshot_artifact_id: legacyArtifactId(input.pre_export_snapshot_blob_id),
+  };
   if (existing) {
     db.prepare(
       `UPDATE space_exports SET
@@ -591,6 +641,8 @@ function upsertSpaceExport(
          status = @status,
          last_export_artifact_id = @last_export_artifact_id,
          pre_export_snapshot_artifact_id = @pre_export_snapshot_artifact_id,
+         last_export_blob_id = @last_export_blob_id,
+         pre_export_snapshot_blob_id = @pre_export_snapshot_blob_id,
          last_export_commit = @last_export_commit,
          last_export_blob_sha = @last_export_blob_sha,
          last_export_content_sha256 = @last_export_content_sha256,
@@ -598,7 +650,7 @@ function upsertSpaceExport(
          last_seen_content_sha256 = @last_seen_content_sha256,
          updated_at = @updated_at
        WHERE id = @id`,
-    ).run({ ...input, id: existing.id, updated_at: now });
+    ).run({ ...stored, id: existing.id, updated_at: now });
     return getSpaceExport(db, existing.id)!;
   }
   const id = `spxp_${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
@@ -606,15 +658,17 @@ function upsertSpaceExport(
     `INSERT INTO space_exports (
        id, space_id, repo_id, branch, path, authority, status,
        last_export_artifact_id, pre_export_snapshot_artifact_id,
+       last_export_blob_id, pre_export_snapshot_blob_id,
        last_export_commit, last_export_blob_sha, last_export_content_sha256,
        last_seen_commit, last_seen_content_sha256, created_at, updated_at
      ) VALUES (
        @id, @space_id, @repo_id, @branch, @path, @authority, @status,
        @last_export_artifact_id, @pre_export_snapshot_artifact_id,
+       @last_export_blob_id, @pre_export_snapshot_blob_id,
        @last_export_commit, @last_export_blob_sha, @last_export_content_sha256,
        @last_seen_commit, @last_seen_content_sha256, @created_at, @updated_at
      )`,
-  ).run({ ...input, id, created_at: now, updated_at: now });
+  ).run({ ...stored, id, created_at: now, updated_at: now });
   return getSpaceExport(db, id)!;
 }
 

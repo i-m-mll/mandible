@@ -56,6 +56,77 @@ function createIssue(store: LedgerStore, projectId: string, title = "Ledger issu
   });
 }
 
+function createHistoricalArtifactSchema(target: Db, version: 54 | 67): void {
+  target.exec(`CREATE TABLE artifacts (
+    id TEXT PRIMARY KEY,
+    algorithm TEXT NOT NULL DEFAULT 'sha256',
+    content_hash TEXT NOT NULL,
+    uri TEXT NOT NULL,
+    media_type TEXT,
+    role TEXT,
+    size_bytes INTEGER NOT NULL DEFAULT 0,
+    provider_id TEXT,
+    manifest_id TEXT,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    pinned INTEGER NOT NULL DEFAULT 1,
+    created_at INTEGER NOT NULL,
+    UNIQUE(algorithm, content_hash)
+  )`);
+  if (version === 54) return;
+  target.exec(`
+    ALTER TABLE artifacts ADD COLUMN custody_mode TEXT NOT NULL DEFAULT 'managed'
+      CHECK(custody_mode IN ('link','copy','managed','external'));
+    ALTER TABLE artifacts ADD COLUMN home_repo_id TEXT;
+    ALTER TABLE artifacts ADD COLUMN repo_locator_json TEXT NOT NULL DEFAULT '{}';
+    ALTER TABLE artifacts ADD COLUMN availability TEXT NOT NULL DEFAULT 'unchecked'
+      CHECK(availability IN ('present','missing','stale','unchecked','remote_only','pinned'));
+    ALTER TABLE artifacts ADD COLUMN retention_json TEXT NOT NULL DEFAULT '{}';
+    ALTER TABLE artifacts ADD COLUMN reference_json TEXT NOT NULL DEFAULT '{}';
+    CREATE TABLE artifact_aliases (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,
+      scheme TEXT NOT NULL,
+      alias TEXT NOT NULL,
+      normalized_ref TEXT NOT NULL,
+      locator_json TEXT NOT NULL DEFAULT '{}',
+      resolution_status TEXT NOT NULL DEFAULT 'resolved'
+        CHECK(resolution_status IN ('resolved','unresolved','ambiguous','unsupported')),
+      source TEXT NOT NULL DEFAULT 'artifact_registry',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE TABLE artifact_links (
+      id TEXT PRIMARY KEY,
+      artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+      entity_type TEXT NOT NULL,
+      entity_id TEXT NOT NULL,
+      link_type TEXT NOT NULL DEFAULT 'references',
+      role TEXT,
+      repo_id TEXT,
+      provider_id TEXT,
+      source TEXT NOT NULL DEFAULT 'artifact_registry',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+  `);
+}
+
+function removePostV60ArtifactAssociationTables(target: Db): void {
+  const previousForeignKeys = target.pragma("foreign_keys", { simple: true }) as number;
+  target.pragma("foreign_keys = OFF");
+  try {
+    target.exec(`
+      DROP TABLE artifact_drafts;
+      DROP TABLE session_instruction_artifacts;
+      DROP TABLE artifact_aliases;
+      DROP TABLE artifact_links;
+    `);
+  } finally {
+    if (previousForeignKeys) target.pragma("foreign_keys = ON");
+  }
+}
+
 describe("ledger schema", () => {
   it("creates ledger tables, indexes, and enables foreign keys on fresh DBs", () => {
     const tables = db.prepare(
@@ -104,6 +175,7 @@ describe("ledger schema", () => {
       CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       INSERT INTO meta (key, value) VALUES ('schema_version', '54');
     `);
+    createHistoricalArtifactSchema(upgradeDb, 54);
 
     migrate(upgradeDb);
 
@@ -192,6 +264,7 @@ describe("ledger schema", () => {
         (id, issue_id, ordinal, body, author_actor_type, source, created_at)
         VALUES ('com_test', 'issue_test', 1, 'Comment body', 'agent', 'mandible', 1100);
     `);
+    createHistoricalArtifactSchema(upgradeDb, 67);
 
     migrate(upgradeDb);
 
@@ -240,6 +313,7 @@ describe("ledger schema", () => {
     db.prepare("UPDATE ledger_body_revisions SET event_id = 'evt_00legacy00_00112233445566778899' WHERE event_id = ?")
       .run(event.id);
     db.pragma("foreign_keys = ON");
+    removePostV60ArtifactAssociationTables(db);
     db.prepare("UPDATE meta SET value = '60' WHERE key = 'schema_version'").run();
 
     migrate(db);
