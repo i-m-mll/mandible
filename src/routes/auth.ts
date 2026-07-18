@@ -718,6 +718,14 @@ function parseAuthRequestUpdatePayload(
     payload.head_branch = body.head_branch;
   }
 
+  if (hasKey("merge_head_sha")) {
+    if (body.merge_head_sha === null || typeof body.merge_head_sha === "string") {
+      payload.merge_head_sha = body.merge_head_sha as string | null;
+    } else {
+      return { ok: false, error: "Invalid 'merge_head_sha' — must be a string or null" };
+    }
+  }
+
   if (hasKey("files_changed")) {
     if (typeof body.files_changed !== "number" || !Number.isFinite(body.files_changed)) {
       return { ok: false, error: "Invalid 'files_changed' — must be a finite number" };
