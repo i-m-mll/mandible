@@ -1399,6 +1399,215 @@ describe('WorkOverviewView', () => {
     expect(await screen.findByLabelText('Projects compare diff')).toBeTruthy();
     expect(screen.getByText('file.txt | 2 +-')).toBeTruthy();
   });
+
+  function auditEntry(
+    branch: string | null,
+    classification: 'safe_candidate' | 'unique_commits' | 'dirty_worktree' | 'protected' | 'current' | 'app_managed' | 'unknown',
+    overrides: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    const safe = classification === 'safe_candidate';
+    const worktreePath = branch ? `/repo/one/worktrees/${branch.replaceAll('/', '__')}` : '/repo/one/.codex/worktrees/detached';
+    return {
+      kind: branch ? 'branch' : 'detached_worktree',
+      branch,
+      classification,
+      preserve_by_default: !safe,
+      reason: safe ? 'Reachable from main with a clean worktree.' : `${classification} must be preserved.`,
+      blockers: safe ? [] : [`blocked:${classification}`],
+      proof: { kind: safe ? 'reachable' : 'unknown', default_branch: 'main', merged: safe ? true : null },
+      ahead_default: safe ? 0 : 2,
+      behind_default: safe ? 1 : 0,
+      default_branch: 'main',
+      dirty: classification === 'dirty_worktree',
+      status_known: classification !== 'unknown',
+      canonical_project: classification !== 'unknown',
+      canonical_project_id: classification !== 'unknown' ? 'mandible' : null,
+      ambiguous_project: classification === 'unknown',
+      worktree_path: worktreePath,
+      trash_request: safe ? {
+        project: 'mandible',
+        checkout_root: '/repo/one',
+        branch,
+        reason: 'manual',
+        issue_refs: [],
+      } : null,
+      trash_command: safe ? `mandible trash create --project mandible --branch ${branch}` : null,
+      ...overrides,
+    };
+  }
+
+  function stubAuditFetch(
+    entries: Record<string, unknown>[] | (() => Record<string, unknown>[]),
+    trash?: { status: number; body: Record<string, unknown> },
+  ): ReturnType<typeof vi.fn> {
+    const mock = vi.fn(async (input: RequestInfo) => {
+      const url = String(input);
+      if (url.endsWith('/audit')) {
+        return new Response(JSON.stringify({
+          repo: { id: 'r1', name: 'Repo One', root: '/repo/one', default_branch: 'main' },
+          maintenance_issue_ref: null,
+          maintenance_issue_note: 'No maintenance issue is configured.',
+          worktree_inventory_known: true,
+          entries: typeof entries === 'function' ? entries() : entries,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/v1/trash' && trash) {
+        return new Response(JSON.stringify(trash.body), {
+          status: trash.status,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url.includes('/commits')) {
+        return new Response(JSON.stringify({
+          repo_root: '/repo/one', branch: 'feature/safe', default_branch: 'main', merge_base: null,
+          commits: [], total: 0, limit: 50, offset: 0,
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/work/repos') {
+        return new Response(JSON.stringify([
+          { id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' },
+        ]), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify([]), { headers: { 'content-type': 'application/json' } });
+    });
+    vi.stubGlobal('fetch', mock);
+    return mock;
+  }
+
+  it('renders every audit safety group with proof, paths, commands, and disabled reasons', async () => {
+    const entries = [
+      auditEntry('feature/safe', 'safe_candidate'),
+      auditEntry('feature/unique', 'unique_commits'),
+      auditEntry('feature/dirty', 'dirty_worktree', {
+        worktree_path: '/repo/one/work trees/feature__dirty',
+      }),
+      auditEntry('main', 'protected'),
+      auditEntry('feature/current', 'current'),
+      auditEntry('feature/unknown', 'unknown'),
+      auditEntry(null, 'app_managed'),
+    ];
+    stubAuditFetch(entries);
+    render(h(WorkOverviewView, {
+      repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
+      branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
+      onRescan: () => undefined,
+    }));
+
+    expect(await screen.findByText('Safe candidates')).toBeTruthy();
+    for (const group of [
+      'Unique commits', 'Dirty worktrees', 'Protected, default, or current',
+      'Unknown or ambiguous', 'App-managed or detached',
+    ]) expect(screen.getByText(group)).toBeTruthy();
+    expect(screen.getByText('Merged into main')).toBeTruthy();
+    expect(screen.getByText('/repo/one/worktrees/feature__safe')).toBeTruthy();
+    expect(screen.getByText('mandible trash create --project mandible --branch feature/safe')).toBeTruthy();
+    expect(screen.getAllByText(/Action disabled:/).length).toBe(6);
+    const disabledActions = screen.getAllByRole('button', { name: 'Review trash action' }).filter((button) =>
+      (button as HTMLButtonElement).disabled);
+    expect(disabledActions.length).toBe(6);
+    for (const button of disabledActions) {
+      const describedBy = button.getAttribute('aria-describedby');
+      expect(describedBy).toBeTruthy();
+      expect(describedBy).not.toMatch(/\s/);
+      expect(document.getElementById(describedBy!)).toBeTruthy();
+    }
+  });
+
+  it('confirms one branch and announces a truthful branch-only result without resetting view state', async () => {
+    const safe = auditEntry('feature/safe', 'safe_candidate', { worktree_path: null });
+    let rescanResolved = false;
+    let resolveRescan!: () => void;
+    const rescanPromise = new Promise<void>((resolve) => {
+      resolveRescan = () => {
+        rescanResolved = true;
+        resolve();
+      };
+    });
+    const mockFetch = stubAuditFetch(() => rescanResolved ? [] : [safe], {
+      status: 201,
+      body: { entry: { id: 'trash-1' }, outcome: { worktree_removed: false, branch_removed: true, worktree_path: null } },
+    });
+    const onRescan = vi.fn(() => rescanPromise);
+    render(h(WorkOverviewView, {
+      repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one', default_branch: 'main' }],
+      branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }, { name: 'other', status: 'clean' }] },
+      onRescan,
+    }));
+
+    await screen.findByText('Safe candidates');
+    const filter = screen.getByPlaceholderText('Filter branches...') as HTMLInputElement;
+    fireEvent.input(filter, { target: { value: 'feature' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh audit' }));
+    await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(2));
+    expect(filter.value).toBe('feature');
+    expect(screen.getByRole('button', { name: /Branch audit/ }).getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: 'Review trash action' }));
+    expect(screen.getByRole('dialog').textContent).toContain('Branch feature/safe has no worktree');
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm trash feature/safe' }));
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Branch ref feature/safe was removed into reversible Mandible custody. No worktree was removed.',
+    );
+    expect(filter.value).toBe('feature');
+    expect(screen.getByRole('button', { name: /Branch audit/ }).getAttribute('aria-expanded')).toBe('true');
+    await waitFor(() => expect(onRescan).toHaveBeenCalledTimes(1));
+    expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(2);
+    act(() => resolveRescan());
+    await waitFor(() => expect(mockFetch.mock.calls.filter(([input]) => String(input).endsWith('/audit')).length).toBe(3));
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Review trash action' })).toBeNull());
+    const trashCall = mockFetch.mock.calls.find(([input]) => String(input) === '/api/v1/trash');
+    expect(JSON.parse(String((trashCall?.[1] as RequestInit).body))).toMatchObject({ branch: 'feature/safe', reason: 'manual' });
+  });
+
+  it('names a removed worktree and warns not to continue work there', async () => {
+    const safe = auditEntry('feature/safe', 'safe_candidate');
+    stubAuditFetch([safe], {
+      status: 201,
+      body: { entry: {}, outcome: {
+        worktree_removed: true,
+        branch_removed: true,
+        worktree_path: '/repo/one/worktrees/feature__safe',
+      } },
+    });
+    render(h(WorkOverviewView, {
+      repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one' }],
+      branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
+      onRescan: () => undefined,
+    }));
+    await screen.findByText('Safe candidates');
+    fireEvent.click(screen.getByRole('button', { name: 'Review trash action' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm trash feature/safe' }));
+    expect((await screen.findByRole('status')).textContent).toContain(
+      'Do not continue work in /repo/one/worktrees/feature__safe.',
+    );
+  });
+
+  it('treats partial removal as an error while announcing completed removal facts', async () => {
+    const safe = auditEntry('feature/safe', 'safe_candidate');
+    stubAuditFetch([safe], {
+      status: 409,
+      body: {
+        error: 'snapshot is safe but local removal failed',
+        code: 'remove_failed',
+        detail: { outcome: {
+          worktree_removed: true,
+          branch_removed: false,
+          worktree_path: '/repo/one/worktrees/feature__safe',
+        } },
+      },
+    });
+    render(h(WorkOverviewView, {
+      repos: [{ id: 'r1', name: 'Repo One', path: '/repo/one' }],
+      branchesByRepo: { r1: [{ name: 'feature/safe', status: 'clean' }] },
+      onRescan: () => undefined,
+    }));
+    await screen.findByText('Safe candidates');
+    fireEvent.click(screen.getByRole('button', { name: 'Review trash action' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm trash feature/safe' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('Cleanup did not complete');
+    expect(alert.textContent).toContain('Worktree /repo/one/worktrees/feature__safe was already removed');
+    expect(alert.textContent).toContain('Branch ref feature/safe was not removed');
+  });
 });
 
 describe('issue deep links', () => {

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
+  createTrashEntry,
   getRepoBranchCommits,
+  getWorkRepoAudit,
   getWorkCompare,
   openPath,
   pushRepos,
@@ -9,6 +11,9 @@ import {
   type WorkCommitPage,
   type WorkCompareMode,
   type WorkCompareResult,
+  type TrashCreateOutcome,
+  type WorkAuditEntry,
+  type WorkRepoAudit,
 } from '../api';
 import { DiffView } from '../components/DiffView';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
@@ -55,7 +60,7 @@ export type WorkBranch = {
 export type WorkOverviewProps = {
   repos: WorkRepo[];
   branchesByRepo: Record<string, WorkBranch[]>;
-  onRescan: () => void;
+  onRescan: () => void | Promise<void>;
   onReposChanged?: (repos: WorkRepo[]) => void;
   params?: Record<string, string>;
 };
@@ -155,6 +160,16 @@ type SortDirection = 'asc' | 'desc';
 type CommitLoadState = {
   loading: boolean;
   error: string | null;
+};
+
+type AuditLoadState = {
+  loading: boolean;
+  error: string | null;
+};
+
+type AuditNotice = {
+  kind: 'success' | 'error';
+  text: string;
 };
 
 const WORK_COMMIT_LIMIT = 50;
@@ -529,6 +544,270 @@ function BranchTableScroller({
   );
 }
 
+const AUDIT_GROUPS: Array<{
+  title: string;
+  classifications: WorkAuditEntry['classification'][];
+}> = [
+  { title: 'Safe candidates', classifications: ['safe_candidate'] },
+  { title: 'Unique commits', classifications: ['unique_commits'] },
+  { title: 'Dirty worktrees', classifications: ['dirty_worktree'] },
+  { title: 'Protected, default, or current', classifications: ['protected', 'current'] },
+  { title: 'Unknown or ambiguous', classifications: ['unknown'] },
+  { title: 'App-managed or detached', classifications: ['app_managed'] },
+];
+
+function auditEntryKey(entry: WorkAuditEntry): string {
+  return `${entry.kind}:${entry.branch ?? ''}:${entry.worktree_path ?? ''}`;
+}
+
+function auditEntryLabel(entry: WorkAuditEntry): string {
+  return entry.branch || entry.worktree_path || 'Detached worktree';
+}
+
+function auditClassificationLabel(classification: WorkAuditEntry['classification']): string {
+  return classification.replaceAll('_', ' ');
+}
+
+function trashOutcomeText(
+  entry: WorkAuditEntry,
+  outcome: TrashCreateOutcome | undefined,
+  ok: boolean,
+  error: string | undefined,
+): AuditNotice {
+  const branch = entry.branch || 'the branch';
+  const path = outcome?.worktree_path || entry.worktree_path;
+  if (!outcome) {
+    return {
+      kind: 'error',
+      text: `Cleanup outcome is unknown${error ? `: ${error}.` : '.'} Refresh the audit before continuing.`,
+    };
+  }
+  if (ok && outcome?.worktree_removed) {
+    const branchText = outcome.branch_removed
+      ? `Branch ref ${branch} and worktree ${path || 'at the reported path'} were removed`
+      : `Worktree ${path || 'at the reported path'} was removed, but branch ref ${branch} remains`;
+    return {
+      kind: outcome.branch_removed ? 'success' : 'error',
+      text: `${branchText} in reversible Mandible custody. Do not continue work in ${path || 'that worktree path'}.`,
+    };
+  }
+  if (ok && outcome?.branch_removed) {
+    return {
+      kind: 'success',
+      text: `Branch ref ${branch} was removed into reversible Mandible custody. No worktree was removed.`,
+    };
+  }
+  const facts: string[] = [];
+  if (outcome?.worktree_removed) {
+    facts.push(`Worktree ${path || 'at the reported path'} was already removed; do not continue work there.`);
+  } else {
+    facts.push('No worktree was removed.');
+  }
+  if (outcome?.branch_removed) facts.push(`Branch ref ${branch} was already removed.`);
+  else facts.push(`Branch ref ${branch} was not removed.`);
+  return {
+    kind: 'error',
+    text: `Cleanup did not complete${error ? `: ${error}.` : '.'} ${facts.join(' ')}`,
+  };
+}
+
+function BranchAuditPanel({
+  repoTitle,
+  audit,
+  loadState,
+  open,
+  confirmingKey,
+  actingKey,
+  notice,
+  onToggle,
+  onRefresh,
+  onConfirm,
+  onCancel,
+  onTrash,
+}: {
+  repoTitle: string;
+  audit: WorkRepoAudit | null;
+  loadState: AuditLoadState;
+  open: boolean;
+  confirmingKey: string | null;
+  actingKey: string | null;
+  notice: AuditNotice | null;
+  onToggle: () => void;
+  onRefresh: () => void;
+  onConfirm: (key: string) => void;
+  onCancel: () => void;
+  onTrash: (entry: WorkAuditEntry) => void;
+}): JSX.Element {
+  const entries = Array.isArray(audit?.entries) ? audit.entries : [];
+  return (
+    <section className="work-audit" aria-labelledby="work-audit-title">
+      <div className="work-audit__header">
+        <button
+          type="button"
+          className="work-audit__toggle"
+          aria-expanded={open}
+          aria-controls="work-audit-content"
+          onClick={onToggle}
+        >
+          <span aria-hidden="true">{open ? '\u25be' : '\u25b8'}</span>
+          <span id="work-audit-title">Branch audit</span>
+          {audit ? <span className="work-audit__count">{entries.length}</span> : null}
+        </button>
+        <button
+          type="button"
+          className="btn btn--xs btn--ghost"
+          disabled={loadState.loading}
+          onClick={onRefresh}
+        >
+          {loadState.loading ? 'Auditing\u2026' : 'Refresh audit'}
+        </button>
+      </div>
+      {notice ? (
+        <div
+          className={`work-audit__notice work-audit__notice--${notice.kind}`}
+          role={notice.kind === 'error' ? 'alert' : 'status'}
+          aria-live={notice.kind === 'error' ? 'assertive' : 'polite'}
+        >
+          {notice.text}
+        </div>
+      ) : null}
+      {open ? (
+        <div id="work-audit-content" className="work-audit__content">
+          <p className="work-audit__intro">
+            Review one local branch at a time. Eligible branches move into reversible Mandible custody;
+            remote branches are never deleted here.
+          </p>
+          {audit?.maintenance_issue_note ? (
+            <p className="work-audit__maintenance-note">
+              {audit.maintenance_issue_note}
+              {audit.maintenance_issue_ref ? ` (${audit.maintenance_issue_ref})` : ''}
+            </p>
+          ) : null}
+          {audit && !audit.worktree_inventory_known ? (
+            <p className="work-audit-entry__disabled" role="status">
+              Worktree inventory is unknown. Preserve all entries until a refresh succeeds.
+            </p>
+          ) : null}
+          {loadState.error ? (
+            <div className="work-audit__load-error" role="alert">{loadState.error}</div>
+          ) : loadState.loading && !audit ? (
+            <div className="empty-state">Auditing {repoTitle}\u2026</div>
+          ) : entries.length === 0 ? (
+            <div className="empty-state">No local branch or worktree audit entries.</div>
+          ) : (
+            AUDIT_GROUPS.map((group) => {
+              const groupEntries = entries.filter((entry) =>
+                group.classifications.includes(entry.classification));
+              if (groupEntries.length === 0) return null;
+              return (
+                <section className="work-audit-group" key={group.title}>
+                  <h5>{group.title} <span>{groupEntries.length}</span></h5>
+                  <div className="work-audit-group__entries">
+                    {groupEntries.map((entry) => {
+                      const key = auditEntryKey(entry);
+                      const domId = `work-audit-${encodeURIComponent(key)}`;
+                      const label = auditEntryLabel(entry);
+                      const confirming = confirmingKey === key;
+                      const actionEnabled = Boolean(
+                        entry.kind === 'branch' &&
+                        entry.classification === 'safe_candidate' &&
+                        entry.trash_request &&
+                        entry.trash_command,
+                      );
+                      const disabledReason = actionEnabled
+                        ? null
+                        : entry.reason || 'This entry must be preserved.';
+                      return (
+                        <article className="work-audit-entry" key={key}>
+                          <div className="work-audit-entry__heading">
+                            <div>
+                              <h6>{label}</h6>
+                              <span className="work-audit-entry__classification">
+                                {entry.preserve_by_default ? 'Preserved' : 'Eligible'} ·{' '}
+                                {auditClassificationLabel(entry.classification)}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              className="btn btn--xs btn--danger-outline"
+                              disabled={!actionEnabled || actingKey !== null}
+                              aria-describedby={!actionEnabled ? `${domId}-disabled-reason` : undefined}
+                              onClick={() => onConfirm(key)}
+                            >
+                              Review trash action
+                            </button>
+                          </div>
+                          <p className="work-audit-entry__reason">{entry.reason}</p>
+                          <dl className="work-audit-entry__facts">
+                            <div><dt>Proof</dt><dd>{entry.proof.kind}</dd></div>
+                            <div><dt>Detail</dt><dd>{entry.proof.merged === null ? 'Merge status unknown' : entry.proof.merged ? `Merged into ${entry.proof.default_branch || 'default'}` : `Not merged into ${entry.proof.default_branch || 'default'}`}</dd></div>
+                            <div><dt>Default</dt><dd>{entry.default_branch || 'unknown'}</dd></div>
+                            <div><dt>Ahead / behind</dt><dd>{entry.ahead_default ?? 'unknown'} / {entry.behind_default ?? 'unknown'}</dd></div>
+                            <div><dt>Dirty</dt><dd>{entry.status_known ? (entry.dirty ? 'yes' : 'no') : 'unknown'}</dd></div>
+                            <div><dt>Project</dt><dd>{entry.ambiguous_project ? 'ambiguous' : entry.canonical_project ? entry.canonical_project_id || 'canonical' : 'unknown'}</dd></div>
+                            <div><dt>Path</dt><dd><code>{entry.worktree_path || 'No worktree'}</code></dd></div>
+                          </dl>
+                          {entry.blockers.length > 0 ? (
+                            <div className="work-audit-entry__blockers">
+                              <strong>Blockers:</strong> {entry.blockers.join(', ')}
+                            </div>
+                          ) : null}
+                          <div className="work-audit-entry__command">
+                            <strong>Command:</strong> <code>{entry.trash_command || 'No cleanup command authorized'}</code>
+                          </div>
+                          {!actionEnabled ? (
+                            <p id={`${domId}-disabled-reason`} className="work-audit-entry__disabled">
+                              Action disabled: {disabledReason}
+                            </p>
+                          ) : null}
+                          {confirming ? (
+                            <div
+                              className="work-audit-confirm"
+                              role="dialog"
+                              aria-modal="true"
+                              aria-labelledby={`${domId}-confirm-title`}
+                            >
+                              <strong id={`${domId}-confirm-title`}>Move {entry.branch} into reversible custody?</strong>
+                              <p>
+                                Branch <code>{entry.branch}</code>
+                                {entry.worktree_path ? <> and worktree <code>{entry.worktree_path}</code></> : ' has no worktree'}.
+                                {' '}Mandible will preserve a recoverable snapshot before removing anything.
+                              </p>
+                              <div className="work-audit-confirm__actions">
+                                <button
+                                  type="button"
+                                  className="btn btn--xs btn--danger"
+                                  autoFocus
+                                  disabled={actingKey !== null}
+                                  onClick={() => onTrash(entry)}
+                                >
+                                  {actingKey === key ? 'Moving to trash\u2026' : `Confirm trash ${entry.branch}`}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn--xs btn--ghost"
+                                  disabled={actingKey !== null}
+                                  onClick={onCancel}
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
 export function WorkOverviewView({
   repos: initialRepos,
   branchesByRepo,
@@ -553,6 +832,13 @@ export function WorkOverviewView({
   const [compareResult, setCompareResult] = useState<WorkCompareResult | null>(null);
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareLoading, setCompareLoading] = useState(false);
+  const [audits, setAudits] = useState<Record<string, WorkRepoAudit>>({});
+  const [auditLoadStates, setAuditLoadStates] = useState<Record<string, AuditLoadState>>({});
+  const [auditOpenByRepo, setAuditOpenByRepo] = useState<Record<string, boolean>>({});
+  const [auditConfirmingKey, setAuditConfirmingKey] = useState<string | null>(null);
+  const [auditActingKey, setAuditActingKey] = useState<string | null>(null);
+  const [auditNotices, setAuditNotices] = useState<Record<string, AuditNotice | null>>({});
+  const auditRequestSequence = useRef<Record<string, number>>({});
 
   // Outer-level filters
   const [repoFilterInput, setRepoFilterInput] = useState('');
@@ -764,6 +1050,74 @@ export function WorkOverviewView({
   const selectedBranch = selectedRepo
     ? selectedRepo.branches.find((branch) => getBranchName(branch) === selectedBranchName) ?? selectedRepo.branches[0] ?? null
     : null;
+
+  const loadAudit = async (repoId: string) => {
+    const sequence = (auditRequestSequence.current[repoId] ?? 0) + 1;
+    auditRequestSequence.current[repoId] = sequence;
+    setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: true, error: null } }));
+    try {
+      const audit = await getWorkRepoAudit(repoId);
+      if (auditRequestSequence.current[repoId] !== sequence) return;
+      setAudits((prev) => ({ ...prev, [repoId]: audit }));
+      setAuditLoadStates((prev) => ({ ...prev, [repoId]: { loading: false, error: null } }));
+    } catch (error) {
+      if (auditRequestSequence.current[repoId] !== sequence) return;
+      setAuditLoadStates((prev) => ({
+        ...prev,
+        [repoId]: {
+          loading: false,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      }));
+    }
+  };
+
+  useEffect(() => {
+    if (selectedRepoId) void loadAudit(selectedRepoId);
+  }, [selectedRepoId]);
+
+  const handleTrashAuditEntry = async (repoId: string, entry: WorkAuditEntry) => {
+    const key = auditEntryKey(entry);
+    if (!entry.trash_request) return;
+    setAuditActingKey(key);
+    setAuditNotices((prev) => ({ ...prev, [repoId]: null }));
+    try {
+      const result = await createTrashEntry(entry.trash_request);
+      const outcome = result.ok ? result.body.outcome : result.body.detail?.outcome;
+      setAuditNotices((prev) => ({
+        ...prev,
+        [repoId]: trashOutcomeText(entry, outcome, result.ok, result.body.error),
+      }));
+      if (outcome) {
+        if (result.ok) setAuditConfirmingKey(null);
+        try {
+          await Promise.resolve(onRescan());
+        } catch (error) {
+          setAuditLoadStates((prev) => ({
+            ...prev,
+            [repoId]: {
+              loading: false,
+              error: `Branch data refresh failed: ${error instanceof Error ? error.message : String(error)}`,
+            },
+          }));
+          return;
+        }
+        await loadAudit(repoId);
+      }
+    } catch (error) {
+      setAuditNotices((prev) => ({
+        ...prev,
+        [repoId]: trashOutcomeText(
+          entry,
+          undefined,
+          false,
+          error instanceof Error ? error.message : String(error),
+        ),
+      }));
+    } finally {
+      setAuditActingKey(null);
+    }
+  };
 
   useEffect(() => {
     if (!selectedRepo) {
@@ -1288,6 +1642,23 @@ export function WorkOverviewView({
                   </div>
                 )}
                 <div className="work-detail__body">
+                  <BranchAuditPanel
+                    repoTitle={repoTitle}
+                    audit={audits[repoId] ?? null}
+                    loadState={auditLoadStates[repoId] ?? { loading: false, error: null }}
+                    open={auditOpenByRepo[repoId] !== false}
+                    confirmingKey={auditConfirmingKey}
+                    actingKey={auditActingKey}
+                    notice={auditNotices[repoId] ?? null}
+                    onToggle={() => setAuditOpenByRepo((prev) => ({
+                      ...prev,
+                      [repoId]: prev[repoId] === false,
+                    }))}
+                    onRefresh={() => void loadAudit(repoId)}
+                    onConfirm={setAuditConfirmingKey}
+                    onCancel={() => setAuditConfirmingKey(null)}
+                    onTrash={(entry) => void handleTrashAuditEntry(repoId, entry)}
+                  />
                   <div className="work-detail__controls">
                     <input
                       type="search"

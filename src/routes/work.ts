@@ -1,4 +1,5 @@
 import { WorkScanner, type BranchData } from "../work-scanner.js";
+import { buildWorkAudit } from "../work-audit.js";
 import { startPushSession, pushSingleRepo, getPushStatus, type PushScope } from "../push-manager.js";
 import type { RouteRegistrar } from "../server.js";
 import { queryString, sendJson } from "./http.js";
@@ -143,6 +144,33 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const filter = queryString(req, "filter");
     const branches = workScanner.getBranches(repo.root);
     sendJson(res, 200, filterAndSortBranches(branches, { sort, filter }));
+  }, { fileRpc: "deny" });
+
+  server.get("/api/work/repos/:id/audit", (req, res) => {
+    const repoId = req.params.id;
+    if (!repoId) {
+      sendJson(res, 400, { error: "missing repo id" });
+      return;
+    }
+    const repo = resolveRepo(repoId);
+    if (!repo) {
+      sendJson(res, 404, { error: "repo not found" });
+      return;
+    }
+    let refreshedRepo;
+    try {
+      refreshedRepo = workScanner.refreshRepo(repo.root);
+    } catch (error) {
+      sendJson(res, 503, {
+        error: "repository audit refresh failed",
+        code: "audit_refresh_failed",
+        detail: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    const branches = workScanner.getBranches(refreshedRepo.root);
+    const inventory = workScanner.getWorktreeInventory(refreshedRepo.root);
+    sendJson(res, 200, buildWorkAudit(refreshedRepo, branches, inventory));
   }, { fileRpc: "deny" });
 
   server.get("/api/work/repos/:id/branches/:branch/commits", (req, res) => {
