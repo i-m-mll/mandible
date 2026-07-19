@@ -31,6 +31,9 @@ export interface BranchData {
   ahead_default: number;
   behind_default: number;
   default_branch: string;
+  worktree_inventory_known?: boolean;
+  worktree_status_known?: boolean;
+  default_comparison_known?: boolean;
   last_commit: LastCommit | null;
   last_commit_date?: string | null;
   diff_stat: string | null;
@@ -48,25 +51,33 @@ export interface ReapingSafety {
   canonical_project: boolean;
   ambiguous: boolean;
   canonical_project_id: string | null;
+  facts_known: boolean;
   blockers: string[];
 }
 
 export function deriveReapingSafety(
   branch: Pick<BranchData,
     "branch" | "repo_root" | "is_dirty" | "is_current" | "is_worktree" |
-    "worktree_path" | "ahead_default" | "default_branch">,
+    "worktree_path" | "ahead_default" | "default_branch" |
+    "worktree_inventory_known" | "worktree_status_known" | "default_comparison_known">,
   context: { protectedBranches?: Iterable<string>; projectIds?: string[] } = {},
 ): ReapingSafety {
   const protectedSet = new Set(context.protectedBranches ?? ["main", "develop"]);
   const projectIds = [...new Set(context.projectIds ?? [])];
-  const clean = !branch.is_dirty;
-  const merged = branch.ahead_default === 0;
+  const inventoryKnown = branch.worktree_inventory_known === true;
+  const statusKnown = branch.worktree_status_known === true;
+  const defaultComparisonKnown = branch.default_comparison_known === true;
+  const clean = statusKnown && !branch.is_dirty;
+  const merged = defaultComparisonKnown && branch.ahead_default === 0;
   const isDefault = branch.branch === branch.default_branch;
   const isProtected = protectedSet.has(branch.branch);
   const appManaged = Boolean(branch.worktree_path && isPreservedAppWorktreePath(branch.worktree_path));
   const ambiguous = projectIds.length > 1;
   const canonicalProject = projectIds.length === 1;
   const blockers: string[] = [];
+  if (!inventoryKnown) blockers.push("unknown_worktree_inventory");
+  if (!statusKnown) blockers.push("unknown_worktree_status");
+  if (!defaultComparisonKnown) blockers.push("unknown_default_comparison");
   if (!clean) blockers.push("dirty");
   if (!merged) blockers.push("unmerged");
   if (isProtected) blockers.push("protected");
@@ -85,6 +96,7 @@ export function deriveReapingSafety(
     canonical_project: canonicalProject,
     ambiguous,
     canonical_project_id: canonicalProject ? projectIds[0] : null,
+    facts_known: inventoryKnown && statusKnown && defaultComparisonKnown,
     blockers,
   };
 }
@@ -621,6 +633,9 @@ export class WorkScanner {
           ahead_default,
           behind_default,
           default_branch,
+          worktree_inventory_known,
+          worktree_status_known,
+          default_comparison_known,
           last_commit_hash,
           last_commit_message,
           last_commit_author,
@@ -668,6 +683,9 @@ export class WorkScanner {
         ahead_default: Number(row.ahead_default ?? 0),
         behind_default: Number(row.behind_default ?? 0),
         default_branch: row.default_branch ? String(row.default_branch) : "\u2014",
+        worktree_inventory_known: fromDbBool(Number(row.worktree_inventory_known)),
+        worktree_status_known: fromDbBool(Number(row.worktree_status_known)),
+        default_comparison_known: fromDbBool(Number(row.default_comparison_known)),
         last_commit: row.last_commit_hash
           ? {
               hash: String(row.last_commit_hash),
@@ -1173,7 +1191,8 @@ export class WorkScanner {
   }
 
   private scanRepo(repoRoot: string, repoId: string): { updated: number; removed: number } {
-    const worktrees = this.listWorktrees(repoRoot);
+    const worktreeInventory = this.listWorktrees(repoRoot);
+    const worktrees = worktreeInventory.worktrees;
     const worktreeByBranch = new Map<string, string>();
     let currentBranch: string | null = null;
 
@@ -1187,7 +1206,12 @@ export class WorkScanner {
     }
 
     const branches = this.listBranches(repoRoot);
-    const defaultBranch = this.detectDefaultBranch(repoRoot);
+    const canonicalDefaultBranch = this.getCanonicalCheckoutDefaultBranch(repoRoot);
+    const defaultBranch = canonicalDefaultBranch.branch || this.detectDefaultBranch(repoRoot);
+    const defaultBranchKnown = canonicalDefaultBranch.known && Boolean(runGit(
+      ["rev-parse", "--verify", `refs/heads/${defaultBranch}^{commit}`],
+      { cwd: repoRoot, allow_failure: true },
+    ));
     const now = new Date().toISOString();
 
     let updated = 0;
@@ -1197,10 +1221,15 @@ export class WorkScanner {
       const isCurrent = currentBranch === branch;
       const status = worktreePath
         ? this.getWorktreeStatus(worktreePath)
-        : { is_dirty: false, diff_stat: null };
+        : { is_dirty: false, diff_stat: null, known: worktreeInventory.known };
       const lastCommit = this.getLastCommit(repoRoot, branch);
       const aheadBehind = this.getAheadBehind(repoRoot, branch);
-      const aheadBehindDefault = this.getAheadBehindDefault(repoRoot, branch, defaultBranch);
+      const aheadBehindDefault = this.getAheadBehindDefault(
+        repoRoot,
+        branch,
+        defaultBranch,
+        defaultBranchKnown,
+      );
 
       const row = {
         repo_root: repoRoot,
@@ -1214,6 +1243,9 @@ export class WorkScanner {
         ahead_default: aheadBehindDefault.ahead_default,
         behind_default: aheadBehindDefault.behind_default,
         default_branch: aheadBehindDefault.default_branch,
+        worktree_inventory_known: toDbBool(worktreeInventory.known),
+        worktree_status_known: toDbBool(status.known),
+        default_comparison_known: toDbBool(aheadBehindDefault.known),
         last_commit_hash: lastCommit?.hash ?? null,
         last_commit_message: lastCommit?.message ?? null,
         last_commit_author: lastCommit?.author ?? null,
@@ -1237,6 +1269,9 @@ export class WorkScanner {
             ahead_default,
             behind_default,
             default_branch,
+            worktree_inventory_known,
+            worktree_status_known,
+            default_comparison_known,
             last_commit_hash,
             last_commit_message,
             last_commit_author,
@@ -1264,6 +1299,9 @@ export class WorkScanner {
             ahead_default,
             behind_default,
             default_branch,
+            worktree_inventory_known,
+            worktree_status_known,
+            default_comparison_known,
             last_commit_hash,
             last_commit_message,
             last_commit_author,
@@ -1282,6 +1320,9 @@ export class WorkScanner {
             @ahead_default,
             @behind_default,
             @default_branch,
+            @worktree_inventory_known,
+            @worktree_status_known,
+            @default_comparison_known,
             @last_commit_hash,
             @last_commit_message,
             @last_commit_author,
@@ -1299,6 +1340,9 @@ export class WorkScanner {
             ahead_default = excluded.ahead_default,
             behind_default = excluded.behind_default,
             default_branch = excluded.default_branch,
+            worktree_inventory_known = excluded.worktree_inventory_known,
+            worktree_status_known = excluded.worktree_status_known,
+            default_comparison_known = excluded.default_comparison_known,
             last_commit_hash = excluded.last_commit_hash,
             last_commit_message = excluded.last_commit_message,
             last_commit_author = excluded.last_commit_author,
@@ -1325,6 +1369,9 @@ export class WorkScanner {
           ahead_default: aheadBehindDefault.ahead_default,
           behind_default: aheadBehindDefault.behind_default,
           default_branch: aheadBehindDefault.default_branch,
+          worktree_inventory_known: worktreeInventory.known,
+          worktree_status_known: status.known,
+          default_comparison_known: aheadBehindDefault.known,
           last_commit: lastCommit,
           last_commit_date: lastCommit?.date ?? null,
           diff_stat: status.diff_stat,
@@ -1370,30 +1417,32 @@ export class WorkScanner {
       .filter((line) => !line.startsWith("remotes/"));
   }
 
-  private listWorktrees(repoRoot: string): WorktreeInfo[] {
+  private listWorktrees(repoRoot: string): { worktrees: WorktreeInfo[]; known: boolean } {
     const output = runGit(["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
       allow_failure: true,
     });
-    if (!output) {
-      return [];
+    if (output === null) {
+      return { worktrees: [], known: false };
     }
-    return parseWorktreeList(output);
+    return { worktrees: parseWorktreeList(output), known: true };
   }
 
   private getWorktreeStatus(
     worktreePath: string,
-  ): { is_dirty: boolean; diff_stat: string | null } {
-    const output = runGit(["status", "--porcelain"], {
+  ): { is_dirty: boolean; diff_stat: string | null; known: boolean } {
+    const output = runGit([
+      "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none",
+    ], {
       cwd: worktreePath,
       allow_failure: true,
     });
     if (output === null) {
-      return { is_dirty: false, diff_stat: null };
+      return { is_dirty: true, diff_stat: null, known: false };
     }
     const isDirty = output.trim().length > 0;
     if (!isDirty) {
-      return { is_dirty: false, diff_stat: null };
+      return { is_dirty: false, diff_stat: null, known: true };
     }
     const diffStat = runGit(["diff", "--stat"], {
       cwd: worktreePath,
@@ -1402,7 +1451,27 @@ export class WorkScanner {
     return {
       is_dirty: true,
       diff_stat: diffStat ? diffStat.trim() : null,
+      known: true,
     };
+  }
+
+  private getCanonicalCheckoutDefaultBranch(repoRoot: string): { branch: string; known: boolean } {
+    try {
+      const rows = this.db.prepare(
+        `SELECT project_id, default_branch
+           FROM ledger_project_checkouts
+          WHERE root = ?
+          ORDER BY project_id, id`,
+      ).all(repoRoot) as Array<{ project_id: string; default_branch: string }>;
+      const projectIds = new Set(rows.map((row) => row.project_id));
+      const defaults = new Set(rows.map((row) => row.default_branch?.trim()).filter(Boolean));
+      if (projectIds.size === 1 && defaults.size === 1) {
+        return { branch: [...defaults][0], known: true };
+      }
+    } catch {
+      // Minimal scanner databases may not include the canonical project registry.
+    }
+    return { branch: "", known: false };
   }
 
   private getLastCommit(repoRoot: string, branch: string): LastCommit | null {
@@ -1494,16 +1563,25 @@ export class WorkScanner {
     repoRoot: string,
     branch: string,
     defaultBranch: string,
-  ): { ahead_default: number; behind_default: number; default_branch: string } {
-    if (!defaultBranch || branch === defaultBranch) {
-      return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch || "\u2014" };
+    defaultBranchKnown = true,
+  ): { ahead_default: number; behind_default: number; default_branch: string; known: boolean } {
+    if (!defaultBranchKnown || !defaultBranch) {
+      return {
+        ahead_default: 0,
+        behind_default: 0,
+        default_branch: defaultBranch || "\u2014",
+        known: false,
+      };
+    }
+    if (branch === defaultBranch) {
+      return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: true };
     }
     const output = runGit(
       ["rev-list", "--left-right", "--count", `${defaultBranch}...${branch}`],
       { cwd: repoRoot, allow_failure: true },
     );
     if (!output) {
-      return { ahead_default: 0, behind_default: 0, default_branch: "\u2014" };
+      return { ahead_default: 0, behind_default: 0, default_branch: defaultBranch, known: false };
     }
     const [behindRaw, aheadRaw] = output.trim().split(/\s+/);
     const behind = Number.parseInt(behindRaw ?? "0", 10);
@@ -1512,6 +1590,7 @@ export class WorkScanner {
       ahead_default: Number.isNaN(ahead) ? 0 : ahead,
       behind_default: Number.isNaN(behind) ? 0 : behind,
       default_branch: defaultBranch,
+      known: !Number.isNaN(ahead) && !Number.isNaN(behind),
     };
   }
 

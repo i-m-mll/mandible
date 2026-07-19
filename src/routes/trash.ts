@@ -62,7 +62,7 @@ export function registerTrashRoutes(router: RouteRegistrar, db: Db = getDb()): v
       const project = queryString(req, "project");
       const rawState = queryString(req, "state");
       const validStates = new Set<TrashState>([
-        "active", "remove_failed", "restored", "expired", "restore_failed", "gc_failed",
+        "active", "remove_failed", "restored", "expired", "restore_failed", "gc_pending", "gc_failed",
       ]);
       if (rawState && !validStates.has(rawState as TrashState)) {
         sendJson(res, 400, { error: `invalid trash state: ${rawState}`, code: "invalid_state" });

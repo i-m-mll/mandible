@@ -333,6 +333,7 @@ function runCleanupHelper(
       HOME: homeDir,
       PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
       MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE_SH),
+      MANDIBLE_AUTH_PROTECTED_BRANCHES: "main,develop",
       ZELLIJ: "",
       TMUX: "",
       ...extraEnv,
@@ -359,6 +360,7 @@ function runCleanupHelperAsync(
         HOME: homeDir,
         PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
         MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE_SH),
+        MANDIBLE_AUTH_PROTECTED_BRANCHES: "main,develop",
         ZELLIJ: "",
         TMUX: "",
         ...extraEnv,
@@ -470,7 +472,7 @@ describe("auth merge worktree cleanup preserves the docs branch", () => {
   });
 });
 
-function listenForCleanup(options: { canonicalProject?: boolean } = {}): Promise<{
+function listenForCleanup(options: { canonicalProject?: boolean; trashPartialFailure?: boolean } = {}): Promise<{
   port: number;
   requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }>;
 }> {
@@ -492,10 +494,30 @@ function listenForCleanup(options: { canonicalProject?: boolean } = {}): Promise
           res.end(JSON.stringify({ project: { project_key: "canonical-mandible" } }));
         }
       } else if (req.method === "POST" && req.url === "/api/v1/trash") {
+        if (options.trashPartialFailure) {
+          res.statusCode = 409;
+          res.end(JSON.stringify({
+            error: "snapshot is safe but local removal failed",
+            code: "remove_failed",
+            detail: {
+              id: "trash-auth",
+              outcome: {
+                worktree_removed: true,
+                branch_removed: false,
+                worktree_path: "/reported/worktree/feature__dirty",
+              },
+            },
+          }));
+          return;
+        }
         res.statusCode = 201;
         res.end(JSON.stringify({
           entry: { id: "trash-auth", branch: "feature/dirty" },
-          outcome: { worktree_removed: true, branch_removed: true },
+          outcome: {
+            worktree_removed: true,
+            branch_removed: true,
+            worktree_path: "/reported/worktree/feature__dirty",
+          },
         }));
       } else if (req.method === "GET" && req.url?.startsWith("/api/work-units?")) {
         res.end(JSON.stringify({ work_units: [{ branch: "feature/sibling" }] }));
@@ -564,7 +586,7 @@ describe("auth merge reversible cleanup", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("trashed dirty merged branch feature/dirty");
     expect(result.stderr).toContain("Worktree path");
-    expect(result.stderr).toContain("worktrees/feature__dirty is gone");
+    expect(result.stderr).toContain("/reported/worktree/feature__dirty is gone");
     expect(result.stderr).toContain("No further work may happen there");
     expect(requests.find((request) => request.url === "/api/v1/trash")?.body).toMatchObject({
       branch,
@@ -591,7 +613,7 @@ describe("auth merge reversible cleanup", () => {
       { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
     );
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("reaped clean patch-equivalent branch feature/sibling");
+    expect(result.stderr).toContain("reaped clean tree-equivalent branch feature/sibling");
     expect(fs.existsSync(worktree)).toBe(false);
     expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${sibling}`], { cwd: tempDir }).status)
       .not.toBe(0);
@@ -652,5 +674,87 @@ describe("auth merge reversible cleanup", () => {
     );
     expect(ambiguousResult.stderr).toContain("cannot prove merged or patch-equivalent");
     expect(fs.existsSync(ambiguousWorktree)).toBe(true);
+  });
+
+  it("preserves merge-only tree changes that git cherry cannot see", () => {
+    const feature = "feature/merge-only";
+    const featureWorktree = createFeatureWorktree(feature);
+    const side = "feature/merge-side";
+    const sideWorktree = createFeatureWorktree(side);
+    commitFile(sideWorktree, "side.txt", "shared side change\n");
+    git(["cherry-pick", side], tempDir);
+
+    git(["merge", "--no-ff", "--no-commit", side], featureWorktree);
+    fs.writeFileSync(path.join(featureWorktree, "merge-only.txt"), "unique merge resolution\n", "utf8");
+    git(["add", "merge-only.txt"], featureWorktree);
+    git(["commit", "-m", "merge with unique tree bytes"], featureWorktree);
+
+    expect(git(["cherry", "main", feature], tempDir)).toBe("");
+    const result = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(feature)} 0 main`,
+      tempDir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("cannot prove merged or patch-equivalent");
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    expect(git(["show", `${feature}:merge-only.txt`], tempDir)).toBe("unique merge resolution");
+  });
+
+  it("uses compare-and-swap deletion and preserves a concurrently advanced branch", () => {
+    const branch = "feature/race";
+    const worktree = createFeatureWorktree(branch);
+    commitFile(worktree, "race.txt", "initial\n");
+    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+    const provenOid = git(["rev-parse", branch], tempDir);
+    commitFile(worktree, "advanced.txt", "advanced after proof\n");
+    const advancedOid = git(["rev-parse", branch], tempDir);
+
+    const dwt = path.join(process.cwd(), "cli", "dwt");
+    const result = runCleanupHelper(
+      `remove_clean_reapable_branch ${JSON.stringify(branch)} merged ${JSON.stringify(provenOid)} ${JSON.stringify(dwt)}`,
+      tempDir,
+    );
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("Worktree path");
+    expect(result.stderr).toContain("No further work may happen there");
+    expect(result.stderr).toContain("compare-and-swap deletion refused");
+    expect(fs.existsSync(worktree)).toBe(false);
+    expect(git(["rev-parse", branch], tempDir)).toBe(advancedOid);
+  });
+
+  it("preserves nonstandard repository-configured protected branches", () => {
+    const branch = "release";
+    const worktree = createFeatureWorktree(branch);
+    commitFile(worktree, "release.txt", "release\n");
+    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+
+    const result = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
+      tempDir,
+      { MANDIBLE_AUTH_PROTECTED_BRANCHES: "main,develop,release" },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("configured protected branch");
+    expect(fs.existsSync(worktree)).toBe(true);
+  });
+
+  it("reports a gone dirty worktree truthfully when trash removal only partially succeeds", async () => {
+    const { port } = await listenForCleanup({ trashPartialFailure: true });
+    const branch = "feature/partial-dirty";
+    const worktree = createFeatureWorktree(branch);
+    commitFile(worktree, "partial.txt", "committed\n");
+    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+    fs.writeFileSync(path.join(worktree, "residue.db"), "dirty\n", "utf8");
+
+    const result = await runCleanupHelperAsync(
+      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main abc123`,
+      tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Trash custody is incomplete");
+    expect(result.stderr).toContain("/reported/worktree/feature__dirty is gone");
+    expect(result.stderr).toContain("No further work may happen there");
+    expect(result.stderr).not.toContain("no deletion attempted");
   });
 });

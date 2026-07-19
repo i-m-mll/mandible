@@ -508,37 +508,53 @@ is_app_managed_worktree_branch() {
   esac
 }
 
-branch_has_dirty_worktree() {
+branch_worktree_status() {
   local branch="$1"
   local wt
   wt="$(branch_worktree_path "$branch")"
-  [[ -n "$wt" && -d "$wt" ]] || return 1
-  [[ -n "$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null)" ]]
+  [[ -n "$wt" && -d "$wt" ]] || return 0
+  git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null
 }
 
-branch_reap_evidence() {
+branch_reap_proof() {
   local branch="$1"
   local target="$2"
-  git show-ref --verify --quiet "refs/heads/${branch}" || return 1
-  git show-ref --verify --quiet "refs/heads/${target}" || return 1
-  if git merge-base --is-ancestor "$branch" "$target" 2>/dev/null; then
-    printf '%s' "merged"
+  local branch_oid target_oid target_tree merge_output merge_tree
+  branch_oid=$(git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null) || return 1
+  target_oid=$(git rev-parse --verify "refs/heads/${target}^{commit}" 2>/dev/null) || return 1
+  if git merge-base --is-ancestor "$branch_oid" "$target_oid" 2>/dev/null; then
+    printf '%s\t%s' "merged" "$branch_oid"
     return 0
   fi
 
-  local cherry
-  cherry=$(git cherry "$target" "$branch" 2>/dev/null) || return 1
-  if ! printf '%s\n' "$cherry" | grep -q '^+'; then
-    printf '%s' "patch-equivalent"
+  # `git cherry` ignores merge commits and can therefore miss merge-resolution
+  # tree changes. A synthetic merge that produces the target's exact tree is a
+  # complete, merge-aware proof that the candidate contributes no bytes.
+  target_tree=$(git rev-parse --verify "${target_oid}^{tree}" 2>/dev/null) || return 1
+  merge_output=$(git merge-tree --write-tree "$target_oid" "$branch_oid" 2>/dev/null) || return 1
+  merge_tree=$(printf '%s\n' "$merge_output" | sed -n '1p')
+  if [[ "$merge_tree" == "$target_tree" ]]; then
+    printf '%s\t%s' "tree-equivalent" "$branch_oid"
     return 0
   fi
   return 1
 }
 
+configured_protected_branches() {
+  if [[ -n "${MANDIBLE_AUTH_PROTECTED_BRANCHES:-}" ]]; then
+    printf '%s' "$MANDIBLE_AUTH_PROTECTED_BRANCHES"
+    return 0
+  fi
+  local response value
+  response=$(curl -sf --max-time 2 "${MANDIBLE_BASE}/api/settings/protected_branches" 2>/dev/null) || return 1
+  value=$(printf '%s' "$response" | jq -er '.value | select(type == "string" and length > 0)' 2>/dev/null) || return 1
+  printf '%s' "$value"
+}
+
 branch_cleanup_guard() {
   local branch="$1"
   local target="$2"
-  local current
+  local current configured protected_name
   current=$(git branch --show-current 2>/dev/null || true)
   case "$branch" in
     ""|main|develop|master|HEAD) printf '%s' "protected/default branch"; return 0 ;;
@@ -547,6 +563,17 @@ branch_cleanup_guard() {
     printf '%s' "protected/default/current branch"
     return 0
   fi
+  if ! configured=$(configured_protected_branches); then
+    printf '%s' "protected branch configuration unavailable"
+    return 0
+  fi
+  while IFS= read -r protected_name; do
+    protected_name=$(printf '%s' "$protected_name" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+    if [[ -n "$protected_name" && "$branch" == "$protected_name" ]]; then
+      printf '%s' "configured protected branch"
+      return 0
+    fi
+  done < <(printf '%s\n' "$configured" | tr ',' '\n')
   if is_app_managed_worktree_branch "$branch"; then
     printf '%s' "app-managed worktree"
     return 0
@@ -568,18 +595,38 @@ trash_dirty_branch() {
     args+=(--issue "$issue_id")
   done <<< "$issue_ids"
 
-  local response
-  response=$(mandible_trash_create "${args[@]}") || return 1
+  local response error_file status error_response
+  error_file=$(mktemp) || return 1
+  response=$(MANDIBLE_LEDGER_ERROR_BODY_FILE="$error_file" mandible_trash_create "${args[@]}")
+  status=$?
+  if (( status != 0 )); then
+    error_response=$(cat "$error_file")
+    rm -f "$error_file"
+    if printf '%s' "$error_response" | jq -e '.detail.outcome.worktree_removed == true' >/dev/null 2>&1; then
+      local reported_path
+      reported_path=$(printf '%s' "$error_response" | jq -r '.detail.outcome.worktree_path // empty' 2>/dev/null)
+      err "${BOLD_YELLOW}Trash custody is incomplete, but worktree path ${reported_path:-${worktree_path:-for ${branch}}} is gone. No further work may happen there.${RESET}"
+    elif printf '%s' "$error_response" | jq -e '.detail.outcome.branch_removed == true' >/dev/null 2>&1; then
+      err "${BOLD_YELLOW}Trash custody is incomplete; the normal branch ref is gone, and repair is required before restore.${RESET}"
+    else
+      err "${BOLD_YELLOW}Trash custody failed for ${branch}; the service reported no local removal.${RESET}"
+    fi
+    return "$status"
+  fi
+  rm -f "$error_file"
   err "${GREEN}trashed dirty merged branch ${branch}; reversible custody recorded.${RESET}"
   if printf '%s' "$response" | jq -e '.outcome.worktree_removed == true' >/dev/null 2>&1; then
-    err "${BOLD_YELLOW}Worktree path ${worktree_path:-for ${branch}} is gone. No further work may happen there.${RESET}"
+    local reported_path
+    reported_path=$(printf '%s' "$response" | jq -r '.outcome.worktree_path // empty' 2>/dev/null)
+    err "${BOLD_YELLOW}Worktree path ${reported_path:-${worktree_path:-for ${branch}}} is gone. No further work may happen there.${RESET}"
   fi
 }
 
 remove_clean_reapable_branch() {
   local branch="$1"
   local evidence="$2"
-  local dwt="$3"
+  local expected_oid="$3"
+  local dwt="$4"
   local wt
   wt="$(branch_worktree_path "$branch")"
 
@@ -588,15 +635,13 @@ remove_clean_reapable_branch() {
       err "${BOLD_YELLOW}preserved ${branch}: clean worktree removal failed.${RESET}"
       return 1
     fi
+    err "${BOLD_YELLOW}Worktree path ${wt} is gone. No further work may happen there.${RESET}"
   fi
-  if ! git branch -D -- "$branch" >/dev/null 2>&1; then
-    err "${BOLD_YELLOW}preserved ${branch}: local branch ref removal failed.${RESET}"
+  if ! git update-ref -d "refs/heads/${branch}" "$expected_oid" >/dev/null 2>&1; then
+    err "${BOLD_YELLOW}preserved ${branch}: branch advanced after proof or its ref changed; compare-and-swap deletion refused.${RESET}"
     return 1
   fi
   err "${GREEN}reaped clean ${evidence} branch ${branch}${wt:+ and worktree ${wt}}.${RESET}"
-  if [[ -n "$wt" ]]; then
-    err "${BOLD_YELLOW}Worktree path ${wt} is gone. No further work may happen there.${RESET}"
-  fi
 }
 
 cleanup_branch_candidate() {
@@ -604,7 +649,7 @@ cleanup_branch_candidate() {
   local target="$2"
   local issue_ids="$3"
   local dwt="$4"
-  local guard evidence wt
+  local guard proof evidence expected_oid wt worktree_status
 
   if ! git show-ref --verify --quiet "refs/heads/${branch}"; then
     return 0
@@ -613,22 +658,27 @@ cleanup_branch_candidate() {
     err "${DIM_WHITE}preserved ${branch}: ${guard}.${RESET}"
     return 0
   }
-  evidence=$(branch_reap_evidence "$branch" "$target") || {
+  proof=$(branch_reap_proof "$branch" "$target") || {
     err "${DIM_WHITE}preserved ${branch}: git cannot prove merged or patch-equivalent to ${target}.${RESET}"
     return 0
   }
+  IFS=$'\t' read -r evidence expected_oid <<< "$proof"
   wt="$(branch_worktree_path "$branch")"
   if [[ -n "$wt" && ! -d "$wt" ]]; then
     err "${BOLD_YELLOW}preserved ${branch}: registered worktree path is missing or ambiguous (${wt}).${RESET}"
     return 0
   fi
-  if branch_has_dirty_worktree "$branch"; then
+  if ! worktree_status=$(branch_worktree_status "$branch"); then
+    err "${BOLD_YELLOW}preserved ${branch}: worktree status is unavailable.${RESET}"
+    return 0
+  fi
+  if [[ -n "$worktree_status" ]]; then
     if ! trash_dirty_branch "$branch" "$issue_ids"; then
-      err "${BOLD_YELLOW}preserved dirty merged branch ${branch}: Mandible trash custody failed; no deletion attempted.${RESET}"
+      err "${BOLD_YELLOW}Trash custody for dirty merged branch ${branch} did not complete; see the reported removal outcome above. No further cleanup was attempted.${RESET}"
     fi
     return 0
   fi
-  remove_clean_reapable_branch "$branch" "$evidence" "$dwt" || true
+  remove_clean_reapable_branch "$branch" "$evidence" "$expected_oid" "$dwt" || true
 }
 
 collect_work_unit_branches() {

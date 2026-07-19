@@ -17,11 +17,26 @@ Usage:
 Create resolves --project through Mandible's canonical project registry; a
 registered checkout root is a valid reference. Successful create removes the
 normal worktree and branch after preserving them in reversible trash custody.
+Restore accepts entries in active, remove_failed, or restore_failed state.
+The gc_pending state is durable cleanup progress and may be listed or replayed.
 USAGE
 }
 
 action="${1:-}"
 shift || true
+
+report_create_outcome() {
+  local response="$1"
+  local prefix="$2"
+  local removed_path
+  removed_path=$(printf '%s' "$response" | jq -r '(.outcome // .detail.outcome).worktree_path // empty' 2>/dev/null)
+  if printf '%s' "$response" | jq -e '(.outcome // .detail.outcome).worktree_removed == true' >/dev/null 2>&1; then
+    [[ -n "$removed_path" ]] || removed_path="for branch ${requested_branch:-unknown}"
+    mandible_ledger_err "${prefix}: worktree path ${removed_path} is gone. No further work may happen there."
+  elif printf '%s' "$response" | jq -e '(.outcome // .detail.outcome).branch_removed == true' >/dev/null 2>&1; then
+    mandible_ledger_err "${prefix}: the normal branch ref is gone; preserved bytes remain under trash custody."
+  fi
+}
 
 case "$action" in
   list)
@@ -29,32 +44,23 @@ case "$action" in
     ;;
   create)
     requested_branch=""
-    requested_checkout=""
     previous=""
     for argument in "$@"; do
       if [[ "$previous" == "--branch" ]]; then requested_branch="$argument"; fi
-      if [[ "$previous" == "--checkout-root" ]]; then requested_checkout="$argument"; fi
       previous="$argument"
     done
-    removed_path=""
-    if [[ -n "$requested_branch" && -n "$requested_checkout" ]]; then
-      current_path=""
-      while IFS= read -r line; do
-        if [[ "$line" == worktree\ * ]]; then
-          current_path="${line#worktree }"
-        elif [[ "$line" == branch\ refs/heads/* && "${line#branch refs/heads/}" == "$requested_branch" ]]; then
-          removed_path="$current_path"
-        fi
-      done < <(git -C "$requested_checkout" worktree list --porcelain 2>/dev/null || true)
+    error_file=$(mktemp) || exit 1
+    response=$(MANDIBLE_LEDGER_ERROR_BODY_FILE="$error_file" mandible_trash_create "$@")
+    status=$?
+    if (( status != 0 )); then
+      error_response=$(cat "$error_file")
+      rm -f "$error_file"
+      report_create_outcome "$error_response" "Trash custody incomplete"
+      exit "$status"
     fi
-    response=$(mandible_trash_create "$@") || exit $?
+    rm -f "$error_file"
     printf '%s\n' "$response"
-    if printf '%s' "$response" | jq -e '.outcome.worktree_removed == true' >/dev/null 2>&1; then
-      [[ -n "$removed_path" ]] || removed_path="for branch ${requested_branch:-unknown}"
-      mandible_ledger_err "Trash custody complete: worktree path ${removed_path} is gone. No further work may happen there."
-    elif printf '%s' "$response" | jq -e '.outcome.branch_removed == true' >/dev/null 2>&1; then
-      mandible_ledger_err "Trash custody complete: the normal branch ref is gone; preserved bytes remain restorable until expiry."
-    fi
+    report_create_outcome "$response" "Trash custody complete"
     ;;
   restore)
     id="${1:-}"

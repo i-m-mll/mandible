@@ -18,6 +18,7 @@ export type TrashState =
   | "restored"
   | "expired"
   | "restore_failed"
+  | "gc_pending"
   | "gc_failed";
 
 export interface TrashEntry {
@@ -100,6 +101,12 @@ interface GitWorktree {
   branch: string | null;
 }
 
+export interface TrashCreateOutcome {
+  worktree_removed: boolean;
+  branch_removed: boolean;
+  worktree_path: string | null;
+}
+
 function git(
   cwd: string,
   args: string[],
@@ -143,6 +150,40 @@ function parseWorktrees(repoRoot: string): GitWorktree[] {
 function isInside(parent: string, child: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(child));
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function validateNewWorktreePath(repoRoot: string, requested: string): string {
+  const requestedPath = path.resolve(requested);
+  if (fs.existsSync(requestedPath)) {
+    throw new TrashServiceError("worktree_path must not already exist", "worktree_path_exists", 409);
+  }
+
+  let existingParent = path.dirname(requestedPath);
+  while (!fs.existsSync(existingParent)) {
+    const next = path.dirname(existingParent);
+    if (next === existingParent) break;
+    existingParent = next;
+  }
+  let realRepoRoot: string;
+  let realParent: string;
+  try {
+    realRepoRoot = fs.realpathSync(repoRoot);
+    realParent = fs.realpathSync(existingParent);
+  } catch {
+    throw new TrashServiceError(
+      "worktree_path parent cannot be resolved safely",
+      "invalid_worktree_path",
+      409,
+    );
+  }
+  if (realParent !== realRepoRoot && !isInside(realRepoRoot, realParent)) {
+    throw new TrashServiceError(
+      "worktree_path must remain inside the registered checkout after resolving symlinks",
+      "invalid_worktree_path",
+      409,
+    );
+  }
+  return requestedPath;
 }
 
 function validateBranch(repoRoot: string, branch: string): string {
@@ -236,27 +277,98 @@ function snapshotWorktree(
   entryId: string,
 ): string {
   if (!worktreePath) return originalOid;
-  const status = git(worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
-  if (!status) return originalOid;
+
+  const captured = captureWorktreeTree(worktreePath, originalOid, entryId);
+  if (!captured.dirty) return originalOid;
+
+  const identity = {
+    GIT_AUTHOR_NAME: "Mandible Trash",
+    GIT_AUTHOR_EMAIL: "trash@mandible.local",
+    GIT_COMMITTER_NAME: "Mandible Trash",
+    GIT_COMMITTER_EMAIL: "trash@mandible.local",
+  };
+  return git(worktreePath, ["commit-tree", captured.tree, "-p", originalOid], {
+    env: identity,
+    input: `Mandible trash snapshot for ${branch}\n`,
+  });
+}
+
+function gitlinkPaths(cwd: string, env?: NodeJS.ProcessEnv): Set<string> {
+  const output = git(cwd, ["ls-files", "--stage", "-z"], { env });
+  const paths = new Set<string>();
+  for (const record of output.split("\0")) {
+    const match = record.match(/^160000 [0-9a-f]+ [0-3]\t([\s\S]+)$/);
+    if (match) paths.add(match[1]);
+  }
+  return paths;
+}
+
+function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Set<string>): void {
+  for (const relativePath of gitlinks) {
+    const nestedPath = path.join(worktreePath, relativePath);
+    if (!fs.existsSync(path.join(nestedPath, ".git"))) continue;
+    const result = spawnSync(
+      "git",
+      ["status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"],
+      {
+        cwd: nestedPath,
+        encoding: "utf8",
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      },
+    );
+    if (result.status !== 0) {
+      throw new TrashServiceError(
+        `cannot inspect nested repository before trashing: ${relativePath}`,
+        "nested_repository_unknown",
+        409,
+        { path: relativePath },
+      );
+    }
+    if (result.stdout.trim()) {
+      throw new TrashServiceError(
+        `dirty submodule cannot be snapshotted losslessly: ${relativePath}`,
+        "dirty_submodule",
+        409,
+        { path: relativePath },
+      );
+    }
+  }
+}
+
+function captureWorktreeTree(
+  worktreePath: string,
+  originalOid: string,
+  entryId: string,
+): { dirty: boolean; tree: string } {
+  const status = git(worktreePath, [
+    "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none",
+  ]);
+  if (!status) {
+    return { dirty: false, tree: git(worktreePath, ["rev-parse", `${originalOid}^{tree}`]) };
+  }
 
   const indexPath = path.join(os.tmpdir(), `mandible-trash-index-${entryId}`);
   const env = { GIT_INDEX_FILE: indexPath };
   try {
+    const originalGitlinks = gitlinkPaths(worktreePath);
+    assertTrackedGitlinksClean(worktreePath, originalGitlinks);
     git(worktreePath, ["read-tree", originalOid], { env });
     git(worktreePath, ["add", "-A", "--", "."], { env });
+    const capturedGitlinks = gitlinkPaths(worktreePath, env);
+    const embedded = [...capturedGitlinks].filter((candidate) => !originalGitlinks.has(candidate));
+    if (embedded.length > 0) {
+      throw new TrashServiceError(
+        `embedded repositories cannot be snapshotted losslessly: ${embedded.join(", ")}`,
+        "embedded_repository",
+        409,
+        { paths: embedded },
+      );
+    }
     const tree = git(worktreePath, ["write-tree"], { env });
-    const identity = {
-      GIT_AUTHOR_NAME: "Mandible Trash",
-      GIT_AUTHOR_EMAIL: "trash@mandible.local",
-      GIT_COMMITTER_NAME: "Mandible Trash",
-      GIT_COMMITTER_EMAIL: "trash@mandible.local",
-    };
-    return git(worktreePath, ["commit-tree", tree, "-p", originalOid], {
-      env: { ...env, ...identity },
-      input: `Mandible trash snapshot for ${branch}\n`,
-    });
+    return { dirty: true, tree };
   } finally {
     fs.rmSync(indexPath, { force: true });
+    fs.rmSync(`${indexPath}.lock`, { force: true });
   }
 }
 
@@ -326,7 +438,7 @@ export function createTrashEntry(
   db: Db,
   input: TrashCreateInput,
   now = Date.now(),
-): { entry: TrashEntry; outcome: { worktree_removed: boolean; branch_removed: boolean } } {
+): { entry: TrashEntry; outcome: TrashCreateOutcome } {
   if (!input.project?.trim()) throw new TrashServiceError("project is required", "missing_project");
   if (!input.branch?.trim()) throw new TrashServiceError("branch is required", "missing_branch");
   if (!["superseded", "merged", "abandoned", "manual"].includes(input.reason)) {
@@ -408,7 +520,11 @@ export function createTrashEntry(
     throw error;
   }
 
-  const outcome = { worktree_removed: false, branch_removed: false };
+  const outcome: TrashCreateOutcome = {
+    worktree_removed: false,
+    branch_removed: false,
+    worktree_path: worktree?.path ?? null,
+  };
   try {
     if (worktree) {
       git(checkout.root, ["worktree", "remove", "--force", worktree.path]);
@@ -420,14 +536,24 @@ export function createTrashEntry(
       .run(JSON.stringify(outcome), id);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    db.prepare(
-      "UPDATE trash_entries SET state = 'remove_failed', last_error = ?, outcome_json = ? WHERE id = ?",
-    ).run(message, JSON.stringify(outcome), id);
+    let recordingError: string | null = null;
+    try {
+      db.prepare(
+        "UPDATE trash_entries SET state = 'remove_failed', last_error = ?, outcome_json = ? WHERE id = ?",
+      ).run(message, JSON.stringify(outcome), id);
+    } catch (recordError) {
+      // Removal finality comes from the completed Git operations, not from the
+      // database write. Preserve it in the error response even when recording
+      // the repair state also fails, so callers never continue in a path that
+      // has already been removed.
+      recordingError = recordError instanceof Error ? recordError.message : String(recordError);
+    }
     throw new TrashServiceError("snapshot is safe but local removal failed", "remove_failed", 409, {
       id,
       snapshot_ref: snapshotRef,
       error: message,
       outcome,
+      ...(recordingError ? { recording_error: recordingError } : {}),
     });
   }
 
@@ -441,7 +567,7 @@ export function restoreTrashEntry(
   now = Date.now(),
 ): { entry: TrashEntry; branch: string; worktree_path: string | null } {
   const entry = getEntry(db, id);
-  if (!(["active", "restore_failed"] as TrashState[]).includes(entry.state)) {
+  if (!(["active", "remove_failed", "restore_failed"] as TrashState[]).includes(entry.state)) {
     throw new TrashServiceError(`trash entry cannot be restored from state ${entry.state}`, "invalid_state", 409);
   }
   if (entry.expires_at <= now) {
@@ -465,35 +591,100 @@ export function restoreTrashEntry(
   if (liveSnapshot !== entry.snapshot_oid) {
     throw new TrashServiceError("trash snapshot ref no longer matches its record", "snapshot_mismatch", 409);
   }
-  if (branchOid(entry.repo_root, entry.branch)) {
-    throw new TrashServiceError(`branch already exists: ${entry.branch}`, "branch_collision", 409);
-  }
+  const liveBranchOid = branchOid(entry.repo_root, entry.branch);
+  const existingWorktree = parseWorktrees(entry.repo_root)
+    .find((candidate) => candidate.branch === entry.branch) ?? null;
+  const requestedValue = input.worktree_path?.trim() || "";
+  const requestedPath = requestedValue ? path.resolve(requestedValue) : null;
 
-  const requestedPath = input.worktree_path?.trim() ? path.resolve(input.worktree_path) : null;
-  if (requestedPath && (fs.existsSync(requestedPath) || !isInside(entry.repo_root, requestedPath))) {
-    throw new TrashServiceError(
-      "worktree_path must be a new path inside the registered checkout",
-      "invalid_worktree_path",
-      409,
+  if (entry.state === "remove_failed" && existingWorktree) {
+    if (requestedPath && path.resolve(existingWorktree.path) !== requestedPath) {
+      throw new TrashServiceError(
+        "remove_failed entry still has a worktree at a different path",
+        "remove_failed_collision",
+        409,
+        { worktree_path: existingWorktree.path, branch_oid: liveBranchOid },
+      );
+    }
+    if (liveBranchOid !== entry.original_oid && liveBranchOid !== entry.snapshot_oid) {
+      throw new TrashServiceError(
+        "remove_failed branch moved after custody was recorded",
+        "branch_collision",
+        409,
+        { branch_oid: liveBranchOid },
+      );
+    }
+    const captured = captureWorktreeTree(
+      existingWorktree.path,
+      liveBranchOid ?? entry.original_oid,
+      `${entry.id}-restore-check`,
     );
-  }
-
-  let branchCreated = false;
-  try {
-    git(entry.repo_root, ["update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, "0".repeat(40)]);
-    branchCreated = true;
-    if (requestedPath) {
-      git(entry.repo_root, ["worktree", "add", requestedPath, entry.branch]);
+    const snapshotTree = git(entry.repo_root, ["rev-parse", `${entry.snapshot_oid}^{tree}`]);
+    if (captured.tree !== snapshotTree) {
+      throw new TrashServiceError(
+        "remove_failed worktree no longer matches its immutable snapshot",
+        "remove_failed_collision",
+        409,
+        { worktree_path: existingWorktree.path },
+      );
     }
     db.prepare(
       `UPDATE trash_entries
           SET state = 'restored', restored_at = ?, last_error = NULL,
               outcome_json = ?
         WHERE id = ?`,
-    ).run(now, JSON.stringify({ restored_by: input.actor?.trim() || "mandible", worktree_path: requestedPath }), id);
+    ).run(now, JSON.stringify({
+      restored_by: input.actor?.trim() || "mandible",
+      worktree_path: existingWorktree.path,
+      repaired_remove_failed: true,
+    }), id);
+    return { entry: getEntry(db, id), branch: entry.branch, worktree_path: existingWorktree.path };
+  }
+
+  const validatedRequestedPath = requestedValue
+    ? validateNewWorktreePath(entry.repo_root, requestedValue)
+    : null;
+  if (entry.state !== "remove_failed" && liveBranchOid) {
+    throw new TrashServiceError(`branch already exists: ${entry.branch}`, "branch_collision", 409);
+  }
+  if (entry.state === "remove_failed" && liveBranchOid
+      && liveBranchOid !== entry.original_oid && liveBranchOid !== entry.snapshot_oid) {
+    throw new TrashServiceError(
+      "remove_failed branch moved after custody was recorded",
+      "branch_collision",
+      409,
+      { branch_oid: liveBranchOid },
+    );
+  }
+
+  let branchCreated = false;
+  let branchRepointed = false;
+  try {
+    if (!liveBranchOid) {
+      git(entry.repo_root, ["update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, "0".repeat(40)]);
+      branchCreated = true;
+    } else if (liveBranchOid === entry.original_oid && liveBranchOid !== entry.snapshot_oid) {
+      git(entry.repo_root, [
+        "update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, entry.original_oid,
+      ]);
+      branchRepointed = true;
+    }
+    if (validatedRequestedPath) {
+      git(entry.repo_root, ["worktree", "add", validatedRequestedPath, entry.branch]);
+    }
+    db.prepare(
+      `UPDATE trash_entries
+          SET state = 'restored', restored_at = ?, last_error = NULL,
+              outcome_json = ?
+        WHERE id = ?`,
+    ).run(now, JSON.stringify({
+      restored_by: input.actor?.trim() || "mandible",
+      worktree_path: validatedRequestedPath,
+      repaired_remove_failed: entry.state === "remove_failed",
+    }), id);
   } catch (error) {
-    if (branchCreated && requestedPath) {
-      git(entry.repo_root, ["worktree", "remove", "--force", requestedPath], {
+    if (validatedRequestedPath) {
+      git(entry.repo_root, ["worktree", "remove", "--force", validatedRequestedPath], {
         allowFailure: true,
       });
     }
@@ -502,12 +693,17 @@ export function restoreTrashEntry(
         allowFailure: true,
       });
     }
+    if (branchRepointed) {
+      git(entry.repo_root, [
+        "update-ref", `refs/heads/${entry.branch}`, entry.original_oid, entry.snapshot_oid,
+      ], { allowFailure: true });
+    }
     const message = error instanceof Error ? error.message : String(error);
     db.prepare("UPDATE trash_entries SET state = 'restore_failed', last_error = ? WHERE id = ?")
       .run(message, id);
     throw error;
   }
-  return { entry: getEntry(db, id), branch: entry.branch, worktree_path: requestedPath };
+  return { entry: getEntry(db, id), branch: entry.branch, worktree_path: validatedRequestedPath };
 }
 
 export interface TrashGcOutcome {
@@ -525,13 +721,14 @@ export function gcTrashEntries(
   const rows = db.prepare(
     `${SELECT_ENTRY}
       WHERE t.expires_at <= ?
-        AND t.state IN ('active','remove_failed','restored','restore_failed','gc_failed')
+        AND t.state IN ('active','remove_failed','restored','restore_failed','gc_pending','gc_failed')
       ORDER BY t.expires_at, t.id
       LIMIT ?`,
   ).all(now, limit) as TrashRow[];
   const outcomes: TrashGcOutcome[] = [];
   for (const row of rows) {
     const entry = mapRow(row);
+    let refDeleted = false;
     try {
       if (!fs.existsSync(entry.repo_root)) {
         throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
@@ -539,11 +736,31 @@ export function gcTrashEntries(
       const live = git(entry.repo_root, ["rev-parse", "--verify", entry.snapshot_ref], {
         allowFailure: true,
       });
-      if (!live) throw new TrashServiceError("trash snapshot ref is missing", "snapshot_missing", 404);
+      if (!live && entry.state !== "gc_pending") {
+        throw new TrashServiceError("trash snapshot ref is missing", "snapshot_missing", 404);
+      }
       if (live !== entry.snapshot_oid) {
+        if (!live && entry.state === "gc_pending") {
+          db.prepare(
+            `UPDATE trash_entries
+                SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
+              WHERE id = ? AND state = 'gc_pending'`,
+          ).run(now, JSON.stringify({
+            gc_actor: options.actor?.trim() || "mandible",
+            replayed_pending: true,
+          }), entry.id);
+          outcomes.push({ id: entry.id, status: "expired" });
+          continue;
+        }
         throw new TrashServiceError("trash snapshot ref no longer matches its record", "snapshot_mismatch", 409);
       }
+      if (entry.state !== "gc_pending") {
+        db.prepare(
+          "UPDATE trash_entries SET state = 'gc_pending', last_error = NULL WHERE id = ?",
+        ).run(entry.id);
+      }
       git(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
+      refDeleted = true;
       db.prepare(
         `UPDATE trash_entries
             SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
@@ -552,8 +769,10 @@ export function gcTrashEntries(
       outcomes.push({ id: entry.id, status: "expired" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      db.prepare("UPDATE trash_entries SET state = 'gc_failed', last_error = ? WHERE id = ?")
-        .run(message, entry.id);
+      if (!refDeleted) {
+        db.prepare("UPDATE trash_entries SET state = 'gc_failed', last_error = ? WHERE id = ?")
+          .run(message, entry.id);
+      }
       outcomes.push({ id: entry.id, status: "failed", error: message });
     }
   }
@@ -571,12 +790,20 @@ export function startTrashGcScheduler(
 ): void {
   stopTrashGcScheduler();
   const run = () => {
-    const result = gcTrashEntries(db, { actor: "mandible-daemon" });
-    if (result.outcomes.length > 0) {
-      log(result.failed > 0 ? "warn" : "info", "trash_gc_completed", {
+    try {
+      const result = gcTrashEntries(db, { actor: "mandible-daemon" });
+      if (result.outcomes.length > 0) {
+        log(result.failed > 0 ? "warn" : "info", "trash_gc_completed", {
+          subsystem: "trash",
+          expired: result.expired,
+          failed: result.failed,
+          failures: result.outcomes.filter((outcome) => outcome.status === "failed"),
+        });
+      }
+    } catch (error) {
+      log("warn", "trash_gc_failed", {
         subsystem: "trash",
-        expired: result.expired,
-        failed: result.failed,
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };

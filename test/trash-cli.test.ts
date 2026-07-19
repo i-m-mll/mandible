@@ -35,7 +35,7 @@ function run(
   });
 }
 
-function listen(): Promise<{ port: number; requests: CapturedRequest[] }> {
+function listen(options: { trashPartialFailure?: boolean } = {}): Promise<{ port: number; requests: CapturedRequest[] }> {
   const requests: CapturedRequest[] = [];
   server = http.createServer((req, res) => {
     let raw = "";
@@ -51,10 +51,30 @@ function listen(): Promise<{ port: number; requests: CapturedRequest[] }> {
       } else if (req.method === "GET" && req.url === "/api/v1/trash?project=mandible&state=active") {
         res.end(JSON.stringify({ entries: [{ id: "trash-1", state: "active" }] }));
       } else if (req.method === "POST" && req.url === "/api/v1/trash") {
+        if (options.trashPartialFailure) {
+          res.statusCode = 409;
+          res.end(JSON.stringify({
+            error: "snapshot is safe but local removal failed",
+            code: "remove_failed",
+            detail: {
+              id: "trash-1",
+              outcome: {
+                worktree_removed: true,
+                branch_removed: false,
+                worktree_path: "/registered/repo/worktrees/feature__demo",
+              },
+            },
+          }));
+          return;
+        }
         res.statusCode = 201;
         res.end(JSON.stringify({
           entry: { id: "trash-1", branch: "feature/demo", state: "active" },
-          outcome: { worktree_removed: true, branch_removed: true },
+          outcome: {
+            worktree_removed: true,
+            branch_removed: true,
+            worktree_path: "/registered/repo/worktrees/feature__demo",
+          },
         }));
       } else if (req.method === "POST" && req.url === "/api/v1/trash/trash-1/restore") {
         res.end(JSON.stringify({
@@ -108,7 +128,7 @@ describe("trash CLI", () => {
     ], port);
     expect(created.status).toBe(0);
     expect(JSON.parse(created.stdout)).toMatchObject({ outcome: { worktree_removed: true } });
-    expect(created.stderr).toContain("worktree path for branch feature/demo is gone");
+    expect(created.stderr).toContain("worktree path /registered/repo/worktrees/feature__demo is gone");
     expect(created.stderr).toContain("No further work may happen there");
 
     const restored = await run([
@@ -158,5 +178,20 @@ describe("trash CLI", () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("integer from 1 to 3650");
     expect(requests).toEqual([]);
+  });
+
+  it("returns nonzero but still reports finality after partial worktree removal", async () => {
+    const { port } = await listen({ trashPartialFailure: true });
+    const result = await run([
+      "trash", "create", "--project", "mandible", "--branch", "feature/demo",
+      "--reason", "merged", "--checkout-root", "/registered/repo",
+    ], port);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain('"code":"remove_failed"');
+    expect(result.stderr).toContain("Trash custody incomplete");
+    expect(result.stderr).toContain("worktree path /registered/repo/worktrees/feature__demo is gone");
+    expect(result.stderr).toContain("No further work may happen there");
   });
 });

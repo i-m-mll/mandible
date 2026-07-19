@@ -2898,7 +2898,7 @@ export const MIGRATIONS: readonly Migration[] = [
         state            TEXT NOT NULL DEFAULT 'active'
                            CHECK(state IN (
                              'active','remove_failed','restored','expired',
-                             'restore_failed','gc_failed'
+                             'restore_failed','gc_pending','gc_failed'
                            )),
         created_at       INTEGER NOT NULL,
         expires_at       INTEGER NOT NULL,
@@ -2982,6 +2982,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 103) {
         ensureConversationEmptyIngestColumns(db);
+      }
+      if (migration.version === 106) {
+        ensureBranchReapingKnowledgeColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5422,6 +5425,39 @@ function ensureLedgerProjectKeyColumn(db: Db): void {
       ON ledger_projects(project_key)
       WHERE project_key != ''`,
   );
+}
+
+function ensureBranchReapingKnowledgeColumns(db: Db): void {
+  const expected = [
+    "worktree_inventory_known",
+    "worktree_status_known",
+    "default_comparison_known",
+  ];
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'branches'")
+    .get();
+  if (!table) return;
+
+  for (const name of expected) {
+    const columns = db.prepare("PRAGMA table_info(branches)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const existing = columns.find((column) => column.name === name);
+    if (!existing) {
+      db.exec(`ALTER TABLE branches ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`);
+      continue;
+    }
+    if (
+      existing.type.toUpperCase() !== "INTEGER" ||
+      existing.notnull !== 1 ||
+      existing.dflt_value !== "0"
+    ) {
+      throw new Error(`migration 106 verification: branches.${name} has divergent definition`);
+    }
+  }
 }
 
 function hasProjectsMissingKeys(db: Db): boolean {

@@ -14,6 +14,9 @@ describe("migration v106: trash custody records", () => {
     db = openDb(path.join(tempDir, "mandible.db"));
     db.exec(`
       DROP TABLE trash_entries;
+      ALTER TABLE branches DROP COLUMN worktree_inventory_known;
+      ALTER TABLE branches DROP COLUMN worktree_status_known;
+      ALTER TABLE branches DROP COLUMN default_comparison_known;
       UPDATE meta SET value = '105' WHERE key = 'schema_version';
     `);
   });
@@ -32,6 +35,14 @@ describe("migration v106: trash custody records", () => {
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([
       "project_id", "checkout_id", "snapshot_ref", "snapshot_oid", "expires_at", "state",
     ]));
+    const branchColumns = db.prepare("PRAGMA table_info(branches)").all() as Array<{ name: string }>;
+    expect(branchColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      "worktree_inventory_known", "worktree_status_known", "default_comparison_known",
+    ]));
+    const createSql = db.prepare(
+      "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'trash_entries'",
+    ).get() as { sql: string };
+    expect(createSql.sql).toContain("gc_pending");
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 });

@@ -16,7 +16,7 @@ import {
   startTrashGcScheduler,
   stopTrashGcScheduler,
 } from "../src/trash-service.js";
-import { deriveReapingSafety } from "../src/work-scanner.js";
+import { deriveReapingSafety, WorkScanner } from "../src/work-scanner.js";
 
 function git(cwd: string, args: string[]): string {
   const result = spawnSync("git", args, {
@@ -69,6 +69,7 @@ describe.sequential("trash custody", () => {
   });
 
   it("snapshots tracked and untracked bytes, removes local refs, and restores them", () => {
+    const expectedWorktreePath = fs.realpathSync(featureWorktree);
     fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "dirty tracked\n");
     fs.writeFileSync(path.join(featureWorktree, "untracked.bin"), Buffer.from([0, 1, 2, 255]));
 
@@ -80,7 +81,11 @@ describe.sequential("trash custody", () => {
       issue_refs: ["5cb1eb3"],
     }, 1_000);
 
-    expect(created.outcome).toEqual({ worktree_removed: true, branch_removed: true });
+    expect(created.outcome).toEqual({
+      worktree_removed: true,
+      branch_removed: true,
+      worktree_path: expectedWorktreePath,
+    });
     expect(db.prepare(
       `SELECT project_id, checkout_id, repo_root, branch, issue_refs_json,
               reason, actor, snapshot_ref, snapshot_oid, original_oid,
@@ -194,6 +199,132 @@ describe.sequential("trash custody", () => {
     );
   });
 
+  it("fails closed when a dirty submodule or embedded repository cannot be captured losslessly", () => {
+    const submoduleRepo = path.join(tempDir, "submodule-source");
+    fs.mkdirSync(submoduleRepo);
+    git(submoduleRepo, ["init", "-b", "main"]);
+    git(submoduleRepo, ["config", "user.name", "Trash Test"]);
+    git(submoduleRepo, ["config", "user.email", "trash-test@example.invalid"]);
+    fs.writeFileSync(path.join(submoduleRepo, "nested.txt"), "committed\n");
+    git(submoduleRepo, ["add", "nested.txt"]);
+    git(submoduleRepo, ["commit", "-m", "nested base"]);
+    git(featureWorktree, [
+      "-c", "protocol.file.allow=always", "submodule", "add", submoduleRepo, "module",
+    ]);
+    git(featureWorktree, ["commit", "-am", "add submodule"]);
+    fs.writeFileSync(path.join(featureWorktree, "module", "nested.txt"), "dirty nested\n");
+
+    expect(() => createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "manual",
+    })).toThrow(/dirty submodule/);
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    expect(listTrashEntries(db)).toEqual([]);
+  });
+
+  it("rejects an untracked embedded repository before removing the worktree", () => {
+    const embedded = path.join(featureWorktree, "embedded");
+    fs.mkdirSync(embedded);
+    git(embedded, ["init", "-b", "main"]);
+    git(embedded, ["config", "user.name", "Trash Test"]);
+    git(embedded, ["config", "user.email", "trash-test@example.invalid"]);
+    fs.writeFileSync(path.join(embedded, "nested.txt"), "nested\n");
+    git(embedded, ["add", "nested.txt"]);
+    git(embedded, ["commit", "-m", "embedded base"]);
+
+    expect(() => createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "manual",
+    })).toThrow(/embedded repositories/);
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    expect(listTrashEntries(db)).toEqual([]);
+  });
+
+  it("restores a remove_failed entry from live Git facts without overwriting a moved branch", () => {
+    fs.writeFileSync(path.join(featureWorktree, "tracked.txt"), "custodied\n");
+    const created = createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "manual",
+    });
+    db.prepare("UPDATE trash_entries SET state = 'remove_failed' WHERE id = ?").run(created.entry.id);
+    git(repoRoot, ["update-ref", "refs/heads/feature/trash", created.entry.original_oid]);
+
+    const restored = restoreTrashEntry(db, created.entry.id);
+    expect(restored.entry).toMatchObject({ state: "restored" });
+    expect(git(repoRoot, ["rev-parse", "refs/heads/feature/trash"])).toBe(created.entry.snapshot_oid);
+
+    const secondBranch = "feature/moved";
+    git(repoRoot, ["branch", secondBranch, "main"]);
+    const secondWorktree = path.join(repoRoot, "worktrees", "feature-moved");
+    git(repoRoot, ["worktree", "add", secondWorktree, secondBranch]);
+    const second = createTrashEntry(db, {
+      project: "trash-test",
+      branch: secondBranch,
+      reason: "manual",
+    });
+    db.prepare("UPDATE trash_entries SET state = 'remove_failed' WHERE id = ?").run(second.entry.id);
+    git(repoRoot, ["branch", secondBranch, "main"]);
+    fs.writeFileSync(path.join(repoRoot, "moved.txt"), "moved\n");
+    git(repoRoot, ["add", "moved.txt"]);
+    git(repoRoot, ["commit", "-m", "move branch authority"]);
+    git(repoRoot, ["update-ref", `refs/heads/${secondBranch}`, "HEAD"]);
+    expect(() => restoreTrashEntry(db, second.entry.id)).toThrow(/moved after custody/);
+  });
+
+  it("reports exact removal finality even when outcome persistence also fails", () => {
+    db.exec(`CREATE TRIGGER fail_all_trash_updates
+      BEFORE UPDATE ON trash_entries
+      BEGIN
+        SELECT RAISE(ABORT, 'recording unavailable');
+      END`);
+
+    let failure: unknown;
+    try {
+      createTrashEntry(db, {
+        project: "trash-test",
+        branch: "feature/trash",
+        reason: "manual",
+      });
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toMatchObject({
+      code: "remove_failed",
+      detail: {
+        outcome: {
+          worktree_removed: true,
+          branch_removed: true,
+          worktree_path: fs.realpathSync(path.dirname(featureWorktree)) + "/feature-trash",
+        },
+        recording_error: expect.stringContaining("recording unavailable"),
+      },
+    });
+    expect(fs.existsSync(featureWorktree)).toBe(false);
+    expect(spawnSync("git", ["rev-parse", "--verify", "refs/heads/feature/trash"], {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    }).status).not.toBe(0);
+  });
+
+  it("rejects restore paths whose existing parent escapes through a symlink", () => {
+    const created = createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "manual",
+    });
+    const outside = path.join(tempDir, "outside");
+    fs.mkdirSync(outside);
+    const link = path.join(repoRoot, "outside-link");
+    fs.symlinkSync(outside, link, "dir");
+    expect(() => restoreTrashEntry(db, created.entry.id, {
+      worktree_path: path.join(link, "restored"),
+    })).toThrow(/resolving symlinks/);
+    expect(fs.existsSync(path.join(outside, "restored"))).toBe(false);
+  });
+
   it("preserves Mandible docs and Codex app-managed worktrees at the public service boundary", () => {
     const managed = [
       {
@@ -238,6 +369,51 @@ describe.sequential("trash custody", () => {
       env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
     }).status).not.toBe(0);
   });
+
+  it("durably replays gc_pending when final DB recording fails after ref deletion", () => {
+    const created = createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "merged",
+      retention_days: 1,
+    }, 1_000);
+    db.exec(`CREATE TRIGGER fail_trash_expire
+      BEFORE UPDATE OF state ON trash_entries
+      WHEN NEW.state = 'expired'
+      BEGIN
+        SELECT RAISE(ABORT, 'finalize failed');
+      END`);
+
+    expect(gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
+    expect(listTrashEntries(db)[0]).toMatchObject({ state: "gc_pending" });
+    expect(spawnSync("git", ["rev-parse", "--verify", created.entry.snapshot_ref], {
+      cwd: repoRoot,
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    }).status).not.toBe(0);
+    db.exec("DROP TRIGGER fail_trash_expire");
+
+    expect(gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 1, failed: 0 });
+    expect(listTrashEntries(db)[0]).toMatchObject({
+      state: "expired",
+      outcome: { replayed_pending: true },
+    });
+  });
+
+  it("uses the canonical checkout default for scanner reaping facts", () => {
+    git(repoRoot, ["branch", "-m", "main", "trunk"]);
+    db.prepare("UPDATE ledger_project_checkouts SET default_branch = 'trunk' WHERE id = ?")
+      .run(checkoutId);
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+
+    expect(scanner.getBranch(repoRoot, "feature/trash")).toMatchObject({
+      default_branch: "trunk",
+      worktree_inventory_known: true,
+      worktree_status_known: true,
+      default_comparison_known: true,
+      reaping: { facts_known: true },
+    });
+  });
 });
 
 describe("scanner reaping safety", () => {
@@ -250,6 +426,9 @@ describe("scanner reaping safety", () => {
     worktree_path: "/repo/worktrees/feature__done",
     ahead_default: 0,
     default_branch: "main",
+    worktree_inventory_known: true,
+    worktree_status_known: true,
+    default_comparison_known: true,
   };
 
   it("requires clean+merged, app-managed, canonical, non-current, non-protected facts", () => {
@@ -275,6 +454,25 @@ describe("scanner reaping safety", () => {
       app_managed: true,
       ambiguous: true,
       blockers: expect.arrayContaining(["dirty", "current", "app_managed", "ambiguous_project"]),
+    });
+  });
+
+  it("blocks candidates whenever a destructive Git fact is unknown", () => {
+    expect(deriveReapingSafety({
+      ...base,
+      worktree_inventory_known: false,
+      worktree_status_known: false,
+      default_comparison_known: false,
+    }, { projectIds: ["prj-one"] })).toMatchObject({
+      candidate: false,
+      clean: false,
+      merged: false,
+      facts_known: false,
+      blockers: expect.arrayContaining([
+        "unknown_worktree_inventory",
+        "unknown_worktree_status",
+        "unknown_default_comparison",
+      ]),
     });
   });
 });

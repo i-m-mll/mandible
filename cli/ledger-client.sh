@@ -44,6 +44,10 @@ mandible_ledger_request() {
     return 0
   fi
 
+  if [[ -n "${MANDIBLE_LEDGER_ERROR_BODY_FILE:-}" ]]; then
+    cp "$tmp_response" "$MANDIBLE_LEDGER_ERROR_BODY_FILE"
+  fi
+
   if [[ "$graceful" == "1" || "$graceful" == "true" ]]; then
     mandible_ledger_err "Mandible ledger request skipped (${method} ${request_path}, status ${status:-unreachable})"
     rm -f "$tmp_response"
