@@ -755,6 +755,7 @@ export const PROJECT_ID_COLUMNS: ReadonlyArray<{ table: string; columns: string[
   { table: "artifact_version", columns: ["source_project_id"] },
   { table: "project_artifact_associations", columns: ["project_id"] },
   { table: "spaces", columns: ["project_id"] },
+  { table: "trash_entries", columns: ["project_id"] },
 ];
 
 // Project-id-bearing columns that are DELIBERATELY not repointed on merge (kept
