@@ -1,0 +1,594 @@
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+
+import type { Db } from "./db.js";
+import { resolveProjectRef, type RegistryCheckout, type RegistryProject } from "./ledger/project-registry.js";
+import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
+
+export const TRASH_RETENTION_POLICY = "trash-retention.v1";
+export const DEFAULT_TRASH_RETENTION_DAYS = 30;
+
+export type TrashReason = "superseded" | "merged" | "abandoned" | "manual";
+export type TrashState =
+  | "active"
+  | "remove_failed"
+  | "restored"
+  | "expired"
+  | "restore_failed"
+  | "gc_failed";
+
+export interface TrashEntry {
+  id: string;
+  project_id: string;
+  project_key: string;
+  checkout_id: string;
+  repo_root: string;
+  branch: string;
+  issue_refs: string[];
+  reason: TrashReason;
+  actor: string;
+  snapshot_ref: string;
+  snapshot_oid: string;
+  original_oid: string;
+  retention_policy: typeof TRASH_RETENTION_POLICY;
+  retention_days: number;
+  state: TrashState;
+  created_at: number;
+  expires_at: number;
+  restored_at: number | null;
+  expired_at: number | null;
+  last_error: string | null;
+  outcome: Record<string, unknown>;
+}
+
+export interface TrashCreateInput {
+  project: string;
+  branch: string;
+  reason: TrashReason;
+  actor?: string;
+  issue_refs?: string[];
+  checkout_root?: string;
+  retention_days?: number;
+}
+
+export interface TrashRestoreInput {
+  worktree_path?: string;
+  actor?: string;
+}
+
+export class TrashServiceError extends Error {
+  constructor(
+    message: string,
+    readonly code: string,
+    readonly status = 400,
+    readonly detail?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = "TrashServiceError";
+  }
+}
+
+interface TrashRow {
+  id: string;
+  project_id: string;
+  project_key: string;
+  checkout_id: string;
+  repo_root: string;
+  branch: string;
+  issue_refs_json: string;
+  reason: TrashReason;
+  actor: string;
+  snapshot_ref: string;
+  snapshot_oid: string;
+  original_oid: string;
+  retention_policy: typeof TRASH_RETENTION_POLICY;
+  retention_days: number;
+  state: TrashState;
+  created_at: number;
+  expires_at: number;
+  restored_at: number | null;
+  expired_at: number | null;
+  last_error: string | null;
+  outcome_json: string;
+}
+
+interface GitWorktree {
+  path: string;
+  branch: string | null;
+}
+
+function git(
+  cwd: string,
+  args: string[],
+  options: { allowFailure?: boolean; env?: NodeJS.ProcessEnv; input?: string } = {},
+): string {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    input: options.input,
+    env: {
+      ...process.env,
+      GIT_OPTIONAL_LOCKS: "0",
+      ...options.env,
+    },
+  });
+  if (result.error) {
+    throw new TrashServiceError(result.error.message, "git_unavailable", 500);
+  }
+  if (result.status !== 0) {
+    if (options.allowFailure) return "";
+    const message = (result.stderr || result.stdout || `git exited ${result.status}`).trim();
+    throw new TrashServiceError(message, "git_failed", 409, { args });
+  }
+  return result.stdout.trim();
+}
+
+function parseWorktrees(repoRoot: string): GitWorktree[] {
+  const raw = git(repoRoot, ["worktree", "list", "--porcelain", "-z"]);
+  const records = raw.split("\0\0").filter(Boolean);
+  return records.map((record) => {
+    let worktreePath = "";
+    let branch: string | null = null;
+    for (const field of record.split("\0")) {
+      if (field.startsWith("worktree ")) worktreePath = field.slice("worktree ".length);
+      if (field.startsWith("branch refs/heads/")) branch = field.slice("branch refs/heads/".length);
+    }
+    return { path: worktreePath, branch };
+  }).filter((entry) => entry.path !== "");
+}
+
+function isInside(parent: string, child: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(child));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function validateBranch(repoRoot: string, branch: string): string {
+  const value = branch.trim();
+  if (!value || value.startsWith("refs/") || value === "HEAD") {
+    throw new TrashServiceError("branch must be a normal local branch name", "invalid_branch");
+  }
+  git(repoRoot, ["check-ref-format", "--branch", value]);
+  return value;
+}
+
+function protectedBranches(db: Db, defaultBranch: string): Set<string> {
+  const setting = db.prepare("SELECT value FROM settings WHERE key = 'protected_branches'").get() as
+    | { value: string }
+    | undefined;
+  const values = (setting?.value ?? "main,develop").split(",").map((value) => value.trim()).filter(Boolean);
+  values.push(defaultBranch);
+  return new Set(values);
+}
+
+function resolveProject(db: Db, ref: string): RegistryProject {
+  const result = resolveProjectRef(db, ref);
+  if (result.ambiguous) {
+    throw new TrashServiceError(`ambiguous project ref: ${ref}`, "ambiguous_project", 409, {
+      candidates: result.candidates ?? [],
+    });
+  }
+  if (!result.ok || !result.project) {
+    throw new TrashServiceError(`project not found: ${ref}`, "project_not_found", 404);
+  }
+  if (result.matched_by === "work_repo_id") {
+    throw new TrashServiceError(
+      "path-derived work_repo_id cannot authorize trash custody; use a canonical project ref",
+      "noncanonical_project_ref",
+      409,
+      { matched_by: result.matched_by },
+    );
+  }
+  return result.project;
+}
+
+function branchOid(repoRoot: string, branch: string): string | null {
+  const ref = `refs/heads/${branch}`;
+  return git(repoRoot, ["rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`], {
+    allowFailure: true,
+  }) || null;
+}
+
+function chooseCheckout(
+  project: RegistryProject,
+  branch: string,
+  checkoutRoot?: string,
+): RegistryCheckout {
+  if (checkoutRoot) {
+    const normalized = path.resolve(checkoutRoot);
+    const checkout = project.checkouts.find((candidate) => path.resolve(candidate.root) === normalized);
+    if (!checkout) {
+      throw new TrashServiceError(
+        "checkout_root is not registered to the canonical project",
+        "checkout_not_registered",
+        409,
+      );
+    }
+    if (!fs.existsSync(checkout.root) || !branchOid(checkout.root, branch)) {
+      throw new TrashServiceError("branch is not present in the selected checkout", "branch_not_found", 404);
+    }
+    return checkout;
+  }
+
+  const candidates = project.checkouts.filter(
+    (checkout) => fs.existsSync(checkout.root) && branchOid(checkout.root, branch) !== null,
+  );
+  if (candidates.length === 0) {
+    throw new TrashServiceError("branch not found in a registered project checkout", "branch_not_found", 404);
+  }
+  if (candidates.length > 1) {
+    throw new TrashServiceError(
+      "branch exists in multiple registered checkouts; checkout_root is required",
+      "ambiguous_checkout",
+      409,
+      { roots: candidates.map((checkout) => checkout.root) },
+    );
+  }
+  return candidates[0];
+}
+
+function snapshotWorktree(
+  branch: string,
+  worktreePath: string | null,
+  originalOid: string,
+  entryId: string,
+): string {
+  if (!worktreePath) return originalOid;
+  const status = git(worktreePath, ["status", "--porcelain=v1", "--untracked-files=all"]);
+  if (!status) return originalOid;
+
+  const indexPath = path.join(os.tmpdir(), `mandible-trash-index-${entryId}`);
+  const env = { GIT_INDEX_FILE: indexPath };
+  try {
+    git(worktreePath, ["read-tree", originalOid], { env });
+    git(worktreePath, ["add", "-A", "--", "."], { env });
+    const tree = git(worktreePath, ["write-tree"], { env });
+    const identity = {
+      GIT_AUTHOR_NAME: "Mandible Trash",
+      GIT_AUTHOR_EMAIL: "trash@mandible.local",
+      GIT_COMMITTER_NAME: "Mandible Trash",
+      GIT_COMMITTER_EMAIL: "trash@mandible.local",
+    };
+    return git(worktreePath, ["commit-tree", tree, "-p", originalOid], {
+      env: { ...env, ...identity },
+      input: `Mandible trash snapshot for ${branch}\n`,
+    });
+  } finally {
+    fs.rmSync(indexPath, { force: true });
+  }
+}
+
+function linkedIssueRefs(db: Db, projectId: string, branch: string, explicit: string[]): string[] {
+  const rows = db.prepare(
+    `SELECT DISTINCT COALESCE(NULLIF(i.short_id, ''), i.id) AS issue_ref
+       FROM ledger_issues i
+       LEFT JOIN issue_branches b ON b.issue_id = i.id
+       LEFT JOIN work_units w ON w.ledger_issue_id = i.id
+      WHERE i.project_id = ? AND (b.branch = ? OR w.branch = ?)
+      ORDER BY issue_ref`,
+  ).all(projectId, branch, branch) as Array<{ issue_ref: string }>;
+  return [...new Set([...explicit.map((value) => value.trim()).filter(Boolean), ...rows.map((row) => row.issue_ref)])]
+    .sort();
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function mapRow(row: TrashRow): TrashEntry {
+  const { issue_refs_json: issueRefsJson, outcome_json: outcomeJson, ...entry } = row;
+  return {
+    ...entry,
+    issue_refs: JSON.parse(issueRefsJson) as string[],
+    outcome: parseJsonObject(outcomeJson),
+  };
+}
+
+const SELECT_ENTRY = `SELECT t.*, p.project_key
+  FROM trash_entries t
+  JOIN ledger_projects p ON p.id = t.project_id`;
+
+function getEntry(db: Db, id: string): TrashEntry {
+  const row = db.prepare(`${SELECT_ENTRY} WHERE t.id = ?`).get(id) as TrashRow | undefined;
+  if (!row) throw new TrashServiceError(`trash entry not found: ${id}`, "trash_not_found", 404);
+  return mapRow(row);
+}
+
+export function listTrashEntries(
+  db: Db,
+  filters: { project?: string; state?: TrashState } = {},
+): TrashEntry[] {
+  const where: string[] = [];
+  const values: unknown[] = [];
+  if (filters.project) {
+    where.push("t.project_id = ?");
+    values.push(resolveProject(db, filters.project).id);
+  }
+  if (filters.state) {
+    where.push("t.state = ?");
+    values.push(filters.state);
+  }
+  const sql = `${SELECT_ENTRY}${where.length ? ` WHERE ${where.join(" AND ")}` : ""}
+    ORDER BY t.created_at DESC, t.id`;
+  return (db.prepare(sql).all(...values) as TrashRow[]).map(mapRow);
+}
+
+export function createTrashEntry(
+  db: Db,
+  input: TrashCreateInput,
+  now = Date.now(),
+): { entry: TrashEntry; outcome: { worktree_removed: boolean; branch_removed: boolean } } {
+  if (!input.project?.trim()) throw new TrashServiceError("project is required", "missing_project");
+  if (!input.branch?.trim()) throw new TrashServiceError("branch is required", "missing_branch");
+  if (!["superseded", "merged", "abandoned", "manual"].includes(input.reason)) {
+    throw new TrashServiceError("invalid trash reason", "invalid_reason");
+  }
+  const retentionDays = input.retention_days ?? DEFAULT_TRASH_RETENTION_DAYS;
+  if (!Number.isInteger(retentionDays) || retentionDays < 1 || retentionDays > 3650) {
+    throw new TrashServiceError("retention_days must be an integer between 1 and 3650", "invalid_retention");
+  }
+
+  const project = resolveProject(db, input.project);
+  const checkout = chooseCheckout(project, input.branch.trim(), input.checkout_root);
+  const branch = validateBranch(checkout.root, input.branch);
+  if (protectedBranches(db, checkout.default_branch).has(branch)) {
+    throw new TrashServiceError(`refusing to trash protected/default branch: ${branch}`, "protected_branch", 409);
+  }
+  const originalOid = branchOid(checkout.root, branch);
+  if (!originalOid) throw new TrashServiceError(`branch not found: ${branch}`, "branch_not_found", 404);
+  const worktree = parseWorktrees(checkout.root).find((entry) => entry.branch === branch) ?? null;
+  if (worktree && path.resolve(worktree.path) === path.resolve(checkout.root)) {
+    throw new TrashServiceError("refusing to remove the registered root worktree", "current_worktree", 409);
+  }
+  if (worktree && isPreservedAppWorktreePath(worktree.path)) {
+    throw new TrashServiceError(
+      `refusing to trash app-managed worktree: ${worktree.path}`,
+      "app_managed_worktree",
+      409,
+    );
+  }
+  const active = db.prepare(
+    `SELECT id FROM trash_entries
+      WHERE project_id = ? AND branch = ?
+        AND state IN ('active','remove_failed','restore_failed','gc_failed')
+      LIMIT 1`,
+  ).get(project.id, branch) as { id: string } | undefined;
+  if (active) {
+    throw new TrashServiceError("branch already has a live trash entry", "trash_exists", 409, {
+      id: active.id,
+    });
+  }
+
+  const id = randomUUID();
+  const snapshotRef = `refs/mandible/trash/${id}`;
+  const snapshotOid = snapshotWorktree(branch, worktree?.path ?? null, originalOid, id);
+  git(checkout.root, ["update-ref", snapshotRef, snapshotOid, "0".repeat(40)]);
+  const actor = input.actor?.trim() || "mandible";
+  const issueRefs = linkedIssueRefs(db, project.id, branch, input.issue_refs ?? []);
+  const expiresAt = now + retentionDays * 86_400_000;
+  try {
+    db.prepare(
+      `INSERT INTO trash_entries (
+         id, project_id, checkout_id, repo_root, branch, issue_refs_json,
+         reason, actor, snapshot_ref, snapshot_oid, original_oid,
+         retention_policy, retention_days, state, created_at, expires_at
+       ) VALUES (
+         @id, @project_id, @checkout_id, @repo_root, @branch, @issue_refs_json,
+         @reason, @actor, @snapshot_ref, @snapshot_oid, @original_oid,
+         @retention_policy, @retention_days, 'active', @created_at, @expires_at
+       )`,
+    ).run({
+      id,
+      project_id: project.id,
+      checkout_id: checkout.id,
+      repo_root: checkout.root,
+      branch,
+      issue_refs_json: JSON.stringify(issueRefs),
+      reason: input.reason,
+      actor,
+      snapshot_ref: snapshotRef,
+      snapshot_oid: snapshotOid,
+      original_oid: originalOid,
+      retention_policy: TRASH_RETENTION_POLICY,
+      retention_days: retentionDays,
+      created_at: now,
+      expires_at: expiresAt,
+    });
+  } catch (error) {
+    git(checkout.root, ["update-ref", "-d", snapshotRef, snapshotOid], { allowFailure: true });
+    throw error;
+  }
+
+  const outcome = { worktree_removed: false, branch_removed: false };
+  try {
+    if (worktree) {
+      git(checkout.root, ["worktree", "remove", "--force", worktree.path]);
+      outcome.worktree_removed = true;
+    }
+    git(checkout.root, ["update-ref", "-d", `refs/heads/${branch}`, originalOid]);
+    outcome.branch_removed = true;
+    db.prepare("UPDATE trash_entries SET outcome_json = ? WHERE id = ?")
+      .run(JSON.stringify(outcome), id);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    db.prepare(
+      "UPDATE trash_entries SET state = 'remove_failed', last_error = ?, outcome_json = ? WHERE id = ?",
+    ).run(message, JSON.stringify(outcome), id);
+    throw new TrashServiceError("snapshot is safe but local removal failed", "remove_failed", 409, {
+      id,
+      snapshot_ref: snapshotRef,
+      error: message,
+      outcome,
+    });
+  }
+
+  return { entry: getEntry(db, id), outcome };
+}
+
+export function restoreTrashEntry(
+  db: Db,
+  id: string,
+  input: TrashRestoreInput = {},
+  now = Date.now(),
+): { entry: TrashEntry; branch: string; worktree_path: string | null } {
+  const entry = getEntry(db, id);
+  if (!(["active", "restore_failed"] as TrashState[]).includes(entry.state)) {
+    throw new TrashServiceError(`trash entry cannot be restored from state ${entry.state}`, "invalid_state", 409);
+  }
+  if (entry.expires_at <= now) {
+    throw new TrashServiceError("trash entry is past its retention window", "retention_expired", 409);
+  }
+  const checkout = db.prepare(
+    "SELECT id, project_id, root FROM ledger_project_checkouts WHERE id = ? AND project_id = ?",
+  ).get(entry.checkout_id, entry.project_id) as { id: string; project_id: string; root: string } | undefined;
+  if (!checkout || path.resolve(checkout.root) !== path.resolve(entry.repo_root)) {
+    throw new TrashServiceError("canonical checkout is missing or changed", "checkout_mismatch", 409);
+  }
+  if (!fs.existsSync(entry.repo_root)) {
+    throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
+  }
+  const liveSnapshot = git(entry.repo_root, ["rev-parse", "--verify", `${entry.snapshot_ref}^{commit}`], {
+    allowFailure: true,
+  });
+  if (!liveSnapshot) {
+    throw new TrashServiceError("trash snapshot ref is missing", "snapshot_missing", 404);
+  }
+  if (liveSnapshot !== entry.snapshot_oid) {
+    throw new TrashServiceError("trash snapshot ref no longer matches its record", "snapshot_mismatch", 409);
+  }
+  if (branchOid(entry.repo_root, entry.branch)) {
+    throw new TrashServiceError(`branch already exists: ${entry.branch}`, "branch_collision", 409);
+  }
+
+  const requestedPath = input.worktree_path?.trim() ? path.resolve(input.worktree_path) : null;
+  if (requestedPath && (fs.existsSync(requestedPath) || !isInside(entry.repo_root, requestedPath))) {
+    throw new TrashServiceError(
+      "worktree_path must be a new path inside the registered checkout",
+      "invalid_worktree_path",
+      409,
+    );
+  }
+
+  let branchCreated = false;
+  try {
+    git(entry.repo_root, ["update-ref", `refs/heads/${entry.branch}`, entry.snapshot_oid, "0".repeat(40)]);
+    branchCreated = true;
+    if (requestedPath) {
+      git(entry.repo_root, ["worktree", "add", requestedPath, entry.branch]);
+    }
+    db.prepare(
+      `UPDATE trash_entries
+          SET state = 'restored', restored_at = ?, last_error = NULL,
+              outcome_json = ?
+        WHERE id = ?`,
+    ).run(now, JSON.stringify({ restored_by: input.actor?.trim() || "mandible", worktree_path: requestedPath }), id);
+  } catch (error) {
+    if (branchCreated && requestedPath) {
+      git(entry.repo_root, ["worktree", "remove", "--force", requestedPath], {
+        allowFailure: true,
+      });
+    }
+    if (branchCreated) {
+      git(entry.repo_root, ["update-ref", "-d", `refs/heads/${entry.branch}`, entry.snapshot_oid], {
+        allowFailure: true,
+      });
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    db.prepare("UPDATE trash_entries SET state = 'restore_failed', last_error = ? WHERE id = ?")
+      .run(message, id);
+    throw error;
+  }
+  return { entry: getEntry(db, id), branch: entry.branch, worktree_path: requestedPath };
+}
+
+export interface TrashGcOutcome {
+  id: string;
+  status: "expired" | "failed";
+  error?: string;
+}
+
+export function gcTrashEntries(
+  db: Db,
+  options: { now?: number; limit?: number; actor?: string } = {},
+): { outcomes: TrashGcOutcome[]; expired: number; failed: number } {
+  const now = options.now ?? Date.now();
+  const limit = Math.min(Math.max(Math.trunc(options.limit ?? 100), 1), 1000);
+  const rows = db.prepare(
+    `${SELECT_ENTRY}
+      WHERE t.expires_at <= ?
+        AND t.state IN ('active','remove_failed','restored','restore_failed','gc_failed')
+      ORDER BY t.expires_at, t.id
+      LIMIT ?`,
+  ).all(now, limit) as TrashRow[];
+  const outcomes: TrashGcOutcome[] = [];
+  for (const row of rows) {
+    const entry = mapRow(row);
+    try {
+      if (!fs.existsSync(entry.repo_root)) {
+        throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
+      }
+      const live = git(entry.repo_root, ["rev-parse", "--verify", entry.snapshot_ref], {
+        allowFailure: true,
+      });
+      if (!live) throw new TrashServiceError("trash snapshot ref is missing", "snapshot_missing", 404);
+      if (live !== entry.snapshot_oid) {
+        throw new TrashServiceError("trash snapshot ref no longer matches its record", "snapshot_mismatch", 409);
+      }
+      git(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
+      db.prepare(
+        `UPDATE trash_entries
+            SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
+          WHERE id = ?`,
+      ).run(now, JSON.stringify({ gc_actor: options.actor?.trim() || "mandible" }), entry.id);
+      outcomes.push({ id: entry.id, status: "expired" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      db.prepare("UPDATE trash_entries SET state = 'gc_failed', last_error = ? WHERE id = ?")
+        .run(message, entry.id);
+      outcomes.push({ id: entry.id, status: "failed", error: message });
+    }
+  }
+  const expired = outcomes.filter((outcome) => outcome.status === "expired").length;
+  return { outcomes, expired, failed: outcomes.length - expired };
+}
+
+let trashGcTimer: ReturnType<typeof setInterval> | null = null;
+let trashGcStartupTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function startTrashGcScheduler(
+  db: Db,
+  log: (level: "info" | "warn", event: string, fields: Record<string, unknown>) => void,
+  options: { intervalMs?: number; startupDelayMs?: number } = {},
+): void {
+  stopTrashGcScheduler();
+  const run = () => {
+    const result = gcTrashEntries(db, { actor: "mandible-daemon" });
+    if (result.outcomes.length > 0) {
+      log(result.failed > 0 ? "warn" : "info", "trash_gc_completed", {
+        subsystem: "trash",
+        expired: result.expired,
+        failed: result.failed,
+      });
+    }
+  };
+  trashGcStartupTimer = setTimeout(run, options.startupDelayMs ?? 10_000);
+  trashGcTimer = setInterval(run, options.intervalMs ?? 60 * 60 * 1_000);
+  trashGcStartupTimer.unref?.();
+  trashGcTimer.unref?.();
+}
+
+export function stopTrashGcScheduler(): void {
+  if (trashGcStartupTimer) clearTimeout(trashGcStartupTimer);
+  if (trashGcTimer) clearInterval(trashGcTimer);
+  trashGcStartupTimer = null;
+  trashGcTimer = null;
+}

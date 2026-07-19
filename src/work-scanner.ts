@@ -7,6 +7,7 @@ import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
+import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 
 export interface LastCommit {
   hash: string;
@@ -33,6 +34,59 @@ export interface BranchData {
   last_commit: LastCommit | null;
   last_commit_date?: string | null;
   diff_stat: string | null;
+  reaping?: ReapingSafety;
+}
+
+export interface ReapingSafety {
+  candidate: boolean;
+  clean: boolean;
+  merged: boolean;
+  protected: boolean;
+  default_branch: boolean;
+  current: boolean;
+  app_managed: boolean;
+  canonical_project: boolean;
+  ambiguous: boolean;
+  canonical_project_id: string | null;
+  blockers: string[];
+}
+
+export function deriveReapingSafety(
+  branch: Pick<BranchData,
+    "branch" | "repo_root" | "is_dirty" | "is_current" | "is_worktree" |
+    "worktree_path" | "ahead_default" | "default_branch">,
+  context: { protectedBranches?: Iterable<string>; projectIds?: string[] } = {},
+): ReapingSafety {
+  const protectedSet = new Set(context.protectedBranches ?? ["main", "develop"]);
+  const projectIds = [...new Set(context.projectIds ?? [])];
+  const clean = !branch.is_dirty;
+  const merged = branch.ahead_default === 0;
+  const isDefault = branch.branch === branch.default_branch;
+  const isProtected = protectedSet.has(branch.branch);
+  const appManaged = Boolean(branch.worktree_path && isPreservedAppWorktreePath(branch.worktree_path));
+  const ambiguous = projectIds.length > 1;
+  const canonicalProject = projectIds.length === 1;
+  const blockers: string[] = [];
+  if (!clean) blockers.push("dirty");
+  if (!merged) blockers.push("unmerged");
+  if (isProtected) blockers.push("protected");
+  if (isDefault) blockers.push("default_branch");
+  if (branch.is_current) blockers.push("current");
+  if (appManaged) blockers.push("app_managed");
+  if (!canonicalProject) blockers.push(ambiguous ? "ambiguous_project" : "missing_project");
+  return {
+    candidate: blockers.length === 0,
+    clean,
+    merged,
+    protected: isProtected,
+    default_branch: isDefault,
+    current: branch.is_current,
+    app_managed: appManaged,
+    canonical_project: canonicalProject,
+    ambiguous,
+    canonical_project_id: canonicalProject ? projectIds[0] : null,
+    blockers,
+  };
 }
 
 export type WorkCommitClassification = "unique" | "pre-branch-point" | "merged-elsewhere";
@@ -579,10 +633,28 @@ export class WorkScanner {
       )
       .all(repoRoot) as Array<Record<string, unknown>>;
 
+    let configuredProtected = ["main", "develop"];
+    let projectIds: string[] = [];
+    try {
+      const setting = this.db.prepare("SELECT value FROM settings WHERE key = 'protected_branches'").get() as
+        | { value: string }
+        | undefined;
+      configuredProtected = (setting?.value ?? "main,develop")
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean);
+      projectIds = (this.db.prepare(
+        "SELECT DISTINCT project_id FROM ledger_project_checkouts WHERE root = ? ORDER BY project_id",
+      ).all(repoRoot) as Array<{ project_id: string }>).map((row) => row.project_id);
+    } catch {
+      // Minimal scanner test doubles may not carry the canonical registry.
+      // Missing identity remains an explicit fail-closed blocker below.
+    }
+
     return rows.map((row) => {
       const branchName = String(row.branch);
       const upstreamInfo = this.getUpstreamInfo(repoRoot, branchName);
-      return {
+      const branchData: BranchData = {
         repo_root: String(row.repo_root),
         branch: branchName,
         is_current: fromDbBool(Number(row.is_current)),
@@ -607,6 +679,11 @@ export class WorkScanner {
         last_commit_date: row.last_commit_date ? String(row.last_commit_date) : null,
         diff_stat: row.diff_stat ? String(row.diff_stat) : null,
       };
+      branchData.reaping = deriveReapingSafety(branchData, {
+        protectedBranches: configuredProtected,
+        projectIds,
+      });
+      return branchData;
     });
   }
 

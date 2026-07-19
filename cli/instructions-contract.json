@@ -119,6 +119,10 @@
       "description": "Release active work units for an abandoned issue/repo lane without encoding worktree layout policy."
     },
     {
+      "name": "mandible trash list|create|restore|gc",
+      "description": "List, snapshot/remove, restore, or expire reversible branch/worktree trash custody. Create accepts a canonical-project-resolvable ref and reports when the removed worktree path can no longer be used."
+    },
+    {
       "name": "mandible issue-file path [cwd]",
       "description": "Resolve the git-root .issue helper file path for a caller-supplied or current working directory."
     },
@@ -209,7 +213,7 @@
     "Mutating work-unit requests may carry allowlisted ambient provider identity as `{provider, provider_session_id}`; Mandible persists only those fields on work units and never stores the caller environment.",
     "Successful auth merges archive reliably linked terminal Codex worker threads for closed child issues. Resolved work units with `provider=codex` and a provider session id can archive directly without `console_sessions`; legacy console-session links still work. Live parent-role holders and active sessions are not archived. Codex resume dispatch unarchives the provider thread before sending follow-up work.",
     "Use `worker_status` and issue-branch links for coordination state; open/closed issue lifecycle remains separate.",
-    "The sourceable policy-free ledger mechanism client is `cli/ledger-client.sh`; it exposes `mandible_work_unit_claim`, `mandible_work_unit_activate`, `mandible_work_unit_find`, `mandible_work_unit_resolve`, `mandible_work_unit_release`, `mandible_issue_title`, `mandible_session_link_issue`, `mandible_issue_file_path`, `mandible_issue_file_read`, `mandible_issue_file_write`, and `mandible_commit_trailers`."
+    "The sourceable policy-free ledger mechanism client is `cli/ledger-client.sh`; it exposes work-unit, trash-custody, issue-title, session-link, issue-file, and commit-trailer helpers for policy wrappers."
   ],
   "transports": [
     "Default CLI transport is loopback HTTP via `MANDIBLE_BASE=http://127.0.0.1:<port>`.",

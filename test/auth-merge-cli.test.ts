@@ -318,6 +318,7 @@ const AUTH_MERGE_SH = path.join(process.cwd(), "cli", "auth-merge.sh");
 function runCleanupHelper(
   snippet: string,
   cwd: string,
+  extraEnv: Record<string, string> = {},
 ): { status: number | null; stdout: string; stderr: string } {
   const script = [
     "set -u",
@@ -331,11 +332,46 @@ function runCleanupHelper(
     env: {
       HOME: homeDir,
       PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+      MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE_SH),
       ZELLIJ: "",
       TMUX: "",
+      ...extraEnv,
     },
   });
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+}
+
+function runCleanupHelperAsync(
+  snippet: string,
+  cwd: string,
+  extraEnv: Record<string, string> = {},
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const script = [
+    "set -u",
+    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
+    `source ${JSON.stringify(AUTH_MERGE_SH)}`,
+    snippet,
+  ].join("\n");
+  return new Promise((resolve) => {
+    const child = spawn("bash", ["-c", script], {
+      cwd,
+      env: {
+        HOME: homeDir,
+        PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+        MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE_SH),
+        ZELLIJ: "",
+        TMUX: "",
+        ...extraEnv,
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
 }
 
 function provisionManagedDocsWorktree(branch: string): string {
@@ -365,7 +401,7 @@ describe("auth merge worktree cleanup preserves the docs branch", () => {
     expect(fs.existsSync(docsWorktree)).toBe(true);
 
     const result = runCleanupHelper(
-      `cleanup_merged_worktrees ${JSON.stringify(proxy)} 0`,
+      `cleanup_merged_worktrees ${JSON.stringify(proxy)} 0 ${JSON.stringify(docsBranch)}`,
       tempDir,
     );
     expect(result.status).toBe(0);
@@ -431,5 +467,190 @@ describe("auth merge worktree cleanup preserves the docs branch", () => {
       { cwd: tempDir },
     ).status;
     expect(branchExists).toBe(0);
+  });
+});
+
+function listenForCleanup(options: { canonicalProject?: boolean } = {}): Promise<{
+  port: number;
+  requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }>;
+}> {
+  const requests: Array<{ method: string | undefined; url: string | undefined; body: unknown }> = [];
+  server = http.createServer((req, res) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { raw += chunk; });
+    req.on("end", () => {
+      requests.push({ method: req.method, url: req.url, body: raw ? JSON.parse(raw) : null });
+      res.setHeader("Content-Type", "application/json");
+      if (req.method === "GET" && req.url === "/api/instance") {
+        res.end(JSON.stringify({ instance: { role: "main", operational_mutations: "allow" } }));
+      } else if (req.method === "GET" && req.url?.startsWith("/api/projects/")) {
+        if (options.canonicalProject === false) {
+          res.statusCode = 409;
+          res.end(JSON.stringify({ error: "ambiguous project" }));
+        } else {
+          res.end(JSON.stringify({ project: { project_key: "canonical-mandible" } }));
+        }
+      } else if (req.method === "POST" && req.url === "/api/v1/trash") {
+        res.statusCode = 201;
+        res.end(JSON.stringify({
+          entry: { id: "trash-auth", branch: "feature/dirty" },
+          outcome: { worktree_removed: true, branch_removed: true },
+        }));
+      } else if (req.method === "GET" && req.url?.startsWith("/api/work-units?")) {
+        res.end(JSON.stringify({ work_units: [{ branch: "feature/sibling" }] }));
+      } else {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: "not found" }));
+      }
+    });
+  });
+  return new Promise((resolve) => {
+    server!.listen(0, "127.0.0.1", () => {
+      const address = server!.address();
+      if (!address || typeof address === "string") throw new Error("cleanup server did not bind");
+      resolve({ port: address.port, requests });
+    });
+  });
+}
+
+function createFeatureWorktree(branch: string): string {
+  const safe = branch.replace(/\//g, "__");
+  const worktree = path.join(tempDir, "worktrees", safe);
+  git(["worktree", "add", "-b", branch, worktree, "main"]);
+  return worktree;
+}
+
+function commitFile(worktree: string, filename: string, content: string): void {
+  fs.writeFileSync(path.join(worktree, filename), content, "utf8");
+  git(["add", filename], worktree);
+  git(["commit", "-m", `add ${filename}`], worktree);
+}
+
+describe("auth merge reversible cleanup", () => {
+  it("visibly removes a clean merged worktree and local branch", () => {
+    const branch = "feature/clean";
+    const worktree = createFeatureWorktree(branch);
+    commitFile(worktree, "clean.txt", "clean\n");
+    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+
+    const result = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main`,
+      tempDir,
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("reaped clean merged branch feature/clean");
+    expect(result.stderr).toContain("Worktree path ");
+    expect(result.stderr).toContain("worktrees/feature__clean is gone");
+    expect(result.stderr).toContain("No further work may happen there");
+    expect(fs.existsSync(worktree)).toBe(false);
+    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], { cwd: tempDir }).status)
+      .not.toBe(0);
+  });
+
+  it("sends a dirty merged worktree through daemon trash custody", async () => {
+    const { port, requests } = await listenForCleanup();
+    const branch = "feature/dirty";
+    const worktree = createFeatureWorktree(branch);
+    commitFile(worktree, "dirty.txt", "committed\n");
+    git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+    fs.writeFileSync(path.join(worktree, "residue.sqlite"), "untracked fixture residue\n", "utf8");
+
+    const result = await runCleanupHelperAsync(
+      `cleanup_merged_worktrees ${JSON.stringify(branch)} 0 main abc123`,
+      tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("trashed dirty merged branch feature/dirty");
+    expect(result.stderr).toContain("Worktree path");
+    expect(result.stderr).toContain("worktrees/feature__dirty is gone");
+    expect(result.stderr).toContain("No further work may happen there");
+    expect(requests.find((request) => request.url === "/api/v1/trash")?.body).toMatchObject({
+      branch,
+      reason: "merged",
+      actor: "auth-merge",
+      issue_refs: ["abc123"],
+      checkout_root: git(["rev-parse", "--show-toplevel"], tempDir),
+    });
+  });
+
+  it("reaps a differently named patch-equivalent sibling work-unit branch", async () => {
+    const { port, requests } = await listenForCleanup();
+    const sibling = "feature/sibling";
+    const worktree = createFeatureWorktree(sibling);
+    commitFile(worktree, "sibling.txt", "sibling\n");
+    fs.writeFileSync(path.join(tempDir, "main-only.txt"), "main\n", "utf8");
+    git(["add", "main-only.txt"], tempDir);
+    git(["commit", "-m", "advance main independently"], tempDir);
+    git(["cherry-pick", sibling], tempDir);
+
+    const result = await runCleanupHelperAsync(
+      "cleanup_merged_worktrees feature/missing-head 0 main abc123",
+      tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("reaped clean patch-equivalent branch feature/sibling");
+    expect(fs.existsSync(worktree)).toBe(false);
+    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${sibling}`], { cwd: tempDir }).status)
+      .not.toBe(0);
+    const projectRequest = requests.find((request) => request.url?.startsWith("/api/projects/"));
+    expect(projectRequest?.url).toContain(encodeURIComponent(git(["rev-parse", "--show-toplevel"], tempDir)));
+    expect(requests.some((request) => (
+      request.url?.includes("repo_id=canonical-mandible")
+      && request.url.includes("issue_id=abc123")
+    ))).toBe(true);
+  });
+
+  it("preserves sibling candidates when canonical project identity cannot be resolved", async () => {
+    const { port, requests } = await listenForCleanup({ canonicalProject: false });
+    const sibling = "feature/sibling-preserved";
+    const worktree = createFeatureWorktree(sibling);
+    commitFile(worktree, "preserved.txt", "preserved\n");
+    git(["merge", "--no-ff", "--no-edit", sibling], tempDir);
+
+    const result = await runCleanupHelperAsync(
+      "cleanup_merged_worktrees feature/missing-head 0 main abc123",
+      tempDir,
+      { MANDIBLE_PORT: String(port), MANDIBLE_BASE: `http://127.0.0.1:${port}` },
+    );
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("Preserved sibling work-unit branches");
+    expect(result.stderr).toContain("canonical project identity could not be resolved uniquely");
+    expect(fs.existsSync(worktree)).toBe(true);
+    expect(spawnSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${sibling}`], { cwd: tempDir }).status)
+      .toBe(0);
+    expect(requests.some((request) => request.url?.startsWith("/api/projects/"))).toBe(true);
+    expect(requests.some((request) => request.url?.startsWith("/api/work-units?"))).toBe(false);
+  });
+
+  it("preserves protected, app-managed, and git-ambiguous candidates", () => {
+    const appBranch = "feature/app-managed";
+    const appWorktree = path.join(tempDir, ".codex", "worktrees", "app-managed");
+    fs.mkdirSync(path.dirname(appWorktree), { recursive: true });
+    git(["worktree", "add", "-b", appBranch, appWorktree, "main"]);
+    commitFile(appWorktree, "app.txt", "app\n");
+    git(["merge", "--no-ff", "--no-edit", appBranch], tempDir);
+
+    const appResult = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(appBranch)} 0 main`,
+      tempDir,
+    );
+    expect(appResult.stderr).toContain("preserved feature/app-managed: app-managed worktree");
+    expect(fs.existsSync(appWorktree)).toBe(true);
+
+    const protectedResult = runCleanupHelper("cleanup_merged_worktrees main 0 main", tempDir);
+    expect(protectedResult.stderr).toContain("preserved main: protected/default branch");
+
+    const ambiguous = "feature/not-merged";
+    const ambiguousWorktree = createFeatureWorktree(ambiguous);
+    commitFile(ambiguousWorktree, "ambiguous.txt", "unique\n");
+    const ambiguousResult = runCleanupHelper(
+      `cleanup_merged_worktrees ${JSON.stringify(ambiguous)} 0 main`,
+      tempDir,
+    );
+    expect(ambiguousResult.stderr).toContain("cannot prove merged or patch-equivalent");
+    expect(fs.existsSync(ambiguousWorktree)).toBe(true);
   });
 });

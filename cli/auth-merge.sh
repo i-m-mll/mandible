@@ -10,6 +10,9 @@ source "$GIT_ENV_HELPER"
 AUTH_PREFLIGHT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/auth-preflight.sh"
 source "$AUTH_PREFLIGHT_HELPER"
 
+LEDGER_CLIENT_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/ledger-client.sh"
+source "$LEDGER_CLIENT_HELPER"
+
 RESET=$'\033[0m'
 BOLD_WHITE=$'\033[1;37m'
 DIM_WHITE=$'\033[2;37m'
@@ -494,11 +497,172 @@ is_managed_docs_worktree_branch() {
   esac
 }
 
+is_app_managed_worktree_branch() {
+  local branch="$1"
+  local wt
+  wt="$(branch_worktree_path "$branch")"
+  [[ -n "$wt" ]] || return 1
+  case "$wt" in
+    */.codex/worktrees/*|*/.git/mandible-docs-worktrees/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+branch_has_dirty_worktree() {
+  local branch="$1"
+  local wt
+  wt="$(branch_worktree_path "$branch")"
+  [[ -n "$wt" && -d "$wt" ]] || return 1
+  [[ -n "$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null)" ]]
+}
+
+branch_reap_evidence() {
+  local branch="$1"
+  local target="$2"
+  git show-ref --verify --quiet "refs/heads/${branch}" || return 1
+  git show-ref --verify --quiet "refs/heads/${target}" || return 1
+  if git merge-base --is-ancestor "$branch" "$target" 2>/dev/null; then
+    printf '%s' "merged"
+    return 0
+  fi
+
+  local cherry
+  cherry=$(git cherry "$target" "$branch" 2>/dev/null) || return 1
+  if ! printf '%s\n' "$cherry" | grep -q '^+'; then
+    printf '%s' "patch-equivalent"
+    return 0
+  fi
+  return 1
+}
+
+branch_cleanup_guard() {
+  local branch="$1"
+  local target="$2"
+  local current
+  current=$(git branch --show-current 2>/dev/null || true)
+  case "$branch" in
+    ""|main|develop|master|HEAD) printf '%s' "protected/default branch"; return 0 ;;
+  esac
+  if [[ "$branch" == "$target" || "$branch" == "$current" || "$branch" == "$(protected_branch)" ]]; then
+    printf '%s' "protected/default/current branch"
+    return 0
+  fi
+  if is_app_managed_worktree_branch "$branch"; then
+    printf '%s' "app-managed worktree"
+    return 0
+  fi
+  return 1
+}
+
+trash_dirty_branch() {
+  local branch="$1"
+  local issue_ids="$2"
+  local root
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  local worktree_path
+  worktree_path="$(branch_worktree_path "$branch")"
+  local -a args=(--project "$root" --checkout-root "$root" --branch "$branch" --reason merged --actor auth-merge)
+  local issue_id
+  while IFS= read -r issue_id; do
+    [[ -n "$issue_id" ]] || continue
+    args+=(--issue "$issue_id")
+  done <<< "$issue_ids"
+
+  local response
+  response=$(mandible_trash_create "${args[@]}") || return 1
+  err "${GREEN}trashed dirty merged branch ${branch}; reversible custody recorded.${RESET}"
+  if printf '%s' "$response" | jq -e '.outcome.worktree_removed == true' >/dev/null 2>&1; then
+    err "${BOLD_YELLOW}Worktree path ${worktree_path:-for ${branch}} is gone. No further work may happen there.${RESET}"
+  fi
+}
+
+remove_clean_reapable_branch() {
+  local branch="$1"
+  local evidence="$2"
+  local dwt="$3"
+  local wt
+  wt="$(branch_worktree_path "$branch")"
+
+  if [[ -n "$wt" ]]; then
+    if ! "$dwt" "$branch" --keep-branch; then
+      err "${BOLD_YELLOW}preserved ${branch}: clean worktree removal failed.${RESET}"
+      return 1
+    fi
+  fi
+  if ! git branch -D -- "$branch" >/dev/null 2>&1; then
+    err "${BOLD_YELLOW}preserved ${branch}: local branch ref removal failed.${RESET}"
+    return 1
+  fi
+  err "${GREEN}reaped clean ${evidence} branch ${branch}${wt:+ and worktree ${wt}}.${RESET}"
+  if [[ -n "$wt" ]]; then
+    err "${BOLD_YELLOW}Worktree path ${wt} is gone. No further work may happen there.${RESET}"
+  fi
+}
+
+cleanup_branch_candidate() {
+  local branch="$1"
+  local target="$2"
+  local issue_ids="$3"
+  local dwt="$4"
+  local guard evidence wt
+
+  if ! git show-ref --verify --quiet "refs/heads/${branch}"; then
+    return 0
+  fi
+  guard=$(branch_cleanup_guard "$branch" "$target") && {
+    err "${DIM_WHITE}preserved ${branch}: ${guard}.${RESET}"
+    return 0
+  }
+  evidence=$(branch_reap_evidence "$branch" "$target") || {
+    err "${DIM_WHITE}preserved ${branch}: git cannot prove merged or patch-equivalent to ${target}.${RESET}"
+    return 0
+  }
+  wt="$(branch_worktree_path "$branch")"
+  if [[ -n "$wt" && ! -d "$wt" ]]; then
+    err "${BOLD_YELLOW}preserved ${branch}: registered worktree path is missing or ambiguous (${wt}).${RESET}"
+    return 0
+  fi
+  if branch_has_dirty_worktree "$branch"; then
+    if ! trash_dirty_branch "$branch" "$issue_ids"; then
+      err "${BOLD_YELLOW}preserved dirty merged branch ${branch}: Mandible trash custody failed; no deletion attempted.${RESET}"
+    fi
+    return 0
+  fi
+  remove_clean_reapable_branch "$branch" "$evidence" "$dwt" || true
+}
+
+collect_work_unit_branches() {
+  local issue_ids="$1"
+  local repo_id="$2"
+  local issue_id response
+  while IFS= read -r issue_id; do
+    [[ -n "$issue_id" ]] || continue
+    if ! response=$(mandible_work_unit_find --repo "$repo_id" --issue "$issue_id" 2>/dev/null); then
+      err "${BOLD_YELLOW}Could not inspect work-unit branches for issue ${issue_id}; sibling cleanup skipped for that issue.${RESET}"
+      continue
+    fi
+    printf '%s' "$response" | jq -r '.work_units[]?.branch // empty' 2>/dev/null
+  done <<< "$issue_ids"
+}
+
+current_canonical_repo_id() {
+  local root response project_key
+  root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+  response=$(api_get "/api/projects/$(urlencode "$root")" 2>/dev/null) || return 1
+  project_key=$(printf '%s' "$response" | jq -er \
+    '.project.project_key | select(type == "string" and length > 0)' 2>/dev/null) || return 1
+  printf '%s' "$project_key"
+}
+
 # $1 = merged source branch
 # $2 = preserve flag ("1" to skip tearing down the merged branch itself)
+# $3 = target branch used for authoritative merged/patch-equivalent evidence
+# $4 = newline-delimited closed/declared issue refs used to discover sibling work units
 cleanup_merged_worktrees() {
   local branch="$1"
   local preserve_head="${2:-0}"
+  local target="${3:-$(protected_branch)}"
+  local issue_ids="${4:-}"
   local script_dir
   script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   # dwt is vendored alongside this script in cli/
@@ -516,8 +680,7 @@ cleanup_merged_worktrees() {
   elif is_managed_docs_worktree_branch "$branch"; then
     err "${DIM_WHITE}Refusing to tear down managed docs worktree for ${branch}; promote via a proxy branch instead.${RESET}"
   else
-    # Clean the merged branch's worktree (if it has one)
-    "$dwt" "$branch" 2>/dev/null || true
+    cleanup_branch_candidate "$branch" "$target" "$issue_ids" "$dwt"
   fi
 
   # Clean __-delimited child branches (these are always disposable feature
@@ -527,10 +690,25 @@ cleanup_merged_worktrees() {
   git for-each-ref --format='%(refname:short)' 'refs/heads/' | while IFS= read -r child; do
     case "$child" in
       "${prefix}"*)
-        "$dwt" "$child" 2>/dev/null || true
+        cleanup_branch_candidate "$child" "$target" "$issue_ids" "$dwt"
         ;;
     esac
   done
+
+  # Work-unit branches for the issue(s) declared closed by this merge may be
+  # siblings with unrelated names. The ledger only supplies candidates; each
+  # branch still needs authoritative ancestry or patch-equivalence evidence.
+  if [[ -n "$issue_ids" ]]; then
+    local sibling canonical_repo_id
+    if ! canonical_repo_id=$(current_canonical_repo_id); then
+      err "${BOLD_YELLOW}Preserved sibling work-unit branches: canonical project identity could not be resolved uniquely for this checkout; destructive candidate discovery was skipped.${RESET}"
+      return 0
+    fi
+    collect_work_unit_branches "$issue_ids" "$canonical_repo_id" | sort -u | while IFS= read -r sibling; do
+      [[ -n "$sibling" && "$sibling" != "$branch" && "$sibling" != "${prefix}"* ]] || continue
+      cleanup_branch_candidate "$sibling" "$target" "$issue_ids" "$dwt"
+    done
+  fi
 }
 
 urlencode() {
@@ -591,6 +769,15 @@ collect_declared_issues() {
   local ids
   ids=$(printf '%s' "$issues_json" | jq -r '.[]' 2>/dev/null) || return 0
   printf "%s" "$ids"
+}
+
+collect_cleanup_issue_ids() {
+  local base_commit="$1"
+  {
+    collect_auto_close_issues "$base_commit"
+    printf '\n'
+    collect_declared_issues
+  } | sed '/^$/d' | sort -u
 }
 
 issue_ids_to_json() {
@@ -735,7 +922,7 @@ main() {
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
         record_auth_merge_result "$pre_merge_head"
-        cleanup_merged_worktrees "${sources[0]}" "$preserve_head"
+        cleanup_merged_worktrees "${sources[0]}" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
       fi
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
@@ -851,7 +1038,7 @@ main() {
       auth_phase "signed merge complete; running follow-up actions..."
       verify_merge_not_empty
       record_auth_merge_result "$pre_merge_head"
-      cleanup_merged_worktrees "$source" "$preserve_head"
+      cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     fi
@@ -866,7 +1053,7 @@ main() {
           auth_phase "signed merge complete; running follow-up actions..."
           verify_merge_not_empty
           record_auth_merge_result "$pre_merge_head"
-          cleanup_merged_worktrees "$source" "$preserve_head"
+          cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
           # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
           exit 0
         else
@@ -918,7 +1105,7 @@ main() {
   record_auth_merge_result "$pre_merge_head"
 
   for source in "${succeeded[@]}"; do
-    cleanup_merged_worktrees "$source" "$preserve_head"
+    cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
   done
   # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
 }
