@@ -43,6 +43,8 @@ import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
+import { registerTrashRoutes } from "./routes/trash.js";
+import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestionGracefully } from "./ingestion.js";
@@ -120,6 +122,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const authQueue = registerAuthRoutes(router);
   registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router);
+  registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
   const issueScanner = registerIssueRoutes(router, workScanner, issueDeps);
@@ -360,6 +363,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Start scheduled metadata backups
   startBackupScheduler();
+  startTrashGcScheduler(db, (level, event, fields) => logger(level, event, fields));
 
   // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
   // paced passes. Disk-reclaiming VACUUM remains an explicit maintenance task.
@@ -393,6 +397,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     sse.closeAll();
     await stopIngestionGracefully();
     stopBackupScheduler();
+    stopTrashGcScheduler();
     daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();

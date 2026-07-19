@@ -157,6 +157,79 @@ export type WorkCompareResult = {
   stat: string;
 };
 
+export type WorkAuditClassification =
+  | 'safe_candidate'
+  | 'unique_commits'
+  | 'dirty_worktree'
+  | 'protected'
+  | 'current'
+  | 'app_managed'
+  | 'unknown';
+
+export type TrashCreateRequest = {
+  project: string;
+  checkout_root: string;
+  branch: string;
+  reason: 'manual';
+  issue_refs: string[];
+};
+
+export type TrashCreateOutcome = {
+  worktree_removed: boolean;
+  branch_removed: boolean;
+  worktree_path: string | null;
+};
+
+export type TrashCreateBody = {
+  entry?: Record<string, unknown>;
+  outcome?: TrashCreateOutcome;
+  error?: string;
+  code?: string;
+  detail?: {
+    outcome?: TrashCreateOutcome;
+    [key: string]: unknown;
+  };
+};
+
+export type TrashCreateResult = {
+  ok: boolean;
+  status: number;
+  body: TrashCreateBody;
+};
+
+export type WorkAuditEntry = {
+  kind: 'branch' | 'detached_worktree';
+  branch: string | null;
+  classification: WorkAuditClassification;
+  preserve_by_default: boolean;
+  reason: string;
+  blockers: string[];
+  proof: {
+    kind: 'reachable' | 'none' | 'unknown';
+    default_branch: string | null;
+    merged: boolean | null;
+  };
+  ahead_default: number | null;
+  behind_default: number | null;
+  default_branch: string | null;
+  dirty: boolean | null;
+  status_known: boolean;
+  canonical_project: boolean;
+  canonical_project_id: string | null;
+  ambiguous_project: boolean;
+  worktree_path: string | null;
+  trash_request: TrashCreateRequest | null;
+  trash_command: string | null;
+};
+
+export type WorkRepoAudit = {
+  repo: Record<string, unknown>;
+  maintenance_issue_ref: string | null;
+  maintenance_issue_note: string;
+  worktree_inventory_known: boolean;
+  entries: WorkAuditEntry[];
+};
+
 export type UpdateInstructionDeliveryRequest = {
   targets?: InstructionTarget[];
   postExport?: string;
@@ -596,6 +669,31 @@ export async function getWorkCompare(
     `/api/work/repos/${encodeURIComponent(repoId)}/compare${buildQuery(params)}`,
   );
   return (await response.json()) as WorkCompareResult;
+}
+
+export async function getWorkRepoAudit(repoId: string): Promise<WorkRepoAudit> {
+  const response = await apiGet(`/api/work/repos/${encodeURIComponent(repoId)}/audit`);
+  return (await parseMaybeJson(response)) as WorkRepoAudit;
+}
+
+/**
+ * Move a branch/worktree into reversible custody without discarding partial
+ * outcome facts from non-2xx responses.
+ */
+export async function createTrashEntry(request: TrashCreateRequest): Promise<TrashCreateResult> {
+  const response = await fetch('/api/v1/trash', {
+    method: 'POST',
+    headers: {
+      ...DEFAULT_HEADERS,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+  const parsed = await parseMaybeJson(response);
+  const body = typeof parsed === 'object' && parsed !== null
+    ? parsed as TrashCreateBody
+    : { error: typeof parsed === 'string' ? parsed : `POST /api/v1/trash failed: ${response.status}` };
+  return { ok: response.ok, status: response.status, body };
 }
 
 export async function getIssueRepos<T>(): Promise<T[]> {

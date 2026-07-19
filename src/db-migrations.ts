@@ -2871,6 +2871,50 @@ export const MIGRATIONS: readonly Migration[] = [
     // Issue: 9ceb090 — Spaces export tracking stores canonical blob targets.
     // The historical artifact ids remain nullable read-compatibility provenance.
     statements: []
+  },
+  {
+    version: 106,
+    name: "trash_entries",
+    // Issues 5cb1eb3 / 50d4a6b — durable custody records for reversible
+    // local branch/worktree removal. Snapshot identity is immutable; lifecycle
+    // columns record restore and GC outcomes without rewriting custody facts.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS trash_entries (
+        id               TEXT PRIMARY KEY,
+        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        checkout_id      TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,
+        repo_root        TEXT NOT NULL,
+        branch           TEXT NOT NULL,
+        issue_refs_json  TEXT NOT NULL DEFAULT '[]'
+                           CHECK(json_valid(issue_refs_json) AND json_type(issue_refs_json)='array'),
+        reason           TEXT NOT NULL
+                           CHECK(reason IN ('superseded','merged','abandoned','manual')),
+        actor            TEXT NOT NULL,
+        snapshot_ref     TEXT NOT NULL UNIQUE,
+        snapshot_oid     TEXT NOT NULL,
+        original_oid     TEXT NOT NULL,
+        retention_policy TEXT NOT NULL DEFAULT 'trash-retention.v1',
+        retention_days   INTEGER NOT NULL CHECK(retention_days BETWEEN 1 AND 3650),
+        state            TEXT NOT NULL DEFAULT 'active'
+                           CHECK(state IN (
+                             'active','remove_failed','restored','expired',
+                             'restore_failed','gc_pending','gc_failed'
+                           )),
+        created_at       INTEGER NOT NULL,
+        expires_at       INTEGER NOT NULL,
+        restored_at      INTEGER,
+        expired_at       INTEGER,
+        last_error       TEXT,
+        outcome_json     TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(outcome_json) AND json_type(outcome_json)='object')
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_trash_entries_project_created
+         ON trash_entries(project_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_trash_entries_expiry
+         ON trash_entries(state, expires_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_trash_entries_branch
+         ON trash_entries(project_id, branch, created_at DESC)`
+    ]
   }
 ];
 
@@ -2938,6 +2982,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 103) {
         ensureConversationEmptyIngestColumns(db);
+      }
+      if (migration.version === 106) {
+        ensureBranchReapingKnowledgeColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5378,6 +5425,39 @@ function ensureLedgerProjectKeyColumn(db: Db): void {
       ON ledger_projects(project_key)
       WHERE project_key != ''`,
   );
+}
+
+function ensureBranchReapingKnowledgeColumns(db: Db): void {
+  const expected = [
+    "worktree_inventory_known",
+    "worktree_status_known",
+    "default_comparison_known",
+  ];
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'branches'")
+    .get();
+  if (!table) return;
+
+  for (const name of expected) {
+    const columns = db.prepare("PRAGMA table_info(branches)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+    const existing = columns.find((column) => column.name === name);
+    if (!existing) {
+      db.exec(`ALTER TABLE branches ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`);
+      continue;
+    }
+    if (
+      existing.type.toUpperCase() !== "INTEGER" ||
+      existing.notnull !== 1 ||
+      existing.dflt_value !== "0"
+    ) {
+      throw new Error(`migration 106 verification: branches.${name} has divergent definition`);
+    }
+  }
 }
 
 function hasProjectsMissingKeys(db: Db): boolean {

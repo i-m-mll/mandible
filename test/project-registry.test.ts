@@ -711,6 +711,7 @@ describe("merge move-list schema coverage (codex review #1)", () => {
     expect(moveSet.has("ledger_commit_issue_links.project_id")).toBe(true);
     expect(moveSet.has("ledger_sync_jobs.project_id")).toBe(true);
     expect(moveSet.has("ledger_reconciliation_mismatches.project_id")).toBe(true);
+    expect(moveSet.has("trash_entries.project_id")).toBe(true);
   });
 
   it("merges a source project WITH commit links cleanly (FK ON DELETE RESTRICT)", () => {
@@ -750,6 +751,50 @@ describe("merge move-list schema coverage (codex review #1)", () => {
       .prepare("SELECT project_id FROM ledger_commit_issue_links WHERE commit_sha = ?")
       .get("deadbeef") as { project_id: string };
     expect(link.project_id).toBe(projB.id);
+  });
+
+  it("repoints trash custody records while preserving their source checkout", () => {
+    const dirA = path.join(tempDir, "trash-a");
+    const dirB = path.join(tempDir, "trash-b");
+    fs.mkdirSync(dirA, { recursive: true });
+    fs.mkdirSync(dirB, { recursive: true });
+    const { project: projA, checkout: checkoutA } = resolveProjectForCheckout(db, {
+      root: dirA,
+      remoteUrl: "git@github.com:mll/trash-source.git",
+    });
+    const { project: projB } = resolveProjectForCheckout(db, {
+      root: dirB,
+      remoteUrl: "git@github.com:mll/trash-target.git",
+    });
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO trash_entries (
+         id, project_id, checkout_id, repo_root, branch, reason, actor,
+         snapshot_ref, snapshot_oid, original_oid, retention_days,
+         created_at, expires_at
+       ) VALUES (?, ?, ?, ?, ?, 'manual', 'test', ?, ?, ?, 30, ?, ?)`,
+    ).run(
+      "trash-project-merge",
+      projA.id,
+      checkoutA.id,
+      dirA,
+      "feature/trash",
+      "refs/mandible/trash/trash-project-merge",
+      "a".repeat(40),
+      "b".repeat(40),
+      now,
+      now + 30 * 24 * 60 * 60 * 1000,
+    );
+
+    const report = repairRegistry(db, { apply: true, merge: { source: projA.id, target: projB.id } });
+
+    expect(report.merge!.applied).toBe(true);
+    expect(report.merge!.foreign_key_violations).toBe(0);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    const trash = db
+      .prepare("SELECT project_id, checkout_id FROM trash_entries WHERE id = ?")
+      .get("trash-project-merge") as { project_id: string; checkout_id: string };
+    expect(trash).toEqual({ project_id: projB.id, checkout_id: checkoutA.id });
   });
 });
 

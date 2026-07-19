@@ -42,6 +42,7 @@ describe.sequential("WorkScanner", () => {
   const repoRoot = path.join(tempRoot, "repo");
   const remoteRoot = path.join(tempRoot, "remote.git");
   const worktreePath = path.join(tempRoot, "wt-feature");
+  const detachedWorktreePath = path.join(tempRoot, ".codex", "worktrees", "detached");
   const missingRepo = path.join(tempRoot, "missing");
 
   beforeAll(() => {
@@ -64,6 +65,7 @@ describe.sequential("WorkScanner", () => {
 
     run("git checkout main", repoRoot);
     run("git worktree add " + worktreePath + " feature", repoRoot);
+    run("git worktree add --detach " + detachedWorktreePath + " main", repoRoot);
 
     // Make feature branch ahead by one commit in its worktree
     writeFile(path.join(worktreePath, "feature.txt"), "feature\nlocal\n");
@@ -122,6 +124,25 @@ describe.sequential("WorkScanner", () => {
     expect(feature?.is_worktree).toBe(true);
     expect(feature?.is_dirty).toBe(true);
     expect(feature?.diff_stat).toMatch(/feature\.txt/);
+  });
+
+  it("preserves detached worktrees in the explicit inventory adapter", () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+
+    const inventory = scanner.getWorktreeInventory(repoRoot);
+    expect(inventory.known).toBe(true);
+    expect(inventory.worktrees).toContainEqual({
+      path: fs.realpathSync(repoRoot),
+      branch: "main",
+      is_current: true,
+    });
+    expect(inventory.worktrees).toContainEqual({
+      path: fs.realpathSync(detachedWorktreePath),
+      branch: null,
+      is_current: false,
+    });
   });
 
   it("computes ahead/behind counts", () => {
@@ -246,7 +267,7 @@ describe.sequential("WorkScanner", () => {
     ]);
   });
 
-  it("rescans update cached data", () => {
+  it("targeted repo refresh updates cached data", () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
     scanner.scanAll();
@@ -256,7 +277,7 @@ describe.sequential("WorkScanner", () => {
 
     run("git reset --hard", worktreePath);
 
-    scanner.scanAll();
+    scanner.refreshRepo(repoRoot);
     feature = scanner.getBranch(repoRoot, "feature");
     expect(feature?.is_dirty).toBe(false);
   });

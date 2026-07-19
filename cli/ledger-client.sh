@@ -44,6 +44,10 @@ mandible_ledger_request() {
     return 0
   fi
 
+  if [[ -n "${MANDIBLE_LEDGER_ERROR_BODY_FILE:-}" ]]; then
+    cp "$tmp_response" "$MANDIBLE_LEDGER_ERROR_BODY_FILE"
+  fi
+
   if [[ "$graceful" == "1" || "$graceful" == "true" ]]; then
     mandible_ledger_err "Mandible ledger request skipped (${method} ${request_path}, status ${status:-unreachable})"
     rm -f "$tmp_response"
@@ -201,6 +205,126 @@ mandible_work_unit_release() {
   local payload
   payload=$(mandible_ledger_payload_base "$issue_id" "$repo_id")
   mandible_ledger_request POST "/api/work-units/release" "$payload" "$graceful"
+}
+
+mandible_trash_list() {
+  local project="" state=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --project) project="${2:-}"; shift 2 ;;
+      --state) state="${2:-}"; shift 2 ;;
+      *) mandible_ledger_die "Unknown trash list option: $1" 2; return $? ;;
+    esac
+  done
+
+  mandible_ledger_require_tools || return $?
+  local query=""
+  [[ -z "$project" ]] || query="project=$(mandible_ledger_urlencode "$project")"
+  if [[ -n "$state" ]]; then
+    [[ -z "$query" ]] || query="${query}&"
+    query="${query}state=$(mandible_ledger_urlencode "$state")"
+  fi
+  [[ -z "$query" ]] || query="?${query}"
+  mandible_ledger_request GET "/api/v1/trash${query}"
+}
+
+mandible_trash_create() {
+  local project="" branch="" reason="" actor="" checkout_root="" retention_days=""
+  local issue_refs='[]'
+  while (( $# > 0 )); do
+    case "$1" in
+      --project) project="${2:-}"; shift 2 ;;
+      --branch) branch="${2:-}"; shift 2 ;;
+      --reason) reason="${2:-}"; shift 2 ;;
+      --actor) actor="${2:-}"; shift 2 ;;
+      --checkout-root) checkout_root="${2:-}"; shift 2 ;;
+      --retention-days) retention_days="${2:-}"; shift 2 ;;
+      --issue|--issue-ref)
+        issue_refs=$(printf '%s' "$issue_refs" | jq --arg value "${2:-}" '. + [$value]')
+        shift 2
+        ;;
+      *) mandible_ledger_die "Unknown trash create option: $1" 2; return $? ;;
+    esac
+  done
+
+  [[ -n "$project" ]] || mandible_ledger_die "Missing --project" 2 || return $?
+  [[ -n "$branch" ]] || mandible_ledger_die "Missing --branch" 2 || return $?
+  case "$reason" in
+    superseded|merged|abandoned|manual) ;;
+    "") mandible_ledger_die "Missing --reason" 2; return $? ;;
+    *) mandible_ledger_die "Invalid --reason (expected superseded, merged, abandoned, or manual)" 2; return $? ;;
+  esac
+  if [[ -n "$retention_days" && ( ! "$retention_days" =~ ^[0-9]+$ || "$retention_days" -lt 1 || "$retention_days" -gt 3650 ) ]]; then
+    mandible_ledger_die "Invalid --retention-days (expected an integer from 1 to 3650)" 2
+    return $?
+  fi
+  mandible_ledger_require_tools || return $?
+
+  local payload
+  payload=$(jq -n \
+    --arg project "$project" \
+    --arg branch "$branch" \
+    --arg reason "$reason" \
+    --arg actor "$actor" \
+    --arg checkout_root "$checkout_root" \
+    --arg retention_days "$retention_days" \
+    --argjson issue_refs "$issue_refs" \
+    '{project:$project, branch:$branch, reason:$reason}
+     + (if $actor != "" then {actor:$actor} else {} end)
+     + (if $checkout_root != "" then {checkout_root:$checkout_root} else {} end)
+     + (if ($issue_refs | length) > 0 then {issue_refs:$issue_refs} else {} end)
+     + (if $retention_days != "" then {retention_days:($retention_days | tonumber)} else {} end)')
+  mandible_ledger_request POST "/api/v1/trash" "$payload"
+}
+
+mandible_trash_restore() {
+  local id="" worktree_path="" actor=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --id) id="${2:-}"; shift 2 ;;
+      --worktree-path) worktree_path="${2:-}"; shift 2 ;;
+      --actor) actor="${2:-}"; shift 2 ;;
+      *) mandible_ledger_die "Unknown trash restore option: $1" 2; return $? ;;
+    esac
+  done
+
+  [[ -n "$id" ]] || mandible_ledger_die "Missing --id" 2 || return $?
+  mandible_ledger_require_tools || return $?
+  local payload
+  payload=$(jq -n --arg worktree_path "$worktree_path" --arg actor "$actor" \
+    '{}
+     + (if $worktree_path != "" then {worktree_path:$worktree_path} else {} end)
+     + (if $actor != "" then {actor:$actor} else {} end)')
+  mandible_ledger_request POST "/api/v1/trash/$(mandible_ledger_urlencode "$id")/restore" "$payload"
+}
+
+mandible_trash_gc() {
+  local now="" limit="" actor=""
+  while (( $# > 0 )); do
+    case "$1" in
+      --now) now="${2:-}"; shift 2 ;;
+      --limit) limit="${2:-}"; shift 2 ;;
+      --actor) actor="${2:-}"; shift 2 ;;
+      *) mandible_ledger_die "Unknown trash gc option: $1" 2; return $? ;;
+    esac
+  done
+
+  if [[ -n "$now" && ! "$now" =~ ^[0-9]+$ ]]; then
+    mandible_ledger_die "Invalid --now (expected an integer timestamp in milliseconds)" 2
+    return $?
+  fi
+  if [[ -n "$limit" && ( ! "$limit" =~ ^[0-9]+$ || "$limit" -lt 1 || "$limit" -gt 1000 ) ]]; then
+    mandible_ledger_die "Invalid --limit (expected an integer from 1 to 1000)" 2
+    return $?
+  fi
+  mandible_ledger_require_tools || return $?
+  local payload
+  payload=$(jq -n --arg now "$now" --arg limit "$limit" --arg actor "$actor" \
+    '{}
+     + (if $now != "" then {now:($now | tonumber)} else {} end)
+     + (if $limit != "" then {limit:($limit | tonumber)} else {} end)
+     + (if $actor != "" then {actor:$actor} else {} end)')
+  mandible_ledger_request POST "/api/v1/trash/gc" "$payload"
 }
 
 mandible_issue_title() {
