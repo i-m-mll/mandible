@@ -183,6 +183,15 @@ interface WorktreeInfo {
   branch: string | null;
 }
 
+export interface WorktreeInventory {
+  worktrees: Array<{
+    path: string;
+    branch: string | null;
+    is_current: boolean;
+  }>;
+  known: boolean;
+}
+
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
 
 // Issue 70cf59d — ephemeral sandbox/container mount prefixes.
@@ -512,6 +521,14 @@ function fromDbBool(value: number): boolean {
   return value === 1;
 }
 
+function pathsReferToSameLocation(left: string, right: string): boolean {
+  try {
+    return fs.realpathSync(left) === fs.realpathSync(right);
+  } catch {
+    return path.resolve(left) === path.resolve(right);
+  }
+}
+
 function compareValue(a: unknown, b: unknown): boolean {
   return a === b;
 }
@@ -721,6 +738,18 @@ export class WorkScanner {
       }));
   }
 
+  getWorktreeInventory(repoRoot: string): WorktreeInventory {
+    const inventory = this.listWorktrees(repoRoot);
+    return {
+      known: inventory.known,
+      worktrees: inventory.worktrees.map((worktree) => ({
+        path: worktree.path,
+        branch: worktree.branch,
+        is_current: pathsReferToSameLocation(worktree.path, repoRoot),
+      })),
+    };
+  }
+
   getCommits(
     repoRoot: string,
     branch: string,
@@ -878,6 +907,28 @@ export class WorkScanner {
 
   async scanAllAsync(): Promise<ScanSummary> {
     return this.scanAll();
+  }
+
+  refreshRepo(idOrPath: string): RepoInfo {
+    const repo = this.getRepoById(idOrPath);
+    if (!repo) {
+      throw new Error("repo not found");
+    }
+    if (!fs.existsSync(repo.root) || !this.isGitRepo(repo.root)) {
+      throw new Error("repository is unavailable or is not a Git repository");
+    }
+
+    this.scanRepo(repo.root, repo.id);
+    const scanNow = new Date().toISOString();
+    this.db.prepare(
+      "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?",
+    ).run(scanNow, scanNow, repo.root);
+    const refreshed = { ...repo, exists: true, last_scanned_at: scanNow };
+    const index = this.repoInfos.findIndex((candidate) => candidate.root === repo.root);
+    if (index >= 0) {
+      this.repoInfos[index] = refreshed;
+    }
+    return refreshed;
   }
 
   updateRepo(id: string, patch: { name?: string; excluded?: boolean }): RepoInfo | null {
