@@ -5667,12 +5667,43 @@ function assertMigration104Preconditions(db: Db): void {
       WHERE aa.resolution_status = 'resolved'
         AND (
           aa.artifact_id IS NULL OR
-          (SELECT COUNT(*)
-             FROM artifacts legacy_blob
-             JOIN artifact_blob canonical_blob
-               ON canonical_blob.algorithm = legacy_blob.algorithm
-              AND canonical_blob.content_hash = legacy_blob.content_hash
-            WHERE legacy_blob.id = aa.artifact_id) != 1
+          COALESCE(
+            (SELECT COUNT(*)
+               FROM artifacts legacy_blob
+               JOIN artifact_blob canonical_blob
+                 ON canonical_blob.algorithm = legacy_blob.algorithm
+                AND canonical_blob.content_hash = legacy_blob.content_hash
+              WHERE legacy_blob.id = aa.artifact_id),
+            0
+          ) +
+          CASE WHEN EXISTS (
+            SELECT 1
+              FROM artifacts legacy_blob
+             WHERE legacy_blob.id = aa.artifact_id
+               AND aa.scheme = 'repo'
+               AND aa.normalized_ref = legacy_blob.uri
+               AND legacy_blob.algorithm = 'ref-sha256'
+               AND legacy_blob.id = 'artifact:ref:' || legacy_blob.content_hash
+               AND NOT EXISTS (
+                 SELECT 1
+                   FROM artifact_blob canonical_blob
+                  WHERE canonical_blob.algorithm = legacy_blob.algorithm
+                    AND canonical_blob.content_hash = legacy_blob.content_hash
+               )
+          ) THEN (
+            SELECT COUNT(*)
+              FROM artifacts recovered_artifact
+              JOIN artifact_blob recovered_blob
+                ON recovered_blob.algorithm = recovered_artifact.algorithm
+               AND recovered_blob.content_hash = recovered_artifact.content_hash
+              JOIN artifacts legacy_blob ON legacy_blob.id = aa.artifact_id
+             WHERE recovered_artifact.uri = legacy_blob.uri
+               AND recovered_artifact.algorithm = 'sha256'
+               AND recovered_artifact.id =
+                 'artifact:sha256:' || recovered_artifact.content_hash
+               AND recovered_blob.id =
+                 'artifact-blob:' || recovered_artifact.content_hash
+          ) ELSE 0 END != 1
         )
       ORDER BY aa.id`,
   );
@@ -5696,12 +5727,29 @@ function assertMigration104Preconditions(db: Db): void {
        FROM artifact_links link
       WHERE link.link_kind = 'living'
         AND (
-          link.series_id IS NULL OR
-          (SELECT COUNT(*)
-             FROM artifact_series legacy_series
-             JOIN artifact canonical_artifact
-               ON canonical_artifact.identity_key = legacy_series.series_key
-            WHERE legacy_series.id = link.series_id) != 1
+          (link.series_id IS NOT NULL AND
+           (SELECT COUNT(*)
+              FROM artifact_series legacy_series
+              JOIN artifact canonical_artifact
+                ON canonical_artifact.identity_key = legacy_series.series_key
+             WHERE legacy_series.id = link.series_id) != 1)
+          OR
+          (link.series_id IS NULL AND NOT EXISTS (
+            SELECT 1
+              FROM artifacts legacy_blob
+              JOIN artifact_blob canonical_blob
+                ON canonical_blob.algorithm = legacy_blob.algorithm
+               AND canonical_blob.content_hash = legacy_blob.content_hash
+              JOIN artifact_version fallback_version
+                ON fallback_version.id = link.fallback_version_id
+               AND fallback_version.blob_id = canonical_blob.id
+               AND fallback_version.content_hash = canonical_blob.content_hash
+              JOIN artifact canonical_artifact
+                ON canonical_artifact.id = link.target_id
+               AND fallback_version.artifact_id = canonical_artifact.id
+             WHERE legacy_blob.id = link.artifact_id
+               AND link.target_type = 'artifact'
+          ))
         )
       ORDER BY link.id`,
   );
@@ -5733,10 +5781,23 @@ function assertMigration104Preconditions(db: Db): void {
                     SELECT content_hash FROM artifact_blob WHERE id = mapped_blob_id
                   )
              ))
-         OR (link_kind = 'living' AND (
+         OR (link_kind = 'living' AND series_id IS NOT NULL AND (
                mapped_artifact_id IS NULL OR
                (target_type IS NOT NULL AND
                 (target_type != 'artifact' OR target_id != mapped_artifact_id))
+             ))
+         OR (link_kind = 'living' AND series_id IS NULL AND NOT EXISTS (
+               SELECT 1
+                 FROM artifact_version fallback_version
+                 JOIN artifact canonical_artifact
+                   ON canonical_artifact.id = target_id
+                  AND fallback_version.artifact_id = canonical_artifact.id
+                WHERE target_type = 'artifact'
+                  AND fallback_version.id = fallback_version_id
+                  AND fallback_version.blob_id = mapped_blob_id
+                  AND fallback_version.content_hash = (
+                    SELECT content_hash FROM artifact_blob WHERE id = mapped_blob_id
+                  )
              ))
          OR (link_kind = 'pinned' AND target_type IS NOT NULL AND NOT (
                (target_type = 'artifact_blob' AND target_id = mapped_blob_id) OR
@@ -5994,14 +6055,32 @@ function rebuildArtifactCanonicalTargets(db: Db): void {
           resolution_status, source, created_at, updated_at
         )
         SELECT alias.id, alias.artifact_id,
-               CASE WHEN alias.resolution_status = 'resolved' THEN canonical_blob.id END,
+               CASE WHEN alias.resolution_status = 'resolved'
+                 THEN COALESCE(canonical_blob.id, recovered_blob.id)
+               END,
                alias.scheme, alias.alias, alias.normalized_ref, alias.locator_json,
                alias.resolution_status, alias.source, alias.created_at, alias.updated_at
           FROM artifact_aliases alias
           LEFT JOIN artifacts legacy_blob ON legacy_blob.id = alias.artifact_id
           LEFT JOIN artifact_blob canonical_blob
             ON canonical_blob.algorithm = legacy_blob.algorithm
-           AND canonical_blob.content_hash = legacy_blob.content_hash;
+           AND canonical_blob.content_hash = legacy_blob.content_hash
+          LEFT JOIN artifacts recovered_artifact
+            ON recovered_artifact.uri = legacy_blob.uri
+           AND alias.resolution_status = 'resolved'
+           AND alias.scheme = 'repo'
+           AND alias.normalized_ref = legacy_blob.uri
+           AND legacy_blob.algorithm = 'ref-sha256'
+           AND legacy_blob.id = 'artifact:ref:' || legacy_blob.content_hash
+           AND recovered_artifact.algorithm = 'sha256'
+           AND recovered_artifact.id =
+             'artifact:sha256:' || recovered_artifact.content_hash
+           AND canonical_blob.id IS NULL
+          LEFT JOIN artifact_blob recovered_blob
+            ON recovered_blob.algorithm = recovered_artifact.algorithm
+           AND recovered_blob.content_hash = recovered_artifact.content_hash
+           AND recovered_blob.id =
+             'artifact-blob:' || recovered_artifact.content_hash;
 
         INSERT INTO artifact_links_v104 (
           id, artifact_id, blob_id, entity_type, entity_id, link_type, role,
@@ -6019,7 +6098,7 @@ function rebuildArtifactCanonicalTargets(db: Db): void {
                  ELSE 'artifact_blob'
                END,
                CASE
-                 WHEN link.link_kind = 'living' THEN canonical_artifact.id
+                 WHEN link.link_kind = 'living' THEN COALESCE(canonical_artifact.id, link.target_id)
                  WHEN link.target_type = 'artifact_version' THEN link.target_id
                  ELSE canonical_blob.id
                END,
