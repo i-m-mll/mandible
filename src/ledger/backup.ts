@@ -103,6 +103,10 @@ export const METADATA_BACKUP_TABLES = [
   // a backup round-trip. Omitting it from this list would orphan tracked documents.
   "space_exports",
   ...LEDGER_BACKUP_TABLES,
+  // Reversible local cleanup custody. Project/checkout parents are emitted by
+  // LEDGER_BACKUP_TABLES first; refs remain in Git while this preserves the
+  // authoritative lifecycle and retention record.
+  "trash_entries",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

@@ -24,6 +24,7 @@
 #   claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
 #   instructions <subcommand>        Install or diff the Mandible instruction fragment
 #   work-unit <subcommand>           Policy-free work-unit lifecycle client
+#   trash <subcommand>               Reversible branch/worktree trash custody
 #   issue-file <subcommand>          Read/write the .issue helper file
 #   commit trailer [issue...]        Render Mandible-Issue trailers
 #   session link-issue <id> ...      Link sessions to issues
@@ -65,6 +66,7 @@ Commands:
   claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
   instructions <subcommand>        Install or diff the Mandible instruction fragment
   work-unit <subcommand>           Policy-free work-unit lifecycle client
+  trash <subcommand>               Reversible branch/worktree trash custody
   issue-file <subcommand>          Read/write the .issue helper file
   commit trailer [issue...]        Render Mandible-Issue trailers
   commit linked --issue <id> ...   Agent-key linked commit (Mandible-Issue trailers)
@@ -116,6 +118,7 @@ case "${1:-}" in
   claude-integration) shift; exec "$MANDIBLE_CLI_DIR/claude-integration.sh" "$@" ;;
   instructions) shift; exec "$MANDIBLE_CLI_DIR/instructions.sh" "$@" ;;
   work-unit) shift; exec "$MANDIBLE_CLI_DIR/work-unit.sh" "$@" ;;
+  trash) shift; exec "$MANDIBLE_CLI_DIR/trash.sh" "$@" ;;
   issue-file) shift; exec "$MANDIBLE_CLI_DIR/issue-file.sh" "$@" ;;
   commit) shift; exec "$MANDIBLE_CLI_DIR/commit.sh" "$@" ;;
   session) shift; exec "$MANDIBLE_CLI_DIR/session.sh" "$@" ;;

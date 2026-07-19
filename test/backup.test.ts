@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 
@@ -233,5 +234,75 @@ describe("backup routes", () => {
     expect(dump).toContain("-- Table: project_artifact_associations");
     expect(dump).toContain("idx_artifact_version_blob");
     expect(dump).toContain("idx_project_artifact_assoc_target");
+  });
+
+  it("round-trips an actual trash custody row with canonical parents", async () => {
+    const { db } = await setupBackupRoutes();
+    const { buildMetadataBackupSql } = await import("../src/ledger/backup.js");
+    db.prepare(
+      `INSERT INTO ledger_projects
+        (id, project_key, display_name, remote_identity, upstream_identity,
+         namespace_policy, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run("prj_trash_backup", "trash-backup", "Trash Backup", "local:trash", "", "local", 1, 1);
+    db.prepare(
+      `INSERT INTO ledger_project_checkouts
+        (id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "checkout_trash_backup",
+      "prj_trash_backup",
+      "trash-backup-local",
+      "/registered/trash-backup",
+      "trash-backup",
+      "main",
+      "",
+      1,
+      1,
+    );
+    db.prepare(
+      `INSERT INTO trash_entries (
+        id, project_id, checkout_id, repo_root, branch, issue_refs_json,
+        reason, actor, snapshot_ref, snapshot_oid, original_oid,
+        retention_policy, retention_days, state, created_at, expires_at, outcome_json
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "trash-backup-row",
+      "prj_trash_backup",
+      "checkout_trash_backup",
+      "/registered/trash-backup",
+      "feature/custodied",
+      '["5cb1eb3"]',
+      "superseded",
+      "backup-test",
+      "refs/mandible/trash/trash-backup-row",
+      "a".repeat(40),
+      "b".repeat(40),
+      "trash-retention.v1",
+      30,
+      "gc_pending",
+      1,
+      2,
+      '{"worktree_removed":true,"branch_removed":true}',
+    );
+
+    const restored = new Database(":memory:");
+    try {
+      restored.exec(buildMetadataBackupSql(db));
+      expect(restored.prepare(
+        `SELECT project_id, checkout_id, branch, snapshot_ref, state, outcome_json
+           FROM trash_entries WHERE id = ?`,
+      ).get("trash-backup-row")).toEqual({
+        project_id: "prj_trash_backup",
+        checkout_id: "checkout_trash_backup",
+        branch: "feature/custodied",
+        snapshot_ref: "refs/mandible/trash/trash-backup-row",
+        state: "gc_pending",
+        outcome_json: '{"worktree_removed":true,"branch_removed":true}',
+      });
+      expect(restored.pragma("foreign_key_check")).toEqual([]);
+    } finally {
+      restored.close();
+    }
   });
 });
