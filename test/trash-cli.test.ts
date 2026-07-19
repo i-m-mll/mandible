@@ -35,7 +35,10 @@ function run(
   });
 }
 
-function listen(options: { trashPartialFailure?: boolean } = {}): Promise<{ port: number; requests: CapturedRequest[] }> {
+function listen(options: {
+  trashPartialFailure?: boolean;
+  trashBranchOnly?: boolean;
+} = {}): Promise<{ port: number; requests: CapturedRequest[] }> {
   const requests: CapturedRequest[] = [];
   server = http.createServer((req, res) => {
     let raw = "";
@@ -63,6 +66,18 @@ function listen(options: { trashPartialFailure?: boolean } = {}): Promise<{ port
                 branch_removed: false,
                 worktree_path: "/registered/repo/worktrees/feature__demo",
               },
+            },
+          }));
+          return;
+        }
+        if (options.trashBranchOnly) {
+          res.statusCode = 201;
+          res.end(JSON.stringify({
+            entry: { id: "trash-1", branch: "feature/demo", state: "active" },
+            outcome: {
+              worktree_removed: false,
+              branch_removed: true,
+              worktree_path: null,
             },
           }));
           return;
@@ -193,5 +208,18 @@ describe("trash CLI", () => {
     expect(result.stderr).toContain("Trash custody incomplete");
     expect(result.stderr).toContain("worktree path /registered/repo/worktrees/feature__demo is gone");
     expect(result.stderr).toContain("No further work may happen there");
+  });
+
+  it("reports branch-only success without claiming that a worktree path is gone", async () => {
+    const { port } = await listen({ trashBranchOnly: true });
+    const result = await run([
+      "trash", "create", "--project", "mandible", "--branch", "feature/demo",
+      "--reason", "merged", "--checkout-root", "/registered/repo",
+    ], port);
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("normal branch ref is gone");
+    expect(result.stderr).not.toContain("worktree path");
+    expect(result.stderr).not.toContain("No further work may happen there");
   });
 });

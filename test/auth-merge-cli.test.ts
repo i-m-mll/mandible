@@ -597,6 +597,36 @@ describe("auth merge reversible cleanup", () => {
     });
   });
 
+  it("detects submodule-only dirtiness even when repository config hides it", () => {
+    const submoduleSource = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-submodule-"));
+    try {
+      git(["init", "-b", "main"], submoduleSource);
+      git(["config", "user.name", "Auth Merge Test"], submoduleSource);
+      git(["config", "user.email", "auth-merge@example.invalid"], submoduleSource);
+      commitFile(submoduleSource, "nested.txt", "base\n");
+
+      const branch = "feature/submodule-dirty";
+      const worktree = createFeatureWorktree(branch);
+      git([
+        "-c", "protocol.file.allow=always", "submodule", "add", submoduleSource, "module",
+      ], worktree);
+      git(["commit", "-m", "add submodule"], worktree);
+      git(["merge", "--no-ff", "--no-edit", branch], tempDir);
+      git(["config", "diff.ignoreSubmodules", "all"], tempDir);
+      fs.writeFileSync(path.join(worktree, "module", "nested.txt"), "dirty nested bytes\n", "utf8");
+
+      expect(git(["status", "--porcelain"], worktree)).toBe("");
+      const result = runCleanupHelper(
+        `branch_worktree_status ${JSON.stringify(branch)}`,
+        tempDir,
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("module");
+    } finally {
+      fs.rmSync(submoduleSource, { recursive: true, force: true });
+    }
+  });
+
   it("reaps a differently named patch-equivalent sibling work-unit branch", async () => {
     const { port, requests } = await listenForCleanup();
     const sibling = "feature/sibling";

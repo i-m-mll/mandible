@@ -293,18 +293,28 @@ function snapshotWorktree(
   });
 }
 
-function gitlinkPaths(cwd: string, env?: NodeJS.ProcessEnv): Set<string> {
+function indexGitlinks(cwd: string, env?: NodeJS.ProcessEnv): Map<string, string> {
   const output = git(cwd, ["ls-files", "--stage", "-z"], { env });
-  const paths = new Set<string>();
+  const gitlinks = new Map<string, string>();
   for (const record of output.split("\0")) {
-    const match = record.match(/^160000 [0-9a-f]+ [0-3]\t([\s\S]+)$/);
-    if (match) paths.add(match[1]);
+    const match = record.match(/^160000 ([0-9a-f]+) [0-3]\t([\s\S]+)$/);
+    if (match) gitlinks.set(match[2], match[1]);
   }
-  return paths;
+  return gitlinks;
 }
 
-function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Set<string>): void {
-  for (const relativePath of gitlinks) {
+function commitGitlinks(cwd: string, commitOid: string): Map<string, string> {
+  const output = git(cwd, ["ls-tree", "-r", "-z", commitOid]);
+  const gitlinks = new Map<string, string>();
+  for (const record of output.split("\0")) {
+    const match = record.match(/^160000 commit ([0-9a-f]+)\t([\s\S]+)$/);
+    if (match) gitlinks.set(match[2], match[1]);
+  }
+  return gitlinks;
+}
+
+function assertTrackedGitlinksClean(worktreePath: string, gitlinks: Map<string, string>): void {
+  for (const relativePath of gitlinks.keys()) {
     const nestedPath = path.join(worktreePath, relativePath);
     if (!fs.existsSync(path.join(nestedPath, ".git"))) continue;
     const result = spawnSync(
@@ -350,18 +360,32 @@ function captureWorktreeTree(
   const indexPath = path.join(os.tmpdir(), `mandible-trash-index-${entryId}`);
   const env = { GIT_INDEX_FILE: indexPath };
   try {
-    const originalGitlinks = gitlinkPaths(worktreePath);
+    const originalGitlinks = commitGitlinks(worktreePath, originalOid);
     assertTrackedGitlinksClean(worktreePath, originalGitlinks);
     git(worktreePath, ["read-tree", originalOid], { env });
     git(worktreePath, ["add", "-A", "--", "."], { env });
-    const capturedGitlinks = gitlinkPaths(worktreePath, env);
-    const embedded = [...capturedGitlinks].filter((candidate) => !originalGitlinks.has(candidate));
+    const capturedGitlinks = indexGitlinks(worktreePath, env);
+    const embedded = [...capturedGitlinks.keys()].filter((candidate) => !originalGitlinks.has(candidate));
     if (embedded.length > 0) {
       throw new TrashServiceError(
         `embedded repositories cannot be snapshotted losslessly: ${embedded.join(", ")}`,
         "embedded_repository",
         409,
         { paths: embedded },
+      );
+    }
+    const advanced = [...capturedGitlinks].flatMap(([gitlinkPath, capturedOid]) => {
+      const originalGitlinkOid = originalGitlinks.get(gitlinkPath);
+      return originalGitlinkOid && originalGitlinkOid !== capturedOid
+        ? [{ path: gitlinkPath, original_oid: originalGitlinkOid, captured_oid: capturedOid }]
+        : [];
+    });
+    if (advanced.length > 0) {
+      throw new TrashServiceError(
+        `advanced tracked gitlinks cannot be snapshotted losslessly: ${advanced.map((item) => item.path).join(", ")}`,
+        "advanced_gitlink",
+        409,
+        { gitlinks: advanced },
       );
     }
     const tree = git(worktreePath, ["write-tree"], { env });
@@ -712,6 +736,37 @@ export interface TrashGcOutcome {
   error?: string;
 }
 
+type ExactRefProbe =
+  | { status: "present"; oid: string }
+  | { status: "absent" }
+  | { status: "unknown"; error: string };
+
+function probeExactRef(repoRoot: string, ref: string): ExactRefProbe {
+  const result = spawnSync("git", [
+    "for-each-ref", "--format=%(refname)%00%(objectname)", ref,
+  ], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  if (result.error) return { status: "unknown", error: result.error.message };
+  if (result.status !== 0) {
+    return {
+      status: "unknown",
+      error: (result.stderr || result.stdout || `git for-each-ref exited ${result.status}`).trim(),
+    };
+  }
+  const exact = result.stdout.split("\n").map((line) => line.trim()).find((line) => {
+    const separator = line.indexOf("\0");
+    return separator >= 0 && line.slice(0, separator) === ref;
+  });
+  if (!exact) return { status: "absent" };
+  const oid = exact.slice(exact.indexOf("\0") + 1);
+  return oid
+    ? { status: "present", oid }
+    : { status: "unknown", error: "exact ref probe returned no object id" };
+}
+
 export function gcTrashEntries(
   db: Db,
   options: { now?: number; limit?: number; actor?: string } = {},
@@ -729,18 +784,24 @@ export function gcTrashEntries(
   for (const row of rows) {
     const entry = mapRow(row);
     let refDeleted = false;
+    let pendingRecorded = entry.state === "gc_pending";
     try {
       if (!fs.existsSync(entry.repo_root)) {
         throw new TrashServiceError("registered checkout is missing", "checkout_missing", 404);
       }
-      const live = git(entry.repo_root, ["rev-parse", "--verify", entry.snapshot_ref], {
-        allowFailure: true,
-      });
-      if (!live && entry.state !== "gc_pending") {
+      const probe = probeExactRef(entry.repo_root, entry.snapshot_ref);
+      if (probe.status === "unknown") {
+        throw new TrashServiceError(
+          `cannot inspect trash snapshot ref: ${probe.error}`,
+          "snapshot_probe_unknown",
+          409,
+        );
+      }
+      if (probe.status === "absent" && entry.state !== "gc_pending") {
         throw new TrashServiceError("trash snapshot ref is missing", "snapshot_missing", 404);
       }
-      if (live !== entry.snapshot_oid) {
-        if (!live && entry.state === "gc_pending") {
+      if (probe.status === "absent") {
+        if (entry.state === "gc_pending") {
           db.prepare(
             `UPDATE trash_entries
                 SET state = 'expired', expired_at = ?, last_error = NULL, outcome_json = ?
@@ -752,12 +813,14 @@ export function gcTrashEntries(
           outcomes.push({ id: entry.id, status: "expired" });
           continue;
         }
+      } else if (probe.oid !== entry.snapshot_oid) {
         throw new TrashServiceError("trash snapshot ref no longer matches its record", "snapshot_mismatch", 409);
       }
       if (entry.state !== "gc_pending") {
         db.prepare(
           "UPDATE trash_entries SET state = 'gc_pending', last_error = NULL WHERE id = ?",
         ).run(entry.id);
+        pendingRecorded = true;
       }
       git(entry.repo_root, ["update-ref", "-d", entry.snapshot_ref, entry.snapshot_oid]);
       refDeleted = true;
@@ -769,7 +832,15 @@ export function gcTrashEntries(
       outcomes.push({ id: entry.id, status: "expired" });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (!refDeleted) {
+      if (pendingRecorded) {
+        try {
+          db.prepare("UPDATE trash_entries SET last_error = ? WHERE id = ? AND state = 'gc_pending'")
+            .run(message, entry.id);
+        } catch {
+          // The durable pending transition remains authoritative even if the
+          // diagnostic write also fails; a later GC pass can replay it.
+        }
+      } else if (!refDeleted) {
         db.prepare("UPDATE trash_entries SET state = 'gc_failed', last_error = ? WHERE id = ?")
           .run(message, entry.id);
       }

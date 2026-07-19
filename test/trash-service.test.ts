@@ -223,6 +223,37 @@ describe.sequential("trash custody", () => {
     expect(listTrashEntries(db)).toEqual([]);
   });
 
+  it("rejects a clean tracked submodule advanced to an uncustodied local commit", () => {
+    const submoduleRepo = path.join(tempDir, "advanced-submodule-source");
+    fs.mkdirSync(submoduleRepo);
+    git(submoduleRepo, ["init", "-b", "main"]);
+    git(submoduleRepo, ["config", "user.name", "Trash Test"]);
+    git(submoduleRepo, ["config", "user.email", "trash-test@example.invalid"]);
+    fs.writeFileSync(path.join(submoduleRepo, "nested.txt"), "base\n");
+    git(submoduleRepo, ["add", "nested.txt"]);
+    git(submoduleRepo, ["commit", "-m", "nested base"]);
+    git(featureWorktree, [
+      "-c", "protocol.file.allow=always", "submodule", "add", submoduleRepo, "module",
+    ]);
+    git(featureWorktree, ["commit", "-am", "add submodule"]);
+
+    const modulePath = path.join(featureWorktree, "module");
+    git(modulePath, ["config", "user.name", "Trash Test"]);
+    git(modulePath, ["config", "user.email", "trash-test@example.invalid"]);
+    fs.writeFileSync(path.join(modulePath, "nested.txt"), "local commit only\n");
+    git(modulePath, ["add", "nested.txt"]);
+    git(modulePath, ["commit", "-m", "uncustodied local commit"]);
+    expect(git(modulePath, ["status", "--porcelain"])).toBe("");
+
+    expect(() => createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "manual",
+    })).toThrow(/advanced tracked gitlinks/);
+    expect(fs.existsSync(featureWorktree)).toBe(true);
+    expect(listTrashEntries(db)).toEqual([]);
+  });
+
   it("rejects an untracked embedded repository before removing the worktree", () => {
     const embedded = path.join(featureWorktree, "embedded");
     fs.mkdirSync(embedded);
@@ -397,6 +428,29 @@ describe.sequential("trash custody", () => {
       state: "expired",
       outcome: { replayed_pending: true },
     });
+  });
+
+  it("preserves gc_pending when the exact snapshot ref cannot be inspected", () => {
+    const created = createTrashEntry(db, {
+      project: "trash-test",
+      branch: "feature/trash",
+      reason: "merged",
+      retention_days: 1,
+    }, 1_000);
+    const nonRepoRoot = path.join(tempDir, "not-a-repository");
+    fs.mkdirSync(nonRepoRoot);
+    db.prepare("UPDATE trash_entries SET state = 'gc_pending', repo_root = ? WHERE id = ?")
+      .run(nonRepoRoot, created.entry.id);
+
+    expect(gcTrashEntries(db, { now: 86_401_001 })).toMatchObject({ expired: 0, failed: 1 });
+    expect(listTrashEntries(db)[0]).toMatchObject({
+      state: "gc_pending",
+      expired_at: null,
+      last_error: expect.stringContaining("cannot inspect trash snapshot ref"),
+    });
+    expect(git(repoRoot, ["show-ref", "--verify", created.entry.snapshot_ref])).toContain(
+      created.entry.snapshot_oid,
+    );
   });
 
   it("uses the canonical checkout default for scanner reaping facts", () => {

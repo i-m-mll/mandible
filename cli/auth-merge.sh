@@ -513,7 +513,7 @@ branch_worktree_status() {
   local wt
   wt="$(branch_worktree_path "$branch")"
   [[ -n "$wt" && -d "$wt" ]] || return 0
-  git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null
+  git -C "$wt" status --porcelain --untracked-files=all --ignore-submodules=none 2>/dev/null
 }
 
 branch_reap_proof() {
