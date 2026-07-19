@@ -2,7 +2,7 @@ import path from "node:path";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, resolvePrefix } from "../db.js";
 import type { IssueScanner } from "../issue-scanner.js";
-import { listLedgerIssueSummaries } from "../ledger/issue-migration.js";
+import { listLedgerIssueSummaries } from "../ledger/issue-projection.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { RouteOptions } from "../server.js";
@@ -15,6 +15,7 @@ import {
   type WorkUnitLiveness,
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
+import { sendJson } from "./http.js";
 
 // Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
 // primary "needs attention" signal. Auth results and continuations remain.
@@ -57,27 +58,6 @@ function getBody(req: unknown): Record<string, unknown> | null {
     return record.body as Record<string, unknown>;
   }
   return null;
-}
-
-function sendJson(res: unknown, status: number, payload: unknown): void {
-  if (!res || typeof res !== "object") return;
-  const record = res as Record<string, unknown>;
-  if (typeof record.status === "function") {
-    (record.status as (code: number) => void)(status);
-  } else if (typeof record.code === "function") {
-    (record.code as (code: number) => void)(status);
-  }
-  if (typeof record.json === "function") {
-    (record.json as (body: unknown) => void)(payload);
-    return;
-  }
-  if (typeof record.send === "function") {
-    (record.send as (body: unknown) => void)(payload);
-    return;
-  }
-  if (typeof record.end === "function") {
-    (record.end as (body: string) => void)(JSON.stringify(payload));
-  }
 }
 
 interface ContinuationRow {

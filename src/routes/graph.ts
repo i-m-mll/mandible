@@ -1,5 +1,6 @@
 import path from "node:path";
 import { getDb } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import {
   buildLedgerIssueProjection,
   countLedgerGraphIssues,
@@ -447,17 +448,6 @@ function upsertEdge(edges: Map<string, GraphEdge>, edge: GraphEdge): void {
   edges.set(edge.id, edge);
 }
 
-function tableExists(table: string): boolean {
-  try {
-    const row = getDb()
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(table);
-    return Boolean(row);
-  } catch {
-    return false;
-  }
-}
-
 function parseMetadataJson(value: string | null | undefined): Record<string, unknown> {
   if (!value) return {};
   try {
@@ -817,7 +807,7 @@ function addAuthNodesAndEdges(
     }
   }
 
-  if (tableExists("ledger_auth_issue_links")) {
+  if (tableExists(getDb(), "ledger_auth_issue_links")) {
     const authIds = Array.from(authNodeIds);
     if (authIds.length > 0) {
       const placeholders = authIds.map((_, index) => `:auth${index}`);
@@ -895,7 +885,7 @@ function addSessionIssueEdges(
     }
   }
 
-  if (tableExists("ledger_session_issue_links")) {
+  if (tableExists(getDb(), "ledger_session_issue_links")) {
     const ledgerRows = getDb().prepare(
       `SELECT session_id, issue_id AS ledger_issue_id, metadata_json
          FROM ledger_session_issue_links
@@ -1400,7 +1390,7 @@ function presetDescriptors(): GraphPresetDescriptor[] {
 
 function countTableRows(table: string): number {
   if (!COUNT_TABLE_ALLOWLIST.has(table)) return 0;
-  if (!tableExists(table)) return 0;
+  if (!tableExists(getDb(), table)) return 0;
   try {
     return (getDb().prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as { count: number }).count;
   } catch {

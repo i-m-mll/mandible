@@ -4,8 +4,8 @@
 // split: collapsed columns, the active card selection, and the free-text card
 // filter. It is NOT ledger/canonical state — column DEFINITIONS (custom
 // columns) and card PLACEMENT (`section_id`/`sort_key`) are the canonical state
-// and live in SQLite via the C2 routes. This view state is persisted to
-// localStorage (per Space) so it survives tab switches, refreshes, and SSE
+// and live in SQLite via the C2 routes. This view state is persisted in browser
+// storage (per Space) so it survives tab switches, refreshes, and SSE
 // reconciliation, mirroring the C8 collection view-state pattern.
 
 import type { SpaceSelection } from './types';
@@ -62,28 +62,6 @@ export function normalizeBoardViewState(raw: unknown): BoardViewState {
   }
 
   return { cardFilter, selection, collapsedColumns };
-}
-
-/** Read persisted board view state for a Space; tolerant of malformed JSON. */
-export function readBoardViewState(projectId: string, spaceId: string): BoardViewState {
-  if (typeof window === 'undefined' || !spaceId) return { ...EMPTY_BOARD_VIEW_STATE };
-  try {
-    const raw = window.localStorage.getItem(boardStorageKey(projectId, spaceId));
-    if (!raw) return { ...EMPTY_BOARD_VIEW_STATE };
-    return normalizeBoardViewState(JSON.parse(raw));
-  } catch {
-    return { ...EMPTY_BOARD_VIEW_STATE };
-  }
-}
-
-/** Persist board view state for a Space. No-op outside the browser. */
-export function writeBoardViewState(projectId: string, spaceId: string, state: BoardViewState): void {
-  if (typeof window === 'undefined' || !spaceId) return;
-  try {
-    window.localStorage.setItem(boardStorageKey(projectId, spaceId), JSON.stringify(state));
-  } catch {
-    /* storage may be unavailable (private mode/quota); view-state is best-effort. */
-  }
 }
 
 /**

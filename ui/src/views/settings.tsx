@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { formatRelativeTime } from '../lib/format';
 import {
   bootstrapRuntime,
   getBackupStatus,
@@ -635,18 +636,6 @@ function InstructionsDeliverySection(props: {
   );
 }
 
-function formatRelativeTime(ts: number): string {
-  const diffMs = Date.now() - ts;
-  const diffSec = Math.floor(diffMs / 1000);
-  if (diffSec < 60) return 'just now';
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin} minute${diffMin === 1 ? '' : 's'} ago`;
-  const diffHr = Math.floor(diffMin / 60);
-  if (diffHr < 24) return `${diffHr} hour${diffHr === 1 ? '' : 's'} ago`;
-  const diffDay = Math.floor(diffHr / 24);
-  return `${diffDay} day${diffDay === 1 ? '' : 's'} ago`;
-}
-
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
@@ -1127,7 +1116,7 @@ function BackupSection(): JSX.Element {
               <span className="text-muted">Loading...</span>
             ) : status.last_run_at ? (
               <span>
-                {formatRelativeTime(status.last_run_at)}
+                {formatRelativeTime(status.last_run_at, { style: 'verbose' })}
                 {status.last_size_bytes != null && (
                   <span className="text-muted"> &mdash; {formatBytes(status.last_size_bytes)}</span>
                 )}

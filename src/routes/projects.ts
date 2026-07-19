@@ -13,10 +13,7 @@ import {
 } from "../ledger/project-registry.js";
 import type { LedgerNamespacePolicy } from "../ledger/types.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
-
-function sendJson(res: ResponseLike, code: number, payload: unknown): void {
-  res.status(code).json(payload);
-}
+import { sendJson } from "./http.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
   return req.body && typeof req.body === "object" && !Array.isArray(req.body)

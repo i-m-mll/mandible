@@ -1,5 +1,7 @@
 import type { Db } from "../db.js";
+import { columnExists, tableExists } from "../db-introspection.js";
 import {
+  getArtifact,
   resolveArtifactLinkRef,
   resolveArtifactSurfaceRefReadonlyFull,
 } from "../provider-artifacts.js";
@@ -596,7 +598,7 @@ function listAssociatedArtifacts(
   issueBody: string,
   comments: LedgerIssueDetailComment[],
 ): LedgerIssueDetailAssociatedArtifact[] {
-  if (!tableExists(db, "artifacts")) return [];
+  if (!tableExists(db, "artifacts") && !tableExists(db, "artifact_blob")) return [];
   const artifacts = new Map<string, LedgerIssueDetailAssociatedArtifact>();
 
   for (const row of listExplicitArtifactRows(db, issueId, comments.map((comment) => comment.id))) {
@@ -647,6 +649,10 @@ function listExplicitArtifactRows(
     groups.push(`(l.entity_type = 'comment' AND l.entity_id IN (${uniqueCommentIds.map(() => "?").join(", ")}))`);
     params.push(...uniqueCommentIds);
   }
+  const hasCanonicalTargets = columnExists(db, "artifact_links", "blob_id")
+    && columnExists(db, "artifact_links", "target_type")
+    && columnExists(db, "artifact_links", "target_id")
+    && tableExists(db, "artifact_blob");
   return db.prepare(
     `SELECT
         a.id AS artifact_id, a.algorithm, a.content_hash, a.uri, a.media_type,
@@ -657,9 +663,13 @@ function listExplicitArtifactRows(
         l.role AS link_role, l.repo_id AS link_repo_id,
         l.provider_id AS link_provider_id, l.source AS link_source,
         l.metadata_json AS link_metadata_json, l.link_kind, l.series_id, l.series_ref,
+        ${hasCanonicalTargets ? "b.id" : "NULL"} AS canonical_blob_id,
+        ${hasCanonicalTargets ? "l.target_type" : "NULL"} AS canonical_target_type,
+        ${hasCanonicalTargets ? "l.target_id" : "NULL"} AS canonical_target_id,
         l.created_at AS link_created_at, l.updated_at AS link_updated_at
        FROM artifact_links l
        LEFT JOIN artifacts a ON a.id = l.artifact_id
+       ${hasCanonicalTargets ? "LEFT JOIN artifact_blob b ON b.id = l.blob_id" : ""}
       WHERE ${groups.join(" OR ")}
       ORDER BY l.created_at DESC, a.created_at DESC`,
   ).all(...params) as Array<Record<string, unknown>>;
@@ -743,7 +753,10 @@ function resolveIssueDetailLinkArtifact(
   row: Record<string, unknown>,
   link: LedgerIssueDetailArtifactLink,
 ): ResolvedIssueDetailLink {
-  const fallback = artifactFromIssueDetailRow(row);
+  const canonicalBlobId = nullableString(row.canonical_blob_id);
+  const fallback = canonicalBlobId
+    ? getArtifact(db, canonicalBlobId)
+    : artifactFromIssueDetailRow(row);
   if (link.link_kind !== "living") {
     return {
       artifact: fallback,
@@ -756,7 +769,12 @@ function resolveIssueDetailLinkArtifact(
     };
   }
 
-  const ref = link.series_ref ?? link.series_id;
+  const canonicalArtifactId = row.canonical_target_type === "artifact"
+    ? nullableString(row.canonical_target_id)
+    : null;
+  const ref = canonicalArtifactId
+    ? canonicalArtifactId.replace(/^artifact:/i, "artifact-series:")
+    : link.series_ref ?? link.series_id;
   if (!ref) {
     return livingFallback(fallback, link, ["living_series_unresolved"]);
   }
@@ -1551,11 +1569,6 @@ function parseJsonValue(value: string): unknown {
   } catch {
     return value;
   }
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  return Boolean(row);
 }
 
 function stringOr(value: unknown, fallback: string): string {

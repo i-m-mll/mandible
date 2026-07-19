@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { IssueScanner } from "../issue-scanner.js";
 import { WorkScanner } from "../work-scanner.js";
 import { getDb, type Db } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -47,28 +48,16 @@ import {
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
-  getLedgerIssueMigrationConfig,
-  getReconciliationReport,
-  isLedgerWriteModeEnabled,
   listLedgerIssueSummaries,
-  listReconciliationReports,
-  parseMigrationConfigPatch,
   resolveLedgerIssueIdForRoute,
-  runIssueReconciliation,
-  updateLedgerIssueMigrationConfig,
-} from "../ledger/issue-migration.js";
+} from "../ledger/issue-projection.js";
 import {
   linkCommitToLedgerIssue,
   resolveOperationalIssueRef,
 } from "../ledger/operational-links.js";
-import { SubprocessGitBugClient } from "../ledger/git-bug-client.js";
-import {
-  listLedgerSyncJobs,
-  runGitBugSyncForRepos,
-  type LedgerSyncDirection,
-} from "../ledger/sync-runner.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 import type { RouteOptions } from "../server.js";
+import { sendJson } from "./http.js";
 
 export interface RouteHandler<Request = unknown, Response = unknown> {
   (req: Request, res: Response): void | Promise<void>;
@@ -139,30 +128,6 @@ function getStringArray(value: unknown): string[] | undefined {
   }
   if (typeof value === "string" && value.trim()) return [value.trim()];
   return undefined;
-}
-
-function sendJson(res: unknown, status: number, payload: unknown): void {
-  if (!res || typeof res !== "object") {
-    return;
-  }
-  const record = res as Record<string, unknown>;
-  if (typeof record.status === "function") {
-    (record.status as (code: number) => void)(status);
-  } else if (typeof record.code === "function") {
-    (record.code as (code: number) => void)(status);
-  }
-
-  if (typeof record.json === "function") {
-    (record.json as (body: unknown) => void)(payload);
-    return;
-  }
-  if (typeof record.send === "function") {
-    (record.send as (body: unknown) => void)(payload);
-    return;
-  }
-  if (typeof record.end === "function") {
-    (record.end as (body: string) => void)(JSON.stringify(payload));
-  }
 }
 
 function isBodyRevisionConflict(error: unknown): boolean {
@@ -240,20 +205,6 @@ function filterIssueSummaries(
   }
 
   return filtered.filter((s) => s.issues.length > 0 || (!filters.status && !filters.label));
-}
-
-function ledgerWriteUnavailable(res: unknown, mode: string): boolean {
-  if (mode === "dual") {
-    sendJson(res, 409, { error: "dual issue writes are not armed; use git_bug or ledger mode" });
-    return true;
-  }
-  return false;
-}
-
-function sendLegacyIssueEndpointGone(res: unknown): void {
-  sendJson(res, 410, {
-    error: "legacy git-bug issue endpoint is disabled; use the ledger issue API or explicit manual import/sync",
-  });
 }
 
 function resolveLedgerIssueId(db: Db, issueRef: string): { ok: true; issue_id: string } | { ok: false; status: 404 | 409; error: string } {
@@ -1218,21 +1169,12 @@ function invalidRelationshipTypeResponse(value: unknown): {
   };
 }
 
-function parseSyncDirection(value: unknown): LedgerSyncDirection {
-  return value === "export" || value === "full" ? value : "import";
-}
-
 function kindFromLabels(labels: string[]): LedgerIssueKind {
   if (labels.includes("error")) return "bug";
   if (labels.includes("umbrella")) return "umbrella";
   if (labels.includes("deferred")) return "deferred";
   if (labels.includes("feature")) return "feature";
   return "unknown";
-}
-
-function tableExists(db: Db, table: string): boolean {
-  const row = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-  return Boolean(row);
 }
 
 function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): string | null {
@@ -1307,61 +1249,6 @@ export function registerIssueRoutes(
 
     sendJson(res, 200, summaries);
   }, { fileRpc: "allow" });
-
-  server.get("/api/issues/migration", (_req, res) => {
-    const db = getDb();
-    sendJson(res, 200, {
-      config: getLedgerIssueMigrationConfig(db),
-      reports: listReconciliationReports(db, 10),
-      sync_jobs: listLedgerSyncJobs(db).slice(0, 10),
-    });
-  }, { fileRpc: "deny" });
-
-  server.put?.("/api/issues/migration", (req, res) => {
-    const db = getDb();
-    const config = updateLedgerIssueMigrationConfig(db, parseMigrationConfigPatch(getBody(req)));
-    sendJson(res, 200, { config });
-  }, { fileRpc: "deny" });
-
-  server.post("/api/issues/reconcile", (_req, res) => {
-    const db = getDb();
-    const report = runIssueReconciliation(
-      db,
-      issueScanner,
-      workScanner,
-      getLedgerIssueMigrationConfig(db).read_mode,
-    );
-    sendJson(res, 200, report);
-  }, { fileRpc: "deny" });
-
-  server.post("/api/issues/migration/sync", async (req, res) => {
-    const body = getBody(req) ?? {};
-    const db = getDb();
-    const direction = parseSyncDirection(body.direction);
-    const repos = getStringArray(body.repos ?? body.repo);
-    const result = await runGitBugSyncForRepos({
-      db,
-      client: new SubprocessGitBugClient(),
-      repos: workScanner.getRepos(),
-      direction,
-      repoRefs: repos,
-    });
-    sendJson(res, 200, result);
-  }, { fileRpc: "deny" });
-
-  server.get("/api/issues/reconcile/:reportId", (req, res) => {
-    const reportId = getParam(req, "reportId");
-    if (!reportId) {
-      sendJson(res, 400, { error: "missing reportId" });
-      return;
-    }
-    const report = getReconciliationReport(getDb(), reportId);
-    if (!report) {
-      sendJson(res, 404, { error: "reconciliation report not found" });
-      return;
-    }
-    sendJson(res, 200, report);
-  }, { fileRpc: "deny" });
 
   // GET /api/ledger/issues/:issueId — canonical ledger issue detail projection
   server.get("/api/ledger/issues/:issueId", (req, res) => {
@@ -1777,12 +1664,6 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
-    const config = getLedgerIssueMigrationConfig(db);
-    if (!isLedgerWriteModeEnabled(config)) {
-      sendJson(res, 409, { error: "ledger issue writes are not enabled" });
-      return;
-    }
-    if (ledgerWriteUnavailable(res, config.write_mode)) return;
     const markdownPolicy = applyMarkdownBodyPolicy(res, db, issueBody);
     if (!markdownPolicy.ok) return;
 
@@ -2293,32 +2174,6 @@ export function registerIssueRoutes(
     }
     sendJson(res, 200, result.resolved.issue);
   }, { fileRpc: "deny" });
-
-  // POST /api/issues/:repoId/:issueId/status — close or reopen
-  server.post("/api/issues/:repoId/:issueId/status", (_req, res) => {
-    sendLegacyIssueEndpointGone(res);
-  }, { fileRpc: "deny" });
-
-  // POST /api/issues/:repoId/:issueId/comment — add comment
-  server.post("/api/issues/:repoId/:issueId/comment", (_req, res) => {
-    sendLegacyIssueEndpointGone(res);
-  }, { fileRpc: "deny" });
-
-  // POST /api/issues/:repoId/:issueId/label — add or remove label
-  server.post("/api/issues/:repoId/:issueId/label", (_req, res) => {
-    sendLegacyIssueEndpointGone(res);
-  }, { fileRpc: "deny" });
-
-  // POST /api/issues/scan — force rescan all repos
-  server.post("/api/issues/scan", (_req, res) => {
-    sendLegacyIssueEndpointGone(res);
-  }, { fileRpc: "deny" });
-
-  // POST /api/issues/:repoId/scan — legacy git-bug targeted scan.
-  server.post("/api/issues/:repoId/scan", (_req, res) => {
-    sendLegacyIssueEndpointGone(res);
-  }, { fileRpc: "deny" });
-
 
   // GET /api/issues/:repoId/:issueId/context — comprehensive issue context hub
   // Bug: 84cd5ae — issue detail hub aggregation endpoint

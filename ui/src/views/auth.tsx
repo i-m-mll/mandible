@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 import {
   DiffView,
   parseUnifiedDiffSections,
@@ -15,6 +14,9 @@ import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { linkifyResourceRefs as linkifyArtifactRefs } from '../resource-refs';
+import { formatRelativeTime } from '../lib/format';
+import { renderInlineMarkdown, renderMarkdown } from '../lib/markdown';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import {
   disableAuthAutoApprove,
   enableAuthAutoApprove,
@@ -211,27 +213,6 @@ function looksLikeBranchName(value: string): boolean {
 
 const RESOLVED_LINGER_MS = 1500;
 
-function formatRelativeTime(timestampMs: number): string {
-  const diffMs = Date.now() - timestampMs;
-  const seconds = Math.floor(diffMs / 1000);
-  if (seconds < 5) {
-    return 'just now';
-  }
-  if (seconds < 60) {
-    return `${seconds}s ago`;
-  }
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) {
-    return `${minutes}m ago`;
-  }
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) {
-    return `${hours}h ago`;
-  }
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
-}
-
 function formatRemaining(ms: number): string {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -414,22 +395,11 @@ function truncateSummary(text: string, maxChars: number): string {
   return `${text.slice(0, Math.max(0, maxChars - 1)).trim()}…`;
 }
 
-function loadExpandedActionIds(requestId: string): Set<string> {
-  try {
-    const raw = window.localStorage.getItem(`auth-action-expanded:${requestId}`);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(parsed) ? parsed.filter((value): value is string => typeof value === 'string') : []);
-  } catch {
-    return new Set();
-  }
-}
+const DEFAULT_EXPANDED_ACTION_IDS: string[] = [];
 
-function storeExpandedActionIds(requestId: string, ids: Set<string>): void {
-  try {
-    window.localStorage.setItem(`auth-action-expanded:${requestId}`, JSON.stringify(Array.from(ids)));
-  } catch {
-    // Ignore storage failures; expansion still works for the current render.
-  }
+function normalizeExpandedActionIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(value.filter((item): item is string => typeof item === 'string')));
 }
 
 function AuthActionBundle({
@@ -447,14 +417,15 @@ function AuthActionBundle({
 }): JSX.Element | null {
   const requestId = getAuthId(request);
   const repoId = request.repo ?? '';
-  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => loadExpandedActionIds(requestId));
+  const [expandedActionIds, setExpandedActionIds] = usePersistedViewState(
+    `auth-action-expanded:${requestId}`,
+    normalizeExpandedActionIds,
+    DEFAULT_EXPANDED_ACTION_IDS,
+  );
+  const expandedIds = useMemo(() => new Set(expandedActionIds), [expandedActionIds]);
   const [targetTitles, setTargetTitles] = useState<Record<string, string>>({});
   const status = getAuthStatus(request);
   const canVeto = status === 'pending';
-
-  useEffect(() => {
-    setExpandedIds(loadExpandedActionIds(requestId));
-  }, [requestId]);
 
   useEffect(() => {
     const refs = uniqueStrings(actions.map((action) => action.target_issue_ref));
@@ -480,12 +451,11 @@ function AuthActionBundle({
   }
 
   const toggleExpanded = (actionId: string) => {
-    setExpandedIds((prev) => {
+    setExpandedActionIds((prev) => {
       const next = new Set(prev);
       if (next.has(actionId)) next.delete(actionId);
       else next.add(actionId);
-      storeExpandedActionIds(requestId, next);
-      return next;
+      return Array.from(next);
     });
   };
 
@@ -585,40 +555,6 @@ function stripAnsi(text: string): string {
   return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
 }
 
-function renderMarkdown(src: string): string {
-  const result = marked.parse(src, { async: false });
-  return linkifyArtifactRefs(sanitizeInlineHtml(typeof result === 'string' ? result : ''));
-}
-
-/**
- * Strip dangerous tags and attributes from HTML produced by marked.
- * Keeps safe inline tags (strong, em, code, a, del, s, sup, sub, span).
- * Bug: 387ae46 — sanitize marked output before dangerouslySetInnerHTML
- */
-function sanitizeInlineHtml(html: string): string {
-  let out = html.replace(
-    /<(script|iframe|object|embed|form|style|svg|math)[^>]*>[\s\S]*?<\/\1>/gi,
-    '',
-  );
-  out = out.replace(/<(script|iframe|object|embed|form|style|svg|math)[^>]*\/>/gi, '');
-  out = out.replace(/\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '');
-  out = out.replace(/\s+(href|src)\s*=\s*(?:"javascript:[^"]*"|'javascript:[^']*')/gi, '');
-  return out;
-}
-
-/**
- * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
- * input so text flows inline in compact contexts (sidebar titles, card headers).
- * Bug: a44fd6a — markdown rendering in auth sidebar and card titles
- */
-function renderInlineMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  const html = typeof result === 'string' ? result : '';
-  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
-  return linkifyArtifactRefs(sanitizeInlineHtml(stripped));
-}
-
 /** Check if the request's head_branch no longer exists in the repo's known branches. */
 function isBranchMerged(
   request: AuthRequest,
@@ -653,9 +589,11 @@ function getSubmissionTimestampLabel(request: AuthRequest): string {
     lastExecutedAtMs != null &&
     (createdAtMs == null || lastExecutedAtMs !== createdAtMs);
 
-  const submissionLabel = createdAtMs != null ? formatRelativeTime(createdAtMs) : 'unknown';
+  const submissionLabel = createdAtMs != null
+    ? formatRelativeTime(createdAtMs, { style: 'recent' })
+    : 'unknown';
   const lastAttemptLabel = showLastAttempt && lastExecutedAtMs != null
-    ? `last attempt: ${formatRelativeTime(lastExecutedAtMs)}`
+    ? `last attempt: ${formatRelativeTime(lastExecutedAtMs, { style: 'recent' })}`
     : null;
   return lastAttemptLabel
     ? `${submissionLabel} · ${lastAttemptLabel}`
@@ -664,13 +602,13 @@ function getSubmissionTimestampLabel(request: AuthRequest): string {
 
 function getResolvedTimestampLabel(request: AuthRequest): string {
   const resolvedAtMs = getResolvedAtMs(request);
-  return `resolved ${formatRelativeTime(resolvedAtMs)}`;
+  return `resolved ${formatRelativeTime(resolvedAtMs, { style: 'recent' })}`;
 }
 
 function formatMetadataTimestamp(value?: string | number | null): string | null {
   const timestamp = getTimestampMs(value ?? null);
   if (timestamp == null) return null;
-  return `${formatRelativeTime(timestamp)} (${new Date(timestamp).toLocaleString()})`;
+  return `${formatRelativeTime(timestamp, { style: 'recent' })} (${new Date(timestamp).toLocaleString()})`;
 }
 
 function getStringField(request: AuthRequest, field: string): string | null {
@@ -753,8 +691,14 @@ function AuthCard({
     () => parseBranchTag(commitMsg),
     [commitMsg],
   );
-  const commitHtml = useMemo(() => commitBody ? renderMarkdown(commitBody) : '', [commitBody]);
-  const specHtml = useMemo(() => specContent ? renderMarkdown(specContent) : '', [specContent]);
+  const commitHtml = useMemo(
+    () => commitBody ? linkifyArtifactRefs(renderMarkdown(commitBody)) : '',
+    [commitBody],
+  );
+  const specHtml = useMemo(
+    () => specContent ? linkifyArtifactRefs(renderMarkdown(specContent)) : '',
+    [specContent],
+  );
   const diffSections = useMemo(() => parseUnifiedDiffSections(diffRaw), [diffRaw]);
   const diffHtml = useMemo(() => {
     if (selectedFile === -1) {
@@ -865,7 +809,9 @@ function AuthCard({
         {/* Bug: a44fd6a — render auth request title as inline markdown */}
         <span
           className="auth-card__title"
-          dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+          dangerouslySetInnerHTML={{
+            __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
+          }}
         />
         {repoName && (
           <span className="auth-card__repo">{repoName}</span>
@@ -1235,8 +1181,14 @@ function AuthRequestDetail({
     () => parseBranchTag(commitMsg),
     [commitMsg],
   );
-  const commitHtml = useMemo(() => commitBody ? renderMarkdown(commitBody) : '', [commitBody]);
-  const specHtml = useMemo(() => specContent ? renderMarkdown(specContent) : '', [specContent]);
+  const commitHtml = useMemo(
+    () => commitBody ? linkifyArtifactRefs(renderMarkdown(commitBody)) : '',
+    [commitBody],
+  );
+  const specHtml = useMemo(
+    () => specContent ? linkifyArtifactRefs(renderMarkdown(specContent)) : '',
+    [specContent],
+  );
   const rawConsoleOutput = executionOutput ||
     (typeof request.output === 'string' ? request.output : '');
   const consoleText = useMemo(() => stripAnsi(rawConsoleOutput), [rawConsoleOutput]);
@@ -1449,7 +1401,9 @@ function AuthRequestDetail({
             </DetailHeaderIdentity>
             <h2
               className="auth-detail__title"
-              dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+              dangerouslySetInnerHTML={{
+                __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
+              }}
             />
             <div className="auth-detail__subtitle">
               <span>{primarySubtitle}</span>
@@ -1850,7 +1804,9 @@ function AuthSidebarItem({
           {/* Bug: a44fd6a — render auth sidebar title as inline markdown */}
           <span
             className="auth-sidebar-item__title"
-            dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(getAuthTitle(request)) }}
+            dangerouslySetInnerHTML={{
+              __html: linkifyArtifactRefs(renderInlineMarkdown(getAuthTitle(request))),
+            }}
           />
           {actionCount > 0 && (
             <span className="auth-sidebar-item__action-badge" title={`${actionCount} deferred actions`}>

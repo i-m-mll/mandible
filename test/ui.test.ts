@@ -32,7 +32,6 @@ import {
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
-import { SessionsView } from '../ui/src/views/sessions';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
@@ -308,25 +307,6 @@ const previewInstance: InstanceInfo = {
   source_db_path: '/tmp/mandible-main.db',
   source_db_path_source: 'env',
 };
-
-describe('SessionsView', () => {
-  it('renders session data and triggers navigate', () => {
-    const onNavigate = vi.fn();
-    render(
-      h(SessionsView, {
-        sessions: [{ id: 's1', status: 'active', task: 'Plan work', branch: 'main' }],
-        newSessionIds: {},
-        onNavigate,
-        onKill: () => undefined,
-      }),
-    );
-
-    expect(screen.getByText('Plan work')).toBeTruthy();
-    fireEvent.click(screen.getByLabelText('Actions'));
-    fireEvent.click(screen.getByText('Go to'));
-    expect(onNavigate).toHaveBeenCalledWith('s1');
-  });
-});
 
 describe('App routing', () => {
   it('routes legacy monitor hashes into console', () => {
@@ -1422,6 +1402,21 @@ describe('WorkOverviewView', () => {
 });
 
 describe('issue deep links', () => {
+  function stubIssuesLocalStorage(initial: Record<string, string> = {}): void {
+    const store = new Map(Object.entries(initial));
+    const localStorageStub = {
+      getItem: vi.fn((key: string) => store.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => store.set(key, value)),
+      removeItem: vi.fn((key: string) => store.delete(key)),
+      clear: vi.fn(() => store.clear()),
+    };
+    vi.stubGlobal('localStorage', localStorageStub);
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: localStorageStub,
+    });
+  }
+
   const repos: IssueRepoSummary[] = [
     {
       repo_id: 'mandible',
@@ -1482,7 +1477,7 @@ describe('issue deep links', () => {
       resolveDetail = resolve;
     })));
 
-    render(h(IssuesView, {
+    const { rerender } = render(h(IssuesView, {
       repos,
       onRescan: async () => undefined,
       initialRepoId: 'mandible',
@@ -1804,6 +1799,122 @@ describe('issue deep links', () => {
 
     expect(screen.getByText('Still mounted after poll')).toBeTruthy();
     expect(detailFetchCount()).toBe(2);
+  });
+
+  it('restores and writes only browser-local issue filters', async () => {
+    const storageKey = 'mandible_issues_view_state:v1';
+    stubIssuesLocalStorage({
+      [storageKey]: JSON.stringify({
+        filter: 'daemon',
+        filterEdited: true,
+        repoFilter: 'mandible',
+        parentFilter: null,
+      }),
+    });
+
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+    }));
+
+    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('daemon');
+    expect((screen.getByPlaceholderText('Filter by repo...') as HTMLInputElement).value).toBe('mandible');
+
+    fireEvent.input(screen.getByLabelText('Filter issues'), { target: { value: 'toast' } });
+    await waitFor(() => {
+      const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
+      expect(stored).toEqual({
+        filter: 'toast',
+        filterEdited: true,
+        repoFilter: 'mandible',
+        parentFilter: null,
+      });
+      expect(stored).not.toHaveProperty('selectedRepoId');
+      expect(stored).not.toHaveProperty('selectedIssueId');
+    });
+
+    cleanup();
+    render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'another-route-repo',
+    }));
+    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('toast');
+    expect((screen.getByPlaceholderText('Filter by repo...') as HTMLInputElement).value).toBe('mandible');
+  });
+
+  it('keeps configured issue-filter defaults until the user edits them', async () => {
+    const storageKey = 'mandible_issues_view_state:v1';
+    stubIssuesLocalStorage();
+    const { rerender } = render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      defaultFilter: 'status:open',
+    }));
+    const filterInput = screen.getByLabelText('Filter issues') as HTMLInputElement;
+    expect(filterInput.value).toBe('status:open');
+
+    rerender(h(IssuesView, {
+      repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
+      onRescan: async () => undefined,
+      defaultFilter: 'status:closed',
+    }));
+    await waitFor(() => expect(filterInput.value).toBe('status:closed'));
+
+    fireEvent.input(filterInput, { target: { value: 'daemon' } });
+    rerender(h(IssuesView, {
+      repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
+      onRescan: async () => undefined,
+      defaultFilter: 'status:merged',
+    }));
+    expect(filterInput.value).toBe('daemon');
+    await waitFor(() => {
+      const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
+      expect(stored.filter).toBe('daemon');
+      expect(stored.filterEdited).toBe(true);
+    });
+  });
+
+  it('falls back from malformed issue filter storage without changing route selection', async () => {
+    const storageKey = 'mandible_issues_view_state:v1';
+    stubIssuesLocalStorage({
+      [storageKey]: JSON.stringify({
+        filter: 42,
+        filterEdited: true,
+        repoFilter: ['mandible'],
+        parentFilter: false,
+        selectedIssueId: 'stored-selection-must-not-restore',
+      }),
+    });
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+
+    const { rerender } = render(h(IssuesView, {
+      repos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+      defaultFilter: 'status:closed',
+    }));
+
+    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('status:closed');
+    expect(await screen.findByRole('heading', { name: 'Daemon reload toast link' })).toBeTruthy();
+    expect(screen.queryByText('stored-selection-must-not-restore')).toBeNull();
+
+    rerender(h(IssuesView, {
+      repos: repos.map((repo) => ({ ...repo, issues: [...repo.issues] })),
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+      defaultFilter: 'status:merged',
+    }));
+    const filterInput = screen.getByLabelText('Filter issues') as HTMLInputElement;
+    await waitFor(() => expect(filterInput.value).toBe('status:merged'));
+    await waitFor(() => {
+      const stored = JSON.parse(String(window.localStorage.getItem(storageKey)));
+      expect(stored.filter).toBe('status:merged');
+      expect(stored.filterEdited).toBe(false);
+    });
   });
 
   it('ignores stale ledger detail responses after selecting a different issue', async () => {

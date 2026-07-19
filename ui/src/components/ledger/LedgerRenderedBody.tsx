@@ -1,8 +1,7 @@
 import { useEffect, useMemo, useRef } from 'preact/hooks';
-import { marked } from 'marked';
 
+import { renderMarkdown } from '../../lib/markdown';
 import { linkifyResourceRefs, attachResourceRefResolution } from '../../resource-refs';
-import { sanitizeMarkdown } from '../../sanitize';
 
 export type LedgerRenderedBodyContext = {
   id: string;
@@ -28,8 +27,7 @@ export function LedgerRenderedBody({
 }): JSX.Element {
   const html = useMemo(() => {
     if (!source) return '';
-    const parsed = marked.parse(normalizeMarkdownSource(source), { async: false });
-    const sanitized = sanitizeMarkdown(typeof parsed === 'string' ? parsed : '');
+    const sanitized = renderMarkdown(normalizeMarkdownSource(source));
     return linkifyResourceRefs(linkifyLedgerRefs(sanitized, detail));
   }, [
     source,

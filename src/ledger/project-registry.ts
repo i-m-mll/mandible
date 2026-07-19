@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { Db } from "../db.js";
+import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { deriveProjectKeyBase, dedupeProjectKey, slugifyProjectKey } from "./project-key.js";
 import { normalizeRemoteIdentity } from "./projects.js";
@@ -786,14 +787,6 @@ export function discoverProjectIdColumns(db: Db): Array<{ table: string; column:
     }
   }
   return found;
-}
-
-function tableExists(db: Db, table: string): boolean {
-  return Boolean(
-    db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-      .get(table),
-  );
 }
 
 function tableHasColumn(db: Db, table: string, column: string): boolean {

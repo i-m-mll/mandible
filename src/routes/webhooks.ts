@@ -12,6 +12,7 @@ import type { RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { WebhookEvent, WebhookEventRow, WebhookEventStatus } from "../types.js";
+import { sendJson } from "./http.js";
 
 // --- Rate limiter ---
 
@@ -213,14 +214,6 @@ function markDelivered(id: string, deliveredTo: string): void {
 }
 
 // --- Route registration ---
-
-function sendJson(
-  res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void },
-  code: number,
-  payload: unknown,
-): void {
-  res.status(code).json(payload);
-}
 
 export function registerWebhookRoutes(
   server: RouteRegistrar,

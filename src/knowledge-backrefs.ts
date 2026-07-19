@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import type { Db } from "./db.js";
+import { tableExists } from "./db-introspection.js";
 import type {
   KnowledgeBackrefInput,
   KnowledgeBackrefRecord,
@@ -107,13 +108,6 @@ function stableId(parts: unknown[]): string {
   return `knowledge_backref:${crypto.createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 32)}`;
 }
 
-function tableExists(db: Db): boolean {
-  const row = db.prepare(
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'knowledge_backrefs'"
-  ).get() as { name: string } | undefined;
-  return Boolean(row);
-}
-
 function backrefFromRow(row: Record<string, unknown>): KnowledgeBackrefRecord {
   return {
     id: String(row.id),
@@ -135,7 +129,7 @@ export function createKnowledgeBackref(
   input: KnowledgeBackrefInput,
   now = Date.now(),
 ): KnowledgeBackrefRecord {
-  if (!tableExists(db)) {
+  if (!tableExists(db, "knowledge_backrefs")) {
     throw new Error("knowledge_backrefs table is missing; run database migrations");
   }
   const sourceType = normalizeSourceType(input.source_type);
@@ -189,7 +183,7 @@ export function listKnowledgeBackrefs(
   db: Db,
   options: KnowledgeBackrefListOptions = {},
 ): KnowledgeBackrefRecord[] {
-  if (!tableExists(db)) return [];
+  if (!tableExists(db, "knowledge_backrefs")) return [];
   const where: string[] = [];
   const bindings: Record<string, unknown> = {};
   if (asString(options.sourceType)) {

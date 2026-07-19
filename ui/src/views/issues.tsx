@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { marked } from 'marked';
 import {
   addLedgerIssueComment,
   getLedgerIssueDetailByIssueId,
@@ -11,10 +10,11 @@ import {
   spawnIssueAgent,
   type LedgerIssueDetailProjection,
 } from '../api';
-import { sanitizeHtml } from '../sanitize';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { renderInlineMarkdown } from '../lib/markdown';
 
 // --- Types ---
 
@@ -111,27 +111,6 @@ function getVisualState(issue: { status: string; labels: string[] }): VisualStat
   if (issue.status === 'open') return 'open';
   if (issue.labels.includes('merged')) return 'merged';
   return 'closed';
-}
-
-/**
- * Sanitize inline markdown HTML produced by marked before inserting it into the
- * local issue UI. Bug: 387ae46.
- */
-function sanitizeInlineHtml(html: string): string {
-  return sanitizeHtml(html);
-}
-
-/**
- * Render inline markdown — strips the outer <p>…</p> wrapper for single-line
- * input so text flows inline in compact contexts (sidebar titles, list items).
- * Bug: a44fd6a — markdown rendering in issues sidebar titles
- */
-function renderInlineMarkdown(src: string): string {
-  if (!src) return '';
-  const result = marked.parse(src, { async: false });
-  const html = typeof result === 'string' ? result : '';
-  const stripped = html.replace(/^<p>([\s\S]*?)<\/p>\n?$/, '$1').trim();
-  return sanitizeInlineHtml(stripped);
 }
 
 // Reverse map: display name → internal label (for filter pills)
@@ -293,6 +272,8 @@ function getCachedIssueDetail(
   return null;
 }
 
+// Detail scroll intentionally remains session-scoped; promoting it to durable browser
+// storage would change its lifetime and is outside the local filter contract below.
 const ISSUE_DETAIL_SCROLL_STORAGE_PREFIX = 'mandible:issues:detail-scroll:';
 
 function issueDetailScrollStorageKey(repoId: string, issueId: string): string {
@@ -405,9 +386,34 @@ type ListItem = { kind: 'issue'; issue: IssueSummary; repo: IssueRepoSummary };
 type StatusFilter = 'all' | 'open' | 'merged' | 'closed';
 
 const DEFAULT_ISSUES_FILTER = 'status:open';
+const ISSUES_VIEW_STATE_STORAGE_KEY = 'mandible_issues_view_state:v1';
+
+type IssuesViewState = {
+  filter: string;
+  filterEdited: boolean;
+  repoFilter: string | null;
+  parentFilter: string | null;
+};
 
 function normalizeIssueDefaultFilter(value: string | null | undefined): string {
   return value?.trim() || DEFAULT_ISSUES_FILTER;
+}
+
+function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewState>): IssuesViewState {
+  const stored = value && typeof value === 'object' ? value as Partial<IssuesViewState> : {};
+  const filterEdited = stored.filterEdited === true && typeof stored.filter === 'string';
+  return {
+    filter: filterEdited && typeof stored.filter === 'string'
+      ? stored.filter
+      : defaults.filter,
+    filterEdited,
+    repoFilter: stored.repoFilter === null || typeof stored.repoFilter === 'string'
+      ? stored.repoFilter
+      : defaults.repoFilter,
+    parentFilter: stored.parentFilter === null || typeof stored.parentFilter === 'string'
+      ? stored.parentFilter
+      : defaults.parentFilter,
+  };
 }
 
 export function IssuesView({
@@ -423,15 +429,24 @@ export function IssuesView({
     () => normalizeIssueDefaultFilter(defaultFilter),
     [defaultFilter],
   );
+  const defaultViewState = useMemo<IssuesViewState>(() => ({
+    filter: normalizedDefaultFilter,
+    filterEdited: false,
+    repoFilter: null,
+    parentFilter: null,
+  }), [normalizedDefaultFilter]);
+  const [viewState, setViewState] = usePersistedViewState(
+    ISSUES_VIEW_STATE_STORAGE_KEY,
+    normalizeIssuesViewState,
+    defaultViewState,
+  );
+  const { filter, repoFilter, parentFilter } = viewState;
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
-  const [filter, setFilter] = useState(normalizedDefaultFilter);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
-  const [repoFilter, setRepoFilter] = useState<string | null>(null);
   const [repoInput, setRepoInput] = useState('');
   const [repoMenuOpen, setRepoMenuOpen] = useState(false);
-  const [parentFilter, setParentFilter] = useState<string | null>(null);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
   const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
@@ -443,20 +458,32 @@ export function IssuesView({
   const lastAppliedDeepLinkRef = useRef<string | null>(null);
   const lastScrolledCommentRef = useRef<string | null>(null);
   const detailRequestSeqRef = useRef(0);
-  const filterEditedRef = useRef(false);
   const issueDetailScrollRef = useRef<HTMLDivElement>(null);
   const scrollSaveTimerRef = useRef<number | null>(null);
   const lastRestoredScrollKeyRef = useRef<string | null>(null);
   const issueDetailCacheRef = useRef<IssueDetailCache>(new Map());
 
   useEffect(() => {
-    if (!filterEditedRef.current) setFilter(normalizedDefaultFilter);
+    setViewState((current) => current.filterEdited
+      ? current
+      : { ...current, filter: normalizedDefaultFilter });
   }, [normalizedDefaultFilter]);
 
   const setIssueFilter = useCallback((nextFilter: string) => {
-    filterEditedRef.current = true;
-    setFilter(nextFilter);
-  }, []);
+    setViewState((current) => ({
+      ...current,
+      filter: nextFilter,
+      filterEdited: true,
+    }));
+  }, [setViewState]);
+
+  const setRepoFilter = useCallback((repoFilterValue: string | null) => {
+    setViewState((current) => ({ ...current, repoFilter: repoFilterValue }));
+  }, [setViewState]);
+
+  const setParentFilter = useCallback((parentFilterValue: string | null) => {
+    setViewState((current) => ({ ...current, parentFilter: parentFilterValue }));
+  }, [setViewState]);
 
   const resolveRepoId = useCallback((rawRepoId: string | null | undefined): string | null => {
     return resolveIssueRepoDeepLink(repos, rawRepoId);
@@ -521,25 +548,29 @@ export function IssuesView({
   const selectedPriorities = parsedFilter.priorities;
 
   const updateStructuredFilter = useCallback((next: Partial<ParsedIssueFilter>) => {
-    setFilter((current) => {
-      filterEditedRef.current = true;
-      return formatIssueFilter({ ...parseIssueFilter(current), ...next });
-    });
-  }, []);
+    setViewState((current) => ({
+      ...current,
+      filter: formatIssueFilter({ ...parseIssueFilter(current.filter), ...next }),
+      filterEdited: true,
+    }));
+  }, [setViewState]);
 
   const toggleMultiFilter = useCallback((field: 'kinds' | 'priorities', key: string) => {
-    setFilter((current) => {
-      filterEditedRef.current = true;
-      const parsed = parseIssueFilter(current);
+    setViewState((current) => {
+      const parsed = parseIssueFilter(current.filter);
       const values = new Set(parsed[field]);
       if (values.has(key)) {
         values.delete(key);
       } else {
         values.add(key);
       }
-      return formatIssueFilter({ ...parsed, [field]: [...values] });
+      return {
+        ...current,
+        filter: formatIssueFilter({ ...parsed, [field]: [...values] }),
+        filterEdited: true,
+      };
     });
-  }, []);
+  }, [setViewState]);
 
   // Filter issues within repos — three-state aware, plus repo/label/parent filters
   const filteredRepos = useMemo(() => {

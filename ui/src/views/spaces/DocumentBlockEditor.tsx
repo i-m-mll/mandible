@@ -34,6 +34,7 @@ import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { getSpaceExports } from '../../api';
 import { createSSEClient } from '../../sse-client';
+import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
 import {
@@ -55,10 +56,10 @@ import {
   type CreateBlockBody,
 } from './spaceBlocksClient';
 import {
-  readBlockEditorViewState,
+  blockEditorStorageKey,
+  normalizeBlockEditorViewState,
   reconcileBlockEditorViewState,
-  writeBlockEditorViewState,
-  type BlockEditorViewState,
+  EMPTY_BLOCK_EDITOR_VIEW_STATE,
 } from './blockEditorViewState';
 import { EMPTY_DOCUMENT_VIEW_STATE } from './documentViewState';
 import { SpaceItemPicker } from './SpaceItemPicker';
@@ -294,8 +295,10 @@ export function DocumentBlockEditor({
   onEmbedDeleteDecision,
 }: DocumentBlockEditorProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
-  const [viewState, setViewState] = useState<BlockEditorViewState>(() =>
-    readBlockEditorViewState(projectId, spaceId ?? ''),
+  const [viewState, setViewState] = usePersistedViewState(
+    spaceId ? blockEditorStorageKey(projectId, spaceId) : '',
+    normalizeBlockEditorViewState,
+    EMPTY_BLOCK_EDITOR_VIEW_STATE,
   );
   const [busy, setBusy] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -321,16 +324,6 @@ export function DocumentBlockEditor({
   const currentSpaceIdRef = useRef<string | null | undefined>(spaceId);
   fetchRef.current = fetchImpl;
   currentSpaceIdRef.current = spaceId;
-
-  // Re-hydrate per-space edit state whenever the open Space changes.
-  useEffect(() => {
-    setViewState(readBlockEditorViewState(projectId, spaceId ?? ''));
-  }, [projectId, spaceId]);
-
-  // Persist edit state (browser-local only; never promoted to the ledger).
-  useEffect(() => {
-    if (spaceId) writeBlockEditorViewState(projectId, spaceId, viewState);
-  }, [projectId, spaceId, viewState]);
 
   useEffect(() => {
     return () => {

@@ -8,7 +8,7 @@ import {
   buildLedgerIssueDetailProjection,
   buildLedgerIssueDetailProjectionWithProfile,
 } from "../src/ledger/issue-detail.js";
-import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-migration.js";
+import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-projection.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
@@ -73,6 +73,15 @@ function insertArtifact(id: string, hash: string, uri: string): void {
       '{}', 'present', '{}', '{}', 1000
     )`,
   ).run(id, hash, uri);
+  db.prepare(
+    `INSERT INTO artifact_blob (
+       id, algorithm, content_hash, storage_uri, media_type, role, size_bytes,
+       provider_id, manifest_id, custody_mode, availability, created_at
+     ) VALUES (
+       ?, 'sha256', ?, ?, 'text/markdown', 'report', 42,
+       'provider_1', 'manifest_1', 'managed', 'present', 1000
+     )`,
+  ).run(`artifact-blob:${hash}`, hash, uri);
 }
 
 describe("ledger issue detail projection", () => {
@@ -196,12 +205,23 @@ describe("ledger issue detail projection", () => {
         author: { type: "agent", display: "Codex" },
       },
     ]);
-    expect(projection.timeline.slice(0, 5)).toMatchObject([
+    expect(projection.timeline.slice(0, 2)).toMatchObject([
       { kind: "body", ordinal: 0, body: "Child body" },
       { kind: "comment", ordinal: 1, body: "Implementation note" },
-      { kind: "checkpoint", checkpoint_kind: "delegation-manifest" },
-      { kind: "state", event_type: "issue.closed", status: "closed", resolution: "merged" },
-      { kind: "state", event_type: "issue.reopened", status: "open", resolution: null },
+    ]);
+    expect(projection.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: "checkpoint", checkpoint_kind: "delegation-manifest" }),
+      expect.objectContaining({
+        kind: "state", event_type: "issue.closed", status: "closed", resolution: "merged",
+      }),
+      expect.objectContaining({
+        kind: "state", event_type: "issue.reopened", status: "open", resolution: null,
+      }),
+    ]));
+    const lifecycleEvents = projection.timeline.filter((entry) => entry.kind === "state");
+    expect(lifecycleEvents.map((entry) => entry.event_type)).toEqual([
+      "issue.closed",
+      "issue.reopened",
     ]);
     expect(projection.timeline).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: "event", event_type: "relationship.added" }),
@@ -452,13 +472,14 @@ describe("ledger issue detail projection", () => {
     });
     db.prepare(
       `INSERT INTO artifact_links (
-        id, artifact_id, entity_type, entity_id, link_type, role, repo_id,
-        provider_id, source, metadata_json, created_at, updated_at
+        id, artifact_id, blob_id, entity_type, entity_id, link_type, role, repo_id,
+        provider_id, source, metadata_json, target_type, target_id, created_at, updated_at
       ) VALUES (
-        'link_1', ?, 'issue', ?, 'produced_by', 'report', 'repo',
-        'provider_1', 'artifact_registry', '{"path":"results/report.md"}', 2000, 2000
+        'link_1', ?, ?, 'issue', ?, 'produced_by', 'report', 'repo',
+        'provider_1', 'artifact_registry', '{"path":"results/report.md"}',
+        'artifact_blob', ?, 2000, 2000
       )`,
-    ).run(linkedId, issue.id);
+    ).run(linkedId, `artifact-blob:${linkedHash}`, issue.id, `artifact-blob:${linkedHash}`);
 
     const artifacts = buildLedgerIssueDetailProjection(db, issue.id).associated_artifacts;
 

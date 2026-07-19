@@ -69,7 +69,7 @@ const RANDOM_BYTES = 10;
 /**
  * Generate a Mandible ledger ID. This is UUIDv7-like rather than a full RFC
  * UUIDv7 implementation: lexicographic order follows millisecond time, then a
- * cryptographic-random suffix prevents path/title/git-bug-derived IDs.
+ * cryptographic-random suffix prevents path/title/adapter-derived IDs.
  */
 export function createLedgerId(prefix: LedgerIdPrefix, options: LedgerIdOptions = {}): string {
   const now = options.now ?? Date.now();

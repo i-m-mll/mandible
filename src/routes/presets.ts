@@ -35,14 +35,7 @@ import {
   type PresetSource,
   type SessionPreset,
 } from "../presets.js";
-
-function sendJson(
-  res: { status(c: number): { json(p: unknown): void }; json(p: unknown): void },
-  code: number,
-  payload: unknown,
-): void {
-  res.status(code).json(payload);
-}
+import { sendJson } from "./http.js";
 
 export function registerPresetRoutes(server: RouteRegistrar): void {
   // IMPORTANT: Register non-parameterized /api/presets/* routes BEFORE

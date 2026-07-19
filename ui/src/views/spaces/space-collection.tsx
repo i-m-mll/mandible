@@ -16,7 +16,7 @@
 // placeholder, never silently dropped.
 //
 // View-state (filter, selection, collapse) is browser-local (./collectionViewState)
-// and follows the Timeline localStorage pattern; canonical state stays in SQLite.
+// and follows the shared browser-persistence pattern; canonical state stays in SQLite.
 // SSE `space:*` events are RECONCILIATION inputs — they refetch the packet but
 // never reset selection/filter/collapse (Dataful-UX contract).
 
@@ -31,6 +31,7 @@ import {
 import { SpaceItemPicker } from './SpaceItemPicker';
 import { parseResourceRef, resourceRefHref, displayResourceRef } from '../../resource-refs';
 import { createSSEClient } from '../../sse-client';
+import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import type { SpaceViewModel } from './types';
 import {
@@ -41,11 +42,10 @@ import {
   type CollectionTreeNode,
 } from './collectionModel';
 import {
-  readCollectionViewState,
-  writeCollectionViewState,
+  collectionStorageKey,
+  normalizeCollectionViewState,
   reconcileCollectionViewState,
   EMPTY_COLLECTION_VIEW_STATE,
-  type CollectionViewState,
 } from './collectionViewState';
 import './space-collection.css';
 
@@ -206,30 +206,16 @@ function CollectionRow({
 
 export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMountProps): JSX.Element {
   const [load, setLoad] = useState<LoadState>({ status: 'idle' });
-  const [viewState, setViewState] = useState<CollectionViewState>(EMPTY_COLLECTION_VIEW_STATE);
+  const [viewState, setViewState] = usePersistedViewState(
+    spaceId ? collectionStorageKey(projectId, spaceId) : '',
+    normalizeCollectionViewState,
+    EMPTY_COLLECTION_VIEW_STATE,
+  );
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   // The latest live id set, so view-state reconciliation can drop vanished ids
   // without resetting surviving selection/collapse on every refetch.
   const liveIdsRef = useRef<Set<string>>(new Set());
-
-  // Hydrate persisted view-state when the active Space changes. This is the
-  // ONLY place we replace view-state wholesale, and it is driven by the Space
-  // identity (an explicit navigation), never by a data refetch.
-  useEffect(() => {
-    if (!spaceId) {
-      setViewState(EMPTY_COLLECTION_VIEW_STATE);
-      return;
-    }
-    setViewState(readCollectionViewState(projectId, spaceId));
-  }, [projectId, spaceId]);
-
-  // Persist view-state on change (filter/selection/collapse) so it survives
-  // tab switches and refreshes.
-  useEffect(() => {
-    if (!spaceId) return;
-    writeCollectionViewState(projectId, spaceId, viewState);
-  }, [projectId, spaceId, viewState]);
 
   const loadPacket = useCallback(
     async (reconcile: boolean) => {

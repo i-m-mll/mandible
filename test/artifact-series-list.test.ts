@@ -232,6 +232,8 @@ describe("artifact series list", () => {
       media_type: "text/plain",
       role: "report",
     }, 2000);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM artifact_series").get() as { n: number }).n).toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM artifact_versions").get() as { n: number }).n).toBe(0);
     const router = createRouter();
 
     const resolved = await router.invoke({
