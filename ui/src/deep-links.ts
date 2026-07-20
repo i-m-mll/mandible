@@ -1,3 +1,5 @@
+import { normalizeArtifactRouteParams } from './routing';
+
 type DeepLinkModule = {
   getCurrent: () => Promise<string[] | null>;
   onOpenUrl: (handler: (urls: string[]) => void) => Promise<() => void>;
@@ -50,16 +52,15 @@ function artifactRouteFromUrl(url: URL): string | null {
   const version = url.searchParams.get('version')?.trim();
   if (!artifact && !ref && !series) return null;
 
+  const normalized = normalizeArtifactRouteParams({
+    ...(artifact ? { artifact } : {}),
+    ...(ref ? { ref } : {}),
+    ...(series ? { series } : {}),
+    ...(version ? { version } : {}),
+  });
   const params = new URLSearchParams();
-  if (series) {
-    params.set('series', series);
-    // A version only has meaning alongside a series. Preserve valid pins while
-    // dropping malformed combinations instead of inventing a prefixed ref.
-    if (version && /^[1-9]\d*$/.test(version)) params.set('version', version);
-  } else if (ref) {
-    params.set('ref', ref);
-  } else if (artifact) {
-    params.set('artifact', artifact);
+  for (const key of ['series', 'version', 'ref', 'artifact']) {
+    if (normalized[key]) params.set(key, normalized[key]);
   }
   return `#/artifacts?${params.toString()}`;
 }

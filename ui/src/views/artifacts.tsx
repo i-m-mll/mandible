@@ -27,6 +27,7 @@ import {
   getArtifactSeriesList,
   getArtifactVersions,
   getLedgerIssueDetail,
+  isApiErrorStatus,
   publishArtifactDraft,
   rebaseArtifactDraft,
   resolveArtifact,
@@ -231,9 +232,14 @@ export function ArtifactsView({
           setSelectedArtifact(next.artifact);
           return;
         }
-      } catch {
-        // Version history is optional for legacy artifact= links. A standalone
-        // artifact still has a resolved identity and may have previewable bytes.
+      } catch (err) {
+        if (!isApiErrorStatus(err, 404)) {
+          if (!isCancelled()) {
+            applyResolutionSelection(next, { forcePinned: !/^artifact-series:/i.test(next.ref) });
+            setError(err instanceof Error ? err.message : String(err));
+          }
+          return;
+        }
       }
     }
     if (!isCancelled()) {
@@ -391,14 +397,17 @@ export function ArtifactsView({
 
   useEffect(() => {
     if (!selectedSeriesRef) {
+      versionsRequestIdRef.current += 1;
       setVersionHistory(null);
+      setDetailLoading(false);
       return;
     }
     const requestId = versionsRequestIdRef.current + 1;
     versionsRequestIdRef.current = requestId;
+    const controller = new AbortController();
     setDetailLoading(true);
     setError(null);
-    getArtifactVersions(selectedSeriesRef)
+    getArtifactVersions(selectedSeriesRef, { signal: controller.signal })
       .then((history) => {
         if (versionsRequestIdRef.current !== requestId) return;
         const newestFirst = sortedVersionHistory(history);
@@ -409,6 +418,7 @@ export function ArtifactsView({
         setSelectedArtifactId(selectedVersion?.artifact_id ?? null);
       })
       .catch((err) => {
+        if (isAbortError(err)) return;
         if (versionsRequestIdRef.current === requestId) {
           setVersionHistory(null);
           setError(err instanceof Error ? err.message : String(err));
@@ -417,6 +427,9 @@ export function ArtifactsView({
       .finally(() => {
         if (versionsRequestIdRef.current === requestId) setDetailLoading(false);
       });
+    return () => {
+      controller.abort();
+    };
   }, [selectedSeriesRef, selectedVersionNo]);
 
   useEffect(() => {

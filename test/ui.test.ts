@@ -347,6 +347,27 @@ describe('App routing', () => {
     expect(parseRouteFromHash('#/not-a-real-tab')).toEqual({ tab: 'spaces', params: {} });
   });
 
+  it.each([
+    [
+      '#/artifacts?artifact=legacy&ref=artifact-blob%3Aabc&series=artifact-series%3Areport&version=2&sidebar=hidden',
+      { series: 'artifact-series:report', version: '2', sidebar: 'hidden' },
+    ],
+    [
+      '#/artifacts?artifact=legacy&ref=artifact-version%3Av1&version=3',
+      { ref: 'artifact-version:v1' },
+    ],
+    [
+      '#/artifacts?artifact=artifact-blob%3Aabc&version=4',
+      { artifact: 'artifact-blob:abc' },
+    ],
+    [
+      '#/artifacts?series=artifact-series%3Areport&version=0',
+      { series: 'artifact-series:report' },
+    ],
+  ])('normalizes direct artifact hash selectors before view wiring: %s', (hash, params) => {
+    expect(parseRouteFromHash(hash)).toEqual({ tab: 'artifacts', params });
+  });
+
   it('parses sidebar=hidden as the route-scoped view sidebar hide request', () => {
     const route = parseRouteFromHash('#/issues?repo=dotfiles&issue=e70757d&sidebar=hidden');
 
@@ -3687,6 +3708,57 @@ describe('ArtifactsView', () => {
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
   });
 
+  it('surfaces non-404 legacy history enrichment failures without losing the resolved artifact', async () => {
+    const artifact = makeArtifactFixture('d', 'history-error.md');
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'history service failed' }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/artifacts/resolve?')) {
+        return jsonResponse({
+          resolution: {
+            status: 'resolved',
+            ref: `artifact-blob:${artifact.content_hash}`,
+            scheme: 'artifact-blob',
+            normalized_ref: `artifact-blob:${artifact.content_hash}`,
+            artifact,
+            alias: null,
+            series: undefined,
+            version: undefined,
+            warnings: [],
+          },
+        });
+      }
+      if (url.endsWith('/content')) {
+        return jsonResponse({
+          content: {
+            artifact_id: artifact.id,
+            status: 'unavailable',
+            kind: 'unavailable',
+            media_type: artifact.media_type,
+            size_bytes: artifact.size_bytes,
+            source: null,
+            preview: null,
+            download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
+            reason: 'No inline preview is available.',
+          },
+        });
+      }
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialArtifactId: `artifact-blob:${artifact.content_hash}` }));
+
+    await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('history-error.md'));
+    expect(screen.getByText('history service failed')).toBeTruthy();
+  });
+
   it('keeps the sidebar list mounted when artifact selection changes', async () => {
     const makeArtifact = (hashChar: string, title: string) => ({
       id: `artifact:sha256:${hashChar.repeat(64)}`,
@@ -4505,6 +4577,118 @@ describe('ArtifactsView', () => {
     expect(versionRequests).toEqual([]);
     expect(screen.getByText('Select an artifact or open an artifact URI.')).toBeTruthy();
   });
+
+  it('ignores delayed version history after navigation clears the selected series', async () => {
+    const artifact = makeArtifactFixture('e', 'stale-series.md');
+    const artifactSeries = makeArtifactSeries('stale-series', [artifact], 'stale-series.md');
+    let resolveHistory: (response: Response) => void = () => undefined;
+    const delayedHistory = new Promise<Response>((resolve) => {
+      resolveHistory = resolve;
+    });
+    const versionRequests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        versionRequests.push(url);
+        return delayedHistory;
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    const { rerender } = render(h(ArtifactsView, { initialSeriesRef: artifactSeries.summary.ref }));
+    await waitFor(() => expect(versionRequests).toHaveLength(1));
+
+    const invalidSeriesRef = `artifact-blob:${artifact.content_hash}`;
+    rerender(h(ArtifactsView, { initialSeriesRef: invalidSeriesRef }));
+    await waitFor(() => expect(screen.getByText(`Invalid series reference: ${invalidSeriesRef}`)).toBeTruthy());
+
+    resolveHistory(new Response(JSON.stringify({ history: artifactSeries.history }), {
+      headers: { 'content-type': 'application/json' },
+    }));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(document.querySelector('.artifact-detail h2')).toBeNull();
+    expect(screen.getByText(`Invalid series reference: ${invalidSeriesRef}`)).toBeTruthy();
+  });
+
+  it.each(['blob', 'version', 'series'] as const)(
+    'preserves canonical ref= %s selection semantics',
+    async (kind) => {
+      const v1 = makeArtifactFixture('4', 'typed-v1.md');
+      const v2 = makeArtifactFixture('5', 'typed-v2.md');
+      const artifactSeries = makeArtifactSeries('typed-series', [v1, v2], 'typed-report.md');
+      const ref = kind === 'blob'
+        ? `artifact-blob:${v1.content_hash}`
+        : kind === 'version'
+          ? artifactSeries.history.versions[0].id
+          : 'artifact-series:typed-series@latest';
+      const artifact = kind === 'series' ? v2 : v1;
+      const version = kind === 'blob'
+        ? undefined
+        : kind === 'series'
+          ? artifactSeries.history.versions[1]
+          : artifactSeries.history.versions[0];
+      const versionRequests: string[] = [];
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+        const url = String(input);
+        if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+        if (url.startsWith('/api/artifacts/versions?')) {
+          versionRequests.push(url);
+          return jsonResponse({ history: artifactSeries.history });
+        }
+        if (url.startsWith('/api/artifacts/resolve?')) {
+          return jsonResponse({
+            resolution: {
+              status: 'resolved',
+              ref,
+              scheme: kind === 'series' ? 'artifact-series' : `artifact-${kind}`,
+              normalized_ref: ref,
+              artifact,
+              alias: null,
+              series: kind === 'blob' ? undefined : artifactSeries.history.series,
+              version,
+              warnings: kind === 'series' ? ['series_latest_not_pinned'] : [],
+            },
+          });
+        }
+        if (url.endsWith('/content')) {
+          return jsonResponse({
+            content: {
+              artifact_id: artifact.id,
+              status: 'unavailable',
+              kind: 'unavailable',
+              media_type: artifact.media_type,
+              size_bytes: artifact.size_bytes,
+              source: null,
+              preview: null,
+              download: { available: false, media_type: artifact.media_type, size_bytes: 0, filename: null },
+              reason: 'No inline preview is available.',
+            },
+          });
+        }
+        if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+        return Promise.reject(new Error(`unexpected fetch ${url}`));
+      }));
+
+      render(h(ArtifactsView, { initialRef: ref }));
+
+      await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe(artifact.metadata.title));
+      if (kind === 'blob') {
+        expect(versionRequests).toEqual([]);
+        expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('');
+        expect(screen.getByLabelText('Artifact version').querySelectorAll('option')).toHaveLength(1);
+      } else {
+        await waitFor(() => expect(versionRequests).toHaveLength(1));
+        await waitFor(() => {
+          expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value)
+            .toBe(kind === 'series' ? '' : '1');
+        });
+      }
+    },
+  );
 
   it('keeps artifact detail mounted while switching versions', async () => {
     const v1 = makeArtifactFixture('1', 'stable-v1.md');
