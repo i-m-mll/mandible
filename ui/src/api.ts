@@ -241,6 +241,20 @@ const DEFAULT_HEADERS = {
   Accept: 'application/json',
 };
 
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
+export function isApiErrorStatus(error: unknown, status: number): error is ApiError {
+  return error instanceof ApiError && error.status === status;
+}
+
 async function apiGet(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(DEFAULT_HEADERS);
   if (init.headers) {
@@ -262,7 +276,7 @@ async function throwOnError(response: Response, method: string, path: string): P
   } catch {
     // keep the generic message when the server did not return JSON
   }
-  throw new Error(message);
+  throw new ApiError(message, response.status);
 }
 
 async function apiPost(path: string, body?: unknown): Promise<Response> {
@@ -2281,9 +2295,12 @@ export async function getArtifactSeriesList(params: ArtifactQueryParams = {}): P
   return payload.series ?? [];
 }
 
-export async function getArtifactVersions(ref: string): Promise<ArtifactVersionHistory> {
+export async function getArtifactVersions(
+  ref: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<ArtifactVersionHistory> {
   const query = buildQuery({ ref });
-  const response = await apiGet(`/api/artifacts/versions${query}`);
+  const response = await apiGet(`/api/artifacts/versions${query}`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { history: ArtifactVersionHistory };
   return payload.history;
 }

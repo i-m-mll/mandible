@@ -14,6 +14,28 @@ export function parseArtifactVersionParam(value: string | undefined): number | n
   return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
+export function normalizeArtifactRouteParams(params: Record<string, string>): Record<string, string> {
+  const normalized = { ...params };
+  const series = params.series?.trim();
+  const ref = params.ref?.trim();
+  const artifact = params.artifact?.trim();
+  delete normalized.series;
+  delete normalized.ref;
+  delete normalized.artifact;
+  delete normalized.version;
+
+  if (series) {
+    normalized.series = series;
+    const version = parseArtifactVersionParam(params.version);
+    if (version !== null) normalized.version = String(version);
+  } else if (ref) {
+    normalized.ref = ref;
+  } else if (artifact) {
+    normalized.artifact = artifact;
+  }
+  return normalized;
+}
+
 export function isViewSidebarHidden(route: Route): boolean {
   return route.params[VIEW_SIDEBAR_QUERY_PARAM] === VIEW_SIDEBAR_HIDDEN_VALUE;
 }
@@ -65,5 +87,5 @@ export function parseRouteFromHash(hashValue: string): Route {
   const tab = ['auth', 'artifacts', 'chat-history', 'work', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'spaces'].includes(retiredPresetsPath)
     ? (retiredPresetsPath as Route['tab'])
     : 'spaces';
-  return { tab, params };
+  return { tab, params: tab === 'artifacts' ? normalizeArtifactRouteParams(params) : params };
 }

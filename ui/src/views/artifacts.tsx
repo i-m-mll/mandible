@@ -27,6 +27,7 @@ import {
   getArtifactSeriesList,
   getArtifactVersions,
   getLedgerIssueDetail,
+  isApiErrorStatus,
   publishArtifactDraft,
   rebaseArtifactDraft,
   resolveArtifact,
@@ -143,6 +144,7 @@ export function ArtifactsView({
   initialRole,
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
+  const initialSeriesSelection = initialSeriesRef ? normalizeInitialSeriesRef(initialSeriesRef) : null;
   const [filters, setFilters] = useState<ArtifactFilters>(() => ({
     ...EMPTY_FILTERS,
     repo: initialRepo ?? '',
@@ -150,9 +152,11 @@ export function ArtifactsView({
   }));
   const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
   const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
-    initialSeriesRef ? normalizeSeriesRef(initialSeriesRef) : null,
+    initialSeriesSelection,
   );
-  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(initialVersionNo);
+  const [selectedVersionNo, setSelectedVersionNo] = useState<number | null>(
+    initialSeriesRef && !initialSeriesSelection ? null : initialVersionNo,
+  );
   const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(initialArtifactId ?? null);
   const [selectedArtifact, setSelectedArtifact] = useState<ArtifactRecord | null>(null);
   const [versionHistory, setVersionHistory] = useState<ArtifactVersionHistory | null>(null);
@@ -179,7 +183,7 @@ export function ArtifactsView({
   const knowledgeRequestIdRef = useRef(0);
   const lastWrittenHashRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(null);
   const lastAppliedInitialSeriesRef = useRef<{ seriesRef: string; versionNo: number | null } | null>(
-    initialSeriesRef ? { seriesRef: normalizeSeriesRef(initialSeriesRef), versionNo: initialVersionNo } : null,
+    initialSeriesSelection ? { seriesRef: initialSeriesSelection, versionNo: initialVersionNo } : null,
   );
 
   useEffect(() => {
@@ -215,20 +219,32 @@ export function ArtifactsView({
     isCancelled: () => boolean,
   ) => {
     if (next.artifact && !next.series && !next.version) {
-      const history = sortedVersionHistory(await getArtifactVersions(next.artifact.id));
-      if (isCancelled()) return;
-      const pinnedVersion = history.versions.find((version) => version.artifact_id === next.artifact?.id) ?? null;
-      if (pinnedVersion) {
-        setResolution(next);
-        setVersionHistory(history);
-        setSelectedSeriesRef(seriesRecordRef(history.series));
-        setSelectedVersionNo(pinnedVersion.version_no);
-        setSelectedArtifactId(next.artifact.id);
-        setSelectedArtifact(next.artifact);
-        return;
+      try {
+        const history = sortedVersionHistory(await getArtifactVersions(next.artifact.id));
+        if (isCancelled()) return;
+        const pinnedVersion = history.versions.find((version) => version.artifact_id === next.artifact?.id) ?? null;
+        if (pinnedVersion) {
+          setResolution(next);
+          setVersionHistory(history);
+          setSelectedSeriesRef(seriesRecordRef(history.series));
+          setSelectedVersionNo(pinnedVersion.version_no);
+          setSelectedArtifactId(next.artifact.id);
+          setSelectedArtifact(next.artifact);
+          return;
+        }
+      } catch (err) {
+        if (!isApiErrorStatus(err, 404)) {
+          if (!isCancelled()) {
+            applyResolutionSelection(next, { forcePinned: !/^artifact-series:/i.test(next.ref) });
+            setError(err instanceof Error ? err.message : String(err));
+          }
+          return;
+        }
       }
     }
-    if (!isCancelled()) applyResolutionSelection(next, { forcePinned: true });
+    if (!isCancelled()) {
+      applyResolutionSelection(next, { forcePinned: !/^artifact-series:/i.test(next.ref) });
+    }
   }, [applyResolutionSelection]);
 
   const loadSeries = useCallback(async () => {
@@ -351,7 +367,18 @@ export function ArtifactsView({
 
   useEffect(() => {
     if (!initialSeriesRef) return;
-    const nextSeriesRef = normalizeSeriesRef(initialSeriesRef);
+    const nextSeriesRef = normalizeInitialSeriesRef(initialSeriesRef);
+    if (!nextSeriesRef) {
+      lastAppliedInitialSeriesRef.current = null;
+      setSelectedSeriesRef(null);
+      setSelectedVersionNo(null);
+      setSelectedArtifactId(null);
+      setSelectedArtifact(null);
+      setVersionHistory(null);
+      setResolution(null);
+      setError(`Invalid series reference: ${initialSeriesRef}`);
+      return;
+    }
     const nextVersionNo = initialVersionNo;
     const lastWritten = lastWrittenHashRef.current;
     if (lastWritten?.seriesRef === nextSeriesRef && lastWritten.versionNo === nextVersionNo) {
@@ -365,18 +392,22 @@ export function ArtifactsView({
     setSelectedSeriesRef(nextSeriesRef);
     setSelectedVersionNo(nextVersionNo);
     setResolution(null);
+    setError(null);
   }, [initialSeriesRef, initialVersionNo]);
 
   useEffect(() => {
     if (!selectedSeriesRef) {
+      versionsRequestIdRef.current += 1;
       setVersionHistory(null);
+      setDetailLoading(false);
       return;
     }
     const requestId = versionsRequestIdRef.current + 1;
     versionsRequestIdRef.current = requestId;
+    const controller = new AbortController();
     setDetailLoading(true);
     setError(null);
-    getArtifactVersions(selectedSeriesRef)
+    getArtifactVersions(selectedSeriesRef, { signal: controller.signal })
       .then((history) => {
         if (versionsRequestIdRef.current !== requestId) return;
         const newestFirst = sortedVersionHistory(history);
@@ -387,6 +418,7 @@ export function ArtifactsView({
         setSelectedArtifactId(selectedVersion?.artifact_id ?? null);
       })
       .catch((err) => {
+        if (isAbortError(err)) return;
         if (versionsRequestIdRef.current === requestId) {
           setVersionHistory(null);
           setError(err instanceof Error ? err.message : String(err));
@@ -395,6 +427,9 @@ export function ArtifactsView({
       .finally(() => {
         if (versionsRequestIdRef.current === requestId) setDetailLoading(false);
       });
+    return () => {
+      controller.abort();
+    };
   }, [selectedSeriesRef, selectedVersionNo]);
 
   useEffect(() => {
@@ -1935,6 +1970,12 @@ function normalizeSeriesRef(ref: string): string {
   const trimmed = ref.trim();
   if (/^artifact-series:/i.test(trimmed)) return trimmed;
   return canonicalArtifactSeriesRef(trimmed);
+}
+
+function normalizeInitialSeriesRef(ref: string): string | null {
+  const trimmed = ref.trim();
+  if (/^(artifact-blob:|artifact-version:|artifact:sha256:)/i.test(trimmed)) return null;
+  return normalizeSeriesRef(trimmed);
 }
 
 function sortedVersionHistory(history: ArtifactVersionHistory): ArtifactVersionHistory {
