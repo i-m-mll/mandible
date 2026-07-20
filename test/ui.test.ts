@@ -397,6 +397,22 @@ describe('App routing', () => {
     expect(
       routeHashFromMandibleDeepLink('mandible:///artifacts?artifact=artifact%3Asha256%3Aabc'),
     ).toBe('#/artifacts?artifact=artifact%3Asha256%3Aabc');
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///artifacts?series=artifact-series%3Areport&version=2',
+      ),
+    ).toBe('#/artifacts?series=artifact-series%3Areport&version=2');
+    expect(
+      routeHashFromMandibleDeepLink('mandible:///artifacts?ref=artifact-blob%3Aabc'),
+    ).toBe('#/artifacts?ref=artifact-blob%3Aabc');
+    expect(
+      routeHashFromMandibleDeepLink('mandible:///artifacts?artifact=artifact-version%3Av1'),
+    ).toBe('#/artifacts?artifact=artifact-version%3Av1');
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///artifacts?artifact=legacy&ref=artifact-blob%3Aabc&series=artifact-series%3Areport&version=oops',
+      ),
+    ).toBe('#/artifacts?series=artifact-series%3Areport');
   });
 
   it('navigates only for supported mandible deep links', () => {
@@ -3581,7 +3597,7 @@ describe('ArtifactsView', () => {
     expect(screen.getByRole('button', { name: 'Format' })).toBeTruthy();
   });
 
-  it('renders HTML artifact previews in a sandboxed iframe', async () => {
+  it('renders standalone managed HTML previews when legacy artifact history is absent', async () => {
     const artifact = {
       id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
       algorithm: 'sha256',
@@ -3615,7 +3631,10 @@ describe('ArtifactsView', () => {
         return jsonResponse({ series: [artifactSeries.summary] });
       }
       if (url.startsWith('/api/artifacts/versions?')) {
-        return jsonResponse({ history: artifactSeries.history });
+        return Promise.resolve(new Response(JSON.stringify({ error: 'no artifact version series found for ref' }), {
+          status: 404,
+          headers: { 'content-type': 'application/json' },
+        }));
       }
       if (url.startsWith('/api/artifacts/resolve?')) {
         return jsonResponse({
@@ -3659,9 +3678,10 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
 
-    render(h(ArtifactsView, { initialArtifactId: artifact.id }));
+    render(h(ArtifactsView, { initialArtifactId: `artifact-blob:${artifact.content_hash}` }));
 
     await waitFor(() => expect(document.querySelector('.artifact-preview--html')).toBeTruthy());
+    expect(screen.queryByText('no artifact version series found for ref')).toBeNull();
     const iframe = document.querySelector('.artifact-preview--html') as HTMLIFrameElement | null;
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
@@ -4455,12 +4475,35 @@ describe('ArtifactsView', () => {
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
 
-    render(h(ArtifactsView, { initialRef: ref }));
+    render(h(ArtifactsView, { initialArtifactId: ref }));
 
     await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe('latest-v2.md'));
     expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('');
     expect(document.querySelector('.artifact-detail__badge')).toBeNull();
     expect(screen.getByText('series_latest_not_pinned')).toBeTruthy();
+  });
+
+  it.each([
+    `artifact-blob:${'b'.repeat(64)}`,
+    'artifact-version:version-1',
+    `artifact:sha256:${'c'.repeat(64)}`,
+  ])('rejects immutable typed refs supplied through series= without loading version history: %s', async (invalidSeriesRef) => {
+    const versionRequests: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [] });
+      if (url.startsWith('/api/artifacts/versions?')) {
+        versionRequests.push(url);
+        return Promise.reject(new Error(`unexpected versions request ${url}`));
+      }
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, { initialSeriesRef: invalidSeriesRef, initialVersionNo: 1 }));
+
+    await waitFor(() => expect(screen.getByText(`Invalid series reference: ${invalidSeriesRef}`)).toBeTruthy());
+    expect(versionRequests).toEqual([]);
+    expect(screen.getByText('Select an artifact or open an artifact URI.')).toBeTruthy();
   });
 
   it('keeps artifact detail mounted while switching versions', async () => {

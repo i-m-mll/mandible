@@ -46,11 +46,21 @@ function artifactRouteFromUrl(url: URL): string | null {
 
   const artifact = url.searchParams.get('artifact')?.trim();
   const ref = url.searchParams.get('ref')?.trim();
-  if (!artifact && !ref) return null;
+  const series = url.searchParams.get('series')?.trim();
+  const version = url.searchParams.get('version')?.trim();
+  if (!artifact && !ref && !series) return null;
 
   const params = new URLSearchParams();
-  if (artifact) params.set('artifact', artifact);
-  if (ref) params.set('ref', ref);
+  if (series) {
+    params.set('series', series);
+    // A version only has meaning alongside a series. Preserve valid pins while
+    // dropping malformed combinations instead of inventing a prefixed ref.
+    if (version && /^[1-9]\d*$/.test(version)) params.set('version', version);
+  } else if (ref) {
+    params.set('ref', ref);
+  } else if (artifact) {
+    params.set('artifact', artifact);
+  }
   return `#/artifacts?${params.toString()}`;
 }
 
