@@ -274,6 +274,45 @@ describe("artifact CLI", () => {
     }
   });
 
+  it.each([
+    {
+      name: "associate",
+      args: ["artifact", "associate", "artifact:deadbeef", "--project", "mandible"],
+      route: "/api/artifacts/associations",
+      message: "artifact_ref_ambiguous",
+    },
+    {
+      name: "record",
+      args: ["artifact", "record", "--ref", "artifact:deadbeef", "--kind", "managed"],
+      route: "/api/artifacts/versions",
+      message: "artifact_ref_not_resolved",
+    },
+    {
+      name: "bundle create",
+      args: ["artifact", "bundle", "create", "--name", "review", "artifact:deadbeef"],
+      route: "/api/artifacts/bundles",
+      message: "bundle_member_ref_not_resolved",
+    },
+  ])("surfaces non-2xx API details for $name", async ({ args, route, message }) => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "POST" && req.url === route) {
+        return { status: 422, body: { error: message } };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(args, tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`HTTP 422): ${message}`);
+    } finally {
+      await recorder.close();
+    }
+  });
+
   it("classifies clean tracked files as commit-pinned repo links in dry-run JSON", () => {
     const result = run(["artifact", "ingest", "report.md", "--dry-run", "--json"]);
 
@@ -665,5 +704,47 @@ describe("artifact CLI", () => {
     expect(payload.planned_payload.reference.identity_kind).toBe("bundle_manifest");
     expect(payload.members[0].artifact.recoverability).toBe("repo_commit");
     expect(payload.planned_payload.json.members[0].ref).toContain("repo://");
+  });
+
+  it("serializes resolved bundle members with canonical refs, never the obsolete artifact id", async () => {
+    const hash = "a".repeat(64);
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              artifact: {
+                id: `artifact:sha256:${hash}`,
+                content_hash: hash,
+                custody_mode: "copy",
+                availability: "present",
+                metadata: { recoverability: "mandible_cas" },
+              },
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(
+        ["artifact", "bundle", "create", "--name", "review", `artifact-blob:${hash}`, "--dry-run", "--json"],
+        tempDir,
+        { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
+      );
+
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.planned_payload.json.members[0]).toMatchObject({
+        artifact_id: `artifact-blob:${hash}`,
+        ref: `artifact-blob:${hash}`,
+      });
+      expect(result.stdout).not.toContain("artifact:sha256:");
+    } finally {
+      await recorder.close();
+    }
   });
 });
