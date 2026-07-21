@@ -15,6 +15,7 @@ import {
   listArtifactVersions,
   recordArtifactVersion,
   registerLocalArtifactPath,
+  projectArtifactPublicValue,
   resolveAndLinkArtifact,
   resolveArtifactRef,
   resolveArtifactVersionHistory,
@@ -322,23 +323,26 @@ describe("canonical ref resolution and no silent retarget", () => {
     ).toThrow(/not blobs/);
   });
 
-  it("treats artifact:<hex> as a logical artifact ref and does not fall back to blob resolution", () => {
+  it("resolves artifact:<hex> as the current compact immutable artifact id", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
-    const fullId = r1.artifact.id; // artifact:sha256:<hash>
+    const compactId = `artifact:${r1.artifact.content_hash.slice(0, 12)}`;
     const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
-    expect(resolved.status).toBe("unresolved");
-    expect(resolved.target_type).toBe("artifact");
-    expect(resolved.artifact).toBeNull();
-    expect(resolved.target_id).toBeNull();
-    expect(resolved.warnings).toEqual(["artifact_unresolved"]);
+    expect(resolved.status).toBe("resolved");
+    expect(resolved.target_type).toBe("artifact_blob");
+    expect(resolved.target_id).toBe(`artifact-blob:${r1.artifact.content_hash}`);
+    expect(resolved.artifact?.id).toBe(r1.artifact.id);
+    expect(resolved.warnings).toEqual([]);
+    expect((projectArtifactPublicValue(db, resolved) as typeof resolved).artifact?.id).toBe(compactId);
 
     const blob = resolveArtifactRef(db, `artifact-blob:${r1.artifact.content_hash}`);
     expect(blob.status).toBe("resolved");
     expect(blob.target_type).toBe("artifact_blob");
-    expect(blob.artifact?.id).toBe(fullId);
+    expect(blob.artifact?.id).toBe(r1.artifact.id);
+    expect((projectArtifactPublicValue(db, blob) as typeof blob).artifact?.id).toBe(compactId);
 
     const versionResolved = resolveArtifactRef(db, r1.version.id);
-    expect(versionResolved.artifact?.id).toBe(fullId);
+    expect(versionResolved.artifact?.id).toBe(r1.artifact.id);
+    expect((projectArtifactPublicValue(db, versionResolved) as typeof versionResolved).artifact?.id).toBe(compactId);
     expect(versionResolved.version?.id).toBe(r1.version.id);
     expect(versionResolved.warnings ?? []).toEqual([]);
   });

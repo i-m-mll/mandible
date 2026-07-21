@@ -287,7 +287,7 @@ describe("file RPC transport", () => {
       seenBody = req.body as Record<string, unknown>;
       const contentPath = (req.body as Record<string, unknown>).content_path as string;
       attachmentBytes = fs.readFileSync(contentPath, "utf8");
-      res.json({ artifact: { id: "artifact:sha256:abc", availability: "present", custody_mode: "copy" } });
+      res.json({ artifact: { id: "artifact:abc123def456", availability: "present", custody_mode: "copy" } });
     }, { fileRpc: "allow" });
     const transport = new FileRpcTransport({ router, dir: tempDir, responseTtlMs: 60_000 });
 
