@@ -932,6 +932,35 @@ main() {
   local merge_head_file
   merge_head_file="$(git rev-parse --git-dir)/MERGE_HEAD"
   if [[ -f "$merge_head_file" ]]; then
+    if [[ ${#sources[@]} -eq 0 ]]; then
+      die "Cannot resume merge: no source branch was provided." 2
+    fi
+    if [[ "$hierarchical" == "false" && ${#sources[@]} -ne 1 ]]; then
+      die "Cannot resume merge: expected exactly one source branch." 2
+    fi
+
+    local resume_branch
+    resume_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    if [[ "$resume_branch" != "$target" ]]; then
+      die "Cannot resume merge: current branch '${resume_branch:-detached HEAD}' does not match requested target '$target'." 1
+    fi
+
+    local requested_heads=""
+    local resume_source
+    for resume_source in "${sources[@]}"; do
+      if ! branch_exists "$resume_source"; then
+        die "Cannot resume merge: requested source branch '$resume_source' does not exist." 1
+      fi
+      requested_heads+="$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")"$'\n'
+    done
+    requested_heads=$(printf '%s' "$requested_heads" | sed '/^$/d' | sort)
+
+    local merge_heads
+    merge_heads=$(sed '/^$/d' "$merge_head_file" | sort)
+    if [[ -z "$merge_heads" || "$merge_heads" != "$requested_heads" ]]; then
+      die "Cannot resume merge: MERGE_HEAD does not match the requested source commit(s)." 1
+    fi
+
     err ""
     err "${BOLD_YELLOW}Merge already in progress — resuming with git merge --continue${RESET}"
     err ""
@@ -968,7 +997,7 @@ main() {
     local pre_merge_head
     pre_merge_head=$(git rev-parse ORIG_HEAD 2>/dev/null || git rev-parse HEAD)
 
-    if git commit -S --no-edit; then
+    if git -c commit.gpgsign=true merge --continue; then
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
         record_auth_merge_result "$pre_merge_head"
@@ -977,7 +1006,7 @@ main() {
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     else
-      err "${RED}git commit failed.${RESET}"
+      err "${RED}git merge --continue failed.${RESET}"
       if has_conflicts; then
         err "Conflicts remain — resolve them manually and run 'git merge --continue'."
       fi

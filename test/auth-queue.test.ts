@@ -42,7 +42,11 @@ async function waitForStatus(queue: AuthQueue, id: string, status: string, timeo
 }
 
 function git(cwd: string, args: string[]): string {
-  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  }).trim();
 }
 
 function writeFile(repo: string, relativePath: string, content: string): void {
@@ -303,7 +307,7 @@ describe("auth queue", () => {
       const recovered = restarted.getRequest(request.id);
       expect(recovered?.status).toBe("completed");
       expect(recovered?.exit_code).toBe(1);
-      expect(recovered?.error).toContain("partial output");
+      expect(recovered?.error).toContain("missing repository, base branch, or head branch metadata");
       expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
     } finally {
       restarted.dispose();
@@ -311,44 +315,194 @@ describe("auth queue", () => {
     }
   });
 
+  it("aborts an unambiguous interrupted merge and requeues it with a clean checkout", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/interrupted", { "interrupted.txt": "land me\n" });
+      const headSha = git(repo, ["rev-parse", "feature/interrupted"]);
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/interrupted --into main",
+        title: "Interrupted merge",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/interrupted",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+        execution_mode: "remote",
+      });
+      queue.approve(request.id);
+      git(repo, ["merge", "--no-ff", "--no-commit", "feature/interrupted"]);
+      expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
+      queue.dispose();
+
+      now = 6 * 60 * 1000;
+      const restarted = new AuthQueue({ db, now: () => now });
+      try {
+        const recovered = restarted.getRequest(request.id);
+        expect(recovered?.status).toBe("pending");
+        expect(recovered?.exit_code).toBeNull();
+        expect(recovered?.approved_at).toBeNull();
+        expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
+        expect(git(repo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed without mutating an interrupted merge whose checkout has unrelated changes", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/ambiguous", { "ambiguous.txt": "land me\n" });
+      const headSha = git(repo, ["rev-parse", "feature/ambiguous"]);
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/ambiguous --into main",
+        title: "Ambiguous merge",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/ambiguous",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+        execution_mode: "remote",
+      });
+      queue.approve(request.id);
+      git(repo, ["merge", "--no-ff", "--no-commit", "feature/ambiguous"]);
+      writeFile(repo, "shared.txt", "unrelated local edit\n");
+      queue.dispose();
+
+      now = 6 * 60 * 1000;
+      const restarted = new AuthQueue({ db, now: () => now });
+      try {
+        const recovered = restarted.getRequest(request.id);
+        expect(recovered?.status).toBe("completed");
+        expect(recovered?.exit_code).toBe(1);
+        expect(recovered?.error).toContain("unstaged tracked changes");
+        expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
+        expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("unrelated local edit\n");
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      try {
+        git(repo, ["merge", "--abort"]);
+      } catch {
+        // The assertion above diagnoses any unexpected recovery mutation.
+      }
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed without aborting an interrupted merge with unrelated staged changes", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/staged-ambiguous", { "expected.txt": "land me\n" });
+      const headSha = git(repo, ["rev-parse", "feature/staged-ambiguous"]);
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/staged-ambiguous --into main",
+        title: "Staged ambiguous merge",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/staged-ambiguous",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+        execution_mode: "remote",
+      });
+      queue.approve(request.id);
+      git(repo, ["merge", "--no-ff", "--no-commit", "feature/staged-ambiguous"]);
+      writeFile(repo, "shared.txt", "unrelated staged edit\n");
+      git(repo, ["add", "shared.txt"]);
+      queue.dispose();
+
+      now = 6 * 60 * 1000;
+      const restarted = new AuthQueue({ db, now: () => now });
+      try {
+        const recovered = restarted.getRequest(request.id);
+        expect(recovered?.status).toBe("completed");
+        expect(recovered?.exit_code).toBe(1);
+        expect(recovered?.error).toContain("staged index does not match the expected merge tree");
+        expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
+        expect(fs.readFileSync(path.join(repo, "shared.txt"), "utf8")).toBe("unrelated staged edit\n");
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      try {
+        git(repo, ["merge", "--abort"]);
+      } catch {
+        // The assertion above diagnoses any unexpected recovery mutation.
+      }
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("recovers successful executing requests and reapplies merge finalizers on restart", () => {
     let now = 0;
+    const repo = createAuthCheckRepo();
     const db = createMigratedDb();
-    const queue = new AuthQueue({ db, now: () => now });
-    const request = queue.submit({
-      type: "merge",
-      command: "mandible auth merge feature/recovered --into main",
-      title: "Recovered merge",
-      repo: "mandible",
-      base_branch: "main",
-      head_branch: "feature/recovered",
-      execution_mode: "remote"
-    });
-    db.prepare(
-      `INSERT INTO work_units (
-        id, issue_id, repo_id, branch, kind, state, created_at, auth_request_id
-      ) VALUES (
-        'wu-recovered', 'issue-1', 'mandible', 'feature/recovered', 'solo', 'committed', ?, ?
-      )`
-    ).run(now, request.id);
-    queue.approve(request.id);
-    queue.appendOutput(request.id, "Merge made by recursive.\n");
-    queue.dispose();
-
-    now = 6 * 60 * 1000;
-    const restarted = new AuthQueue({ db, now: () => now });
     try {
-      const recovered = restarted.getRequest(request.id);
-      const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
-        .get() as { state: string; resolved_at: number | null };
-      expect(recovered?.status).toBe("completed");
-      expect(recovered?.exit_code).toBe(0);
-      expect(recovered?.merge_finalized_at).toBe(now);
-      expect(workUnit.state).toBe("resolved");
-      expect(workUnit.resolved_at).toBe(now);
+      commitOnBranch(repo, "feature/recovered", { "recovered.txt": "recovered\n" });
+      const headSha = git(repo, ["rev-parse", "feature/recovered"]);
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/recovered --into main",
+        title: "Recovered merge",
+        repo: "mandible",
+        base_branch: "main",
+        head_branch: "feature/recovered",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+        execution_mode: "remote"
+      });
+      db.prepare(
+        `INSERT INTO work_units (
+          id, issue_id, repo_id, branch, kind, state, created_at, auth_request_id
+        ) VALUES (
+          'wu-recovered', 'issue-1', 'mandible', 'feature/recovered', 'solo', 'committed', ?, ?
+        )`
+      ).run(now, request.id);
+      queue.approve(request.id);
+      git(repo, ["merge", "--no-ff", "feature/recovered", "-m", "merge recovered"]);
+      queue.dispose();
+
+      now = 6 * 60 * 1000;
+      const restarted = new AuthQueue({ db, now: () => now });
+      try {
+        const recovered = restarted.getRequest(request.id);
+        const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
+          .get() as { state: string; resolved_at: number | null };
+        expect(recovered?.status).toBe("completed");
+        expect(recovered?.exit_code).toBe(0);
+        expect(recovered?.merge_finalized_at).toBe(now);
+        expect(workUnit.state).toBe("resolved");
+        expect(workUnit.resolved_at).toBe(now);
+      } finally {
+        restarted.dispose();
+      }
     } finally {
-      restarted.dispose();
       db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
     }
   });
 
