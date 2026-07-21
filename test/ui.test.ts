@@ -3270,7 +3270,7 @@ function jsonResponse(body: unknown): Promise<Response> {
 describe('ArtifactsView', () => {
   it('renders HumbleB knowledge backrefs in artifact detail', async () => {
     const artifact = {
-      id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      id: 'artifact:aaaaaaaaaaaa',
       algorithm: 'sha256',
       content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       uri: 'artifact:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -3619,11 +3619,15 @@ describe('ArtifactsView', () => {
   });
 
   it('renders standalone managed HTML previews when legacy artifact history is absent', async () => {
+    const collisionSafeRef = 'artifact:bbbbbbbbbbbb0';
+    const contentHash = `bbbbbbbbbbbb0${'b'.repeat(51)}`;
     const artifact = {
-      id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      // The first 12 characters collide with another artifact. The backend
+      // therefore projects the first safe prefix (13 characters) as the ID.
+      id: collisionSafeRef,
       algorithm: 'sha256',
-      content_hash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      uri: 'artifact:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+      content_hash: contentHash,
+      uri: `artifact-blob:${contentHash}`,
       media_type: 'text/html',
       role: 'figure',
       size_bytes: 100,
@@ -3698,6 +3702,8 @@ describe('ArtifactsView', () => {
       }
       return Promise.reject(new Error(`unexpected fetch ${url}`));
     }));
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { clipboard: { writeText } });
 
     render(h(ArtifactsView, { initialArtifactId: `artifact-blob:${artifact.content_hash}` }));
 
@@ -3706,6 +3712,17 @@ describe('ArtifactsView', () => {
     const iframe = document.querySelector('.artifact-preview--html') as HTMLIFrameElement | null;
     expect(iframe?.getAttribute('sandbox')).toBe('allow-scripts');
     expect(iframe?.getAttribute('srcdoc')).toContain('<h1>Plot</h1>');
+
+    fireEvent.click(screen.getByLabelText('Copy artifact ref'));
+    fireEvent.click(screen.getByLabelText('Copy selected artifact ref'));
+    expect(writeText).toHaveBeenNthCalledWith(1, collisionSafeRef);
+    expect(writeText).toHaveBeenNthCalledWith(2, collisionSafeRef);
+
+    fireEvent.click(screen.getByLabelText('Artifact actions'));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Show metadata' }));
+    const metadataDialog = screen.getByRole('dialog', { name: 'Artifact metadata' });
+    fireEvent.click(within(metadataDialog).getByText('bbbbbbb').closest('button') as HTMLButtonElement);
+    expect(writeText).toHaveBeenNthCalledWith(3, collisionSafeRef);
   });
 
   it('surfaces non-404 legacy history enrichment failures without losing the resolved artifact', async () => {
