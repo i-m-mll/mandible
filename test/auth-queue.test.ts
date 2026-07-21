@@ -455,6 +455,104 @@ describe("auth queue", () => {
     }
   });
 
+  it("fails closed without mutating either checkout when cwd and target_repo_root diverge", () => {
+    let now = 0;
+    const cwdRepo = createAuthCheckRepo();
+    const targetRepo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(cwdRepo, "feature/divergent", { "divergent.txt": "land me\n" });
+      const headSha = git(cwdRepo, ["rev-parse", "feature/divergent"]);
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/divergent --into main",
+        title: "Divergent checkout merge",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/divergent",
+        merge_head_sha: headSha,
+        cwd: cwdRepo,
+        target_repo_root: targetRepo,
+        execution_mode: "remote",
+      });
+      queue.approve(request.id);
+      git(cwdRepo, ["merge", "--no-ff", "--no-commit", "feature/divergent"]);
+      const targetHead = git(targetRepo, ["rev-parse", "HEAD"]);
+      queue.dispose();
+
+      now = 6 * 60 * 1000;
+      const restarted = new AuthQueue({ db, now: () => now });
+      try {
+        const recovered = restarted.getRequest(request.id);
+        expect(recovered?.status).toBe("completed");
+        expect(recovered?.exit_code).toBe(1);
+        expect(recovered?.error).toContain("do not identify the same Git checkout");
+        expect(fs.existsSync(path.join(cwdRepo, ".git", "MERGE_HEAD"))).toBe(true);
+        expect(git(targetRepo, ["rev-parse", "HEAD"])).toBe(targetHead);
+        expect(git(targetRepo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      try {
+        git(cwdRepo, ["merge", "--abort"]);
+      } catch {
+        // The assertion above diagnoses any unexpected recovery mutation.
+      }
+      db.close();
+      fs.rmSync(cwdRepo, { recursive: true, force: true });
+      fs.rmSync(targetRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("does not recover a legitimate long-running in-flight executor", async () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/long-running", { "long-running.txt": "land me\n" });
+      registerWorkRepo(db, repo);
+      let markStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => { markStarted = resolve; });
+      const executor = async () => {
+        markStarted?.();
+        return await new Promise<never>(() => undefined);
+      };
+      const queue = new AuthQueue({ db, now: () => now, executor });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/long-running --into main",
+        title: "Long-running merge",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/long-running",
+        cwd: repo,
+      });
+      queue.approve(request.id);
+      await started;
+      git(repo, ["merge", "--no-ff", "--no-commit", "feature/long-running"]);
+
+      now = 11 * 60 * 1000;
+      queue.expireStale();
+
+      const stillExecuting = queue.getRequest(request.id);
+      expect(stillExecuting?.status).toBe("executing");
+      expect(stillExecuting?.exit_code).toBeNull();
+      expect(stillExecuting?.error).toBeNull();
+      expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(true);
+      queue.dispose();
+    } finally {
+      try {
+        git(repo, ["merge", "--abort"]);
+      } catch {
+        // Test cleanup only.
+      }
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("recovers successful executing requests and reapplies merge finalizers on restart", () => {
     let now = 0;
     const repo = createAuthCheckRepo();

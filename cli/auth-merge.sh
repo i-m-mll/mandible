@@ -935,31 +935,57 @@ main() {
     if [[ ${#sources[@]} -eq 0 ]]; then
       die "Cannot resume merge: no source branch was provided." 2
     fi
-    if [[ "$hierarchical" == "false" && ${#sources[@]} -ne 1 ]]; then
-      die "Cannot resume merge: expected exactly one source branch." 2
+    if [[ ${#sources[@]} -ne 1 ]]; then
+      die "Cannot resume merge: interrupted execution requires exactly one source branch." 2
     fi
 
-    local resume_branch
-    resume_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
-    if [[ "$resume_branch" != "$target" ]]; then
-      die "Cannot resume merge: current branch '${resume_branch:-detached HEAD}' does not match requested target '$target'." 1
+    local resume_source=${sources[0]}
+    if ! branch_exists "$resume_source"; then
+      die "Cannot resume merge: requested source branch '$resume_source' does not exist." 1
     fi
+    local requested_head
+    requested_head=$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")
+    local locked_head
+    locked_head=$(git rev-parse --verify HEAD)
 
-    local requested_heads=""
-    local resume_source
-    for resume_source in "${sources[@]}"; do
-      if ! branch_exists "$resume_source"; then
-        die "Cannot resume merge: requested source branch '$resume_source' does not exist." 1
+    validate_resume_provenance() {
+      local current_branch
+      current_branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+      [[ "$current_branch" == "$target" ]] \
+        || die "Cannot resume merge: current branch '${current_branch:-detached HEAD}' does not match requested target '$target'." 1
+      [[ "$(git rev-parse --verify HEAD)" == "$locked_head" ]] \
+        || die "Cannot resume merge: target HEAD changed during validation." 1
+      [[ "$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")" == "$requested_head" ]] \
+        || die "Cannot resume merge: requested source moved during validation." 1
+
+      local merge_heads
+      merge_heads=$(sed '/^$/d' "$merge_head_file" | sort)
+      if [[ -z "$merge_heads" || "$merge_heads" != "$requested_head" ]]; then
+        die "Cannot resume merge: MERGE_HEAD does not match the requested source commit." 1
       fi
-      requested_heads+="$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")"$'\n'
-    done
-    requested_heads=$(printf '%s' "$requested_heads" | sed '/^$/d' | sort)
+      if has_conflicts; then
+        die "Cannot resume merge: unresolved conflicts remain." 1
+      fi
+      if ! git diff --quiet --; then
+        die "Cannot resume merge: unexpected unstaged tracked changes are present." 1
+      fi
 
-    local merge_heads
-    merge_heads=$(sed '/^$/d' "$merge_head_file" | sort)
-    if [[ -z "$merge_heads" || "$merge_heads" != "$requested_heads" ]]; then
-      die "Cannot resume merge: MERGE_HEAD does not match the requested source commit(s)." 1
-    fi
+      local expected_tree_output
+      if ! expected_tree_output=$(git merge-tree --write-tree "$locked_head" "$requested_head"); then
+        die "Cannot resume merge: expected clean merge tree could not be derived." 1
+      fi
+      local expected_tree=${expected_tree_output%%$'\n'*}
+      expected_tree=${expected_tree%% *}
+      local index_tree
+      if ! index_tree=$(git write-tree); then
+        die "Cannot resume merge: staged index tree could not be read." 1
+      fi
+      if [[ -z "$expected_tree" || "$index_tree" != "$expected_tree" ]]; then
+        die "Cannot resume merge: staged index does not match the expected merge tree." 1
+      fi
+    }
+
+    validate_resume_provenance
 
     err ""
     err "${BOLD_YELLOW}Merge already in progress — resuming with git merge --continue${RESET}"
@@ -993,9 +1019,13 @@ main() {
         ;;
     esac
 
+    # The YubiKey prompt may take time; repeat every provenance check directly
+    # before the first mutating command to close that TOCTOU window.
+    validate_resume_provenance
+
     # ORIG_HEAD is the pre-merge HEAD (set by git when the merge started)
     local pre_merge_head
-    pre_merge_head=$(git rev-parse ORIG_HEAD 2>/dev/null || git rev-parse HEAD)
+    pre_merge_head=$locked_head
 
     if git -c commit.gpgsign=true merge --continue; then
       verify_merge_not_empty

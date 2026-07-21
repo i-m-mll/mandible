@@ -297,7 +297,7 @@ describe("auth merge Mandible preflight", () => {
   });
 
   it("resumes MERGE_HEAD before running Mandible auth check", () => {
-    fs.writeFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), git(["rev-parse", "feature/demo"]), "utf8");
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
 
     const result = run(["auth", "merge", "feature/demo"]);
 
@@ -318,6 +318,31 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("MERGE_HEAD does not match the requested source commit");
     expect(fs.readFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), "utf8")).toBe(`${mergeHead}\n`);
     expect(git(["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
+
+  it("refuses to resume when the staged index contains unrelated changes", () => {
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
+    fs.writeFileSync(path.join(tempDir, "tracked.txt"), "unrelated staged edit\n", "utf8");
+    git(["add", "tracked.txt"]);
+
+    const result = run(["auth", "merge", "feature/demo"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("staged index does not match the expected merge tree");
+    expect(fs.existsSync(path.join(tempDir, ".git", "MERGE_HEAD"))).toBe(true);
+    expect(fs.readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("unrelated staged edit\n");
+  });
+
+  it("refuses to resume when unrelated unstaged tracked changes are present", () => {
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
+    fs.writeFileSync(path.join(tempDir, "tracked.txt"), "unrelated unstaged edit\n", "utf8");
+
+    const result = run(["auth", "merge", "feature/demo"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unexpected unstaged tracked changes");
+    expect(fs.existsSync(path.join(tempDir, ".git", "MERGE_HEAD"))).toBe(true);
+    expect(fs.readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("unrelated unstaged edit\n");
   });
 
   it("resumes with git merge --continue exactly once and runs normal success finalization", () => {

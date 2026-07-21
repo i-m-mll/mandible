@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 
@@ -290,6 +290,7 @@ export class AuthQueue {
   private recoverStaleExecutions(
     cutoff: number,
     context: string,
+    excludeInFlight = false,
   ): { recoveredSuccessIds: string[]; recoveredFailureIds: string[]; requeuedIds: string[] } {
     const now = this.now();
     const rows = this.db
@@ -313,6 +314,9 @@ export class AuthQueue {
 
     for (const row of rows) {
       const request = mapRow(row);
+      if (excludeInFlight && this.inFlight.has(request.id)) {
+        continue;
+      }
       if (request.type === "merge" && isAuthMergeCommand(request)) {
         const recovery = this.inspectStaleMerge(request);
         if (recovery.outcome === "completed") {
@@ -336,19 +340,33 @@ export class AuthQueue {
   }
 
   private inspectStaleMerge(request: AuthRequest): StaleMergeRecovery {
-    const cwd = request.cwd ?? request.target_repo_root;
-    if (!cwd || !request.base_branch || !request.head_branch) {
+    const checkoutPaths = [request.cwd, request.target_repo_root].filter(
+      (value): value is string => Boolean(value),
+    );
+    if (checkoutPaths.length === 0 || !request.base_branch || !request.head_branch) {
       return { outcome: "failed", detail: "missing repository, base branch, or head branch metadata" };
     }
 
-    const git = (args: string[]): string => execFileSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      timeout: 5000,
-      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
-    }).trim();
-
     try {
+      const gitAt = (cwd: string, args: string[]): string => execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      }).trim();
+      const identities = checkoutPaths.map((path) => ({
+        topLevel: realpathSync(gitAt(path, ["rev-parse", "--path-format=absolute", "--show-toplevel"])),
+        commonDir: realpathSync(gitAt(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"])),
+      }));
+      const identity = identities[0];
+      if (!identity || identities.some(
+        (candidate) => candidate.topLevel !== identity.topLevel || candidate.commonDir !== identity.commonDir,
+      )) {
+        return { outcome: "failed", detail: "cwd and target_repo_root do not identify the same Git checkout" };
+      }
+      const cwd = identity.topLevel;
+      const git = (args: string[]): string => gitAt(cwd, args);
+
       const expectedHead = request.merge_head_sha ?? git([
         "rev-parse", "--verify", `refs/heads/${request.head_branch}^{commit}`,
       ]);
@@ -1507,7 +1525,7 @@ export class AuthQueue {
     const cutoff = now - STUCK_RUNTIME_THRESHOLD_MS;
 
     const { recoveredSuccessIds, recoveredFailureIds, requeuedIds } =
-      this.recoverStaleExecutions(cutoff, "periodic recovery");
+      this.recoverStaleExecutions(cutoff, "periodic recovery", true);
 
     if (recoveredSuccessIds.length + recoveredFailureIds.length + requeuedIds.length === 0) {
       return;
