@@ -4347,10 +4347,17 @@ export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
   if (Buffer.isBuffer(value) || value instanceof Date) return value;
   if (Array.isArray(value)) return value.map((entry) => projectArtifactPublicValue(db, entry));
   if (value && typeof value === "object") {
-    return Object.fromEntries(
+    const projected = Object.fromEntries(
       Object.entries(value as Record<string, unknown>)
         .map(([key, entry]) => [key, projectArtifactPublicValue(db, entry)]),
     );
+    const id = asString(projected.id);
+    if (id && /^artifact-series:/i.test(id) && asString(projected.series_key)) {
+      projected.ref = canonicalArtifactSeriesShortRef(db, id);
+    } else if (id && /^artifact-version:/i.test(id) && typeof projected.version_no === "number") {
+      projected.ref = canonicalArtifactVersionShortRef(db, id);
+    }
+    return projected;
   }
   return value;
 }
@@ -4768,6 +4775,12 @@ function canonicalArtifactIdForSeriesRef(seriesId: string): string {
   const trimmed = seriesId.trim();
   const match = /^artifact-series:(.+)$/i.exec(trimmed);
   return match ? `artifact:${match[1]}` : `artifact:${trimmed.replace(/^artifact:/i, "")}`;
+}
+
+function canonicalArtifactSeriesRef(seriesId: string): string {
+  const trimmed = seriesId.trim();
+  if (/^artifact-series:/i.test(trimmed)) return trimmed;
+  return `artifact-series:${trimmed.replace(/^artifact:/i, "")}`;
 }
 
 function canonicalVersionIdForVersionRef(versionId: string): string {
@@ -5349,7 +5362,9 @@ export function getArtifactVersion(db: Db, id: string): ArtifactVersionRecord | 
 }
 
 function resolveArtifactVersionPrefix(db: Db, ref: string): PrefixLookupResult<ArtifactVersionRecord> {
-  if (!artifactVersioningTablesExist(db)) return { status: "unsupported", value: null };
+  if (!artifactIdentityTablesExist(db) && !artifactVersioningTablesExist(db)) {
+    return { status: "unsupported", value: null };
+  }
   const trimmed = ref.trim();
   const key = trimmed.replace(/^artifact-version:/i, "");
   const fullRef = trimmed.startsWith("artifact-version:") ? trimmed : `artifact-version:${key}`;
@@ -5357,6 +5372,24 @@ function resolveArtifactVersionPrefix(db: Db, ref: string): PrefixLookupResult<A
   if (exact) return { status: "resolved", value: exact };
   if (key.length < MIN_ARTIFACT_ID_PREFIX_LENGTH) return { status: "unsupported", value: null };
 
+  if (artifactIdentityTablesExist(db)) {
+    const rows = db
+      .prepare(
+        `SELECT * FROM artifact_version
+          WHERE id LIKE ? ESCAPE '\\'
+          ORDER BY id ASC
+          LIMIT 2`,
+      )
+      .all(`${escapeLike(fullRef)}%`) as Array<Record<string, unknown>>;
+    if (rows.length === 1) {
+      return {
+        status: "resolved",
+        value: projectCanonicalVersionRecord(db, canonicalArtifactVersionFromRow(rows[0])),
+      };
+    }
+    if (rows.length > 1) return { status: "ambiguous", value: null };
+  }
+  if (!artifactVersioningTablesExist(db)) return { status: "unresolved", value: null };
   const rows = db
     .prepare(
       `SELECT * FROM artifact_versions
@@ -5367,6 +5400,32 @@ function resolveArtifactVersionPrefix(db: Db, ref: string): PrefixLookupResult<A
     .all(`${escapeLike(fullRef)}%`) as Array<Record<string, unknown>>;
   if (rows.length === 1) return { status: "resolved", value: versionFromRow(rows[0]) };
   return { status: rows.length > 1 ? "ambiguous" : "unresolved", value: null };
+}
+
+export function canonicalArtifactSeriesShortRef(db: Db, ref: string): string {
+  const series = getArtifactSeries(db, ref);
+  if (!series) return canonicalArtifactSeriesRef(ref);
+  const canonical = canonicalArtifactSeriesRef(series.id);
+  const key = canonical.replace(/^artifact-series:/i, "");
+  for (let length = Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length); length <= key.length; length += 1) {
+    const candidate = `artifact-series:${key.slice(0, length)}`;
+    const lookup = resolveArtifactSeriesPrefix(db, candidate);
+    if (lookup.status === "resolved" && lookup.value?.id === series.id) return candidate;
+  }
+  return canonical;
+}
+
+export function canonicalArtifactVersionShortRef(db: Db, ref: string): string {
+  const version = getArtifactVersion(db, ref);
+  if (!version) return canonicalVersionIdForVersionRef(ref);
+  const canonical = canonicalVersionIdForVersionRef(version.id);
+  const key = canonical.replace(/^artifact-version:/i, "");
+  for (let length = Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length); length <= key.length; length += 1) {
+    const candidate = `artifact-version:${key.slice(0, length)}`;
+    const lookup = resolveArtifactVersionPrefix(db, candidate);
+    if (lookup.status === "resolved" && lookup.value?.id === version.id) return candidate;
+  }
+  return canonical;
 }
 
 export function listArtifactVersions(db: Db, seriesId: string): ArtifactVersionRecord[] {
@@ -6533,6 +6592,9 @@ export function resolveArtifactRefReadonly(db: Db, ref: string): ArtifactRecord 
 
 function resolveArtifactRefReadonlyFullLegacy(db: Db, ref: string): ArtifactResolveResult {
   const trimmed = ref.trim();
+  if (/^artifact-series:/i.test(trimmed)) {
+    return resolveArtifactSeriesSelectorRef(db, trimmed, Date.now());
+  }
   const identityResolution = resolveArtifactIdentityRef(db, trimmed);
   if (identityResolution) return identityResolution;
   if (/^artifact-version:/i.test(trimmed)) {
@@ -6645,7 +6707,7 @@ function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactR
     series: null,
     version: null,
   };
-  if (!artifactVersioningTablesExist(db)) {
+  if (!artifactIdentityTablesExist(db) && !artifactVersioningTablesExist(db)) {
     return { ...base, status: "unsupported", artifact: null, warnings: ["artifact_versioning_unavailable"] };
   }
 
@@ -6697,7 +6759,7 @@ function resolveArtifactSeriesSelectorRef(db: Db, ref: string, _now: number): Ar
     series: null,
     version: null,
   };
-  if (!artifactVersioningTablesExist(db)) {
+  if (!artifactIdentityTablesExist(db) && !artifactVersioningTablesExist(db)) {
     return { ...base, status: "unsupported", artifact: null, warnings: ["artifact_versioning_unavailable"] };
   }
   const seriesLookup = resolveArtifactSeriesPrefix(db, seriesRef);
@@ -6806,6 +6868,9 @@ function resolveArtifactLinkRefLegacy(db: Db, ref: string, now = Date.now()): Ar
 
 function resolveArtifactRefLegacy(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
   const trimmedRef = ref.trim();
+  if (/^artifact-series:/i.test(trimmedRef)) {
+    return resolveArtifactSeriesSelectorRef(db, trimmedRef, now);
+  }
   const identityResolution = resolveArtifactIdentityRef(db, trimmedRef);
   if (identityResolution) return identityResolution;
   if (/^artifact-version:/i.test(trimmedRef)) {

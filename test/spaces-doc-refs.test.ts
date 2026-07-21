@@ -72,6 +72,15 @@ describe('C6 shared parser: spaces-doc.v1 directive extension', () => {
     installSpacesDocRefRecognizer();
     expect(parseResourceRef(':ref[x]{href="artifact:sha256:' + HASH64 + '"}')).toBeNull();
     expect(parseResourceRef(':ref[x]{href="sha256:' + HASH64 + '"}')).toBeNull();
-    expect(parseResourceRef(':ref[x]{href="artifact-series:abc"}')).toBeNull();
+  });
+
+  it('recognizes compatibility series selectors through directive refs', () => {
+    installSpacesDocRefRecognizer();
+    const parsed = parseResourceRef(':ref[x]{href="artifact-series:abcdef0@2"}');
+    expect(parsed).toMatchObject({
+      kind: 'artifact',
+      canonical: 'artifact-series:abcdef0@2',
+      display: 'x',
+    });
   });
 });

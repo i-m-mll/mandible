@@ -5,6 +5,7 @@
 // as plain text and as markdown-link hrefs:
 //
 //   - artifact:<id-or-prefix>       (logical artifact)
+//   - artifact-series:<id-or-prefix>[@<version>|@latest]
 //   - artifact-version:<id-or-prefix>
 //   - artifact-blob:<hash-or-prefix>
 //   - repo://<repo>@<ref>/<path>    (repo-relative custody refs)
@@ -39,6 +40,7 @@ export interface ParsedResourceRef {
 const DIRECT_NAV_SCHEMES = new Set(['http', 'https', 'mailto']);
 
 const LOGICAL_ARTIFACT_REF = /^artifact:(?!sha256:)([^\s]+)$/i;
+const ARTIFACT_SERIES_REF = /^artifact-series:([^@#\s]+)(?:([@#])([^\s]+))?$/i;
 const ARTIFACT_VERSION_REF = /^artifact-version:([^\s]+)$/i;
 const ARTIFACT_BLOB_REF = /^artifact-blob:([0-9a-f]{7,64})$/i;
 const ISSUE_REF = /^issue:([^\s\]]+)$/i;
@@ -84,6 +86,11 @@ function recognizeBuiltin(candidate: string): ParsedResourceRef | null {
   const logical = LOGICAL_ARTIFACT_REF.exec(raw);
   if (logical) {
     return { raw, canonical: raw, kind: 'artifact', display: compactArtifactRef(raw) };
+  }
+
+  const artifactSeries = ARTIFACT_SERIES_REF.exec(raw);
+  if (artifactSeries) {
+    return { raw, canonical: raw, kind: 'artifact', display: compactArtifactSeriesRef(raw) };
   }
 
   const artifactVersion = ARTIFACT_VERSION_REF.exec(raw);
@@ -160,6 +167,14 @@ export function compactArtifactVersionRef(ref: string, length = 7): string {
   );
 }
 
+export function compactArtifactSeriesRef(ref: string, length = 12): string {
+  return ref.replace(
+    /^artifact-series:([^@#\s]+)(.*)$/i,
+    (_match, id: string, selector: string) =>
+      `artifact-series:${compactLongIdSegments(id, length)}${selector ?? ''}`,
+  );
+}
+
 export function compactArtifactBlobRef(ref: string, length = 12): string {
   return ref.replace(
     /^artifact-blob:(.+)$/i,
@@ -196,6 +211,15 @@ export function displayResourceRef(ref: string): string {
 // --- nav hrefs ---------------------------------------------------------------
 
 export function resourceRefHref(ref: string): string {
+  const series = ARTIFACT_SERIES_REF.exec(ref.trim());
+  if (series) {
+    const seriesRef = `artifact-series:${series[1]}`;
+    const selector = series[3]?.toLowerCase();
+    if (selector && selector !== 'latest' && /^\d+$/.test(selector)) {
+      return versionDetailHref(seriesRef, Number(selector));
+    }
+    return seriesDetailHref(selector === 'latest' ? `${seriesRef}@latest` : seriesRef);
+  }
   return `#/artifacts?ref=${encodeURIComponent(ref)}`;
 }
 
@@ -256,7 +280,7 @@ export async function resolveResourceRef(
 
 // --- linkify -----------------------------------------------------------------
 
-const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-version|artifact-blob|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
+const CUSTOM_BRACKET_PATTERN = /\[((?:artifact|artifact-series|artifact-version|artifact-blob|repo|mandible|issue|comment):[^\]\s]+)\]/gi;
 
 function trimTrailingPunctuation(value: string): string {
   return value.replace(/[.,;:!?]+$/g, '');

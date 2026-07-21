@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { checkArtifactMaterialization, getArtifactContent, getArtifactContentAsync } from "../src/artifact-content.js";
 import {
   addArtifactBundleMembers,
+  canonicalArtifactSeriesShortRef,
+  canonicalArtifactVersionShortRef,
   createArtifactBundle,
   getArtifact,
   getArtifactBundle,
@@ -23,6 +25,7 @@ import {
   getArtifactSeries,
   listArtifactVersions,
   planLocalArtifactPath,
+  projectArtifactPublicValue,
   recordArtifactVersion,
   registerArtifactAlias,
   registerLocalArtifactPath,
@@ -790,6 +793,11 @@ describe("provider/artifact substrate", () => {
     const unresolved = resolveArtifactRef(db, "artifact:missing", 5006);
     const tooShort = resolveArtifactRef(db, "artifact:alpha", 5007);
     const versionTooShort = resolveArtifactRef(db, "artifact-version:abc", 5008);
+    const seriesLatest = resolveArtifactRef(db, "artifact-series:alpha-r@latest", 5009);
+    const seriesPinned = resolveArtifactRef(db, "artifact-series:alpha-r@1", 5010);
+    const seriesAmbiguous = resolveArtifactRef(db, "artifact-series:ambiguo", 5011);
+    const seriesUnresolved = resolveArtifactRef(db, "artifact-series:missing", 5012);
+    const seriesTooShort = resolveArtifactRef(db, "artifact-series:alpha", 5013);
 
     expect(logicalKeyPrefix).toMatchObject({
       status: "resolved",
@@ -846,6 +854,40 @@ describe("provider/artifact substrate", () => {
       artifact: null,
       alias: null,
       warnings: ["artifact_version_prefix_too_short"],
+    });
+    expect(seriesLatest).toMatchObject({
+      status: "resolved",
+      artifact: { id: second.artifact.id },
+      series: { id: first.series.id },
+      version: { version_no: 2 },
+    });
+    expect(seriesPinned).toMatchObject({
+      status: "resolved",
+      artifact: { id: first.artifact.id },
+      version: { version_no: 1 },
+    });
+    expect(seriesAmbiguous).toMatchObject({
+      status: "ambiguous",
+      warnings: ["artifact_series_ambiguous"],
+    });
+    expect(seriesUnresolved).toMatchObject({
+      status: "unresolved",
+      warnings: ["artifact_series_unresolved"],
+    });
+    expect(seriesTooShort).toMatchObject({
+      status: "unsupported",
+      warnings: ["artifact_series_prefix_too_short"],
+    });
+
+    const seriesRef = canonicalArtifactSeriesShortRef(db, first.series.id);
+    const versionRef = canonicalArtifactVersionShortRef(db, first.version.id);
+    expect(seriesRef).toMatch(/^artifact-series:.{12,}$/);
+    expect(versionRef).toMatch(/^artifact-version:.{12,}$/);
+    expect(resolveArtifactRef(db, seriesRef)).toMatchObject({ status: "resolved", series: { id: first.series.id } });
+    expect(resolveArtifactRef(db, versionRef)).toMatchObject({ status: "resolved", version: { id: first.version.id } });
+    expect(projectArtifactPublicValue(db, { series: first.series, version: first.version })).toMatchObject({
+      series: { ref: seriesRef },
+      version: { ref: versionRef },
     });
   });
 

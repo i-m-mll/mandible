@@ -323,7 +323,7 @@ describe("canonical ref resolution and no silent retarget", () => {
     ).toThrow(/not blobs/);
   });
 
-  it("resolves artifact:<hex> as the current compact immutable artifact id", () => {
+  it("resolves artifact:<hex> as the canonical compact immutable ref", () => {
     const r1 = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "A\n", media_type: "text/plain", logical_name: "ev" }, 1000);
     const compactId = `artifact:${r1.artifact.content_hash.slice(0, 12)}`;
     const resolved = resolveArtifactRef(db, `artifact:${r1.artifact.content_hash}`);
@@ -373,18 +373,18 @@ describe("canonical ref resolution and no silent retarget", () => {
     expect(linkRows).toHaveLength(1);
     expect(linkRows[0]).toEqual({ artifact_id: null, target_type: "artifact_version", target_id: r1.version.id });
 
-    // Logical artifact resolution floats to B without accepting artifact-series refs.
+    // Logical artifact resolution floats to B. The compatibility series ref
+    // reaches the same latest version without changing the existing pin.
     const logicalRef = `artifact:${r1.series.id.replace(/^artifact-series:/, "")}`;
     const latest = resolveArtifactRef(db, logicalRef);
     expect(latest.artifact?.id).toBe(artifactB);
     expect(latest.target_type).toBe("artifact");
 
     const oldSeries = resolveArtifactRef(db, r1.series.id);
-    expect(oldSeries.status).toBe("unsupported");
-    expect(oldSeries.warnings).toEqual([
-      "artifact_series_ref_unsupported",
-      "repair_to_artifact_or_artifact_version_ref",
-    ]);
+    expect(oldSeries.status).toBe("resolved");
+    expect(oldSeries.artifact?.id).toBe(artifactB);
+    expect(oldSeries.target_type).toBe("artifact_version");
+    expect(oldSeries.warnings).toEqual(["series_latest_not_pinned"]);
 
     // A pinned version ref resolves to B with no warning.
     const pinned2 = resolveArtifactRef(db, r2.version.id);
@@ -564,16 +564,14 @@ describe("codex review fixes", () => {
     expect(counts()).toEqual(before);
   });
 
-  it("LOW-7: artifact-series selectors are no longer accepted by the normal resolver", () => {
+  it("accepts artifact-series selectors at compatibility read boundaries", () => {
     const r = recordArtifactVersion(db, { source_kind: "managed", provider_id: "test", content: "s\n", media_type: "text/plain", logical_name: "sel" }, 1000);
     expect(resolveArtifactRef(db, r.version.id).artifact?.id).toBe(r.artifact.id);
     const res = resolveArtifactRef(db, `${r.series.id}@1`);
-    expect(res.artifact).toBeNull();
-    expect(res.status).toBe("unsupported");
-    expect(res.warnings).toEqual([
-      "artifact_series_ref_unsupported",
-      "repair_to_artifact_or_artifact_version_ref",
-    ]);
+    expect(res.artifact?.id).toBe(r.artifact.id);
+    expect(res.status).toBe("resolved");
+    expect(res.target_type).toBe("artifact_version");
+    expect(res.warnings).toEqual([]);
   });
 
   it("LOW-8/HIGH-3: latest_version_id and version_count stay consistent and survive backup", () => {

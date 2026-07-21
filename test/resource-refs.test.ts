@@ -26,11 +26,10 @@ afterEach(() => {
 });
 
 describe('legacy artifact ref rejection', () => {
-  it('does not recognize old hash or series refs as normal resource refs', () => {
+  it('does not recognize obsolete hash refs as normal resource refs', () => {
     expect(parseResourceRef(`artifact:sha256:${HASH64}`)).toBeNull();
     expect(parseResourceRef(`sha256:${HASH64}`)).toBeNull();
     expect(parseResourceRef(HASH64)).toBeNull();
-    expect(parseResourceRef('artifact-series:abcdef0@2')).toBeNull();
   });
 
   it('does not linkify old hash refs in rendered content', () => {
@@ -47,9 +46,14 @@ describe('parseResourceRef recognizes canonical ref forms', () => {
     expect(parsed?.canonical).toBe('artifact:abcdef0');
   });
 
-  it('artifact version and blob forms', () => {
+  it('artifact series, version, and blob forms', () => {
+    const series = parseResourceRef('artifact-series:abcdef0@2');
+    const latest = parseResourceRef('artifact-series:abcdef0@latest');
     const version = parseResourceRef('artifact-version:1234567');
     const blob = parseResourceRef(`artifact-blob:${HASH64}`);
+    expect(series?.kind).toBe('artifact');
+    expect(series?.canonical).toBe('artifact-series:abcdef0@2');
+    expect(latest?.canonical).toBe('artifact-series:abcdef0@latest');
     expect(version?.kind).toBe('artifact');
     expect(version?.canonical).toBe('artifact-version:1234567');
     expect(blob?.kind).toBe('artifact');
@@ -92,6 +96,7 @@ describe('parseResourceRef recognizes canonical ref forms', () => {
 describe('round-trip: text and markdown-link hrefs', () => {
   const cases: Array<[string, string]> = [
     ['logical artifact', 'artifact:abcdef0'],
+    ['artifact series', 'artifact-series:abcdef0@2'],
     ['artifact version', 'artifact-version:version-1'],
     ['artifact blob', `artifact-blob:${HASH64}`],
     ['repo', 'repo://mandible@main/src/db.ts'],
@@ -157,6 +162,13 @@ describe('artifact nav hrefs', () => {
     expect(versionDetailHref('artifact:demo', 2)).toBe('#/artifacts?series=artifact%3Ademo&version=2');
     expect(resourceRefHref('artifact:abcdef0')).toBe('#/artifacts?ref=artifact%3Aabcdef0');
     expect(resourceRefHref('artifact-version:1234567')).toBe('#/artifacts?ref=artifact-version%3A1234567');
+    expect(resourceRefHref('artifact-series:abcdef0')).toBe('#/artifacts?series=artifact-series%3Aabcdef0');
+    expect(resourceRefHref('artifact-series:abcdef0@latest')).toBe(
+      '#/artifacts?series=artifact-series%3Aabcdef0%40latest',
+    );
+    expect(resourceRefHref('artifact-series:abcdef0@2')).toBe(
+      '#/artifacts?series=artifact-series%3Aabcdef0&version=2',
+    );
     expect(resourceRefHref(`artifact-blob:${HASH64}`)).toBe(`#/artifacts?ref=artifact-blob%3A${HASH64}`);
   });
 });

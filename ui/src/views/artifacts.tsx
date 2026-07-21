@@ -789,7 +789,7 @@ export function ArtifactDetail({
   const selectedArtifactRef = selectedVersion && copyableSeriesRef
     ? `${copyableSeriesRef}@${selectedVersion.version_no}`
     : selectedVersion?.id
-      ? shortArtifactVersionRef(selectedVersion.id)
+      ? selectedVersion.ref || shortArtifactVersionRef(selectedVersion.id)
       : shortImmutableArtifactRef(artifact.content_hash || artifact.id);
   const homeRepoLabel = artifactHomeRepoLabel(artifact, series);
   const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
@@ -2047,19 +2047,19 @@ function shortSeriesId(ref: string): string {
 }
 
 function shortArtifactSeriesRef(ref: string): string {
-  const trimmed = ref.trim();
-  const bare = trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '');
-  return `artifact-series:${bare.slice(0, 7)}`;
+  return canonicalArtifactSeriesRef(ref);
 }
 
 function shortArtifactVersionRef(ref: string): string {
   const trimmed = ref.trim();
   const bare = trimmed.replace(/^artifact-version:/i, '');
-  return `artifact-version:${bare.slice(0, 7)}`;
+  return `artifact-version:${bare}`;
 }
 
 function shortImmutableArtifactRef(ref: string): string {
-  return `artifact-blob:${shortArtifactId(ref)}`;
+  const trimmed = ref.trim();
+  if (/^artifact:[0-9a-f]{7,64}$/i.test(trimmed)) return trimmed.toLowerCase();
+  return compactArtifactRef(trimmed);
 }
 
 function shortArtifactId(ref: string): string {
