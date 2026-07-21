@@ -248,7 +248,7 @@ describe("artifact series list", () => {
     expect(resolved.status).toBe(200);
     expect((resolved.body as any).resolution).toMatchObject({
       status: "resolved",
-      artifact: { id: second.artifact.id },
+      artifact: { id: `artifact:${second.artifact.content_hash.slice(0, 12)}` },
       series: { id: first.series.id },
       version: { version_no: 2 },
     });

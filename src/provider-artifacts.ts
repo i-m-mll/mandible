@@ -11,6 +11,20 @@ import {
 } from "./artifact-repo-resolution.js";
 import { resolveProjectRef } from "./ledger/project-registry.js";
 import { nullableNumber, nullableString, parseJsonOr } from "./row-coerce.js";
+import {
+  classifyArtifactRef,
+  DEFAULT_ARTIFACT_ID_PREFIX_LENGTH,
+  emptyArtifactIdentityPayload,
+  failedArtifactIdentity,
+  formatCompactArtifactId,
+  projectLegacyArtifactResolution,
+  resolvedArtifactIdentity,
+  type ArtifactIdentityKind,
+  type ArtifactIdentityResolution,
+  type ArtifactRequestedKind,
+  type ArtifactResolutionMode,
+  type CanonicalArtifactTargetType,
+} from "./artifact-identity.js";
 // Cyclic import (artifact-content also imports from this module). Safe: both
 // sides reference each other only from inside functions, never at module-eval
 // top level. Used by recordArtifactVersion's managed-`ref` path to read the
@@ -4307,6 +4321,40 @@ function compatibilityArtifactId(blob: ArtifactBlobRecord): string {
   return `artifact:sha256:${blob.content_hash}`;
 }
 
+export function canonicalArtifactShortRef(db: Db, hash: string): string {
+  const normalized = hash.trim().toLowerCase();
+  if (!isSha256(normalized)) throw new Error("artifact hash must be 64 hexadecimal characters");
+  if (!artifactIdentityTablesExist(db)) return formatCompactArtifactId(normalized);
+  for (let length = DEFAULT_ARTIFACT_ID_PREFIX_LENGTH; length <= normalized.length; length += 1) {
+    const prefix = normalized.slice(0, length);
+    const blobCount = Number((db.prepare(
+      "SELECT COUNT(*) AS n FROM artifact_blob WHERE lower(content_hash) LIKE ?",
+    ).get(`${prefix}%`) as { n: number }).n);
+    const logicalCount = Number((db.prepare(
+      "SELECT COUNT(*) AS n FROM artifact WHERE lower(id) LIKE ?",
+    ).get(`artifact:${prefix}%`) as { n: number }).n);
+    if (blobCount === 1 && logicalCount === 0) return formatCompactArtifactId(normalized, length);
+  }
+  return `artifact-blob:${normalized}`;
+}
+
+/** Strip internal legacy compatibility refs from current API projections. */
+export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
+  if (typeof value === "string") {
+    const match = /^artifact:sha256:([a-f0-9]{64})$/i.exec(value);
+    return match ? canonicalArtifactShortRef(db, match[1]) : value;
+  }
+  if (Buffer.isBuffer(value) || value instanceof Date) return value;
+  if (Array.isArray(value)) return value.map((entry) => projectArtifactPublicValue(db, entry));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .map(([key, entry]) => [key, projectArtifactPublicValue(db, entry)]),
+    );
+  }
+  return value;
+}
+
 /**
  * Project canonical blob/identity/version state through the historical
  * ArtifactRecord contract. Canonical fields win when a legacy row also exists;
@@ -4526,14 +4574,15 @@ function unsupportedLegacyArtifactRef(ref: string, warning: string, repairWarnin
 
 function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactResolveResult | null {
   const trimmed = ref.trim();
-  if (/^artifact-series:/i.test(trimmed)) {
+  const classified = classifyArtifactRef(trimmed);
+  if (classified.kind === "series") {
     return unsupportedLegacyArtifactRef(
       ref,
       "artifact_series_ref_unsupported",
       "repair_to_artifact_or_artifact_version_ref",
     );
   }
-  if (/^artifact:sha256:/i.test(trimmed) || /^sha256:/i.test(trimmed) || /^[a-f0-9]{7,64}$/i.test(trimmed)) {
+  if (classified.kind === "legacy-blob") {
     return unsupportedLegacyArtifactRef(
       ref,
       "legacy_artifact_ref_unsupported",
@@ -4546,13 +4595,37 @@ function resolveArtifactIdentityRef(db: Db, ref: string): ArtifactResolveResult 
     }
     return null;
   }
-  if (/^artifact-version:/i.test(trimmed)) {
+  if (classified.kind === "pinned-version") {
     return resolutionForCanonicalVersion(db, ref, getCanonicalArtifactVersionPrefix(db, trimmed));
   }
-  if (/^artifact-blob:/i.test(trimmed)) {
-    return resolutionForArtifactBlob(db, ref, getArtifactBlobPrefix(db, trimmed), false);
+  if (classified.kind === "blob") {
+    const blobRef = classified.compact
+      ? `artifact-blob:${trimmed.replace(/^artifact:/i, "")}`
+      : trimmed;
+    if (classified.compact) {
+      const logicalLookup = getLogicalArtifactPrefix(db, trimmed);
+      if (logicalLookup.status === "resolved" && logicalLookup.value.id.toLowerCase() === trimmed.toLowerCase()) {
+        return resolutionForLogicalArtifact(db, ref, logicalLookup);
+      }
+      const blobLookup = getArtifactBlobPrefix(db, blobRef);
+      const logicalResolved = logicalLookup.status === "resolved";
+      const blobResolved = blobLookup.status === "resolved";
+      if ((logicalResolved && blobResolved)
+        || logicalLookup.status === "ambiguous"
+        || blobLookup.status === "ambiguous") {
+        return {
+          ...makeResolutionBase(ref),
+          status: "ambiguous",
+          target_id: null,
+          warnings: ["artifact_identity_ambiguous"],
+        };
+      }
+      if (logicalResolved) return resolutionForLogicalArtifact(db, ref, logicalLookup);
+      return resolutionForArtifactBlob(db, ref, blobLookup, false);
+    }
+    return resolutionForArtifactBlob(db, ref, getArtifactBlobPrefix(db, blobRef), false);
   }
-  if (/^artifact:/i.test(trimmed)) {
+  if (classified.kind === "logical") {
     const logical = getLogicalArtifactPrefix(db, trimmed);
     return resolutionForLogicalArtifact(db, ref, logical);
   }
@@ -6458,7 +6531,7 @@ export function resolveArtifactRefReadonly(db: Db, ref: string): ArtifactRecord 
   return resolveArtifactRefReadonlyFull(db, ref).artifact;
 }
 
-export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
+function resolveArtifactRefReadonlyFullLegacy(db: Db, ref: string): ArtifactResolveResult {
   const trimmed = ref.trim();
   const identityResolution = resolveArtifactIdentityRef(db, trimmed);
   if (identityResolution) return identityResolution;
@@ -6468,6 +6541,7 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
   const normalized = normalizeRef(trimmed, { db, validateRepo: true });
   const direct = getArtifact(db, trimmed);
   if (direct) {
+    const blob = canonicalBlobForCompatibilityRef(db, direct.id).blob;
     return {
       status: "resolved",
       ref,
@@ -6475,6 +6549,9 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
       normalized_ref: direct.id,
       artifact: direct,
       alias: null,
+      target_type: blob ? "artifact_blob" : "legacy_artifact",
+      target_id: blob?.id ?? direct.id,
+      artifact_blob: blob,
       series: null,
       version: null,
       warnings: [],
@@ -6497,6 +6574,12 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
     const alias = getArtifactAlias(db, normalized.scheme, normalized.normalizedRef);
     if (alias) {
       const artifact = compatibilityArtifactForAlias(db, alias);
+      const blob = artifact
+        ? (columnExists(db, "artifact_aliases", "blob_id")
+            ? canonicalBlobForCompatibilityRef(db, alias.normalized_ref).blob
+              ?? canonicalBlobForCompatibilityRef(db, artifact.id).blob
+            : canonicalBlobForCompatibilityRef(db, artifact.id).blob)
+        : null;
       return {
         status: artifact ? "resolved" : "unresolved",
         ref,
@@ -6504,6 +6587,9 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
         normalized_ref: alias.normalized_ref,
         artifact,
         alias,
+        target_type: blob ? "artifact_blob" : artifact ? "legacy_artifact" : undefined,
+        target_id: blob?.id ?? artifact?.id ?? null,
+        artifact_blob: blob,
         series: null,
         version: null,
         warnings: [],
@@ -6523,13 +6609,14 @@ export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactRes
   };
 }
 
-export function resolveArtifactSurfaceRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
+function resolveArtifactSurfaceRefReadonlyFullLegacy(db: Db, ref: string): ArtifactResolveResult {
   const trimmed = ref.trim();
   if (/^artifact-series:/i.test(trimmed)) {
     return resolveArtifactSeriesSelectorRef(db, trimmed, Date.now());
   }
   const direct = getArtifact(db, trimmed);
   if (direct) {
+    const blob = canonicalBlobForCompatibilityRef(db, direct.id).blob;
     return {
       status: "resolved",
       ref,
@@ -6537,12 +6624,15 @@ export function resolveArtifactSurfaceRefReadonlyFull(db: Db, ref: string): Arti
       normalized_ref: direct.id,
       artifact: direct,
       alias: null,
+      target_type: blob ? "artifact_blob" : "legacy_artifact",
+      target_id: blob?.id ?? direct.id,
+      artifact_blob: blob,
       series: null,
       version: null,
       warnings: [],
     };
   }
-  return resolveArtifactRefReadonlyFull(db, ref);
+  return resolveArtifactRefReadonlyFullLegacy(db, ref);
 }
 
 // Resolve artifact-version: refs to their pinned immutable artifact.
@@ -6576,6 +6666,8 @@ function resolveArtifactVersionRef(db: Db, ref: string, _now: number): ArtifactR
     ...base,
     normalized_ref: selected.id,
     status: artifact ? "resolved" : "unresolved",
+    target_type: "artifact_version",
+    target_id: artifact ? selected.id : null,
     artifact,
     series,
     version: selected,
@@ -6660,7 +6752,7 @@ function resolveArtifactSeriesSelectorRef(db: Db, ref: string, _now: number): Ar
   };
 }
 
-export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+function resolveArtifactLinkRefLegacy(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
   const trimmed = ref.trim();
   if (/^artifact-series:/i.test(trimmed)) {
     return resolveArtifactSeriesSelectorRef(db, trimmed, now);
@@ -6709,10 +6801,10 @@ export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): A
       warnings: [],
     };
   }
-  return resolveArtifactRef(db, ref, now);
+  return resolveArtifactRefLegacy(db, ref, now);
 }
 
-export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+function resolveArtifactRefLegacy(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
   const trimmedRef = ref.trim();
   const identityResolution = resolveArtifactIdentityRef(db, trimmedRef);
   if (identityResolution) return identityResolution;
@@ -6749,7 +6841,146 @@ export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): Artif
     normalized_ref: normalized.normalizedRef,
     artifact,
     alias: alias as ArtifactAliasRecord,
+    target_type: "artifact_blob",
+    target_id: canonicalBlobForCompatibilityRef(db, artifact.id).blob?.id ?? null,
+    artifact_blob: canonicalBlobForCompatibilityRef(db, artifact.id).blob,
   };
+}
+
+function requestedIdentityKind(ref: string): ArtifactRequestedKind {
+  const classified = classifyArtifactRef(ref);
+  if (classified.kind === "legacy-blob") return "blob";
+  if (classified.kind === "pinned-version") return "pinned-version";
+  return classified.kind;
+}
+
+function discriminatedArtifactResolution(
+  db: Db,
+  legacy: ArtifactResolveResult,
+): ArtifactIdentityResolution {
+  const payload = {
+    ...emptyArtifactIdentityPayload(),
+    artifact: legacy.artifact,
+    alias: legacy.alias,
+    logical_artifact: legacy.logical_artifact ?? null,
+    artifact_version: legacy.artifact_version ?? null,
+    artifact_blob: legacy.artifact_blob ?? null,
+    series: legacy.series ?? null,
+    version: legacy.version ?? null,
+  };
+  const warnings = legacy.warnings ?? [];
+  const requestedKind = requestedIdentityKind(legacy.ref);
+  if (legacy.status !== "resolved") {
+    const requestedTarget: CanonicalArtifactTargetType | null = requestedKind === "logical"
+      ? "artifact"
+      : requestedKind === "pinned-version" || requestedKind === "series"
+        ? "artifact_version"
+        : requestedKind === "blob"
+          ? "artifact_blob"
+          : null;
+    return failedArtifactIdentity({
+      status: legacy.status,
+      requested_kind: requestedKind,
+      ref: legacy.ref,
+      scheme: legacy.scheme,
+      normalized_ref: legacy.normalized_ref,
+      target_type: requestedTarget,
+      warnings,
+      ...payload,
+    });
+  }
+
+  let targetType = legacy.target_type === "artifact"
+    || legacy.target_type === "artifact_version"
+    || legacy.target_type === "artifact_blob"
+    ? legacy.target_type
+    : null;
+  let targetId = legacy.target_id ?? null;
+  let kind: ArtifactIdentityKind = legacy.alias
+    ? "alias"
+    : targetType === "artifact"
+      ? "logical"
+      : targetType === "artifact_version"
+        ? "pinned-version"
+        : "blob";
+  if ((!targetType || !targetId) && legacy.artifact) {
+    const blob = legacy.artifact_blob ?? canonicalBlobForCompatibilityRef(db, legacy.artifact.id).blob;
+    if (blob) {
+      targetType = "artifact_blob";
+      targetId = blob.id;
+      payload.artifact_blob = blob;
+      kind = legacy.alias ? "alias" : "blob";
+    }
+  }
+  if (!targetType || !targetId) {
+    return failedArtifactIdentity({
+      status: "unresolved",
+      requested_kind: requestedKind,
+      ref: legacy.ref,
+      scheme: legacy.scheme,
+      normalized_ref: legacy.normalized_ref,
+      target_type: null,
+      warnings: [...warnings, "canonical_artifact_target_missing"],
+      ...payload,
+      artifact: null,
+    });
+  }
+  return resolvedArtifactIdentity({
+    kind,
+    ref: legacy.ref,
+    scheme: legacy.scheme,
+    normalized_ref: legacy.normalized_ref,
+    target_type: targetType,
+    target_id: targetId,
+    warnings,
+    ...payload,
+  });
+}
+
+/**
+ * Shared strict artifact identity contract. Read modes never write; only the
+ * explicit materializing mode may register an external alias/reference.
+ */
+export function resolveArtifactIdentity(
+  db: Db,
+  ref: string,
+  mode: ArtifactResolutionMode = "strict-read",
+  now = Date.now(),
+): ArtifactIdentityResolution {
+  const legacy = mode === "surface"
+    ? resolveArtifactSurfaceRefReadonlyFullLegacy(db, ref)
+    : mode === "link"
+      ? resolveArtifactLinkRefLegacy(db, ref, now)
+      : mode === "materializing"
+        ? resolveArtifactRefLegacy(db, ref, now)
+        : resolveArtifactRefReadonlyFullLegacy(db, ref);
+  return discriminatedArtifactResolution(db, legacy);
+}
+
+/** Preserve the historical public shape at compatibility boundaries only. */
+export function resolveArtifactIdentityCompat(
+  db: Db,
+  ref: string,
+  mode: ArtifactResolutionMode = "strict-read",
+  now = Date.now(),
+): ArtifactResolveResult {
+  return projectLegacyArtifactResolution(resolveArtifactIdentity(db, ref, mode, now));
+}
+
+export function resolveArtifactRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
+  return resolveArtifactIdentityCompat(db, ref, "strict-read");
+}
+
+export function resolveArtifactSurfaceRefReadonlyFull(db: Db, ref: string): ArtifactResolveResult {
+  return resolveArtifactIdentityCompat(db, ref, "surface");
+}
+
+export function resolveArtifactLinkRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+  return resolveArtifactIdentityCompat(db, ref, "link", now);
+}
+
+export function resolveArtifactRef(db: Db, ref: string, now = Date.now()): ArtifactResolveResult {
+  return resolveArtifactIdentityCompat(db, ref, "materializing", now);
 }
 
 export function getProviderManifest(db: Db, id: string): ProviderManifestRecord | null {

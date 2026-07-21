@@ -95,6 +95,9 @@ function postLink(body: Record<string, unknown>): { statusCode: number; payload:
 function postIngest(body: Record<string, unknown>): { statusCode: number; payload: any } {
   return postRoute("/api/artifacts/ingest", body);
 }
+function postSnapshot(body: Record<string, unknown>): { statusCode: number; payload: any } {
+  return postRoute("/api/artifacts/snapshot", body);
+}
 
 // --- ledger fixtures ----------------------------------------------------------
 function createLedgerIssue(issueId: string, projectName = "mandible"): string {
@@ -472,7 +475,7 @@ describe("evidence links must be pinned", () => {
     expect(res.statusCode).toBe(200);
     expect(res.payload.link.link_kind).toBe("living");
     expect(res.payload.link.series_id).toBe(seriesId);
-    expect(res.payload.link.artifact_id).toBe(head.id);
+    expect(res.payload.link.artifact_id).toBe(`artifact:${head.content_hash.slice(0, 12)}`);
   });
 });
 
@@ -480,6 +483,16 @@ describe("evidence links must be pinned", () => {
 // ingest (which forwards caller-supplied link/links straight to the upsert)
 // cannot bypass the route + resolveAndLinkArtifact guards.
 describe("chokepoint enforcement in registerArtifactLink", () => {
+  it("emits current compact ids from ingest and snapshot APIs", () => {
+    const ingest = postIngest({ content: "ingest output\n", custody_mode: "copy" });
+    const snapshot = postSnapshot({ content: "snapshot output\n", custody_mode: "managed" });
+    for (const response of [ingest, snapshot]) {
+      expect(response.statusCode).toBe(200);
+      expect(response.payload.artifact.id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+      expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
+    }
+  });
+
   it("rejects a living issue+evidence link forwarded through POST /api/artifacts/ingest", () => {
     const issueId = createLedgerIssue("issueingestev");
     const { seriesId } = makeSeriesWithHead("series-ingest-ev", "v1\n");
@@ -556,6 +569,7 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
       },
     });
     expect(res.statusCode).toBe(200);
+    expect(res.payload.artifact.id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
     const row = db
       .prepare("SELECT link_kind, series_id FROM artifact_links WHERE entity_id = ? AND link_type = 'evidence'")
       .get(issueId) as { link_kind: string; series_id: string | null };
