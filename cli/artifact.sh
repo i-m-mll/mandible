@@ -40,6 +40,33 @@ explain_transport_failure() {
   esac
 }
 
+# Run an artifact API request without discarding its non-2xx response body.
+# api_request intentionally exposes only successful bodies, so artifact
+# mutations that need actionable resolver/validation diagnostics use capture.
+artifact_api_request() {
+  local method="$1" request_path="$2" data="${3:-}"
+  local response_file response_status detail body
+  response_file="$(mktemp)"
+  response_status="$(api_capture "$method" "$request_path" "$data" "$response_file")"
+  if [[ "$response_status" =~ ^2 ]]; then
+    cat "$response_file"
+    rm -f "$response_file"
+    return 0
+  fi
+
+  detail="$(jq -r '.error // .detail // .message // empty' "$response_file" 2>/dev/null || true)"
+  if [[ -n "$detail" ]]; then
+    printf 'Mandible artifact request failed (HTTP %s): %s\n' "$response_status" "$detail" >&2
+  elif [[ -s "$response_file" ]]; then
+    body="$(cat "$response_file")"
+    printf 'Mandible artifact request failed (HTTP %s): %s\n' "$response_status" "$body" >&2
+  else
+    printf 'Mandible artifact request failed (HTTP %s).\n' "$response_status" >&2
+  fi
+  rm -f "$response_file"
+  return 22
+}
+
 usage() {
   cat <<'EOF'
 Usage:
@@ -827,7 +854,7 @@ cmd_associate() {
     '{target_ref:$target_ref, project_ref:$project_ref, association_kind:$association_kind}
       + (if $role != "" then {role:$role} else {} end)
       + (if $title != "" then {title:$title} else {} end)')"
-  response="$(api_post "/api/artifacts/associations" "$payload")" \
+  response="$(artifact_api_request POST "/api/artifacts/associations" "$payload")" \
     || die "${RED}Failed to associate artifact with project.${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
@@ -1072,7 +1099,7 @@ cmd_record() {
       + (if $repo_id != "" then {repo_id:$repo_id} else {} end)
       + (if $issue != "" then {issue:$issue} else {} end)')"
   local response
-  response="$(api_post "/api/artifacts/versions" "$payload")" \
+  response="$(artifact_api_request POST "/api/artifacts/versions" "$payload")" \
     || die "${RED}Failed to record artifact version.${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
@@ -1232,7 +1259,7 @@ bundle_create() {
   fi
   [[ -n "$name" ]] || die "bundle create requires --name or manifest.name" 2
 
-  local member_results='[]' failed='[]' member payload response artifact bundle_manifest bundle_payload bundle_response bundle_id link_payload bundle_links bundle_artifact encoded_ref members_payload
+  local member_results='[]' failed='[]' member payload response artifact artifact_ref bundle_manifest bundle_payload bundle_response bundle_id link_payload bundle_links bundle_artifact encoded_ref members_payload
   members_payload='[]'
   if [[ -n "$manifest" ]]; then
     members_payload="$(jq '.members // []' "$manifest")"
@@ -1249,7 +1276,7 @@ bundle_create() {
   if (( ! dry_run )); then
     payload="$(jq -n --arg name "$name" --arg role "$role" --arg issue "$issue" --argjson members "$members_payload" \
       '{name:$name, role:$role, members:$members} + (if $issue == "" then {} else {issue:$issue} end)')"
-    bundle_response="$(api_post "/api/artifacts/bundles" "$payload")" || die "${RED}Failed to create bundle.${RESET}" 1
+    bundle_response="$(artifact_api_request POST "/api/artifacts/bundles" "$payload")" || die "${RED}Failed to create bundle.${RESET}" 1
     if (( json )); then
       printf '%s\n' "$bundle_response" | jq .
     else
@@ -1281,6 +1308,8 @@ bundle_create() {
       fi
       artifact="$(printf '%s' "$response" | jq '.resolution.artifact')"
     fi
+    artifact_ref="$(printf '%s' "$artifact" | canonical_ref_for_artifact_json)"
+    artifact="$(printf '%s' "$artifact" | jq --arg id "$artifact_ref" '.id=$id')"
     member_results="$(printf '%s' "$member_results" | jq --arg input "$member" --argjson artifact "$artifact" '. + [{input:$input, artifact:$artifact}]')"
   done
 
@@ -1326,12 +1355,12 @@ bundle_create() {
   if (( dry_run )); then
     bundle_response="$(jq -n --argjson planned_payload "$bundle_payload" --argjson members "$member_results" --argjson failed "$failed" '{command:"bundle create", dry_run:true, planned_payload:$planned_payload, members:$members, failed:$failed}')"
   else
-    bundle_response="$(api_post "/api/artifacts/ingest" "$bundle_payload")" || die "${RED}Failed to create bundle manifest artifact.${RESET}" 1
+    bundle_response="$(artifact_api_request POST "/api/artifacts/ingest" "$bundle_payload")" || die "${RED}Failed to create bundle manifest artifact.${RESET}" 1
     bundle_id="$(printf '%s' "$bundle_response" | jq -r '.artifact.id')"
     for artifact_id in $(printf '%s' "$member_results" | jq -r '.[].artifact.id'); do
       link_payload="$(jq -n --arg ref "$artifact_id" --arg bundle_id "$bundle_id" \
         '{ref:$ref, entity_type:"artifact", entity_id:$bundle_id, link_type:"bundle_contains", source:"artifact_cli"}')"
-      api_post "/api/artifacts/link" "$link_payload" >/dev/null || true
+      artifact_api_request POST "/api/artifacts/link" "$link_payload" >/dev/null || true
     done
     bundle_artifact="$(printf '%s' "$bundle_response" | jq '.artifact')"
     bundle_response="$(jq -n --argjson bundle "$bundle_artifact" --argjson members "$member_results" --argjson failed "$failed" '{command:"bundle create", bundle:$bundle, members:$members, failed:$failed}')"
@@ -1361,7 +1390,7 @@ bundle_add() {
       members_payload="$(printf '%s' "$members_payload" | jq --arg ref "$member" '. + [{ref:$ref}]')"
     fi
   done
-  response="$(api_post "/api/artifacts/bundles/$(urlencode "$bundle_id")/members" "$(jq -n --argjson members "$members_payload" '{members:$members}')")" \
+  response="$(artifact_api_request POST "/api/artifacts/bundles/$(urlencode "$bundle_id")/members" "$(jq -n --argjson members "$members_payload" '{members:$members}')")" \
     || die "${RED}Failed to add bundle members.${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
