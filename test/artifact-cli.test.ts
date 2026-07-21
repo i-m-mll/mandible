@@ -161,8 +161,9 @@ describe("artifact CLI", () => {
     const result = run(["artifact", "--help"], process.cwd());
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("artifact:<id>             logical artifact");
-    expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
+    expect(result.stdout).toContain("artifact:<unique-hash-prefix>  immutable artifact (normal compact ID)");
+    expect(result.stdout).toContain("artifact:<logical-id>          logical artifact");
+    expect(result.stdout).toContain("artifact-blob:<full-hash>      immutable artifact bytes (full typed form)");
     expect(result.stdout).toContain("mandible artifact associate <ref> --project <project>");
     expect(result.stdout).toContain("mandible artifact versions <ref>");
     expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
@@ -180,7 +181,7 @@ describe("artifact CLI", () => {
               target_type: "artifact_blob",
               target_id: "artifact-blob:abc123",
               normalized_ref: "artifact-blob:abc123",
-              artifact: { id: "artifact:sha256:abc123" },
+              artifact: { id: "artifact:abc123def456" },
               warnings: [],
             },
           },
@@ -200,6 +201,100 @@ describe("artifact CLI", () => {
     }
   });
 
+  it("uses a short blob id's canonical target for artifact show", async () => {
+    const hash = "a".repeat(64);
+    const shortId = `artifact:${hash.slice(0, 12)}`;
+    const canonicalTarget = `artifact-blob:${hash}`;
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              target_type: "artifact_blob",
+              target_id: canonicalTarget,
+              artifact: { id: shortId },
+            },
+          },
+        };
+      }
+      if (req.method === "GET" && req.url === `/api/artifacts/${encodeURIComponent(canonicalTarget)}`) {
+        return {
+          status: 200,
+          body: {
+            artifact: {
+              id: shortId,
+              role: "report",
+              custody_mode: "copy",
+              availability: "present",
+              uri: `cas://${hash}`,
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "show", shortId, "--json"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).artifact.id).toBe(shortId);
+      expect(recorder.requests.map((request) => request.url)).toEqual([
+        `/api/artifacts/resolve?ref=${encodeURIComponent(shortId)}`,
+        `/api/artifacts/${encodeURIComponent(canonicalTarget)}`,
+      ]);
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("uses a short blob id's canonical target for artifact content", async () => {
+    const hash = "b".repeat(64);
+    const shortId = `artifact:${hash.slice(0, 12)}`;
+    const canonicalTarget = `artifact-blob:${hash}`;
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              target_type: "artifact_blob",
+              target_id: canonicalTarget,
+              artifact: { id: shortId },
+            },
+          },
+        };
+      }
+      if (req.method === "GET" && req.url === `/api/artifacts/${encodeURIComponent(canonicalTarget)}/content`) {
+        return {
+          status: 200,
+          body: { content: { artifact_id: shortId, preview: { text: "compact content\n" } } },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "content", shortId], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("compact content\n\n");
+      expect(recorder.requests.map((request) => request.url)).toEqual([
+        `/api/artifacts/resolve?ref=${encodeURIComponent(shortId)}`,
+        `/api/artifacts/${encodeURIComponent(canonicalTarget)}/content`,
+      ]);
+    } finally {
+      await recorder.close();
+    }
+  });
+
   it("prints unsupported diagnostics for legacy resolve refs", async () => {
     const recorder = await startHttpRecorder((req) => {
       if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
@@ -209,7 +304,7 @@ describe("artifact CLI", () => {
             resolution: {
               status: "unsupported",
               target_id: null,
-              normalized_ref: "artifact:sha256:abc123",
+              normalized_ref: "artifact:abc123def456",
               artifact: null,
               warnings: ["legacy_artifact_ref_unsupported", "repair_to_artifact_blob_ref"],
             },
@@ -220,11 +315,12 @@ describe("artifact CLI", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "resolve", "artifact:sha256:abc123"], tempDir, {
+      const result = await runAsync(["artifact", "resolve", `artifact:sha256:${"a".repeat(64)}`], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain("unsupported legacy_artifact - artifact:sha256:abc123");
+      expect(result.stdout).toContain("unsupported legacy_artifact - artifact:abc123def456");
+      expect(result.stdout).not.toContain("artifact:sha256:");
       expect(result.stdout).toContain("warning: legacy_artifact_ref_unsupported");
       expect(result.stdout).toContain("warning: repair_to_artifact_blob_ref");
     } finally {
@@ -246,7 +342,7 @@ describe("artifact CLI", () => {
           body: {
             result: {
               created: true,
-              artifact: { id: "artifact:sha256:abc123" },
+              artifact: { id: "artifact:abc123def456" },
               series: { id: "artifact-series:series-1", source_kind: "local_only", version_count: 1 },
               version: { id: "artifact-version:version-1", version_no: 1 },
             },
@@ -269,6 +365,45 @@ describe("artifact CLI", () => {
       expect(fs.realpathSync(record!.body!.path as string)).toBe(
         fs.realpathSync(path.join(tempDir, "report.md")),
       );
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it.each([
+    {
+      name: "associate",
+      args: ["artifact", "associate", "artifact:deadbeef", "--project", "mandible"],
+      route: "/api/artifacts/associations",
+      message: "artifact_ref_ambiguous",
+    },
+    {
+      name: "record",
+      args: ["artifact", "record", "--ref", "artifact:deadbeef", "--kind", "managed"],
+      route: "/api/artifacts/versions",
+      message: "artifact_ref_not_resolved",
+    },
+    {
+      name: "bundle create",
+      args: ["artifact", "bundle", "create", "--name", "review", "artifact:deadbeef"],
+      route: "/api/artifacts/bundles",
+      message: "bundle_member_ref_not_resolved",
+    },
+  ])("surfaces non-2xx API details for $name", async ({ args, route, message }) => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "POST" && req.url === route) {
+        return { status: 422, body: { error: message } };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(args, tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain(`HTTP 422): ${message}`);
     } finally {
       await recorder.close();
     }
@@ -360,7 +495,7 @@ describe("artifact CLI", () => {
           status: 200,
           body: {
             artifact: {
-              id: "artifact:sha256:deadbeef",
+              id: "artifact:deadbeefcafe",
               custody_mode: "copy",
               availability: "present",
               metadata: { recoverability: "mandible_cas" },
@@ -405,7 +540,7 @@ describe("artifact CLI", () => {
     tempRoots.push(spoolDir);
     const sourceRef = "artifact:logical-source";
     const newHash = "b".repeat(64);
-    const newRef = `artifact:sha256:${"b".repeat(64)}`;
+    const newRef = "artifact:bbbbbbbbbbbb";
     const seen: Array<Record<string, unknown>> = [];
     const timer = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
@@ -492,7 +627,7 @@ describe("artifact CLI", () => {
         attachmentSize = typeof name === "string" ? fs.statSync(path.join(spoolDir, name)).size : -1;
         return {
           status: 200,
-          body: { artifact: { id: "artifact:sha256:big", custody_mode: "copy", availability: "present" } },
+          body: { artifact: { id: "artifact:bbbbbbbbbbbb", custody_mode: "copy", availability: "present" } },
         };
       }
       return { status: 404, body: { error: "unexpected" } };
@@ -590,7 +725,7 @@ describe("artifact CLI", () => {
           status: 200,
           body: {
             artifact: {
-              id: `artifact:sha256:${body.sha256}`,
+              id: `artifact:${String(body.sha256).slice(0, 12)}`,
               custody_mode: "copy",
               availability: "present",
             },
@@ -665,5 +800,47 @@ describe("artifact CLI", () => {
     expect(payload.planned_payload.reference.identity_kind).toBe("bundle_manifest");
     expect(payload.members[0].artifact.recoverability).toBe("repo_commit");
     expect(payload.planned_payload.json.members[0].ref).toContain("repo://");
+  });
+
+  it("serializes resolved bundle members with canonical refs, never the obsolete artifact id", async () => {
+    const hash = "a".repeat(64);
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              artifact: {
+                id: `artifact:sha256:${hash}`,
+                content_hash: hash,
+                custody_mode: "copy",
+                availability: "present",
+                metadata: { recoverability: "mandible_cas" },
+              },
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected" } };
+    });
+
+    try {
+      const result = await runAsync(
+        ["artifact", "bundle", "create", "--name", "review", `artifact-blob:${hash}`, "--dry-run", "--json"],
+        tempDir,
+        { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` },
+      );
+
+      expect(result.status).toBe(0);
+      const payload = JSON.parse(result.stdout);
+      expect(payload.planned_payload.json.members[0]).toMatchObject({
+        artifact_id: `artifact-blob:${hash}`,
+        ref: `artifact-blob:${hash}`,
+      });
+      expect(result.stdout).not.toContain("artifact:sha256:");
+    } finally {
+      await recorder.close();
+    }
   });
 });

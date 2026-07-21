@@ -210,8 +210,17 @@ describe("artifact series list", () => {
     });
 
     expect(response.status).toBe(200);
-    const body = response.body as { series: Array<{ id: string; latest_artifact: { role: string } }> };
+    const body = response.body as {
+      series: Array<{
+        id: string;
+        ref: string;
+        latest_version: { ref: string };
+        latest_artifact: { role: string };
+      }>;
+    };
     expect(body.series.map((item) => item.id)).toEqual([selected.series.id]);
+    expect(body.series[0].ref).toMatch(/^artifact-series:.{12,}$/);
+    expect(body.series[0].latest_version.ref).toMatch(/^artifact-version:.{12,}$/);
     expect(body.series[0].latest_artifact.role).toBe("route-role");
   });
 
@@ -248,14 +257,17 @@ describe("artifact series list", () => {
     expect(resolved.status).toBe(200);
     expect((resolved.body as any).resolution).toMatchObject({
       status: "resolved",
-      artifact: { id: second.artifact.id },
-      series: { id: first.series.id },
-      version: { version_no: 2 },
+      artifact: { id: `artifact:${second.artifact.content_hash.slice(0, 12)}` },
+      series: { id: first.series.id, ref: expect.stringMatching(/^artifact-series:.{12,}$/) },
+      version: { version_no: 2, ref: expect.stringMatching(/^artifact-version:.{12,}$/) },
     });
     expect(history.status).toBe(200);
     expect((history.body as any).history).toMatchObject({
-      series: { id: first.series.id },
-      versions: [{ id: first.version.id }, { id: second.version.id }],
+      series: { id: first.series.id, ref: expect.stringMatching(/^artifact-series:.{12,}$/) },
+      versions: [
+        { id: first.version.id, ref: expect.stringMatching(/^artifact-version:.{12,}$/) },
+        { id: second.version.id, ref: expect.stringMatching(/^artifact-version:.{12,}$/) },
+      ],
     });
   });
 });

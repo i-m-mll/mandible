@@ -48,7 +48,6 @@ import { DiffView } from '../components/DiffView';
 import {
   artifactDetailHref,
   compactArtifactBlobRef,
-  compactArtifactRef,
   displayResourceRef,
   seriesDetailHref,
   versionDetailHref,
@@ -786,14 +785,15 @@ export function ArtifactDetail({
   const spaceActionDisabled = !spaceProjectId || spaceTargets.length === 0;
   const seriesRefValue = series ? seriesRecordRef(series) : '';
   const copyableSeriesRef = seriesRefValue ? shortArtifactSeriesRef(seriesRefValue) : '';
+  const immutableArtifactRef = artifact.id;
   const selectedArtifactRef = selectedVersion && copyableSeriesRef
     ? `${copyableSeriesRef}@${selectedVersion.version_no}`
     : selectedVersion?.id
-      ? shortArtifactVersionRef(selectedVersion.id)
-      : shortImmutableArtifactRef(artifact.content_hash || artifact.id);
+      ? selectedVersion.ref || shortArtifactVersionRef(selectedVersion.id)
+      : immutableArtifactRef;
   const homeRepoLabel = artifactHomeRepoLabel(artifact, series);
   const headerShortId = seriesRefValue ? shortSeriesId(seriesRefValue) : shortArtifactId(artifact.id);
-  const headerCopyValue = copyableSeriesRef || shortImmutableArtifactRef(artifact.content_hash || artifact.id);
+  const headerCopyValue = copyableSeriesRef || immutableArtifactRef;
   const headerCopyLabel = copyableSeriesRef ? 'Copy artifact series ref' : 'Copy artifact ref';
   const createdUpdated = artifactCreatedUpdated(artifact, series, versions);
   const identityRows: MetadataRow[] = [
@@ -801,7 +801,7 @@ export function ArtifactDetail({
     ['Selected version', selectedVersion ? `v${selectedVersion.version_no}` : 'Latest'],
     ['URI', artifact.uri, true],
     ['Content hash', artifact.content_hash, true],
-    ['Short ID', shortArtifactId(artifact.id), true, shortImmutableArtifactRef(artifact.content_hash || artifact.id)],
+    ['Short ID', shortArtifactId(artifact.id), true, immutableArtifactRef],
     ['Home repo', artifact.home_repo_id],
     ['Provider', artifact.provider_id],
     ['Manifest', artifact.manifest_id],
@@ -2047,19 +2047,13 @@ function shortSeriesId(ref: string): string {
 }
 
 function shortArtifactSeriesRef(ref: string): string {
-  const trimmed = ref.trim();
-  const bare = trimmed.replace(/^artifact-series:/i, '').replace(/^artifact:/i, '');
-  return `artifact-series:${bare.slice(0, 7)}`;
+  return canonicalArtifactSeriesRef(ref);
 }
 
 function shortArtifactVersionRef(ref: string): string {
   const trimmed = ref.trim();
   const bare = trimmed.replace(/^artifact-version:/i, '');
-  return `artifact-version:${bare.slice(0, 7)}`;
-}
-
-function shortImmutableArtifactRef(ref: string): string {
-  return `artifact-blob:${shortArtifactId(ref)}`;
+  return `artifact-version:${bare}`;
 }
 
 function shortArtifactId(ref: string): string {

@@ -209,20 +209,36 @@ api_route_mutation_category_file() {
 api_route_template_matches() {
   local route_template="$1"
   local pathname="$2"
-  local template_parts path_parts template_part path_part
+  local template_part path_part template_more path_more
 
-  IFS='/' read -r -a template_parts <<< "$route_template"
-  IFS='/' read -r -a path_parts <<< "$pathname"
-  [[ "${#template_parts[@]}" -eq "${#path_parts[@]}" ]] || return 1
+  # This helper is sourced by both bash and zsh CLIs. Split one path segment at
+  # a time instead of using either shell's incompatible `read` array option.
+  while true; do
+    template_more=0
+    path_more=0
+    if [[ "$route_template" == */* ]]; then
+      template_part="${route_template%%/*}"
+      route_template="${route_template#*/}"
+      template_more=1
+    else
+      template_part="$route_template"
+    fi
+    if [[ "$pathname" == */* ]]; then
+      path_part="${pathname%%/*}"
+      pathname="${pathname#*/}"
+      path_more=1
+    else
+      path_part="$pathname"
+    fi
 
-  for i in "${!template_parts[@]}"; do
-    template_part="${template_parts[$i]}"
-    path_part="${path_parts[$i]}"
     if [[ "$template_part" == :* ]]; then
       [[ -n "$path_part" ]] || return 1
-      continue
+    else
+      [[ "$template_part" == "$path_part" ]] || return 1
     fi
-    [[ "$template_part" == "$path_part" ]] || return 1
+
+    [[ "$template_more" -eq "$path_more" ]] || return 1
+    [[ "$template_more" -eq 1 ]] || return 0
   done
 }
 

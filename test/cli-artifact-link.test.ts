@@ -101,12 +101,12 @@ function linkResponse(body: Record<string, unknown>, versionNo = 3) {
   const linkKind = body.link_kind === "living" ? "living" : "pinned";
   return {
     resolution: {
-      artifact: { id: "artifact:sha256:abc123" },
+      artifact: { id: "artifact:abc123def456" },
       version: { version_no: versionNo },
     },
     link: {
       id: "artifact-link-1",
-      artifact_id: "artifact:sha256:abc123",
+      artifact_id: "artifact:abc123def456",
       entity_type: "issue",
       entity_id: "issue-1234567890",
       link_type: body.link_type,
@@ -131,9 +131,10 @@ describe("artifact link CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[--pinned|--living]");
-    expect(result.stdout).toContain("artifact:<id>             logical artifact");
-    expect(result.stdout).toContain("artifact-version:<id>     specific artifact version");
-    expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
+    expect(result.stdout).toContain("artifact:<unique-hash-prefix>  immutable artifact (normal compact ID)");
+    expect(result.stdout).toContain("artifact:<logical-id>          logical artifact");
+    expect(result.stdout).toContain("artifact-version:<id>          specific artifact version");
+    expect(result.stdout).toContain("artifact-blob:<full-hash>      immutable artifact bytes (full typed form)");
     expect(result.stdout).not.toContain("artifact:sha256:<hash>");
   });
 
@@ -155,7 +156,7 @@ describe("artifact link CLI", () => {
 
       expect(result.status).toBe(0);
       expect(result.stdout.trim()).toBe(
-        "linked artifact:sha256:abc123 references issue:issue-12 [pinned v3]",
+        "linked artifact:abc123def456 references issue:issue-12 [pinned v3]",
       );
       const linkRequest = recorder.requests.find((request) => request.url === "/api/artifacts/link")!;
       expect(linkRequest.body).toMatchObject({
@@ -196,11 +197,11 @@ describe("artifact link CLI", () => {
 
       expect(living.status).toBe(0);
       expect(living.stdout.trim()).toBe(
-        "linked artifact:sha256:abc123 references issue:issue-12 [living · latest v3]",
+        "linked artifact:abc123def456 references issue:issue-12 [living · latest v3]",
       );
       expect(pinned.status).toBe(0);
       expect(pinned.stdout.trim()).toBe(
-        "linked artifact:sha256:abc123 references issue:issue-12 [pinned v3]",
+        "linked artifact:abc123def456 references issue:issue-12 [pinned v3]",
       );
       const linkBodies = recorder.requests
         .filter((request) => request.url === "/api/artifacts/link")
@@ -273,7 +274,7 @@ describe("artifact link CLI", () => {
           status: 200,
           body: {
             resolution: {
-              artifact: { id: "artifact:sha256:resolved" },
+              artifact: { id: "artifact:abc123def456" },
             },
           },
         };
@@ -314,7 +315,7 @@ describe("artifact link CLI", () => {
           status: 200,
           body: {
             artifact: {
-              id: "artifact:sha256:snapshot",
+              id: "artifact:abc123def456",
               custody_mode: "copy",
               availability: "present",
             },
@@ -336,7 +337,7 @@ describe("artifact link CLI", () => {
       expect(result.status).toBe(0);
       const body = recorder.requests.find((request) => request.url === "/api/artifacts/link")!.body;
       expect(body).toMatchObject({
-        ref: "artifact-blob:snapshot",
+        ref: "artifact:abc123def456",
         entity_type: "issue",
         entity_id: "issue-1234567890",
         link_type: "references",
@@ -366,13 +367,13 @@ describe("artifact versions CLI display", () => {
                 {
                   version_no: 1,
                   source_kind: "managed",
-                  artifact_id: "artifact:sha256:one",
+                  artifact_id: "artifact:111111111111",
                   label: "draft",
                 },
                 {
                   version_no: 2,
                   source_kind: "managed",
-                  artifact_id: "artifact:sha256:two",
+                  artifact_id: "artifact:222222222222",
                   label: null,
                 },
               ],
@@ -392,8 +393,9 @@ describe("artifact versions CLI display", () => {
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("artifact artifact:series-1 [managed] 2 version(s)");
       expect(result.stdout).not.toContain("artifact-series:series-1");
-      expect(result.stdout).toContain("v1 managed artifact:sha256:one (draft)");
-      expect(result.stdout).toContain("v2 managed artifact:sha256:two");
+      expect(result.stdout).toContain("v1 managed artifact:111111111111 (draft)");
+      expect(result.stdout).toContain("v2 managed artifact:222222222222");
+      expect(result.stdout).not.toContain("artifact:sha256:");
     } finally {
       await recorder.close();
     }

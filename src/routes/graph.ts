@@ -7,7 +7,11 @@ import {
   getLedgerGraphFilterOptions,
   ledgerGraphHasIssues,
 } from "../ledger/graph-adapter.js";
-import { getIndexedGraph, getIndexedGraphCount } from "../provider-artifacts.js";
+import {
+  getIndexedGraph,
+  getIndexedGraphCount,
+  projectArtifactPublicValue,
+} from "../provider-artifacts.js";
 import type { IssueScanner } from "../issue-scanner.js";
 import type { RouteRegistrar } from "../server.js";
 import type {
@@ -1460,6 +1464,6 @@ export function registerGraphRoutes(
       available_count: selected.counts.available_nodes,
     };
 
-    res.json(payload);
+    res.json(projectArtifactPublicValue(getDb(), payload));
   }, { fileRpc: "deny" });
 }
