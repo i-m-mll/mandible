@@ -1,6 +1,7 @@
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
+  projectArtifactPublicValue,
   resolveArtifactRefReadonlyFull,
   resolveArtifactSurfaceRefReadonlyFull,
 } from "../provider-artifacts.js";
@@ -333,12 +334,13 @@ function resolveArtifactResult(
   const resolution = /^artifact:sha256:[0-9a-f]{64}$/i.test(trimmed)
     ? resolveArtifactRefReadonlyFull(db, trimmed)
     : resolveArtifactSurfaceRefReadonlyFull(db, trimmed);
+  const publicResolution = projectArtifactPublicValue(db, resolution) as typeof resolution;
   return {
     ref: displayRef ?? refValue,
     kind,
     resolved: resolution.artifact !== null,
-    entity: resolution.artifact as Record<string, unknown> | null,
-    detail: { resolution },
+    entity: publicResolution.artifact as Record<string, unknown> | null,
+    detail: { resolution: publicResolution },
   };
 }
 

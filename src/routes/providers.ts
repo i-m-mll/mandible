@@ -27,6 +27,7 @@ import {
   listProjectArtifactAssociations,
   listProviders,
   planLocalArtifactPath,
+  projectArtifactPublicValue,
   publishArtifactDraft,
   recordArtifactVersion,
   registerLocalArtifactPath,
@@ -172,11 +173,11 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           : undefined;
       if (localPath) {
         const result = registerLocalArtifactPath(getDb(), { ...body, path: localPath });
-        sendJson(res, 200, result);
+        sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
         return;
       }
       const artifact = ingestArtifact(getDb(), body);
-      sendJson(res, 200, { artifact });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);
     }
@@ -244,7 +245,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       offset: queryNumber(req, "offset"),
       summary: queryBoolean(req, "summary"),
     });
-    sendJson(res, 200, { artifacts });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/resolve", (req, res) => {
@@ -254,7 +255,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      sendJson(res, 200, { resolution: resolveArtifactSurfaceRefReadonlyFull(getDb(), ref) });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), {
+        resolution: resolveArtifactSurfaceRefReadonlyFull(getDb(), ref),
+      }));
     } catch (error) {
       handleError(res, error);
     }
@@ -329,7 +332,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    sendJson(res, 200, { series });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { series }));
   }, { fileRpc: "deny" });
 
   app.post("/api/artifacts/link", (req, res) => {
@@ -352,7 +355,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         return;
       }
       const result = resolveAndLinkArtifact(getDb(), body);
-      sendJson(res, 200, result);
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
     }
@@ -379,7 +382,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           : null;
         return { ref, resolution, check };
       });
-      sendJson(res, 200, { checks });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { checks }));
     } catch (error) {
       handleError(res, error);
     }
@@ -388,7 +391,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/snapshot", (req, res) => {
     try {
       const artifact = snapshotArtifactBytes(getDb(), bodyRecord(req));
-      sendJson(res, 200, { artifact });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);
     }
@@ -409,7 +412,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 404, { error: "no artifact version series found for ref" });
         return;
       }
-      sendJson(res, 200, { history });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { history }));
     } catch (error) {
       handleError(res, error);
     }
@@ -529,7 +532,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         ...body,
         source_kind: sourceKind as ArtifactVersionSourceKind,
       });
-      sendJson(res, 200, { result });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { result }));
     } catch (error) {
       handleError(res, error);
     }
@@ -538,7 +541,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/bundles", (req, res) => {
     try {
       const result = createArtifactBundle(getDb(), bodyRecord(req) as unknown as Parameters<typeof createArtifactBundle>[1]);
-      sendJson(res, 200, result);
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
     }
@@ -549,7 +552,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       const body = bodyRecord(req);
       const members = Array.isArray(body.members) ? body.members : [];
       const result = addArtifactBundleMembers(getDb(), req.params.id, members as Parameters<typeof addArtifactBundleMembers>[2]);
-      sendJson(res, 200, result);
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
     }
@@ -561,7 +564,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "bundle not found" });
       return;
     }
-    sendJson(res, 200, bundle);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), bundle));
   }, { fileRpc: "allow" });
 
   app.get("/api/knowledge-backrefs", (req, res) => {
@@ -592,7 +595,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "artifact not found" });
       return;
     }
-    sendJson(res, 200, { content });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { content }));
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/check", (req, res) => {
@@ -601,7 +604,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "artifact not found" });
       return;
     }
-    sendJson(res, 200, { check });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { check }));
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
@@ -635,7 +638,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "artifact not found" });
       return;
     }
-    sendJson(res, 200, { artifact });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
   }, { fileRpc: "allow" });
 
   app.post("/api/provider-manifests/ingest", (req, res) => {

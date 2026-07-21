@@ -2,6 +2,7 @@ import type { Db } from "../db.js";
 import { columnExists, tableExists } from "../db-introspection.js";
 import {
   getArtifact,
+  projectArtifactPublicValue,
   resolveArtifactLinkRef,
   resolveArtifactSurfaceRefReadonlyFull,
 } from "../provider-artifacts.js";
@@ -628,12 +629,13 @@ function listAssociatedArtifacts(
     }
   }
 
-  return Array.from(artifacts.values()).sort((a, b) => {
+  const sorted = Array.from(artifacts.values()).sort((a, b) => {
     const linkPriority = Number(b.links.length > 0) - Number(a.links.length > 0);
     if (linkPriority !== 0) return linkPriority;
     if (a.created_at !== b.created_at) return b.created_at - a.created_at;
     return a.id.localeCompare(b.id);
   });
+  return projectArtifactPublicValue(db, sorted) as LedgerIssueDetailAssociatedArtifact[];
 }
 
 function listExplicitArtifactRows(
@@ -1526,7 +1528,7 @@ function normalizeAuthoredArtifactRef(ref: string): string {
 function isArtifactLikeRef(ref: string): boolean {
   const scheme = schemeForRef(ref);
   if (scheme === "artifact") {
-    return !/^artifact:sha256:/i.test(ref) && !/^artifact:[a-f0-9]{7,64}$/i.test(ref);
+    return !/^artifact:sha256:/i.test(ref);
   }
   if (scheme === "artifact-series") return true;
   if (scheme === "artifact-version") return true;

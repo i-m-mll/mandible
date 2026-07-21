@@ -460,7 +460,7 @@ describe("ledger issue detail projection", () => {
     const issue = store.createIssue({
       project_id: checkout.project.id,
       title: "Artifacts",
-      body: "See [artifact:repo://repo@main/results/summary.md] for the generated report.",
+      body: `See [artifact:repo://repo@main/results/summary.md] and [artifact:${linkedHash.slice(0, 12)}] for the generated report.`,
       kind: "feature",
       aliases: [{ alias_kind: "git_bug_human", alias: "art1234", is_primary: true }],
     });
@@ -485,11 +485,12 @@ describe("ledger issue detail projection", () => {
 
     expect(artifacts).toHaveLength(3);
     expect(artifacts[0]).toMatchObject({
-      id: linkedId,
+      id: `artifact:${linkedHash.slice(0, 12)}`,
       uri: `artifact:${linkedHash}`,
       links: [{ id: "link_1", link_type: "produced_by", role: "report" }],
     });
     expect(artifacts.map((artifact) => artifact.refs).flat().sort()).toEqual([
+      `artifact:${linkedHash.slice(0, 12)}`,
       "feedbax://runs/demo",
       "repo://repo@main/results/summary.md",
     ]);
