@@ -4341,8 +4341,10 @@ export function canonicalArtifactShortRef(db: Db, hash: string): string {
 /** Strip internal legacy compatibility refs from current API projections. */
 export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
   if (typeof value === "string") {
-    const match = /^artifact:sha256:([a-f0-9]{64})$/i.exec(value);
-    return match ? canonicalArtifactShortRef(db, match[1]) : value;
+    return value.replace(
+      /artifact:sha256:([a-f0-9]{64})/gi,
+      (_match, hash: string) => canonicalArtifactShortRef(db, hash),
+    );
   }
   if (Buffer.isBuffer(value) || value instanceof Date) return value;
   if (Array.isArray(value)) return value.map((entry) => projectArtifactPublicValue(db, entry));

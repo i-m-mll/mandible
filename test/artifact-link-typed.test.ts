@@ -11,6 +11,7 @@ import type {
   RouteRegistrar,
 } from "../src/server.js";
 import { registerProviderRoutes } from "../src/routes/providers.js";
+import { registerGraphRoutes } from "../src/routes/graph.js";
 import {
   appendArtifactVersion,
   ensureArtifactSeries,
@@ -89,6 +90,26 @@ function postRoute(routePath: string, body: Record<string, unknown>): { statusCo
   routes.handler("POST", routePath)(req, res);
   return { statusCode: res.statusCode, payload: res.payload };
 }
+function getRoute(
+  routePath: string,
+  params: Record<string, string> = {},
+  query: Record<string, string> = {},
+): { statusCode: number; payload: any } {
+  const routes = new TestRoutes();
+  registerProviderRoutes(routes);
+  const req = { method: "GET", url: routePath, params, query } as RequestLike;
+  const res = createResponse();
+  routes.handler("GET", routePath)(req, res);
+  return { statusCode: res.statusCode, payload: res.payload };
+}
+function getGraphRoute(query: Record<string, string>): { statusCode: number; payload: any } {
+  const routes = new TestRoutes();
+  registerGraphRoutes(routes, {} as never);
+  const req = { method: "GET", url: "/api/graph", params: {}, query } as RequestLike;
+  const res = createResponse();
+  routes.handler("GET", "/api/graph")(req, res);
+  return { statusCode: res.statusCode, payload: res.payload };
+}
 function postLink(body: Record<string, unknown>): { statusCode: number; payload: any } {
   return postRoute("/api/artifacts/link", body);
 }
@@ -110,6 +131,22 @@ function createLedgerIssue(issueId: string, projectName = "mandible"): string {
      VALUES (?, ?, ?, ?, 'open', 1, 1)`,
   ).run(issueId, issueId.slice(0, 7), projectId, `Issue ${issueId}`);
   return issueId;
+}
+
+function createProjectCheckout(projectKey: string, root: string): void {
+  const projectId = `prj_${projectKey}`;
+  db.prepare(
+    `INSERT OR REPLACE INTO ledger_projects (
+      id, project_key, display_name, remote_identity, upstream_identity,
+      namespace_policy, created_at, updated_at
+    ) VALUES (?, ?, ?, '', '', 'local', 1, 1)`,
+  ).run(projectId, projectKey, projectKey);
+  db.prepare(
+    `INSERT OR REPLACE INTO ledger_project_checkouts (
+      id, project_id, work_repo_id, root, name, default_branch, remote_url,
+      created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
+  ).run(`checkout_${projectKey}`, projectId, projectKey, root, projectKey);
 }
 
 let counter = 0;
@@ -483,6 +520,49 @@ describe("evidence links must be pinned", () => {
 // ingest (which forwards caller-supplied link/links straight to the upsert)
 // cannot bypass the route + resolveAndLinkArtifact guards.
 describe("chokepoint enforcement in registerArtifactLink", () => {
+  it("projects provider manifest ingest and provider detail responses", () => {
+    const body = {
+      provider_id: "provider-public-ids",
+      manifest: {
+        provider: { id: "provider-public-ids", name: "Public IDs" },
+        artifacts: [{ id: "report", content: "report\n" }],
+      },
+    };
+    const registered = postRoute("/api/providers/register-manifest", body);
+    const ingested = postRoute("/api/provider-manifests/ingest", body);
+    const detail = getRoute("/api/providers/:id", { id: "provider-public-ids" });
+
+    for (const response of [registered, ingested, detail]) {
+      expect(response.statusCode).toBe(200);
+      expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
+    }
+    expect(registered.payload.manifest.artifact_id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(ingested.payload.manifest.artifact_id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(detail.payload.manifests[0].artifact_id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(detail.payload.artifacts.every((artifact: { id: string }) =>
+      /^artifact:[a-f0-9]{12,64}$/.test(artifact.id))).toBe(true);
+
+    const graph = getGraphRoute({ mode: "provider-lineage", provider: "provider-public-ids" });
+    expect(graph.statusCode).toBe(200);
+    expect(JSON.stringify(graph.payload)).not.toContain("artifact:sha256:");
+  });
+
+  it("projects repository-scan artifact responses", () => {
+    const repoRoot = path.join(tempDir, "scan-repo");
+    fs.mkdirSync(path.join(repoRoot, "results"), { recursive: true });
+    fs.writeFileSync(path.join(repoRoot, "results", "summary.md"), "# Summary\n", "utf8");
+    createProjectCheckout("scan-provider", repoRoot);
+
+    const response = postRoute("/api/artifacts/scan-repos", {
+      roots: [{ root: repoRoot, repo_id: "scan-provider" }],
+      register: true,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.payload.artifacts).toHaveLength(1);
+    expect(response.payload.artifacts[0].id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
+    expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
+  });
+
   it("emits current compact ids from ingest and snapshot APIs", () => {
     const ingest = postIngest({ content: "ingest output\n", custody_mode: "copy" });
     const snapshot = postSnapshot({ content: "snapshot output\n", custody_mode: "managed" });
