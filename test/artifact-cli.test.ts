@@ -180,7 +180,7 @@ describe("artifact CLI", () => {
               target_type: "artifact_blob",
               target_id: "artifact-blob:abc123",
               normalized_ref: "artifact-blob:abc123",
-              artifact: { id: "artifact:sha256:abc123" },
+              artifact: { id: "artifact:abc123def456" },
               warnings: [],
             },
           },
@@ -209,7 +209,7 @@ describe("artifact CLI", () => {
             resolution: {
               status: "unsupported",
               target_id: null,
-              normalized_ref: "artifact:sha256:abc123",
+              normalized_ref: "artifact:abc123def456",
               artifact: null,
               warnings: ["legacy_artifact_ref_unsupported", "repair_to_artifact_blob_ref"],
             },
@@ -220,11 +220,12 @@ describe("artifact CLI", () => {
     });
 
     try {
-      const result = await runAsync(["artifact", "resolve", "artifact:sha256:abc123"], tempDir, {
+      const result = await runAsync(["artifact", "resolve", `artifact:sha256:${"a".repeat(64)}`], tempDir, {
         MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
       });
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain("unsupported legacy_artifact - artifact:sha256:abc123");
+      expect(result.stdout).toContain("unsupported legacy_artifact - artifact:abc123def456");
+      expect(result.stdout).not.toContain("artifact:sha256:");
       expect(result.stdout).toContain("warning: legacy_artifact_ref_unsupported");
       expect(result.stdout).toContain("warning: repair_to_artifact_blob_ref");
     } finally {
@@ -246,7 +247,7 @@ describe("artifact CLI", () => {
           body: {
             result: {
               created: true,
-              artifact: { id: "artifact:sha256:abc123" },
+              artifact: { id: "artifact:abc123def456" },
               series: { id: "artifact-series:series-1", source_kind: "local_only", version_count: 1 },
               version: { id: "artifact-version:version-1", version_no: 1 },
             },
@@ -399,7 +400,7 @@ describe("artifact CLI", () => {
           status: 200,
           body: {
             artifact: {
-              id: "artifact:sha256:deadbeef",
+              id: "artifact:deadbeefcafe",
               custody_mode: "copy",
               availability: "present",
               metadata: { recoverability: "mandible_cas" },
@@ -444,7 +445,7 @@ describe("artifact CLI", () => {
     tempRoots.push(spoolDir);
     const sourceRef = "artifact:logical-source";
     const newHash = "b".repeat(64);
-    const newRef = `artifact:sha256:${"b".repeat(64)}`;
+    const newRef = "artifact:bbbbbbbbbbbb";
     const seen: Array<Record<string, unknown>> = [];
     const timer = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
@@ -531,7 +532,7 @@ describe("artifact CLI", () => {
         attachmentSize = typeof name === "string" ? fs.statSync(path.join(spoolDir, name)).size : -1;
         return {
           status: 200,
-          body: { artifact: { id: "artifact:sha256:big", custody_mode: "copy", availability: "present" } },
+          body: { artifact: { id: "artifact:bbbbbbbbbbbb", custody_mode: "copy", availability: "present" } },
         };
       }
       return { status: 404, body: { error: "unexpected" } };
@@ -629,7 +630,7 @@ describe("artifact CLI", () => {
           status: 200,
           body: {
             artifact: {
-              id: `artifact:sha256:${body.sha256}`,
+              id: `artifact:${String(body.sha256).slice(0, 12)}`,
               custody_mode: "copy",
               availability: "present",
             },

@@ -45,7 +45,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Db } from "../db.js";
-import { getArtifact, ingestArtifact } from "../provider-artifacts.js";
+import { getArtifact, ingestArtifact, projectArtifactPublicValue } from "../provider-artifacts.js";
 import { getSpace, type SpaceRecord } from "../ledger/spaces.js";
 import { listSpaceBlocks, toDocBlock } from "../ledger/space-blocks.js";
 import { exportDocument, SPACES_DOC_VERSION, type DocBlock, type DocTree } from "./serialize.js";
@@ -431,8 +431,8 @@ interface SpaceExportStoredRow extends SpaceExportRow {
 
 function projectSpaceExportRow(db: Db, row: SpaceExportStoredRow): SpaceExportRow {
   const compatibilityRef = (blobId: string | null, legacyId: string | null): string | null => {
-    if (!blobId) return legacyId;
-    return getArtifact(db, blobId)?.id ?? legacyId;
+    const storedId = blobId ? (getArtifact(db, blobId)?.id ?? legacyId) : legacyId;
+    return storedId ? projectArtifactPublicValue(db, storedId) as string : null;
   };
   const {
     last_export_blob_id: lastExportBlobId,
@@ -595,8 +595,8 @@ export async function exportAndTrack(
       export: row,
       document_content_sha256: contentSha,
       commit,
-      pre_export_snapshot_artifact_id: preExport.id,
-      last_export_artifact_id: lastExport.id,
+      pre_export_snapshot_artifact_id: projectArtifactPublicValue(db, preExport.id) as string,
+      last_export_artifact_id: projectArtifactPublicValue(db, lastExport.id) as string,
     };
   });
 }

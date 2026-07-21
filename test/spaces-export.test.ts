@@ -159,8 +159,9 @@ describe('export-and-track (linked commit + tracking row)', () => {
     expect(row.last_export_commit).toBe('commit1');
     expect(row.last_export_blob_sha).toBe('blob1');
     expect(row.last_export_content_sha256).toBe(result.document_content_sha256);
-    expect(row.pre_export_snapshot_artifact_id).toMatch(/^artifact:sha256:/);
-    expect(row.last_export_artifact_id).toMatch(/^artifact:sha256:/);
+    expect(row.pre_export_snapshot_artifact_id).toMatch(/^artifact:[a-f0-9]{12}$/);
+    expect(row.last_export_artifact_id).toMatch(/^artifact:[a-f0-9]{12}$/);
+    expect(JSON.stringify(result)).not.toContain("artifact:sha256:");
     expect(row).not.toHaveProperty('last_export_blob_id');
     expect(row).not.toHaveProperty('pre_export_snapshot_blob_id');
 
