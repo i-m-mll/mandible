@@ -161,8 +161,9 @@ describe("artifact CLI", () => {
     const result = run(["artifact", "--help"], process.cwd());
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("artifact:<id>             logical artifact");
-    expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
+    expect(result.stdout).toContain("artifact:<unique-hash-prefix>  immutable artifact (normal compact ID)");
+    expect(result.stdout).toContain("artifact:<logical-id>          logical artifact");
+    expect(result.stdout).toContain("artifact-blob:<full-hash>      immutable artifact bytes (full typed form)");
     expect(result.stdout).toContain("mandible artifact associate <ref> --project <project>");
     expect(result.stdout).toContain("mandible artifact versions <ref>");
     expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
@@ -195,6 +196,100 @@ describe("artifact CLI", () => {
       });
       expect(result.status).toBe(0);
       expect(result.stdout).toContain("resolved artifact_blob artifact-blob:abc123 artifact-blob:abc123");
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("uses a short blob id's canonical target for artifact show", async () => {
+    const hash = "a".repeat(64);
+    const shortId = `artifact:${hash.slice(0, 12)}`;
+    const canonicalTarget = `artifact-blob:${hash}`;
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              target_type: "artifact_blob",
+              target_id: canonicalTarget,
+              artifact: { id: shortId },
+            },
+          },
+        };
+      }
+      if (req.method === "GET" && req.url === `/api/artifacts/${encodeURIComponent(canonicalTarget)}`) {
+        return {
+          status: 200,
+          body: {
+            artifact: {
+              id: shortId,
+              role: "report",
+              custody_mode: "copy",
+              availability: "present",
+              uri: `cas://${hash}`,
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "show", shortId, "--json"], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout).artifact.id).toBe(shortId);
+      expect(recorder.requests.map((request) => request.url)).toEqual([
+        `/api/artifacts/resolve?ref=${encodeURIComponent(shortId)}`,
+        `/api/artifacts/${encodeURIComponent(canonicalTarget)}`,
+      ]);
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("uses a short blob id's canonical target for artifact content", async () => {
+    const hash = "b".repeat(64);
+    const shortId = `artifact:${hash.slice(0, 12)}`;
+    const canonicalTarget = `artifact-blob:${hash}`;
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              target_type: "artifact_blob",
+              target_id: canonicalTarget,
+              artifact: { id: shortId },
+            },
+          },
+        };
+      }
+      if (req.method === "GET" && req.url === `/api/artifacts/${encodeURIComponent(canonicalTarget)}/content`) {
+        return {
+          status: 200,
+          body: { content: { artifact_id: shortId, preview: { text: "compact content\n" } } },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const result = await runAsync(["artifact", "content", shortId], tempDir, {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("compact content\n\n");
+      expect(recorder.requests.map((request) => request.url)).toEqual([
+        `/api/artifacts/resolve?ref=${encodeURIComponent(shortId)}`,
+        `/api/artifacts/${encodeURIComponent(canonicalTarget)}/content`,
+      ]);
     } finally {
       await recorder.close();
     }

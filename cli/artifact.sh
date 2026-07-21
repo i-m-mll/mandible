@@ -105,9 +105,10 @@ Recoverability:
   mandible_cas  bytes are stored in Mandible artifact storage.
 
 Artifact refs:
-  artifact:<id>             logical artifact.
-  artifact-version:<id>     specific artifact version.
-  artifact-blob:<hash>      immutable artifact bytes.
+  artifact:<unique-hash-prefix>  immutable artifact (normal compact ID).
+  artifact:<logical-id>          logical artifact.
+  artifact-version:<id>          specific artifact version.
+  artifact-blob:<full-hash>      immutable artifact bytes (full typed form).
 EOF
 }
 
@@ -901,6 +902,12 @@ artifact_id_for_ref() {
   api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" | jq -r '.resolution.artifact.id'
 }
 
+artifact_route_target_for_ref() {
+  local ref="$1"
+  api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")" \
+    | jq -er '.resolution | select(.status == "resolved") | .target_id | select(type == "string" and length > 0)'
+}
+
 canonical_ref_for_artifact_json() {
   jq -r '
     if (.content_hash // "") != "" then "artifact-blob:" + .content_hash
@@ -921,7 +928,7 @@ cmd_show() {
   [[ -n "$ref" ]] || die "Usage: mandible artifact show <ref> [--json]" 2
   require_tools
   local id response
-  id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
   response="$(api_get "/api/artifacts/$(urlencode "$id")")" || die "${RED}Failed to show artifact.${RESET}" 1
   if (( json )); then
     printf '%s\n' "$response" | jq .
@@ -943,7 +950,7 @@ cmd_content() {
   [[ -n "$ref" ]] || die "Usage: mandible artifact content <ref> [--output <path>] [--json]" 2
   require_tools
   local id response
-  id="$(artifact_id_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  id="$(artifact_route_target_for_ref "$ref")" || die "${RED}Failed to resolve artifact ref.${RESET}" 1
   response="$(api_get "/api/artifacts/$(urlencode "$id")/content")" || die "${RED}Failed to fetch artifact content.${RESET}" 1
   if [[ -n "$output" ]]; then
     printf '%s\n' "$response" | jq -er '.content.preview.text' > "$output" \
