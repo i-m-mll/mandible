@@ -131,9 +131,10 @@ describe("artifact link CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[--pinned|--living]");
-    expect(result.stdout).toContain("artifact:<id>             logical artifact");
-    expect(result.stdout).toContain("artifact-version:<id>     specific artifact version");
-    expect(result.stdout).toContain("artifact-blob:<hash>      immutable artifact bytes");
+    expect(result.stdout).toContain("artifact:<unique-hash-prefix>  immutable artifact (normal compact ID)");
+    expect(result.stdout).toContain("artifact:<logical-id>          logical artifact");
+    expect(result.stdout).toContain("artifact-version:<id>          specific artifact version");
+    expect(result.stdout).toContain("artifact-blob:<full-hash>      immutable artifact bytes (full typed form)");
     expect(result.stdout).not.toContain("artifact:sha256:<hash>");
   });
 
