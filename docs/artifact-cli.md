@@ -6,20 +6,24 @@ Mandible-Issue: f094416
 
 Mandible artifact commands are a thin interface over the artifact registry. They
 should create structured artifact records and links, not just paste paths into
-issue comments. Durable references should prefer `repo://...` and
-compact `artifact-blob:<sha-or-prefix>` refs over absolute local paths.
+issue comments. Durable references should prefer `repo://...` and canonical
+compact `artifact:<unique-hash-prefix>` refs over absolute local paths.
 
 User-facing hash references may use compact SHA-256 prefixes when the prefix is
 long enough to identify exactly one artifact, for example
-`artifact-blob:ad46ed88a9e8`. SHA-prefixed URI forms are not valid authored refs.
+`artifact:ad46ed88a9e8`. SHA-prefixed URI forms are not valid authored refs.
 Prefix resolution must report `ambiguous` when multiple artifacts match and
 `unresolved` when none match; it must not guess or create a new hash-only
 artifact from a short prefix.
 
 Living logical artifact links should use `artifact:<prefix>` once the logical
-artifact prefix is long enough to resolve unambiguously. Pinned selected
-versions should use `artifact-version:<prefix>`. Immutable byte references
-should use `artifact-blob:<hash-prefix>`.
+artifact prefix is long enough to resolve unambiguously. Compatibility readers
+also accept `artifact-series:<prefix>`, `artifact-series:<prefix>@<n>`, and
+`artifact-series:<prefix>@latest`. Pinned selected versions should use
+`artifact-version:<prefix>`. Immutable byte references should use
+`artifact:<unique-hash-prefix>`. Current producers must not emit
+`artifact:sha256:<hash>`; `artifact-blob:<hash>` is retained only as an explicit
+legacy/read boundary or an ambiguity-safe full fallback.
 
 ## Repo-Local Artifacts
 
@@ -128,7 +132,7 @@ custody. This is the right escape hatch for hash-only external references or
 local-only files that need durable issue evidence:
 
 ```bash
-mandible artifact snapshot artifact-blob:<hash-or-prefix> --from ./external.txt --json
+mandible artifact snapshot artifact:<unique-hash-prefix> --from ./external.txt --json
 ```
 
 For a local path that should be copied directly into Mandible custody, use:

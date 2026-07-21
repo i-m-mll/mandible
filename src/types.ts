@@ -1231,6 +1231,8 @@ export type ArtifactSeriesSourceKind = ArtifactVersionSourceKind | "mixed";
 // one immutable `artifacts.id`.
 export interface ArtifactSeriesRecord {
   id: string;
+  /** Canonical author-facing ref, shortened only when it remains unambiguous. */
+  ref?: string;
   series_key: string;
   source_kind: ArtifactSeriesSourceKind;
   title: string | null;
@@ -1248,6 +1250,8 @@ export interface ArtifactSeriesRecord {
 // history without mutating that content row.
 export interface ArtifactVersionRecord {
   id: string;
+  /** Canonical author-facing ref, shortened only when it remains unambiguous. */
+  ref?: string;
   series_id: string;
   artifact_id: string;
   version_no: number;

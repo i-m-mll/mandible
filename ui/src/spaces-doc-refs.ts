@@ -24,6 +24,7 @@ import {
   parseResourceRef,
   compactArtifactBlobRef,
   compactArtifactRef,
+  compactArtifactSeriesRef,
   type ParsedResourceRef,
   type ResourceRefKind,
 } from './resource-refs';
@@ -31,12 +32,14 @@ import {
 function directiveDisplay(parsed: SpacesDocDirectiveRef): string {
   if (parsed.label) return parsed.label;
   if (/^artifact-blob:/i.test(parsed.canonical)) return compactArtifactBlobRef(parsed.canonical);
+  if (/^artifact-series:/i.test(parsed.canonical)) return compactArtifactSeriesRef(parsed.canonical);
   if (supportedArtifactDirectiveRef(parsed.canonical)) return compactArtifactRef(parsed.canonical);
   return parsed.canonical;
 }
 
 function supportedArtifactDirectiveRef(ref: string): boolean {
   return /^artifact:(?!sha256:)[^\s]+$/i.test(ref)
+    || /^artifact-series:[^\s]+$/i.test(ref)
     || /^artifact-version:[^\s]+$/i.test(ref)
     || /^artifact-blob:[0-9a-f]{7,64}$/i.test(ref);
 }
@@ -68,7 +71,6 @@ export function recognizeSpacesDocDirectiveRef(candidate: string): ParsedResourc
     /^artifact:sha256:/i.test(parsed.canonical)
     || /^sha256:/i.test(parsed.canonical)
     || /^[0-9a-f]{7,64}$/i.test(parsed.canonical)
-    || /^artifact-series:/i.test(parsed.canonical)
   ) {
     return null;
   }
