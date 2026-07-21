@@ -109,7 +109,7 @@ function linkedEntityQuery(req: RequestLike): { type?: string; id?: string } {
 
 export function registerProviderRoutes(app: RouteRegistrar): void {
   app.get("/api/providers", (_req, res) => {
-    sendJson(res, 200, { providers: listProviders(getDb()) });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { providers: listProviders(getDb()) }));
   }, { fileRpc: "deny" });
 
   app.get("/api/providers/:id/capabilities", (req, res) => {
@@ -118,7 +118,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "provider not found" });
       return;
     }
-    sendJson(res, 200, capabilities);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), capabilities));
   }, { fileRpc: "deny" });
 
   app.get("/api/providers/:id/health", (req, res) => {
@@ -127,7 +127,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "provider not found" });
       return;
     }
-    sendJson(res, 200, health);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), health));
   }, { fileRpc: "deny" });
 
   app.get("/api/providers/:id", (req, res) => {
@@ -136,13 +136,13 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "provider not found" });
       return;
     }
-    sendJson(res, 200, detail);
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), detail));
   }, { fileRpc: "deny" });
 
   app.post("/api/providers/register", (req, res) => {
     try {
       const provider = registerProvider(getDb(), bodyRecord(req));
-      sendJson(res, 200, { provider });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { provider }));
     } catch (error) {
       handleError(res, error);
     }
@@ -153,11 +153,11 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       const body = bodyRecord(req);
       if (typeof body.path === "string" && body.path.trim()) {
         const manifest = ingestProviderManifestFile(getDb(), body.path);
-        sendJson(res, 200, { manifest });
+        sendJson(res, 200, projectArtifactPublicValue(getDb(), { manifest }));
         return;
       }
       const manifest = ingestProviderManifest(getDb(), body);
-      sendJson(res, 200, { manifest });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { manifest }));
     } catch (error) {
       handleError(res, error);
     }
@@ -196,7 +196,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         return;
       }
       const plan = planLocalArtifactPath(getDb(), { ...body, path: localPath });
-      sendJson(res, 200, { plan });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { plan }));
     } catch (error) {
       handleError(res, error);
     }
@@ -214,7 +214,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         discoveryOnly: bodyBoolean(body, "discovery_only"),
         dryRun: bodyBoolean(body, "dry_run", "dryRun"),
       });
-      sendJson(res, 200, result);
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
     }
@@ -272,7 +272,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    sendJson(res, 200, { artifacts });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/blobs", (req, res) => {
@@ -284,7 +284,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    sendJson(res, 200, { blobs });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { blobs }));
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/associations", (req, res) => {
@@ -300,7 +300,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    sendJson(res, 200, { associations });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { associations }));
   }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/associations", (req, res) => {
@@ -309,7 +309,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         getDb(),
         bodyRecord(req) as unknown as Parameters<typeof associateProjectArtifact>[1],
       );
-      sendJson(res, 200, result);
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
     }
@@ -428,7 +428,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "a and b query parameters required" });
         return;
       }
-      sendJson(res, 200, { diff: diffArtifacts(getDb(), refA, refB) });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { diff: diffArtifacts(getDb(), refA, refB) }));
     } catch (error) {
       handleError(res, error);
     }
@@ -441,7 +441,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      sendJson(res, 200, { draft: getArtifactDraft(getDb(), ref) });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: getArtifactDraft(getDb(), ref) }));
     } catch (error) {
       handleError(res, error);
     }
@@ -467,7 +467,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           ? body.metadata as Record<string, unknown>
           : undefined,
       });
-      sendJson(res, 200, { draft });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft }));
     } catch (error) {
       handleError(res, error);
     }
@@ -481,7 +481,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref is required" });
         return;
       }
-      sendJson(res, 200, { draft: rebaseArtifactDraft(getDb(), ref) });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: rebaseArtifactDraft(getDb(), ref) }));
     } catch (error) {
       handleError(res, error);
     }
@@ -495,12 +495,12 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref is required" });
         return;
       }
-      sendJson(res, 200, publishArtifactDraft(getDb(), {
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), publishArtifactDraft(getDb(), {
         ref,
         label: typeof body.label === "string" ? body.label : null,
         note: typeof body.note === "string" ? body.note : null,
         allow_stale: body.allow_stale === true,
-      }));
+      })));
     } catch (error) {
       handleError(res, error);
     }
@@ -513,7 +513,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
-      sendJson(res, 200, deleteArtifactDraft(getDb(), ref));
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), deleteArtifactDraft(getDb(), ref)));
     } catch (error) {
       handleError(res, error);
     }
@@ -577,13 +577,13 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    sendJson(res, 200, { backrefs });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { backrefs }));
   }, { fileRpc: "allow" });
 
   app.post("/api/knowledge-backrefs", (req, res) => {
     try {
       const backref = createKnowledgeBackref(getDb(), bodyRecord(req));
-      sendJson(res, 200, { backref });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
       handleError(res, error);
     }
@@ -616,7 +616,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
     });
-    sendJson(res, 200, { backrefs });
+    sendJson(res, 200, projectArtifactPublicValue(getDb(), { backrefs }));
   }, { fileRpc: "deny" });
 
   app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
@@ -626,7 +626,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         source_type: "artifact",
         source_id: req.params.id,
       });
-      sendJson(res, 200, { backref });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
       handleError(res, error);
     }
@@ -644,7 +644,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/provider-manifests/ingest", (req, res) => {
     try {
       const manifest = ingestProviderManifest(getDb(), bodyRecord(req));
-      sendJson(res, 200, { manifest });
+      sendJson(res, 200, projectArtifactPublicValue(getDb(), { manifest }));
     } catch (error) {
       handleError(res, error);
     }
