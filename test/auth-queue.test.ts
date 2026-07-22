@@ -2395,4 +2395,166 @@ describe("auth queue", () => {
       }
     });
   });
+
+  // Bug: 681739e — a self-merge restart must not kill chained executions. While
+  // the restart is pending, admission is closed (new executions park instead of
+  // starting), and the shutdown instant is recorded so the respawned daemon
+  // fast-recovers any orphaned execution instead of waiting out the multi-minute
+  // stuck-request threshold.
+  describe("self-merge restart drain", () => {
+    it("parks a newly-approved execution while a self-merge restart is pending", async () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      let queue: AuthQueue | null = null;
+      const executed: string[] = [];
+
+      const originalSetTimeout = globalThis.setTimeout;
+      const setTimeoutSpy = (fn: (...args: unknown[]) => void, ms?: number) => {
+        // Neutralize the self-rebuild process.exit so the test keeps running.
+        if (ms === 2000) {
+          return originalSetTimeout(() => {}, 0);
+        }
+        return originalSetTimeout(fn, ms);
+      };
+      globalThis.setTimeout = setTimeoutSpy as typeof globalThis.setTimeout;
+
+      let releaseHook: (() => void) | null = null;
+      const hookGate = new Promise<void>((resolve) => {
+        releaseHook = resolve;
+      });
+      // Hold the self-merge in its hook phase, keeping admission closed while we
+      // approve a second request.
+      const hookManager = {
+        executeHooks: async () => {
+          await hookGate;
+          return [];
+        },
+      } as unknown as AuthHookManager;
+
+      try {
+        commitOnBranch(repo, "feature/self-park", { "park.txt": "fix\n" });
+        registerWorkRepo(db, repo);
+        queue = new AuthQueue({
+          db,
+          hookManager,
+          executor: async (options) => {
+            executed.push(options.request_id);
+            return {
+              exit_code: 0,
+              signal: null,
+              stdout: "",
+              stderr: "",
+              output: "",
+              started_at: Date.now(),
+              finished_at: Date.now(),
+            };
+          },
+        });
+
+        const selfMerge = queue.submit({
+          command: "mandible auth merge main",
+          title: "Self-merge",
+          repo: "mandible",
+          base_branch: "main",
+          head_branch: "feature/self-park",
+          cwd: repo,
+          execution_mode: "daemon",
+        });
+        queue.approve(selfMerge.id);
+
+        // Wait for the self-merge to enter its hook phase (admission closed).
+        const deadline = Date.now() + 2000;
+        while (!queue.isRebuilding && Date.now() < deadline) {
+          await new Promise((resolve) => originalSetTimeout(resolve, 10));
+        }
+        expect(queue.isRebuilding).toBe(true);
+
+        // A request approved during the rebuild window must be parked, not run.
+        const other = queue.submit({
+          command: "echo other",
+          title: "Other",
+          execution_mode: "daemon",
+        });
+        queue.approve(other.id);
+        expect(queue.getRequest(other.id)?.status).toBe("pending");
+
+        releaseHook?.();
+        await waitForStatus(queue, selfMerge.id, "completed");
+        await new Promise((resolve) => originalSetTimeout(resolve, 50));
+
+        // Parked request stayed pending and never reached the executor.
+        expect(queue.getRequest(other.id)?.status).toBe("pending");
+        expect(executed).toEqual([selfMerge.id]);
+      } finally {
+        globalThis.setTimeout = originalSetTimeout;
+        queue?.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    it("fast-recovers an execution orphaned by a recorded self-merge shutdown", () => {
+      const db = createMigratedDb();
+      const now = 5_000_000;
+      const q1 = new AuthQueue({ db, now: () => now });
+      const req = q1.submit({
+        command: "echo work",
+        title: "Interrupted",
+        execution_mode: "daemon",
+      });
+      q1.dispose();
+
+      // Approved ~10 s before the daemon exited to rebuild, killed mid-execution
+      // (executing, no exit code). Recent enough that the 5-minute threshold path
+      // would NOT recover it.
+      db.prepare(
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, last_executed_at = ?, exit_code = NULL WHERE id = ?"
+      ).run(now - 10_000, now - 9_000, req.id);
+      // Durable marker recorded by the self-merge just before exit.
+      db.prepare(
+        "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+      ).run("auth_self_merge_shutdown_at", String(now - 5_000));
+
+      const events: SseEvent[] = [];
+      const q2 = new AuthQueue({ db, now: () => now, broadcast: (event) => events.push(event) });
+
+      const recovered = q2.getRequest(req.id);
+      // A non-merge execution cannot be repository-recovered → completed as failed.
+      expect(recovered?.status).toBe("completed");
+      expect(recovered?.exit_code).toBe(1);
+      // Marker is consumed (one-shot).
+      const marker = db
+        .prepare("SELECT value FROM meta WHERE key = ?")
+        .get("auth_self_merge_shutdown_at");
+      expect(marker).toBeUndefined();
+      expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
+
+      q2.dispose();
+      db.close();
+    });
+
+    it("does not fast-recover a recent stuck execution without a shutdown marker", () => {
+      const db = createMigratedDb();
+      const now = 5_000_000;
+      const q1 = new AuthQueue({ db, now: () => now });
+      const req = q1.submit({
+        command: "echo work",
+        title: "Recent",
+        execution_mode: "daemon",
+      });
+      q1.dispose();
+
+      db.prepare(
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, exit_code = NULL WHERE id = ?"
+      ).run(now - 10_000, req.id);
+      // No shutdown marker recorded.
+
+      const q2 = new AuthQueue({ db, now: () => now });
+      // Recent (< 5 min) with no marker → left executing for the threshold path.
+      expect(q2.getRequest(req.id)?.status).toBe("executing");
+
+      q2.dispose();
+      db.close();
+    });
+  });
 });

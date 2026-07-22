@@ -167,7 +167,16 @@ export class AuthQueue {
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
   // self-merge. Exposed via isRebuilding so the health endpoint can include
   // it in the response, preventing the UI from reloading prematurely.
+  //
+  // Bug: 681739e — while true, admission is closed: executeInBackground parks
+  // any new execution (reverts it to pending) instead of starting a merge that
+  // the imminent process.exit would kill mid-flight.
   private _rebuilding = false;
+  // Bug: 681739e — durable marker (meta key) recording when a self-merge
+  // scheduled the restart. On the next startup, requests approved before this
+  // instant that never recorded a result are recovered immediately instead of
+  // waiting out the multi-minute stuck-request threshold.
+  private static readonly SELF_MERGE_SHUTDOWN_KEY = "auth_self_merge_shutdown_at";
 
   constructor(options: AuthQueueOptions = {}) {
     this.db = options.db ?? getDb();
@@ -178,6 +187,9 @@ export class AuthQueue {
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
     this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
+    // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
+    // before the generic (threshold-based) stuck-request recovery runs.
+    this.recoverSelfMergeShutdown();
     this.recoverStuckRequests();
     this.startExpiryTimer();
   }
@@ -285,6 +297,144 @@ export class AuthQueue {
     }
 
     this.sweepSuccessfulMergeFinalizers();
+  }
+
+  /**
+   * Bug: 681739e — recover executions orphaned by a self-merge restart.
+   *
+   * A Mandible self-merge exits the daemon (~2 s after completing) so launchd
+   * respawns the rebuilt code. Any request that was in-flight or queued at that
+   * moment is killed without recording a result and would otherwise sit
+   * 'executing'/'approved' until the 5-minute stuck-request threshold fires.
+   *
+   * The self-merge records a durable shutdown timestamp before exiting. On the
+   * next startup we recover every request approved before that instant that
+   * never recorded a result, using the shutdown time as the cutoff so recovery
+   * is immediate rather than threshold-gated. The marker is consumed (one-shot)
+   * so a later clean startup does not re-trigger recovery.
+   */
+  private recoverSelfMergeShutdown(): void {
+    const shutdownAt = this.consumeSelfMergeShutdown();
+    if (shutdownAt == null) {
+      return;
+    }
+    // approved_at strictly less than the cutoff is recovered; +1 makes the
+    // comparison inclusive of requests approved at the recorded instant.
+    const result = this.recoverStaleExecutions(shutdownAt + 1, "self-merge restart");
+    this.emitRecoveredExecutions(result);
+    authLog("info", "auth_self_merge_shutdown_recovered", {
+      subsystem: "auth",
+      shutdown_at: shutdownAt,
+      recovered_success: result.recoveredSuccessIds.length,
+      recovered_failure: result.recoveredFailureIds.length,
+      requeued: result.requeuedIds.length,
+    });
+  }
+
+  /**
+   * Broadcast and finalize the outcome of a stale-execution recovery pass.
+   * Successful merges run idempotent success finalizers before the resolved
+   * broadcast; requeued requests emit an updated event so clients re-render the
+   * pending row.
+   */
+  private emitRecoveredExecutions(result: {
+    recoveredSuccessIds: string[];
+    recoveredFailureIds: string[];
+    requeuedIds: string[];
+  }): void {
+    for (const id of result.recoveredSuccessIds) {
+      const recovered = this.getRequest(id);
+      if (recovered) {
+        this.afterSuccessfulMerge(recovered);
+        this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(recovered) });
+      }
+    }
+    for (const id of result.recoveredFailureIds) {
+      const recovered = this.getRequest(id);
+      if (recovered) {
+        this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(recovered) });
+      }
+    }
+    for (const id of result.requeuedIds) {
+      const requeued = this.getRequest(id);
+      if (requeued) {
+        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+      }
+    }
+  }
+
+  /** Bug: 681739e — durably record the instant a self-merge scheduled its restart. */
+  private recordSelfMergeShutdown(at: number): void {
+    try {
+      this.db
+        .prepare(
+          "INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+        )
+        .run(AuthQueue.SELF_MERGE_SHUTDOWN_KEY, String(at));
+    } catch (error) {
+      authLog("warn", "auth_self_merge_shutdown_record_failed", {
+        subsystem: "auth",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Bug: 681739e — read and clear the self-merge shutdown marker (one-shot). */
+  private consumeSelfMergeShutdown(): number | null {
+    let raw: string | undefined;
+    try {
+      const row = this.db
+        .prepare("SELECT value FROM meta WHERE key = ?")
+        .get(AuthQueue.SELF_MERGE_SHUTDOWN_KEY) as { value?: string } | undefined;
+      raw = row?.value;
+      if (raw != null) {
+        this.db.prepare("DELETE FROM meta WHERE key = ?").run(AuthQueue.SELF_MERGE_SHUTDOWN_KEY);
+      }
+    } catch {
+      return null;
+    }
+    if (raw == null) {
+      return null;
+    }
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  /**
+   * Bug: 681739e — park a request that cannot start because a self-merge
+   * restart is in progress. The execution never began, so the repository is
+   * untouched; revert the row to pending (dropping the just-issued approval) so
+   * it survives the restart and can be re-approved against the rebuilt code.
+   */
+  private parkExecutionForRestart(request: AuthRequest): void {
+    this.inFlight.delete(request.id);
+    this.executionEnvs.delete(request.id);
+    const now = this.now();
+    try {
+      this.db
+        .prepare(
+          `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
+           exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
+           approval_source = 'manual', approval_lease_id = NULL
+           WHERE id = ? AND status = 'executing' AND exit_code IS NULL`
+        )
+        .run(now + this.ttlMs, now, request.id);
+    } catch (error) {
+      authLog("warn", "auth_execution_park_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    const parked = this.getRequest(request.id);
+    if (parked) {
+      this.broadcast({ event: "auth:updated", data: { request: parked } });
+    }
+    authLog("info", "auth_execution_parked_for_restart", {
+      subsystem: "auth",
+      auth_request_id: request.id,
+    });
   }
 
   private recoverStaleExecutions(
@@ -1571,10 +1721,25 @@ export class AuthQueue {
       return;
     }
 
+    // Bug: 681739e — admission is closed while a self-merge restart is pending.
+    // Park the request now rather than chaining an execution that the imminent
+    // process.exit would kill mid-merge.
+    if (this._rebuilding) {
+      this.parkExecutionForRestart(request);
+      return;
+    }
+
     const runPromise = this.executionChain
       .catch(() => undefined)
       .then(async () => {
         try {
+          // Bug: 681739e — a self-merge restart may have been scheduled after
+          // this execution was chained but before it reached the head of the
+          // queue. Re-check admission here so it parks instead of starting.
+          if (this._rebuilding) {
+            this.parkExecutionForRestart(request);
+            return;
+          }
           await this.prepareAuthExecution(request);
           const executedAt = Date.now();
           this.db
@@ -1650,6 +1815,11 @@ export class AuthQueue {
           if (result.exit_code === 0) {
             const mergedForRestart = { ...request, ...this.getRequest(request.id) } as AuthRequest;
             if (mergedForRestart.repo === "mandible") {
+              // Bug: 681739e — admission is already closed (this._rebuilding was
+              // set before hooks); durably record the shutdown instant so the
+              // respawned daemon fast-recovers any execution killed by the exit.
+              this._rebuilding = true;
+              this.recordSelfMergeShutdown(this.now());
               authLog("info", "auth_self_merge_restart_scheduled", {
                 subsystem: "auth",
                 auth_request_id: request.id,
