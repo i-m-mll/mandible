@@ -40,6 +40,7 @@ import type {
 import { replaceSessionInstructionArtifacts } from "./presets.js";
 import type { ClientAuthenticator } from "./client-auth/authenticator.js";
 import { getOperator } from "./users/store.js";
+import { resolveSessionOwnerUserId } from "./session-ownership.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -67,6 +68,7 @@ interface ConsoleSessionRow {
   resume_at_message: string | null;
   channel_enabled: number;
   transport_lane: string | null;
+  owner_user_id: string | null;
 }
 
 interface ConsoleSessionUsageRow {
@@ -458,6 +460,16 @@ export class SessionManager {
     const provider_session_id = input.provider_session_id ?? null;
     const resume_at_message = input.resume_at_message ?? null;
     const channel_enabled = selection.channel_enabled ? 1 : 0;
+    const operator = input.is_operator ? getOperator(db) : null;
+    const ownerUserId = resolveSessionOwnerUserId(
+      db,
+      {
+        explicit_user_id: operator?.id ?? null,
+        app_names: input.is_operator ? [] : [input.command],
+      },
+      this.logger,
+      { source: "console_session", entity_id: id },
+    );
 
     this.unarchiveCodexThread(input.command, provider_session_id);
 
@@ -466,8 +478,8 @@ export class SessionManager {
          (id, label, command, args_json, provider_session_id, cwd, env_json, cols, rows,
           status, auto_restart, is_operator, interaction_mode, created_at, updated_at,
           backend_type, allowed_tools, mandible_session_id, resume_at_message, channel_enabled,
-          transport_lane)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          transport_lane, owner_user_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'stopped', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       id,
       input.label,
@@ -488,7 +500,8 @@ export class SessionManager {
       input.mandible_session_id ?? null,
       resume_at_message,
       channel_enabled,
-      transport_lane
+      transport_lane,
+      ownerUserId,
     );
 
     const session = rowToSession({
@@ -517,6 +530,7 @@ export class SessionManager {
       resume_at_message,
       channel_enabled,
       transport_lane,
+      owner_user_id: ownerUserId,
     });
 
     // Issue 2181ffd — Store instruction attachments as pinned artifact versions.

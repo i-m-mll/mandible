@@ -147,7 +147,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const clientAuth = new ClientAuthenticator(db);
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
-  const sessionRegistry = new SessionRegistry(db);
+  const sessionRegistry = new SessionRegistry(db, logger);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
   const authQueue = registerAuthRoutes(router);
@@ -188,7 +188,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   );
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
-  registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
+  registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);

@@ -5,7 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { broadcast } from "./sse.js";
-import type { NavMetadataStatus, Session, SessionStatus } from "./types.js";
+import { resolveSessionOwnerUserId } from "./session-ownership.js";
+import type { Logger, NavMetadataStatus, Session, SessionStatus } from "./types.js";
 
 // Bug: 568eca7 — pinned-panes.tsv location for reaper backward compat
 const PINNED_PANES_TSV = path.join(os.homedir(), ".cache", "claude-reaper", "pinned-panes.tsv");
@@ -106,6 +107,7 @@ interface SessionRow {
   // Bug: 0b454df — channel-connected session tracking
   channel_connected_at: number | null;
   channel_last_tool_call: number | null;
+  owner_user_id: string | null;
 }
 
 const SESSION_SCHEMA = `
@@ -140,6 +142,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_active TEXT,
   channel_connected_at INTEGER,
   channel_last_tool_call INTEGER,
+  owner_user_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
@@ -202,6 +205,16 @@ function ensureSessionColumns(db: SqliteDatabase): void {
   }
   if (!names.has("conversation_id")) {
     db.exec("ALTER TABLE sessions ADD COLUMN conversation_id TEXT");
+  }
+  if (!names.has("owner_user_id")) {
+    const hasUsers = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'")
+      .get();
+    db.exec(
+      hasUsers
+        ? "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL"
+        : "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT",
+    );
   }
 }
 
@@ -503,9 +516,11 @@ export function syncPinnedPanesTsv(paneId: string, pinned: boolean): void {
 
 export class SessionRegistry {
   private db: SqliteDatabase;
+  private logger: Logger;
 
-  constructor(db: SqliteDatabase) {
+  constructor(db: SqliteDatabase, logger: Logger = () => undefined) {
     this.db = db;
+    this.logger = logger;
     ensureSessionSchema(db);
   }
 
@@ -605,6 +620,13 @@ export class SessionRegistry {
       }
     }
 
+    const ownerUserId = resolveSessionOwnerUserId(
+      this.db,
+      { app_names: [input.app, input.agent_type] },
+      this.logger,
+      { source: "session_registry", entity_id: input.id },
+    );
+
     this.db
       .prepare(
         `INSERT INTO sessions (
@@ -612,9 +634,10 @@ export class SessionRegistry {
           nav_session, nav_tab, nav_pane_id, nav_extra, nav_metadata_status,
           nav_metadata_attempts, nav_metadata_last_error, nav_metadata_last_attempt_at,
           nav_metadata_next_retry_at, task, status, parent_id,
-          agent_type, description, conversation_id, created_at, updated_at, ended_at
+          agent_type, description, conversation_id, created_at, updated_at, ended_at,
+          owner_user_id
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
       )
       .run(
@@ -645,6 +668,7 @@ export class SessionRegistry {
         now,
         now,
         status === "active" ? null : now,
+        ownerUserId,
       );
 
     const session = this.getSession(input.id);

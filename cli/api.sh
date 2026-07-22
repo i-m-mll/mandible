@@ -274,12 +274,22 @@ api_http_exchange() {
 api_ambient_provider() {
   if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
     printf 'codex'
+  elif [[ -n "${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}" ]]; then
+    printf 'claude'
+  elif [[ -n "${GEMINI_SESSION_ID:-}" ]]; then
+    printf 'gemini'
   fi
 }
 
 api_ambient_session_id() {
   if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
     printf '%s' "$CODEX_THREAD_ID"
+  elif [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
+    printf '%s' "$CLAUDE_CODE_SESSION_ID"
+  elif [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
+    printf '%s' "$CLAUDE_SESSION_ID"
+  elif [[ -n "${GEMINI_SESSION_ID:-}" ]]; then
+    printf '%s' "$GEMINI_SESSION_ID"
   fi
 }
 
