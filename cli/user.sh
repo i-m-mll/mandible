@@ -148,11 +148,11 @@ cmd_dashboard_link() {
 }
 
 cmd_list() {
-  local kind="" status="" json=0
+  local kind="" status_filter="" json=0
   while (( $# > 0 )); do
     case "$1" in
       --kind)   kind="$2"; shift 2 ;;
-      --status) status="$2"; shift 2 ;;
+      --status) status_filter="$2"; shift 2 ;;
       --json)   json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) die "Unexpected argument: $1" 2 ;;
@@ -161,8 +161,8 @@ cmd_list() {
   require_tools
   local query="" response
   [[ -n "$kind" ]] && query="?kind=$(urlencode "$kind")"
-  if [[ -n "$status" ]]; then
-    [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status")" || query="?status=$(urlencode "$status")"
+  if [[ -n "$status_filter" ]]; then
+    [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status_filter")" || query="?status=$(urlencode "$status_filter")"
   fi
   response="$(api_get "/api/users${query}")" || die "${RED}Failed to list users.${RESET}" 1
   emit "$response" "$json" '.users[]? | "\(.slug)\t\(.kind)\t\(.status)\t\(.display_name)\t\(.email // "-")"'
