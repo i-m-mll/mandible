@@ -536,6 +536,14 @@ export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
   return (await response.json()) as DashboardBadgeCounts;
 }
 
+// Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the
+// detail route serves the full body, fetched when a request is selected.
+export async function getAuthRequestDetail(requestId: string): Promise<Record<string, unknown> | null> {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}`);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
+}
+
 export async function getAuthRequestActions(requestId: string): Promise<AuthRequestAction[]> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/actions`);
   const payload = await parseMaybeJson(response);

@@ -45,12 +45,30 @@ import type {
   AuthRequestInput,
   AuthRequestOutcome,
   AuthRequestStatus,
+  AuthRequestSummary,
   AuthRequestType,
   SseEvent
 } from "./types.js";
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
+
+// Columns selected for the history list projection. Deliberately excludes the
+// unbounded body blobs `diff_summary`, `spec_content`, and `output` so a
+// 50–200 row list does not read or serialize megabytes of text per poll. The
+// full body is served by the detail route and fetched on selection. Keep this
+// list updated when a non-blob auth_requests column is added.
+const AUTH_HISTORY_SUMMARY_COLUMNS = [
+  "id", "session_id", "command", "title", "cwd", "status",
+  "created_at", "updated_at", "approved_at", "resolved_at", "skipped_at",
+  "expires_at", "exit_code", "error", "repo", "base_branch", "head_branch",
+  "files_changed", "additions", "deletions", "execution_mode", "commit_message",
+  "last_executed_at", "acknowledged_by", "post_merge_handoff", "issue_ids",
+  "depends_on_id", "issues", "type", "target_session_id", "target_repo_root",
+  "delivered_at", "conversation_id", "approval_source", "approval_lease_id",
+  "issue_references", "issue_closures", "merge_preflight_base_sha",
+  "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_finalized_at",
+].join(", ");
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
   "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
@@ -1085,6 +1103,55 @@ export class AuthQueue {
       )
       .all(limit) as Record<string, unknown>[];
     return rows.map((row) => mapRow(row));
+  }
+
+  /**
+   * List projection for the history sidebar: resolved items without the
+   * unbounded body blobs (`diff_summary`, `spec_content`, `output`) and with
+   * `action_count` resolved in a single batched query instead of one COUNT
+   * per row. The detail route serves the full body on selection.
+   */
+  listHistorySummaries(limit = 50): AuthRequestSummary[] {
+    const rows = this.db
+      .prepare(
+        `SELECT ${AUTH_HISTORY_SUMMARY_COLUMNS} FROM auth_requests ` +
+          "WHERE status IN ('completed', 'rejected', 'dismissed') " +
+          "ORDER BY resolved_at DESC LIMIT ?"
+      )
+      .all(limit) as Record<string, unknown>[];
+    if (rows.length === 0) {
+      return [];
+    }
+    const counts = this.countActionsForRequests(rows.map((row) => String(row.id)));
+    return rows.map((row) => {
+      const mapped = mapRow(row);
+      // Omit the blob keys entirely so the client can distinguish "not loaded"
+      // (undefined) from a genuinely empty body (null from the detail route).
+      const { diff_summary, spec_content, output, ...summary } = mapped;
+      void diff_summary;
+      void spec_content;
+      void output;
+      return { ...summary, action_count: counts.get(String(row.id)) ?? 0 };
+    });
+  }
+
+  /** Batched action counts for a set of request ids (avoids per-row N+1). */
+  private countActionsForRequests(ids: string[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    if (ids.length === 0) {
+      return counts;
+    }
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = this.db
+      .prepare(
+        `SELECT auth_request_id, COUNT(*) AS count FROM auth_request_actions ` +
+          `WHERE auth_request_id IN (${placeholders}) GROUP BY auth_request_id`
+      )
+      .all(...ids) as Array<{ auth_request_id: string; count: number }>;
+    for (const row of rows) {
+      counts.set(String(row.auth_request_id), Number(row.count));
+    }
+    return counts;
   }
 
   retry(id: string): AuthRequest {

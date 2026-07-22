@@ -2395,4 +2395,89 @@ describe("auth queue", () => {
       }
     });
   });
+
+  // Bug: 0de95bf — history list projection.
+  describe("listHistorySummaries", () => {
+    function submitCompleted(
+      queue: AuthQueue,
+      overrides: Partial<Parameters<AuthQueue["submit"]>[0]> = {},
+    ): string {
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/x --into main",
+        title: "History row",
+        repo: "mandible",
+        base_branch: "main",
+        head_branch: "feature/x",
+        diff_summary: "diff --git a/f b/f\n@@ -1 +1 @@\n-a\n+b\n",
+        spec_content: "# Spec\n\nlots of text",
+        commit_message: "feat: land it",
+        execution_mode: "remote",
+        ...overrides,
+      });
+      queue.setResult(request.id, 0, "verbose console output ".repeat(50));
+      return request.id;
+    }
+
+    it("omits diff/spec/output body blobs but keeps commit_message", () => {
+      const queue = createQueue();
+      submitCompleted(queue);
+
+      const [row] = queue.listHistorySummaries(50);
+      expect(row).toBeDefined();
+      // Body blobs are omitted entirely (undefined, not null/"").
+      expect("diff_summary" in row).toBe(false);
+      expect("spec_content" in row).toBe(false);
+      expect("output" in row).toBe(false);
+      // Bounded fields the sidebar needs are still present.
+      expect(row.commit_message).toBe("feat: land it");
+      expect(row.title).toBe("History row");
+      expect(row.repo).toBe("mandible");
+      expect(row.head_branch).toBe("feature/x");
+    });
+
+    it("reports action_count per row from a batched query", () => {
+      const queue = createQueue();
+      const withActions = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/a --into main",
+        title: "Has actions",
+        repo: "mandible",
+        base_branch: "main",
+        head_branch: "feature/a",
+        execution_mode: "remote",
+        actions: [
+          { kind: "comment_add", target_issue_ref: "abc1234", payload: { body: "one" } },
+          { kind: "label_add", target_issue_ref: "abc1234", payload: { label: "verified" } },
+        ],
+      });
+      queue.setResult(withActions.id, 0, "ok");
+      submitCompleted(queue, { title: "No actions", head_branch: "feature/b" });
+
+      const rows = queue.listHistorySummaries(50);
+      const withActionsRow = rows.find((r) => r.id === withActions.id);
+      const withoutRow = rows.find((r) => r.title === "No actions");
+      expect(withActionsRow?.action_count).toBe(2);
+      expect(withoutRow?.action_count).toBe(0);
+    });
+
+    it("only returns resolved rows, newest first, respecting the limit", () => {
+      let now = 1000;
+      const db = createMigratedDb();
+      const queue = new AuthQueue({ db, now: () => now });
+      // A pending row must not appear in history.
+      queue.submit({ command: "echo pending", title: "Pending" });
+      const first = submitCompleted(queue, { title: "First", head_branch: "feature/1" });
+      now = 2000;
+      const second = submitCompleted(queue, { title: "Second", head_branch: "feature/2" });
+
+      const rows = queue.listHistorySummaries(50);
+      expect(rows.map((r) => r.id)).toEqual([second, first]);
+      expect(rows.some((r) => r.title === "Pending")).toBe(false);
+
+      expect(queue.listHistorySummaries(1).map((r) => r.id)).toEqual([second]);
+      queue.dispose();
+      db.close();
+    });
+  });
 });

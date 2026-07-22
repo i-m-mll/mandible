@@ -327,16 +327,14 @@ export function registerAuthRoutes(
       limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 200)
         : 50;
-    let requests = authQueue.listHistory(limit);
+    // Bug: 0de95bf — list projection omits diff/spec/output body blobs and
+    // resolves action counts in one batched query; the detail route serves the
+    // full body on selection.
+    let requests = authQueue.listHistorySummaries(limit);
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
-    res.json({
-      requests: requests.map((r) => ({
-        ...r,
-        action_count: authQueue.countActions(r.id),
-      })),
-    });
+    res.json({ requests });
   }, { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/approve", (req, res) => {
