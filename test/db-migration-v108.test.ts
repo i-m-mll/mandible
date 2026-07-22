@@ -5,18 +5,22 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, openDb, type Db } from "../src/db.js";
 
-describe("migration v108: auth-request finalizer state", () => {
+// Integration reconciliation (umbrella c16807e): the auth-request finalizer
+// state migration (issue 75f52ac) was renumbered from v108 to v109 because the
+// work-unit merge-scan retirement migration (93d978e) shifted to v108 after
+// 651e820 took v107. Migration head is now v109.
+describe("migration v109: auth-request finalizer state", () => {
   let tempDir: string;
   let db: Db;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-db-v108-"));
     db = openDb(path.join(tempDir, "mandible.db"));
-    // Reverse the v108 change so the migration can be re-applied against a
-    // simulated v107 database.
+    // Reverse the v109 change so the migration can be re-applied against a
+    // simulated v108 database.
     db.exec(`
       ALTER TABLE auth_requests DROP COLUMN merge_finalizer_state;
-      UPDATE meta SET value = '107' WHERE key = 'schema_version';
+      UPDATE meta SET value = '108' WHERE key = 'schema_version';
     `);
   });
 
@@ -32,7 +36,7 @@ describe("migration v108: auth-request finalizer state", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "108",
+      value: "109",
     });
     const columns = db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{
       name: string;
@@ -57,13 +61,13 @@ describe("migration v108: auth-request finalizer state", () => {
     expect(columns.filter((entry) => entry.name === "merge_finalizer_state")).toHaveLength(1);
   });
 
-  it("leaves a freshly migrated database at v108 with the column present", () => {
+  it("leaves a freshly migrated database at head (v109) with the column present", () => {
     const fresh = openDb(path.join(tempDir, "fresh.db"));
     try {
       const columns = fresh.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_finalizer_state");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "108",
+        value: "109",
       });
     } finally {
       fresh.close();
