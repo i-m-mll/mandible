@@ -56,7 +56,8 @@ import {
 } from '../../api';
 import { layoutGraph } from '../../graph/layout';
 import type { GraphEdge, GraphNode } from '../../types/graph';
-import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
+import { type SSEPayload } from '../../sse-client';
+import { acquireSharedSse, type SseHandle } from '../../sse-shared';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
@@ -546,7 +547,7 @@ export type SpaceCanvasProps = SpaceRendererMountProps & {
    */
   createOccurrence?: typeof createSpaceOccurrence;
   /** SSE client factory (injected for tests); defaults to the shared client. */
-  createSse?: () => SSEClient;
+  createSse?: () => SseHandle;
   /** Debounce window (ms) for the batched drag-position write. */
   debounceMs?: number;
 };
@@ -593,7 +594,7 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
     removeEdge = deleteSpaceEdge,
     promote = promoteEdgeToLedger,
     createOccurrence = createSpaceOccurrence,
-    createSse = createSSEClient,
+    createSse = acquireSharedSse,
     debounceMs = DEFAULT_DEBOUNCE_MS,
   } = props;
 

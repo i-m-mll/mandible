@@ -26,6 +26,16 @@ export class SseManager {
       for (const client of this.clients) {
         this.writeClient(client, comment);
       }
+      // Also broadcast a real `heartbeat` data event so unfiltered dashboard
+      // clients can measure connection liveness from server heartbeats rather
+      // than last-event receipt (the fallback-poll freshness gate). Topic-
+      // filtered clients are naturally excluded by matchesTopic and keep the
+      // `: heartbeat` comment above as their keep-alive.
+      this.broadcast({
+        type: "heartbeat",
+        data: { timestamp: Date.now() },
+        timestamp: new Date().toISOString(),
+      });
     }, intervalMs);
     // Ensure the timer doesn't prevent process exit
     if (this.heartbeatTimer && typeof this.heartbeatTimer === "object" && "unref" in this.heartbeatTimer) {

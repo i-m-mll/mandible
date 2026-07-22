@@ -471,7 +471,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/inbox');
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
-  } else if (type.startsWith('ledger:issue:')) {
+  } else if (type.startsWith('ledger:')) {
+    // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
+    // ledger:* events; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
   } else if (type.startsWith('space:')) {
