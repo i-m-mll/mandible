@@ -1095,6 +1095,80 @@ describe("auth queue", () => {
     }
   });
 
+  // Integration reconciliation (issue 93d978e) — a transient git failure while
+  // building the ancestry batch must not tombstone genuinely merged snapshots.
+  it("skips the retirement sweep when the ancestry batch build fails, then retires once it succeeds", async () => {
+    let now = 10_000;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      // A real, existing branch drives the batch to actually run `git rev-list`
+      // against the request target (rather than short-circuiting on an
+      // unresolved candidate ref).
+      commitOnBranch(repo, "feature/live-candidate", { "live.txt": "live\n" });
+      // A real, already-merged head branch so the pre-submit independence check
+      // passes; the ancestry scan below still uses the (bogus) merge_head_sha.
+      git(repo, ["checkout", "-b", "integration/bf-batch", "main"]);
+      writeFile(repo, "bf.txt", "bf\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "integration bf work"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/bf-batch", "-m", "merge integration bf"]);
+      const mainHead = git(repo, ["rev-parse", "main"]);
+
+      registerWorkRepo(db, repo);
+      // Live candidate on an existing branch: forces reachableFor() to spawn.
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-live', 'live123', ?, 'feature/live-candidate', 'partition', 'committed', ?)`
+      ).run(path.basename(repo), now);
+      // Stale abandoned row aged past retention: would be retired by a healthy pass.
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-stale-bf', 'stale-bf', ?, 'feature/stale-bf', 'partition', 'abandoned', 0)`
+      ).run(path.basename(repo));
+
+      const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
+      // A syntactically valid but nonexistent SHA makes `git rev-list <sha>`
+      // fail for the request target, so the batch records a build failure.
+      const bogusSha = "b".repeat(40);
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/bf-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/bf-batch",
+        merge_head_sha: bogusSha,
+        execution_mode: "remote",
+      });
+
+      queue.setResult(request.id, 0, "ok");
+      await queue.drainFinalizers();
+
+      // Batch build failed this pass → retirement sweep skipped → the stale row
+      // is NOT tombstoned (a transient git failure must not cost data).
+      expect(db.prepare(
+        "SELECT merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-bf'",
+      ).get()).toEqual({ merge_scan_retired_at: null });
+
+      // Repair the target so the batch builds cleanly, then re-run the ancestry
+      // finalizer: the same stale row is now retired, proving the earlier skip
+      // was caused specifically by the batch build failure.
+      db.prepare("UPDATE auth_requests SET merge_head_sha = ? WHERE id = ?").run(mainHead, request.id);
+      await (queue as unknown as { resolveAncestryWorkUnitsOnMerge(r: unknown): Promise<string[]> })
+        .resolveAncestryWorkUnitsOnMerge(queue.getRequest(request.id));
+      expect(db.prepare(
+        "SELECT state, merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-bf'",
+      ).get()).toEqual({ state: "abandoned", merge_scan_retired_at: now });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("excludes an already-retired abandoned unit from a later merge that contains its branch", async () => {
     let now = 0;
     const repo = createAuthCheckRepo();

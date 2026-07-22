@@ -303,6 +303,22 @@ class AncestryBatch {
   // per-root branch tip map; null = for-each-ref failed.
   private readonly tips = new Map<string, Map<string, string> | null>();
 
+  // Issue 93d978e — true once any (root, target) rev-list build or any per-root
+  // for-each-ref build failed (cached as null). A failed build makes every
+  // ancestry test against it read as "not an ancestor", so a caller that mutates
+  // state off those negatives (the abandoned-row retirement sweep) must skip the
+  // pass rather than tombstone a genuinely merged snapshot that only looked
+  // unmerged because the batch could not be built.
+  hadFailure(): boolean {
+    for (const value of this.reachable.values()) {
+      if (value === null) return true;
+    }
+    for (const value of this.tips.values()) {
+      if (value === null) return true;
+    }
+    return false;
+  }
+
   // Issue 75f52ac — async so the rev-list / for-each-ref spawns run off the
   // daemon event loop inside the background finalizer queue. Same args,
   // timeouts, maxBuffer, and null-on-failure semantics as the previous sync
@@ -3290,7 +3306,10 @@ export class AuthQueue {
     const resolvedIds = new Set<string>();
     const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
 
-    for (const row of await this.workUnitsMergedByRequest(completed)) {
+    // Issue 93d978e — one batch per pass; its per-(root,target) git build
+    // outcomes gate the retirement sweep below.
+    const batch = new AncestryBatch();
+    for (const row of await this.workUnitsMergedByRequest(completed, batch)) {
       if (!resolvedIds.has(row.id)) {
         if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
           recoverClosedMergedStmt.run(now, completed.id, row.id);
@@ -3307,19 +3326,34 @@ export class AuthQueue {
     // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
     // not a deletion — state and provenance are preserved. The NULL guard keeps
     // it idempotent across finalizer re-runs.
+    //
+    // Integration reconciliation: skip the sweep entirely when the ancestry
+    // batch had any git build failure this pass. A failed rev-list/for-each-ref
+    // makes every ancestry test read as "not an ancestor", so a genuinely merged
+    // deleted-branch snapshot would look unmerged; retiring off those false
+    // negatives could tombstone real merges and exclude them from future
+    // automatic resolution. A transient git failure must not cost data.
     if (this.workUnitsHaveRetirementColumn()) {
-      const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
-      const retired = this.db.prepare(
-        `UPDATE work_units SET merge_scan_retired_at = ?
-         WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
-           AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
-      ).run(now, retireCutoff);
-      if (retired.changes > 0) {
-        authLog("info", "auth_work_units_scan_retired", {
+      if (batch.hadFailure()) {
+        authLog("warn", "auth_work_units_scan_retirement_skipped", {
           subsystem: "auth",
           auth_request_id: completed.id,
-          retired_count: retired.changes,
+          reason: "ancestry_batch_build_failed",
         });
+      } else {
+        const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
+        const retired = this.db.prepare(
+          `UPDATE work_units SET merge_scan_retired_at = ?
+           WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
+             AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
+        ).run(now, retireCutoff);
+        if (retired.changes > 0) {
+          authLog("info", "auth_work_units_scan_retired", {
+            subsystem: "auth",
+            auth_request_id: completed.id,
+            retired_count: retired.changes,
+          });
+        }
       }
     }
 
@@ -3356,7 +3390,7 @@ export class AuthQueue {
 
   // Issue 75f52ac — async so the batched ancestry git spawns run off the event
   // loop inside the Stage 3 finalizer queue.
-  private async workUnitsMergedByRequest(completed: AuthRequest): Promise<Array<{
+  private async workUnitsMergedByRequest(completed: AuthRequest, batch: AncestryBatch): Promise<Array<{
     id: string;
     issue_id: string;
     ledger_issue_id: string | null;
@@ -3402,9 +3436,10 @@ export class AuthQueue {
     // once. Unifies path/symlink aliases and the `dotfiles`/`.dotfiles` repo-string
     // mismatch so those work units resolve on merge.
     const requestKeys = this.canonicalKeysForRequest(completed);
-    // Issue 93d978e — one batch per call; the reachable-commit sets and branch
-    // tip maps are cached for this request only (the repo changed by definition).
-    const batch = new AncestryBatch();
+    // Issue 93d978e — the caller owns one batch per pass so its git-build
+    // outcomes (see AncestryBatch.hadFailure) can gate the retirement sweep;
+    // the reachable-commit sets and branch tip maps are cached for this request
+    // only (the repo changed by definition).
     const resolved = new Map<string, {
       id: string;
       issue_id: string;
