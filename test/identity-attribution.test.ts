@@ -15,6 +15,7 @@ import {
 } from "../src/users/store.js";
 import {
   EVIDENCE_METHODS,
+  OperatorNotConfiguredError,
   isEvidenceMethod,
   localDefaultAttribution,
   mintShadowUser,
@@ -298,7 +299,18 @@ describe("evidence_method vocabulary (F3)", () => {
 
   it("resolver constructors emit only locked values", () => {
     expect(systemAction().evidence_method).toBe("system_internal");
-    expect(() => localDefaultAttribution(db)).toThrow(/operator attribution is unavailable/i);
+    let missingOperator: unknown;
+    try {
+      localDefaultAttribution(db);
+    } catch (error) {
+      missingOperator = error;
+    }
+    expect(missingOperator).toBeInstanceOf(OperatorNotConfiguredError);
+    expect(missingOperator).toMatchObject({
+      code: "operator_not_configured",
+      hint: "Run `mandible user setup` to create the local operator first.",
+      retryable: false,
+    });
     setupOperator(db, { display_name: "Operator" });
     expect(localDefaultAttribution(db).evidence_method).toBe("local_default");
     const agent = createUser(db, { slug: "sess", kind: "agent", display_name: "Sess" });

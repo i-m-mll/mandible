@@ -13,6 +13,7 @@ import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
 import type { DaemonMemorySnapshot } from "./daemon-memory.js";
 import type { EventLoopLagSnapshot } from "./daemon-event-loop.js";
+import { OperatorNotConfiguredError } from "./identity/resolver.js";
 
 const MAX_BODY_BYTES = 1024 * 1024;
 const ROOT_DIR = resolveRootDir();
@@ -443,6 +444,15 @@ export class Router implements RouteRegistrar {
       try {
         await route.handler(request, response);
       } catch (error) {
+        if (error instanceof OperatorNotConfiguredError) {
+          response.status(409).json({
+            error: error.message,
+            code: error.code,
+            hint: error.hint,
+            retryable: error.retryable,
+          });
+          return true;
+        }
         this.options.logger?.("error", "route_handler_error", {
           method: normalizedMethod,
           pathname,
