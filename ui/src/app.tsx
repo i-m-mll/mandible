@@ -925,6 +925,9 @@ function App(): JSX.Element {
       client.on('auth:new', handler),
       client.on('auth:updated', handler),
       client.on('auth:output', authOutputHandler),
+      // Issue 75f52ac — auth:merged flips the row early (perceived-latency fix);
+      // it reuses the resolved handler (terminal output flush + row dispatch).
+      client.on('auth:merged', authResolvedHandler),
       client.on('auth:resolved', authResolvedHandler),
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
@@ -947,7 +950,11 @@ function App(): JSX.Element {
       client.on('session:ended', graphRefreshHandler),
       client.on('auth:new', graphRefreshHandler),
       client.on('auth:updated', graphRefreshHandler),
+      client.on('auth:merged', graphRefreshHandler),
       client.on('auth:resolved', graphRefreshHandler),
+      // Issue 75f52ac — auth:finalized only invalidates cached graph/queue data
+      // (background finalizers landed); the row already flipped at auth:merged.
+      client.on('auth:finalized', graphRefreshHandler),
       client.on('ledger:issue:created', graphRefreshHandler),
       client.on('ledger:issue:updated', graphRefreshHandler),
       client.on('ledger:issue:closed', graphRefreshHandler),

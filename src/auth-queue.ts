@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
@@ -52,6 +53,103 @@ import type {
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
+
+// Issue 75f52ac — off-loop git spawns for the background finalizer queue.
+const execFileAsync = promisify(execFile);
+
+// Issue 75f52ac — background finalizer queue tuning.
+// Concurrency is 1 (steps touch shared tables); FIFO with dedup by request id.
+const FINALIZER_MAX_QUEUED = 32;
+// Per-step retry ceiling. A step that keeps throwing is marked failed after
+// this many attempts (surfaced in auth:finalized) so the request still
+// finalizes instead of looping forever.
+const FINALIZER_MAX_ATTEMPTS = 3;
+// Stage 3 finalizer steps in execution order. Durable per-step state is keyed
+// by these names in auth_requests.merge_finalizer_state.
+const FINALIZER_STEP_NAMES = [
+  "revalidate_pending",
+  "auto_dismiss_duplicates",
+  "resolve_ancestry_work_units",
+  "archive_worker_threads",
+] as const;
+type FinalizerStepName = (typeof FINALIZER_STEP_NAMES)[number];
+type FinalizerStepState = {
+  state: "pending" | "done" | "failed";
+  attempts: number;
+  error?: string;
+  at: number;
+};
+type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>>;
+
+/**
+ * Issue 75f52ac — bounded, single-concurrency FIFO queue that runs the heavy
+ * post-merge finalizers off the daemon event loop. Dedups by request id; when
+ * full, `enqueue` reports overflow (false) rather than throwing — the row stays
+ * unfinalized and the periodic sweep re-enqueues it. `drain()` resolves once the
+ * queue is fully idle (used by the self-merge restart drain and tests).
+ */
+class FinalizerQueue {
+  private readonly ids: string[] = [];
+  private readonly queued = new Set<string>();
+  private processing = false;
+  private drainWaiters: Array<() => void> = [];
+
+  constructor(
+    private readonly process: (id: string) => Promise<void>,
+    private readonly maxQueued: number = FINALIZER_MAX_QUEUED,
+  ) {}
+
+  /** Returns false when the queue is full (overflow is a backstop, not an error). */
+  enqueue(id: string): boolean {
+    if (this.queued.has(id)) {
+      return true;
+    }
+    if (this.ids.length >= this.maxQueued) {
+      return false;
+    }
+    this.ids.push(id);
+    this.queued.add(id);
+    void this.run();
+    return true;
+  }
+
+  get idle(): boolean {
+    return !this.processing && this.ids.length === 0;
+  }
+
+  async drain(): Promise<void> {
+    if (this.idle) {
+      return;
+    }
+    await new Promise<void>((resolve) => this.drainWaiters.push(resolve));
+  }
+
+  private async run(): Promise<void> {
+    if (this.processing) {
+      return;
+    }
+    this.processing = true;
+    try {
+      while (this.ids.length > 0) {
+        const id = this.ids.shift()!;
+        this.queued.delete(id);
+        try {
+          await this.process(id);
+        } catch {
+          // process() is written to never throw; guard defensively so one bad
+          // request cannot wedge the queue.
+        }
+      }
+    } finally {
+      this.processing = false;
+      const waiters = this.drainWaiters;
+      this.drainWaiters = [];
+      for (const waiter of waiters) {
+        waiter();
+      }
+    }
+  }
+}
 // Bug: dd21c1e — valid auth request types
 const VALID_AUTH_REQUEST_TYPES: AuthRequestType[] = [
   "merge", "commit", "force-push", "branch-delete", "config-change", "preset-promote", "data-delete"
@@ -181,36 +279,40 @@ class AncestryBatch {
   // per-root branch tip map; null = for-each-ref failed.
   private readonly tips = new Map<string, Map<string, string> | null>();
 
-  isAncestor(root: string, candidate: string, target: string): boolean {
+  // Issue 75f52ac — async so the rev-list / for-each-ref spawns run off the
+  // daemon event loop inside the background finalizer queue. Same args,
+  // timeouts, maxBuffer, and null-on-failure semantics as the previous sync
+  // implementation; equivalence to per-row `git merge-base --is-ancestor` is
+  // preserved (see class docstring).
+  async isAncestor(root: string, candidate: string, target: string): Promise<boolean> {
     let resolved: string | null;
     if (SHA40_RE.test(candidate)) {
       resolved = candidate.toLowerCase();
     } else if (candidate.startsWith(REFS_HEADS_PREFIX)) {
       const name = candidate.slice(REFS_HEADS_PREFIX.length);
-      resolved = this.tipsFor(root)?.get(name) ?? null;
+      resolved = (await this.tipsFor(root))?.get(name) ?? null;
     } else {
       resolved = null;
     }
     if (!resolved) return false;
-    const set = this.reachableFor(root, target);
+    const set = await this.reachableFor(root, target);
     return set ? set.has(resolved) : false;
   }
 
-  private reachableFor(root: string, target: string): Set<string> | null {
+  private async reachableFor(root: string, target: string): Promise<Set<string> | null> {
     const key = `${root}\0${target}`;
     const cached = this.reachable.get(key);
     if (cached !== undefined) return cached;
     let result: Set<string> | null = null;
     try {
-      const out = execFileSync("git", ["rev-list", target], {
+      const { stdout } = await execFileAsync("git", ["rev-list", target], {
         cwd: root,
         encoding: "utf8",
-        stdio: "pipe",
         timeout: 10000,
         maxBuffer: 64 * 1024 * 1024,
       });
       result = new Set<string>();
-      for (const line of out.split("\n")) {
+      for (const line of String(stdout).split("\n")) {
         const sha = line.trim().toLowerCase();
         if (sha) result.add(sha);
       }
@@ -221,16 +323,17 @@ class AncestryBatch {
     return result;
   }
 
-  private tipsFor(root: string): Map<string, string> | null {
+  private async tipsFor(root: string): Promise<Map<string, string> | null> {
     const cached = this.tips.get(root);
     if (cached !== undefined) return cached;
     let result: Map<string, string> | null = null;
     try {
-      const out = execFileSync(
+      const { stdout } = await execFileAsync(
         "git",
         ["for-each-ref", "--format=%(objectname) %(refname)", REFS_HEADS_PREFIX],
-        { cwd: root, encoding: "utf8", stdio: "pipe", timeout: 5000 },
+        { cwd: root, encoding: "utf8", timeout: 5000 },
       );
+      const out = String(stdout);
       result = new Map<string, string>();
       for (const line of out.split("\n")) {
         const trimmed = line.trim();
@@ -277,6 +380,9 @@ export class AuthQueue {
   private readonly executionChains = new Map<string, Promise<void>>();
   // Issue ded17e6 — injectable restart hook for the self-merge drain.
   private readonly restartFn: () => void;
+  // Issue 75f52ac — bounded, idempotent, crash-safe queue that runs the heavy
+  // post-merge finalizers (Stage 3) off the event loop after auth:resolved.
+  private readonly finalizerQueue: FinalizerQueue;
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
@@ -313,6 +419,9 @@ export class AuthQueue {
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
+    // Issue 75f52ac — construct the finalizer queue before any recovery pass:
+    // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
+    this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
     this.recoverSelfMergeShutdown();
@@ -333,6 +442,12 @@ export class AuthQueue {
       }
       try {
         this.expireStale();
+        // Issue 75f52ac — crash/overflow backstop: re-run any successful merge
+        // whose finalizers never completed, but only when the queue is idle so
+        // the 30 s tick never piles work onto an already-busy queue.
+        if (this.finalizerQueue.idle) {
+          this.sweepSuccessfulMergeFinalizers();
+        }
       } catch (error) {
         if (this.disposed || !this.isDbOpen()) {
           this.stopExpiryTimer();
@@ -382,11 +497,10 @@ export class AuthQueue {
     for (const id of recoveredSuccessIds) {
       const recovered = this.getRequest(id);
       if (recovered) {
-        this.afterSuccessfulMerge(recovered);
-        this.broadcast({
-          event: "auth:resolved",
-          data: this.buildResolvedPayload(recovered)
-        });
+        // Issue 75f52ac — staged: emits auth:merged → Stage 2 → auth:resolved,
+        // then enqueues Stage 3 finalizers. Re-emitting merged/resolved on
+        // recovery matches the prior recovery broadcast behaviour.
+        this.finalizeSuccessfulMerge(recovered);
         authLog("warn", "auth_request_recovered_success", {
           subsystem: "auth",
           auth_request_id: id,
@@ -471,8 +585,7 @@ export class AuthQueue {
     for (const id of result.recoveredSuccessIds) {
       const recovered = this.getRequest(id);
       if (recovered) {
-        this.afterSuccessfulMerge(recovered);
-        this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(recovered) });
+        this.finalizeSuccessfulMerge(recovered);
       }
     }
     for (const id of result.recoveredFailureIds) {
@@ -749,7 +862,7 @@ export class AuthQueue {
     return null;
   }
 
-  replayCodexThreadArchives(requestId: string): CodexArchiveReplayResult {
+  async replayCodexThreadArchives(requestId: string): Promise<CodexArchiveReplayResult> {
     const request = this.getRequest(requestId);
     if (!request) {
       throw new AuthQueueError("not_found", "Request not found.");
@@ -1731,12 +1844,14 @@ export class AuthQueue {
 
     const completed = this.requireRequest(id);
     if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
+      // Issue 75f52ac — staged lifecycle: merged → Stage 2 → resolved → Stage 3.
+      this.finalizeSuccessfulMerge(completed);
+    } else {
+      this.broadcast({
+        event: "auth:resolved",
+        data: this.buildResolvedPayload(completed)
+      });
     }
-    this.broadcast({
-      event: "auth:resolved",
-      data: this.buildResolvedPayload(completed)
-    });
     return completed;
   }
 
@@ -1810,11 +1925,7 @@ export class AuthQueue {
     for (const id of recoveredSuccessIds) {
       const recovered = this.getRequest(id);
       if (recovered) {
-        this.afterSuccessfulMerge(recovered);
-        this.broadcast({
-          event: "auth:resolved",
-          data: this.buildResolvedPayload(recovered)
-        });
+        this.finalizeSuccessfulMerge(recovered);
       }
       authLog("warn", "auth_request_periodic_recovery_success", {
         subsystem: "auth",
@@ -2007,9 +2118,14 @@ export class AuthQueue {
     const foreign = [...this.inFlight.entries()]
       .filter(([id]) => id !== selfRequestId)
       .map(([, promise]) => promise);
-    if (foreign.length > 0) {
+    // Issue 75f52ac — also let the background finalizer queue drain within the
+    // same drain cap so in-flight Stage 3 work is not killed by the exit. The
+    // durable merge_finalized_at IS NULL marker plus the startup sweep is the
+    // backstop for anything still running when the cap is hit.
+    const drainTargets: Array<Promise<unknown>> = [...foreign, this.finalizerQueue.drain()];
+    if (drainTargets.length > 0) {
       await Promise.race([
-        Promise.allSettled(foreign),
+        Promise.allSettled(drainTargets),
         new Promise<void>((resolve) =>
           setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS)
         ),
@@ -2059,38 +2175,64 @@ export class AuthQueue {
       .run(now, now, exitCode, errorText, id);
 
     const completed = this.requireRequest(id);
-    // Bug: 2164775 — run idempotent success finalizers before the resolved
-    // broadcast so consumers observe the resolved work-unit/ledger state.
     if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
+      // Issue 75f52ac — staged lifecycle: merged → Stage 2 → resolved → Stage 3.
+      this.finalizeSuccessfulMerge(completed);
+    } else {
+      this.broadcast({
+        event: "auth:resolved",
+        data: this.buildResolvedPayload(completed)
+      });
     }
-    this.broadcast({
-      event: "auth:resolved",
-      data: this.buildResolvedPayload(completed)
-    });
-
-    // Bug: 0c44fec — after a successful merge (exit_code=0), auto-dismiss any
-    // other pending/failed requests targeting the same branch merge. These are
-    // stale duplicates (retries, corrected-CWD resubmissions) — approving them
-    // would waste a YubiKey tap on a branch that no longer exists.
   }
 
-  private afterSuccessfulMerge(completed: AuthRequest): void {
+  /**
+   * Issue 75f52ac — the single post-merge entry point. Splits the old
+   * afterSuccessfulMerge into three stages by cost:
+   *
+   *   Stage 1 (auth:merged): broadcast immediately (merge type only) — the
+   *     perceived-latency fix. The UI flips the row here, before any finalizer.
+   *   Stage 2 (sync, then auth:resolved): pure-SQLite finalizers whose completed
+   *     state consumers rely on at auth:resolved — persist merge_head_sha,
+   *     deferred ledger completion (incl. issue closes), and direct work-unit
+   *     resolution. auth:resolved keeps its exact prior shape/semantics.
+   *   Stage 3 (async queue, then auth:finalized): the heavy git/codex spawns —
+   *     pending-request revalidation, duplicate auto-dismiss, ancestry work-unit
+   *     resolution + retention sweep, and worker-thread archiving.
+   *
+   * Failures (exit_code != 0), rejections, and expiries never reach here; they
+   * emit auth:resolved only, unchanged.
+   */
+  private finalizeSuccessfulMerge(completed: AuthRequest): void {
+    // Idempotent: an already-finalized merge needs no re-processing.
     if (completed.type === "merge" && completed.merge_finalized_at != null) {
       return;
     }
 
-    const mergeHeadSha = completed.merge_head_sha ?? this.resolveMergeHeadShaForRequest(completed);
-    const finalized: AuthRequest = { ...completed, merge_head_sha: mergeHeadSha };
+    // Stage 1 — broadcast auth:merged immediately (merge type only).
+    if (completed.type === "merge") {
+      this.broadcast({ event: "auth:merged", data: this.buildMergedPayload(completed) });
+    }
 
-    this.autoDismissDuplicates(finalized);
-    this.revalidatePendingMergeRequests(finalized);
+    // Stage 2 — critical, pure-SQLite finalizers.
+    const mergeHeadSha = completed.merge_head_sha ?? this.resolveMergeHeadShaForRequest(completed);
+    if (completed.type === "merge" && mergeHeadSha && completed.merge_head_sha == null) {
+      // Persist merge_head_sha now: the head branch may be deleted before Stage 3
+      // runs, and later steps depend on it for ancestry evidence.
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?"
+        )
+        .run(mergeHeadSha, this.now(), completed.id);
+    }
+    const finalized: AuthRequest = { ...completed, merge_head_sha: mergeHeadSha };
     this.applyLedgerCompletionForRequest(finalized);
     // Bug: 8a281b3 — resolve work units on successful auth merge (best-effort;
-    // work_units table may not exist in test DBs or fresh installs mid-migration)
+    // work_units table may not exist in test DBs or fresh installs mid-migration).
+    // Only the DB-only direct matches run here; ancestry scans are Stage 3.
     if (this.tableExists("work_units")) {
       try {
-        this.resolveWorkUnitsOnMerge(finalized);
+        this.resolveDirectWorkUnitsOnMerge(finalized);
       } catch (err) {
         authLog("warn", "auth_work_units_resolve_failed", {
           subsystem: "auth",
@@ -2099,8 +2241,191 @@ export class AuthQueue {
         });
       }
     }
-    this.archiveCompletedWorkerThreads(finalized);
+
+    // Stage 2 complete — consumers (channel server, UI) observe resolved
+    // ledger/work-unit state here. Shape/semantics unchanged from before.
+    this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(finalized) });
+
+    // Stage 3 — enqueue the heavy finalizers. Overflow is a backstop, not an
+    // error: the row stays merge_finalized_at IS NULL and the periodic sweep
+    // re-enqueues it.
+    if (!this.finalizerQueue.enqueue(completed.id)) {
+      authLog("info", "auth_finalizer_enqueue_overflow", {
+        subsystem: "auth",
+        auth_request_id: completed.id,
+      });
+    }
+  }
+
+  /**
+   * Issue 75f52ac — Stage 3 processor run by the FinalizerQueue. Per-step durable
+   * state in merge_finalizer_state makes it crash-safe: a daemon restart mid-way
+   * resumes the remaining steps. Each step is idempotent, so a crash between the
+   * JSON update and the step effect re-runs the step without double-applying.
+   * A step that throws is retried up to FINALIZER_MAX_ATTEMPTS across sweeps;
+   * after that it is marked failed (surfaced in auth:finalized) so the request
+   * still finalizes. Never throws.
+   */
+  private async runBackgroundFinalizers(requestId: string): Promise<void> {
+    // Issue 75f52ac — bail cleanly if the queue was disposed or its DB closed
+    // between enqueue and processing (common in tests that dispose right after a
+    // successful setResult). Anything left unfinalized is picked up by the
+    // startup sweep on the next daemon boot.
+    if (this.disposed || !this.isDbOpen()) {
+      return;
+    }
+    // Exact-id lookup (not getRequest): the queue holds the precise id, so we
+    // must not prefix-resolve it, and this avoids getRequest's expireStale side
+    // effect on the background path.
+    const row = this.db
+      .prepare("SELECT * FROM auth_requests WHERE id = ?")
+      .get(requestId) as Record<string, unknown> | undefined;
+    if (!row) {
+      return;
+    }
+    const request = mapRow(row);
+    if (request.status !== "completed" || request.exit_code !== 0) {
+      return;
+    }
+    if (request.merge_finalized_at != null) {
+      return;
+    }
+
+    const mergeHeadSha = request.merge_head_sha ?? this.resolveMergeHeadShaForRequest(request);
+    const finalized: AuthRequest = { ...request, merge_head_sha: mergeHeadSha };
+    const state = this.readFinalizerState(requestId);
+    let resolvedWorkUnitIds: string[] = [];
+    let archivedThreadCount = 0;
+
+    const steps: Array<{ name: FinalizerStepName; run: () => Promise<void> }> = [
+      {
+        name: "revalidate_pending",
+        run: async () => {
+          await this.revalidatePendingMergeRequests(finalized);
+        },
+      },
+      {
+        name: "auto_dismiss_duplicates",
+        run: async () => {
+          await this.autoDismissDuplicates(finalized);
+        },
+      },
+      {
+        name: "resolve_ancestry_work_units",
+        run: async () => {
+          if (this.tableExists("work_units")) {
+            resolvedWorkUnitIds = await this.resolveAncestryWorkUnitsOnMerge(finalized);
+          }
+        },
+      },
+      {
+        name: "archive_worker_threads",
+        run: async () => {
+          archivedThreadCount = (await this.archiveCompletedWorkerThreads(finalized)).archived;
+        },
+      },
+    ];
+
+    for (const step of steps) {
+      // A concurrent dispose/close aborts the pass; the sweep resumes it later.
+      if (this.disposed || !this.isDbOpen()) {
+        return;
+      }
+      const entry = state[step.name];
+      if (entry?.state === "done" || entry?.state === "failed") {
+        continue;
+      }
+      try {
+        await step.run();
+        state[step.name] = { state: "done", attempts: (entry?.attempts ?? 0) + 1, at: this.now() };
+      } catch (err) {
+        const attempts = (entry?.attempts ?? 0) + 1;
+        const message = err instanceof Error ? err.message : String(err);
+        state[step.name] = {
+          state: attempts >= FINALIZER_MAX_ATTEMPTS ? "failed" : "pending",
+          attempts,
+          error: message,
+          at: this.now(),
+        };
+        authLog("warn", "auth_finalizer_step_failed", {
+          subsystem: "auth",
+          auth_request_id: requestId,
+          step: step.name,
+          attempts,
+          error: message,
+        });
+      }
+      this.writeFinalizerState(requestId, state);
+    }
+
+    // Finalize only once every step is terminal (done or failed@max). A step
+    // still eligible for retry leaves the row unfinalized for the periodic sweep.
+    const allTerminal = FINALIZER_STEP_NAMES.every((name) => {
+      const entry = state[name];
+      return entry?.state === "done" || entry?.state === "failed";
+    });
+    if (!allTerminal) {
+      return;
+    }
+
     this.markSuccessfulMergeFinalized(finalized, mergeHeadSha);
+    const finalizedRowData = this.db
+      .prepare("SELECT * FROM auth_requests WHERE id = ?")
+      .get(requestId) as Record<string, unknown> | undefined;
+    const finalizedRow = finalizedRowData ? mapRow(finalizedRowData) : finalized;
+    const failedSteps = FINALIZER_STEP_NAMES.filter((name) => state[name]?.state === "failed");
+    if (failedSteps.length > 0) {
+      authLog("warn", "auth_finalizer_completed_with_failures", {
+        subsystem: "auth",
+        auth_request_id: requestId,
+        failed_steps: failedSteps,
+      });
+    }
+    this.broadcast({
+      event: "auth:finalized",
+      data: this.buildFinalizedPayload(finalizedRow, state, resolvedWorkUnitIds, archivedThreadCount),
+    });
+  }
+
+  /** Test / self-merge restart hook — resolve once all enqueued finalizers settle. */
+  async drainFinalizers(): Promise<void> {
+    await this.finalizerQueue.drain();
+  }
+
+  private readFinalizerState(id: string): FinalizerState {
+    let raw: string | null | undefined;
+    try {
+      const row = this.db
+        .prepare("SELECT merge_finalizer_state FROM auth_requests WHERE id = ?")
+        .get(id) as { merge_finalizer_state?: string | null } | undefined;
+      raw = row?.merge_finalizer_state;
+    } catch {
+      return {};
+    }
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? (parsed as FinalizerState) : {};
+    } catch {
+      return {};
+    }
+  }
+
+  private writeFinalizerState(id: string, state: FinalizerState): void {
+    if (this.disposed || !this.isDbOpen()) {
+      return;
+    }
+    try {
+      this.db
+        .prepare("UPDATE auth_requests SET merge_finalizer_state = ?, updated_at = ? WHERE id = ?")
+        .run(JSON.stringify(state), this.now(), id);
+    } catch (error) {
+      authLog("warn", "auth_finalizer_state_write_failed", {
+        subsystem: "auth",
+        auth_request_id: id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 
   private sweepSuccessfulMergeFinalizers(): void {
@@ -2110,7 +2435,7 @@ export class AuthQueue {
       )
       .all() as Record<string, unknown>[];
     for (const row of rows) {
-      this.afterSuccessfulMerge(mapRow(row));
+      this.finalizeSuccessfulMerge(mapRow(row));
     }
   }
 
@@ -2263,7 +2588,11 @@ export class AuthQueue {
     ).trim();
   }
 
-  private revalidatePendingMergeRequests(completed: AuthRequest): void {
+  // Issue 75f52ac — Stage 3 finalizer step. checkMergeIndependence stays
+  // synchronous (it is shared with the submit-time preflight), but the loop
+  // yields to the event loop between pending requests so a long revalidation
+  // pass does not monopolise the daemon after auth:resolved.
+  private async revalidatePendingMergeRequests(completed: AuthRequest): Promise<void> {
     if (!completed.repo || !completed.base_branch || !completed.cwd) {
       return;
     }
@@ -2282,6 +2611,7 @@ export class AuthQueue {
     );
 
     for (const request of pending) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
       const report = this.checkMergeIndependence({
         request_id: request.id,
         repo: request.repo,
@@ -2589,7 +2919,9 @@ export class AuthQueue {
     }));
   }
 
-  private autoDismissDuplicates(completed: AuthRequest): void {
+  // Issue 75f52ac — Stage 3 finalizer step; isMergedIntoBase now spawns git via
+  // async execFile, so this and shouldAutoDismissDuplicate are async.
+  private async autoDismissDuplicates(completed: AuthRequest): Promise<void> {
     if (!completed.base_branch || !completed.head_branch) {
       return;
     }
@@ -2633,7 +2965,7 @@ export class AuthQueue {
 
     for (const row of siblings) {
       const sibling = mapRow(row);
-      if (!this.shouldAutoDismissDuplicate(completed, sibling)) {
+      if (!(await this.shouldAutoDismissDuplicate(completed, sibling))) {
         continue;
       }
       dismissStmt.run(now, now, reason, sibling.id);
@@ -2653,13 +2985,13 @@ export class AuthQueue {
     }
   }
 
-  private shouldAutoDismissDuplicate(completed: AuthRequest, sibling: AuthRequest): boolean {
+  private async shouldAutoDismissDuplicate(completed: AuthRequest, sibling: AuthRequest): Promise<boolean> {
     if (completed.resolved_at != null && sibling.created_at > completed.resolved_at) {
       return false;
     }
     if (completed.merge_head_sha && sibling.merge_head_sha) {
       return completed.merge_head_sha === sibling.merge_head_sha ||
-        this.isMergedIntoBase(completed, sibling.merge_head_sha);
+        (await this.isMergedIntoBase(completed, sibling.merge_head_sha));
     }
     if (sibling.merge_head_sha) {
       return this.isMergedIntoBase(completed, sibling.merge_head_sha);
@@ -2667,7 +2999,9 @@ export class AuthQueue {
     return completed.resolved_at != null && sibling.created_at <= completed.resolved_at;
   }
 
-  private isMergedIntoBase(completed: AuthRequest, sha: string): boolean {
+  // Issue 75f52ac — async execFile so the Stage 3 auto-dismiss step runs off the
+  // event loop.
+  private async isMergedIntoBase(completed: AuthRequest, sha: string): Promise<boolean> {
     if (!completed.base_branch) {
       return false;
     }
@@ -2676,7 +3010,7 @@ export class AuthQueue {
       return false;
     }
     try {
-      execFileSync(
+      await execFileAsync(
         "git",
         ["merge-base", "--is-ancestor", sha, `refs/heads/${completed.base_branch}`],
         { cwd, encoding: "utf8", timeout: 5000 }
@@ -2715,30 +3049,22 @@ export class AuthQueue {
   }
 
   /**
-   * When an auth request completes successfully (exit_code=0), resolve
-   * associated work units:
+   * Issue 75f52ac — Stage 2 (synchronous, DB-only) work-unit resolution.
+   * Consumers rely on this completed state at auth:resolved, so it runs before
+   * that broadcast. Covers the matches that never spawn git:
    * 1. Work units whose auth_request_id matches the completed request
    * 2. Work units whose branch matches the auth request's head_branch
-   * 3. Work units whose branch tip is now contained in the merged base branch
    * 4. Work units linked to explicit auth closure issue IDs
-   * Bug: 8a281b3
+   * 5. Work units linked by canonical ledger auth-issue links
+   * The ancestry scan (original step 3) and retention sweep spawn git and move
+   * to Stage 3 (resolveAncestryWorkUnitsOnMerge). Bug: 8a281b3.
    */
-  private resolveWorkUnitsOnMerge(completed: AuthRequest): void {
+  private resolveDirectWorkUnitsOnMerge(completed: AuthRequest): string[] {
     const now = this.now();
     const resolveStmt = this.db.prepare(
       `UPDATE work_units
        SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
        WHERE id = ? AND state IN ('open', 'committed')`
-    );
-    const recoverMergedStmt = this.db.prepare(
-      `UPDATE work_units
-       SET state = 'resolved', resolved_at = ?
-       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
-    );
-    const recoverClosedMergedStmt = this.db.prepare(
-      `UPDATE work_units
-       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
-       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
     );
 
     const resolvedIds = new Set<string>();
@@ -2769,42 +3095,6 @@ export class AuthQueue {
           resolveStmt.run(now, completed.id, row.id);
           resolvedIds.add(row.id);
         }
-      }
-    }
-
-    // 3. Match child feature branches that were merged through an integration
-    // branch. auth-merge may delete those branches before the branch scanner
-    // runs, so prefer the scanner's last_commit_hash snapshot when present.
-    for (const row of this.workUnitsMergedByRequest(completed)) {
-      if (!resolvedIds.has(row.id)) {
-        if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
-          recoverClosedMergedStmt.run(now, completed.id, row.id);
-        } else {
-          recoverMergedStmt.run(now, row.id);
-        }
-        resolvedIds.add(row.id);
-      }
-    }
-
-    // Issue 93d978e — retire abandoned rows that have aged past the retention
-    // window from future merge-side ancestry scans. Runs AFTER the step 3 scan
-    // so the current merge still gets its chance at every stale row. This is a
-    // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
-    // not a deletion — state and provenance are preserved. The NULL guard keeps
-    // it idempotent across finalizer re-runs.
-    if (this.workUnitsHaveRetirementColumn()) {
-      const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
-      const retired = this.db.prepare(
-        `UPDATE work_units SET merge_scan_retired_at = ?
-         WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
-           AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
-      ).run(now, retireCutoff);
-      if (retired.changes > 0) {
-        authLog("info", "auth_work_units_scan_retired", {
-          subsystem: "auth",
-          auth_request_id: completed.id,
-          retired_count: retired.changes,
-        });
       }
     }
 
@@ -2873,6 +3163,76 @@ export class AuthQueue {
         head_branch: completed.head_branch,
       });
     }
+    return [...resolvedIds];
+  }
+
+  /**
+   * Issue 75f52ac — Stage 3 (async) ancestry-based work-unit resolution plus the
+   * retention sweep. Matches child feature branches merged through an integration
+   * branch (original step 3 of resolveWorkUnitsOnMerge); auth-merge may delete
+   * those branches before the scanner runs, so it prefers the scanner's
+   * last_commit_hash snapshot. Idempotent: guarded UPDATEs skip already-resolved
+   * rows, and the retirement sweep is NULL-guarded. Returns the resolved ids.
+   */
+  private async resolveAncestryWorkUnitsOnMerge(completed: AuthRequest): Promise<string[]> {
+    const now = this.now();
+    const recoverMergedStmt = this.db.prepare(
+      `UPDATE work_units
+       SET state = 'resolved', resolved_at = ?
+       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
+    );
+    const recoverClosedMergedStmt = this.db.prepare(
+      `UPDATE work_units
+       SET state = 'resolved', resolved_at = ?, auth_request_id = COALESCE(auth_request_id, ?)
+       WHERE id = ? AND state IN ('open', 'committed', 'abandoned')`
+    );
+
+    const resolvedIds = new Set<string>();
+    const explicitClosureIssueRefs = this.explicitClosureIssueRefs(completed);
+
+    for (const row of await this.workUnitsMergedByRequest(completed)) {
+      if (!resolvedIds.has(row.id)) {
+        if (this.workUnitMatchesIssueRefs(row, explicitClosureIssueRefs)) {
+          recoverClosedMergedStmt.run(now, completed.id, row.id);
+        } else {
+          recoverMergedStmt.run(now, row.id);
+        }
+        resolvedIds.add(row.id);
+      }
+    }
+
+    // Issue 93d978e — retire abandoned rows that have aged past the retention
+    // window from future merge-side ancestry scans. Runs AFTER the scan so the
+    // current merge still gets its chance at every stale row. This is a
+    // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
+    // not a deletion — state and provenance are preserved. The NULL guard keeps
+    // it idempotent across finalizer re-runs.
+    if (this.workUnitsHaveRetirementColumn()) {
+      const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
+      const retired = this.db.prepare(
+        `UPDATE work_units SET merge_scan_retired_at = ?
+         WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
+           AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
+      ).run(now, retireCutoff);
+      if (retired.changes > 0) {
+        authLog("info", "auth_work_units_scan_retired", {
+          subsystem: "auth",
+          auth_request_id: completed.id,
+          retired_count: retired.changes,
+        });
+      }
+    }
+
+    if (resolvedIds.size > 0) {
+      authLog("info", "auth_work_units_resolved", {
+        subsystem: "auth",
+        auth_request_id: completed.id,
+        resolved_count: resolvedIds.size,
+        head_branch: completed.head_branch,
+        scope: "ancestry",
+      });
+    }
+    return [...resolvedIds];
   }
 
   // Issue 93d978e — memoized presence of the merge_scan_retired_at column.
@@ -2894,11 +3254,13 @@ export class AuthQueue {
     return this.workUnitRetirementColumn;
   }
 
-  private workUnitsMergedByRequest(completed: AuthRequest): Array<{
+  // Issue 75f52ac — async so the batched ancestry git spawns run off the event
+  // loop inside the Stage 3 finalizer queue.
+  private async workUnitsMergedByRequest(completed: AuthRequest): Promise<Array<{
     id: string;
     issue_id: string;
     ledger_issue_id: string | null;
-  }> {
+  }>> {
     if (completed.type !== "merge" || !completed.base_branch) {
       return [];
     }
@@ -2962,14 +3324,21 @@ export class AuthQueue {
       if (row.repo_root && branchSnapshotMatchesRequest) roots.unshift(row.repo_root);
       const uniqueRoots = [...new Set(roots.filter(Boolean))];
       const lastCommitHash = branchSnapshotMatchesRequest ? row.last_commit_hash : null;
-      if (uniqueRoots.some((root) => this.workUnitBranchWasMerged(
-        root,
-        row.branch,
-        lastCommitHash,
-        completed,
-        { requestHeadOnly: row.state === "abandoned" },
-        batch,
-      ))) {
+      let merged = false;
+      for (const root of uniqueRoots) {
+        if (await this.workUnitBranchWasMerged(
+          root,
+          row.branch,
+          lastCommitHash,
+          completed,
+          { requestHeadOnly: row.state === "abandoned" },
+          batch,
+        )) {
+          merged = true;
+          break;
+        }
+      }
+      if (merged) {
         resolved.set(row.id, {
           id: row.id,
           issue_id: row.issue_id,
@@ -3118,14 +3487,14 @@ export class AuthQueue {
     return refA === refB;
   }
 
-  private workUnitBranchWasMerged(
+  private async workUnitBranchWasMerged(
     repoRoot: string,
     branch: string,
     lastCommitHash: string | null,
     completed: AuthRequest,
     options: { requestHeadOnly?: boolean } = {},
     batch?: AncestryBatch,
-  ): boolean {
+  ): Promise<boolean> {
     // Abandoned work needs request-specific evidence; base ancestry alone can
     // match stale work that landed before this auth request.
     const targets = options.requestHeadOnly
@@ -3149,7 +3518,7 @@ export class AuthQueue {
     for (const candidate of candidates) {
       for (const target of targets) {
         const merged = batch
-          ? batch.isAncestor(repoRoot, candidate, target)
+          ? await batch.isAncestor(repoRoot, candidate, target)
           : this.gitIsAncestor(repoRoot, candidate, target);
         if (merged) {
           return true;
@@ -3173,10 +3542,10 @@ export class AuthQueue {
     }
   }
 
-  private archiveCompletedWorkerThreads(
+  private async archiveCompletedWorkerThreads(
     completed: AuthRequest,
     options: { logSummary?: boolean } = {},
-  ): CodexArchiveReplayResult {
+  ): Promise<CodexArchiveReplayResult> {
     const result: CodexArchiveReplayResult = {
       request_id: completed.id,
       archived: 0,
@@ -3189,7 +3558,7 @@ export class AuthQueue {
     try {
       const candidates = listCompletedWorkerThreadArchiveCandidates(this.db, completed);
       for (const candidate of candidates) {
-        const archived = safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
+        const archived = await safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
         if (archived) {
           result.archived += 1;
         }
@@ -3272,6 +3641,41 @@ export class AuthQueue {
       // events across session restarts within the same conversation.
       conversation_id: request.conversation_id,
       action_outcomes: this.actionOutcomeSummary(request.id)
+    };
+  }
+
+  // Issue 75f52ac — auth:merged payload: the resolved shape minus action_outcomes
+  // (deferred ledger actions have not run yet at Stage 1). The UI flips the row
+  // on this event; the follow-up auth:resolved carries action_outcomes.
+  private buildMergedPayload(request: AuthRequest): Record<string, unknown> {
+    const { action_outcomes: _actionOutcomes, ...rest } = this.buildResolvedPayload(request);
+    return rest;
+  }
+
+  // Issue 75f52ac — auth:finalized payload: emitted once every Stage 3 step is
+  // terminal. Surfaces per-step outcomes (including failures), the ancestry
+  // work units resolved in Stage 3, and the archived-thread count.
+  private buildFinalizedPayload(
+    request: AuthRequest,
+    state: FinalizerState,
+    resolvedWorkUnitIds: string[],
+    archivedThreadCount: number,
+  ): Record<string, unknown> {
+    const steps = FINALIZER_STEP_NAMES.map((name) => {
+      const entry = state[name];
+      return {
+        name,
+        state: entry?.state ?? "skipped",
+        attempts: entry?.attempts ?? 0,
+        ...(entry?.error ? { error: entry.error } : {}),
+      };
+    });
+    return {
+      request_id: request.id,
+      merge_finalized_at: request.merge_finalized_at ?? null,
+      steps,
+      resolved_work_unit_ids: resolvedWorkUnitIds,
+      archived_thread_count: archivedThreadCount,
     };
   }
 
@@ -3480,6 +3884,9 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
       ? null
       : String(row.merge_preflight_queue_fingerprint),
     merge_finalized_at: row.merge_finalized_at == null ? null : Number(row.merge_finalized_at),
+    // Issue 75f52ac — durable per-step finalizer state (raw JSON string); detail
+    // views and crash recovery read it. Kept as a string to match the column.
+    merge_finalizer_state: row.merge_finalizer_state == null ? null : String(row.merge_finalizer_state),
     files_changed: row.files_changed == null ? undefined : Number(row.files_changed),
     additions: row.additions == null ? undefined : Number(row.additions),
     deletions: row.deletions == null ? undefined : Number(row.deletions),

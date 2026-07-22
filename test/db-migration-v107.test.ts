@@ -32,7 +32,7 @@ describe("migration v107: work-unit merge-scan retirement", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "107",
+      value: "108",
     });
     const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
       name: string;
@@ -56,7 +56,7 @@ describe("migration v107: work-unit merge-scan retirement", () => {
       const columns = fresh.prepare("PRAGMA table_info(work_units)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_scan_retired_at");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "107",
+        value: "108",
       });
     } finally {
       fresh.close();

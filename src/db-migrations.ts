@@ -2926,6 +2926,18 @@ export const MIGRATIONS: readonly Migration[] = [
     // so re-migration over a DB that already has the column is idempotent,
     // matching the pattern used for the v106 branch-reaping columns.
     statements: []
+  },
+  {
+    version: 108,
+    name: "auth_request_merge_finalizer_state",
+    // Issue 75f52ac — per-step durable state for the background finalizer queue.
+    // Nullable JSON column recording each Stage 3 finalizer step's state,
+    // attempts, and last error so a daemon restart mid-finalizer resumes the
+    // remaining steps instead of losing or double-applying work. The additive
+    // column is added by a guarded hook (ensureAuthRequestMergeFinalizerStateColumn)
+    // so re-migration over a DB that already has the column is idempotent,
+    // matching the v106/v107 additive-column pattern.
+    statements: []
   }
 ];
 
@@ -2999,6 +3011,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 107) {
         ensureWorkUnitMergeScanRetirementColumn(db);
+      }
+      if (migration.version === 108) {
+        ensureAuthRequestMergeFinalizerStateColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5496,6 +5511,18 @@ function ensureWorkUnitMergeScanRetirementColumn(db: Db): void {
     throw new Error(
       "migration 107 verification: work_units.merge_scan_retired_at has divergent definition",
     );
+  }
+}
+
+// Issue 75f52ac (migration 108) — additive nullable JSON column recording the
+// background finalizer queue's per-step durable state. Guarded so re-running
+// migrate over a database that already has the column (version-rewind fixtures)
+// is a no-op rather than a duplicate-column error.
+function ensureAuthRequestMergeFinalizerStateColumn(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("merge_finalizer_state")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_finalizer_state TEXT");
   }
 }
 

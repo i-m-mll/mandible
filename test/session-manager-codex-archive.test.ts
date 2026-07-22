@@ -20,8 +20,8 @@ describe("SessionManager Codex archive integration", () => {
       () => undefined,
       undefined,
       {
-        archive: () => undefined,
-        unarchive: (threadId) => unarchived.push(threadId),
+        archive: async () => undefined,
+        unarchive: async (threadId) => { unarchived.push(threadId); },
       },
     );
 

@@ -737,6 +737,12 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       }
       return state;
     }
+    // Issue 75f52ac — auth:merged is the early row-flip event, broadcast right
+    // after the git merge succeeds and before the background finalizers run. Its
+    // payload is the resolved shape minus action_outcomes, so it maps onto the
+    // same authResolved reducer action; a following auth:resolved is a no-op-safe
+    // reconciliation carrying the completed action_outcomes.
+    case 'auth:merged':
     case 'auth:resolved': {
       const rd = (payload.data && typeof payload.data === 'object' ? payload.data : payload) as Record<string, unknown>;
       const rId = parseAuthResolvedId(payload) || undefined;

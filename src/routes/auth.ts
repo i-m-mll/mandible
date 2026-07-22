@@ -285,9 +285,10 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/replay-codex-archives", (req, res) => {
+  app.post("/api/auth/request/:id/replay-codex-archives", async (req, res) => {
     try {
-      const result = authQueue.replayCodexThreadArchives(req.params.id);
+      // Issue 75f52ac — archiving is now async (off-loop codex CLI spawn).
+      const result = await authQueue.replayCodexThreadArchives(req.params.id);
       res.status(200).json(result);
     } catch (error) {
       handleQueueError(error, res);

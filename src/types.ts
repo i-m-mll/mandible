@@ -201,6 +201,11 @@ export interface AuthRequest {
   merge_preflight_base_sha?: string | null;
   merge_preflight_queue_fingerprint?: string | null;
   merge_finalized_at?: number | null;
+  // Issue 75f52ac — per-step durable state for the background finalizer queue.
+  // JSON object keyed by step name: { [step]: { state, attempts, error?, at } }.
+  // Null until Stage 3 finalizers run; lets crash recovery resume mid-queue and
+  // surfaces failed steps in the auth:finalized payload and detail views.
+  merge_finalizer_state?: string | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;
