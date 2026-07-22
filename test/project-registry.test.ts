@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import {
   addOrUpdateCheckout,
@@ -29,6 +30,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 let tempDir = "";
 let dbPath = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-prreg-"));
@@ -474,6 +476,7 @@ describe("buildLedgerIssueDetailProjection project fields", () => {
 
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.id,
       title: "Test issue",
       body: "Test body",
@@ -512,6 +515,7 @@ describe("repairRegistry merge", () => {
 
     const store = new LedgerStore(db);
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projA.id,
       title: "Issue in A",
       body: "body",
@@ -519,6 +523,7 @@ describe("repairRegistry merge", () => {
       author_display: "Test",
     });
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projB.id,
       title: "Issue in B",
       body: "body",
@@ -570,6 +575,7 @@ describe("repairRegistry merge", () => {
 
     const store = new LedgerStore(db);
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projC.id,
       title: "Issue in C",
       body: "body",
@@ -577,6 +583,7 @@ describe("repairRegistry merge", () => {
       author_display: "Test",
     });
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projD.id,
       title: "Issue in D",
       body: "body",
@@ -634,6 +641,7 @@ describe("repairRegistry merge", () => {
 
     const store = new LedgerStore(db);
     const issueE = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projE.id,
       title: "Issue E",
       body: "body",
@@ -641,6 +649,7 @@ describe("repairRegistry merge", () => {
       author_display: "Test",
     });
     const issueF = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projF.id,
       title: "Issue F",
       body: "body",
@@ -729,6 +738,7 @@ describe("merge move-list schema coverage (codex review #1)", () => {
     });
     const store = new LedgerStore(db);
     const issueA = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: projA.id,
       title: "Linked issue",
       body: "body",
@@ -855,6 +865,7 @@ describe("operational + relationship resolution by project_key (codex review #2)
 
     const store = new LedgerStore(db);
     const inF = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: feedbax.id,
       title: "F issue",
       body: "b",
@@ -862,6 +873,7 @@ describe("operational + relationship resolution by project_key (codex review #2)
       author_display: "T",
     });
     const inO = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: other.id,
       title: "O issue",
       body: "b",
@@ -900,6 +912,7 @@ describe("operational + relationship resolution by project_key (codex review #2)
     });
     const store = new LedgerStore(db);
     const targetIssue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: target.id,
       title: "Target",
       body: "b",
@@ -907,6 +920,7 @@ describe("operational + relationship resolution by project_key (codex review #2)
       author_display: "T",
     });
     const sourceIssue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: sourceProject.id,
       title: "Source",
       body: "b",
@@ -915,6 +929,7 @@ describe("operational + relationship resolution by project_key (codex review #2)
     });
     // Cross-project ref by the canonical project_key (cased) -> resolveProjectId.
     store.reconcileTextIssueReferences({
+      actor: SYSTEM_ACTOR,
       source_issue_id: sourceIssue.id,
       source_entity_type: "issue_body",
       source_entity_id: sourceIssue.id,

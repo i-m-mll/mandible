@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -33,6 +34,7 @@ function createIssue(body = ""): string {
   });
   const store = new LedgerStore(db);
   return store.createIssue({
+    attribution: systemAction(),
     project_id: checkout.project.id,
     title: "Artifacts",
     body,

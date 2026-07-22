@@ -29,7 +29,7 @@ describe("migration v106: trash custody records", () => {
   it("adds the sequential record table with retention and lifecycle constraints", () => {
     migrate(db);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "107",
+      value: "108",
     });
     const columns = db.prepare("PRAGMA table_info(trash_entries)").all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([

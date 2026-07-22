@@ -111,10 +111,29 @@ export type LedgerBodyRevisionReason = (typeof LEDGER_BODY_REVISION_REASONS)[num
 
 export type LedgerNamespacePolicy = "remote" | "upstream" | "local";
 
+/**
+ * Resolved user principal for a ledger write (umbrella 8e2e8b2 / issue 92813cc).
+ * Mirrors `AttributionContext` in `src/identity/resolver.ts` structurally so the
+ * ledger layer can accept it without importing the resolver at the type level.
+ * When present, the store records these values in the parallel `*_user_id`
+ * columns and projects `actor_type` from the user's kind.
+ */
+export interface LedgerAttributionInput {
+  user_id: string;
+  evidence_method: string;
+  evidence_id?: string | null;
+  authorizer_user_id?: string | null;
+}
+
 export interface LedgerActorInput {
   actor_id?: string | null;
   actor_type?: LedgerActorType;
   author_display?: string;
+  /**
+   * Resolved user attribution for every durable ledger write. Historical rows
+   * may retain NULL user ids, but new writes cannot create unresolved rows.
+   */
+  attribution: LedgerAttributionInput;
 }
 
 export interface LedgerProject {
@@ -153,6 +172,9 @@ export interface LedgerIssue {
   author_actor_id: string | null;
   author_actor_type: LedgerActorType;
   author_display: string;
+  author_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: LedgerEventSource;
   created_at: number;
   updated_at: number;
@@ -179,6 +201,9 @@ export interface LedgerComment {
   author_actor_id: string | null;
   author_actor_type: LedgerActorType;
   author_display: string;
+  author_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: LedgerEventSource;
   created_at: number;
   updated_at: number | null;
@@ -193,6 +218,9 @@ export interface LedgerIssueCheckpoint {
   author_actor_id: string | null;
   author_actor_type: LedgerActorType;
   author_display: string;
+  author_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: LedgerEventSource;
   created_at: number;
 }
@@ -207,6 +235,9 @@ export interface LedgerBodyRevision {
   event_id: string | null;
   actor_id: string | null;
   actor_type: LedgerActorType;
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: LedgerEventSource;
   reason: LedgerBodyRevisionReason;
   occurred_at: number;
@@ -220,6 +251,7 @@ export interface LedgerBodyRevision {
   metadata_json: string;
   redacted_at: number | null;
   redacted_by_actor_id: string | null;
+  redacted_by_user_id: string | null;
   redaction_reason: string | null;
 }
 
@@ -285,6 +317,9 @@ export interface LedgerRelationshipEdge {
   action_id: string;
   actor_id: string | null;
   actor_type: LedgerActorType;
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: LedgerEventSource;
   metadata_json: string;
   created_at: number;
@@ -299,6 +334,9 @@ export interface LedgerEvent {
   event_type: string;
   actor_id: string | null;
   actor_type: LedgerActorType;
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: LedgerEventSource;
   payload_json: string;
   occurred_at: number;

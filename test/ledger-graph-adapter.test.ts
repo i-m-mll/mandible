@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   buildLedgerIssueProjection,
   countLedgerGraphIssues,
@@ -15,6 +16,7 @@ import type { GraphNode } from "../src/types.js";
 
 let tempDir = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-graph-"));
@@ -46,6 +48,7 @@ function createIssue(
   options: { kind?: "feature" | "umbrella"; status?: "open" | "closed"; labels?: string[] } = {},
 ) {
   return store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: `${title} body`,
@@ -95,12 +98,14 @@ describe("ledger graph projection", () => {
     );
     const child = createIssue(store, checkout.project.id, "chi1234", "Child issue");
     store.addComment(child.id, {
+      ...SYSTEM_ACTOR,
       body: "Implementation note",
       author_display: "Codex",
       actor_type: "agent",
       source: "session",
     });
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -229,6 +234,7 @@ describe("ledger graph projection", () => {
     db.prepare("UPDATE ledger_issues SET created_at = ?, updated_at = ? WHERE id = ?")
       .run(now, now, recentIssue.id);
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: oldIssue.id,
       target_issue_id: recentIssue.id,
       relationship_type: "parent_child",
@@ -262,6 +268,7 @@ describe("ledger graph projection", () => {
 
     vi.setSystemTime(new Date(recent));
     const comment = store.addComment(oldRowRecentComment.id, {
+      ...SYSTEM_ACTOR,
       body: "Recent implementation note.",
       author_actor_type: "agent",
       author_display: "Codex",
@@ -321,7 +328,7 @@ describe("ledger graph projection", () => {
     const source = createIssue(store, checkout.project.id, "src1234", "Source issue");
     const target = createIssue(store, checkout.project.id, "tar1234", "Target issue");
 
-    store.updateIssue(source.id, { body: "See [issue:tar1234] for follow-up." });
+    store.updateIssue(source.id, { body: "See [issue:tar1234] for follow-up." }, SYSTEM_ACTOR);
 
     const projection = buildLedgerIssueProjection(db, { mode: "issue", status: "all" });
     const sourceNode = findNode(projection?.nodes ?? [], "Source issue");

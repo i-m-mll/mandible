@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { LedgerIssue } from "../src/ledger/types.js";
@@ -31,6 +32,7 @@ export interface TimelineFixture {
 }
 
 const BASE = 1_800_000_000_000;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 export function createTimelineFixture(tempDir: string): TimelineFixture {
   fs.mkdirSync(tempDir, { recursive: true });
@@ -45,6 +47,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   const store = new LedgerStore(db);
 
   const shared = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Shared dependency",
     body: "Shared implementation body.",
@@ -54,6 +57,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 30,
   });
   const nested = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Nested dependency",
     body: "Nested implementation body.",
@@ -63,6 +67,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 40,
   });
   const cycle = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Cycle target",
     body: "Cycle body.",
@@ -72,6 +77,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 50,
   });
   const closed = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Closed target",
     body: "Closed target body.",
@@ -83,6 +89,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 60,
   });
   const deleted = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Deleted target",
     body: "Deleted target body.",
@@ -92,6 +99,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 70,
   });
   const loner = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Open loner",
     body: "No refs in or out.",
@@ -101,6 +109,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 80,
   });
   const authDone = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Auth completed issue",
     body: "Auth completion should appear as an operational event.",
@@ -110,6 +119,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 90,
   });
   const rootA = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Coordination Alpha",
     body: `## Alpha plan\nBody refs [issue:${shared.short_id}] and [issue:${closed.short_id}].`,
@@ -119,6 +129,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 10,
   });
   const rootB = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: checkout.project.id,
     title: "Coordination Beta",
     body: `Beta also references [issue:${shared.short_id}] for repeated target coverage.`,
@@ -129,6 +140,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
   });
 
   const rootARefs = store.addComment(rootA.id, {
+    ...SYSTEM_ACTOR,
     id: "comment-root-a-refs",
     body: `Comment refs [issue:${shared.short_id}], [issue:${deleted.short_id}], and [issue:${cycle.short_id}].`,
     actor_type: "agent",
@@ -136,6 +148,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 110,
   }).id;
   const sharedNested = store.addComment(shared.id, {
+    ...SYSTEM_ACTOR,
     id: "comment-shared-nested",
     body: `Nested ref [issue:${nested.short_id}].`,
     actor_type: "agent",
@@ -143,6 +156,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 120,
   }).id;
   const manyRefs = store.addComment(rootB.id, {
+    ...SYSTEM_ACTOR,
     id: "comment-root-b-many-refs",
     body: [
       `Many refs [issue:${shared.short_id}]`,
@@ -156,22 +170,23 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     created_at: BASE + 130,
   }).id;
   store.addComment(cycle.id, {
+    ...SYSTEM_ACTOR,
     id: "comment-cycle-back",
     body: `Cycle back to [issue:${rootA.short_id}].`,
     actor_type: "agent",
     author_display: "Codex",
     created_at: BASE + 140,
   });
-  store.setLabel(shared.id, "needs-review", true);
-  store.setLabel(nested.id, "needs-review", true);
-  store.setLabel(shared.id, `parent:${rootA.short_id}`, true);
-  store.setLabel(nested.id, `parent:${shared.short_id}`, true);
-  store.setLabel(cycle.id, `parent:${nested.short_id}`, true);
-  store.setLabel(shared.id, `parent:${cycle.short_id}`, true);
-  store.setIssueStatus(rootA.id, "closed", "merged");
-  store.setIssueStatus(rootA.id, "open", null);
-  store.setLabel(rootB.id, "needs-review", true, "mandible");
-  store.setLabel(rootB.id, "needs-review", false, "mandible");
+  store.setLabel(shared.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
+  store.setLabel(nested.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
+  store.setLabel(shared.id, `parent:${rootA.short_id}`, true, "mandible", SYSTEM_ACTOR);
+  store.setLabel(nested.id, `parent:${shared.short_id}`, true, "mandible", SYSTEM_ACTOR);
+  store.setLabel(cycle.id, `parent:${nested.short_id}`, true, "mandible", SYSTEM_ACTOR);
+  store.setLabel(shared.id, `parent:${cycle.short_id}`, true, "mandible", SYSTEM_ACTOR);
+  store.setIssueStatus(rootA.id, "closed", "merged", SYSTEM_ACTOR);
+  store.setIssueStatus(rootA.id, "open", null, SYSTEM_ACTOR);
+  store.setLabel(rootB.id, "needs-review", true, "mandible", SYSTEM_ACTOR);
+  store.setLabel(rootB.id, "needs-review", false, "mandible", SYSTEM_ACTOR);
   db.prepare(
     `UPDATE ledger_events
      SET occurred_at = ?, observed_at = ?
@@ -184,6 +199,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
      WHERE created_at < ?`,
   ).run(BASE + 155, BASE);
   const authCompleted = store.recordEvent({
+    ...SYSTEM_ACTOR,
     entity_type: "auth_request",
     entity_id: "auth_timeline_1",
     event_type: "auth_request.completed",
@@ -203,7 +219,7 @@ export function createTimelineFixture(tempDir: string): TimelineFixture {
     authDone.id,
     "closed",
     "merged",
-    { actor_type: "system", actor_id: null },
+    { ...SYSTEM_ACTOR, actor_type: "system", actor_id: null },
     "auth_queue",
   );
   db.prepare(
