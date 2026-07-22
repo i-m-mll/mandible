@@ -13,10 +13,10 @@ import {
   getAuthQueue,
   getConsoleSessions,
   getConversations,
+  getDashboardBadges,
   getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
-  getSessions,
   getSettings,
   getWorkRepos,
   invalidateDashboardApiCacheForEvent,
@@ -27,6 +27,7 @@ import {
   updateAuthRequestField,
   updateSetting,
   type InstanceInfo,
+  type DashboardBadgeCounts,
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
@@ -49,7 +50,6 @@ import {
 } from './app-shell';
 import type { AuthRequest } from './views/auth';
 import type { IssueRepoSummary } from './views/issues';
-import type { SessionRecord } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { GraphNodeType } from './views/graph';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
@@ -461,6 +461,8 @@ function App(): JSX.Element {
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
+  const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
+  const lastDashboardSseAtRef = useRef(0);
 
   const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
     setBottomPanel(descriptor);
@@ -644,125 +646,93 @@ function App(): JSX.Element {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [navigateToHash, navigateToSettings]);
 
-  useEffect(() => {
-    let active = true;
-    // Bug: 73ef02f — legacy session registry data remains for backend/session
-    // integrations while the Monitor frontend route is retired.
-    getSessions<SessionRecord>('?include=issues')
-      .then((sessions) => {
-        if (active) {
-          dispatch({ type: 'setSessions', sessions });
-        }
-      })
-      .catch(() => undefined);
-
-    getAuthQueue<AuthRequest>()
-      .then((queue) => {
-        if (active) {
-          dispatch({ type: 'setAuthQueue', queue });
-        }
-      })
-      .catch(() => undefined);
-
-    getAuthHistory<AuthRequest>(200)
-      .then((history) => {
-        if (active) {
-          dispatch({ type: 'setAuthHistory', history });
-        }
-      })
-      .catch(() => undefined);
-
-    const loadWork = async () => {
-      try {
-        const repos = await getWorkRepos<WorkRepo>();
-        if (!active) {
-          return;
-        }
-        dispatch({ type: 'setWorkRepos', repos });
-        await Promise.all(
-          repos.map(async (repo) => {
-            const repoId = getRepoId(repo);
-            if (!repoId) {
-              return;
-            }
-            const branches = await getRepoBranches<WorkBranch>(repoId);
-            if (active) {
-              dispatch({ type: 'setRepoBranches', repoId, branches });
-            }
-          }),
-        );
-      } catch {
-        return;
-      }
-    };
-
-    loadWork();
-
-    getIssueRepos<IssueRepoSummary>()
-      .then((repos) => {
-        if (active) {
-          dispatch({ type: 'setIssueRepos', repos });
-        }
-      })
-      .catch(() => undefined);
-
-    getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
-      .then((result) => {
-        if (active) {
-          dispatch({ type: 'setConversations', conversations: result.conversations });
-        }
-      })
-      .catch(() => undefined);
-
-    getSettings()
-      .then((settings) => {
-        if (active) {
-          dispatch({ type: 'setSettings', settings });
-        }
-      })
-      .catch(() => undefined);
-
-    dispatch({ type: 'setInboxLoading', loading: true });
-    getInboxGlobal()
-      .then((data) => {
-        if (active) {
-          dispatch({ type: 'setInboxData', data });
-        }
-      })
-      .catch(() => {
-        if (active) {
-          dispatch({ type: 'setInboxLoading', loading: false });
-        }
-      });
-
-    // Load initial console sessions list
-    getConsoleSessions<ConsoleSession>()
-      .then((sessions) => {
-        if (active) {
-          dispatch({
-            type: 'setConsoleSessions',
-            sessions: sessions.map((session) => ({
-              pinned: false,
-              unread_count: 0,
-              ...session,
-            })),
-          });
-        }
-      })
-      .catch(() => undefined);
-
-    return () => {
-      active = false;
-    };
+  const loadDashboardBadges = useCallback(async () => {
+    try {
+      setDashboardBadges(await getDashboardBadges());
+    } catch {
+      // Cached full-view state remains a usable fallback when the aggregate is unavailable.
+    }
   }, []);
+
+  const loadWorkData = useCallback(async (includeBranches: boolean) => {
+    const repos = await getWorkRepos<WorkRepo>();
+    dispatch({ type: 'setWorkRepos', repos });
+    if (!includeBranches) return;
+    await Promise.all(repos.map(async (repo) => {
+      const repoId = getRepoId(repo);
+      if (!repoId) return;
+      const branches = await getRepoBranches<WorkBranch>(repoId);
+      dispatch({ type: 'setRepoBranches', repoId, branches });
+    }));
+  }, []);
+
+  const loadVisibleRouteData = useCallback(async (tab: Route['tab']) => {
+    try {
+      switch (tab) {
+        case 'auth':
+          await Promise.all([
+            getAuthQueue<AuthRequest>().then((queue) => dispatch({ type: 'setAuthQueue', queue })),
+            getAuthHistory<AuthRequest>(200).then((history) => dispatch({ type: 'setAuthHistory', history })),
+            loadWorkData(true),
+          ]);
+          return;
+        case 'console':
+        case 'chat-history':
+          await Promise.all([
+            getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
+              .then((result) => dispatch({ type: 'setConversations', conversations: result.conversations })),
+            getConsoleSessions<ConsoleSession>().then((sessions) => dispatch({
+              type: 'setConsoleSessions',
+              sessions: sessions.map((session) => ({ pinned: false, unread_count: 0, ...session })),
+            })),
+            loadWorkData(false),
+          ]);
+          return;
+        case 'issues':
+          await getIssueRepos<IssueRepoSummary>()
+            .then((repos) => {
+              if (repos.length > 0) dispatch({ type: 'setIssueRepos', repos });
+            });
+          return;
+        case 'inbox':
+          dispatch({ type: 'setInboxLoading', loading: true });
+          await getInboxGlobal().then((data) => dispatch({ type: 'setInboxData', data }));
+          return;
+        case 'settings':
+          await getSettings().then((settings) => dispatch({ type: 'setSettings', settings }));
+          return;
+        case 'work':
+          await loadWorkData(true);
+          return;
+        case 'timeline':
+          await loadWorkData(false);
+          return;
+        default:
+          return;
+      }
+    } catch {
+      if (tab === 'inbox') dispatch({ type: 'setInboxLoading', loading: false });
+    }
+  }, [loadWorkData]);
+
+  useEffect(() => {
+    // Start the visible view request before the small global aggregate.
+    void loadVisibleRouteData(route.tab);
+    void getSettings()
+      .then((settings) => dispatch({ type: 'setSettings', settings }))
+      .catch(() => undefined);
+    void loadDashboardBadges();
+  }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
 
   // SSE real-time updates: register handlers FIRST, then connect, so no
   // events arrive before we are ready to dispatch them.
   useEffect(() => {
     const client = createSSEClient();
     const handler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
+      void loadDashboardBadges();
     };
     const conversationHandler = (payload: SSEPayload) => {
       handler(payload);
@@ -910,33 +880,21 @@ function App(): JSX.Element {
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       client.close();
     };
-  }, []);
+  }, [loadDashboardBadges]);
 
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
   useEffect(() => {
     const POLL_INTERVAL = 10_000;
+    const SSE_FRESH_FOR = 30_000;
     const timer = window.setInterval(() => {
-      getSessions<SessionRecord>('?include=issues')
-        .then((sessions) => dispatch({ type: 'setSessions', sessions }))
-        .catch(() => undefined);
-      getAuthQueue<AuthRequest>()
-        .then((queue) => dispatch({ type: 'setAuthQueue', queue }))
-        .catch(() => undefined);
-      getAuthHistory<AuthRequest>(200)
-        .then((history) => dispatch({ type: 'setAuthHistory', history }))
-        .catch(() => undefined);
-      // Bug: a2c8d43 — poll issueRepos so the Issues tab refreshes once the
-      // background IssueScanner finishes after a daemon restart. Guard: only
-      // dispatch if the result is non-empty so we never overwrite valid cached
-      // data with an empty list from a cold cache response.
-      getIssueRepos<IssueRepoSummary>()
-        .then((repos) => { if (repos.length > 0) dispatch({ type: 'setIssueRepos', repos }); })
-        .catch(() => undefined);
+      if (Date.now() - lastDashboardSseAtRef.current < SSE_FRESH_FOR) return;
+      void loadVisibleRouteData(route.tab);
+      void loadDashboardBadges();
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
 
   // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
   // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
@@ -1033,7 +991,10 @@ function App(): JSX.Element {
     state.settings,
   ]);
 
-  const badges = useMemo(() => selectBadgeCounts(state), [state]);
+  const badges = useMemo(() => ({
+    ...selectBadgeCounts(state),
+    ...(dashboardBadges ?? {}),
+  }), [dashboardBadges, state]);
   const headerDisplayMode = (state.settings.header_display_mode ?? 'icons') as 'text' | 'icons' | 'both';
   const railDisplayMode = headerDisplayMode === 'both' ? 'both' : 'icons';
 
@@ -1064,6 +1025,7 @@ function App(): JSX.Element {
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
       dispatch({ type: 'authResolved', requestId, status: 'approved' });
+      void loadDashboardBadges();
     } catch (err) {
       // Bug: f690657 — do NOT dispatch a local status change on failure.
       // Dispatching status:'error' made isHistoryStatus() return true, which hid
@@ -1080,6 +1042,7 @@ function App(): JSX.Element {
     try {
       await rejectAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'rejected' });
+      void loadDashboardBadges();
     } catch {
       // Do not set a local error status — the server state is unchanged.
       // The action simply failed; inFlight cleanup in runAction is sufficient.
@@ -1090,6 +1053,7 @@ function App(): JSX.Element {
     try {
       await retryAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'pending' });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1099,6 +1063,7 @@ function App(): JSX.Element {
     try {
       await dismissAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'dismissed' });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1172,6 +1137,7 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
       dispatch({ type: 'ackInboxContinuation', sessionId });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1181,6 +1147,7 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('auth_result', requestId);
       dispatch({ type: 'ackInboxAuthResult', requestId });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1269,6 +1236,7 @@ function App(): JSX.Element {
     try {
       await ackAllInbox();
       dispatch({ type: 'ackAllInboxItems' });
+      void loadDashboardBadges();
     } catch {
       return;
     }

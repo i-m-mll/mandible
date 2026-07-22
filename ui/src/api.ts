@@ -525,6 +525,17 @@ export async function getAuthHistory<T>(limit?: number): Promise<T[]> {
   return normalizeList(payload);
 }
 
+export type DashboardBadgeCounts = {
+  auth: number;
+  inbox: number;
+  work: number;
+};
+
+export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
+  const response = await apiGet('/api/dashboard/badges');
+  return (await response.json()) as DashboardBadgeCounts;
+}
+
 export async function getAuthRequestActions(requestId: string): Promise<AuthRequestAction[]> {
   const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}/actions`);
   const payload = await parseMaybeJson(response);
