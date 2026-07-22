@@ -199,6 +199,46 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM ledger_issues").get()).toEqual({ n: 0 });
   });
 
+  it("snapshots stateful JavaScript attribution exactly once before persistence", () => {
+    const store = new LedgerStore(db);
+    const projectId = createProject();
+    let attributionReads = 0;
+    let userReads = 0;
+    let methodReads = 0;
+    const candidate = {
+      get user_id() {
+        userReads += 1;
+        return userReads === 1 ? SYSTEM_USER_ID : null;
+      },
+      get evidence_method() {
+        methodReads += 1;
+        return methodReads === 1 ? "system_internal" : "forged_after_validation";
+      },
+    };
+    const input = {
+      project_id: projectId,
+      title: "Stateful attribution",
+      get attribution() {
+        attributionReads += 1;
+        return attributionReads === 1 ? candidate : null;
+      },
+    };
+
+    const issue = store.createIssue(input as never);
+    expect(attributionReads).toBe(1);
+    expect(userReads).toBe(1);
+    expect(methodReads).toBe(1);
+    expect(issue.author_user_id).toBe(SYSTEM_USER_ID);
+    expect(issue.evidence_method).toBe("system_internal");
+    expect(store.listEvents({ entity_type: "issue", entity_id: issue.id })[0]).toMatchObject({
+      actor_user_id: SYSTEM_USER_ID,
+      evidence_method: "system_internal",
+    });
+    expect(db.prepare(
+      "SELECT COUNT(*) AS n FROM ledger_events WHERE actor_user_id IS NULL OR evidence_method = 'forged_after_validation'",
+    ).get()).toEqual({ n: 0 });
+  });
+
   it("records an explicit non-system principal in the parallel columns", () => {
     const store = new LedgerStore(db);
     const projectId = createProject();

@@ -254,25 +254,44 @@ export class LedgerStore {
    * `evidence_method` is validated against the locked vocabulary here.
    */
   private resolveActor(input: LedgerActorInput): ResolvedActor {
-    if (!input?.attribution) {
+    const candidate = input?.attribution;
+    if (!candidate) {
       throw new Error("Ledger write requires an explicit attribution context");
     }
     const base = normalizeActor(input);
-    const attribution = input.attribution;
-    assertEvidenceMethod(attribution.evidence_method);
-    if (typeof attribution.user_id !== "string" || !attribution.user_id.trim()) {
+    // Snapshot every caller-controlled primitive once. JavaScript callers may
+    // supply accessors or proxies; validation and persistence must operate on
+    // the same immutable values.
+    const userId = candidate.user_id;
+    const evidenceMethod = candidate.evidence_method;
+    const evidenceId = candidate.evidence_id ?? null;
+    const authorizerUserId = candidate.authorizer_user_id ?? null;
+    assertEvidenceMethod(evidenceMethod);
+    if (typeof userId !== "string" || !userId.trim()) {
       throw new Error("Ledger write requires a non-empty attribution user_id");
     }
-    const user = getUserById(this.db, attribution.user_id);
-    if (!user || user.status !== "active") {
-      throw new Error(`Ledger write attribution user '${attribution.user_id}' is not active`);
+    if (evidenceId !== null && typeof evidenceId !== "string") {
+      throw new Error("Ledger write attribution evidence_id must be a string or null");
     }
+    if (authorizerUserId !== null && typeof authorizerUserId !== "string") {
+      throw new Error("Ledger write attribution authorizer_user_id must be a string or null");
+    }
+    const user = getUserById(this.db, userId);
+    if (!user || user.status !== "active") {
+      throw new Error(`Ledger write attribution user '${userId}' is not active`);
+    }
+    const attribution = {
+      user_id: userId,
+      evidence_method: evidenceMethod,
+      evidence_id: evidenceId,
+      authorizer_user_id: authorizerUserId,
+    };
     return {
       actor_id: base.actor_id,
       actor_type: base.actor_type,
-      actor_user_id: attribution.user_id,
-      evidence_method: attribution.evidence_method,
-      evidence_id: attribution.evidence_id ?? null,
+      actor_user_id: userId,
+      evidence_method: evidenceMethod,
+      evidence_id: evidenceId,
       attribution,
     };
   }

@@ -47,7 +47,7 @@ function main(argv: string[]): number {
             scope: args.scope,
             normalize_all_matches: args.allMatches,
             // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI");
-            // real identity is the system user in the parallel columns (issue 92813cc).
+            // real identity is the local operator in parallel columns (issue 92813cc).
             actor: {
               actor_type: "mandible_user",
               author_display: "Mandible CLI",
