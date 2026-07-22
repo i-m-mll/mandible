@@ -13,6 +13,17 @@ export type Db = Database.Database;
 export { assertMigrationSequence, CURRENT_SCHEMA_VERSION, migrate };
 export type { Migration };
 
+export const SQLITE_COLD_START_TUNING = Object.freeze({
+  // better-sqlite3's bundled SQLite caps mmap just below 2 GiB.
+  mmapSizeBytes: (2 * 1024 * 1024 * 1024) - (64 * 1024),
+  cacheSizeKib: 256 * 1024,
+  tempStore: "MEMORY",
+});
+
+export interface OpenDbOptions {
+  busyTimeoutMs?: number;
+}
+
 const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "mandible");
 const DEFAULT_DB_PATH = path.join(DEFAULT_CACHE_DIR, "mandible.db");
 
@@ -20,7 +31,7 @@ export function getDbPath(): string {
   return process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH;
 }
 
-export function openDb(dbPath: string = getDbPath()): Db {
+export function openDb(dbPath: string = getDbPath(), options: OpenDbOptions = {}): Db {
   // Bug: 727a44b — one-time migration from control-plane to mandible cache dir.
   // If the mandible DB doesn't exist yet but the old control-plane DB does, copy it.
   const shouldAttemptLegacyCopy = !process.env.MANDIBLE_DB && dbPath === DEFAULT_DB_PATH;
@@ -46,9 +57,26 @@ export function openDb(dbPath: string = getDbPath()): Db {
   const db = new Database(dbPath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
+  db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);
+  applyColdStartTuning(db);
   migrate(db);
   return db;
+}
+
+/** Apply optional connection-local performance settings without weakening startup safety. */
+export function applyColdStartTuning(db: Db): void {
+  const pragmas = [
+    `mmap_size = ${SQLITE_COLD_START_TUNING.mmapSizeBytes}`,
+    `cache_size = -${SQLITE_COLD_START_TUNING.cacheSizeKib}`,
+    `temp_store = ${SQLITE_COLD_START_TUNING.tempStore}`,
+  ];
+  for (const pragma of pragmas) {
+    try {
+      db.pragma(pragma);
+    } catch {
+      // These performance hints are optional across SQLite builds and filesystems.
+    }
+  }
 }
 
 // --- Singleton accessor for partition code ---
