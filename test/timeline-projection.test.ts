@@ -56,8 +56,9 @@ describe("project timeline projection", () => {
       display: "Timeline Agent",
       legacy_display: "Mandible",
       attribution: { user: { id: user.id, kind: "agent" }, evidence_method: "session_claim" },
+      source: fixture.issues.rootA.source,
     });
-    expect(comment?.author).toMatchObject({ display: "Timeline Agent" });
+    expect(comment?.author).toMatchObject({ display: "Timeline Agent", source: "mandible" });
   });
 
   it("projects coordination roots on one global time axis without per-row domains", () => {

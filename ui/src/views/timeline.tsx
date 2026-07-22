@@ -2366,6 +2366,7 @@ function TimelineInspector({
                   <AttributionIdentity
                     display={selectedEvent.author.display}
                     attribution={selectedEvent.author.attribution}
+                    source={selectedEvent.author.source}
                   />
                 </dd>
               </div>

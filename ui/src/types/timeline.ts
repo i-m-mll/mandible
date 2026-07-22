@@ -181,6 +181,7 @@ export type TimelineEvent = {
       evidence_id: string | null;
       credential: { id: string; type: string; label: string | null } | null;
     } | null;
+    source: string | null;
   } | null;
   body: string | null;
   state: {

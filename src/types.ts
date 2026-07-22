@@ -482,6 +482,7 @@ export interface TimelineEvent {
     display: string;
     legacy_display: string;
     attribution: AttributionReadProjection | null;
+    source: string | null;
   } | null;
   body: string | null;
   state: {

@@ -20,6 +20,13 @@ export interface AttributionReadProjection {
   credential: ReadCredentialIdentity | null;
 }
 
+export interface AuthAttributionReadFields {
+  requester: ReadUserIdentity | null;
+  approver: ReadUserIdentity | null;
+  execution_evidence: AttributionReadProjection | null;
+  verified_signature: boolean;
+}
+
 interface EvidenceRow {
   id: string;
   evidence_method: string;
@@ -99,4 +106,21 @@ export function resolvedActorDisplay(
   attribution: AttributionReadProjection | null,
 ): string {
   return (attribution?.user?.display_name ?? legacyDisplay) || fallback;
+}
+
+export function authAttributionReadFields(
+  resolver: AttributionReadResolver,
+  request: {
+    requested_by_user_id?: string | null;
+    approved_by_user_id?: string | null;
+    execution_evidence_id?: string | null;
+  },
+): AuthAttributionReadFields {
+  const executionEvidence = resolver.attribution({ evidence_id: request.execution_evidence_id });
+  return {
+    requester: resolver.user(request.requested_by_user_id),
+    approver: resolver.user(request.approved_by_user_id),
+    execution_evidence: executionEvidence,
+    verified_signature: executionEvidence?.evidence_method === "credential_signature",
+  };
 }

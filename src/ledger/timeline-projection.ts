@@ -55,6 +55,7 @@ type CommentRow = {
   created_at: number;
   updated_at: number | null;
   deleted_at: number | null;
+  source: string;
   author_actor_type: string;
   author_display: string;
   author_user_id: string | null;
@@ -642,7 +643,7 @@ function loadTimelineEventIndexes(
 function loadCommentsByIssue(db: Db, projectId: string): Map<string, CommentRow[]> {
   const rows = db.prepare(
     `SELECT c.id, c.issue_id, c.ordinal, c.body, c.created_at, c.updated_at, c.deleted_at,
-            c.author_actor_type, c.author_display, c.author_user_id,
+            c.source, c.author_actor_type, c.author_display, c.author_user_id,
             c.evidence_method, c.evidence_id
        FROM ledger_comments c
        JOIN ledger_issues i ON i.id = c.issue_id
@@ -1037,6 +1038,7 @@ function buildEventsForRow(
         user_id: issue.author_user_id,
         evidence_method: issue.evidence_method,
         evidence_id: issue.evidence_id,
+        source: issue.source,
       }),
       body: issue.body,
       state: null,
@@ -1065,6 +1067,7 @@ function buildEventsForRow(
           user_id: comment.author_user_id,
           evidence_method: comment.evidence_method,
           evidence_id: comment.evidence_id,
+          source: comment.source,
         }),
         body: comment.body,
         state: null,
@@ -1101,6 +1104,7 @@ function buildEventsForRow(
         user_id: event.actor_user_id,
         evidence_method: event.evidence_method,
         evidence_id: event.evidence_id,
+        source: event.source,
       }),
       body: null,
       state: {
@@ -1126,6 +1130,7 @@ function timelineAuthor(
     user_id: string | null;
     evidence_method: string | null;
     evidence_id: string | null;
+    source: string | null;
   },
 ): NonNullable<TimelineEvent["author"]> {
   const attribution = resolver.attribution(input);
@@ -1133,6 +1138,7 @@ function timelineAuthor(
     display: resolvedActorDisplay(input.legacy_display, input.actor_type, attribution),
     legacy_display: input.legacy_display,
     attribution,
+    source: input.source,
   };
 }
 

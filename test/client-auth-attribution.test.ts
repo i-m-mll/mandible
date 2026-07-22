@@ -11,6 +11,7 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
+import type { SseEvent } from "../src/types.js";
 import {
   addAttributionEvidence,
   addBinding,
@@ -28,6 +29,8 @@ describe("client-auth durable attribution", () => {
   let operatorId: string;
   let operatorToken: string;
   let sessionCreate: ReturnType<typeof vi.fn>;
+  let authEvents: SseEvent[];
+  let authQueue: AuthQueue;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-client-auth-attribution-"));
@@ -48,8 +51,10 @@ describe("client-auth durable attribution", () => {
     });
     operatorToken = authenticator.mintApiToken(operator.id).token;
     sessionCreate = vi.fn(() => ({ id: "managed-issue-session" }));
+    authEvents = [];
+    authQueue = new AuthQueue({ db, broadcast: (event) => authEvents.push(event) });
     router = new Router({ clientAuth: authenticator });
-    registerAuthRoutes(router, new AuthQueue({ db }), new AuthAutoApproveManager({ db }));
+    registerAuthRoutes(router, authQueue, new AuthAutoApproveManager({ db }));
     registerIssueRoutes(router, {
       getRepos: () => [],
       getRepoById: () => undefined,
@@ -166,6 +171,12 @@ describe("client-auth durable attribution", () => {
     });
     expect(submitted.status).toBe(201);
     const requestId = (submitted.body as { request_id: string }).request_id;
+    expect(authEvents.find((event) => event.event === "auth:new")?.data).toMatchObject({
+      request: {
+        id: requestId,
+        requester: { id: agent.id, display_name: "Auth Request Agent", kind: "agent" },
+      },
+    });
 
     const denied = await router.invoke({
       method: "POST",
@@ -182,6 +193,12 @@ describe("client-auth durable attribution", () => {
       transport: "http",
     });
     expect(approved.status).toBe(202);
+    expect(authEvents.findLast((event) => event.event === "auth:updated")?.data).toMatchObject({
+      request: {
+        id: requestId,
+        approver: { id: operatorId, display_name: "Operator", kind: "human" },
+      },
+    });
 
     const signingCredential = addCredential(db, operatorId, {
       type: "ssh_key",
@@ -194,6 +211,16 @@ describe("client-auth durable attribution", () => {
     });
     db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
       .run(executionEvidence.id, requestId);
+    authQueue.update(requestId, { title: "Attributed auth request with signature" });
+    expect(authEvents.findLast((event) => event.event === "auth:updated")?.data).toMatchObject({
+      request: {
+        execution_evidence: {
+          evidence_method: "credential_signature",
+          credential: { id: signingCredential.id, label: "Operator signing key" },
+        },
+        verified_signature: true,
+      },
+    });
 
     const detail = await router.invoke({
       method: "GET",
