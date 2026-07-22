@@ -14,6 +14,7 @@ import {
   resolveUserOrThrow,
   revokeCredential,
   setupOperator,
+  setupAgentUsers,
   updateUser,
   UserRegistryError,
 } from "../users/store.js";
@@ -95,17 +96,21 @@ export function registerUserRoutes(
       // authenticated token; generic settings can never reassign it.
       if (getOperatorId(db) !== null) requireOperator(db, req);
       const body = bodyRecord(req);
-      const user = setupOperator(db, {
-        slug: optionalString(body, "slug"),
-        display_name: optionalString(body, "display_name"),
-        email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,
-        metadata: optionalMetadata(body),
-      });
+      const setupAgents = body.setup_agents === true;
+      const { user, agents } = db.transaction(() => {
+        const user = setupOperator(db, {
+          slug: optionalString(body, "slug"),
+          display_name: optionalString(body, "display_name"),
+          email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,
+          metadata: optionalMetadata(body),
+        });
+        return { user, agents: setupAgents ? setupAgentUsers(db) : [] };
+      })();
       // First setup happens after ClientAuthenticator construction. Publish the
       // new same-user bootstrap credential immediately so subsequent protected
       // setup/token/dashboard enrollment calls do not require a daemon restart.
       authenticator?.refreshBootstrapTokenFile();
-      sendJson(res, 200, { user });
+      sendJson(res, 200, { user, agents });
     } catch (error) {
       handleError(res, error);
     }

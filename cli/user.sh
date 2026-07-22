@@ -31,7 +31,7 @@ die() { err "$1"; exit "${2:-1}"; }
 usage() {
   cat <<'EOF'
 Usage:
-  mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--json]
+  mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]
   mandible user dashboard-link
   mandible user list [--kind <k>] [--status <s>] [--json]
   mandible user show <ref> [--json]
@@ -47,6 +47,8 @@ Usage:
   mandible user binding list <ref> [--json]
 
 Setup is idempotent and is the only way the local human operator is created.
+--agents deliberately provisions the claude-code, codex, and gemini users,
+their app and provider-session-environment bindings.
 Defaults for --name/--email come from git config user.name / user.email.
 Credentials are immutable: revoke then add, never mutate a fingerprint. No
 private key material is ever accepted.
@@ -77,12 +79,13 @@ git_config_value() {
 }
 
 cmd_setup() {
-  local slug="" name="" email="" json=0 email_set=0
+  local slug="" name="" email="" json=0 email_set=0 agents=0
   while (( $# > 0 )); do
     case "$1" in
       --slug)  slug="$2"; shift 2 ;;
       --name)  name="$2"; shift 2 ;;
       --email) email="$2"; email_set=1; shift 2 ;;
+      --agents) agents=1; shift ;;
       --json)  json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) die "Unexpected argument: $1" 2 ;;
@@ -96,12 +99,15 @@ cmd_setup() {
   local payload response
   payload="$(jq -n \
     --arg slug "$slug" --arg name "$name" --arg email "$email" \
+    --argjson agents "$agents" \
     '{}
      + (if $slug == "" then {} else {slug:$slug} end)
      + (if $name == "" then {} else {display_name:$name} end)
-     + (if $email == "" then {} else {email:$email} end)')"
+     + (if $email == "" then {} else {email:$email} end)
+     + (if $agents == 1 then {setup_agents:true} else {} end)')"
   response="$(api_send POST "/api/users/setup" "$payload")" || die "${RED}Setup failed.${RESET}" 1
   err "${GREEN}Operator ready.${RESET}"
+  (( agents == 0 )) || err "${GREEN}Agent users ready.${RESET}"
   emit "$response" "$json" '.user | "id: \(.id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
 }
 

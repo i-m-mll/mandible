@@ -195,8 +195,8 @@
       "description": "Guarded registry normalization: backfill keys and optionally merge duplicate projects (dry run unless --apply)."
     },
     {
-      "name": "mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--json]",
-      "description": "Idempotently create or update the local human operator and record its user id in settings; defaults for name/email come from git config. This is the only way the operator is created; migrations never prompt."
+      "name": "mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]",
+      "description": "Idempotently create or update the local human operator and record its user id in settings; --agents deliberately provisions the built-in agent users and bindings. Migrations never create either the operator or agent users."
     },
     {
       "name": "mandible user list [--kind <k>] [--status <s>] [--json]",

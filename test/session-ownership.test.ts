@@ -1,0 +1,178 @@
+import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity.js";
+import { migrate, setDb, type Db } from "../src/db.js";
+import { SessionRegistry } from "../src/registry.js";
+import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
+import { registerUserRoutes } from "../src/routes/users.js";
+import { Router } from "../src/server.js";
+import { SessionManager } from "../src/session-manager.js";
+import {
+  addBinding,
+  createUser,
+  getUserBySlug,
+  listBindings,
+  listUsers,
+  setupAgentUsers,
+  setupOperator,
+} from "../src/users/store.js";
+
+describe("session and work-unit ownership", () => {
+  let db: Db;
+
+  beforeEach(() => {
+    db = new Database(":memory:");
+    migrate(db);
+    setDb(db);
+  });
+
+  afterEach(() => db.close());
+
+  function owner(table: string, id: string): string | null {
+    return (db.prepare(`SELECT owner_user_id FROM ${table} WHERE id = ?`).get(id) as {
+      owner_user_id: string | null;
+    }).owner_user_id;
+  }
+
+  it("deliberately provisions agent users and bindings idempotently", () => {
+    const first = setupAgentUsers(db, 1);
+    const second = setupAgentUsers(db, 2);
+
+    expect(first.map((user) => user.id)).toEqual(second.map((user) => user.id));
+    expect(listUsers(db, { kind: "agent" }).map((user) => user.slug)).toEqual([
+      "claude-code",
+      "codex",
+      "gemini",
+    ]);
+    expect(listBindings(db, "claude-code").map((binding) =>
+      `${binding.binding_type}:${binding.value}`,
+    )).toEqual([
+      "app_name:claude",
+      "app_name:claude-code",
+      "app_name:claude-channel",
+      "provider_session_env:CLAUDE_CODE_SESSION_ID",
+      "provider_session_env:CLAUDE_SESSION_ID",
+    ]);
+  });
+
+  it("exposes deliberate agent provisioning through user setup", async () => {
+    const router = new Router();
+    registerUserRoutes(router);
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/users/setup",
+      body: { slug: "operator", display_name: "Operator", setup_agents: true },
+    });
+
+    expect(response.status).toBe(200);
+    expect((response.body as { agents: Array<{ slug: string }> }).agents.map((agent) => agent.slug))
+      .toEqual(["claude-code", "codex", "gemini"]);
+  });
+
+  it("binds registry, channel, and discovery app registrations and fails conflicts closed", () => {
+    setupAgentUsers(db);
+    const logger = vi.fn();
+    const registry = new SessionRegistry(db, logger);
+    const codex = getUserBySlug(db, "codex")!;
+    const claude = getUserBySlug(db, "claude-code")!;
+    const gemini = getUserBySlug(db, "gemini")!;
+
+    registry.registerSession({ id: "registry-codex", app: "codex" });
+    registry.registerSession({ id: "channel-claude", app: "claude-channel" });
+    registry.registerSession({ id: "discovered-gemini", app: "gemini" });
+    expect(owner("sessions", "registry-codex")).toBe(codex.id);
+    expect(owner("sessions", "channel-claude")).toBe(claude.id);
+    expect(owner("sessions", "discovered-gemini")).toBe(gemini.id);
+
+    const worker = createUser(db, {
+      slug: "worker-owner",
+      kind: "agent",
+      display_name: "Worker Owner",
+    });
+    addBinding(db, worker.id, { binding_type: "app_name", value: "worker" });
+    registry.registerSession({ id: "conflict", app: "codex", agent_type: "worker" });
+    expect(owner("sessions", "conflict")).toBeNull();
+    expect(logger).toHaveBeenCalledWith(
+      "warn",
+      "session_owner_binding_unresolved",
+      expect.objectContaining({ source: "session_registry", status: "conflict" }),
+    );
+  });
+
+  it("leaves unmatched registrations NULL and logs each signal set once", () => {
+    const logger = vi.fn();
+    const registry = new SessionRegistry(db, logger);
+    registry.registerSession({ id: "unknown-1", app: "unknown-agent" });
+    registry.registerSession({ id: "unknown-2", app: "unknown-agent" });
+
+    expect(owner("sessions", "unknown-1")).toBeNull();
+    expect(owner("sessions", "unknown-2")).toBeNull();
+    expect(logger).toHaveBeenCalledTimes(1);
+  });
+
+  it("pins console ownership at creation and assigns operator consoles to the operator", () => {
+    setupAgentUsers(db);
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    const codex = getUserBySlug(db, "codex")!;
+    const manager = new SessionManager(db, () => undefined);
+    try {
+      const consoleSession = manager.create({
+        label: "Codex",
+        command: "codex",
+        backend_type: "spawn",
+      });
+      manager.startOperator();
+      const operatorSession = manager.getAll().find((backend) => backend.meta.is_operator)!.meta;
+
+      expect(owner("console_sessions", consoleSession.id)).toBe(codex.id);
+      expect(owner("console_sessions", operatorSession.id)).toBe(operator.id);
+    } finally {
+      manager.close();
+    }
+  });
+
+  it("pins work-unit ownership independently of mutable provider metadata", async () => {
+    setupAgentUsers(db);
+    const codex = getUserBySlug(db, "codex")!;
+    const router = new Router();
+    registerWorkUnitRoutes(router, {} as never, {} as never, vi.fn());
+
+    const claim = await router.invoke({
+      method: "POST",
+      url: "/api/work-units/claim",
+      ambient_identity: { provider: "codex", provider_session_id: "codex-thread-1" },
+      body: { issue_id: "ownership-issue", repo_id: "mandible", branch: "feature/owner" },
+    });
+    const id = (claim.body as { id: string }).id;
+    expect(owner("work_units", id)).toBe(codex.id);
+
+    await router.invoke({
+      method: "POST",
+      url: "/api/work-units/activate",
+      ambient_identity: { provider: "claude", provider_session_id: "replacement-thread" },
+      body: { issue_id: "ownership-issue", repo_id: "mandible", branch: "feature/owner" },
+    });
+    expect(db.prepare(
+      "SELECT owner_user_id, provider_session_id FROM work_units WHERE id = ?",
+    ).get(id)).toEqual({
+      owner_user_id: codex.id,
+      provider_session_id: "replacement-thread",
+    });
+  });
+
+  it("recognizes Codex, Claude, and Gemini ambient provider descriptors", () => {
+    expect(resolveAmbientProviderIdentity({ CODEX_THREAD_ID: "codex-1" })).toEqual({
+      provider: "codex",
+      provider_session_id: "codex-1",
+    });
+    expect(resolveAmbientProviderIdentity({ CLAUDE_CODE_SESSION_ID: "claude-1" })).toEqual({
+      provider: "claude",
+      provider_session_id: "claude-1",
+    });
+    expect(resolveAmbientProviderIdentity({ GEMINI_SESSION_ID: "gemini-1" })).toEqual({
+      provider: "gemini",
+      provider_session_id: "gemini-1",
+    });
+  });
+});

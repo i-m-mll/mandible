@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
 import { ulid } from "./ids.js";
 import {
   BINDING_TYPES,
@@ -756,6 +757,91 @@ export function setupOperator(
   }
   setSetting(db, OPERATOR_SETTING_KEY, user.id, now);
   return user;
+}
+
+const AGENT_SETUP_MANIFEST = [
+  {
+    slug: "claude-code",
+    display_name: "Claude Code",
+    provider: "claude",
+    app_names: ["claude", "claude-code", "claude-channel"],
+  },
+  {
+    slug: "codex",
+    display_name: "Codex",
+    provider: "codex",
+    app_names: ["codex"],
+  },
+  {
+    slug: "gemini",
+    display_name: "Gemini",
+    provider: "gemini",
+    app_names: ["gemini"],
+  },
+] as const;
+
+/** Deliberately provision the built-in agent users and claimed bindings. */
+export function setupAgentUsers(
+  db: Db,
+  now: number = Date.now(),
+): User[] {
+  return db.transaction(() => AGENT_SETUP_MANIFEST.map((definition) => {
+    let user = getUserBySlug(db, definition.slug);
+    if (user && user.kind !== "agent") {
+      throw new UserRegistryError(
+        "conflict",
+        `User '${definition.slug}' is kind '${user.kind}', not 'agent'; cannot provision it.`,
+      );
+    }
+    if (!user) {
+      user = createUser(db, {
+        slug: definition.slug,
+        kind: "agent",
+        display_name: definition.display_name,
+      }, now);
+    }
+    for (const appName of definition.app_names) {
+      ensureActiveBinding(db, user.id, "app_name", appName, now);
+    }
+    for (const providerSessionEnv of providerSessionEnvBindingValues(definition.provider)) {
+      ensureActiveBinding(db, user.id, "provider_session_env", providerSessionEnv, now);
+    }
+    return user;
+  }))();
+}
+
+function ensureActiveBinding(
+  db: Db,
+  userId: string,
+  bindingType: UserBinding["binding_type"],
+  value: string,
+  now: number,
+): void {
+  const active = db.prepare(
+    `SELECT id, user_id FROM user_bindings
+      WHERE binding_type = ? AND value = ? AND scope IS NULL AND status = 'active'
+      LIMIT 1`,
+  ).get(bindingType, value) as { id: string; user_id: string } | undefined;
+  if (active) {
+    if (active.user_id !== userId) {
+      throw new UserRegistryError(
+        "conflict",
+        `Binding '${bindingType}=${value}' already belongs to another active user.`,
+      );
+    }
+    return;
+  }
+  const inactive = db.prepare(
+    `SELECT id FROM user_bindings
+      WHERE user_id = ? AND binding_type = ? AND value = ? AND scope IS NULL AND status = 'inactive'
+      ORDER BY updated_at DESC LIMIT 1`,
+  ).get(userId, bindingType, value) as { id: string } | undefined;
+  if (inactive) {
+    db.prepare("UPDATE user_bindings SET status = 'active', updated_at = ? WHERE id = ?")
+      .run(now, inactive.id);
+    return;
+  }
+  addBinding(db, userId, { binding_type: bindingType, value }, now);
 }
 
 // --- read helpers for downstream waves (leases / evidence) ---

@@ -3049,6 +3049,14 @@ export const MIGRATIONS: readonly Migration[] = [
     // Guarded by ensureAuthRequestUserAttributionColumns() so schema-rewind
     // tests and interrupted upgrades can safely re-enter v109.
     statements: []
+  },
+  {
+    version: 110,
+    name: "session_work_unit_ownership",
+    // Umbrella 8e2e8b2 / issue e552606 — immutable, nullable user ownership
+    // captured when sessions, console sessions, and work units are registered.
+    // Legacy rows stay NULL; migrations never infer or create a user.
+    statements: []
   }
 ];
 
@@ -3125,6 +3133,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 109) {
         ensureAuthRequestUserAttributionColumns(db);
+      }
+      if (migration.version === 110) {
+        ensureSessionOwnershipColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5676,6 +5687,21 @@ function ensureAuthRequestUserAttributionColumns(db: Db): void {
     ON auth_requests(approved_by_user_id) WHERE approved_by_user_id IS NOT NULL`);
   db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_execution_evidence
     ON auth_requests(execution_evidence_id) WHERE execution_evidence_id IS NOT NULL`);
+}
+
+// Umbrella 8e2e8b2 / issue e552606 (migration 110): guarded ownership columns.
+// These are write-time identity facts, separate from mutable liveness and
+// provider/session mechanism bookkeeping.
+function ensureSessionOwnershipColumns(db: Db): void {
+  for (const table of ["sessions", "console_sessions", "work_units"]) {
+    if (!tableExists(db, table)) continue;
+    if (!tableColumnNames(db, table).has("owner_user_id")) {
+      db.exec(
+        `ALTER TABLE ${table} ADD COLUMN owner_user_id
+          TEXT REFERENCES users(id) ON DELETE SET NULL`,
+      );
+    }
+  }
 }
 
 function ensureBranchReapingKnowledgeColumns(db: Db): void {
