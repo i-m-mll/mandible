@@ -199,7 +199,7 @@ export function normalizeEscapedMarkdownBodies(
   const actor: LedgerActorInput = options.actor ?? {
     actor_type: "system",
     author_display: "Mandible",
-    attribution: systemAction("markdown_normalize"),
+    attribution: systemAction(),
   };
   const eventIds: string[] = [];
   let normalized = 0;

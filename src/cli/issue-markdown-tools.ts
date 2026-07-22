@@ -45,10 +45,12 @@ function main(argv: string[]): number {
         apply: args.apply,
         scope: args.scope,
         normalize_all_matches: args.allMatches,
+        // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI");
+        // real identity is the system user in the parallel columns (issue 92813cc).
         actor: {
-          actor_type: "system",
+          actor_type: "mandible_user",
           author_display: "Mandible CLI",
-          attribution: systemAction("markdown_normalize_cli"),
+          attribution: systemAction(),
         },
       });
       printResult(result, args.json);

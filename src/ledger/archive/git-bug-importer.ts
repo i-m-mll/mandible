@@ -114,6 +114,16 @@ function importIssueDetail(
     issueId = resolved.ok ? resolved.id : null;
   }
 
+  // Mint (or reuse) an external-kind shadow user keyed by adapter + project +
+  // normalized author name so every imported write is attributed rather than
+  // anonymous (umbrella 8e2e8b2 / issue 92813cc). The raw display name is
+  // preserved. Reused across the issue's create/patch and its label writes.
+  const issueActor = shadowImportActor(db, {
+    adapter: "git_bug",
+    project_id: projectId,
+    author_name: detail.author_name,
+  });
+
   let created = false;
   let updated = false;
   if (!issueId) {
@@ -125,14 +135,7 @@ function importIssueDetail(
       status: detail.status,
       resolution: detail.status === "closed" && detail.labels.includes("merged") ? "merged" : null,
       source: "git_bug",
-      // Mint (or reuse) an external-kind shadow user keyed by adapter + project
-      // + raw author name so new imports are attributed rather than anonymous
-      // (umbrella 8e2e8b2 / issue 92813cc). The raw display name is preserved.
-      ...shadowImportActor(db, {
-        adapter: "git_bug",
-        project_id: projectId,
-        author_name: detail.author_name,
-      }),
+      ...issueActor,
       created_at: parseGitBugTime(detail.created_at) ?? Date.now(),
       aliases: [
         ...(externalId !== fullId ? [{ alias_kind: "git_bug_legacy", alias: externalId, external_id: externalId, source: "git_bug" }] : []),
@@ -148,7 +151,7 @@ function importIssueDetail(
       resolution: detail.status === "closed" && detail.labels.includes("merged") ? "merged" : null,
       closed_at: detail.status === "closed" ? Date.now() : null,
       author_display: detail.author_name,
-    }, "git_bug");
+    }, "git_bug", issueActor);
     updated = patch.changed;
   }
 
@@ -167,7 +170,7 @@ function importIssueDetail(
 
   let labels = 0;
   for (const label of detail.labels) {
-    const before = store.setLabel(issueId, label, true, "git_bug");
+    const before = store.setLabel(issueId, label, true, "git_bug", issueActor);
     if (before.changed) labels++;
   }
 
@@ -181,13 +184,20 @@ function importIssueDetail(
       external_kind: "git_bug_comment",
       external_id: commentExternalId,
     });
+    const commentActor = shadowImportActor(db, {
+      adapter: "git_bug",
+      project_id: projectId,
+      author_name: comment.author_name,
+    });
     if (existingCommentRef) {
       const patched = store.applyImportedCommentPatch(existingCommentRef.entity_id, {
         body: comment.body,
         author_display: comment.author_name,
       }, "git_bug", {
+        // Legacy tuple frozen to base ('external_adapter'); shadow user in the
+        // parallel columns (issue 92813cc).
         actor_type: "external_adapter",
-        author_display: comment.author_name,
+        ...commentActor,
       });
       store.recordExternalRef({
         entity_type: "comment",
@@ -207,11 +217,7 @@ function importIssueDetail(
       id: isSha256Hex(comment.id) ? comment.id : undefined,
       body: comment.body,
       source: "git_bug",
-      ...shadowImportActor(db, {
-        adapter: "git_bug",
-        project_id: projectId,
-        author_name: comment.author_name,
-      }),
+      ...commentActor,
       created_at: parseGitBugTime(comment.created_at) ?? Date.now(),
     });
     store.recordExternalRef({

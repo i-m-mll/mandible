@@ -297,6 +297,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX sessions_nav_metadata_idx\n        ON sessions(nav_metadata_status, nav_metadata_next_retry_at)",
   "CREATE INDEX sessions_parent_idx ON sessions(parent_id)",
   "CREATE INDEX sessions_status_idx ON sessions(status)",
+  "CREATE UNIQUE INDEX uq_user_bindings_active_scoped\n        ON user_bindings(binding_type, value, scope)\n        WHERE status = 'active' AND scope IS NOT NULL",
+  "CREATE UNIQUE INDEX uq_user_bindings_active_unscoped\n        ON user_bindings(binding_type, value)\n        WHERE status = 'active' AND scope IS NULL",
   "CREATE INDEX work_repos_excluded_idx ON work_repos(excluded)",
   "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
   "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",

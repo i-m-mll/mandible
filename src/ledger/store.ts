@@ -10,8 +10,8 @@ import {
   createStableIssueId,
 } from "./ids.js";
 import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
-import { getUserById, SYSTEM_USER_ID } from "../users/store.js";
-import { projectActorType } from "../identity/resolver.js";
+import { SYSTEM_USER_ID } from "../users/store.js";
+import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -241,27 +241,26 @@ export class LedgerStore {
 
   /**
    * Resolve a write actor's legacy provenance and parallel user-attribution
-   * columns. When `attribution` is present the parallel `*_user_id` columns are
-   * populated and `actor_type` is written as the centralized lossy projection of
-   * the acting user's kind (never an authorization input). When it is absent
-   * only the legacy columns are written and `actor_user_id` stays null.
+   * columns (umbrella 8e2e8b2 / issue 92813cc).
+   *
+   * The legacy `actor_id`/`actor_type` tuple is FROZEN — it is exactly what the
+   * caller passed (or the historical `external_adapter` default). It is hashed
+   * into stable ids, so this lane never changes it and never derives it from the
+   * user's kind.
+   *
+   * The parallel `*_user_id`/evidence columns carry the real identity. A write
+   * that supplies no attribution is still attributed to the seeded `system` user
+   * via `systemAction()` — a NULL user_id is reachable only for pre-migration
+   * rows, never from a new write. `evidence_method` is validated against the
+   * locked vocabulary at this boundary.
    */
   private resolveActor(input: LedgerActorInput): ResolvedActor {
     const base = normalizeActor(input);
-    const attribution = input.attribution;
-    if (!attribution) {
-      return {
-        actor_id: base.actor_id,
-        actor_type: base.actor_type,
-        actor_user_id: null,
-        evidence_method: null,
-        evidence_id: null,
-      };
-    }
-    const user = getUserById(this.db, attribution.user_id);
+    const attribution = input.attribution ?? systemAction();
+    assertEvidenceMethod(attribution.evidence_method);
     return {
       actor_id: base.actor_id,
-      actor_type: user ? projectActorType(user.kind) : base.actor_type,
+      actor_type: base.actor_type,
       actor_user_id: attribution.user_id,
       evidence_method: attribution.evidence_method,
       evidence_id: attribution.evidence_id ?? null,
@@ -1809,7 +1808,7 @@ export class LedgerStore {
         actor_id: null,
         actor_type: "system",
         actor_user_id: SYSTEM_USER_ID,
-        evidence_method: "system_action",
+        evidence_method: "system_internal",
         evidence_id: null,
         source,
         payload: { external_ref_id: ref.id, entity_type: input.entity_type, entity_id: input.entity_id },
@@ -1886,7 +1885,7 @@ export class LedgerStore {
         actor_id: null,
         actor_type: "system",
         actor_user_id: SYSTEM_USER_ID,
-        evidence_method: "system_action",
+        evidence_method: "system_internal",
         evidence_id: null,
         source,
         payload: { conflict_id: id, entity_type: input.entity_type, entity_id: input.entity_id },
@@ -1966,7 +1965,7 @@ export class LedgerStore {
         actor_id: null,
         actor_type: "system",
         actor_user_id: SYSTEM_USER_ID,
-        evidence_method: "system_action",
+        evidence_method: "system_internal",
         evidence_id: null,
         source: "system",
         payload: { outbox_id: id, status },

@@ -343,7 +343,7 @@ export function applyAuthRequestLedgerCompletion(
       entity_id: input.auth_request_id,
       event_type: "auth_request.completed",
       actor_type: "system",
-      attribution: systemAction("auth_queue"),
+      attribution: systemAction(),
       source: "auth_queue",
       project_id: issue.project_id,
       enqueueOutbox: false,
@@ -365,7 +365,7 @@ export function applyAuthRequestLedgerCompletion(
       {
         actor_type: "system",
         actor_id: input.approval_lease_id ?? null,
-        attribution: systemAction("auth_queue"),
+        attribution: systemAction(),
       },
     );
     if (mergeSha) {
@@ -383,7 +383,7 @@ export function applyAuthRequestLedgerCompletion(
       {
         actor_type: "system",
         actor_id: input.approval_lease_id ?? null,
-        attribution: systemAction("auth_queue"),
+        attribution: systemAction(),
       },
       "auth_queue",
     );

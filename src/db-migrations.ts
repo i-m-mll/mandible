@@ -3025,7 +3025,19 @@ export const MIGRATIONS: readonly Migration[] = [
     // partial indexes (IF NOT EXISTS) only for tables that exist. Keeping the
     // index creation inside the hook lets a synthetic partial-schema upgrade
     // (e.g. an auth-only fixture DB with no ledger_* tables) migrate cleanly.
-    statements: []
+    //
+    // Also enforce at most one ACTIVE user_bindings row per (binding_type,
+    // value, scope) so a binding value resolves to a single user (used by shadow
+    // import minting and session-binding resolution). SQLite treats NULLs as
+    // distinct in unique indexes, so scope IS NULL needs its own partial index.
+    statements: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_user_bindings_active_scoped
+        ON user_bindings(binding_type, value, scope)
+        WHERE status = 'active' AND scope IS NOT NULL`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_user_bindings_active_unscoped
+        ON user_bindings(binding_type, value)
+        WHERE status = 'active' AND scope IS NULL`
+    ]
   }
 ];
 
