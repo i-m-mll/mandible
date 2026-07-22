@@ -1,4 +1,9 @@
-import { SSEClient, type SSEHandler, type SseStateHandler } from './sse-client';
+import {
+  SSEClient,
+  type SSEHandler,
+  type SseConnectionState,
+  type SseStateHandler,
+} from './sse-client';
 
 /**
  * A ref-counted handle onto the process-wide singleton {@link SSEClient}.
@@ -15,11 +20,29 @@ export type SseHandle = {
   on(type: string, handler: SSEHandler): () => void;
   /** Observe connection-state transitions (reconnect resync hook). */
   onState(handler: SseStateHandler): () => void;
+  /** Current connection-state of the shared client (poll-gate freshness). */
+  getState(): SseConnectionState;
   /** Ensure the shared client is connected. Idempotent. */
   connect(): void;
   /** Release this handle: detach its handlers and decrement the refcount. Idempotent. */
   close(): void;
 };
+
+/**
+ * Fallback-poll gate: the heavy periodic refetch is skipped only while the
+ * shared SSE socket is `open` AND a server signal (event or heartbeat) arrived
+ * within `freshForMs`. A non-open socket, or heartbeat silence beyond the
+ * window (default three 15 s intervals), re-enables the poll so a silently
+ * wedged stream cannot leave the dashboard stale.
+ */
+export function shouldSkipFallbackPoll(
+  state: SseConnectionState,
+  lastSignalAt: number,
+  now: number,
+  freshForMs = 45_000,
+): boolean {
+  return state === 'open' && now - lastSignalAt < freshForMs;
+}
 
 let sharedClient: SSEClient | null = null;
 let refCount = 0;
@@ -88,6 +111,9 @@ export function acquireSharedSse(): SseHandle {
     },
     onState(handler) {
       return track(client.onState(handler));
+    },
+    getState() {
+      return client.getState();
     },
     connect() {
       client.connect();

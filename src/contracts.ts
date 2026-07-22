@@ -52,6 +52,7 @@ export type MandibleEventType =
   | "conversation:new"
   | "conversation:updated"
   | "daemon:reloaded"
+  | "heartbeat"
   | "mandible:rebuilding"
   | "preset:created"
   | "preset:updated"

@@ -1,6 +1,6 @@
 import { EventEmitter } from "node:events";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SseManager, broadcastSpaceEvent, setSseManager } from "../src/sse.js";
 import { SPACE_EVENTS } from "../src/spaces/events.js";
 
@@ -68,6 +68,46 @@ describe("SseManager lifecycle", () => {
 
     expect(manager.count()).toBe(0);
     expect(res.destroyed).toBe(true);
+  });
+});
+
+describe("SseManager heartbeat", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function parsePayloads(res: FakeResponse): SSEEnvelope[] {
+    return res.writes
+      .filter((p) => p.startsWith("data: "))
+      .map((p) => JSON.parse(p.slice("data: ".length).trim()) as SSEEnvelope);
+  }
+
+  it("broadcasts a heartbeat data event to unfiltered clients and only the comment to topic-filtered clients", () => {
+    vi.useFakeTimers();
+    const manager = new SseManager();
+
+    const openReq = makeRequest();
+    const openRes = makeResponse();
+    manager.addClient(openReq, openRes, []); // unfiltered dashboard client
+
+    const topicReq = makeRequest();
+    const topicRes = makeResponse();
+    manager.addClient(topicReq, topicRes, ["auth:"]); // topic-filtered client
+
+    manager.startHeartbeat(15_000);
+    vi.advanceTimersByTime(15_000);
+
+    // Unfiltered client receives the heartbeat data event.
+    const openEvents = parsePayloads(openRes);
+    const heartbeat = openEvents.find((e) => e.type === "heartbeat");
+    expect(heartbeat).toBeDefined();
+    expect(typeof heartbeat?.timestamp).toBe("string");
+
+    // Topic-filtered client gets only the keep-alive comment, never the event.
+    expect(parsePayloads(topicRes).some((e) => e.type === "heartbeat")).toBe(false);
+    expect(topicRes.writes.some((p) => p.startsWith(": heartbeat"))).toBe(true);
+
+    manager.closeAll();
   });
 });
 

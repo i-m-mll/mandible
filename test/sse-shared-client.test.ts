@@ -204,6 +204,22 @@ describe('shared SSE client', () => {
     expect(errorSpy).toHaveBeenCalled();
   });
 
+  it('exposes the live connection state through the handle getState()', () => {
+    vi.useFakeTimers();
+    const a = acquireSharedSse();
+    expect(a.getState()).toBe('idle');
+    a.connect();
+    expect(a.getState()).toBe('connecting');
+    const es = FakeEventSource.instances[0];
+    es.open();
+    expect(a.getState()).toBe('open');
+    es.error(); // terminal drop -> down + backoff
+    expect(a.getState()).toBe('down');
+    vi.advanceTimersByTime(500); // reconnect attempt
+    FakeEventSource.instances[1].open();
+    expect(a.getState()).toBe('open');
+  });
+
   it('dispatches exact handlers before wildcard handlers, each in registration order', () => {
     const a = acquireSharedSse();
     const order: string[] = [];

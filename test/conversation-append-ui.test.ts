@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { applyConversationAppendPayload } from "../ui/src/chat/conversationAppend";
+import {
+  applyConversationAppendPayload,
+  mergeConversationSummaryIntoList,
+} from "../ui/src/chat/conversationAppend";
 import type { Conversation, ConversationBlock, ConversationChild } from "../ui/src/api";
 
 function conversation(blocks: ConversationBlock[]): Conversation & {
@@ -83,5 +86,61 @@ describe("conversation append SSE merge", () => {
     });
 
     expect(next).toBeNull();
+  });
+});
+
+describe("sidebar conversation summary merge", () => {
+  function listRow(id: string, blockCount: number, title = "Session"): Conversation {
+    return { ...conversation([]), id, block_count: blockCount, title };
+  }
+
+  it("merges a newer summary in place with monotonic block_count", () => {
+    const list = [listRow("conv-1", 3, "Old"), listRow("conv-2", 5)];
+    const result = mergeConversationSummaryIntoList(list, {
+      id: "conv-1",
+      title: "New",
+      block_count: 4,
+    });
+
+    expect(result.applied).toBe(true);
+    expect(result.refetch).toBe(false);
+    expect(result.conversations).not.toBe(list); // new array
+    expect(result.conversations[0].block_count).toBe(4);
+    expect(result.conversations[0].title).toBe("New");
+    expect(result.conversations[1]).toBe(list[1]); // untouched
+  });
+
+  it("rejects a stale (regressed block_count) summary without refetching", () => {
+    const list = [listRow("conv-1", 5)];
+    const result = mergeConversationSummaryIntoList(list, {
+      id: "conv-1",
+      block_count: 3,
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.refetch).toBe(false);
+    expect(result.conversations).toBe(list); // unchanged reference
+  });
+
+  it("signals refetch for an unknown conversation id", () => {
+    const list = [listRow("conv-1", 5)];
+    const result = mergeConversationSummaryIntoList(list, {
+      id: "conv-99",
+      block_count: 2,
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.refetch).toBe(true);
+  });
+
+  it("signals refetch when the summary carries no block_count anchor", () => {
+    const list = [listRow("conv-1", 5)];
+    const result = mergeConversationSummaryIntoList(list, {
+      id: "conv-1",
+      title: "Renamed",
+    });
+
+    expect(result.applied).toBe(false);
+    expect(result.refetch).toBe(true);
   });
 });

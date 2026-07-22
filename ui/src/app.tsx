@@ -30,8 +30,8 @@ import {
   type InstanceInfo,
   type DashboardBadgeCounts,
 } from './api';
-import type { SSEPayload } from './sse-client';
-import { acquireSharedSse } from './sse-shared';
+import type { SSEPayload, SseConnectionState } from './sse-client';
+import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -518,6 +518,12 @@ function App(): JSX.Element {
   const [themeModeSaving, setThemeModeSaving] = useState(false);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
   const lastDashboardSseAtRef = useRef(0);
+  // Current shared-SSE connection state, updated from onState, so the fallback
+  // poll can gate on connection health rather than last-event receipt.
+  const sseStateRef = useRef<SseConnectionState>('idle');
+  // Set when a graph-affecting event arrives while the graph tab is hidden or
+  // inactive; the graph-activation effect flushes it on activation/visibility.
+  const graphDirtyRef = useRef(false);
   // Latest values for the SSE reconnect-resync closure, so the shared-SSE
   // effect need not re-run (and re-register handlers) on every route change.
   const routeTabRef = useRef(route.tab);
@@ -789,11 +795,60 @@ function App(): JSX.Element {
   // events arrive before we are ready to dispatch them.
   useEffect(() => {
     const client = acquireSharedSse();
+    // Coalesced badge refresh: an event burst schedules exactly one trailing
+    // fetch instead of one per event. Reconnect resync still fetches immediately.
+    let badgeTimer: number | null = null;
+    const scheduleBadgeRefresh = () => {
+      if (badgeTimer !== null) return;
+      badgeTimer = window.setTimeout(() => {
+        badgeTimer = null;
+        void loadDashboardBadges();
+      }, 500);
+    };
+    // Coalesced graph-token bump while the graph tab is active and visible.
+    let graphTokenTimer: number | null = null;
+    const scheduleGraphBump = () => {
+      if (graphTokenTimer !== null) return;
+      graphTokenTimer = window.setTimeout(() => {
+        graphTokenTimer = null;
+        setGraphRefreshToken((n) => n + 1);
+      }, 300);
+    };
+    // Coalesced issues-list refetch while the issues tab is active.
+    let issuesRefreshTimer: number | null = null;
+    const scheduleIssuesRefresh = () => {
+      if (issuesRefreshTimer !== null) return;
+      issuesRefreshTimer = window.setTimeout(() => {
+        issuesRefreshTimer = null;
+        void loadVisibleRouteDataRef.current('issues');
+      }, 1000);
+    };
     const handler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
-      void loadDashboardBadges();
+      scheduleBadgeRefresh();
+    };
+    // Heartbeat: liveness signal only — bump freshness, never cache-invalidate,
+    // badge-fetch, or dispatch.
+    const heartbeatHandler = () => {
+      lastDashboardSseAtRef.current = Date.now();
+    };
+    // Ledger issue liveness: thin `{issue_id, project_id}` payloads. Bump
+    // freshness, invalidate the affected cache, forward the raw payload for the
+    // open issue-detail view, and (only while the issues tab is active) schedule
+    // a debounced list refetch. When the tab is inactive, cache invalidation
+    // suffices — the route.tab activation effect refetches on activation.
+    const ledgerHandler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
+      invalidateDashboardApiCacheForEvent(payload.type);
+      const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
+      window.dispatchEvent(
+        new CustomEvent('ledger:sse', { detail: { type: payload.type, data } }),
+      );
+      if (routeTabRef.current === 'issues') {
+        scheduleIssuesRefresh();
+      }
     };
     const conversationHandler = (payload: SSEPayload) => {
       handler(payload);
@@ -890,7 +945,14 @@ function App(): JSX.Element {
 
     const graphRefreshHandler = (payload: SSEPayload) => {
       invalidateDashboardApiCacheForEvent(payload.type);
-      setGraphRefreshToken((n) => n + 1);
+      // Only repaint the graph when it is the active, visible tab. Otherwise
+      // mark it dirty; the graph-activation effect flushes one bump on
+      // activation or when the tab becomes visible again.
+      if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
+        scheduleGraphBump();
+      } else {
+        graphDirtyRef.current = true;
+      }
     };
 
     const unsubscribes = [
@@ -904,6 +966,14 @@ function App(): JSX.Element {
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
+      client.on('heartbeat', heartbeatHandler),
+      client.on('ledger:issue:created', ledgerHandler),
+      client.on('ledger:issue:updated', ledgerHandler),
+      client.on('ledger:issue:closed', ledgerHandler),
+      client.on('ledger:issue:reopened', ledgerHandler),
+      client.on('ledger:comment:created', ledgerHandler),
+      client.on('ledger:comment:updated', ledgerHandler),
+      client.on('ledger:label:updated', ledgerHandler),
       client.on('daemon:reloaded', daemonHandler),
       client.on('console:session:created', handler),
       client.on('console:session:updated', handler),
@@ -943,31 +1013,64 @@ function App(): JSX.Element {
     // dropped stream (e.g. a daemon self-merge restart) may have missed events.
     // On a real reconnect, bust the API cache and refetch the visible route plus
     // badges so the dashboard converges on current state.
-    const offState = client.onState((_state, { reconnected }) => {
+    const offState = client.onState((state, { reconnected }) => {
+      sseStateRef.current = state;
       if (!reconnected) return;
       invalidateApiGetCache();
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
+      // A reconnect gap may have missed graph-affecting events; converge the
+      // graph too (bump now if active/visible, else mark dirty).
+      if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
+        setGraphRefreshToken((n) => n + 1);
+      } else {
+        graphDirtyRef.current = true;
+      }
     });
 
     // Connect AFTER all handlers are registered
     client.connect();
 
     return () => {
+      if (badgeTimer !== null) window.clearTimeout(badgeTimer);
+      if (graphTokenTimer !== null) window.clearTimeout(graphTokenTimer);
+      if (issuesRefreshTimer !== null) window.clearTimeout(issuesRefreshTimer);
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       offState();
       client.close();
     };
   }, [loadDashboardBadges]);
 
+  // Graph-activation flush: when the graph tab becomes active (or becomes
+  // visible again while active) and a graph-affecting event was buffered while
+  // it was hidden/inactive, repaint exactly once.
+  useEffect(() => {
+    if (route.tab !== 'graph') return undefined;
+    const flush = () => {
+      if (document.visibilityState !== 'visible') return;
+      if (!graphDirtyRef.current) return;
+      graphDirtyRef.current = false;
+      setGraphRefreshToken((n) => n + 1);
+    };
+    flush();
+    document.addEventListener('visibilitychange', flush);
+    return () => document.removeEventListener('visibilitychange', flush);
+  }, [route.tab]);
+
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
   useEffect(() => {
     const POLL_INTERVAL = 10_000;
-    const SSE_FRESH_FOR = 30_000;
+    // Freshness is now connection health, not last-event receipt: while the
+    // shared SSE socket is open and a server heartbeat arrived within the last
+    // three 15 s intervals, the live stream is authoritative and the heavy
+    // fallback fetch is skipped. A dropped/closed socket re-enables the poll.
+    const SSE_FRESH_FOR = 45_000;
     const timer = window.setInterval(() => {
-      if (Date.now() - lastDashboardSseAtRef.current < SSE_FRESH_FOR) return;
+      if (shouldSkipFallbackPoll(sseStateRef.current, lastDashboardSseAtRef.current, Date.now(), SSE_FRESH_FOR)) {
+        return;
+      }
       void loadVisibleRouteData(route.tab);
       void loadDashboardBadges();
     }, POLL_INTERVAL);
