@@ -60,7 +60,8 @@ export function registerClientAuthRoutes(
   // Dashboard session renewal. This endpoint never upgrades an anonymous or
   // unrelated identity: an already-authenticated operator is required in both
   // compat and strict mode. The resulting bounded, expiring session survives a
-  // daemon restart in a protected file and is rotated on every successful boot.
+  // daemon restart through a protected fingerprint and is rotated on every
+  // successful boot or bounded post-expiry recovery.
   router.post("/api/client-auth/handshake", (req, res) => {
     try {
       const db = getDb();
@@ -74,9 +75,9 @@ export function registerClientAuthRoutes(
         });
         return;
       }
-      const token = authenticator.issueDashboardToken(identity);
+      const session = authenticator.issueDashboardToken(identity);
       sendJson(res, 200, {
-        token,
+        ...session,
         user: { id: operator.id, slug: operator.slug },
       });
     } catch (error) {

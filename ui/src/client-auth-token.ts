@@ -10,6 +10,7 @@
 
 const STORAGE_KEY = 'mandible.client_auth.token';
 const HANDSHAKE_PATH = '/api/client-auth/handshake';
+const WEBSOCKET_AUTH_PROTOCOL_PREFIX = 'mandible-auth.';
 
 function storage(): Storage | null {
   try {
@@ -28,6 +29,14 @@ export function getStoredToken(): string | null {
   } catch {
     return null;
   }
+}
+
+/** WebSocket browser APIs cannot set Authorization; use a header subprotocol. */
+export function clientAuthWebSocketProtocols(): string[] {
+  const token = getStoredToken();
+  return token
+    ? ['mandible', `${WEBSOCKET_AUTH_PROTOCOL_PREFIX}${token}`]
+    : ['mandible'];
 }
 
 function setStoredToken(token: string): void {
@@ -108,12 +117,36 @@ export function installClientAuthFetch(): void {
     const headers = new Headers(
       init.headers ?? (input instanceof Request ? input.headers : undefined),
     );
-    if (!headers.has('Authorization')) {
+    const attachedStoredToken = !headers.has('Authorization');
+    if (attachedStoredToken) {
       headers.set('Authorization', `Bearer ${token}`);
     }
+    const retryInput = input instanceof Request ? input.clone() : input;
     const response = await originalFetch(input, { ...init, headers });
-    if (response.status === 401 && getStoredToken() === token) {
-      clearStoredToken();
+    if (response.status === 401 && attachedStoredToken && getStoredToken() === token) {
+      const resolved = new URL(url, window.location.origin);
+      if (resolved.pathname !== HANDSHAKE_PATH) {
+        try {
+          const renewal = await originalFetch(HANDSHAKE_PATH, {
+            method: 'POST',
+            headers: {
+              Accept: 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+          });
+          if (renewal.ok) {
+            const body = (await renewal.json()) as { token?: unknown };
+            if (typeof body.token === 'string' && body.token) {
+              setStoredToken(body.token);
+              headers.set('Authorization', `Bearer ${body.token}`);
+              return originalFetch(retryInput, { ...init, headers });
+            }
+          }
+        } catch {
+          // Fall through to clearing a credential that cannot be renewed.
+        }
+      }
+      if (getStoredToken() === token) clearStoredToken();
     }
     return response;
   };

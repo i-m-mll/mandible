@@ -257,7 +257,12 @@ const DEPRECATED_REAPER_SETTINGS = new Set([
 
 // Issue 708dc4c / finding 4 — client-auth settings are not managed through the
 // generic settings API. Reads are hidden and writes/reads of a specific key 403.
-const PROTECTED_SETTING_KEYS = new Set(["client_auth", "user.operator_id"]);
+const PROTECTED_SETTING_KEYS = new Set([
+  "client_auth",
+  "console_operator_session_id",
+  "console_pinned_sessions",
+  "user.operator_id",
+]);
 
 function isProtectedIdentitySettingKey(key: string): boolean {
   const normalized = key.trim().toLowerCase();

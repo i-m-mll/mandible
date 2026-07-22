@@ -363,6 +363,10 @@ export class SessionManager {
   private codexThreadArchiver: CodexThreadArchiver;
   private clientAuth: ClientAuthenticator | null;
   private clientTokens = new Map<string, string>();
+  // Credential eligibility and identity are pinned when a session backend is
+  // constructed. Binding edits must never turn previously admitted plain work
+  // into credential-bearing work (or create a temporary unbound auth window).
+  private clientIdentities = new Map<string, SessionClientIdentity | null>();
 
   constructor(
     _db: unknown,
@@ -393,6 +397,7 @@ export class SessionManager {
 
     for (const row of rows) {
       const session = rowToSession(row);
+      this.pinClientIdentity(session);
       if (session.status !== "running" && !retainedTerminalIds.has(session.id)) {
         this.sessions.set(session.id, new DormantBackend(session));
         continue;
@@ -515,21 +520,21 @@ export class SessionManager {
     });
 
     // Issue 2181ffd — Store instruction attachments as pinned artifact versions.
-    if (input.presetIds && input.presetIds.length > 0) {
-      replaceSessionInstructionArtifacts(db, id, input.presetIds);
-    }
+    const pinnedPresetIds = input.presetIds && input.presetIds.length > 0
+      ? replaceSessionInstructionArtifacts(db, id, input.presetIds)
+      : [];
 
     const backend = this.createBackend(session, backend_type, { allowUnpersistedOperator: allowOperator });
 
     // Bug: 61bee4e — If presetIds are set, update the SDK backend options
-    if (input.presetIds && input.presetIds.length > 0 && backend instanceof SDKBackend) {
-      backend.updateOptions({ presetIds: input.presetIds });
+    if (pinnedPresetIds.length > 0 && backend instanceof SDKBackend) {
+      backend.updateOptions({ presetIds: pinnedPresetIds });
     }
 
     // Bug: 790433d — If presetIds are set on a PTY session, pass them so the
     // preset union is appended at launch via --append-system-prompt
-    if (input.presetIds && input.presetIds.length > 0 && backend instanceof PTYBackend) {
-      backend.setPresetIds(input.presetIds);
+    if (pinnedPresetIds.length > 0 && backend instanceof PTYBackend) {
+      backend.setPresetIds(pinnedPresetIds);
     }
 
     this.sessions.set(id, backend);
@@ -554,6 +559,15 @@ export class SessionManager {
 
   getAll(): AgenticBackend[] {
     return Array.from(this.sessions.values());
+  }
+
+  /** Whether controlling this session can activate its pinned client credential. */
+  isCredentialBearing(id: string): boolean {
+    const session = this.sessions.get(id)?.meta;
+    if (!session) return false;
+    if (session.is_operator) return true;
+    this.pinClientIdentity(session);
+    return this.clientIdentities.get(id) !== null;
   }
 
   getRetentionStats(): { retainedTerminal: number; dormant: number } {
@@ -591,6 +605,7 @@ export class SessionManager {
     getDb().prepare("DELETE FROM console_sessions WHERE id = ?").run(id);
     this.sessions.delete(id);
     this.revokeClientToken(id);
+    this.clientIdentities.delete(id);
     broadcast("console:session:deleted", { id });
   }
 
@@ -661,24 +676,31 @@ export class SessionManager {
 
   updateOptions(id: string, options: SDKBackendOptions | AcpBackendOptions): ConsoleSession {
     const session = this.requireSession(id);
+    const requestedPresetIds = (options as SDKBackendOptions).presetIds;
+    const safeOptions = requestedPresetIds !== undefined
+      ? {
+          ...options,
+          presetIds: replaceSessionInstructionArtifacts(getDb(), id, requestedPresetIds),
+        } as SDKBackendOptions | AcpBackendOptions
+      : options;
     const patch: Partial<Pick<ConsoleSession, "args" | "allowed_tools">> = {};
 
-    if (typeof options.model === "string") {
+    if (typeof safeOptions.model === "string") {
       const nextArgs = stripModelArgs(session.meta.args);
-      const model = options.model.trim();
+      const model = safeOptions.model.trim();
       if (model) {
         nextArgs.push("--model", model);
       }
       patch.args = nextArgs;
     }
 
-    if (options.allowedTools !== undefined) {
-      patch.allowed_tools = [...options.allowedTools];
+    if (safeOptions.allowedTools !== undefined) {
+      patch.allowed_tools = [...safeOptions.allowedTools];
     }
 
     const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch, { silent: true }) : session.meta;
     if (this.isConfigurableBackend<SDKBackendOptions | AcpBackendOptions>(session)) {
-      session.updateOptions(options);
+      session.updateOptions(safeOptions);
     }
     return nextSession;
   }
@@ -795,6 +817,7 @@ export class SessionManager {
       }
     }
     for (const id of this.clientTokens.keys()) this.revokeClientToken(id);
+    this.clientIdentities.clear();
   }
 
   private createBackend(
@@ -802,6 +825,7 @@ export class SessionManager {
     type: BackendType,
     options: { allowUnpersistedOperator?: boolean } = {},
   ): AgenticBackend {
+    this.pinClientIdentity(session, options);
     // The operator bootstrap file is a one-time human/Tauri enrollment proof.
     // Remove it before constructing any non-operator backend so an agent under
     // the same OS uid can never read or race that credential directly.
@@ -829,7 +853,8 @@ export class SessionManager {
       if (this.clientAuth.authenticate(existing, "in_process")) return existing;
       this.clientTokens.delete(session.id);
     }
-    const identity = resolveSessionClientIdentity(getDb(), session, options);
+    this.pinClientIdentity(session, options);
+    const identity = this.clientIdentities.get(session.id) ?? null;
     if (!identity) {
       if (this.clientAuth.mode() === "strict") {
         this.logger("warn", "client_auth_agent_identity_unresolved", {
@@ -846,6 +871,17 @@ export class SessionManager {
     );
     this.clientTokens.set(session.id, token);
     return token;
+  }
+
+  private pinClientIdentity(
+    session: ConsoleSession,
+    options: { allowUnpersistedOperator?: boolean } = {},
+  ): void {
+    if (this.clientIdentities.has(session.id)) return;
+    this.clientIdentities.set(
+      session.id,
+      resolveSessionClientIdentity(getDb(), session, options),
+    );
   }
 
   private revokeClientToken(id: string): void {

@@ -66,6 +66,11 @@ export interface ResolvedClientIdentity {
   source: "http_bearer" | "file_rpc_capability" | "bootstrap" | "in_process";
 }
 
+export interface ClientAuthRequestContext {
+  method: string;
+  pathname: string;
+}
+
 export interface UnattributedWriteRecord {
   method: string;
   pathname: string;
@@ -83,6 +88,7 @@ export interface ClientAuthGate {
   authenticate(
     credential: string | null | undefined,
     source: ResolvedClientIdentity["source"],
+    context?: ClientAuthRequestContext,
   ): ResolvedClientIdentity | null;
   mode(): ClientAuthMode;
   recordUnattributedWrite(record: UnattributedWriteRecord): void;
@@ -386,7 +392,11 @@ export class Router implements RouteRegistrar {
       let clientIdentity: ResolvedClientIdentity | null = null;
       const gate = this.options.clientAuth;
       if (gate) {
-        clientIdentity = gate.authenticate(credential, clientAuthSourceForTransport(transport));
+        clientIdentity = gate.authenticate(
+          credential,
+          clientAuthSourceForTransport(transport),
+          { method: normalizedMethod, pathname },
+        );
         if (UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity) {
           const telemetryTransport = transport === "http" ? "http" : "file-rpc";
           if (gate.mode() === "strict") {
@@ -700,11 +710,11 @@ export function attachWebSocketUpgrade(
   ) => void
 ): void {
   server.on("upgrade", (req, socket, head) => {
-    // Issue 708dc4c / finding 5 (deferred): WebSocket console upgrades are
-    // guarded by the browser boundary (loopback Host/Origin/Sec-Fetch-Site) but
-    // are NOT covered by the client-auth gate. Strict mode phase-1 scope is the
-    // HTTP router + file-RPC only; console-WS client authentication belongs to
-    // the permissions umbrella child, tracked separately.
+    // Issue 708dc4c: all WebSocket upgrades retain the browser boundary. The
+    // index-level terminal dispatcher additionally requires an operator bearer
+    // (transported in Sec-WebSocket-Protocol, never the URL) before attaching
+    // to the privileged operator backend. Per-user authorization for ordinary
+    // terminal sessions remains deferred to the permissions child.
     const boundary = validateDaemonBrowserBoundary(req);
     if (!boundary.ok) {
       socket.write(

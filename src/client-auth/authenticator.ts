@@ -4,8 +4,9 @@
 //   - Resolve a presented bearer/capability token to a user identity, from two
 //     sources: persisted api_token credentials (CLI/agent tokens) and bounded
 //     ephemeral tokens (dashboard session, operator bootstrap-token file,
-//     per-agent file-RPC capability tokens). The one dashboard session is also
-//     held in a protected file so strict-mode renewal survives daemon restart.
+//     per-agent file-RPC capability tokens). The dashboard session fingerprint
+//     and bounded renewal deadline are held in a protected file so strict-mode
+//     renewal survives daemon restart without persisting reusable bearer bytes.
 //   - Report the current mode (compat | strict).
 //   - Count unattributed writes (the strict-mode readiness ratchet).
 //   - Own the operator's bootstrap token: a daemon-lifetime ephemeral token
@@ -18,6 +19,7 @@
 import type { Db } from "../db.js";
 import { getOperator, getUserById } from "../users/store.js";
 import type {
+  ClientAuthRequestContext,
   ClientAuthGate,
   ClientAuthMode,
   ResolvedClientIdentity,
@@ -49,6 +51,8 @@ interface EphemeralEntry {
   purpose: string;
   createdAt: number;
   expiresAt: number | null;
+  /** Hard deadline for handshake-only renewal of an expired dashboard token. */
+  renewUntil: number | null;
 }
 
 export interface ClientAuthenticatorOptions {
@@ -56,6 +60,8 @@ export interface ClientAuthenticatorOptions {
   secretsDir?: string;
   /** Expiry for the single restart-stable dashboard session (tests may shorten). */
   dashboardSessionTtlMs?: number;
+  /** Bounded handshake-only renewal grace after dashboard expiry (tests may shorten). */
+  dashboardSessionRenewalGraceMs?: number;
   /** Hard cap for daemon-lifetime ephemeral credentials. */
   maxEphemeralTokens?: number;
   /** Injectable clock for expiry tests. */
@@ -63,6 +69,7 @@ export interface ClientAuthenticatorOptions {
 }
 
 const DEFAULT_DASHBOARD_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_EPHEMERAL_TTL_MS = 15 * 60 * 1_000;
 const OPERATOR_BOOTSTRAP_TTL_MS = 5 * 60 * 1_000;
 const DEFAULT_MAX_EPHEMERAL_TOKENS = 256;
@@ -72,6 +79,7 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly telemetry = new ClientAuthTelemetry();
   private readonly secretsDir: string;
   private readonly dashboardSessionTtlMs: number;
+  private readonly dashboardSessionRenewalGraceMs: number;
   private readonly maxEphemeralTokens: number;
   private readonly now: () => number;
   /** Pepper is loaded from the filesystem ONCE at construction (startup). */
@@ -85,6 +93,8 @@ export class ClientAuthenticator implements ClientAuthGate {
     this.secretsDir = options.secretsDir ?? defaultClientAuthDir();
     this.dashboardSessionTtlMs = options.dashboardSessionTtlMs
       ?? DEFAULT_DASHBOARD_SESSION_TTL_MS;
+    this.dashboardSessionRenewalGraceMs = options.dashboardSessionRenewalGraceMs
+      ?? DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS;
     this.maxEphemeralTokens = Math.max(
       2,
       options.maxEphemeralTokens ?? DEFAULT_MAX_EPHEMERAL_TOKENS,
@@ -101,6 +111,7 @@ export class ClientAuthenticator implements ClientAuthGate {
   authenticate(
     credential: string | null | undefined,
     source: ResolvedClientIdentity["source"] = "http_bearer",
+    context?: ClientAuthRequestContext,
   ): ResolvedClientIdentity | null {
     const token = normalizeBearer(credential);
     if (!token) return null;
@@ -110,12 +121,25 @@ export class ClientAuthenticator implements ClientAuthGate {
     const key = fingerprintForToken(this.pepper, token);
     const eph = this.ephemeral.get(key);
     if (eph) {
-      if (eph.expiresAt !== null && eph.expiresAt <= this.now()) {
-        this.ephemeral.delete(key);
-        if (eph.purpose === "dashboard_handshake") {
-          writeDashboardSession(null, this.secretsDir);
+      const now = this.now();
+      if (eph.expiresAt !== null && eph.expiresAt <= now) {
+        const renewableDashboard = eph.purpose === "dashboard_handshake"
+          && eph.renewUntil !== null
+          && eph.renewUntil > now;
+        if (!renewableDashboard) {
+          this.ephemeral.delete(key);
+          if (eph.purpose === "dashboard_handshake") {
+            writeDashboardSession(null, this.secretsDir);
+          }
+          return null;
         }
-        return null;
+        // An expired dashboard token is never a general bearer credential. It
+        // is accepted only by the protected handshake during a bounded grace
+        // window, allowing an open/suspended dashboard to rotate without a
+        // daemon restart.
+        if (context?.method !== "POST" || context.pathname !== "/api/client-auth/handshake") {
+          return null;
+        }
       }
       const currentUser = getUserById(this.db, eph.identity.user_id);
       if (!currentUser || currentUser.status !== "active") {
@@ -195,6 +219,7 @@ export class ClientAuthenticator implements ClientAuthGate {
       purpose,
       createdAt,
       expiresAt: ttlMs === null ? null : createdAt + ttlMs,
+      renewUntil: null,
     });
     this.enforceEphemeralLimit();
     return raw;
@@ -217,10 +242,14 @@ export class ClientAuthenticator implements ClientAuthGate {
   /**
    * Rotate the operator dashboard session. The caller must already have passed
    * requireOperator; this method never upgrades an anonymous or unrelated user.
-   * Exactly one raw session is kept in a protected file so a strict dashboard
-   * can authenticate and renew after a normal daemon restart.
+   * Exactly one session fingerprint is kept in a protected file so a strict
+   * dashboard can authenticate and renew after a normal daemon restart without
+   * persisting reusable bearer bytes.
    */
-  issueDashboardToken(identity: { user_id: string; slug: string }): string {
+  issueDashboardToken(identity: { user_id: string; slug: string }): {
+    token: string;
+    expires_at: number;
+  } {
     const previous = [...this.ephemeral.entries()]
       .filter(([, entry]) => entry.purpose === "dashboard_handshake");
     for (const [key] of previous) this.ephemeral.delete(key);
@@ -231,6 +260,7 @@ export class ClientAuthenticator implements ClientAuthGate {
     if (!entry || entry.expiresAt === null) {
       throw new Error("Failed to create expiring dashboard session.");
     }
+    entry.renewUntil = entry.expiresAt + this.dashboardSessionRenewalGraceMs;
     try {
       writeDashboardSession({
         token_fingerprint: fingerprintForToken(this.pepper, token),
@@ -238,6 +268,7 @@ export class ClientAuthenticator implements ClientAuthGate {
         slug: identity.slug,
         created_at: entry.createdAt,
         expires_at: entry.expiresAt,
+        renew_until: entry.renewUntil,
       }, this.secretsDir);
     } catch (error) {
       this.ephemeral.delete(fingerprintForToken(this.pepper, token));
@@ -246,7 +277,7 @@ export class ClientAuthenticator implements ClientAuthGate {
       }
       throw error;
     }
-    return token;
+    return { token, expires_at: entry.expiresAt };
   }
 
   /**
@@ -290,7 +321,7 @@ export class ClientAuthenticator implements ClientAuthGate {
     if (!session) return;
     const operator = getOperator(this.db);
     if (
-      session.expires_at <= this.now()
+      session.renew_until <= this.now()
       || !operator
       || session.user_id !== operator.id
     ) {
@@ -302,13 +333,20 @@ export class ClientAuthenticator implements ClientAuthGate {
       purpose: "dashboard_handshake",
       createdAt: session.created_at,
       expiresAt: session.expires_at,
+      renewUntil: session.renew_until,
     });
   }
 
   private evictExpired(): void {
     const now = this.now();
     for (const [key, entry] of this.ephemeral) {
-      if (entry.expiresAt !== null && entry.expiresAt <= now) {
+      if (
+        entry.expiresAt !== null
+        && entry.expiresAt <= now
+        && (entry.purpose !== "dashboard_handshake"
+          || entry.renewUntil === null
+          || entry.renewUntil <= now)
+      ) {
         this.ephemeral.delete(key);
         if (entry.purpose === "dashboard_handshake") {
           writeDashboardSession(null, this.secretsDir);

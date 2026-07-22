@@ -4,7 +4,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { migrate, setDb } from "../src/db.js";
 import { resolveSessionClientIdentity, SessionManager } from "../src/session-manager.js";
-import { addBinding, createUser, setupOperator } from "../src/users/store.js";
+import {
+  computePresetUnion,
+  ensureInstructionArtifactForPreset,
+} from "../src/presets.js";
+import {
+  addBinding,
+  createUser,
+  removeBinding,
+  setupOperator,
+} from "../src/users/store.js";
 
 describe("agent client-auth provisioning", () => {
   let db: InstanceType<typeof Database>;
@@ -70,6 +79,62 @@ describe("agent client-auth provisioning", () => {
     expect(auth.revoked).toEqual(["token-for-claude-agent"]);
   });
 
+  it("pins creation and runtime prompt options to the selected artifact version", () => {
+    const now = Date.now();
+    db.prepare(
+      `INSERT INTO presets (
+        id, name, description, source, source_path, content_hash, version, created_at, updated_at
+      ) VALUES (?, ?, '', 'manual', NULL, '', 1, ?, ?)`,
+    ).run("credential-preset", "Credential preset", now, now);
+    db.prepare(
+      `INSERT INTO preset_nodes (
+        id, preset_id, parent_id, position, title, body, level, created_at, updated_at
+      ) VALUES (?, ?, NULL, 0, ?, ?, 1, ?, ?)`,
+    ).run(
+      "credential-preset-node",
+      "credential-preset",
+      "Pinned rule",
+      "Use only the original instruction.",
+      now,
+      now,
+    );
+    const initial = ensureInstructionArtifactForPreset(db, "credential-preset")!;
+    const agent = createUser(db, {
+      slug: "preset-agent",
+      kind: "agent",
+      display_name: "Preset Agent",
+    });
+    addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
+    const auth = fakeAuthenticator();
+    const manager = new SessionManager(db, () => undefined, undefined, undefined, auth.value);
+    const session = manager.create({
+      label: "Pinned preset session",
+      command: "claude",
+      backend_type: "sdk",
+      presetIds: [initial.series_id],
+    });
+    const backend = manager.get(session.id) as unknown as {
+      options: { presetIds?: string[] };
+    };
+    expect(backend.options.presetIds).toEqual([initial.version_id]);
+    manager.updateOptions(session.id, { presetIds: [initial.series_id] });
+    expect(backend.options.presetIds).toEqual([initial.version_id]);
+
+    db.prepare(
+      "UPDATE preset_nodes SET body = ?, updated_at = ? WHERE id = ?",
+    ).run("Attacker-controlled replacement.", now + 1, "credential-preset-node");
+    db.prepare(
+      "UPDATE presets SET version = version + 1, updated_at = ? WHERE id = ?",
+    ).run(now + 1, "credential-preset");
+    const updated = ensureInstructionArtifactForPreset(db, "credential-preset")!;
+    expect(updated.version_id).not.toBe(initial.version_id);
+
+    const effective = computePresetUnion(backend.options.presetIds ?? [], db);
+    expect(effective.text).toContain("Use only the original instruction.");
+    expect(effective.text).not.toContain("Attacker-controlled replacement.");
+    expect(manager.isCredentialBearing(session.id)).toBe(true);
+  });
+
   it("never falls back to the operator when an agent binding is missing", () => {
     setupOperator(db, { slug: "operator", display_name: "Operator" });
     const auth = fakeAuthenticator();
@@ -88,6 +153,95 @@ describe("agent client-auth provisioning", () => {
       "client_auth_agent_identity_unresolved",
       expect.objectContaining({ session_id: missing.id, command: "bash" }),
     );
+  });
+
+  it("pins unbound and ambiguous sessions as permanently credential-ineligible", () => {
+    const first = createUser(db, {
+      slug: "first-binding",
+      kind: "agent",
+      display_name: "First Binding",
+    });
+    const second = createUser(db, {
+      slug: "second-binding",
+      kind: "agent",
+      display_name: "Second Binding",
+    });
+    const auth = fakeAuthenticator();
+    const manager = new SessionManager(db, () => undefined, undefined, undefined, auth.value);
+
+    const unbound = manager.create({
+      label: "Initially unbound",
+      command: "late-bound",
+      backend_type: "spawn",
+    });
+    expect(manager.isCredentialBearing(unbound.id)).toBe(false);
+    addBinding(db, first.id, { binding_type: "app_name", value: "late-bound" });
+    expect(manager.isCredentialBearing(unbound.id)).toBe(false);
+    (manager.get(unbound.id) as unknown as {
+      buildCleanEnv(env: Record<string, string>): Record<string, string>;
+    }).buildCleanEnv({});
+
+    // Model a legacy/corrupt database that predates active-binding uniqueness;
+    // the runtime resolver deliberately remains fail-closed for this state.
+    db.exec(
+      "DROP INDEX uq_user_bindings_active_scoped; " +
+      "DROP INDEX uq_user_bindings_active_unscoped;",
+    );
+    const firstAmbiguous = addBinding(db, first.id, {
+      binding_type: "app_name",
+      value: "ambiguous-app",
+    });
+    addBinding(db, second.id, { binding_type: "app_name", value: "ambiguous-app" });
+    const ambiguous = manager.create({
+      label: "Initially ambiguous",
+      command: "ambiguous-app",
+      backend_type: "spawn",
+    });
+    expect(manager.isCredentialBearing(ambiguous.id)).toBe(false);
+    removeBinding(db, firstAmbiguous.id);
+    expect(manager.isCredentialBearing(ambiguous.id)).toBe(false);
+    (manager.get(ambiguous.id) as unknown as {
+      buildCleanEnv(env: Record<string, string>): Record<string, string>;
+    }).buildCleanEnv({});
+
+    expect(auth.issued).toEqual([]);
+  });
+
+  it("pins a credential-bearing session to its original identity across rebinding", () => {
+    const original = createUser(db, {
+      slug: "original-owner",
+      kind: "agent",
+      display_name: "Original Owner",
+    });
+    const replacement = createUser(db, {
+      slug: "replacement-owner",
+      kind: "agent",
+      display_name: "Replacement Owner",
+    });
+    const binding = addBinding(db, original.id, {
+      binding_type: "app_name",
+      value: "rebound-app",
+    });
+    const auth = fakeAuthenticator();
+    const manager = new SessionManager(db, () => undefined, undefined, undefined, auth.value);
+    const session = manager.create({
+      label: "Pinned owner",
+      command: "rebound-app",
+      backend_type: "spawn",
+    });
+    expect(manager.isCredentialBearing(session.id)).toBe(true);
+
+    removeBinding(db, binding.id);
+    addBinding(db, replacement.id, { binding_type: "app_name", value: "rebound-app" });
+    expect(manager.isCredentialBearing(session.id)).toBe(true);
+    (manager.get(session.id) as unknown as {
+      buildCleanEnv(env: Record<string, string>): Record<string, string>;
+    }).buildCleanEnv({});
+
+    expect(auth.issued).toEqual([{
+      identity: { user_id: original.id, slug: original.slug },
+      purpose: `agent_session:${session.id}`,
+    }]);
   });
 
   it("binds the operator console only to the configured operator", () => {

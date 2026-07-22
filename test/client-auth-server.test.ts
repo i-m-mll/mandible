@@ -10,7 +10,13 @@ import { SseManager } from "../src/sse.js";
 import { registerClientAuthRoutes } from "../src/routes/client-auth.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { registerSettingsRoutes } from "../src/routes/settings.js";
+import { registerPresetRoutes } from "../src/routes/presets.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import {
+  authorizeManagedSessionWebSocket,
+  authorizeOperatorWebSocket,
+  credentialFromWebSocketProtocols,
+} from "../src/client-auth/authz.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
 import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
@@ -46,6 +52,9 @@ beforeEach(async () => {
   registerClientAuthRoutes(router, authenticator);
   registerUserRoutes(router, authenticator);
   registerSettingsRoutes(router);
+  registerPresetRoutes(router, {
+    isCredentialBearing: (id: string) => id === "operator-session" || id === "agent-session",
+  });
 
   sse = new SseManager();
   server = createServer({
@@ -216,6 +225,108 @@ describe("client-auth: dashboard handshake (finding 1/3)", () => {
       method: "ephemeral",
     });
   });
+
+  it("renews an expired dashboard only at the handshake during a bounded grace", () => {
+    let now = 1_000;
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const renewalDir = path.join(tempDir, "renewal-auth");
+    const expiring = new ClientAuthenticator(db, {
+      secretsDir: renewalDir,
+      dashboardSessionTtlMs: 10,
+      dashboardSessionRenewalGraceMs: 20,
+      now: () => now,
+    });
+    const durable = expiring.mintApiToken(operator.id).token;
+    const identity = expiring.authenticate(durable, "http_bearer");
+    expect(identity).not.toBeNull();
+    const first = expiring.issueDashboardToken(identity!);
+
+    now = 1_011;
+    expect(expiring.authenticate(first.token, "http_bearer", {
+      method: "POST",
+      pathname: "/api/write",
+    })).toBeNull();
+
+    const restarted = new ClientAuthenticator(db, {
+      secretsDir: renewalDir,
+      dashboardSessionTtlMs: 10,
+      dashboardSessionRenewalGraceMs: 20,
+      now: () => now,
+    });
+    const renewalIdentity = restarted.authenticate(first.token, "http_bearer", {
+      method: "POST",
+      pathname: "/api/client-auth/handshake",
+    });
+    expect(renewalIdentity).toMatchObject({ user_id: operator.id });
+    const rotated = restarted.issueDashboardToken(renewalIdentity!);
+    expect(restarted.authenticate(rotated.token, "http_bearer", {
+      method: "POST",
+      pathname: "/api/write",
+    })).toMatchObject({ user_id: operator.id });
+
+    now = 1_042;
+    expect(restarted.authenticate(rotated.token, "http_bearer", {
+      method: "POST",
+      pathname: "/api/client-auth/handshake",
+    })).toBeNull();
+  });
+});
+
+describe("client-auth: operator WebSocket credential transport", () => {
+  it("extracts the bearer from a subprotocol header without a URL token", () => {
+    expect(credentialFromWebSocketProtocols(
+      "mandible, mandible-auth.mandible_pat_secret",
+    )).toBe("mandible_pat_secret");
+    expect(credentialFromWebSocketProtocols("mandible")).toBeNull();
+  });
+
+  it("admits only the operator token to an operator terminal upgrade", () => {
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const agent = createUser(db, { slug: "agent-ws", kind: "agent", display_name: "Agent WS" });
+    const operatorBearer = authenticator.mintApiToken(operator.id).token;
+    const agentBearer = authenticator.mintApiToken(agent.id).token;
+
+    expect(authorizeOperatorWebSocket(
+      db,
+      authenticator,
+      `mandible, mandible-auth.${operatorBearer}`,
+      "/terminal/operator",
+    )).toBe(true);
+    expect(authorizeOperatorWebSocket(
+      db,
+      authenticator,
+      `mandible, mandible-auth.${agentBearer}`,
+      "/terminal/operator",
+    )).toBe(false);
+    expect(authorizeOperatorWebSocket(
+      db,
+      authenticator,
+      "mandible",
+      "/terminal/operator",
+    )).toBe(false);
+
+    expect(authorizeManagedSessionWebSocket(
+      db,
+      authenticator,
+      `mandible, mandible-auth.${agentBearer}`,
+      "/terminal/app-bound-agent",
+      true,
+    )).toBe(false);
+    expect(authorizeManagedSessionWebSocket(
+      db,
+      authenticator,
+      `mandible, mandible-auth.${operatorBearer}`,
+      "/terminal/app-bound-agent",
+      true,
+    )).toBe(true);
+    expect(authorizeManagedSessionWebSocket(
+      db,
+      authenticator,
+      undefined,
+      "/terminal/plain-shell",
+      false,
+    )).toBe(true);
+  });
 });
 
 describe("client-auth: token administration requires auth (finding 2)", () => {
@@ -301,15 +412,103 @@ describe("client-auth: settings surface is protected (finding 4)", () => {
       { value: "strict" },
     );
     expect(caseVariant.status).toBe(403);
+
+    db.prepare(
+      "UPDATE settings SET value = ? WHERE key = 'console_operator_session_id'",
+    ).run("operator-session");
+    const operatorSessionRead = await requestJson(
+      "GET",
+      "/api/settings/console_operator_session_id",
+    );
+    expect(operatorSessionRead.status).toBe(403);
+    const operatorSessionRewrite = await requestJson(
+      "PUT",
+      "/api/settings/console_operator_session_id",
+      { value: "attacker-session" },
+    );
+    expect(operatorSessionRewrite.status).toBe(403);
+    expect(db.prepare(
+      "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
+    ).pluck().get()).toBe("operator-session");
+    const pinnedRewrite = await requestJson(
+      "PUT",
+      "/api/settings/console_pinned_sessions",
+      { value: "[]" },
+    );
+    expect(pinnedRewrite.status).toBe(403);
   });
 
   it("hides client_auth.* keys from the generic settings listing", async () => {
+    db.prepare(
+      "UPDATE settings SET value = ? WHERE key = 'console_operator_session_id'",
+    ).run("operator-session");
     setClientAuthMode(db, "strict");
     const all = await requestJson("GET", "/api/settings");
     expect(all.status).toBe(200);
     for (const key of Object.keys(all.body as Record<string, unknown>)) {
       expect(key.startsWith("client_auth.")).toBe(false);
     }
+    expect(all.body).not.toHaveProperty("console_operator_session_id");
+    expect(all.body).not.toHaveProperty("console_pinned_sessions");
+  });
+});
+
+describe("client-auth: operator instruction routes", () => {
+  it("protects every session-targeted preset surface for the canonical operator", async () => {
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const agent = createUser(db, {
+      slug: "agent-presets",
+      kind: "agent",
+      display_name: "Agent Presets",
+    });
+    const operatorBearer = authenticator.mintApiToken(operator.id).token;
+    const agentBearer = authenticator.mintApiToken(agent.id).token;
+    const sessionId = "operator-session";
+    db.prepare(
+      "UPDATE settings SET value = ? WHERE key = 'console_operator_session_id'",
+    ).run(sessionId);
+
+    const attempts: Array<[string, string, unknown]> = [
+      ["GET", `/api/presets/union?session_id=${sessionId}`, undefined],
+      ["GET", `/api/presets/diffs?session_id=${sessionId}`, undefined],
+      ["POST", "/api/presets/diffs", { session_id: sessionId, diff_type: "add" }],
+      ["POST", "/api/presets/violations", { sessionId, context: {} }],
+      ["GET", `/api/presets/validate-session?session_id=${sessionId}`, undefined],
+      ["GET", `/api/console/sessions/${sessionId}/presets`, undefined],
+      ["POST", `/api/console/sessions/${sessionId}/presets`, { presetIds: ["guessed"] }],
+      ["DELETE", `/api/console/sessions/${sessionId}/presets/guessed`, undefined],
+    ];
+    for (const [method, path, body] of attempts) {
+      const denied = await requestJson(method, path, body, bearer(agentBearer));
+      expect(denied.status, `${method} ${path}`).toBe(403);
+      expect(denied.body).toMatchObject({ code: "operator_required" });
+    }
+
+    const appBoundAttempts = attempts.map(([method, path, body]) => [
+      method,
+      path.replaceAll(sessionId, "agent-session"),
+      body && typeof body === "object"
+        ? JSON.parse(JSON.stringify(body).replaceAll(sessionId, "agent-session"))
+        : body,
+    ] as [string, string, unknown]);
+    for (const [method, path, body] of appBoundAttempts) {
+      const denied = await requestJson(method, path, body, bearer(agentBearer));
+      expect(denied.status, `${method} ${path}`).toBe(403);
+      expect(denied.body).toMatchObject({ code: "operator_required" });
+    }
+
+    const anonymous = await requestJson(
+      "GET",
+      `/api/presets/union?session_id=${sessionId}`,
+    );
+    expect(anonymous.status).toBe(401);
+    const allowed = await requestJson(
+      "GET",
+      `/api/presets/union?session_id=${sessionId}`,
+      undefined,
+      bearer(operatorBearer),
+    );
+    expect(allowed.status).toBe(200);
   });
 });
 

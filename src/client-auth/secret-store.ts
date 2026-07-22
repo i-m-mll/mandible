@@ -143,6 +143,7 @@ export interface StoredDashboardSession {
   slug: string;
   created_at: number;
   expires_at: number;
+  renew_until: number;
 }
 
 export function readDashboardSession(
@@ -168,10 +169,17 @@ export function readDashboardSession(
     || typeof value.slug !== "string"
     || typeof value.created_at !== "number"
     || typeof value.expires_at !== "number"
+    || (value.renew_until !== undefined && typeof value.renew_until !== "number")
   ) {
     throw new Error("Invalid client-auth dashboard session file.");
   }
-  return value as unknown as StoredDashboardSession;
+  const renewUntil = typeof value.renew_until === "number"
+    ? value.renew_until
+    : value.expires_at;
+  if (renewUntil < value.expires_at) {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  return { ...value, renew_until: renewUntil } as unknown as StoredDashboardSession;
 }
 
 export function writeDashboardSession(

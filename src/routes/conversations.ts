@@ -5,6 +5,7 @@ import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
 import { deriveConversationAttachState } from "../conversation-attach-state.js";
+import { operatorOnlyManagedSessionRoute } from "../client-auth/authz.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
 import type { SessionManager } from "../session-manager.js";
@@ -728,7 +729,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
 
   // POST /api/conversations/:id/fork — Fork a conversation at a specific message
   // Bug: 40f0298 — DAG branching: create a new session by forking at a message
-  server.post("/api/conversations/:id/fork", async (req, res) => {
+  server.post("/api/conversations/:id/fork", operatorOnlyManagedSessionRoute(async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -769,11 +770,11 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   // POST /api/conversations/:id/resume — Resume a conversation from a specific message
   // Bug: 40f0298 — DAG branching: create a Console session resuming at a message
-  server.post("/api/conversations/:id/resume", async (req, res) => {
+  server.post("/api/conversations/:id/resume", operatorOnlyManagedSessionRoute(async (req, res) => {
     const id = req.params.id;
     if (!id) {
       sendJson(res, 400, { error: "Missing conversation id" });
@@ -903,7 +904,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
         details: error instanceof Error ? error.message : String(error),
       });
     }
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   // GET /api/conversations/:id/blocks — Blocks with type filtering and pagination
   server.get("/api/conversations/:id/blocks", (req, res) => {

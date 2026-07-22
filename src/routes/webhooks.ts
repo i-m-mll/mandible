@@ -8,7 +8,8 @@ import { randomUUID } from "node:crypto";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import { getChannelRegistry } from "../channel-registry.js";
-import type { RouteRegistrar } from "../server.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
 import type { WebhookEvent, WebhookEventRow, WebhookEventStatus } from "../types.js";
@@ -81,11 +82,46 @@ interface RouteResult {
   message: string;
 }
 
+const ROUTE_FORBIDDEN = Symbol("webhook_operator_route_forbidden");
+type RouteAttempt = RouteResult | null | typeof ROUTE_FORBIDDEN;
+
+function requireOperatorForCredentialBearingSession(
+  sessionManager: SessionManager,
+  req: RequestLike,
+  res: ResponseLike,
+  sessionId: string,
+): boolean {
+  const db = getDb();
+  const classifier = (sessionManager as SessionManager & {
+    isCredentialBearing?: (id: string) => boolean;
+  }).isCredentialBearing;
+  const backend = sessionManager.get(sessionId);
+  const credentialBearing = typeof classifier === "function"
+    ? classifier.call(sessionManager, sessionId)
+    : backend?.meta.is_operator === true;
+  if (!credentialBearing) return true;
+  try {
+    requireOperator(db, req);
+    return true;
+  } catch (error) {
+    if (error instanceof ClientAuthzError) {
+      sendJson(res, error.status, { error: error.message, code: error.code });
+      return false;
+    }
+    throw error;
+  }
+}
+
 function tryRouteToConsoleSession(
   sessionManager: SessionManager,
   sessionId: string,
   event: WebhookEvent,
-): RouteResult | null {
+  req: RequestLike,
+  res: ResponseLike,
+): RouteAttempt {
+  if (!requireOperatorForCredentialBearingSession(sessionManager, req, res, sessionId)) {
+    return ROUTE_FORBIDDEN;
+  }
   const backend = sessionManager.get(sessionId);
   if (!backend) return null;
 
@@ -105,7 +141,9 @@ function tryRouteByIssue(
   sessionManager: SessionManager,
   issueId: string,
   event: WebhookEvent,
-): RouteResult | null {
+  req: RequestLike,
+  res: ResponseLike,
+): RouteAttempt {
   const db = getDb();
 
   // Look up work unit for this issue
@@ -120,7 +158,13 @@ function tryRouteByIssue(
   if (!workUnit?.assigned_session_id) return null;
 
   // The assigned_session_id may be a console session ID — try routing to it
-  return tryRouteToConsoleSession(sessionManager, workUnit.assigned_session_id, event);
+  return tryRouteToConsoleSession(
+    sessionManager,
+    workUnit.assigned_session_id,
+    event,
+    req,
+    res,
+  );
 }
 
 function tryRouteByBranch(
@@ -128,7 +172,9 @@ function tryRouteByBranch(
   sessionRegistry: SessionRegistry,
   branch: string,
   event: WebhookEvent,
-): RouteResult | null {
+  req: RequestLike,
+  res: ResponseLike,
+): RouteAttempt {
   // First check console sessions (managed by SessionManager)
   for (const backend of sessionManager.getAll()) {
     if (
@@ -143,7 +189,7 @@ function tryRouteByBranch(
           .prepare("SELECT branch FROM sessions WHERE id = ? AND branch = ?")
           .get(backend.meta.mandible_session_id, branch) as { branch: string } | undefined;
         if (session) {
-          return tryRouteToConsoleSession(sessionManager, backend.id, event);
+          return tryRouteToConsoleSession(sessionManager, backend.id, event, req, res);
         }
       }
     }
@@ -260,19 +306,29 @@ export function registerWebhookRoutes(
     };
 
     const id = randomUUID();
-    let result: RouteResult | null = null;
+    let result: RouteAttempt = null;
 
     // Routing priority: target_session > target_issue > target_branch > queue
     if (event.target_session) {
-      result = tryRouteToConsoleSession(sessionManager, event.target_session, event);
+      result = tryRouteToConsoleSession(sessionManager, event.target_session, event, req, res);
+      if (result === ROUTE_FORBIDDEN) return;
     }
 
     if (!result && event.target_issue) {
-      result = tryRouteByIssue(sessionManager, event.target_issue, event);
+      result = tryRouteByIssue(sessionManager, event.target_issue, event, req, res);
+      if (result === ROUTE_FORBIDDEN) return;
     }
 
     if (!result && event.target_branch) {
-      result = tryRouteByBranch(sessionManager, sessionRegistry, event.target_branch, event);
+      result = tryRouteByBranch(
+        sessionManager,
+        sessionRegistry,
+        event.target_branch,
+        event,
+        req,
+        res,
+      );
+      if (result === ROUTE_FORBIDDEN) return;
     }
 
     if (result) {
@@ -397,7 +453,14 @@ export function registerWebhookRoutes(
       priority: row.priority as WebhookEvent["priority"],
     };
 
-    const result = tryRouteToConsoleSession(sessionManager, targetSessionId, event);
+    const result = tryRouteToConsoleSession(
+      sessionManager,
+      targetSessionId,
+      event,
+      req,
+      res,
+    );
+    if (result === ROUTE_FORBIDDEN) return;
     if (!result) {
       sendJson(res, 422, {
         error: "delivery_failed",

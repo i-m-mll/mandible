@@ -45,6 +45,9 @@ import { registerProjectRoutes } from "./routes/projects.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerClientAuthRoutes } from "./routes/client-auth.js";
 import { ClientAuthenticator } from "./client-auth/index.js";
+import {
+  authorizeManagedSessionWebSocket,
+} from "./client-auth/authz.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
 import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
@@ -162,7 +165,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerConsoleRoutes(router, sessionManager);
   registerHookRoutes(router);
   // Bug: 61bee4e — preset routes for convention management
-  registerPresetRoutes(router);
+  registerPresetRoutes(router, sessionManager);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
@@ -229,8 +232,25 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     const url = new URL(req.url ?? "/", "http://localhost");
     const match = url.pathname.match(/^\/terminal\/([^/]+)$/);
     if (match) {
+      const sessionId = decodeURIComponent(match[1]);
+      const session = sessionManager.get(sessionId);
+      if (!session) {
+        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      if (!authorizeManagedSessionWebSocket(
+        db,
+        clientAuth,
+        req.headers["sec-websocket-protocol"],
+        url.pathname,
+        sessionManager.isCredentialBearing(sessionId),
+      )) {
+          socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+          socket.destroy();
+          return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const sessionId = decodeURIComponent(match[1]);
         const added = sessionManager.addWsClient(sessionId, ws);
         if (!added) {
           ws.close(1008, "session not found");

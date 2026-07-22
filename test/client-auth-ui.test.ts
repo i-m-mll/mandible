@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import {
+  clientAuthWebSocketProtocols,
   ensureClientAuthToken,
   getStoredToken,
   installClientAuthFetch,
@@ -38,12 +39,26 @@ afterEach(() => {
 describe("dashboard client-auth enrollment", () => {
   it("adopts a same-user fragment credential, strips it, and renews with Authorization", async () => {
     window.history.replaceState(null, "", "/#/issues?repo=mandible&mandible_auth=bootstrap-secret");
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer bootstrap-secret");
-      return new Response(JSON.stringify({ token: "dashboard-session" }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
+    let writeAttempts = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const authorization = new Headers(init?.headers).get("Authorization");
+      if (url === "/api/client-auth/handshake") {
+        const token = authorization === "Bearer bootstrap-secret"
+          ? "dashboard-session"
+          : "renewed-dashboard-session";
+        return new Response(JSON.stringify({ token }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url === "/api/write") {
+        writeAttempts += 1;
+        return new Response(null, {
+          status: authorization === "Bearer renewed-dashboard-session" ? 200 : 401,
+        });
+      }
+      return new Response(null, { status: 404 });
     });
     window.fetch = fetchMock as typeof window.fetch;
     installClientAuthFetch();
@@ -52,6 +67,24 @@ describe("dashboard client-auth enrollment", () => {
     expect(getStoredToken()).toBe("dashboard-session");
     expect(window.location.hash).toBe("#/issues?repo=mandible");
     expect(window.location.href).not.toContain("bootstrap-secret");
+
+    const recovered = await window.fetch("/api/write", { method: "POST" });
+    expect(recovered.status).toBe(200);
+    expect(writeAttempts).toBe(2);
+    expect(getStoredToken()).toBe("renewed-dashboard-session");
+    expect(clientAuthWebSocketProtocols()).toEqual([
+      "mandible",
+      "mandible-auth.renewed-dashboard-session",
+    ]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/client-auth/handshake",
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({
+          Authorization: "Bearer dashboard-session",
+        }),
+      }),
+    );
   });
 
   it("has the Tauri shell request a one-time protected proof and redirect with a fragment", () => {
