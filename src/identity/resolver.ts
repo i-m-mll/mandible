@@ -24,8 +24,17 @@ import {
   addBinding,
   getUserBySlug,
 } from "../users/store.js";
-import type { User, UserKind } from "../users/types.js";
+import {
+  EVIDENCE_METHODS,
+  assertEvidenceMethod,
+  isEvidenceMethod,
+  type EvidenceMethod,
+  type User,
+  type UserKind,
+} from "../users/types.js";
 import type { LedgerActorInput, LedgerActorType } from "../ledger/types.js";
+
+export { EVIDENCE_METHODS, assertEvidenceMethod, isEvidenceMethod, type EvidenceMethod };
 
 /**
  * Locked evidence-method vocabulary (issue 92813cc). `evidence_method` records
@@ -33,35 +42,8 @@ import type { LedgerActorInput, LedgerActorType } from "../ledger/types.js";
  * per-binding detail string. Site-specific detail (e.g. which binding type
  * matched) belongs in a separate context/evidence-details field, not here.
  */
-export const EVIDENCE_METHODS = [
-  "local_default",
-  "session_claim",
-  "external_import",
-  "credential_signature",
-  "hardware_presence",
-  "delegated_lease",
-  "system_internal",
-  "api_token",
-] as const;
-export type EvidenceMethod = (typeof EVIDENCE_METHODS)[number];
-
-const EVIDENCE_METHOD_SET: ReadonlySet<string> = new Set(EVIDENCE_METHODS);
-
-export function isEvidenceMethod(value: string): value is EvidenceMethod {
-  return EVIDENCE_METHOD_SET.has(value);
-}
-
-/**
- * Runtime guard applied at the ledger store boundary: reject any attribution
- * carrying an evidence_method outside the locked vocabulary.
- */
-export function assertEvidenceMethod(value: string): asserts value is EvidenceMethod {
-  if (!isEvidenceMethod(value)) {
-    throw new Error(
-      `Invalid evidence_method '${value}'. Allowed: ${EVIDENCE_METHODS.join(", ")}.`,
-    );
-  }
-}
+// Runtime guards and vocabulary are defined with the durable user/evidence
+// types and re-exported here for existing attribution-resolver consumers.
 
 /**
  * A resolved write principal. `user_id` names the acting user; `evidence_method`
@@ -134,6 +116,11 @@ export interface SessionAttributionSignals {
   binding_scope?: string | null;
 }
 
+export type SessionAttributionResolution =
+  | { status: "resolved"; attribution: AttributionContext }
+  | { status: "no_match" }
+  | { status: "conflict" };
+
 const SESSION_BINDING_ORDER: ReadonlyArray<{
   key: keyof SessionAttributionSignals;
   binding_type: string;
@@ -156,6 +143,15 @@ export function resolveSessionAttribution(
   db: Db,
   signals: SessionAttributionSignals,
 ): AttributionContext | null {
+  const result = resolveSessionAttributionResult(db, signals);
+  return result.status === "resolved" ? result.attribution : null;
+}
+
+/** Resolve session signals while preserving no-match vs conflict semantics. */
+export function resolveSessionAttributionResult(
+  db: Db,
+  signals: SessionAttributionSignals,
+): SessionAttributionResolution {
   const matchedUserIds = new Set<string>();
   for (const { key, binding_type } of SESSION_BINDING_ORDER) {
     const value = signals[key];
@@ -173,11 +169,45 @@ export function resolveSessionAttribution(
          LIMIT 2`,
       )
       .all(binding_type, normalizeBindingValue(value), scope, scope, scope) as Array<{ user_id: string }>;
-    if (rows.length > 1) return null;
+    if (rows.length > 1) return { status: "conflict" };
     if (rows.length === 1) matchedUserIds.add(rows[0].user_id);
   }
-  if (matchedUserIds.size !== 1) return null;
-  return { user_id: [...matchedUserIds][0], evidence_method: "session_claim" };
+  if (matchedUserIds.size === 0) return { status: "no_match" };
+  if (matchedUserIds.size > 1) return { status: "conflict" };
+  return {
+    status: "resolved",
+    attribution: { user_id: [...matchedUserIds][0], evidence_method: "session_claim" },
+  };
+}
+
+/**
+ * Resolve an auth/inbox session reference using the same fail-closed binding
+ * rules as live session writes. The session id itself is a
+ * `provider_session_env` signal; when the Mandible session row exists, its app
+ * is an additional claim that must resolve to the same user.
+ */
+export function resolveSessionIdAttribution(
+  db: Db,
+  sessionId: string,
+): AttributionContext | null {
+  const result = resolveSessionIdAttributionResult(db, sessionId);
+  return result.status === "resolved" ? result.attribution : null;
+}
+
+/** Resolve a session id without collapsing conflicting claims into no match. */
+export function resolveSessionIdAttributionResult(
+  db: Db,
+  sessionId: string,
+): SessionAttributionResolution {
+  const normalized = normalizeBindingValue(sessionId);
+  if (!normalized) return { status: "no_match" };
+  const row = db
+    .prepare("SELECT app FROM sessions WHERE id = ?")
+    .get(normalized) as { app: string } | undefined;
+  return resolveSessionAttributionResult(db, {
+    provider_session_env: normalized,
+    app_name: row?.app ?? null,
+  });
 }
 
 // --- LedgerActorInput adapters (used at write call sites) ---

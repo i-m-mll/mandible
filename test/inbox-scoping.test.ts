@@ -27,15 +27,23 @@ import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { migrate, setDb } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
+import { registerInboxRoutes } from "../src/routes/inbox.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import type { SseEvent } from "../src/types.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 // --- DB helpers ---------------------------------------------------------
+
+let testRequesterUserId = "";
 
 function setupInMemoryDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   db.pragma("journal_mode = WAL");
   migrate(db);
+  testRequesterUserId = setupOperator(db, {
+    slug: "inbox-auth-test",
+    display_name: "Inbox Auth Test",
+  }).id;
   setDb(db);
   return db;
 }
@@ -1702,6 +1710,61 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
   });
 });
 
+describe("inbox acknowledgement attribution", () => {
+  it("uses a bound user id and preserves an unknown legacy session string", async () => {
+    const db = setupInMemoryDb();
+    try {
+      seedAuthRow(db, { id: "bound-ack", target_session_id: null, target_repo_root: null, resolved_at: 1 });
+      seedAuthRow(db, { id: "legacy-ack", target_session_id: null, target_repo_root: null, resolved_at: 2 });
+      addBinding(db, "inbox-auth-test", {
+        binding_type: "provider_session_env",
+        value: "bound-ack-session",
+      });
+
+      const app = new TestRouteRegistrar();
+      registerInboxRoutes(app, {} as never, {} as never);
+
+      const bound = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
+        params: { type: "auth_result", id: "bound-ack" },
+        body: { session_id: "bound-ack-session" },
+        client_identity: null,
+      });
+      expect(bound.statusCode).toBe(200);
+      expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("bound-ack"))
+        .toEqual({ acknowledged_by: testRequesterUserId });
+
+      const legacy = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
+        params: { type: "auth_result", id: "legacy-ack" },
+        body: { session_id: "unbound-legacy-session" },
+        client_identity: null,
+      });
+      expect(legacy.statusCode).toBe(200);
+      expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("legacy-ack"))
+        .toEqual({ acknowledged_by: "unbound-legacy-session" });
+
+      seedAuthRow(db, { id: "conflict-ack", target_session_id: null, target_repo_root: null, resolved_at: 3 });
+      const other = createUser(db, {
+        slug: "inbox-conflicting-app",
+        kind: "agent",
+        display_name: "Inbox Conflicting App",
+      });
+      addBinding(db, other.slug, { binding_type: "app_name", value: "inbox-conflict-app" });
+      db.prepare("INSERT INTO sessions (id, app, status) VALUES (?, ?, 'active')")
+        .run("bound-ack-session", "inbox-conflict-app");
+      const conflict = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
+        params: { type: "auth_result", id: "conflict-ack" },
+        body: { session_id: "bound-ack-session" },
+        client_identity: null,
+      });
+      expect(conflict.statusCode).toBe(403);
+      expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("conflict-ack"))
+        .toEqual({ acknowledged_by: null });
+    } finally {
+      db.close();
+    }
+  });
+});
+
 class TestRouteRegistrar implements RouteRegistrar {
   private readonly handlers = new Map<string, RouteHandler>();
 
@@ -1720,7 +1783,11 @@ class TestRouteRegistrar implements RouteRegistrar {
   async invoke(
     method: string,
     routePath: string,
-    request: { body?: unknown } = {}
+    request: {
+      body?: unknown;
+      params?: Record<string, string>;
+      client_identity?: RequestLike["client_identity"];
+    } = {}
   ): Promise<TestRouteResponse> {
     const handler = this.handlers.get(`${method} ${routePath}`);
     if (!handler) {
@@ -1730,9 +1797,16 @@ class TestRouteRegistrar implements RouteRegistrar {
     await handler({
       method,
       url: routePath,
-      params: {},
+      params: request.params ?? {},
       query: {},
-      body: request.body
+      body: request.body,
+      client_identity: Object.hasOwn(request, "client_identity") ? request.client_identity : {
+        user_id: testRequesterUserId,
+        slug: "inbox-auth-test",
+        method: "api_token",
+        credential_id: null,
+        source: "in_process",
+      }
     } satisfies RequestLike, response);
     return response;
   }

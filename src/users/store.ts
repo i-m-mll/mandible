@@ -3,8 +3,11 @@ import { ulid } from "./ids.js";
 import {
   BINDING_TYPES,
   CREDENTIAL_TYPES,
+  assertEvidenceMethod,
   type AddBindingInput,
+  type AddAttributionEvidenceInput,
   type AddCredentialInput,
+  type AddDelegatedSigningLeaseInput,
   type AttributionEvidence,
   type CreateUserInput,
   type DelegatedSigningLease,
@@ -80,6 +83,24 @@ interface BindingRow {
   updated_at: number;
 }
 
+interface EvidenceRow {
+  id: string;
+  evidence_method: string;
+  credential_id: string | null;
+  lease_id: string | null;
+  verified_at: number;
+  details_json: string;
+}
+
+interface DelegatedSigningLeaseRow {
+  id: string;
+  credential_id: string;
+  owner_user_id: string;
+  minted_at: number;
+  expires_at: number;
+  mint_method: DelegatedSigningLease["mint_method"];
+}
+
 // --- mappers ---
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -133,6 +154,22 @@ function mapBinding(row: BindingRow): UserBinding {
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
+}
+
+function mapEvidence(row: EvidenceRow): AttributionEvidence {
+  assertEvidenceMethod(row.evidence_method);
+  return {
+    id: row.id,
+    evidence_method: row.evidence_method,
+    credential_id: row.credential_id,
+    lease_id: row.lease_id,
+    verified_at: row.verified_at,
+    details: parseJsonObject(row.details_json),
+  };
+}
+
+function mapDelegatedSigningLease(row: DelegatedSigningLeaseRow): DelegatedSigningLease {
+  return { ...row };
 }
 
 // --- validation helpers ---
@@ -505,6 +542,92 @@ export function revokeCredential(
   );
 }
 
+export function findActiveCredentialByFingerprint(
+  db: Db,
+  fingerprint: string,
+): UserCredential | null {
+  const row = db
+    .prepare("SELECT * FROM user_credentials WHERE fingerprint = ? AND status = 'active'")
+    .get(fingerprint.trim()) as CredentialRow | undefined;
+  return row ? mapCredential(row) : null;
+}
+
+export function addDelegatedSigningLease(
+  db: Db,
+  input: AddDelegatedSigningLeaseInput,
+): DelegatedSigningLease {
+  const owner = getUserById(db, input.owner_user_id);
+  if (!owner || owner.status !== "active" || owner.kind !== "human") {
+    throw new UserRegistryError("invalid", "Delegated signing lease owner must be an active human user.");
+  }
+  const credential = db
+    .prepare("SELECT * FROM user_credentials WHERE id = ?")
+    .get(input.credential_id) as CredentialRow | undefined;
+  if (
+    !credential ||
+    credential.status !== "active" ||
+    credential.user_id !== owner.id ||
+    credential.type !== "delegated_ssh_key"
+  ) {
+    throw new UserRegistryError(
+      "invalid",
+      "Delegated signing lease requires the owner's active delegated_ssh_key credential.",
+    );
+  }
+  if (input.expires_at <= input.minted_at) {
+    throw new UserRegistryError("invalid", "Delegated signing lease expiry must follow mint time.");
+  }
+  db.prepare(
+    `INSERT INTO delegated_signing_leases (
+       id, credential_id, owner_user_id, minted_at, expires_at, mint_method
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    input.id,
+    input.credential_id,
+    input.owner_user_id,
+    input.minted_at,
+    input.expires_at,
+    input.mint_method,
+  );
+  return getDelegatedSigningLease(db, input.id)!;
+}
+
+export function getDelegatedSigningLease(db: Db, id: string): DelegatedSigningLease | null {
+  const row = db
+    .prepare("SELECT * FROM delegated_signing_leases WHERE id = ?")
+    .get(id) as DelegatedSigningLeaseRow | undefined;
+  return row ? mapDelegatedSigningLease(row) : null;
+}
+
+export function addAttributionEvidence(
+  db: Db,
+  input: AddAttributionEvidenceInput,
+  now: number = Date.now(),
+): AttributionEvidence {
+  assertEvidenceMethod(input.evidence_method);
+  const id = ulid(now);
+  db.prepare(
+    `INSERT INTO attribution_evidence (
+       id, evidence_method, credential_id, lease_id, verified_at, details_json
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    id,
+    input.evidence_method,
+    input.credential_id ?? null,
+    input.lease_id ?? null,
+    now,
+    serializeMetadata(input.details),
+  );
+  return getAttributionEvidence(db, id)!;
+}
+
+export function getAttributionEvidence(db: Db, id: string): AttributionEvidence | null {
+  const row = db
+    .prepare("SELECT * FROM attribution_evidence WHERE id = ?")
+    .get(id) as EvidenceRow | undefined;
+  return row ? mapEvidence(row) : null;
+}
+
 // --- bindings ---
 
 export function listBindings(db: Db, ref: string): UserBinding[] {
@@ -676,14 +799,7 @@ export function listEvidence(db: Db, credentialId?: string): AttributionEvidence
   const rows = db
     .prepare(`SELECT * FROM attribution_evidence${where} ORDER BY verified_at ASC`)
     .all(...params) as EvidenceRow[];
-  return rows.map((row) => ({
-    id: row.id,
-    evidence_method: row.evidence_method,
-    credential_id: row.credential_id,
-    lease_id: row.lease_id,
-    verified_at: row.verified_at,
-    details: parseJsonObject(row.details_json),
-  }));
+  return rows.map(mapEvidence);
 }
 
 // --- internals ---

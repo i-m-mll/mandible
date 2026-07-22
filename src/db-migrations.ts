@@ -3038,6 +3038,17 @@ export const MIGRATIONS: readonly Migration[] = [
         ON user_bindings(binding_type, value)
         WHERE status = 'active' AND scope IS NULL`
     ]
+  },
+  {
+    version: 109,
+    name: "auth_request_user_attribution",
+    // Umbrella 8e2e8b2 / issue 6349203 — durable requester, approver, and
+    // execution-evidence attribution for auth requests. Columns remain nullable
+    // so legacy rows are preserved byte-for-byte; every new transport write is
+    // populated and validated by AuthQueue/route boundaries.
+    // Guarded by ensureAuthRequestUserAttributionColumns() so schema-rewind
+    // tests and interrupted upgrades can safely re-enter v109.
+    statements: []
   }
 ];
 
@@ -3111,6 +3122,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 108) {
         ensureLedgerUserAttributionColumns(db);
+      }
+      if (migration.version === 109) {
+        ensureAuthRequestUserAttributionColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5638,6 +5652,30 @@ function ensureLedgerUserAttributionColumns(db: Db): void {
     const index = indexes[table];
     if (index) db.exec(index);
   }
+}
+
+// Umbrella 8e2e8b2 / issue 6349203 (migration 109): guarded auth-request
+// requester, approver, and execution-evidence columns. Like migration 108,
+// this must tolerate a baseline-shaped table whose schema version was rewound
+// for recovery or migration verification.
+function ensureAuthRequestUserAttributionColumns(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns: Array<[string, string]> = [
+    ["requested_by_user_id", "TEXT REFERENCES users(id) ON DELETE RESTRICT"],
+    ["approved_by_user_id", "TEXT REFERENCES users(id) ON DELETE RESTRICT"],
+    ["execution_evidence_id", "TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL"],
+  ];
+  for (const [name, definition] of columns) {
+    if (!tableColumnNames(db, "auth_requests").has(name)) {
+      db.exec(`ALTER TABLE auth_requests ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_requested_by_user
+    ON auth_requests(requested_by_user_id) WHERE requested_by_user_id IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_approved_by_user
+    ON auth_requests(approved_by_user_id) WHERE approved_by_user_id IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_execution_evidence
+    ON auth_requests(execution_evidence_id) WHERE execution_evidence_id IS NOT NULL`);
 }
 
 function ensureBranchReapingKnowledgeColumns(db: Db): void {

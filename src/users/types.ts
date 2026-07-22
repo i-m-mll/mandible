@@ -34,6 +34,33 @@ export type BindingStatus = "active" | "inactive";
 
 export type MintMethod = "fresh_presence" | "reused_lease";
 
+/** Locked classes of evidence that may be persisted for durable attribution. */
+export const EVIDENCE_METHODS = [
+  "local_default",
+  "session_claim",
+  "external_import",
+  "credential_signature",
+  "hardware_presence",
+  "delegated_lease",
+  "system_internal",
+  "api_token",
+] as const;
+export type EvidenceMethod = (typeof EVIDENCE_METHODS)[number];
+
+const EVIDENCE_METHOD_SET: ReadonlySet<string> = new Set(EVIDENCE_METHODS);
+
+export function isEvidenceMethod(value: string): value is EvidenceMethod {
+  return EVIDENCE_METHOD_SET.has(value);
+}
+
+export function assertEvidenceMethod(value: string): asserts value is EvidenceMethod {
+  if (!isEvidenceMethod(value)) {
+    throw new Error(
+      `Invalid evidence_method '${value}'. Allowed: ${EVIDENCE_METHODS.join(", ")}.`,
+    );
+  }
+}
+
 export interface User {
   id: string;
   slug: string;
@@ -72,7 +99,7 @@ export interface UserBinding {
 
 export interface AttributionEvidence {
   id: string;
-  evidence_method: string;
+  evidence_method: EvidenceMethod;
   credential_id: string | null;
   lease_id: string | null;
   verified_at: number;
@@ -80,6 +107,22 @@ export interface AttributionEvidence {
 }
 
 export interface DelegatedSigningLease {
+  id: string;
+  credential_id: string;
+  owner_user_id: string;
+  minted_at: number;
+  expires_at: number;
+  mint_method: MintMethod;
+}
+
+export interface AddAttributionEvidenceInput {
+  evidence_method: EvidenceMethod;
+  credential_id?: string | null;
+  lease_id?: string | null;
+  details?: Record<string, unknown>;
+}
+
+export interface AddDelegatedSigningLeaseInput {
   id: string;
   credential_id: string;
   owner_user_id: string;
