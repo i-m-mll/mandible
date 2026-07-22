@@ -1,4 +1,5 @@
-import { execSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -15,10 +16,17 @@ import { resolveInstanceInfo } from "./instance-policy.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
 import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
-import { SseManager, setSseManager } from "./sse.js";
+import { broadcast, SseManager, setSseManager } from "./sse.js";
 import { Router, createServer, startServer, attachWebSocketUpgrade } from "./server.js";
 import { FileRpcTransport } from "./file-rpc-transport.js";
-import { isDaemonReady, removePidFile, setDaemonReady, writePidFile } from "./lifecycle.js";
+import {
+  isDaemonReady,
+  isDaemonWarm,
+  removePidFile,
+  setDaemonReady,
+  setDaemonWarm,
+  writePidFile,
+} from "./lifecycle.js";
 import { registerSessionRoutes } from "./routes/sessions.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { registerChatRoutes } from "./routes/chats.js";
@@ -28,6 +36,7 @@ import { registerInboxRoutes } from "./routes/inbox.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerConversationRoutes } from "./routes/conversations.js";
+import { WorkScanner } from "./work-scanner.js";
 import { registerConsoleRoutes } from "./routes/console.js";
 import { registerGraphRoutes } from "./routes/graph.js";
 import { registerHookRoutes } from "./routes/hooks.js";
@@ -83,6 +92,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // critical init completes below, so a page loaded mid-startup keeps the
   // splash up and auth/dashboard mutations are blocked.
   setDaemonReady(false);
+  setDaemonWarm(false);
+  startupInfo = null;
   const port = options.port ?? getPort();
   let logger = getDaemonLogger();
   const memoryDiagnostics = new DaemonMemoryDiagnostics({
@@ -109,6 +120,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   const sse = new SseManager();
   const version = resolveVersion();
+  const startupEpoch = randomUUID();
+  let startupWorkScanComplete = false;
+  let startupSessionDiscoveryComplete = false;
+  const updateWarmReadiness = () => {
+    if (!startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
+    setDaemonWarm(true);
+    logger("info", "daemon_warm", { port });
+  };
 
   // Set singletons so partition code can use broadcast() and getDb()
   setDb(db);
@@ -122,7 +141,15 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // auth_requests as delivered when the channel server forwards the event.
   const authQueue = registerAuthRoutes(router);
   registerChatRoutes(router);
-  const workScanner = registerWorkRoutes(router);
+  const workScanner = registerWorkRoutes(router, new WorkScanner({
+    on_event: (event) => {
+      broadcast(event);
+      if (event.type === "work:scan:completed") {
+        startupWorkScanComplete = true;
+        updateWarmReadiness();
+      }
+    },
+  }));
   registerTrashRoutes(router, db);
   // Bug: f3dbb3e — pass sessionRegistry immediately; sessionManager is set after creation via issueDeps ref
   const issueDeps: { sessionRegistry?: import("./registry.js").SessionRegistry; sessionManager?: import("./session-manager.js").SessionManager } = { sessionRegistry };
@@ -195,10 +222,12 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const fileRpcTransport = new FileRpcTransport({ router, logger, instance });
   const server = createServer({
     db, sse, logger, version, router,
+    startupEpoch,
     getStartupInfo: () => startupInfo,
     isRebuilding: () => authQueue.isRebuilding,
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
+    isWarm: () => isDaemonWarm(),
     getMemoryDiagnostics: () => memoryDiagnostics.sample(),
     getEventLoopDiagnostics: () => eventLoopDiagnostics.sample(),
     instance,
@@ -252,18 +281,23 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   if (typeof healthCheckTimer === "object" && "unref" in healthCheckTimer) {
     healthCheckTimer.unref();
   }
-  startupInfo = readStartupCommit(logger);
-  sse.setStartupCommit(startupInfo);
-
   // Bug: 645f8a8 — critical startup work is complete: the server is listening,
   // routes are registered, the DB is open, the pid file is written, the session
-  // manager has initialized, and the startup commit is known. Normal dashboard
+  // manager has initialized. Normal dashboard
   // mutations (auth approve/reject, etc.) are now safe. Flip the readiness gate
   // so health reports ready:true and the UI can drop the splash / re-enable
   // mutation controls. Deferred background scans (issue scan, session
   // discovery) run after this point and intentionally do NOT gate readiness.
   setDaemonReady(true);
   logger("info", "daemon_ready", { port: actualPort });
+
+  // Resolve the startup epoch after critical readiness. A slow git process must
+  // not delay mutation safety; health temporarily reports an unknown epoch and
+  // rebuild clients continue polling until the real commit is available.
+  void readStartupCommit(logger).then((commit) => {
+    startupInfo = commit;
+    sse.setStartupCommit(commit);
+  });
 
   // Start conversation ingestion watchers
   try {
@@ -289,6 +323,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       }
     } catch (error) {
       logger("warn", "startup_discovery_failed", { error: String(error) });
+    } finally {
+      startupSessionDiscoveryComplete = true;
+      updateWarmReadiness();
     }
   }, STARTUP_DISCOVERY_DELAY_MS);
   if (typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
@@ -381,6 +418,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     closing = true;
     // Bug: 645f8a8 — a draining daemon is no longer ready for mutations.
     setDaemonReady(false);
+    setDaemonWarm(false);
 
     // Hard deadline: if graceful shutdown hasn't completed in 5 seconds,
     // force exit so we don't become a zombie.
@@ -494,27 +532,31 @@ function routeMutationCategoriesJson(router: Router): string {
   }, null, 2)}\n`;
 }
 
-function readStartupCommit(logger: Logger): StartupCommitInfo {
-  try {
+function readStartupCommit(logger: Logger): Promise<StartupCommitInfo> {
+  return new Promise((resolve) => {
     // Run against the mandible repo root with no path filter — every commit
     // here is a mandible commit. The old path (.config/mcp-servers/mandible/)
     // was the pre-migration dotfiles location and no longer exists.
-    const raw = execSync("git log -1 --format='%H|%s|%ci'", {
+    execFile("git", ["log", "-1", "--format=%H|%s|%ci"], {
       cwd: MANDIBLE_ROOT,
-      encoding: "utf8"
-    }).trim();
-    const parts = raw.split("|");
-    const hash = parts.shift() ?? "";
-    const date = parts.length > 0 ? (parts.pop() ?? "") : "";
-    const summary = parts.join("|");
-    if (!hash || !summary || !date) {
-      throw new Error(`unexpected git log output: ${raw}`);
-    }
-    return { hash, summary, date };
-  } catch (error) {
-    logger("warn", "startup_commit_failed", { error: String(error) });
-    return { hash: "unknown", summary: "unknown", date: "" };
-  }
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    }, (error, stdout) => {
+      const raw = stdout.trim();
+      const parts = raw.split("|");
+      const hash = parts.shift() ?? "";
+      const date = parts.length > 0 ? (parts.pop() ?? "") : "";
+      const summary = parts.join("|");
+      if (error || !hash || !summary || !date) {
+        logger("warn", "startup_commit_failed", {
+          error: error ? String(error) : `unexpected git log output: ${raw}`,
+        });
+        resolve({ hash: "unknown", summary: "unknown", date: "" });
+        return;
+      }
+      resolve({ hash, summary, date });
+    });
+  });
 }
 
 function isMain(): boolean {

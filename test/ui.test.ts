@@ -788,6 +788,26 @@ describe('app shell', () => {
     });
   });
 
+  it('shows non-blocking workspace population status while the daemon is not warm', async () => {
+    stubEventSource();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/health') {
+        return Promise.resolve(new Response(JSON.stringify({ ready: true, warm: false }), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+
+    render(h(App, {}));
+
+    expect(await screen.findByText('Still loading workspace data…')).toBeTruthy();
+    expect(await screen.findByLabelText('Main navigation')).toBeTruthy();
+  });
+
   it('renders the Spaces preview notice from boot instance data before health resolves', async () => {
     stubEventSource();
     (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {

@@ -31,7 +31,16 @@ import {
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
-import { daemonIsReady, shouldEnterSplashOnProbe, type DaemonHealthSnapshot } from './daemon-readiness';
+import {
+  daemonEpochChanged,
+  daemonCommitChanged,
+  daemonIsReadyAfterEpoch,
+  daemonIsWarm,
+  daemonStartupEpoch,
+  daemonStartupCommit,
+  shouldEnterSplashOnBackgroundProbe,
+  type DaemonHealthSnapshot,
+} from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
   hashWithViewSidebarHidden,
@@ -91,6 +100,7 @@ import './views/spaces/SpaceTypeIndicator.css';
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
+const LAST_SEEN_STARTUP_EPOCH_KEY = 'mandible-last-seen-startup-epoch';
 const SPACES_LAST_VIEW_KEY = 'mandible.spaces.lastView:v1';
 const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#0b0f14',
@@ -243,6 +253,24 @@ function setLastSeenCommit(hash: string): void {
   }
   try {
     window.localStorage.setItem(LAST_SEEN_COMMIT_KEY, hash);
+  } catch {
+    return;
+  }
+}
+
+function getLastSeenStartupEpoch(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(LAST_SEEN_STARTUP_EPOCH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setLastSeenStartupEpoch(epoch: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LAST_SEEN_STARTUP_EPOCH_KEY, epoch);
   } catch {
     return;
   }
@@ -419,7 +447,13 @@ function TabChunkFallback(): JSX.Element {
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
 // Bug: 645f8a8 — also used as a generic "daemon starting" splash for pages
 // loaded mid-startup (the daemon is alive but not yet ready for mutations).
-function RebuildingSplash({ reason = 'rebuilding' }: { reason?: 'rebuilding' | 'starting' }): JSX.Element {
+function RebuildingSplash({
+  reason = 'rebuilding',
+  epochStalled = false,
+}: {
+  reason?: 'rebuilding' | 'starting';
+  epochStalled?: boolean;
+}): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
   return (
     <div className="rebuilding-splash">
@@ -429,7 +463,9 @@ function RebuildingSplash({ reason = 'rebuilding' }: { reason?: 'rebuilding' | '
           {isRebuilding ? 'Rebuilding & restarting…' : 'Starting Mandible…'}
         </div>
         <div className="rebuilding-splash__subtitle">
-          {isRebuilding
+          {epochStalled
+            ? 'The daemon is ready, but its startup commit has not changed. The rebuild may not have completed.'
+            : isRebuilding
             ? 'Mandible is restarting after a self-merge. This page will reload automatically.'
             : 'Mandible is finishing startup. This page will reload automatically when it is ready.'}
         </div>
@@ -472,6 +508,12 @@ function App(): JSX.Element {
   // down/restarting) that detects a not-ready daemon via the mount probe / poll,
   // even though it never saw the mandible:rebuilding SSE event.
   const [daemonStarting, setDaemonStarting] = useState(false);
+  const [daemonWarm, setDaemonWarm] = useState(true);
+  const [epochStalled, setEpochStalled] = useState(false);
+  const splashEpochRef = useRef<string | null>(null);
+  const splashCommitRef = useRef<string | null>(null);
+  const requireNewEpochRef = useRef(false);
+  const requireNewCommitRef = useRef(false);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
@@ -834,6 +876,11 @@ function App(): JSX.Element {
 
     // Bug: 326a3e2 — show full-page splash when daemon is about to restart
     const rebuildingHandler = () => {
+      splashEpochRef.current = getLastSeenStartupEpoch();
+      splashCommitRef.current = getLastSeenCommit();
+      requireNewEpochRef.current = true;
+      requireNewCommitRef.current = true;
+      setEpochStalled(false);
       setRebuilding(true);
     };
 
@@ -917,7 +964,9 @@ function App(): JSX.Element {
   const splashActive = rebuilding || daemonStarting;
   const daemonReady = !splashActive;
 
-  // Bug: 645f8a8 — initial mount probe. A page (re)loaded mid-rebuild or
+  // Initial mount plus low-cost background probe. Besides detecting explicit
+  // not-ready states, the epoch comparison catches a self-merge whose SSE
+  // rebuilding event was missed while EventSource was reconnecting.
   // mid-startup will not have seen the mandible:rebuilding SSE event. Probe
   // /api/health once on mount; enter the splash ONLY on a POSITIVE not-ready
   // signal — a successful health response that reports rebuilding or ready
@@ -927,8 +976,9 @@ function App(): JSX.Element {
   // every normal load. (The POLL predicate keeps the splash up through the
   // exit/restart gap once it is already active — that is a different question.)
   useEffect(() => {
+    if (splashActive) return;
     let cancelled = false;
-    void (async () => {
+    const probe = async () => {
       let health: DaemonHealthSnapshot | null = null;
       try {
         const res = await fetch('/api/health');
@@ -940,17 +990,35 @@ function App(): JSX.Element {
       if (health?.instance) {
         setInstanceInfo(health.instance);
       }
-      if (!shouldEnterSplashOnProbe(health)) return; // ready, or unreachable cold mount — render normally
+      setDaemonWarm(daemonIsWarm(health));
+      const previousEpoch = getLastSeenStartupEpoch();
+      const previousCommit = getLastSeenCommit();
+      const currentEpoch = daemonStartupEpoch(health);
+      const currentCommit = daemonStartupCommit(health);
+      if (!shouldEnterSplashOnBackgroundProbe(health, previousEpoch)) {
+        if (currentEpoch && !previousEpoch) setLastSeenStartupEpoch(currentEpoch);
+        if (currentCommit && !previousCommit) setLastSeenCommit(currentCommit);
+        return;
+      }
+      splashEpochRef.current = previousEpoch ?? currentEpoch;
+      splashCommitRef.current = previousCommit ?? currentCommit;
+      requireNewEpochRef.current = health?.rebuilding === true
+        || daemonEpochChanged(health, previousEpoch);
+      requireNewCommitRef.current = requireNewEpochRef.current;
+      setEpochStalled(false);
       if (health?.rebuilding) {
         setRebuilding(true);
       } else {
         setDaemonStarting(true);
       }
-    })();
+    };
+    void probe();
+    const timer = window.setInterval(() => { void probe(); }, 5_000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, []);
+  }, [splashActive]);
 
   // Bug: 326a3e2 — poll /api/health every 2s while the splash is active; reload
   // when the daemon reports it is ready.
@@ -971,9 +1039,34 @@ function App(): JSX.Element {
           const res = await fetch('/api/health');
           if (!res.ok) return; // not up yet — keep polling
           const data = (await res.json()) as DaemonHealthSnapshot;
-          // Reload only once the restarted daemon is ready for normal mutations.
-          if (daemonIsReady(data)) {
+          setDaemonWarm(daemonIsWarm(data));
+          const currentEpoch = daemonStartupEpoch(data);
+          const currentCommit = daemonStartupCommit(data);
+          if (data.rebuilding && !splashEpochRef.current && currentEpoch) {
+            splashEpochRef.current = currentEpoch;
+          }
+          if (data.rebuilding && !splashCommitRef.current && currentCommit) {
+            splashCommitRef.current = currentCommit;
+          }
+          // Reload only once the restarted daemon is mutation-safe and, for a
+          // rebuild, its startup commit differs from the connected daemon.
+          if (daemonIsReadyAfterEpoch(
+            data,
+            splashEpochRef.current,
+            requireNewEpochRef.current,
+          ) && (
+            !requireNewCommitRef.current
+            || daemonCommitChanged(data, splashCommitRef.current)
+          )) {
+            if (currentEpoch) setLastSeenStartupEpoch(currentEpoch);
+            if (currentCommit) setLastSeenCommit(currentCommit);
             window.location.reload();
+          } else if (
+            requireNewEpochRef.current
+            && data.ready === true
+            && data.rebuilding !== true
+          ) {
+            setEpochStalled(true);
           }
         } catch {
           // Server not yet up — keep polling
@@ -1481,11 +1574,19 @@ function App(): JSX.Element {
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
   if (splashActive) {
-    return <RebuildingSplash reason={rebuilding ? 'rebuilding' : 'starting'} />;
+    return <RebuildingSplash
+      reason={rebuilding ? 'rebuilding' : 'starting'}
+      epochStalled={epochStalled}
+    />;
   }
 
   return (
     <div className="app-shell">
+      {!daemonWarm && (
+        <div className="daemon-warm-status" role="status" aria-live="polite">
+          Still loading workspace data…
+        </div>
+      )}
       {state.daemonReload && (
         <div className="daemon-toast" role="status" aria-live="polite">
           <span>Daemon reloaded</span>
