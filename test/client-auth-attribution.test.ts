@@ -17,6 +17,7 @@ import {
   addBinding,
   addCredential,
   createUser,
+  setupAgentUsers,
   setupOperator,
 } from "../src/users/store.js";
 
@@ -143,6 +144,38 @@ describe("client-auth durable attribution", () => {
     expect(allowed.status).toBe(200);
     expect(allowed.body).toMatchObject({ console_session_id: "managed-issue-session" });
     expect(sessionCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves a Codex requester from ambient provider identity without a session row", async () => {
+    const submit = (sessionId: string) => router.invoke({
+      method: "POST",
+      url: "/api/auth/request",
+      body: {
+        command: "echo codex",
+        title: "Codex desktop auth request",
+        session_id: sessionId,
+      },
+      ambient_identity: {
+        provider: "codex",
+        provider_session_id: "codex-desktop-thread",
+      },
+      transport: "http",
+    });
+
+    expect((await submit("codex-desktop-thread")).status).toBe(401);
+    const codex = setupAgentUsers(db).find((user) => user.slug === "codex")!;
+    expect(
+      db.prepare("SELECT id FROM sessions WHERE id = ?").get("codex-desktop-thread"),
+    ).toBeUndefined();
+
+    const submitted = await submit("codex-desktop-thread");
+    expect(submitted.status).toBe(201);
+    const requestId = (submitted.body as { request_id: string }).request_id;
+    expect(authQueue.getRequest(requestId)?.requested_by_user_id).toBe(codex.id);
+
+    const mismatched = await submit("different-thread");
+    expect(mismatched.status).toBe(403);
+    expect(mismatched.body).toMatchObject({ code: "requester_session_conflict" });
   });
 
   it("persists requester and approver users while rejecting conflicting session identity", async () => {
