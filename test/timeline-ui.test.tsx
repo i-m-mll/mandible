@@ -847,7 +847,7 @@ describe('TimelineView', () => {
     }));
 
     expect(screen.getByRole('status', { name: 'Loading timeline' })).toBeTruthy();
-    expect(screen.getByText('Loading mandible timeline...')).toBeTruthy();
+    expect(document.querySelector('.loading-skeleton--canvas')).toBeTruthy();
     expect(screen.queryByText('No timeline rows match the current controls.')).toBeNull();
 
     await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
@@ -1629,7 +1629,7 @@ describe('TimelineView', () => {
     await waitFor(() => expect(screen.getByText('Mandible loaded root')).toBeTruthy());
     changeSelect(screen.getByLabelText('Project'), 'mll.bio');
     await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
-    expect(screen.getByText('Loading mll.bio timeline...')).toBeTruthy();
+    expect(document.querySelector('.loading-skeleton--canvas')).toBeTruthy();
 
     view.rerender(h(TimelineView, {
       repos,
@@ -1647,7 +1647,7 @@ describe('TimelineView', () => {
     expect(screen.queryByText('Mandible loaded root')).toBeNull();
   });
 
-  it('ignores stale prior-project responses that resolve after the selected project', async () => {
+  it('invalidates stale prior-project responses as soon as the selected request key changes', async () => {
     const mandible = projectProjection(
       'mandible',
       'Mandible coordination root',
@@ -1691,13 +1691,14 @@ describe('TimelineView', () => {
 
     await waitFor(() => expect(fetchMock.mock.calls.length).toBe(1));
     changeSelect(screen.getByLabelText('Project'), 'feedbax');
+    resolveMandible();
     await waitFor(() => expect(fetchMock.mock.calls.length).toBe(2));
+    expect(screen.queryByText('Mandible stale response')).toBeNull();
 
     resolveFeedbax();
     await waitFor(() => expect(screen.getByText('Feedbax selected response')).toBeTruthy());
     expect(screen.queryByText('Mandible stale response')).toBeNull();
 
-    resolveMandible();
     await waitFor(() => {
       expect(screen.getByText('Feedbax selected response')).toBeTruthy();
       expect(screen.queryByText('Mandible stale response')).toBeNull();
@@ -2138,8 +2139,13 @@ describe('TimelineView', () => {
       params: { project: 'mandible' },
     }));
 
-    await waitFor(() => expect(screen.getByText('Review A start')).toBeTruthy());
-    const memberEvent = screen.getByText('Review A start').closest('button') as HTMLButtonElement;
+    await waitFor(() => expect(
+      Array.from(document.querySelectorAll('.timeline-row-canvas .timeline-event'))
+        .some((event) => event.textContent?.includes('Review A start')),
+    ).toBe(true));
+    const memberEvent = Array.from(
+      document.querySelectorAll<HTMLButtonElement>('.timeline-row-canvas .timeline-event'),
+    ).find((event) => event.textContent?.includes('Review A start'))!;
     expect(parseFloat(memberEvent.style.left)).toBe(firstAggregateLeft);
   });
 

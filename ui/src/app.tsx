@@ -68,6 +68,7 @@ import {
   LogsIcon,
   ProjectsIcon,
 } from './components/icons/TabIcons';
+import { LoadingSkeleton } from './components/LoadingSkeleton';
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
@@ -394,11 +395,7 @@ function routeForTab(
 }
 
 function TabChunkFallback(): JSX.Element {
-  return (
-    <div className="app-tab-loading" role="status" aria-live="polite">
-      Loading...
-    </div>
-  );
+  return <LoadingSkeleton variant="tab" label="Loading view" />;
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge

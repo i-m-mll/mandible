@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import type { ConsoleSession } from '../state';
@@ -49,6 +49,8 @@ import {
 import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
 import { createSSEClient } from '../sse-client';
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import type { WorkRepo } from './work';
 // Bug: bce7370 — Shared message-block components
 import {
@@ -62,6 +64,14 @@ import {
 type ToastState = { message: string; type: 'info' | 'error' } | null;
 
 type AttachComposerMode = 'enabled' | 'disabled' | 'hidden';
+
+function defaultCollapsedConversationBlocks(conversation: ConversationWithDetails): Set<string> {
+  return new Set(
+    conversation.blocks
+      .filter((block) => block.type === 'system')
+      .map((block) => block.id),
+  );
+}
 
 export function getConversationAttachPresentation(
   state: ConversationAttachState,
@@ -1327,9 +1337,13 @@ function ConversationDetail({
   workRepos: WorkRepo[];
   sidebarCollapsed: boolean;
 }): JSX.Element {
-  const [conversation, setConversation] = useState<ConversationWithDetails | null>(
+  const [loadedConversation, setConversation] = useState<ConversationWithDetails | null>(
     initialConversation ? conversationShell(initialConversation) : null,
   );
+  const [loadedConversationKey, setLoadedConversationKey] = useState(
+    () => detailRequestKey('conversation', { conversationId, leaf: null }),
+  );
+  const collapsedBlocksKeyRef = useRef<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadNonce, setLoadNonce] = useState(0);
@@ -1365,15 +1379,25 @@ function ConversationDetail({
   const [continueError, setContinueError] = useState<string | null>(null);
   const [resumeErrorDetails, setResumeErrorDetails] = useState<string | null>(null);
   const [selectedLeaf, setSelectedLeaf] = useState<string | null>(null);
+  const conversationRequestKey = detailRequestKey('conversation', { conversationId, leaf: selectedLeaf });
+  const conversation = loadedConversationKey === conversationRequestKey ? loadedConversation : null;
 
   // Virtual scroll state
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [containerHeight, setContainerHeight] = useState(800);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    if (selectedLeaf) return undefined;
     let active = true;
-    setConversation(initialConversation ? conversationShell(initialConversation) : null);
+    const requestKey = detailRequestKey('conversation', { conversationId, leaf: null });
+    const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
+    setLoadedConversationKey(requestKey);
+    setConversation(cached ?? (initialConversation ? conversationShell(initialConversation) : null));
+    if (cached && collapsedBlocksKeyRef.current !== requestKey) {
+      collapsedBlocksKeyRef.current = requestKey;
+      setCollapsedBlocks(defaultCollapsedConversationBlocks(cached));
+    }
     setLoading(true);
     setError(null);
     getConversation(conversationId)
@@ -1382,13 +1406,10 @@ function ConversationDetail({
         setConversation(conv);
         // Bug: bce7370 — Fix 1: Don't add thinking blocks to the outer collapsed set.
         // ThinkingBlock now manages its own collapse state internally.
-        const defaultCollapsed = new Set<string>();
-        for (const block of conv.blocks) {
-          if (block.type === 'system') {
-            defaultCollapsed.add(block.id);
-          }
+        if (collapsedBlocksKeyRef.current !== requestKey) {
+          collapsedBlocksKeyRef.current = requestKey;
+          setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
         }
-        setCollapsedBlocks(defaultCollapsed);
         setLoading(false);
       })
       .catch((err) => {
@@ -1397,7 +1418,12 @@ function ConversationDetail({
         setLoading(false);
       });
     return () => { active = false; };
-  }, [conversationId, initialConversation, loadNonce]);
+  }, [conversationId, initialConversation, loadNonce, selectedLeaf]);
+
+  useEffect(() => {
+    if (!conversation || loading || loadedConversationKey !== conversationRequestKey) return;
+    writePersistedDetail('conversations', conversationRequestKey, conversation);
+  }, [conversation, conversationRequestKey, loadedConversationKey, loading]);
 
   useEffect(() => {
     if (typeof EventSource === 'undefined') return undefined;
@@ -1490,13 +1516,25 @@ function ConversationDetail({
   }, [conversation?.session_id]);
 
   // Reload conversation when a leaf branch is selected
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedLeaf) return;
     let active = true;
+    const requestKey = detailRequestKey('conversation', { conversationId, leaf: selectedLeaf });
+    const cached = readPersistedDetail<ConversationWithDetails>('conversations', requestKey);
+    setLoadedConversationKey(requestKey);
+    setConversation(cached);
+    if (cached && collapsedBlocksKeyRef.current !== requestKey) {
+      collapsedBlocksKeyRef.current = requestKey;
+      setCollapsedBlocks(defaultCollapsedConversationBlocks(cached));
+    }
     setLoading(true);
     getConversation(conversationId, selectedLeaf)
       .then((conv) => {
         if (!active) return;
+        if (collapsedBlocksKeyRef.current !== requestKey) {
+          collapsedBlocksKeyRef.current = requestKey;
+          setCollapsedBlocks(defaultCollapsedConversationBlocks(conv));
+        }
         setConversation(conv);
         setLoading(false);
       })
@@ -1505,7 +1543,7 @@ function ConversationDetail({
         setLoading(false);
       });
     return () => { active = false; };
-  }, [conversationId, selectedLeaf]);
+  }, [conversationId, loadNonce, selectedLeaf]);
 
   useEffect(() => {
     const handleConversationSse = (event: Event) => {
@@ -1993,11 +2031,7 @@ function ConversationDetail({
   }, [conversation?.session_id, linkedConsoleSession?.id]);
 
   if (loading && !conversation) {
-    return (
-      <div className="conv-detail">
-        <div className="empty-state">Loading conversation...</div>
-      </div>
-    );
+    return <LoadingSkeleton variant="detail" label="Loading conversation" />;
   }
 
   if (error && !conversation) {
