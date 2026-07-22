@@ -63,6 +63,13 @@ import {
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
 import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
+import {
+  PermissionError,
+  evaluateProjectAccess,
+  requireProjectAccess,
+  sendPermissionError,
+  type ProjectRole,
+} from "../permissions/store.js";
 
 export interface RouteHandler<Request = RequestLike, Response = ResponseLike> {
   (req: Request, res: Response): unknown;
@@ -253,6 +260,16 @@ function resolveRelationshipEntityRef(
   } catch {
     return resolvedIssue;
   }
+}
+
+function relationshipEntityIssueId(
+  db: Db,
+  entity: { entity_type: LedgerRelationshipEntityType; entity_id: string },
+): string | null {
+  if (entity.entity_type === "issue") return entity.entity_id;
+  const row = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+    .get(entity.entity_id) as { issue_id: string } | undefined;
+  return row?.issue_id ?? null;
 }
 
 function sendLedgerIssueProjection(
@@ -1209,6 +1226,31 @@ function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): s
   }
 }
 
+function enforceIssueProjectAccess(
+  db: Db,
+  req: RequestLike,
+  res: ResponseLike,
+  issueId: string,
+  role: ProjectRole,
+): boolean {
+  const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?")
+    .get(issueId) as { project_id: string } | undefined;
+  if (!row) {
+    sendJson(res, 404, { error: "ledger issue not found" });
+    return false;
+  }
+  try {
+    requireProjectAccess(db, req, row.project_id, role);
+    return true;
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      sendPermissionError(res, error);
+      return false;
+    }
+    throw error;
+  }
+}
+
 interface ResolvedRouteIssue {
   repoId: string;
   issue: GitBugIssueDetail;
@@ -1269,6 +1311,16 @@ export function registerIssueRoutes(
       status: statusFilter,
       label: labelFilter,
     });
+    summaries = summaries.filter((summary) => {
+      const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
+      if (project.ambiguous) return false;
+      if (!project.ok || !project.project) return true;
+      return evaluateProjectAccess(db, {
+        identity: req.client_identity ?? null,
+        project_id: project.project.id,
+        required_role: "read",
+      }).allowed;
+    });
 
     sendJson(res, 200, summaries);
   }, { fileRpc: "allow" });
@@ -1286,6 +1338,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     sendLedgerIssueProjection(res, db, resolved.issue_id, [], {
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
@@ -1304,6 +1357,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     try {
       const deep = getQueryParam(req, "deep") === "true";
       sendJson(res, 200, buildUmbrellaStatus(db, resolved.issue_id, { deep }));
@@ -1330,6 +1384,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
       sendJson(res, 200, buildUmbrellaAdoptionResponse(
         db,
@@ -1355,6 +1410,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
       const umbrella = buildLedgerIssueDetailProjection(db, resolved.issue_id);
       sendJson(
@@ -1385,6 +1441,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
       sendJson(res, 200, buildUmbrellaManifestRefreshResponse(
         db,
@@ -1410,6 +1467,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id));
   }, { fileRpc: "allow" });
 
@@ -1435,6 +1493,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const reconcileBlocker = parentRoleReconcileBlocker(db, resolved.issue_id);
     if (reconcileBlocker) {
       sendJson(res, 409, reconcileBlocker);
@@ -1492,6 +1551,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     try {
       sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id, at === null ? {} : { at }));
     } catch (error) {
@@ -1511,6 +1571,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const revisions = new LedgerStore(db).listBodyRevisions({
       entity_type: "issue_body",
       entity_id: resolved.issue_id,
@@ -1559,6 +1620,12 @@ export function registerIssueRoutes(
         return;
       }
       targetEntities.push(targetEntity);
+    }
+    const issueIds = new Set([sourceEntity, ...targetEntities]
+      .map((entity) => relationshipEntityIssueId(db, entity))
+      .filter((id): id is string => id !== null));
+    for (const issueId of issueIds) {
+      if (!enforceIssueProjectAccess(db, req, res, issueId, "write")) return;
     }
     try {
       const result = new LedgerStore(db).linkRelationshipEdges({
@@ -1613,6 +1680,12 @@ export function registerIssueRoutes(
       }
       targetEntities.push(targetEntity);
     }
+    const issueIds = new Set([sourceEntity, ...targetEntities]
+      .map((entity) => relationshipEntityIssueId(db, entity))
+      .filter((id): id is string => id !== null));
+    for (const issueId of issueIds) {
+      if (!enforceIssueProjectAccess(db, req, res, issueId, "write")) return;
+    }
     try {
       const result = new LedgerStore(db).unlinkRelationshipEdges({
         source_entity: sourceEntity,
@@ -1634,6 +1707,13 @@ export function registerIssueRoutes(
       return;
     }
     const db = getDb();
+    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+      .get(commentId) as { issue_id: string } | undefined;
+    if (!owner) {
+      sendJson(res, 404, { error: "comment not found" });
+      return;
+    }
+    if (!enforceIssueProjectAccess(db, req, res, owner.issue_id, "read")) return;
     const store = new LedgerStore(db);
     try {
       store.getComment(commentId);
@@ -1742,6 +1822,15 @@ export function registerIssueRoutes(
         return;
       }
     }
+    try {
+      requireProjectAccess(db, req, project.id, "write");
+    } catch (error) {
+      if (error instanceof PermissionError) {
+        sendPermissionError(res, error);
+        return;
+      }
+      throw error;
+    }
     const store = new LedgerStore(db);
     const issue = store.createIssue({
       project_id: project.id,
@@ -1779,6 +1868,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
     if (!markdownPolicy.ok) return;
     new LedgerStore(db).addComment(resolved.issue_id, {
@@ -1815,6 +1905,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
       const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
         kind,
@@ -1842,6 +1933,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const kind = getQueryParam(req, "kind");
     const latest = getQueryParam(req, "latest");
     const store = new LedgerStore(db);
@@ -1883,6 +1975,13 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "body or author_display is required" });
       return;
     }
+    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+      .get(commentId) as { issue_id: string } | undefined;
+    if (!owner) {
+      sendJson(res, 404, { error: "comment not found" });
+      return;
+    }
+    if (!enforceIssueProjectAccess(db, req, res, owner.issue_id, "write")) return;
     const store = new LedgerStore(db);
     try {
       const comment = store.updateComment(commentId, patch, {
@@ -1919,6 +2018,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
 
     let markdownWarnings: MarkdownBodyPolicyWarning[] = [];
     const patch: {
@@ -2012,6 +2112,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).setWorkerStatus(
       resolved.issue_id,
       workerStatus as LedgerWorkerStatus,
@@ -2044,6 +2145,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).addIssueBranch(
       resolved.issue_id,
       branch,
@@ -2083,6 +2185,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
       actor_type: "mandible_user",
       author_display: "Mandible",
@@ -2129,6 +2232,9 @@ export function registerIssueRoutes(
     try {
       const result = findLedgerIssueAcrossRepos(db, workScanner, issueId);
       if (result.ok) {
+        const ledgerIssueId = resolveContextLedgerIssueId(db, result.detail.id, result.detail.repo_id);
+        if (ledgerIssueId
+          && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
         sendJson(res, 200, result.detail);
         return;
       }
@@ -2154,6 +2260,13 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
+    const operationalIssue = resolveOperationalIssueRef(db, issue_id, repo_id);
+    if (!operationalIssue.ok && operationalIssue.error === "ambiguous") {
+      sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
+      return;
+    }
+    if (operationalIssue.ok
+      && !enforceIssueProjectAccess(db, req, res, operationalIssue.issue_id, "write")) return;
     const resolvedAt = Date.now();
     db.prepare(
       `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
@@ -2186,6 +2299,13 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueId);
+    if (!resolved.ok && resolved.status === 409) {
+      sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
+      return;
+    }
+    if (resolved.ok
+      && !enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const rows = db.prepare(
       `SELECT commit_sha, repo_id, resolved_at
        FROM issue_resolutions
@@ -2215,6 +2335,12 @@ export function registerIssueRoutes(
       sendJson(res, result.status, { error: result.error });
       return;
     }
+    const ledgerIssueId = resolveContextLedgerIssueId(
+      db,
+      result.resolved.issue.id,
+      result.resolved.repoId,
+    );
+    if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
     sendJson(res, 200, result.resolved.issue);
   }, { fileRpc: "deny" });
 
@@ -2241,6 +2367,7 @@ export function registerIssueRoutes(
     }
     const { repoId, issue } = resolvedIssue.resolved;
     const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
+    if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
 
     // 2. Work unit for this issue+repo
     const workUnitRow = ledgerIssueId

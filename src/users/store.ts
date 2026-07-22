@@ -24,6 +24,7 @@ import {
 /** Fixed sentinel id for the single canonical `system` user (see migration v107). */
 export const SYSTEM_USER_ID = "00000000000000000000000000";
 export const SYSTEM_USER_SLUG = "system";
+const AGENTS_GROUP_ID = "00000000000000000000000001";
 
 /** Settings key recording which user is the local human operator. */
 export const OPERATOR_SETTING_KEY = "user.operator_id";
@@ -423,6 +424,15 @@ export function createUser(db: Db, input: CreateUserInput, now: number = Date.no
     now,
     serializeMetadata(input.metadata),
   );
+  if (input.kind === "agent") {
+    // Issue a0379a3 — creating an agent is the deliberate enrollment action.
+    // INSERT OR IGNORE keeps setupAgentUsers idempotent without silently
+    // enrolling pre-existing non-agent principals.
+    db.prepare(
+      `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
+       VALUES (?, ?, ?)`,
+    ).run(AGENTS_GROUP_ID, id, now);
+  }
   return getUserById(db, id)!;
 }
 
@@ -800,6 +810,10 @@ export function setupAgentUsers(
         display_name: definition.display_name,
       }, now);
     }
+    db.prepare(
+      `INSERT OR IGNORE INTO user_group_members (group_id, user_id, created_at)
+       VALUES (?, ?, ?)`,
+    ).run(AGENTS_GROUP_ID, user.id, now);
     for (const appName of definition.app_names) {
       ensureActiveBinding(db, user.id, "app_name", appName, now);
     }

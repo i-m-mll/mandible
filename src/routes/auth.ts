@@ -22,6 +22,7 @@ import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { readBody } from "./http.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 
 const authRouteLog = getDaemonLogger();
 
@@ -359,15 +360,15 @@ export function registerAuthRoutes(
     });
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/approve", (req, res) => {
+  app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", (req, res) => {
     try {
-      const identity = requireOperator(getDb(), req);
+      const identity = req.client_identity!;
       const request = authQueue.approve(req.params.id, undefined, identity.user_id);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { authenticated: true }), { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/reject", (req, res) => {
     try {

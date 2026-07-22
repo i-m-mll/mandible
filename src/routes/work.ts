@@ -1,7 +1,16 @@
 import { WorkScanner, type BranchData } from "../work-scanner.js";
 import { buildWorkAudit } from "../work-audit.js";
 import { startPushSession, pushSingleRepo, getPushStatus, type PushScope } from "../push-manager.js";
-import type { RouteRegistrar } from "../server.js";
+import { getDb } from "../db.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { resolveWorkProject } from "../permissions/resources.js";
+import {
+  evaluateProjectAccess,
+  PermissionError,
+  requireProjectAccess,
+  sendPermissionError,
+  type ProjectRole,
+} from "../permissions/store.js";
 import { queryString, sendJson } from "./http.js";
 
 type BranchSort = "recency" | "name" | "activity";
@@ -78,6 +87,44 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     const repos = workScanner.getRepos();
     return repos[index];
   };
+  const enforceRepoAccess = (
+    req: RequestLike,
+    res: ResponseLike,
+    repo: { id: string; root: string },
+    role: ProjectRole,
+  ): boolean => {
+    const db = getDb();
+    const resolved = resolveWorkProject(db, repo.id);
+    const project = resolved.ok ? resolved : resolveWorkProject(db, repo.root);
+    // Unregistered work-scanner entries have no restriction state and retain
+    // their historical behavior. Ambiguous registered identity fails closed.
+    if (!project.ok && project.reason === "not_found") return true;
+    if (!project.ok) {
+      sendJson(res, 403, { error: "ambiguous work project", code: "ambiguous_project" });
+      return false;
+    }
+    try {
+      requireProjectAccess(db, req, project.project_id, role);
+      return true;
+    } catch (error) {
+      if (error instanceof PermissionError) {
+        sendPermissionError(res, error);
+        return false;
+      }
+      throw error;
+    }
+  };
+  const canRepoAccess = (req: RequestLike, repo: { id: string; root: string }, role: ProjectRole): boolean => {
+    const db = getDb();
+    const direct = resolveWorkProject(db, repo.id);
+    const project = direct.ok ? direct : resolveWorkProject(db, repo.root);
+    if (!project.ok) return project.reason === "not_found";
+    return evaluateProjectAccess(db, {
+      identity: req.client_identity ?? null,
+      project_id: project.project_id,
+      required_role: role,
+    }).allowed;
+  };
 
   // Bug: d6f79a2 — fire-and-forget async scan; respond immediately with cached
   // repo list so the UI is not blocked while branches are scanned. The first
@@ -99,13 +146,17 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     ensureScan();
     const includeExcluded = queryString(req, "include_excluded") === "true";
     const repos = workScanner.getRepos();
-    const filtered = includeExcluded ? repos : repos.filter((r) => !r.excluded);
+    const visible = repos.filter((repo) => canRepoAccess(req, repo, "read"));
+    const filtered = includeExcluded ? visible : visible.filter((r) => !r.excluded);
     sendJson(res, 200, filtered);
   }, { fileRpc: "allow" });
 
   server.put("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;
     if (!id) { sendJson(res, 400, { error: "missing repo id" }); return; }
+    const repo = resolveRepo(id);
+    if (!repo) { sendJson(res, 404, { error: "repo not found" }); return; }
+    if (!enforceRepoAccess(req, res, repo, "write")) return;
     const body = req.body as { name?: string; excluded?: boolean } | undefined;
     const updated = workScanner.updateRepo(id, body ?? {});
     if (!updated) { sendJson(res, 404, { error: "repo not found" }); return; }
@@ -126,6 +177,9 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
 
   server.delete("/api/work/repos/:id", (req, res) => {
     const id = req.params.id;
+    const repo = resolveRepo(id ?? "");
+    if (!repo) { sendJson(res, 404, { error: "repo not found" }); return; }
+    if (!enforceRepoAccess(req, res, repo, "write")) return;
     const ok = workScanner.removeRepo(id ?? "");
     if (!ok) { sendJson(res, 404, { error: "repo not found" }); return; }
     sendJson(res, 200, { ok: true });
@@ -143,6 +197,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "read")) return;
     const sort = queryString(req, "sort");
     const filter = queryString(req, "filter");
     const branches = workScanner.getBranches(repo.root);
@@ -160,6 +215,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "read")) return;
     let refreshedRepo;
     try {
       refreshedRepo = workScanner.refreshRepo(repo.root);
@@ -189,6 +245,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "read")) return;
     const branch = branchName;
     if (!workScanner.getBranch(repo.root, branch)) {
       sendJson(res, 404, { error: "branch not found" });
@@ -211,6 +268,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "read")) return;
     const from = queryString(req, "from");
     const to = queryString(req, "to");
     if (!from || !to) {
@@ -233,6 +291,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "read")) return;
     sendJson(res, 200, workScanner.getWorktrees(repo.root));
   }, { fileRpc: "deny" });
 
@@ -249,6 +308,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "read")) return;
     const branch = workScanner.getBranch(repo.root, decodeURIComponent(branchName));
     if (!branch) {
       sendJson(res, 404, { error: "branch not found" });
@@ -278,6 +338,9 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
         sendJson(res, 400, { error: "no repos to push" });
         return;
       }
+      for (const repo of repos) {
+        if (!enforceRepoAccess(req, res, repo, "write")) return;
+      }
       const session = startPushSession(repos, scope, workScanner);
       sendJson(res, 202, session);
     } catch (err) {
@@ -296,6 +359,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
       sendJson(res, 404, { error: "repo not found" });
       return;
     }
+    if (!enforceRepoAccess(req, res, repo, "write")) return;
     const body = req.body as { scope?: PushScope } | undefined;
     const scope: PushScope = body?.scope === "all_ahead" ? "all_ahead" : "current";
 

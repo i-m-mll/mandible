@@ -3057,6 +3057,63 @@ export const MIGRATIONS: readonly Migration[] = [
     // captured when sessions, console sessions, and work units are registered.
     // Legacy rows stay NULL; migrations never infer or create a user.
     statements: []
+  },
+  {
+    version: 111,
+    name: "user_groups_project_permissions",
+    // Umbrella 8e2e8b2 / issue a0379a3 — opt-in project restrictions and
+    // explicit user/group grants. Existing projects remain unrestricted and
+    // the only migration seed is the system-owned agents group; users are
+    // enrolled deliberately by the user provisioning path.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS user_groups (
+        id           TEXT PRIMARY KEY,
+        slug         TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        kind         TEXT NOT NULL DEFAULT 'custom'
+                       CHECK(kind IN ('system','custom')),
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS user_group_members (
+        group_id  TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+        user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, user_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_user_group_members_user
+        ON user_group_members(user_id, group_id)`,
+      `CREATE TABLE IF NOT EXISTS permission_grants (
+        id            TEXT PRIMARY KEY,
+        subject_type  TEXT NOT NULL CHECK(subject_type IN ('user','group')),
+        subject_id    TEXT NOT NULL,
+        resource_type TEXT NOT NULL CHECK(resource_type IN ('project','global')),
+        resource_id   TEXT REFERENCES ledger_projects(id) ON DELETE CASCADE,
+        permission    TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        CHECK (
+          (resource_type = 'project' AND resource_id IS NOT NULL
+            AND permission IN ('read','write','admin')) OR
+          (resource_type = 'global' AND resource_id IS NULL
+            AND permission IN ('approve_auth','spawn_console','change_settings','backup','open_path'))
+        )
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_permission_grants_project
+        ON permission_grants(subject_type, subject_id, resource_id, permission)
+        WHERE resource_type = 'project'`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_permission_grants_global
+        ON permission_grants(subject_type, subject_id, permission)
+        WHERE resource_type = 'global'`,
+      `CREATE INDEX IF NOT EXISTS idx_permission_grants_subject
+        ON permission_grants(subject_type, subject_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_permission_grants_resource
+        ON permission_grants(resource_type, resource_id)`,
+      `INSERT OR IGNORE INTO user_groups (
+        id, slug, display_name, kind, created_at, updated_at
+      ) VALUES (
+        '00000000000000000000000001', 'agents', 'Agents', 'system', 0, 0
+      )`
+    ]
   }
 ];
 
@@ -3136,6 +3193,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 110) {
         ensureSessionOwnershipColumns(db);
+      }
+      if (migration.version === 111) {
+        ensureProjectRestrictionColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5704,6 +5764,18 @@ function ensureSessionOwnershipColumns(db: Db): void {
   }
 }
 
+// Umbrella 8e2e8b2 / issue a0379a3 (migration 111): restriction is opt-in so
+// adding this column preserves every existing project's effective access.
+function ensureProjectRestrictionColumn(db: Db): void {
+  if (!tableExists(db, "ledger_projects")) return;
+  if (!tableColumnNames(db, "ledger_projects").has("restricted")) {
+    db.exec(
+      `ALTER TABLE ledger_projects ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0
+        CHECK(restricted IN (0, 1))`,
+    );
+  }
+}
+
 function ensureBranchReapingKnowledgeColumns(db: Db): void {
   const expected = [
     "worktree_inventory_known",
@@ -7025,6 +7097,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "conversations",
     "ledger_comments",
     "ledger_issues",
+    "ledger_projects",
     "message_params",
     "project_artifact_associations",
     "session_instruction_artifacts",

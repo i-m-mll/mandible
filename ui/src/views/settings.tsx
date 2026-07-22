@@ -20,6 +20,9 @@ import {
   updateBackupSettings,
   updateInstructionDeliverySettings,
   updateRuntime,
+  getProjectAccessSettings,
+  listProjectsForPicker,
+  updateProjectAccessSettings,
   type BackupStatus,
   type AuthAutoApproveStatus,
   type DesktopDaemonLaunchMode,
@@ -28,6 +31,8 @@ import {
   type InstructionTargetMode,
   type DesktopDaemonStatus,
   type RuntimeStatus,
+  type ProjectAccessSettings,
+  type ProjectPickerItem,
 } from '../api';
 import type { InstanceInfo } from '../api';
 import { AuthHooksPanel } from './auth';
@@ -1403,6 +1408,96 @@ function RuntimeSection(): JSX.Element {
   );
 }
 
+function ProjectPermissionsSection(): JSX.Element {
+  const [projects, setProjects] = useState<ProjectPickerItem[]>([]);
+  const [selected, setSelected] = useState('');
+  const [access, setAccess] = useState<ProjectAccessSettings | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    void listProjectsForPicker().then((items) => {
+      setProjects(items);
+      if (!selected && items[0]) setSelected(items[0].project_key);
+    }).catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load projects'));
+  }, []);
+
+  useEffect(() => {
+    if (!selected) {
+      setAccess(null);
+      return;
+    }
+    setError('');
+    void getProjectAccessSettings(selected)
+      .then(setAccess)
+      .catch((reason) => setError(reason instanceof Error ? reason.message : 'Failed to load access'));
+  }, [selected]);
+
+  const toggleRestricted = useCallback(async () => {
+    if (!selected || !access) return;
+    setBusy(true);
+    setError('');
+    try {
+      setAccess(await updateProjectAccessSettings(selected, !access.restricted));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Failed to update access');
+    } finally {
+      setBusy(false);
+    }
+  }, [selected, access]);
+
+  return (
+    <div className="settings-view__section" data-testid="project-permissions-settings">
+      <div className="settings-view__section-header">
+        <h3 className="settings-view__section-title">Project permissions</h3>
+        <p className="settings-view__section-desc">
+          Projects remain unrestricted until this toggle is enabled. Grants are managed with the user CLI.
+        </p>
+      </div>
+      <div className="settings-view__section-body">
+        <div className="settings-view__select-row">
+          <div className="settings-view__select-info">
+            <span className="settings-view__select-label">Project</span>
+          </div>
+          <select className="settings-view__select" value={selected}
+            onChange={(event) => setSelected((event.target as HTMLSelectElement).value)}>
+            {projects.map((project) => (
+              <option key={project.id} value={project.project_key}>
+                {project.display_name || project.project_key}
+              </option>
+            ))}
+          </select>
+        </div>
+        {access && (
+          <>
+            <div className="settings-view__toggle-row">
+              <div className="settings-view__toggle-info">
+                <h3 className="settings-view__section-title">Restricted</h3>
+                <p className="settings-view__section-desc">Require an explicit read, write, or admin grant.</p>
+              </div>
+              <Toggle enabled={access.restricted} onToggle={() => void toggleRestricted()}
+                disabled={busy} label="Toggle project restriction" />
+            </div>
+            <div className="settings-view__text-row">
+              <div className="settings-view__text-info">
+                <span className="settings-view__text-label">Grants</span>
+                {access.grants.length === 0 ? (
+                  <span className="settings-view__text-desc">No explicit grants.</span>
+                ) : access.grants.map((grant) => (
+                  <span key={grant.id} className="settings-view__text-desc">
+                    {grant.subject_type}:{grant.subject_id} — {grant.permission}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+        {error && <span className="settings-view__feedback settings-view__feedback--error">{error}</span>}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsView(props: SettingsViewProps): JSX.Element {
   const { settings, onSave, onClose, instance = null } = props;
   const operationalMutationsAllowed = !instance || instance.operational_mutations === 'allow';
@@ -1574,6 +1669,8 @@ export function SettingsView(props: SettingsViewProps): JSX.Element {
       </div>
 
       <InstructionsDeliverySection settings={settings} onSave={onSave} />
+
+      <ProjectPermissionsSection />
 
       {/* ── Section: Conversation Branching ── */}
       <div className="settings-view__section">
