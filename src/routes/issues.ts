@@ -5,6 +5,7 @@ import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
+import { localDefaultAttribution } from "../identity/resolver.js";
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_BRANCH_ROLES,
@@ -534,6 +535,7 @@ function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[
     payload,
     actor_type: "mandible_user",
     author_display: "Mandible",
+    attribution: localDefaultAttribution(db),
     source: "mandible",
   });
   return checkpointResponse(checkpoint);
@@ -1082,7 +1084,7 @@ function linkMissingUmbrellaChildren(db: Db, umbrellaId: string, childIds: strin
     link_type: "parent_child",
     provenance: "manual",
     note,
-    actor: { actor_type: "mandible_user", author_display: "Mandible" },
+    actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
     source: "mandible",
   });
   return { beforeIds, missingIds, action_id: result.action_id };
@@ -1428,6 +1430,7 @@ export function registerIssueRoutes(
       },
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: localDefaultAttribution(db),
       source: "mandible",
       created_at: now,
     });
@@ -1532,7 +1535,7 @@ export function registerIssueRoutes(
         link_type: linkType as LedgerRelationshipType,
         provenance: provenance as LedgerRelationshipProvenance,
         note: typeof body.note === "string" ? body.note : null,
-        actor: { actor_type: "mandible_user", author_display: "Mandible" },
+        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
         source: "mandible",
       });
       sendJson(res, 200, result);
@@ -1583,7 +1586,7 @@ export function registerIssueRoutes(
         source_entity: sourceEntity,
         target_entities: targetEntities,
         link_type: linkType as LedgerRelationshipType,
-        actor: { actor_type: "mandible_user", author_display: "Mandible" },
+        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
         source: "mandible",
       });
       sendJson(res, 200, result);
@@ -1716,6 +1719,7 @@ export function registerIssueRoutes(
       kind: kindFromLabels(labels),
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: localDefaultAttribution(db),
       source: "mandible",
     });
     sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
@@ -1749,6 +1753,7 @@ export function registerIssueRoutes(
       body: message,
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: localDefaultAttribution(db),
       source: "mandible",
       reopen: body?.reopen === true,
     });
@@ -1784,6 +1789,7 @@ export function registerIssueRoutes(
         payload,
         actor_type: "mandible_user",
         author_display: "Mandible",
+        attribution: localDefaultAttribution(db),
         source: "mandible",
       });
       sendJson(res, 200, checkpointResponse(checkpoint));
@@ -1850,6 +1856,7 @@ export function registerIssueRoutes(
       const comment = store.updateComment(commentId, patch, {
         actor_type: "mandible_user",
         author_display: "Mandible",
+        attribution: localDefaultAttribution(db),
         base_body_revision_id: typeof body.base_revision_id === "string"
           ? body.base_revision_id
           : typeof body.base_body_revision_id === "string"
@@ -1914,6 +1921,7 @@ export function registerIssueRoutes(
         store.updateIssue(resolved.issue_id, patch, {
           actor_type: "mandible_user",
           author_display: "Mandible",
+          attribution: localDefaultAttribution(db),
           base_body_revision_id: typeof body.base_body_revision_id === "string"
             ? body.base_body_revision_id
             : typeof body.base_revision_id === "string"
@@ -1947,7 +1955,7 @@ export function registerIssueRoutes(
         resolved.issue_id,
         (status ?? current.status) as LedgerIssueStatus,
         resolution as LedgerIssueResolution | null,
-        { actor_type: "mandible_user", author_display: "Mandible" },
+        { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
         "mandible",
       );
     }
@@ -1975,7 +1983,7 @@ export function registerIssueRoutes(
     new LedgerStore(db).setWorkerStatus(
       resolved.issue_id,
       workerStatus as LedgerWorkerStatus,
-      { actor_type: "mandible_user", author_display: "Mandible" },
+      { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
@@ -2008,7 +2016,7 @@ export function registerIssueRoutes(
       resolved.issue_id,
       branch,
       role as LedgerIssueBranchRole,
-      { actor_type: "mandible_user", author_display: "Mandible" },
+      { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
@@ -2046,6 +2054,7 @@ export function registerIssueRoutes(
     new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: localDefaultAttribution(db),
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   }, { fileRpc: "allow" });
@@ -2062,11 +2071,13 @@ export function registerIssueRoutes(
       : "keep_mandible";
     const status = body.status === "dismissed" ? "dismissed" : "resolved";
     try {
-      const conflict = new LedgerStore(getDb()).resolveConflict(conflictId, {
+      const conflictDb = getDb();
+      const conflict = new LedgerStore(conflictDb).resolveConflict(conflictId, {
         resolution,
         status,
         actor_type: "mandible_user",
         author_display: "Mandible",
+        attribution: localDefaultAttribution(conflictDb),
       });
       sendJson(res, 200, { ok: true, conflict });
     } catch (error) {

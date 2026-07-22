@@ -3009,6 +3009,23 @@ export const MIGRATIONS: readonly Migration[] = [
         '00000000000000000000000000', 'system', 'system', 'System', NULL, 'active', 0, 0, '{}'
       )`
     ]
+  },
+  {
+    version: 108,
+    name: "ledger_user_attribution_columns",
+    // Umbrella 8e2e8b2 / issue 92813cc — parallel, nullable user-attribution
+    // columns on ledger write tables. The legacy actor_id/actor_type/
+    // author_display columns are immutable provenance (hashed into stable
+    // event/issue/comment ids) and are untouched here; these columns carry the
+    // resolved user principal alongside them. NULL means legacy/unresolved.
+    // FK to users(id) makes the parallel identity fail-closed: a non-null value
+    // must name a real user. evidence_id optionally points at a verified
+    // attribution_evidence row. The ALTER ADD COLUMN work is applied by the
+    // guarded ensureLedgerUserAttributionColumns() hook, which also creates the
+    // partial indexes (IF NOT EXISTS) only for tables that exist. Keeping the
+    // index creation inside the hook lets a synthetic partial-schema upgrade
+    // (e.g. an auth-only fixture DB with no ledger_* tables) migrate cleanly.
+    statements: []
   }
 ];
 
@@ -3079,6 +3096,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 106) {
         ensureBranchReapingKnowledgeColumns(db);
+      }
+      if (migration.version === 108) {
+        ensureLedgerUserAttributionColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5519,6 +5539,93 @@ function ensureLedgerProjectKeyColumn(db: Db): void {
       ON ledger_projects(project_key)
       WHERE project_key != ''`,
   );
+}
+
+// Umbrella 8e2e8b2 / issue 92813cc (migration 108): guarded ALTER ADD COLUMN
+// for the parallel user-attribution columns. Each column is added only when
+// absent so a fresh baseline (which already has them) and a schema-rewind
+// re-run are both idempotent. The definitions here MUST match the fresh-schema
+// baseline byte-for-byte after normalization.
+function ensureLedgerUserAttributionColumns(db: Db): void {
+  const userFk = "TEXT REFERENCES users(id) ON DELETE RESTRICT";
+  const evidenceFk = "TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL";
+  const plan: Array<{ table: string; columns: Array<[string, string]> }> = [
+    {
+      table: "ledger_issues",
+      columns: [
+        ["author_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_comments",
+      columns: [
+        ["author_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_issue_checkpoints",
+      columns: [
+        ["author_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_events",
+      columns: [
+        ["actor_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_body_revisions",
+      columns: [
+        ["actor_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+        ["redacted_by_user_id", userFk],
+      ],
+    },
+    {
+      table: "ledger_relationship_edges",
+      columns: [
+        ["actor_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+  ];
+  const indexes: Record<string, string> = {
+    ledger_issues:
+      `CREATE INDEX IF NOT EXISTS idx_ledger_issues_author_user
+        ON ledger_issues(author_user_id) WHERE author_user_id IS NOT NULL`,
+    ledger_comments:
+      `CREATE INDEX IF NOT EXISTS idx_ledger_comments_author_user
+        ON ledger_comments(author_user_id) WHERE author_user_id IS NOT NULL`,
+    ledger_events:
+      `CREATE INDEX IF NOT EXISTS idx_ledger_events_actor_user
+        ON ledger_events(actor_user_id) WHERE actor_user_id IS NOT NULL`,
+  };
+  for (const { table, columns } of plan) {
+    const tableExistsRow = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table);
+    if (!tableExistsRow) continue;
+    for (const [name, definition] of columns) {
+      const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .some((column) => column.name === name);
+      if (!existing) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+      }
+    }
+    const index = indexes[table];
+    if (index) db.exec(index);
+  }
 }
 
 function ensureBranchReapingKnowledgeColumns(db: Db): void {

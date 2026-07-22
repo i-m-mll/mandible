@@ -2,6 +2,7 @@ import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
+import { systemAction } from "../identity/resolver.js";
 import type { LedgerIssueResolution } from "./types.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
@@ -342,6 +343,7 @@ export function applyAuthRequestLedgerCompletion(
       entity_id: input.auth_request_id,
       event_type: "auth_request.completed",
       actor_type: "system",
+      attribution: systemAction("auth_queue"),
       source: "auth_queue",
       project_id: issue.project_id,
       enqueueOutbox: false,
@@ -360,7 +362,11 @@ export function applyAuthRequestLedgerCompletion(
       "merged",
       true,
       "auth_queue",
-      { actor_type: "system", actor_id: input.approval_lease_id ?? null },
+      {
+        actor_type: "system",
+        actor_id: input.approval_lease_id ?? null,
+        attribution: systemAction("auth_queue"),
+      },
     );
     if (mergeSha) {
       recordIssueResolution(db, {
@@ -374,7 +380,11 @@ export function applyAuthRequestLedgerCompletion(
       issueId,
       "closed",
       input.resolution ?? "merged",
-      { actor_type: "system", actor_id: input.approval_lease_id ?? null },
+      {
+        actor_type: "system",
+        actor_id: input.approval_lease_id ?? null,
+        attribution: systemAction("auth_queue"),
+      },
       "auth_queue",
     );
   }

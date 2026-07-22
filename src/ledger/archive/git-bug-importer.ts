@@ -6,6 +6,7 @@ import { hashGitBugPayload } from "./git-bug-hash.js";
 import { isSha256Hex } from "./ids.js";
 import { parseGitBugLabel } from "./git-bug-labels.js";
 import { LedgerStore } from "./store.js";
+import { shadowImportActor } from "../identity/resolver.js";
 
 export interface GitBugImportOptions {
   db: Db;
@@ -58,7 +59,7 @@ export async function importGitBugCheckout(options: GitBugImportOptions): Promis
   for (const summary of summaries.value) {
     const detailResult = await options.client.getIssue(options.checkout.root, summary.human_id || summary.id);
     const detail = detailResult.ok ? detailResult.value : summaryToDetail(summary);
-    const importedIssue = importIssueDetail(store, options.checkout.project_id, detail);
+    const importedIssue = importIssueDetail(store, options.db, options.checkout.project_id, detail);
     result.imported++;
     if (importedIssue.created) result.created++;
     if (importedIssue.updated) result.updated++;
@@ -88,6 +89,7 @@ function summaryToDetail(summary: GitBugIssueSummary): GitBugIssueDetail {
 
 function importIssueDetail(
   store: LedgerStore,
+  db: Db,
   projectId: string,
   detail: GitBugIssueDetail,
 ): { issue_id: string; created: boolean; updated: boolean; comments: number; labels: number } {
@@ -123,8 +125,14 @@ function importIssueDetail(
       status: detail.status,
       resolution: detail.status === "closed" && detail.labels.includes("merged") ? "merged" : null,
       source: "git_bug",
-      actor_type: "external_adapter",
-      author_display: detail.author_name,
+      // Mint (or reuse) an external-kind shadow user keyed by adapter + project
+      // + raw author name so new imports are attributed rather than anonymous
+      // (umbrella 8e2e8b2 / issue 92813cc). The raw display name is preserved.
+      ...shadowImportActor(db, {
+        adapter: "git_bug",
+        project_id: projectId,
+        author_name: detail.author_name,
+      }),
       created_at: parseGitBugTime(detail.created_at) ?? Date.now(),
       aliases: [
         ...(externalId !== fullId ? [{ alias_kind: "git_bug_legacy", alias: externalId, external_id: externalId, source: "git_bug" }] : []),
@@ -199,8 +207,11 @@ function importIssueDetail(
       id: isSha256Hex(comment.id) ? comment.id : undefined,
       body: comment.body,
       source: "git_bug",
-      actor_type: "external_adapter",
-      author_display: comment.author_name,
+      ...shadowImportActor(db, {
+        adapter: "git_bug",
+        project_id: projectId,
+        author_name: comment.author_name,
+      }),
       created_at: parseGitBugTime(comment.created_at) ?? Date.now(),
     });
     store.recordExternalRef({

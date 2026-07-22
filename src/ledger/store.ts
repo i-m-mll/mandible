@@ -10,6 +10,8 @@ import {
   createStableIssueId,
 } from "./ids.js";
 import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
+import { getUserById, SYSTEM_USER_ID } from "../users/store.js";
+import { projectActorType } from "../identity/resolver.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -237,11 +239,40 @@ export class LedgerStore {
     this.broadcaster = options.broadcaster ?? broadcast;
   }
 
+  /**
+   * Resolve a write actor's legacy provenance and parallel user-attribution
+   * columns. When `attribution` is present the parallel `*_user_id` columns are
+   * populated and `actor_type` is written as the centralized lossy projection of
+   * the acting user's kind (never an authorization input). When it is absent
+   * only the legacy columns are written and `actor_user_id` stays null.
+   */
+  private resolveActor(input: LedgerActorInput): ResolvedActor {
+    const base = normalizeActor(input);
+    const attribution = input.attribution;
+    if (!attribution) {
+      return {
+        actor_id: base.actor_id,
+        actor_type: base.actor_type,
+        actor_user_id: null,
+        evidence_method: null,
+        evidence_id: null,
+      };
+    }
+    const user = getUserById(this.db, attribution.user_id);
+    return {
+      actor_id: base.actor_id,
+      actor_type: user ? projectActorType(user.kind) : base.actor_type,
+      actor_user_id: attribution.user_id,
+      evidence_method: attribution.evidence_method,
+      evidence_id: attribution.evidence_id ?? null,
+    };
+  }
+
   createIssue(input: CreateLedgerIssueInput): LedgerIssue {
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input);
+    const actor = this.resolveActor(input);
     const nonce = createCreationNonce();
     const id = input.id ?? createStableIssueId({
       project_id: input.project_id,
@@ -260,9 +291,10 @@ export class LedgerStore {
       this.db.prepare(
         `INSERT INTO ledger_issues (
           id, short_id, project_id, title, body, status, resolution, kind, priority,
-          author_actor_id, author_actor_type, author_display, source,
+          author_actor_id, author_actor_type, author_display,
+          author_user_id, evidence_method, evidence_id, source,
           created_at, updated_at, closed_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
       ).run(
         id,
         shortId,
@@ -276,6 +308,9 @@ export class LedgerStore {
         actor.actor_id,
         actor.actor_type,
         input.author_display ?? "",
+        actor.actor_user_id,
+        actor.evidence_method,
+        actor.evidence_id,
         source,
         now,
         now,
@@ -356,7 +391,7 @@ export class LedgerStore {
     const existing = this.requireIssue(id);
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
-    const normalizedActor = normalizeActor(actor);
+    const normalizedActor = this.resolveActor(actor);
     const source = actor.source ?? "mandible";
     const next = {
       title: patch.title ?? existing.title,
@@ -415,6 +450,9 @@ export class LedgerStore {
           event_type: "issue.updated",
           actor_id: normalizedActor.actor_id,
           actor_type: normalizedActor.actor_type,
+          actor_user_id: normalizedActor.actor_user_id,
+          evidence_method: normalizedActor.evidence_method,
+          evidence_id: normalizedActor.evidence_id,
           source,
           payload: { issue_id: id, patch: scalarPatch, changed_fields: changedFields },
           project_id: existing.project_id,
@@ -448,7 +486,7 @@ export class LedgerStore {
   ): { changed: boolean; issue: LedgerIssue } {
     const existing = this.requireIssue(id);
     const now = Date.now();
-    const normalizedActor = normalizeActor(actor);
+    const normalizedActor = this.resolveActor(actor);
     const next = {
       title: patch.title ?? existing.title,
       body: patch.body ?? existing.body,
@@ -530,6 +568,9 @@ export class LedgerStore {
           event_type: eventType ?? "issue.updated",
           actor_id: normalizedActor.actor_id,
           actor_type: normalizedActor.actor_type,
+          actor_user_id: normalizedActor.actor_user_id,
+          evidence_method: normalizedActor.evidence_method,
+          evidence_id: normalizedActor.evidence_id,
           source,
           payload: { ...eventPayload, changed_fields: changedFields },
           project_id: existing.project_id,
@@ -568,7 +609,7 @@ export class LedgerStore {
     }
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
-    const normalizedActor = normalizeActor(actor);
+    const normalizedActor = this.resolveActor(actor);
 
     const run = this.db.transaction(() => {
       this.db.prepare(
@@ -584,6 +625,9 @@ export class LedgerStore {
         event_type: eventType,
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
+        actor_user_id: normalizedActor.actor_user_id,
+        evidence_method: normalizedActor.evidence_method,
+        evidence_id: normalizedActor.evidence_id,
         source,
         payload,
         project_id: existing.project_id,
@@ -610,7 +654,7 @@ export class LedgerStore {
     }
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
-    const normalizedActor = normalizeActor(actor);
+    const normalizedActor = this.resolveActor(actor);
 
     const run = this.db.transaction(() => {
       this.db.prepare(
@@ -629,6 +673,9 @@ export class LedgerStore {
         event_type: "issue.worker_status.updated",
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
+        actor_user_id: normalizedActor.actor_user_id,
+        evidence_method: normalizedActor.evidence_method,
+        evidence_id: normalizedActor.evidence_id,
         source,
         payload,
         project_id: existing.project_id,
@@ -660,7 +707,7 @@ export class LedgerStore {
     }
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
-    const normalizedActor = normalizeActor(actor);
+    const normalizedActor = this.resolveActor(actor);
 
     const run = this.db.transaction(() => {
       const existing = this.getIssueBranch(issueId, trimmedBranch);
@@ -683,6 +730,9 @@ export class LedgerStore {
         event_type: existing ? "issue.branch.updated" : "issue.branch.added",
         actor_id: normalizedActor.actor_id,
         actor_type: normalizedActor.actor_type,
+        actor_user_id: normalizedActor.actor_user_id,
+        evidence_method: normalizedActor.evidence_method,
+        evidence_id: normalizedActor.evidence_id,
         source,
         payload,
         project_id: issue.project_id,
@@ -704,7 +754,7 @@ export class LedgerStore {
   recordEvent(input: RecordLedgerEventInput): LedgerEvent {
     const emitted: LedgerSsePayload[] = [];
     const now = input.occurred_at ?? Date.now();
-    const actor = normalizeActor(input);
+    const actor = this.resolveActor(input);
     const source = input.source ?? "system";
 
     const event = this.db.transaction(() => this.insertEvent({
@@ -713,6 +763,9 @@ export class LedgerStore {
       event_type: input.event_type,
       actor_id: actor.actor_id,
       actor_type: actor.actor_type,
+      actor_user_id: actor.actor_user_id,
+      evidence_method: actor.evidence_method,
+      evidence_id: actor.evidence_id,
       source,
       payload: input.payload ?? {},
       project_id: input.project_id,
@@ -729,7 +782,7 @@ export class LedgerStore {
     const emitted: LedgerSsePayload[] = [];
     const now = input.created_at ?? Date.now();
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input);
+    const actor = this.resolveActor(input);
     const ordinal = this.nextCommentOrdinal(issueId);
     const nonce = createCreationNonce();
     const id = input.id ?? createStableCommentId({
@@ -763,6 +816,9 @@ export class LedgerStore {
           event_type: "issue.reopened",
           actor_id: actor.actor_id,
           actor_type: actor.actor_type,
+          actor_user_id: actor.actor_user_id,
+          evidence_method: actor.evidence_method,
+          evidence_id: actor.evidence_id,
           source,
           payload: reopenPayload,
           project_id: issue.project_id,
@@ -773,8 +829,9 @@ export class LedgerStore {
       this.db.prepare(
         `INSERT INTO ledger_comments (
           id, issue_id, ordinal, body, author_actor_id, author_actor_type,
-          author_display, source, created_at, updated_at, deleted_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
+          author_display, author_user_id, evidence_method, evidence_id,
+          source, created_at, updated_at, deleted_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)`,
       ).run(
         id,
         issueId,
@@ -783,6 +840,9 @@ export class LedgerStore {
         actor.actor_id,
         actor.actor_type,
         input.author_display ?? "",
+        actor.actor_user_id,
+        actor.evidence_method,
+        actor.evidence_id,
         source,
         now,
       );
@@ -825,7 +885,7 @@ export class LedgerStore {
     const kind = normalizeCheckpointKind(input.kind);
     const now = input.created_at ?? Date.now();
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input);
+    const actor = this.resolveActor(input);
     const id = input.id ?? createLedgerId("chk", { now });
     const payloadJson = jsonStringify(input.payload);
     const emitted: LedgerSsePayload[] = [];
@@ -834,8 +894,9 @@ export class LedgerStore {
       this.db.prepare(
         `INSERT INTO ledger_issue_checkpoints (
           id, issue_id, kind, payload_json, author_actor_id, author_actor_type,
-          author_display, source, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          author_display, author_user_id, evidence_method, evidence_id,
+          source, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         id,
         issueId,
@@ -844,6 +905,9 @@ export class LedgerStore {
         actor.actor_id,
         actor.actor_type,
         input.author_display ?? "",
+        actor.actor_user_id,
+        actor.evidence_method,
+        actor.evidence_id,
         source,
         now,
       );
@@ -853,6 +917,9 @@ export class LedgerStore {
         event_type: "issue.checkpoint.created",
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
         source,
         payload: { issue_id: issueId, checkpoint_id: id, kind, payload: input.payload },
         project_id: issue.project_id,
@@ -875,7 +942,7 @@ export class LedgerStore {
   ): { changed: boolean; comment: LedgerComment } {
     const existing = this.getComment(id);
     const issue = this.requireIssue(existing.issue_id);
-    const actor = normalizeActor(actorInput);
+    const actor = this.resolveActor(actorInput);
     const next = {
       body: patch.body ?? existing.body,
       author_display: patch.author_display ?? existing.author_display,
@@ -923,6 +990,9 @@ export class LedgerStore {
           event_type: "comment.updated",
           actor_id: actor.actor_id,
           actor_type: actor.actor_type,
+          actor_user_id: actor.actor_user_id,
+          evidence_method: actor.evidence_method,
+          evidence_id: actor.evidence_id,
           source,
           payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields },
           project_id: issue.project_id,
@@ -951,7 +1021,7 @@ export class LedgerStore {
   updateComment(id: string, patch: UpdateLedgerCommentPatch, actorInput: UpdateLedgerCommentOptions = {}): LedgerComment {
     const existing = this.getComment(id);
     const issue = this.requireIssue(existing.issue_id);
-    const actor = normalizeActor(actorInput);
+    const actor = this.resolveActor(actorInput);
     const source = actorInput.source ?? "mandible";
     const next = {
       body: patch.body ?? existing.body,
@@ -1002,6 +1072,9 @@ export class LedgerStore {
           event_type: "comment.updated",
           actor_id: actor.actor_id,
           actor_type: actor.actor_type,
+          actor_user_id: actor.actor_user_id,
+          evidence_method: actor.evidence_method,
+          evidence_id: actor.evidence_id,
           source,
           payload: { issue_id: existing.issue_id, comment_id: id, patch: scalarPatch, changed_fields: changedFields },
           project_id: issue.project_id,
@@ -1035,7 +1108,7 @@ export class LedgerStore {
     actor?: LedgerActorInput;
     occurred_at?: number;
   }): LedgerEvent | null {
-    const actor = normalizeActor(input.actor ?? { actor_type: "system" });
+    const actor = this.resolveActor(input.actor ?? { actor_type: "system" });
     const now = input.occurred_at ?? Date.now();
     const emitted: LedgerSsePayload[] = [];
     const target = input.entity_type === "issue"
@@ -1103,7 +1176,7 @@ export class LedgerStore {
     const issue = this.requireIssue(issueId);
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
-    const normalizedActor = normalizeActor(actor);
+    const normalizedActor = this.resolveActor(actor);
     const trimmed = label.trim();
     if (!trimmed) {
       throw new Error("Ledger label cannot be empty");
@@ -1143,6 +1216,9 @@ export class LedgerStore {
           event_type: "label.updated",
           actor_id: normalizedActor.actor_id,
           actor_type: normalizedActor.actor_type,
+          actor_user_id: normalizedActor.actor_user_id,
+          evidence_method: normalizedActor.evidence_method,
+          evidence_id: normalizedActor.evidence_id,
           source,
           payload: { issue_id: issueId, label: trimmed, present },
           project_id: issue.project_id,
@@ -1166,7 +1242,7 @@ export class LedgerStore {
     const now = input.created_at ?? Date.now();
     const id = input.id ?? createLedgerId("rel", { now });
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor ?? {});
 
     const run = this.db.transaction(() => {
       const existing = this.db.prepare(
@@ -1229,6 +1305,9 @@ export class LedgerStore {
         event_type: "relationship.upserted",
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
         source,
         payload: {
           relationship_id: relationship.id,
@@ -1258,7 +1337,7 @@ export class LedgerStore {
     const now = input.created_at ?? Date.now();
     const actionId = input.action_id ?? createLedgerId("edge", { now });
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor ?? {});
     const linkType = input.link_type ?? "references";
     const provenance = input.provenance ?? "manual";
     const note = normalizeOptionalText(input.note);
@@ -1293,9 +1372,10 @@ export class LedgerStore {
               id, source_entity_type, source_entity_id, source_project_id,
               source_issue_id, target_entity_type, target_entity_id,
               target_project_id, target_issue_id, link_type, provenance, note,
-              action_id, actor_id, actor_type, source, metadata_json,
+              action_id, actor_id, actor_type, actor_user_id, evidence_method,
+              evidence_id, source, metadata_json,
               created_at, updated_at, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
           ).run(
             createLedgerId("edge", { now }),
             sourceEntity.entity_type,
@@ -1312,6 +1392,9 @@ export class LedgerStore {
             actionId,
             actor.actor_id,
             actor.actor_type,
+            actor.actor_user_id,
+            actor.evidence_method,
+            actor.evidence_id,
             source,
             metadataJson,
             now,
@@ -1323,7 +1406,9 @@ export class LedgerStore {
              SET source_project_id = ?, source_issue_id = ?,
                  target_project_id = ?, target_issue_id = ?,
                  provenance = ?, note = ?, action_id = ?,
-                 actor_id = ?, actor_type = ?, source = ?,
+                 actor_id = ?, actor_type = ?,
+                 actor_user_id = ?, evidence_method = ?, evidence_id = ?,
+                 source = ?,
                  metadata_json = ?, updated_at = ?, deleted_at = NULL
              WHERE id = ?`,
           ).run(
@@ -1336,6 +1421,9 @@ export class LedgerStore {
             actionId,
             actor.actor_id,
             actor.actor_type,
+            actor.actor_user_id,
+            actor.evidence_method,
+            actor.evidence_id,
             source,
             metadataJson,
             now,
@@ -1365,6 +1453,9 @@ export class LedgerStore {
           event_type: "relationship.added",
           actor_id: actor.actor_id,
           actor_type: actor.actor_type,
+          actor_user_id: actor.actor_user_id,
+          evidence_method: actor.evidence_method,
+          evidence_id: actor.evidence_id,
           source,
           payload,
           project_id: edge.source_project_id,
@@ -1390,7 +1481,7 @@ export class LedgerStore {
     const now = input.occurred_at ?? Date.now();
     const actionId = input.action_id ?? createLedgerId("edge", { now });
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor ?? {});
     const linkType = input.link_type ?? "references";
     const sourceEntity = this.resolveRelationshipEntity(input.source_entity);
     const targetEntities = uniqueRelationshipEntities(
@@ -1433,6 +1524,9 @@ export class LedgerStore {
           event_type: "relationship.removed",
           actor_id: actor.actor_id,
           actor_type: actor.actor_type,
+          actor_user_id: actor.actor_user_id,
+          evidence_method: actor.evidence_method,
+          evidence_id: actor.evidence_id,
           source,
           payload,
           project_id: tombstone.source_project_id,
@@ -1490,7 +1584,7 @@ export class LedgerStore {
     const issue = this.requireIssue(comment.issue_id);
     const now = input.occurred_at ?? Date.now();
     const source = input.source ?? "system";
-    const actor = normalizeActor(input.actor ?? { actor_type: "system" });
+    const actor = this.resolveActor(input.actor ?? { actor_type: "system" });
     const emitted: LedgerSsePayload[] = [];
 
     const run = this.db.transaction(() => {
@@ -1552,6 +1646,9 @@ export class LedgerStore {
           event_type: edge.deleted_at === null ? "relationship.added" : "relationship.removed",
           actor_id: actor.actor_id,
           actor_type: actor.actor_type,
+          actor_user_id: actor.actor_user_id,
+          evidence_method: actor.evidence_method,
+          evidence_id: actor.evidence_id,
           source,
           payload: { ...payload, degradation: "target_comment_tombstone" },
           project_id: edge.source_project_id,
@@ -1570,7 +1667,7 @@ export class LedgerStore {
   reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
     const sourceIssue = this.requireIssue(input.source_issue_id);
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor ?? {});
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
 
@@ -1711,6 +1808,9 @@ export class LedgerStore {
         event_type: "external_ref.recorded",
         actor_id: null,
         actor_type: "system",
+        actor_user_id: SYSTEM_USER_ID,
+        evidence_method: "system_action",
+        evidence_id: null,
         source,
         payload: { external_ref_id: ref.id, entity_type: input.entity_type, entity_id: input.entity_id },
         project_id: projectId,
@@ -1785,6 +1885,9 @@ export class LedgerStore {
         event_type: "conflict.created",
         actor_id: null,
         actor_type: "system",
+        actor_user_id: SYSTEM_USER_ID,
+        evidence_method: "system_action",
+        evidence_id: null,
         source,
         payload: { conflict_id: id, entity_type: input.entity_type, entity_id: input.entity_id },
         project_id: projectId,
@@ -1806,7 +1909,7 @@ export class LedgerStore {
     const now = Date.now();
     const status = input.status ?? "resolved";
     const source = input.source ?? "mandible";
-    const actor = normalizeActor(input);
+    const actor = this.resolveActor(input);
 
     const run = this.db.transaction(() => {
       this.db.prepare(
@@ -1820,6 +1923,9 @@ export class LedgerStore {
         event_type: "conflict.resolved",
         actor_id: actor.actor_id,
         actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
         source,
         payload: { conflict_id: id, status, resolution: input.resolution },
         project_id: existing.project_id,
@@ -1859,6 +1965,9 @@ export class LedgerStore {
         event_type: "outbox.updated",
         actor_id: null,
         actor_type: "system",
+        actor_user_id: SYSTEM_USER_ID,
+        evidence_method: "system_action",
+        evidence_id: null,
         source: "system",
         payload: { outbox_id: id, status },
         project_id: existing.project_id,
@@ -2210,7 +2319,7 @@ export class LedgerStore {
     project_id: string;
     previous_body: string | null;
     next_body: string;
-    actor: { actor_id: string | null; actor_type: LedgerActorType };
+    actor: ResolvedActor;
     source: LedgerEventSource;
     reason: LedgerBodyRevisionReason;
     occurred_at: number;
@@ -2241,6 +2350,9 @@ export class LedgerStore {
       event_type: input.event_type,
       actor_id: input.actor.actor_id,
       actor_type: input.actor.actor_type,
+      actor_user_id: input.actor.actor_user_id,
+      evidence_method: input.actor.evidence_method,
+      evidence_id: input.actor.evidence_id,
       source: input.source,
       payload,
       project_id: input.project_id,
@@ -2260,10 +2372,12 @@ export class LedgerStore {
     this.db.prepare(
       `INSERT INTO ledger_body_revisions (
         id, entity_type, entity_id, issue_id, project_id, revision_no, event_id,
-        actor_id, actor_type, source, reason, occurred_at, observed_at,
+        actor_id, actor_type, actor_user_id, evidence_method, evidence_id,
+        source, reason, occurred_at, observed_at,
         base_revision_id, base_hash, new_hash, snapshot_body, patch_format,
-        patch_text, metadata_json, redacted_at, redacted_by_actor_id, redaction_reason
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL)`,
+        patch_text, metadata_json, redacted_at, redacted_by_actor_id,
+        redacted_by_user_id, redaction_reason
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?, NULL, NULL, NULL, NULL)`,
     ).run(
       revisionId,
       input.entity_type,
@@ -2274,6 +2388,9 @@ export class LedgerStore {
       event.id,
       input.actor.actor_id,
       input.actor.actor_type,
+      input.actor.actor_user_id,
+      input.actor.evidence_method,
+      input.actor.evidence_id,
       input.source,
       input.reason,
       input.occurred_at,
@@ -2405,7 +2522,7 @@ export class LedgerStore {
     sourceIssueId: string,
     targetIssueId: string,
     source: LedgerEventSource,
-    actor: { actor_id: string | null; actor_type: LedgerActorType },
+    actor: ResolvedActor,
     now: number,
     emitted: LedgerSsePayload[],
   ): LedgerIssueRelationship {
@@ -2450,6 +2567,9 @@ export class LedgerStore {
       event_type: "relationship.upserted",
       actor_id: actor.actor_id,
       actor_type: actor.actor_type,
+      actor_user_id: actor.actor_user_id,
+      evidence_method: actor.evidence_method,
+      evidence_id: actor.evidence_id,
       source,
       payload: {
         relationship_id: relationship.id,
@@ -2470,7 +2590,7 @@ export class LedgerStore {
     input: ReconcileTextIssueReferencesInput;
     ref: ParsedIssueReference;
     source: LedgerEventSource;
-    actor: { actor_id: string | null; actor_type: LedgerActorType };
+    actor: ResolvedActor;
     now: number;
   }): void {
     const existing = this.db.prepare(
@@ -2538,7 +2658,7 @@ export class LedgerStore {
   private pruneDerivedRelationshipIfUnreferenced(
     relationshipId: string,
     source: LedgerEventSource,
-    actor: { actor_id: string | null; actor_type: LedgerActorType },
+    actor: ResolvedActor,
     now: number,
     emitted: LedgerSsePayload[],
   ): void {
@@ -2562,6 +2682,9 @@ export class LedgerStore {
       event_type: "relationship.deleted",
       actor_id: actor.actor_id,
       actor_type: actor.actor_type,
+      actor_user_id: actor.actor_user_id,
+      evidence_method: actor.evidence_method,
+      evidence_id: actor.evidence_id,
       source,
       payload: {
         relationship_id: relationshipId,
@@ -2599,6 +2722,9 @@ export class LedgerStore {
     event_type: string;
     actor_id: string | null;
     actor_type: LedgerActorType;
+    actor_user_id?: string | null;
+    evidence_method?: string | null;
+    evidence_id?: string | null;
     source: LedgerEventSource;
     payload: Record<string, unknown>;
     project_id: string;
@@ -2623,8 +2749,9 @@ export class LedgerStore {
     this.db.prepare(
       `INSERT INTO ledger_events (
         id, entity_type, entity_id, event_type, actor_id, actor_type,
+        actor_user_id, evidence_method, evidence_id,
         source, payload_json, occurred_at, observed_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       input.entity_type,
@@ -2632,6 +2759,9 @@ export class LedgerStore {
       input.event_type,
       input.actor_id,
       input.actor_type,
+      input.actor_user_id ?? null,
+      input.evidence_method ?? null,
+      input.evidence_id ?? null,
       input.source,
       jsonStringify(payload),
       input.occurred_at,
@@ -2677,6 +2807,21 @@ function normalizeActor(input: LedgerActorInput): {
     actor_id: input.actor_id ?? null,
     actor_type: input.actor_type ?? "external_adapter",
   };
+}
+
+/**
+ * A ledger write actor after user-attribution resolution (umbrella 8e2e8b2 /
+ * issue 92813cc). `actor_id`/`actor_type` are the legacy provenance columns
+ * (hashed into stable ids); `actor_user_id`/`evidence_method`/`evidence_id` are
+ * the parallel user-principal columns. `actor_user_id` is null for legacy
+ * callers that pass no attribution, which is a valid "legacy/unresolved" state.
+ */
+interface ResolvedActor {
+  actor_id: string | null;
+  actor_type: LedgerActorType;
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
 }
 
 function shouldEnqueueOutbox(source: LedgerEventSource): boolean {

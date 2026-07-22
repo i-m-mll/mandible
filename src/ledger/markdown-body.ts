@@ -1,5 +1,6 @@
 import type { Db } from "../db.js";
 import { LedgerStore } from "./store.js";
+import { systemAction } from "../identity/resolver.js";
 import type { LedgerActorInput } from "./types.js";
 
 export const MARKDOWN_BODY_ESCAPE_POLICY_SETTING = "ledger.markdown_body_escape_policy";
@@ -198,6 +199,7 @@ export function normalizeEscapedMarkdownBodies(
   const actor: LedgerActorInput = options.actor ?? {
     actor_type: "system",
     author_display: "Mandible",
+    attribution: systemAction("markdown_normalize"),
   };
   const eventIds: string[] = [];
   let normalized = 0;

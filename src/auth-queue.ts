@@ -33,6 +33,7 @@ import {
 } from "./ledger/operational-links.js";
 import { getLedgerIssueHead } from "./ledger/issue-heads.js";
 import { LedgerStore } from "./ledger/store.js";
+import { systemAction } from "./identity/resolver.js";
 import type {
   LedgerRelationshipType,
   LedgerWorkerStatus,
@@ -2068,10 +2069,15 @@ export class AuthQueue {
     const detail = digestMoved
       ? `Applied after target digest moved from ${action.target_digest} to ${currentDigest}`
       : null;
+    // Auth-queue ledger writes are applied by the daemon on merge, not by the
+    // requesting session; attribute them to the system user (umbrella 8e2e8b2 /
+    // issue 92813cc). The approving-user-as-authorizer wiring is owned by
+    // issue 6349203. The legacy session id is preserved as provenance only.
     const actor = {
-      actor_type: "agent" as const,
+      actor_type: "system" as const,
       actor_id: request.session_id ?? request.target_session_id ?? null,
       author_display: "Mandible auth action",
+      attribution: systemAction("auth_queue"),
     };
     switch (action.kind) {
       case "comment_add":
