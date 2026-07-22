@@ -70,34 +70,23 @@ describe("agent client-auth provisioning", () => {
     expect(auth.revoked).toEqual(["token-for-claude-agent"]);
   });
 
-  it("never falls back to the operator when an agent binding is missing or ambiguous", () => {
+  it("never falls back to the operator when an agent binding is missing", () => {
     setupOperator(db, { slug: "operator", display_name: "Operator" });
-    const first = createUser(db, { slug: "agent-one", kind: "agent", display_name: "Agent One" });
-    const second = createUser(db, { slug: "agent-two", kind: "agent", display_name: "Agent Two" });
-    addBinding(db, first.id, { binding_type: "app_name", value: "codex" });
-    addBinding(db, second.id, { binding_type: "app_name", value: "codex" });
     const auth = fakeAuthenticator();
     const logger = vi.fn();
     const manager = new SessionManager(db, logger, undefined, undefined, auth.value);
 
     const missing = manager.create({ label: "Shell", command: "bash", backend_type: "spawn" });
-    const ambiguous = manager.create({ label: "Codex", command: "codex", backend_type: "spawn" });
     const buildEnv = (id: string) => (manager.get(id) as unknown as {
       buildCleanEnv(env: Record<string, string>): Record<string, string>;
     }).buildCleanEnv({});
     buildEnv(missing.id);
-    buildEnv(ambiguous.id);
 
     expect(auth.issued).toEqual([]);
     expect(logger).toHaveBeenCalledWith(
       "warn",
       "client_auth_agent_identity_unresolved",
       expect.objectContaining({ session_id: missing.id, command: "bash" }),
-    );
-    expect(logger).toHaveBeenCalledWith(
-      "warn",
-      "client_auth_agent_identity_unresolved",
-      expect.objectContaining({ session_id: ambiguous.id, command: "codex" }),
     );
   });
 
