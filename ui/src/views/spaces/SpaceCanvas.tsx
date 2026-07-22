@@ -57,6 +57,7 @@ import {
 import { layoutGraph } from '../../graph/layout';
 import type { GraphEdge, GraphNode } from '../../types/graph';
 import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
+import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import { ArtifactReferenceDetail, IssueReferenceDetail } from './SpaceReferenceDetailPanel';
@@ -1221,8 +1222,8 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
       <div className="space-canvas__body" ref={bodyRef}>
         <div className="space-canvas__flow" data-testid="space-canvas-flow">
           {initialModelStatus === 'pending' && placed.length === 0 ? (
-            <div className="space-canvas__empty" data-testid="space-canvas-loading">
-              Loading canvas items...
+            <div data-testid="space-canvas-loading">
+              <LoadingSkeleton variant="canvas" label="Loading canvas items..." />
             </div>
           ) : initialModelStatus === 'error' && placed.length === 0 ? (
             <div className="space-canvas__empty" data-testid="space-canvas-load-error">
