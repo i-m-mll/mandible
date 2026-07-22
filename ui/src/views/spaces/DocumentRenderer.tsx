@@ -52,7 +52,7 @@ import {
   type BlockType,
 } from '../../../../src/spaces/serialize';
 import type { SpaceBlock } from '../../api';
-import { createSSEClient } from '../../sse-client';
+import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import {
@@ -606,15 +606,21 @@ export function DocumentRenderer({
   // input. Collapse state is preserved across the refetch.
   useEffect(() => {
     if (!spaceId) return;
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const unsubscribe = client.on('*', (payload) => {
       if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
         void loadBlocks(true);
       }
     });
+    // Reconnect resync: refetch after a dropped stream so events missed during
+    // the gap are reconciled.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) void loadBlocks(true);
+    });
     client.connect();
     return () => {
       unsubscribe();
+      offState();
       client.close();
     };
   }, [spaceId, loadBlocks]);

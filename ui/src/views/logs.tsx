@@ -1,7 +1,8 @@
 // Logs viewer tab — Bug: af91bdd
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { getLogs, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
-import { createSSEClient, type SSEClient, type SSEPayload } from '../sse-client';
+import { type SSEPayload } from '../sse-client';
+import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
@@ -18,7 +19,7 @@ type LogFilters = {
 
 type LogsViewProps = {
   loadLogs?: typeof getLogs;
-  createSse?: () => SSEClient;
+  createSse?: () => SseHandle;
 };
 
 const LEVEL_LABELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
@@ -297,7 +298,7 @@ function facetLabel(facet: LogEntityFacetValue): string {
   return `${facet.type}:${facet.value}`;
 }
 
-export function LogsView({ loadLogs = getLogs, createSse = createSSEClient }: LogsViewProps): JSX.Element {
+export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: LogsViewProps): JSX.Element {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [filters, setFilters] = useState<LogFilters>(() => parseLogsHash());
   const [facets, setFacets] = useState<LogsResponse['facets'] | null>(null);
@@ -357,7 +358,7 @@ export function LogsView({ loadLogs = getLogs, createSse = createSSEClient }: Lo
 
   useEffect(() => {
     let closed = false;
-    let client: SSEClient | null = null;
+    let client: SseHandle | null = null;
     try {
       client = createSse();
       const unsubscribe = client.on('*', (_payload: SSEPayload) => {

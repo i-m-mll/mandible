@@ -48,7 +48,7 @@ import {
 } from '../chat';
 import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
-import { createSSEClient } from '../sse-client';
+import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import type { WorkRepo } from './work';
@@ -1428,7 +1428,7 @@ function ConversationDetail({
   useEffect(() => {
     if (typeof EventSource === 'undefined') return undefined;
     let refreshTimer: number | null = null;
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const scheduleRefresh = () => {
       if (refreshTimer !== null) {
         window.clearTimeout(refreshTimer);
@@ -1442,6 +1442,11 @@ function ConversationDetail({
     const offWorkflowUpdated = client.on('workflow:updated', () => {
       setWorkflowNonce((prev) => prev + 1);
     });
+    // Reconnect resync: refetch the open conversation after a dropped stream so
+    // any events missed during the gap are reconciled.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) scheduleRefresh();
+    });
     client.connect();
     return () => {
       if (refreshTimer !== null) {
@@ -1450,6 +1455,7 @@ function ConversationDetail({
       offConversationNew();
       offConversationUpdated();
       offWorkflowUpdated();
+      offState();
       client.close();
     };
   }, [conversationId]);

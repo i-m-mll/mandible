@@ -19,6 +19,7 @@ import {
   getRepoBranches,
   getSettings,
   getWorkRepos,
+  invalidateApiGetCache,
   invalidateDashboardApiCacheForEvent,
   triggerWorkScan,
   rejectAuthRequest,
@@ -29,8 +30,8 @@ import {
   type InstanceInfo,
   type DashboardBadgeCounts,
 } from './api';
-import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
+import { acquireSharedSse } from './sse-shared';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -517,6 +518,11 @@ function App(): JSX.Element {
   const [themeModeSaving, setThemeModeSaving] = useState(false);
   const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
   const lastDashboardSseAtRef = useRef(0);
+  // Latest values for the SSE reconnect-resync closure, so the shared-SSE
+  // effect need not re-run (and re-register handlers) on every route change.
+  const routeTabRef = useRef(route.tab);
+  routeTabRef.current = route.tab;
+  const loadVisibleRouteDataRef = useRef<(tab: Route['tab']) => void>(() => undefined);
 
   const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
     setBottomPanel(descriptor);
@@ -768,6 +774,7 @@ function App(): JSX.Element {
       if (tab === 'inbox') dispatch({ type: 'setInboxLoading', loading: false });
     }
   }, [loadWorkData]);
+  loadVisibleRouteDataRef.current = loadVisibleRouteData;
 
   useEffect(() => {
     // Start the visible view request before the small global aggregate.
@@ -781,7 +788,7 @@ function App(): JSX.Element {
   // SSE real-time updates: register handlers FIRST, then connect, so no
   // events arrive before we are ready to dispatch them.
   useEffect(() => {
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const handler = (payload: SSEPayload) => {
       lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
@@ -932,11 +939,24 @@ function App(): JSX.Element {
       client.on('push:auth:complete', pushEventHandler),
     ];
 
+    // Reconnect resync: the server has no event replay, so a reconnect after a
+    // dropped stream (e.g. a daemon self-merge restart) may have missed events.
+    // On a real reconnect, bust the API cache and refetch the visible route plus
+    // badges so the dashboard converges on current state.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (!reconnected) return;
+      invalidateApiGetCache();
+      lastDashboardSseAtRef.current = Date.now();
+      void loadVisibleRouteDataRef.current(routeTabRef.current);
+      void loadDashboardBadges();
+    });
+
     // Connect AFTER all handlers are registered
     client.connect();
 
     return () => {
       unsubscribes.forEach((unsubscribe) => unsubscribe());
+      offState();
       client.close();
     };
   }, [loadDashboardBadges]);

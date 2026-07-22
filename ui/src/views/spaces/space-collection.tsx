@@ -30,7 +30,7 @@ import {
 } from '../../api';
 import { SpaceItemPicker } from './SpaceItemPicker';
 import { parseResourceRef, resourceRefHref, displayResourceRef } from '../../resource-refs';
-import { createSSEClient } from '../../sse-client';
+import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import type { SpaceViewModel } from './types';
@@ -252,15 +252,21 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
   // packet as a reconciliation input. Selection/filter/collapse are preserved.
   useEffect(() => {
     if (!spaceId) return;
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const unsubscribe = client.on('*', (payload) => {
       if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
         void loadPacket(true);
       }
     });
+    // Reconnect resync: refetch the packet after a dropped stream so events
+    // missed during the gap are reconciled. Selection/filter/collapse preserved.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) void loadPacket(true);
+    });
     client.connect();
     return () => {
       unsubscribe();
+      offState();
       client.close();
     };
   }, [spaceId, loadPacket]);

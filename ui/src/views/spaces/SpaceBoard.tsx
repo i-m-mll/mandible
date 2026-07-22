@@ -35,7 +35,7 @@ import {
   resourceRefHref,
   displayResourceRef,
 } from '../../resource-refs';
-import { createSSEClient } from '../../sse-client';
+import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import {
   IssuePredicateFilter,
@@ -545,15 +545,21 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
   // selection / filter are preserved across the refetch.
   useEffect(() => {
     if (!spaceId) return;
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const unsubscribe = client.on('*', (payload) => {
       if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
         void loadPacket(true);
       }
     });
+    // Reconnect resync: refetch the packet after a dropped stream so events
+    // missed during the gap are reconciled. Collapse/selection/filter preserved.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) void loadPacket(true);
+    });
     client.connect();
     return () => {
       unsubscribe();
+      offState();
       client.close();
     };
   }, [spaceId, loadPacket]);

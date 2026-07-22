@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { __resetSharedSseForTests } from "../ui/src/sse-shared";
 import { h } from "preact";
 
 import { App } from "../ui/src/app";
@@ -41,6 +42,7 @@ describe("visible-first dashboard boot", () => {
   beforeEach(() => {
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
+    __resetSharedSseForTests();
     vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
       matches: false,
       media: query,
