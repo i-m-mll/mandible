@@ -486,6 +486,49 @@ export async function getSessions<T>(query?: string): Promise<T[]> {
   return normalizeList(payload);
 }
 
+// Paginated sessions listing (issue 21502ff). The list endpoint now returns a
+// bounded page by default with a stable cursor and an unfiltered total; pass
+// { scope: 'all' } for full history, or a cursor to page. History is never
+// hidden — total reflects every matching session and direct-id lookups plus
+// deep links continue to resolve unchanged.
+export interface SessionsPage<T> {
+  sessions: T[];
+  total: number;
+  returned: number;
+  nextCursor: string | null;
+  scope: 'all' | 'default';
+  limit: number | null;
+}
+
+export async function getSessionsPage<T>(params?: {
+  status?: string;
+  app?: string;
+  parentId?: string | null;
+  scope?: 'all';
+  limit?: number;
+  cursor?: string | null;
+}): Promise<SessionsPage<T>> {
+  const query = buildQuery({
+    status: params?.status,
+    app: params?.app,
+    parent_id: params?.parentId === null ? 'null' : params?.parentId,
+    scope: params?.scope,
+    limit: params?.limit,
+    cursor: params?.cursor ?? undefined,
+  });
+  const payload = await cachedApiGetJson<ApiList<T> & Partial<SessionsPage<T>>>(
+    `/api/sessions${query}`,
+  );
+  return {
+    sessions: normalizeList(payload),
+    total: payload.total ?? 0,
+    returned: payload.returned ?? 0,
+    nextCursor: payload.nextCursor ?? null,
+    scope: payload.scope ?? 'default',
+    limit: payload.limit ?? null,
+  };
+}
+
 export async function navigateSession(sessionId: string): Promise<void> {
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
   const response = await fetch(path, {

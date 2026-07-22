@@ -235,8 +235,29 @@ export function registerSessionRoutes(
     } else if (query.parent_id) {
       options.parent_id = query.parent_id;
     }
+    // Bounded default with explicit history escape hatch (issue 21502ff).
+    if (query.scope === "all" || query.all === "1" || query.all === "true") {
+      options.scope = "all";
+    }
+    if (query.cursor) {
+      options.cursor = query.cursor;
+    }
+    if (query.limit !== undefined) {
+      const parsedLimit = Number(query.limit);
+      if (Number.isFinite(parsedLimit) && parsedLimit > 0) {
+        options.limit = Math.floor(parsedLimit);
+      }
+    }
 
-    const sessions = registry.listSessions(options);
+    const page = registry.listSessionsPage(options);
+    const sessions = page.sessions;
+    const meta = {
+      total: page.total,
+      returned: page.returned,
+      nextCursor: page.nextCursor,
+      scope: page.scope,
+      limit: page.limit,
+    };
 
     if (query.include === "issues" || query.include === "all_issues") {
       const showAll = query.include === "all_issues";
@@ -279,11 +300,11 @@ export function registerSessionRoutes(
         issues: linkMap.get(s.id) ?? [],
         projects: projectMap.get(s.id) ?? [],
       }));
-      sendJson(res, 200, enriched);
+      sendJson(res, 200, { sessions: enriched, ...meta });
       return;
     }
 
-    sendJson(res, 200, sessions);
+    sendJson(res, 200, { sessions, ...meta });
   }, { fileRpc: "deny" });
 
   // Bug: 568eca7 — lightweight endpoint returning just pinned session IDs
