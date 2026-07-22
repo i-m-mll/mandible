@@ -149,7 +149,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     sendJson(res, 200, filterAndSortBranches(branches, { sort, filter }));
   }, { fileRpc: "deny" });
 
-  server.get("/api/work/repos/:id/audit", (req, res) => {
+  server.get("/api/work/repos/:id/audit", async (req, res) => {
     const repoId = req.params.id;
     if (!repoId) {
       sendJson(res, 400, { error: "missing repo id" });
@@ -162,7 +162,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
     }
     let refreshedRepo;
     try {
-      refreshedRepo = workScanner.refreshRepo(repo.root);
+      refreshedRepo = await workScanner.refreshRepoAsync(repo.root);
     } catch (error) {
       sendJson(res, 503, {
         error: "repository audit refresh failed",

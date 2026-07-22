@@ -1,7 +1,8 @@
-import { spawnSync } from "child_process";
+import { execFile, spawnSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
+import { promisify } from "util";
 import { parse as parseToml } from "smol-toml";
 import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
@@ -436,6 +437,29 @@ function runGit(
   return result.stdout.trimEnd();
 }
 
+const execFileAsync = promisify(execFile);
+
+// Async counterpart to runGit for event-loop-safe repo probing. Only the
+// allow_failure semantics are needed by the async callers (repo discovery
+// prefix and audit refresh), so a rejected spawn returns null rather than
+// throwing.
+async function runGitAsync(
+  args: string[],
+  options: { cwd: string },
+): Promise<string | null> {
+  try {
+    const { stdout } = await execFileAsync("git", args, {
+      cwd: options.cwd,
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    return stdout.trimEnd();
+  } catch {
+    return null;
+  }
+}
+
 function runGitStatus(args: string[], cwd: string): number | null {
   const result = spawnSync("git", args, {
     cwd,
@@ -662,6 +686,8 @@ export class WorkScanner {
           worktree_inventory_known,
           worktree_status_known,
           default_comparison_known,
+          has_upstream,
+          upstream,
           last_commit_hash,
           last_commit_message,
           last_commit_author,
@@ -694,7 +720,6 @@ export class WorkScanner {
 
     return rows.map((row) => {
       const branchName = String(row.branch);
-      const upstreamInfo = this.getUpstreamInfo(repoRoot, branchName);
       const branchData: BranchData = {
         repo_root: String(row.repo_root),
         branch: branchName,
@@ -704,8 +729,8 @@ export class WorkScanner {
         is_dirty: fromDbBool(Number(row.is_dirty)),
         ahead: Number(row.ahead),
         behind: Number(row.behind),
-        has_upstream: upstreamInfo.has_upstream,
-        upstream: upstreamInfo.upstream,
+        has_upstream: fromDbBool(Number(row.has_upstream)),
+        upstream: row.upstream ? String(row.upstream) : null,
         ahead_default: Number(row.ahead_default ?? 0),
         behind_default: Number(row.behind_default ?? 0),
         default_branch: row.default_branch ? String(row.default_branch) : "\u2014",
@@ -957,7 +982,7 @@ export class WorkScanner {
       return summary;
     }
 
-    this.refreshRepoInfos();
+    await this.refreshRepoInfosAsync();
     this.emit({
       event: "work:scan:started",
       type: "work:scan:started",
@@ -1037,6 +1062,37 @@ export class WorkScanner {
     }
 
     this.scanRepo(repo.root, repo.id);
+    const scanNow = new Date().toISOString();
+    this.db.prepare(
+      "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?",
+    ).run(scanNow, scanNow, repo.root);
+    const refreshed = { ...repo, exists: true, last_scanned_at: scanNow };
+    const index = this.repoInfos.findIndex((candidate) => candidate.root === repo.root);
+    if (index >= 0) {
+      this.repoInfos[index] = refreshed;
+    }
+    return refreshed;
+  }
+
+  // Issue 651e820 — audit-endpoint refresh that yields between branches instead
+  // of running the fully synchronous scanRepo, so the per-repo audit GET does
+  // not block the event loop for the whole scan.
+  async refreshRepoAsync(idOrPath: string): Promise<RepoInfo> {
+    const repo = this.getRepoById(idOrPath);
+    if (!repo) {
+      throw new Error("repo not found");
+    }
+    if (!fs.existsSync(repo.root) || !this.isGitRepo(repo.root)) {
+      throw new Error("repository is unavailable or is not a Git repository");
+    }
+
+    const steps = this.scanRepoSteps(repo.root, repo.id);
+    let step = steps.next();
+    while (!step.done) {
+      await yieldToEventLoop();
+      step = steps.next();
+    }
+
     const scanNow = new Date().toISOString();
     this.db.prepare(
       "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?",
@@ -1221,11 +1277,51 @@ export class WorkScanner {
     return isGitDirectory(candidate);
   }
 
-  private refreshRepoInfos(): void {
+  private resolveSortedRoots(): string[] {
     const roots = this.resolveRepoRoots();
-    const sortedRoots = [...roots].sort((a, b) =>
+    return [...roots].sort((a, b) =>
       path.normalize(a).localeCompare(path.normalize(b)),
     );
+  }
+
+  // Synchronous discovery prefix retained for explicit sync callers
+  // (getRepos cold-start, scanAll, addRepo). Probes each root's git identity
+  // with blocking spawns.
+  private refreshRepoInfos(): void {
+    const sortedRoots = this.resolveSortedRoots();
+    const probes = new Map<string, { exists: boolean; defaultBranch: string }>();
+    for (const root of sortedRoots) {
+      const exists = fs.existsSync(root);
+      const defaultBranch = exists && this.isGitRepo(root)
+        ? this.detectDefaultBranch(root)
+        : "";
+      probes.set(root, { exists, defaultBranch });
+    }
+    this.applyRepoInfos(sortedRoots, probes);
+  }
+
+  // Issue 651e820 — async discovery prefix for the yielding scan path. The
+  // per-repo `git rev-parse` identity probes run via execFile and the loop
+  // yields to the event loop between repos, so a cold-cache post-restart scan
+  // no longer blocks for tens of seconds before its first yield.
+  private async refreshRepoInfosAsync(): Promise<void> {
+    const sortedRoots = this.resolveSortedRoots();
+    const probes = new Map<string, { exists: boolean; defaultBranch: string }>();
+    for (const root of sortedRoots) {
+      const exists = fs.existsSync(root);
+      const defaultBranch = exists && (await this.isGitRepoAsync(root))
+        ? await this.detectDefaultBranchAsync(root)
+        : "";
+      probes.set(root, { exists, defaultBranch });
+      await yieldToEventLoop();
+    }
+    this.applyRepoInfos(sortedRoots, probes);
+  }
+
+  private applyRepoInfos(
+    sortedRoots: string[],
+    probes: Map<string, { exists: boolean; defaultBranch: string }>,
+  ): void {
     const candidates = sortedRoots.map((root) => {
       const baseName = path.basename(root);
       const nameBase = stripLeadingDot(baseName) || baseName;
@@ -1253,16 +1349,13 @@ export class WorkScanner {
       const seen = slugInstances.get(baseId) ?? 0;
       const id = seen === 0 ? baseId : `${baseId}-${seen}`;
       slugInstances.set(baseId, seen + 1);
-      const repoExists = fs.existsSync(candidate.root);
-      const defaultBranch = repoExists && this.isGitRepo(candidate.root)
-        ? this.detectDefaultBranch(candidate.root)
-        : "";
+      const probe = probes.get(candidate.root) ?? { exists: false, defaultBranch: "" };
       return {
         id,
         name: candidate.name,
         root: candidate.root,
-        exists: repoExists,
-        default_branch: defaultBranch,
+        exists: probe.exists,
+        default_branch: probe.defaultBranch,
         excluded: false,
         user_modified: false,
         last_scanned_at: null,
@@ -1347,12 +1440,21 @@ export class WorkScanner {
       cwd: repoRoot,
       allow_failure: true,
     });
-    if (!output) {
+    return this.matchesToplevel(repoRoot, output);
+  }
+
+  private async isGitRepoAsync(repoRoot: string): Promise<boolean> {
+    const output = await runGitAsync(["rev-parse", "--show-toplevel"], { cwd: repoRoot });
+    return this.matchesToplevel(repoRoot, output);
+  }
+
+  private matchesToplevel(repoRoot: string, toplevel: string | null): boolean {
+    if (!toplevel) {
       return false;
     }
     try {
       const resolvedRepo = fs.realpathSync(repoRoot);
-      const resolvedOutput = fs.realpathSync(output);
+      const resolvedOutput = fs.realpathSync(toplevel);
       return resolvedOutput === resolvedRepo;
     } catch (_error) {
       return false;
@@ -1427,6 +1529,8 @@ export class WorkScanner {
         worktree_inventory_known: toDbBool(worktreeInventory.known),
         worktree_status_known: toDbBool(status.known),
         default_comparison_known: toDbBool(aheadBehindDefault.known),
+        has_upstream: toDbBool(aheadBehind.has_upstream),
+        upstream: aheadBehind.upstream,
         last_commit_hash: lastCommit?.hash ?? null,
         last_commit_message: lastCommit?.message ?? null,
         last_commit_author: lastCommit?.author ?? null,
@@ -1453,6 +1557,8 @@ export class WorkScanner {
             worktree_inventory_known,
             worktree_status_known,
             default_comparison_known,
+            has_upstream,
+            upstream,
             last_commit_hash,
             last_commit_message,
             last_commit_author,
@@ -1483,6 +1589,8 @@ export class WorkScanner {
             worktree_inventory_known,
             worktree_status_known,
             default_comparison_known,
+            has_upstream,
+            upstream,
             last_commit_hash,
             last_commit_message,
             last_commit_author,
@@ -1504,6 +1612,8 @@ export class WorkScanner {
             @worktree_inventory_known,
             @worktree_status_known,
             @default_comparison_known,
+            @has_upstream,
+            @upstream,
             @last_commit_hash,
             @last_commit_message,
             @last_commit_author,
@@ -1524,6 +1634,8 @@ export class WorkScanner {
             worktree_inventory_known = excluded.worktree_inventory_known,
             worktree_status_known = excluded.worktree_status_known,
             default_comparison_known = excluded.default_comparison_known,
+            has_upstream = excluded.has_upstream,
+            upstream = excluded.upstream,
             last_commit_hash = excluded.last_commit_hash,
             last_commit_message = excluded.last_commit_message,
             last_commit_author = excluded.last_commit_author,
@@ -1734,6 +1846,17 @@ export class WorkScanner {
         cwd: repoRoot,
         allow_failure: true,
       });
+      if (result !== null) {
+        return candidate;
+      }
+    }
+    return "";
+  }
+
+  private async detectDefaultBranchAsync(repoRoot: string): Promise<string> {
+    const candidates = ["main", "develop"];
+    for (const candidate of candidates) {
+      const result = await runGitAsync(["rev-parse", "--verify", candidate], { cwd: repoRoot });
       if (result !== null) {
         return candidate;
       }
