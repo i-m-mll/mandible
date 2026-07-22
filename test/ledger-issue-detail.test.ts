@@ -9,7 +9,10 @@ import {
   buildLedgerIssueDetailProjection,
   buildLedgerIssueDetailProjectionWithProfile,
 } from "../src/ledger/issue-detail.js";
-import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-projection.js";
+import {
+  getLedgerIssueDetailForRoute,
+  resolveLedgerIssueIdForRoute,
+} from "../src/ledger/issue-projection.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
@@ -17,6 +20,7 @@ import {
 } from "../src/ledger/operational-links.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import { addAttributionEvidence, addCredential, createUser } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;
@@ -87,6 +91,95 @@ function insertArtifact(id: string, hash: string, uri: string): void {
 }
 
 describe("ledger issue detail projection", () => {
+  it("resolves attributed authors and preserves legacy display text verbatim", () => {
+    const checkout = createProject("attribution-repo");
+    const user = createUser(db, {
+      slug: "read-agent",
+      kind: "agent",
+      display_name: "Read Surface Agent",
+    });
+    const credential = addCredential(db, user.id, {
+      type: "ssh_key",
+      fingerprint: `SHA256:${"R".repeat(43)}`,
+      label: "Review signing key",
+    });
+    const evidence = addAttributionEvidence(db, {
+      evidence_method: "credential_signature",
+      credential_id: credential.id,
+    });
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({
+      project_id: checkout.project.id,
+      title: "Attributed issue",
+      body: "Attributed body",
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      attribution: {
+        user_id: user.id,
+        evidence_method: "credential_signature",
+        evidence_id: evidence.id,
+      },
+    });
+    const attributedComment = store.addComment(issue.id, {
+      body: "Attributed comment",
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      source: "session",
+      attribution: {
+        user_id: user.id,
+        evidence_method: "credential_signature",
+        evidence_id: evidence.id,
+      },
+    });
+    const legacyComment = store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
+      body: "Legacy comment",
+      actor_type: "external_adapter",
+      author_display: "Imported Author",
+      source: "git_bug",
+    });
+    const legacyDisplay = "  Imported Author (historical)  ";
+    db.prepare(
+      `UPDATE ledger_comments
+          SET author_user_id = NULL, evidence_method = NULL, evidence_id = NULL,
+              author_display = ?
+        WHERE id = ?`,
+    ).run(legacyDisplay, legacyComment.id);
+
+    const projection = buildLedgerIssueDetailProjection(db, issue.id);
+    expect(projection.author).toMatchObject({
+      display: "Read Surface Agent",
+      legacy_display: "Mandible",
+      attribution: {
+        user: { id: user.id, display_name: "Read Surface Agent", kind: "agent" },
+        evidence_method: "credential_signature",
+        credential: { id: credential.id, label: "Review signing key", type: "ssh_key" },
+      },
+    });
+    expect(projection.comments.find((comment) => comment.id === attributedComment.id)?.author)
+      .toMatchObject({ display: "Read Surface Agent", legacy_display: "Mandible" });
+    expect(projection.comments.find((comment) => comment.id === legacyComment.id)?.author)
+      .toEqual({
+        id: null,
+        type: "external_adapter",
+        display: legacyDisplay,
+        legacy_display: legacyDisplay,
+        attribution: null,
+      });
+
+    const route = getLedgerIssueDetailForRoute(db, {
+      getRepos: () => [],
+      getRepoById: () => undefined,
+    }, checkout.project.project_key, issue.short_id);
+    expect(route.ok).toBe(true);
+    if (route.ok) {
+      expect(route.detail.author).toBe("Read Surface Agent");
+      expect(route.detail.author_legacy_display).toBe("Mandible");
+      expect(route.detail.comments.find((comment) => comment.id === legacyComment.id)?.author)
+        .toBe(legacyDisplay);
+    }
+  });
+
   it("projects comments, relationships, operational evidence, sync, and conflicts", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
@@ -204,13 +297,18 @@ describe("ledger issue detail projection", () => {
       { branch: "feature/detail", role: "primary" },
     ]);
     expect(projection.comments).toMatchObject([
-      { ordinal: 1, body: "Implementation note", author: { type: "agent", display: "Codex" }, source: "session" },
+      {
+        ordinal: 1,
+        body: "Implementation note",
+        author: { type: "agent", display: "System", legacy_display: "Codex" },
+        source: "session",
+      },
     ]);
     expect(projection.checkpoints).toMatchObject([
       {
         kind: "delegation-manifest",
         payload: [{ issue: child.short_id, digest: "before", branch: "feature/detail", scope: "detail" }],
-        author: { type: "agent", display: "Codex" },
+        author: { type: "agent", display: "System", legacy_display: "Codex" },
       },
     ]);
     expect(projection.timeline.slice(0, 2)).toMatchObject([

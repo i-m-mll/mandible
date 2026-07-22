@@ -1,6 +1,12 @@
 import type { Db } from "../db.js";
 import { columnExists, tableExists } from "../db-introspection.js";
 import {
+  AttributionReadResolver,
+  resolvedActorDisplay,
+  type AttributionReadProjection,
+  type ReadUserIdentity,
+} from "../identity/read-projection.js";
+import {
   getArtifact,
   projectArtifactPublicValue,
   resolveArtifactLinkRef,
@@ -44,6 +50,8 @@ export interface LedgerIssueDetailActor {
   id: string | null;
   type: LedgerActorType;
   display: string;
+  legacy_display: string;
+  attribution: AttributionReadProjection | null;
 }
 
 export interface LedgerIssueDetailComment {
@@ -193,6 +201,7 @@ export interface LedgerIssueDetailSession {
   updated_at: string | null;
   ended_at: string | null;
   last_active: string | null;
+  owner: ReadUserIdentity | null;
   has_conversation: boolean;
   link_type: string;
   link_source: string;
@@ -215,6 +224,9 @@ export interface LedgerIssueDetailAuthRequest {
   skipped_at: number | null;
   exit_code: number | null;
   error: string | null;
+  requester: ReadUserIdentity | null;
+  approver: ReadUserIdentity | null;
+  execution_evidence: AttributionReadProjection | null;
   link_type: string;
   link_source: string;
   link_created_at: number | null;
@@ -373,6 +385,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
   };
 
   const store = new LedgerStore(db);
+  const attributionResolver = new AttributionReadResolver(db);
   const issue = measure("issue", () => store.getIssue(issueId));
   const aliases = measure("aliases", () => store.listAliases(issueId));
   const labels = measure("labels", () => (
@@ -390,11 +403,14 @@ export function buildLedgerIssueDetailProjectionWithProfile(
       id: comment.id,
       ordinal: comment.ordinal,
       body: comment.body,
-      author: {
-        id: comment.author_actor_id,
-        type: comment.author_actor_type,
-        display: comment.author_display || actorTypeLabel(comment.author_actor_type),
-      },
+      author: mapActor(attributionResolver, {
+        actor_id: comment.author_actor_id,
+        actor_type: comment.author_actor_type,
+        legacy_display: comment.author_display,
+        user_id: comment.author_user_id,
+        evidence_method: comment.evidence_method,
+        evidence_id: comment.evidence_id,
+      }),
       source: comment.source,
       created_at: comment.created_at,
       updated_at: comment.updated_at,
@@ -402,7 +418,7 @@ export function buildLedgerIssueDetailProjectionWithProfile(
   const rawCheckpoints = stage === "initial"
     ? []
     : measure("checkpoints", () => store.listIssueCheckpoints(issueId));
-  const checkpoints = rawCheckpoints.map(mapCheckpoint);
+  const checkpoints = rawCheckpoints.map((checkpoint) => mapCheckpoint(checkpoint, attributionResolver));
   const relationshipInputs = stage === "initial"
     ? { outgoing: [], incoming: [] }
     : measure("relationship_rows", () => ({
@@ -426,14 +442,25 @@ export function buildLedgerIssueDetailProjectionWithProfile(
   const mappedAliases = aliases.map(mapAlias);
   const activeIssueLabels = activeLabels(labels);
   const relationships = stage === "initial" ? [] : measure("relationships", () => buildRelationships(db, detail));
-  const author = {
-    id: issue.author_actor_id,
-    type: issue.author_actor_type,
-    display: issue.author_display || actorTypeLabel(issue.author_actor_type),
-  };
+  const author = mapActor(attributionResolver, {
+    actor_id: issue.author_actor_id,
+    actor_type: issue.author_actor_type,
+    legacy_display: issue.author_display,
+    user_id: issue.author_user_id,
+    evidence_method: issue.evidence_method,
+    evidence_id: issue.evidence_id,
+  });
   const timeline = stage === "initial"
     ? buildInitialTimeline(issue, comments, author)
-    : measure("timeline", () => buildTimeline(db, issue, comments, checkpoints, author, measure));
+    : measure("timeline", () => buildTimeline(
+        db,
+        issue,
+        comments,
+        checkpoints,
+        author,
+        attributionResolver,
+        measure,
+      ));
   const conflicts = stage === "initial"
     ? []
     : measure("conflicts", () => listIssueConflicts(
@@ -455,8 +482,12 @@ export function buildLedgerIssueDetailProjectionWithProfile(
     ? []
     : measure("associated_artifacts", () => listAssociatedArtifacts(db, issue.id, issue.body, comments));
   const workUnits = stage === "initial" ? [] : measure("work_units", () => listWorkUnits(db, issue.id));
-  const sessions = stage === "initial" ? [] : measure("sessions", () => listSessions(db, issue.id));
-  const authRequests = stage === "initial" ? [] : measure("auth_requests", () => listAuthRequests(db, issue.id));
+  const sessions = stage === "initial"
+    ? []
+    : measure("sessions", () => listSessions(db, issue.id, attributionResolver));
+  const authRequests = stage === "initial"
+    ? []
+    : measure("auth_requests", () => listAuthRequests(db, issue.id, attributionResolver));
   const timelinePartial = stage === "initial" && (options.commentLimit ?? 50) > 0 && comments.length >= (options.commentLimit ?? 50);
 
   const projection: LedgerIssueDetailProjection = {
@@ -577,17 +608,23 @@ function mapIssueBranch(branch: LedgerIssueBranch): LedgerIssueDetailBranch {
   };
 }
 
-function mapCheckpoint(checkpoint: LedgerIssueCheckpoint): LedgerIssueDetailCheckpoint {
+function mapCheckpoint(
+  checkpoint: LedgerIssueCheckpoint,
+  attributionResolver: AttributionReadResolver,
+): LedgerIssueDetailCheckpoint {
   return {
     id: checkpoint.id,
     issue_id: checkpoint.issue_id,
     kind: checkpoint.kind,
     payload: parseJsonValue(checkpoint.payload_json),
-    author: {
-      id: checkpoint.author_actor_id,
-      type: checkpoint.author_actor_type,
-      display: checkpoint.author_display || actorTypeLabel(checkpoint.author_actor_type),
-    },
+    author: mapActor(attributionResolver, {
+      actor_id: checkpoint.author_actor_id,
+      actor_type: checkpoint.author_actor_type,
+      legacy_display: checkpoint.author_display,
+      user_id: checkpoint.author_user_id,
+      evidence_method: checkpoint.evidence_method,
+      evidence_id: checkpoint.evidence_id,
+    }),
     source: checkpoint.source,
     created_at: checkpoint.created_at,
   };
@@ -956,6 +993,7 @@ function buildTimeline(
   comments: LedgerIssueDetailComment[],
   checkpoints: LedgerIssueDetailCheckpoint[],
   issueAuthor: LedgerIssueDetailActor,
+  attributionResolver: AttributionReadResolver,
   measure: <T>(name: string, fn: () => T) => T = (_name, fn) => fn(),
 ): LedgerIssueTimelineEntry[] {
   const entries: LedgerIssueTimelineEntry[] = [{
@@ -1017,11 +1055,14 @@ function buildTimeline(
       event_type: event.event_type,
       status,
       resolution,
-      author: {
-        id: event.actor_id,
-        type: event.actor_type,
-        display: actorTypeLabel(event.actor_type),
-      },
+      author: mapActor(attributionResolver, {
+        actor_id: event.actor_id,
+        actor_type: event.actor_type,
+        legacy_display: actorTypeLabel(event.actor_type),
+        user_id: event.actor_user_id,
+        evidence_method: event.evidence_method,
+        evidence_id: event.evidence_id,
+      }),
       source: event.source,
       created_at: event.occurred_at,
       payload,
@@ -1039,11 +1080,14 @@ function buildTimeline(
       id: event.id,
       kind: "event",
       event_type: event.event_type,
-      author: {
-        id: event.actor_id,
-        type: event.actor_type,
-        display: actorTypeLabel(event.actor_type),
-      },
+      author: mapActor(attributionResolver, {
+        actor_id: event.actor_id,
+        actor_type: event.actor_type,
+        legacy_display: actorTypeLabel(event.actor_type),
+        user_id: event.actor_user_id,
+        evidence_method: event.evidence_method,
+        evidence_id: event.evidence_id,
+      }),
       source: event.source,
       created_at: event.occurred_at,
       payload: parseJsonObject(event.payload_json),
@@ -1185,7 +1229,11 @@ function listWorkUnits(db: Db, issueId: string): LedgerIssueDetailWorkUnit[] {
   return result;
 }
 
-function listSessions(db: Db, issueId: string): LedgerIssueDetailSession[] {
+function listSessions(
+  db: Db,
+  issueId: string,
+  attributionResolver: AttributionReadResolver,
+): LedgerIssueDetailSession[] {
   if (!tableExists(db, "ledger_session_issue_links") || !tableExists(db, "sessions")) return [];
   const rows = db.prepare(
     `SELECT l.session_id, l.link_type, l.source AS link_source,
@@ -1193,7 +1241,7 @@ function listSessions(db: Db, issueId: string): LedgerIssueDetailSession[] {
             l.metadata_json AS link_metadata_json,
             s.app, s.parent_id, s.status, s.branch, s.worktree, s.task,
             s.description, s.agent_type, s.created_at, s.updated_at,
-            s.ended_at, s.last_active
+            s.ended_at, s.last_active, s.owner_user_id
      FROM ledger_session_issue_links l
      LEFT JOIN sessions s ON s.id = l.session_id
      WHERE l.issue_id = ?
@@ -1217,6 +1265,7 @@ function listSessions(db: Db, issueId: string): LedgerIssueDetailSession[] {
     updated_at: nullableString(row.updated_at),
     ended_at: nullableString(row.ended_at),
     last_active: nullableString(row.last_active),
+    owner: attributionResolver.user(nullableString(row.owner_user_id)),
     has_conversation: conversationSessions.has(String(row.session_id ?? "")),
     link_type: stringOr(row.link_type, "worked_on"),
     link_source: stringOr(row.link_source, "session"),
@@ -1226,14 +1275,19 @@ function listSessions(db: Db, issueId: string): LedgerIssueDetailSession[] {
   }));
 }
 
-function listAuthRequests(db: Db, issueId: string): LedgerIssueDetailAuthRequest[] {
+function listAuthRequests(
+  db: Db,
+  issueId: string,
+  attributionResolver: AttributionReadResolver,
+): LedgerIssueDetailAuthRequest[] {
   if (!tableExists(db, "ledger_auth_issue_links") || !tableExists(db, "auth_requests")) return [];
   return db.prepare(
     `SELECT l.auth_request_id, l.link_type, l.source AS link_source,
             l.created_at AS link_created_at, l.metadata_json AS link_metadata_json,
             ar.type, ar.title, ar.status, ar.repo, ar.base_branch, ar.head_branch,
             ar.created_at, ar.approved_at, ar.resolved_at, ar.skipped_at,
-            ar.exit_code, ar.error
+            ar.exit_code, ar.error, ar.requested_by_user_id,
+            ar.approved_by_user_id, ar.execution_evidence_id
      FROM ledger_auth_issue_links l
      LEFT JOIN auth_requests ar ON ar.id = l.auth_request_id
      WHERE l.issue_id = ?
@@ -1254,6 +1308,11 @@ function listAuthRequests(db: Db, issueId: string): LedgerIssueDetailAuthRequest
       skipped_at: numberOrNull(record.skipped_at),
       exit_code: numberOrNull(record.exit_code),
       error: nullableString(record.error),
+      requester: attributionResolver.user(nullableString(record.requested_by_user_id)),
+      approver: attributionResolver.user(nullableString(record.approved_by_user_id)),
+      execution_evidence: attributionResolver.attribution({
+        evidence_id: nullableString(record.execution_evidence_id),
+      }),
       link_type: stringOr(record.link_type, "references"),
       link_source: stringOr(record.link_source, "auth_queue"),
       link_created_at: numberOrNull(record.link_created_at),
@@ -1587,4 +1646,29 @@ function numberOrNull(value: unknown): number | null {
 
 function actorTypeLabel(type: LedgerActorType): string {
   return type.replace(/_/g, " ");
+}
+
+function mapActor(
+  attributionResolver: AttributionReadResolver,
+  input: {
+    actor_id: string | null;
+    actor_type: LedgerActorType;
+    legacy_display: string;
+    user_id: string | null;
+    evidence_method: string | null;
+    evidence_id: string | null;
+  },
+): LedgerIssueDetailActor {
+  const attribution = attributionResolver.attribution(input);
+  return {
+    id: input.actor_id,
+    type: input.actor_type,
+    display: resolvedActorDisplay(
+      input.legacy_display,
+      actorTypeLabel(input.actor_type),
+      attribution,
+    ),
+    legacy_display: input.legacy_display,
+    attribution,
+  };
 }

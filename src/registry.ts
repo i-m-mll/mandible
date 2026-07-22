@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { broadcast } from "./sse.js";
+import { AttributionReadResolver } from "./identity/read-projection.js";
 import { resolveSessionOwnerUserId } from "./session-ownership.js";
 import type { Logger, NavMetadataStatus, Session, SessionStatus } from "./types.js";
 
@@ -410,7 +411,7 @@ function computeNavMetadataState(
   };
 }
 
-function toSession(row: SessionRow): Session {
+function toSession(row: SessionRow, attributionResolver: AttributionReadResolver): Session {
   return {
     id: row.id,
     app: row.app,
@@ -447,6 +448,8 @@ function toSession(row: SessionRow): Session {
     // Bug: 0b454df — channel-connected session tracking
     channel_connected_at: row.channel_connected_at ?? null,
     channel_last_tool_call: row.channel_last_tool_call ?? null,
+    owner_user_id: row.owner_user_id ?? null,
+    owner: attributionResolver.user(row.owner_user_id),
   };
 }
 
@@ -526,7 +529,9 @@ export class SessionRegistry {
     const existingRow = this.db
       .prepare("SELECT * FROM sessions WHERE id = ?")
       .get(input.id) as SessionRow | undefined;
-    const existing = existingRow ? toSession(existingRow) : null;
+    const existing = existingRow
+      ? toSession(existingRow, new AttributionReadResolver(this.db))
+      : null;
     const pick = (incoming: string | null | undefined, previous: string | null): string | null => {
       if (incoming === undefined) {
         return previous;
@@ -784,7 +789,8 @@ export class SessionRegistry {
       .prepare(`SELECT * FROM sessions ${where} ORDER BY created_at DESC`)
       .all(...params) as SessionRow[];
 
-    return rows.map((row) => this.ensureLiveness(toSession(row)));
+    const attributionResolver = new AttributionReadResolver(this.db);
+    return rows.map((row) => this.ensureLiveness(toSession(row, attributionResolver)));
   }
 
   getSession(id: string): Session | null {
@@ -794,7 +800,7 @@ export class SessionRegistry {
     if (!row) {
       return null;
     }
-    return this.ensureLiveness(toSession(row));
+    return this.ensureLiveness(toSession(row, new AttributionReadResolver(this.db)));
   }
 
   getSessionByPid(pid: number): Session | null {
@@ -804,7 +810,7 @@ export class SessionRegistry {
     if (!row) {
       return null;
     }
-    return this.ensureLiveness(toSession(row));
+    return this.ensureLiveness(toSession(row, new AttributionReadResolver(this.db)));
   }
 
   listSessionsNeedingNavMetadata(limit = 50): Session[] {
@@ -823,7 +829,8 @@ export class SessionRegistry {
          LIMIT ?`,
       )
       .all(now, Math.max(1, limit)) as SessionRow[];
-    return rows.map((row) => this.ensureLiveness(toSession(row)));
+    const attributionResolver = new AttributionReadResolver(this.db);
+    return rows.map((row) => this.ensureLiveness(toSession(row, attributionResolver)));
   }
 
   updateSessionNavMetadata(id: string, update: NavMetadataUpdate): Session | null {
@@ -879,7 +886,8 @@ export class SessionRegistry {
     const rows = this.db
       .prepare("SELECT * FROM sessions")
       .all() as SessionRow[];
-    const sessions = rows.map((row) => this.ensureLiveness(toSession(row)));
+    const attributionResolver = new AttributionReadResolver(this.db);
+    const sessions = rows.map((row) => this.ensureLiveness(toSession(row, attributionResolver)));
     const byId = new Map<string, Session>();
     const children = new Map<string | null, Session[]>();
 

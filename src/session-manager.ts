@@ -41,6 +41,7 @@ import { replaceSessionInstructionArtifacts } from "./presets.js";
 import type { ClientAuthenticator } from "./client-auth/authenticator.js";
 import { getOperator } from "./users/store.js";
 import { resolveSessionOwnerUserId } from "./session-ownership.js";
+import { AttributionReadResolver } from "./identity/read-projection.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -282,7 +283,10 @@ function parseAllowedTools(raw: string | null): string[] | null {
   return null;
 }
 
-function rowToSession(row: ConsoleSessionRow): ConsoleSession {
+function rowToSession(
+  row: ConsoleSessionRow,
+  attributionResolver: AttributionReadResolver,
+): ConsoleSession {
   const is_operator = row.is_operator === 1;
   const backend_type = (row.backend_type === "sdk"
     ? "sdk"
@@ -322,6 +326,8 @@ function rowToSession(row: ConsoleSessionRow): ConsoleSession {
     resume_at_message: row.resume_at_message ?? null,
     channel_enabled: transport_lane === "channel" || Boolean(row.channel_enabled),
     agent_type: computeAgentType(row.command, is_operator),
+    owner_user_id: row.owner_user_id ?? null,
+    owner: attributionResolver.user(row.owner_user_id),
   };
 }
 
@@ -397,8 +403,9 @@ export class SessionManager {
         .map((row) => row.id),
     );
 
+    const attributionResolver = new AttributionReadResolver(db);
     for (const row of rows) {
-      const session = rowToSession(row);
+      const session = rowToSession(row, attributionResolver);
       this.pinClientIdentity(session);
       if (session.status !== "running" && !retainedTerminalIds.has(session.id)) {
         this.sessions.set(session.id, new DormantBackend(session));
@@ -531,7 +538,7 @@ export class SessionManager {
       channel_enabled,
       transport_lane,
       owner_user_id: ownerUserId,
-    });
+    }, new AttributionReadResolver(db));
 
     // Issue 2181ffd — Store instruction attachments as pinned artifact versions.
     const pinnedPresetIds = input.presetIds && input.presetIds.length > 0

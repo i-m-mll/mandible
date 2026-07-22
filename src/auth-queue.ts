@@ -46,6 +46,10 @@ import {
   type AttributionContext,
 } from "./identity/resolver.js";
 import {
+  AttributionReadResolver,
+  authAttributionReadFields,
+} from "./identity/read-projection.js";
+import {
   addAttributionEvidence,
   getAttributionEvidence,
   getDelegatedSigningLease,
@@ -192,7 +196,8 @@ export class AuthQueue {
     this.db = options.db ?? getDb();
     this.now = options.now ?? (() => Date.now());
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
-    this.broadcast = options.broadcast ?? defaultBroadcast;
+    const broadcast = options.broadcast ?? defaultBroadcast;
+    this.broadcast = (event) => broadcast(projectAuthAttributionEvent(this.db, event));
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
@@ -1384,6 +1389,7 @@ export class AuthQueue {
     if (Object.keys(executionEnv).length > 0) {
       this.executionEnvs.set(executing.id, executionEnv);
     }
+    this.broadcast({ event: "auth:updated", data: { request: executing } });
     this.executeInBackground(executing);
     return executing;
   }
@@ -3202,6 +3208,27 @@ export class AuthQueue {
     return request;
   }
 
+}
+
+function projectAuthAttributionEvent(
+  db: InstanceType<typeof Database>,
+  event: SseEvent,
+): SseEvent {
+  if (event.event !== "auth:new" && event.event !== "auth:updated") return event;
+  if (!event.data || typeof event.data !== "object") return event;
+  const data = event.data as Record<string, unknown>;
+  if (!data.request || typeof data.request !== "object") return event;
+  const request = data.request as AuthRequest;
+  return {
+    ...event,
+    data: {
+      ...data,
+      request: {
+        ...request,
+        ...authAttributionReadFields(new AttributionReadResolver(db), request),
+      },
+    },
+  };
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.

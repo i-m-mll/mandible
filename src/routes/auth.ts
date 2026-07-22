@@ -14,6 +14,10 @@ import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
 import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
+import {
+  AttributionReadResolver,
+  authAttributionReadFields,
+} from "../identity/read-projection.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -202,6 +206,7 @@ export function registerAuthRoutes(
       approved_by_user_id: request.approved_by_user_id,
       execution_evidence_id: request.execution_evidence_id,
       signature_verification: authQueue.getSignatureVerification(request.id),
+      ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
       // Bug: 4e32923 — include scoping fields omitted from the original response literal
@@ -316,12 +321,14 @@ export function registerAuthRoutes(
       requests = requests.filter((r) => r.type === typeFilter);
     }
     // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
+    const attributionResolver = new AttributionReadResolver(getDb());
     const enriched = requests.map((r) => {
       const dep = r.depends_on_id ? authQueue.getRequest(r.depends_on_id) : null;
       return {
         ...r,
         depends_on_status: dep ? dep.status : null,
         action_count: authQueue.countActions(r.id),
+        ...authAttributionReadFields(attributionResolver, r),
       };
     });
     res.json({ requests: enriched });
@@ -342,10 +349,12 @@ export function registerAuthRoutes(
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
+    const attributionResolver = new AttributionReadResolver(getDb());
     res.json({
       requests: requests.map((r) => ({
         ...r,
         action_count: authQueue.countActions(r.id),
+        ...authAttributionReadFields(attributionResolver, r),
       })),
     });
   }, { fileRpc: "deny" });
