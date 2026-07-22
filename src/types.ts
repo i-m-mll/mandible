@@ -237,6 +237,20 @@ export interface AuthRequest {
   approval_lease_id: string | null;
 }
 
+/**
+ * Projected auth-request shape for list surfaces (history sidebar).
+ *
+ * Omits the unbounded body blobs (`diff_summary`, `spec_content`, `output`)
+ * so a 50–200 row list does not serialize megabytes of diff/spec/console text
+ * on the main thread. The detail route (`GET /api/auth/request/:id`) still
+ * returns the full body, which the UI fetches on selection. `action_count`
+ * is resolved in a single batched query rather than per-row.
+ */
+export type AuthRequestSummary = Omit<
+  AuthRequest,
+  "diff_summary" | "spec_content" | "output"
+> & { action_count: number };
+
 export interface AuthRequestInput {
   session_id?: string | null;
   type?: AuthRequestType;

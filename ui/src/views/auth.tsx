@@ -24,6 +24,7 @@ import {
   findIssue,
   getAuthAutoApproveStatus,
   getAuthRequestActions,
+  getAuthRequestDetail,
   createAuthHook,
   setAuthRequestActionVeto,
   updateAuthHook,
@@ -2146,6 +2147,13 @@ export function AuthQueueView({
   const [localSelectedId, setLocalSelectedId] = useState<string | null>(null);
   const selectedId = externalSelectedId !== undefined ? externalSelectedId : localSelectedId;
 
+  // Bug: 0de95bf — history list rows omit the diff/spec/output body blobs. The
+  // detail body is fetched from the detail route when a request is selected and
+  // cached here so the detail pane can render the full spec/diff/console.
+  // (commit_message stays in the list projection, so it is not re-fetched.)
+  type AuthRequestBody = { diff_summary: string; spec_content: string; output: string };
+  const [hydratedBodies, setHydratedBodies] = useState<Record<string, AuthRequestBody>>({});
+
   const handleSelect = useCallback((id: string) => {
     setLocalSelectedId(id);
     onSelectAuth?.(id);
@@ -2780,7 +2788,7 @@ export function AuthQueueView({
   }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
   // Find the selected request from whichever list contains it
-  const selectedRequest = useMemo((): AuthRequest | null => {
+  const selectedRequestRaw = useMemo((): AuthRequest | null => {
     if (!selectedId) return null;
     return (
       queue.find((r) => getAuthId(r) === selectedId) ??
@@ -2788,6 +2796,44 @@ export function AuthQueueView({
       null
     );
   }, [selectedId, queue, historyQueue]);
+
+  // Bug: 0de95bf — a list row from the history projection carries no body
+  // blobs (diff_summary/spec_content/output are undefined, not null). Fetch the
+  // full body from the detail route on selection and cache it. Active-queue
+  // rows already carry the full body, so no fetch fires for them.
+  const selectedNeedsBody = Boolean(
+    selectedRequestRaw &&
+      selectedRequestRaw.diff_summary === undefined &&
+      selectedRequestRaw.spec_content === undefined &&
+      selectedRequestRaw.output === undefined,
+  );
+  useEffect(() => {
+    if (!selectedId || !selectedNeedsBody || hydratedBodies[selectedId]) return;
+    let active = true;
+    getAuthRequestDetail(selectedId)
+      .then((detail) => {
+        if (!active || !detail) return;
+        setHydratedBodies((prev) => ({
+          ...prev,
+          [selectedId]: {
+            diff_summary: typeof detail.diff_summary === 'string' ? detail.diff_summary : '',
+            spec_content: typeof detail.spec_content === 'string' ? detail.spec_content : '',
+            output: typeof detail.output === 'string' ? detail.output : '',
+          },
+        }));
+      })
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [selectedId, selectedNeedsBody, hydratedBodies]);
+
+  // Merge any fetched body into the selected request for the detail pane.
+  const selectedRequest = useMemo((): AuthRequest | null => {
+    if (!selectedRequestRaw) return null;
+    const hydration = hydratedBodies[getAuthId(selectedRequestRaw)];
+    return hydration ? { ...selectedRequestRaw, ...hydration } : selectedRequestRaw;
+  }, [selectedRequestRaw, hydratedBodies]);
 
   useEffect(() => {
     if (!selectedRequest) return;
