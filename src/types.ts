@@ -45,6 +45,12 @@ export interface HealthResponse {
   // Constant-space request-loop responsiveness diagnostics. Optional for
   // compatibility with older daemons and lightweight test servers.
   eventLoop?: import("./daemon-event-loop.js").EventLoopLagSnapshot;
+  // Issue 708dc4c — client-authentication mode and the unattributed-write
+  // telemetry ratchet. Present only when the daemon wires a client-auth gate.
+  client_auth?: {
+    mode: "compat" | "strict";
+    telemetry?: unknown;
+  };
 }
 
 export type InstanceRole = "main" | "preview" | "dev" | "test";

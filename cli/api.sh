@@ -136,6 +136,9 @@ api_http_exchange() {
     : > "$output_file"
     : > "$stderr_tmp"
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
+    # Issue 708dc4c — present the client-auth bearer token when configured so the
+    # CLI authenticates as its user (required for mutations under strict mode).
+    [[ -n "${MANDIBLE_TOKEN:-}" ]] && curl_args+=(-H "Authorization: Bearer ${MANDIBLE_TOKEN}")
     if [[ "$method" != "GET" ]]; then
       curl_args+=(-X "$method" -H 'Content-Type: application/json')
       (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
@@ -648,10 +651,12 @@ api_file_rpc_exchange() {
     --arg provider_session_id "$session_id" \
     --arg attach_field "$attach_field" \
     --arg attach_name "$attach_name" \
+    --arg capability_token "${MANDIBLE_TOKEN:-}" \
     --slurpfile body "$body_tmp" \
     '{id:$id, method:$method, path:$path}
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
+     + (if $capability_token != "" then {capability_token:$capability_token} else {} end)
      + (if $method != "GET" and $provider != "" and $provider_session_id != ""
         then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
         else {} end)' > "$request_tmp"

@@ -47,6 +47,56 @@ export interface RequestLike {
   query: Record<string, string>;
   body: unknown;
   ambient_identity?: AmbientProviderIdentity | null;
+  // Issue 708dc4c — the authenticated client identity resolved by the
+  // client-auth gate (bearer/capability token → user), or null when the request
+  // is unauthenticated. Downstream attribution wiring consumes this; the gate
+  // itself performs authentication only, not authorization.
+  client_identity?: ResolvedClientIdentity | null;
+}
+
+// --- Client authentication gate (issue 708dc4c) ---
+
+export type ClientAuthMode = "compat" | "strict";
+
+export interface ResolvedClientIdentity {
+  user_id: string;
+  slug: string;
+  method: "api_token" | "ephemeral";
+  credential_id: string | null;
+  source: "http_bearer" | "file_rpc_capability" | "bootstrap" | "in_process";
+}
+
+export interface UnattributedWriteRecord {
+  method: string;
+  pathname: string;
+  transport: "http" | "file-rpc";
+  category?: string | null;
+}
+
+/**
+ * The client-authentication gate the router consults at the request boundary.
+ * Implemented by ClientAuthenticator (src/client-auth). When absent (unit tests,
+ * back-compat servers) the boundary behaves exactly as before: no token
+ * resolution, no enforcement, no telemetry.
+ */
+export interface ClientAuthGate {
+  authenticate(
+    credential: string | null | undefined,
+    source: ResolvedClientIdentity["source"],
+  ): ResolvedClientIdentity | null;
+  mode(): ClientAuthMode;
+  recordUnattributedWrite(record: UnattributedWriteRecord): void;
+  telemetrySnapshot?(): unknown;
+  bootstrapToken?(): string | null;
+}
+
+/** Presentation transport for a credential, used to label the resolved source. */
+function clientAuthSourceForTransport(
+  transport: "http" | "file-rpc" | "in-process",
+): ResolvedClientIdentity["source"] {
+  if (transport === "http") return "http_bearer";
+  if (transport === "file-rpc") return "file_rpc_capability";
+  return "in_process";
 }
 
 export interface ResponseLike {
@@ -81,6 +131,9 @@ export interface RoutePolicyEntry {
 export interface RouterOptions {
   logger?: Logger;
   instance?: InstanceInfo;
+  // Issue 708dc4c — optional client-auth gate. Omitted in tests and legacy
+  // servers, preserving the original unauthenticated boundary behavior.
+  clientAuth?: ClientAuthGate;
 }
 
 export interface RouterInvokeRequest {
@@ -88,6 +141,10 @@ export interface RouterInvokeRequest {
   url: string;
   body?: unknown;
   ambient_identity?: unknown;
+  // Issue 708dc4c — bearer/capability token presented over an in-process or
+  // file-RPC invocation, and the transport used to present it.
+  credential?: string | null;
+  transport?: "http" | "file-rpc" | "in-process";
 }
 
 export interface RouterInvokeResponse {
@@ -259,6 +316,8 @@ export class Router implements RouteRegistrar {
       input.body,
       response,
       input.ambient_identity,
+      input.credential,
+      input.transport ?? "file-rpc",
     );
     if (!handled) {
       return { status: 404, body: { error: "not_found" } };
@@ -278,7 +337,15 @@ export class Router implements RouteRegistrar {
         try { body = JSON.parse(rawBody); } catch { body = rawBody; }
       }
     }
-    return this.dispatch(method, req.url ?? "/", body, new HttpResponse(res), ambientIdentityFromHeaders(req.headers));
+    return this.dispatch(
+      method,
+      req.url ?? "/",
+      body,
+      new HttpResponse(res),
+      ambientIdentityFromHeaders(req.headers),
+      bearerFromHeaders(req.headers),
+      "http",
+    );
   }
 
   private async dispatch(
@@ -287,6 +354,8 @@ export class Router implements RouteRegistrar {
     body: unknown,
     response: ResponseLike,
     ambientIdentity?: unknown,
+    credential?: string | null,
+    transport: "http" | "file-rpc" | "in-process" = "in-process",
   ): Promise<boolean> {
     const normalizedMethod = method.toUpperCase();
     const url = new URL(requestUrl, "http://localhost");
@@ -305,6 +374,33 @@ export class Router implements RouteRegistrar {
         return true;
       }
 
+      // Issue 708dc4c — client-authentication gate. Resolve the presented token
+      // to a client identity (attached to the request for downstream
+      // attribution). For mutations, enforce strict mode and count unattributed
+      // writes in compat mode. Reads stay open in phase 1. When no gate is wired
+      // (tests/legacy) this whole block is skipped and behavior is unchanged.
+      let clientIdentity: ResolvedClientIdentity | null = null;
+      const gate = this.options.clientAuth;
+      if (gate) {
+        clientIdentity = gate.authenticate(credential, clientAuthSourceForTransport(transport));
+        if (UNSAFE_METHODS.has(normalizedMethod) && !clientIdentity) {
+          const telemetryTransport = transport === "http" ? "http" : "file-rpc";
+          if (gate.mode() === "strict") {
+            response.status(401).json({
+              error: "authentication_required",
+              reason: "client_auth_strict_mode",
+            });
+            return true;
+          }
+          gate.recordUnattributedWrite({
+            method: normalizedMethod,
+            pathname,
+            transport: telemetryTransport,
+            category: operationalMutationCategoryForRoute(normalizedMethod, route.path),
+          });
+        }
+      }
+
       const query: Record<string, string> = {};
       url.searchParams.forEach((value, key) => {
         query[key] = value;
@@ -317,6 +413,7 @@ export class Router implements RouteRegistrar {
         query,
         body,
         ambient_identity: requestAmbientIdentity,
+        client_identity: clientIdentity,
       };
 
       try {
@@ -414,6 +511,13 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return value;
 }
 
+// Issue 708dc4c — extract the bearer credential from the Authorization header
+// for the client-auth gate. The gate tolerates a bare token or a `Bearer `
+// scheme; returning the raw header value keeps this layer scheme-agnostic.
+function bearerFromHeaders(headers: http.IncomingHttpHeaders): string | null {
+  return headerValue(headers["authorization"]) ?? null;
+}
+
 // --- Server creation ---
 
 export interface ServerOptions {
@@ -435,11 +539,15 @@ export interface ServerOptions {
   getEventLoopDiagnostics?: () => EventLoopLagSnapshot;
   instance?: InstanceInfo;
   fileRpcDir?: string;
+  // Issue 708dc4c — client-auth gate for boundary telemetry and the dashboard
+  // bootstrap handshake. Optional; omitting it preserves legacy behavior.
+  clientAuth?: ClientAuthGate;
 }
 
 export function createServer(options: ServerOptions): http.Server {
   const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady } = options;
   const instance = options.instance ?? resolveInstanceInfo();
+  const bootstrapToken = (): string | null => options.clientAuth?.bootstrapToken?.() ?? null;
 
   router.get("/api/health", (_req, res) => {
     const startupCommit =
@@ -464,6 +572,18 @@ export function createServer(options: ServerOptions): http.Server {
       ...(rebuilding ? { rebuilding: true } : {}),
       ...(options.getMemoryDiagnostics ? { memory: options.getMemoryDiagnostics() } : {}),
       ...(options.getEventLoopDiagnostics ? { eventLoop: options.getEventLoopDiagnostics() } : {}),
+      // Issue 708dc4c — surface client-auth mode and the unattributed-write
+      // ratchet so operators can see readiness for strict mode.
+      ...(options.clientAuth
+        ? {
+            client_auth: {
+              mode: options.clientAuth.mode(),
+              ...(options.clientAuth.telemetrySnapshot
+                ? { telemetry: options.clientAuth.telemetrySnapshot() }
+                : {}),
+            },
+          }
+        : {}),
     };
     res.json(payload);
   }, { fileRpc: "deny" });
@@ -528,7 +648,7 @@ export function createServer(options: ServerOptions): http.Server {
       const handled = await router.handle(req, res);
       if (!handled) {
         if (!isApi && (method === "GET" || method === "HEAD")) {
-          const served = await handleStaticRequest(method, pathname, req, res, instance);
+          const served = await handleStaticRequest(method, pathname, req, res, instance, bootstrapToken);
           if (served) {
             return;
           }
@@ -678,13 +798,14 @@ async function handleStaticRequest(
   pathname: string,
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  instance: InstanceInfo
+  instance: InstanceInfo,
+  getBootstrapToken?: () => string | null,
 ): Promise<boolean> {
   const filePath = resolveStaticPath(pathname);
   if (!filePath) {
     return false;
   }
-  return sendFile(req, res, filePath, method, instance);
+  return sendFile(req, res, filePath, method, instance, getBootstrapToken);
 }
 
 const PWA_FILES = new Set([
@@ -734,7 +855,8 @@ async function sendFile(
   res: http.ServerResponse,
   filePath: string,
   method: string,
-  instance: InstanceInfo
+  instance: InstanceInfo,
+  getBootstrapToken?: () => string | null,
 ): Promise<boolean> {
   try {
     const stat = await fs.promises.stat(filePath);
@@ -743,7 +865,7 @@ async function sendFile(
     }
     if (filePath === UI_INDEX_PATH) {
       const raw = await fs.promises.readFile(filePath, "utf8");
-      const body = injectBootstrapData(raw, instance);
+      const body = injectBootstrapData(raw, instance, getBootstrapToken?.() ?? null);
       res.writeHead(200, {
         "Content-Type": getContentType(filePath),
         "Content-Length": Buffer.byteLength(body),
@@ -797,8 +919,20 @@ function isNotModified(header: string | string[] | undefined, mtime: Date): bool
   return fileSeconds <= sinceSeconds;
 }
 
-function injectBootstrapData(html: string, instance: InstanceInfo): string {
-  const json = JSON.stringify({ instance }).replace(/[<>&]/g, (char) => {
+function injectBootstrapData(
+  html: string,
+  instance: InstanceInfo,
+  clientAuthToken: string | null = null,
+): string {
+  // Issue 708dc4c — the dashboard bootstrap handshake: embed the operator's
+  // ephemeral token so operator UI mutations authenticate as the operator, even
+  // in strict mode. Absent an operator (or client-auth gate), the field is
+  // simply omitted and the dashboard falls back to compat-mode anonymous calls.
+  const bootstrap: { instance: InstanceInfo; client_auth?: { token: string } } = { instance };
+  if (clientAuthToken) {
+    bootstrap.client_auth = { token: clientAuthToken };
+  }
+  const json = JSON.stringify(bootstrap).replace(/[<>&]/g, (char) => {
     switch (char) {
       case "<":
         return "\\u003c";

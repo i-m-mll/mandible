@@ -43,6 +43,8 @@ import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerUserRoutes } from "./routes/users.js";
+import { registerClientAuthRoutes } from "./routes/client-auth.js";
+import { ClientAuthenticator } from "./client-auth/index.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
 import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
@@ -115,8 +117,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   setSseManager(sse);
   sse.startHeartbeat();
 
+  // Issue 708dc4c — client-authentication gate. Wired into the router boundary
+  // so token-bearing requests resolve to a user identity (compat mode by
+  // default: unauthenticated loopback still works and unattributed writes are
+  // counted; strict mode rejects anonymous mutations).
+  const clientAuth = new ClientAuthenticator(db);
+
   // Create router and register all partition routes
-  const router = new Router({ logger, instance });
+  const router = new Router({ logger, instance, clientAuth });
   const sessionRegistry = new SessionRegistry(db);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
@@ -162,6 +170,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerProjectRoutes(router);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
   registerUserRoutes(router);
+  // Issue: 708dc4c — client-auth token mint/list, mode toggle, and telemetry.
+  registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
@@ -204,6 +214,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     getEventLoopDiagnostics: () => eventLoopDiagnostics.sample(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
+    clientAuth,
   });
   fileRpcTransport.start();
 

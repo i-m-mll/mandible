@@ -18,6 +18,11 @@ export interface FileRpcRequest {
   query?: Record<string, unknown>;
   body?: unknown;
   ambient_identity?: unknown;
+  // Issue 708dc4c — per-spool capability token. A file-RPC caller's identity is
+  // otherwise only filesystem access with self-asserted ambient identity (now a
+  // hint). A valid capability token resolves to an authenticated user at the
+  // boundary; in strict mode an unauthenticated file-RPC mutation is rejected.
+  capability_token?: string;
   // Large request bytes (e.g. artifact snapshot/copy content) travel as sibling
   // attachment files in the spool dir instead of inline base64 in argv/body
   // (issue 833e972). Maps a body field name to a spool-local attachment file
@@ -116,7 +121,13 @@ export class FileRpcTransport {
       const requestUrl = buildRequestUrl(request);
       const pathname = new URL(requestUrl, "http://localhost").pathname;
       const body = this.resolveRequestBody(request, attachmentPaths);
-      const response = await this.dispatch(method, requestUrl, body, request.ambient_identity);
+      const response = await this.dispatch(
+        method,
+        requestUrl,
+        body,
+        request.ambient_identity,
+        request.capability_token,
+      );
       this.writeResponse(requestId, response);
       fs.rmSync(requestPath, { force: true });
       this.logger?.("info", "file_rpc_request", {
@@ -202,6 +213,7 @@ export class FileRpcTransport {
     requestUrl: string,
     body: unknown,
     ambientIdentity?: unknown,
+    capabilityToken?: string,
   ): Promise<RouterInvokeResponse> {
     const pathname = new URL(requestUrl, "http://localhost").pathname;
     if (!this.router.resolveFileRpcPolicy(method, requestUrl)) {
@@ -216,6 +228,8 @@ export class FileRpcTransport {
         url: requestUrl,
         body,
         ambient_identity: normalizeAmbientProviderIdentity(ambientIdentity),
+        credential: typeof capabilityToken === "string" ? capabilityToken : null,
+        transport: "file-rpc",
       });
     } catch (error) {
       return {
