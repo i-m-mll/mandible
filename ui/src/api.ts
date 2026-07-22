@@ -2826,6 +2826,21 @@ export type ProjectPickerItem = {
   display_name: string | null;
 };
 
+export type ProjectPermissionGrant = {
+  id: string;
+  subject_type: 'user' | 'group';
+  subject_id: string;
+  resource_type: 'project';
+  resource_id: string;
+  permission: 'read' | 'write' | 'admin';
+};
+
+export type ProjectAccessSettings = {
+  project_id: string;
+  restricted: boolean;
+  grants: ProjectPermissionGrant[];
+};
+
 export type SpaceFactPacket = {
   space: ContractSpace;
   items: ContractSpaceItem[];
@@ -2854,6 +2869,30 @@ export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
     project_key: p.project_key,
     display_name: p.display_name ?? null,
   }));
+}
+
+export async function getProjectAccessSettings(projectRef: string): Promise<ProjectAccessSettings> {
+  const response = await apiGet(`/api/projects/${encodeURIComponent(projectRef)}/access`);
+  return await parseMaybeJson(response) as ProjectAccessSettings;
+}
+
+export async function updateProjectAccessSettings(
+  projectRef: string,
+  restricted: boolean,
+): Promise<ProjectAccessSettings> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectRef)}/access`, {
+    method: 'PATCH',
+    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ restricted }),
+  });
+  const payload = await parseMaybeJson(response);
+  if (!response.ok) {
+    const error = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as { error?: unknown }).error
+      : null;
+    throw new Error(typeof error === 'string' ? error : `PATCH project access failed: ${response.status}`);
+  }
+  return payload as ProjectAccessSettings;
 }
 
 export async function getSpace(spaceId: string): Promise<ContractSpace> {

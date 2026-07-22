@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { getDb } from "../db.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import { readBody, sendJson } from "./http.js";
 
@@ -301,7 +302,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
     sendJson(res, 200, instructionDeliverySnapshot());
   }, { fileRpc: "deny" });
 
-  server.put("/api/settings/instructions-delivery", (req, res) => {
+  server.put("/api/settings/instructions-delivery", globalCapabilityRoute("change_settings", (req, res) => {
     const body = readBody<{
       targets?: unknown;
       postExport?: unknown;
@@ -366,7 +367,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       return;
     }
     sendJson(res, 200, snapshot);
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   // GET /api/settings/:key — returns single setting value
   server.get("/api/settings/:key", (req, res) => {
@@ -390,7 +391,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
   }, { fileRpc: "deny" });
 
   // PUT /api/settings/:key — update a setting
-  server.put("/api/settings/:key", (req, res) => {
+  server.put("/api/settings/:key", globalCapabilityRoute("change_settings", (req, res) => {
     const key = req.params.key;
     if (!key) {
       sendJson(res, 400, { error: "Missing key" });
@@ -427,5 +428,5 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       value: body.value,
       deprecated: DEPRECATED_REAPER_SETTINGS.has(key) || undefined,
     });
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 }

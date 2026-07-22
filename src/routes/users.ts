@@ -29,6 +29,23 @@ import {
   requireSelfOrOperator,
 } from "../client-auth/authz.js";
 import { sendJson } from "./http.js";
+import {
+  addGrant,
+  addGroup,
+  addGroupMember,
+  evaluateGlobalCapability,
+  evaluateProjectAccess,
+  GLOBAL_CAPABILITIES,
+  listGrants,
+  listGroupMembers,
+  listGroups,
+  projectAccessSettings,
+  removeGrant,
+  removeGroup,
+  removeGroupMember,
+  type PermissionSubjectType,
+} from "../permissions/store.js";
+import { resolveProjectRef } from "../ledger/project-registry.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
   return req.body && typeof req.body === "object" && !Array.isArray(req.body)
@@ -145,6 +162,164 @@ export function registerUserRoutes(
       requireOperator(db, req);
       removeBinding(db, req.params.id);
       sendJson(res, 200, { ok: true });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.get("/api/users/groups", (_req, res) => {
+    try {
+      sendJson(res, 200, { groups: listGroups(getDb()) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.post("/api/users/groups", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const body = bodyRecord(req);
+      const slug = optionalString(body, "slug");
+      if (!slug) throw new UserRegistryError("invalid", "slug is required.");
+      sendJson(res, 201, {
+        group: addGroup(db, { slug, display_name: optionalString(body, "display_name") }),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.delete("/api/users/groups/:ref", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      removeGroup(db, req.params.ref);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.get("/api/users/groups/:ref/members", (req, res) => {
+    try {
+      sendJson(res, 200, { members: listGroupMembers(getDb(), req.params.ref) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.post("/api/users/groups/:ref/members", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const user = optionalString(bodyRecord(req), "user");
+      if (!user) throw new UserRegistryError("invalid", "user is required.");
+      addGroupMember(db, req.params.ref, user);
+      sendJson(res, 200, { members: listGroupMembers(db, req.params.ref) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.delete("/api/users/groups/:ref/members/:user", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      removeGroupMember(db, req.params.ref, req.params.user);
+      sendJson(res, 200, { members: listGroupMembers(db, req.params.ref) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.get("/api/users/grants", (req, res) => {
+    try {
+      const resourceType = req.query.resource_type;
+      sendJson(res, 200, {
+        grants: listGrants(getDb(), {
+          resource_type: resourceType === "project" || resourceType === "global"
+            ? resourceType
+            : undefined,
+          resource_id: req.query.resource_id || undefined,
+        }),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.post("/api/users/grants", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const body = bodyRecord(req);
+      const subjectType = optionalString(body, "subject_type");
+      const subject = optionalString(body, "subject");
+      const resourceType = optionalString(body, "resource_type");
+      const permission = optionalString(body, "permission");
+      if (subjectType !== "user" && subjectType !== "group") {
+        throw new UserRegistryError("invalid", "subject_type must be user or group.");
+      }
+      if (!subject || !permission || (resourceType !== "project" && resourceType !== "global")) {
+        throw new UserRegistryError("invalid", "subject, resource_type, and permission are required.");
+      }
+      sendJson(res, 201, { grant: addGrant(db, {
+        subject_type: subjectType as PermissionSubjectType,
+        subject,
+        resource_type: resourceType,
+        resource: optionalString(body, "resource"),
+        permission,
+      }) });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.delete("/api/users/grants/:id", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      removeGrant(db, req.params.id);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.get("/api/users/:ref/access", (req, res) => {
+    try {
+      const db = getDb();
+      const user = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, user.id);
+      const projectRef = req.query.project;
+      const project = resolveProjectRef(db, projectRef ?? "");
+      if (!project.ok || !project.project || project.ambiguous) {
+        throw new UserRegistryError("not_found", `No project matches '${projectRef ?? ""}'.`);
+      }
+      const identity = {
+        user_id: user.id,
+        slug: user.slug,
+        method: "api_token" as const,
+        credential_id: null,
+        source: "in_process" as const,
+      };
+      const projectAccess = evaluateProjectAccess(db, {
+        identity,
+        project_id: project.project.id,
+        required_role: "read",
+      });
+      const capabilities = Object.fromEntries(GLOBAL_CAPABILITIES.map((capability) => [
+        capability,
+        evaluateGlobalCapability(db, { identity, capability }).allowed,
+      ]));
+      sendJson(res, 200, {
+        user,
+        project: project.project,
+        access: projectAccess,
+        project_settings: projectAccessSettings(db, project.project.id),
+        global_capabilities: capabilities,
+      });
     } catch (error) {
       handleError(res, error);
     }

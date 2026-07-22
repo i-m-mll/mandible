@@ -854,6 +854,39 @@ describe('app shell', () => {
 });
 
 describe('SettingsView', () => {
+  it('shows project restriction state and existing grants', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/projects') {
+        return new Response(JSON.stringify({
+          projects: [{ id: 'p1', project_key: 'mandible', display_name: 'Mandible' }],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/projects/mandible/access' && init?.method !== 'PATCH') {
+        return new Response(JSON.stringify({
+          project_id: 'p1',
+          restricted: true,
+          grants: [{
+            id: 'g1', subject_type: 'group', subject_id: 'agents',
+            resource_type: 'project', resource_id: 'p1', permission: 'write',
+          }],
+        }), { headers: { 'content-type': 'application/json' } });
+      }
+      if (url === '/api/settings/instructions-delivery') {
+        return new Response(JSON.stringify({ targets: [], postExport: '', configuredTargets: false }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      return new Response('{}', { status: 404, headers: { 'content-type': 'application/json' } });
+    }));
+
+    render(h(SettingsView, { settings: {}, onSave: async () => undefined }));
+
+    expect(await screen.findByTestId('project-permissions-settings')).toBeTruthy();
+    expect(await screen.findByText('group:agents — write')).toBeTruthy();
+    expect(screen.getByLabelText('Toggle project restriction').getAttribute('aria-checked')).toBe('true');
+  });
+
   it('renders a close button when an onClose handler is supplied', () => {
     const onClose = vi.fn();
     render(

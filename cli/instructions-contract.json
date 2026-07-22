@@ -233,6 +233,18 @@
     {
       "name": "mandible user binding list <ref> [--json]",
       "description": "List a user's claimed bindings."
+    },
+    {
+      "name": "mandible user group add|rm|members",
+      "description": "Create or remove custom groups and list or deliberately update idempotent group membership."
+    },
+    {
+      "name": "mandible user grant add|rm|list",
+      "description": "Manage direct user or group project-role and global-capability grants."
+    },
+    {
+      "name": "mandible user access <user> <project> [--json]",
+      "description": "Report a user's effective project role and global capabilities, including group grants and operator implicit admin."
     }
   ],
   "trailers": [

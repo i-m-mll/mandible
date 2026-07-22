@@ -16,9 +16,9 @@ import type {
   ConsoleTransportLane,
 } from "../types.js";
 import { sendJson } from "./http.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
   ClientAuthzError,
-  operatorOnlyManagedSessionRoute,
   requireOperator,
 } from "../client-auth/authz.js";
 
@@ -240,7 +240,7 @@ export function registerConsoleRoutes(
   // ------------------------------------------------------------------
   // POST /api/console/sessions — create a new session
   // ------------------------------------------------------------------
-  server.post("/api/console/sessions", operatorOnlyManagedSessionRoute((req, res) => {
+  server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", (req, res) => {
     const body = (req.body ?? {}) as Partial<ConsoleSessionInput & { interaction_mode?: string }>;
 
     if (!body.label || typeof body.label !== "string") {
@@ -298,7 +298,7 @@ export function registerConsoleRoutes(
     }
     const ptySession = manager.get(session.id);
     res.status(201).json({ session: ptySession?.meta ?? session });
-  }), { fileRpc: "deny" });
+  }, { authenticated: true }), { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id — single session

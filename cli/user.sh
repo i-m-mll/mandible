@@ -45,6 +45,13 @@ Usage:
   mandible user binding add <ref> --type <t> --value <v> [--scope <s>] [--json]
   mandible user binding rm <id> [--json]
   mandible user binding list <ref> [--json]
+  mandible user group add <slug> [--name <n>] [--json]
+  mandible user group rm <ref> [--json]
+  mandible user group members <ref> [--add <user>|--rm <user>] [--json]
+  mandible user grant add --subject-type user|group --subject <ref> (--project <ref> --role read|write|admin | --global <capability>) [--json]
+  mandible user grant rm <id> [--json]
+  mandible user grant list [--resource-type project|global] [--resource-id <id>] [--json]
+  mandible user access <user> <project> [--json]
 
 Setup is idempotent and is the only way the local human operator is created.
 --agents deliberately provisions the claude-code, codex, and gemini users,
@@ -391,6 +398,145 @@ binding_list() {
   emit "$response" "$json" '.bindings[]? | "\(.id)\t\(.binding_type)\t\(.value)\t\(.status)\t\(.scope // "-")"'
 }
 
+cmd_group() {
+  local sub="${1:-}"; shift || true
+  local ref="" name="" user="" operation="" json=0 response payload
+  case "$sub" in
+    add)
+      while (( $# > 0 )); do
+        case "$1" in
+          --name) name="$2"; shift 2 ;;
+          --json) json=1; shift ;;
+          -*) die "Unknown option: $1" 2 ;;
+          *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+        esac
+      done
+      [[ -n "$ref" ]] || die "Usage: mandible user group add <slug> [--name <n>]" 2
+      require_tools
+      payload="$(jq -n --arg slug "$ref" --arg name "$name" \
+        '{slug:$slug} + (if $name == "" then {} else {display_name:$name} end)')"
+      response="$(api_send POST "/api/users/groups" "$payload")" || die "Failed to add group." 1
+      emit "$response" "$json" '.group | "\(.slug)\t\(.kind)\t\(.display_name)"'
+      ;;
+    rm)
+      while (( $# > 0 )); do
+        case "$1" in
+          --json) json=1; shift ;;
+          -*) die "Unknown option: $1" 2 ;;
+          *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+        esac
+      done
+      [[ -n "$ref" ]] || die "Usage: mandible user group rm <ref>" 2
+      require_tools
+      response="$(api_send DELETE "/api/users/groups/$(urlencode "$ref")" "")" || die "Failed to remove group." 1
+      emit "$response" "$json" '"removed group"'
+      ;;
+    members)
+      while (( $# > 0 )); do
+        case "$1" in
+          --add) operation="add"; user="$2"; shift 2 ;;
+          --rm) operation="rm"; user="$2"; shift 2 ;;
+          --json) json=1; shift ;;
+          -*) die "Unknown option: $1" 2 ;;
+          *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+        esac
+      done
+      [[ -n "$ref" ]] || die "Usage: mandible user group members <ref> [--add <user>|--rm <user>]" 2
+      require_tools
+      if [[ "$operation" == "add" ]]; then
+        payload="$(jq -n --arg user "$user" '{user:$user}')"
+        response="$(api_send POST "/api/users/groups/$(urlencode "$ref")/members" "$payload")" || die "Failed to add group member." 1
+      elif [[ "$operation" == "rm" ]]; then
+        response="$(api_send DELETE "/api/users/groups/$(urlencode "$ref")/members/$(urlencode "$user")" "")" || die "Failed to remove group member." 1
+      else
+        response="$(api_get "/api/users/groups/$(urlencode "$ref")/members")" || die "Failed to list group members." 1
+      fi
+      emit "$response" "$json" '.members[]? | "\(.slug)\t\(.kind)\t\(.display_name)"'
+      ;;
+    *) die "Unknown group subcommand: ${sub:-}. Use add|rm|members." 2 ;;
+  esac
+}
+
+cmd_grant() {
+  local sub="${1:-}"; shift || true
+  local id="" subject_type="" subject="" project="" capability="" role="" resource_type="" resource_id="" json=0 response payload query=""
+  case "$sub" in
+    add)
+      while (( $# > 0 )); do
+        case "$1" in
+          --subject-type) subject_type="$2"; shift 2 ;;
+          --subject) subject="$2"; shift 2 ;;
+          --project) project="$2"; shift 2 ;;
+          --role) role="$2"; shift 2 ;;
+          --global) capability="$2"; shift 2 ;;
+          --json) json=1; shift ;;
+          -*) die "Unknown option: $1" 2 ;;
+          *) die "Unexpected argument: $1" 2 ;;
+        esac
+      done
+      [[ "$subject_type" == "user" || "$subject_type" == "group" ]] || die "--subject-type must be user or group" 2
+      [[ -n "$subject" ]] || die "--subject is required" 2
+      if [[ -n "$project" && -n "$role" && -z "$capability" ]]; then
+        resource_type="project"
+        payload="$(jq -n --arg st "$subject_type" --arg s "$subject" --arg r "$project" --arg p "$role" \
+          '{subject_type:$st,subject:$s,resource_type:"project",resource:$r,permission:$p}')"
+      elif [[ -n "$capability" && -z "$project" && -z "$role" ]]; then
+        resource_type="global"
+        payload="$(jq -n --arg st "$subject_type" --arg s "$subject" --arg p "$capability" \
+          '{subject_type:$st,subject:$s,resource_type:"global",permission:$p}')"
+      else
+        die "Choose either --project <ref> --role <role> or --global <capability>." 2
+      fi
+      require_tools
+      response="$(api_send POST "/api/users/grants" "$payload")" || die "Failed to add grant." 1
+      emit "$response" "$json" '.grant | "\(.id)\t\(.subject_type):\(.subject_id)\t\(.resource_type):\(.resource_id // "-")\t\(.permission)"'
+      ;;
+    rm)
+      while (( $# > 0 )); do
+        case "$1" in --json) json=1; shift ;; -*) die "Unknown option: $1" 2 ;; *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;; esac
+      done
+      [[ -n "$id" ]] || die "Usage: mandible user grant rm <id>" 2
+      require_tools
+      response="$(api_send DELETE "/api/users/grants/$(urlencode "$id")" "")" || die "Failed to remove grant." 1
+      emit "$response" "$json" '"removed grant"'
+      ;;
+    list)
+      while (( $# > 0 )); do
+        case "$1" in
+          --resource-type) resource_type="$2"; shift 2 ;;
+          --resource-id) resource_id="$2"; shift 2 ;;
+          --json) json=1; shift ;;
+          -*) die "Unknown option: $1" 2 ;;
+          *) die "Unexpected argument: $1" 2 ;;
+        esac
+      done
+      [[ -z "$resource_type" ]] || query="?resource_type=$(urlencode "$resource_type")"
+      if [[ -n "$resource_id" ]]; then
+        [[ -n "$query" ]] && query="${query}&resource_id=$(urlencode "$resource_id")" || query="?resource_id=$(urlencode "$resource_id")"
+      fi
+      require_tools
+      response="$(api_get "/api/users/grants${query}")" || die "Failed to list grants." 1
+      emit "$response" "$json" '.grants[]? | "\(.id)\t\(.subject_type):\(.subject_id)\t\(.resource_type):\(.resource_id // "-")\t\(.permission)"'
+      ;;
+    *) die "Unknown grant subcommand: ${sub:-}. Use add|rm|list." 2 ;;
+  esac
+}
+
+cmd_access() {
+  local user="" project="" json=0 response
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) if [[ -z "$user" ]]; then user="$1"; elif [[ -z "$project" ]]; then project="$1"; else die "Unexpected argument: $1" 2; fi; shift ;;
+    esac
+  done
+  [[ -n "$user" && -n "$project" ]] || die "Usage: mandible user access <user> <project> [--json]" 2
+  require_tools
+  response="$(api_get "/api/users/$(urlencode "$user")/access?project=$(urlencode "$project")")" || die "Failed to query access." 1
+  emit "$response" "$json" '.access | "allowed: \(.allowed)\nrole: \(.effective_role // "-")\nreason: \(.reason)"'
+}
+
 if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help" ]]; then
   usage
   [[ $# -eq 0 ]] && exit 2 || exit 0
@@ -406,5 +552,8 @@ case "$cmd" in
   credential) cmd_credential "$@" ;;
   token)      cmd_token "$@" ;;
   binding)    cmd_binding "$@" ;;
+  group)      cmd_group "$@" ;;
+  grant)      cmd_grant "$@" ;;
+  access)     cmd_access "$@" ;;
   *) die "Unknown user subcommand: $cmd" 2 ;;
 esac

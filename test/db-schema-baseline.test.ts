@@ -144,7 +144,7 @@ function builtinAuthHooks(db: Db): Array<Record<string, string | number>> {
 }
 
 function assertHealthyDatabase(db: Db): void {
-  expect(CURRENT_SCHEMA_VERSION).toBe(110);
+  expect(CURRENT_SCHEMA_VERSION).toBe(111);
   expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
   expect(db.pragma("foreign_key_check")).toEqual([]);
   expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);

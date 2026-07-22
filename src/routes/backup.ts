@@ -3,6 +3,7 @@ import {
   getDefaultMetadataBackupPath,
   writeMetadataBackup,
 } from "../ledger/backup.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 import type { RouteRegistrar } from "../server.js";
 import { getBoolSetting, getIntSetting, getStrSetting } from "./settings.js";
 
@@ -129,13 +130,13 @@ export function registerBackupRoutes(server: RouteRegistrar): void {
   }, { fileRpc: "deny" });
 
   // POST /api/backup/run
-  server.post("/api/backup/run", (_req, res) => {
+  server.post("/api/backup/run", globalCapabilityRoute("backup", (_req, res) => {
     const result = runBackup();
     res.status(200).json(result);
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   // PUT /api/backup/settings
-  server.put("/api/backup/settings", (req, res) => {
+  server.put("/api/backup/settings", globalCapabilityRoute("backup", (req, res) => {
     const body = (req.body ?? {}) as {
       enabled?: unknown;
       interval_hours?: unknown;
@@ -171,5 +172,5 @@ export function registerBackupRoutes(server: RouteRegistrar): void {
     startBackupScheduler();
 
     res.status(200).json({ ok: true });
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 }
