@@ -36,7 +36,7 @@ Usage:
   mandible user list [--kind <k>] [--status <s>] [--json]
   mandible user show <ref> [--json]
   mandible user update <ref> [--name <n>] [--email <e>] [--status active|retired] [--json]
-  mandible user credential add <ref> --type <t> --fingerprint <f> [--public-material <m>] [--label <l>] [--json]
+  mandible user credential add <ref> (--type <t> --fingerprint <f> [--public-material <m>] | --from-git-signingkey) [--label <l>] [--json]
   mandible user credential revoke <id> [--json]
   mandible user credential list <ref> [--all] [--json]
   mandible user token mint <ref> [--label <l>] [--json]
@@ -76,6 +76,18 @@ emit() {
 
 git_config_value() {
   git config --get "$1" 2>/dev/null || true
+}
+
+git_config_value_without_overrides() {
+  (
+    unset GIT_CONFIG_COUNT
+    unset GIT_CONFIG_PARAMETERS
+    local var
+    for var in $(env | sed -n 's/^\(GIT_CONFIG_\(KEY\|VALUE\)_[0-9][0-9]*\)=.*/\1/p'); do
+      unset "$var"
+    done
+    git config --get "$1" 2>/dev/null || true
+  )
 }
 
 cmd_setup() {
@@ -206,20 +218,57 @@ cmd_credential() {
 }
 
 credential_add() {
-  local ref="" ctype="" fingerprint="" material="" label="" json=0 material_set=0
+  local ref="" ctype="" fingerprint="" material="" label="" json=0 material_set=0 from_git=0
   while (( $# > 0 )); do
     case "$1" in
       --type)            ctype="$2"; shift 2 ;;
       --fingerprint)     fingerprint="$2"; shift 2 ;;
       --public-material) material="$2"; material_set=1; shift 2 ;;
+      --from-git-signingkey) from_git=1; shift ;;
       --label)           label="$2"; shift 2 ;;
       --json)            json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" && -n "$ctype" && -n "$fingerprint" ]] \
-    || die "Usage: mandible user credential add <ref> --type <t> --fingerprint <f> [...]" 2
+  [[ -n "$ref" ]] || die "Usage: mandible user credential add <ref> (...)" 2
+  if (( from_git )); then
+    [[ -z "$ctype" && -z "$fingerprint" && $material_set -eq 0 ]] \
+      || die "--from-git-signingkey cannot be combined with --type, --fingerprint, or --public-material." 2
+    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found." 1
+    local signing_key key_path key_line
+    signing_key="$(git_config_value_without_overrides user.signingkey)"
+    [[ -n "$signing_key" ]] || die "Git user.signingkey is not configured." 1
+    case "$signing_key" in
+      key::*) key_line="${signing_key#key::}" ;;
+      ssh-*\ *|ecdsa-*\ *|sk-*\ *) key_line="$signing_key" ;;
+      *)
+        key_path="$signing_key"
+        [[ "$key_path" == "~/"* ]] && key_path="${HOME}/${key_path#\~/}"
+        [[ -r "$key_path" ]] || die "Configured git signing key is not readable: $signing_key" 1
+        key_line="$(sed -n '1p' "$key_path")"
+        case "$key_line" in
+          ssh-*\ *|ecdsa-*\ *|sk-*\ *) ;;
+          *)
+            if [[ -r "${key_path}.pub" ]]; then
+              key_line="$(sed -n '1p' "${key_path}.pub")"
+            else
+              key_line="$(ssh-keygen -y -f "$key_path" 2>/dev/null)" \
+                || die "Could not derive the public key from git user.signingkey." 1
+            fi
+            ;;
+        esac
+        ;;
+    esac
+    material="$(printf '%s\n' "$key_line" | awk 'NF >= 2 { print $1 " " $2; exit }')"
+    [[ -n "$material" ]] || die "Git user.signingkey did not resolve to an OpenSSH public key." 1
+    fingerprint="$(printf '%s\n' "$material" | ssh-keygen -lf - -E sha256 2>/dev/null | awk 'NF >= 2 { print $2; exit }')"
+    [[ "$fingerprint" == SHA256:* ]] || die "Could not fingerprint git user.signingkey." 1
+    ctype="ssh_key"
+    material_set=1
+  fi
+  [[ -n "$ctype" && -n "$fingerprint" ]] \
+    || die "Usage: mandible user credential add <ref> (--type <t> --fingerprint <f> | --from-git-signingkey) [...]" 2
   require_tools
   local payload response
   payload="$(jq -n \

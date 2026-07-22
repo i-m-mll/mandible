@@ -6,6 +6,11 @@ import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import {
+  extractSuccessfulMergeCommitSha,
+  verifySuccessfulMergeCommitSignature,
+  type MergeSignatureVerification,
+} from "./auth-signature-verification.js";
+import {
   addAuthRequestAction,
   countAuthRequestActions,
   deleteAuthRequestAction,
@@ -259,10 +264,13 @@ export class AuthQueue {
       const recovered = this.getRequest(id);
       if (recovered) {
         this.afterSuccessfulMerge(recovered);
-        this.broadcast({
-          event: "auth:resolved",
-          data: this.buildResolvedPayload(recovered)
-        });
+        const finalized = this.readRequestByExactId(id);
+        if (finalized) {
+          this.broadcast({
+            event: "auth:resolved",
+            data: this.buildResolvedPayload(finalized)
+          });
+        }
         authLog("warn", "auth_request_recovered_success", {
           subsystem: "auth",
           auth_request_id: id,
@@ -982,10 +990,38 @@ export class AuthQueue {
     if (!resolved.ok) {
       return null;
     }
+    return this.readRequestByExactId(resolved.id);
+  }
+
+  getSignatureVerification(id: string): Record<string, unknown> | null {
+    const request = this.requireRequest(id);
+    return this.signatureVerificationForRequest(request);
+  }
+
+  private readRequestByExactId(id: string): AuthRequest | null {
     const row = this.db
       .prepare("SELECT * FROM auth_requests WHERE id = ?")
-      .get(resolved.id) as Record<string, unknown> | undefined;
+      .get(id) as Record<string, unknown> | undefined;
     return row ? mapRow(row) : null;
+  }
+
+  private signatureVerificationForRequest(request: AuthRequest): Record<string, unknown> | null {
+    if (!request.execution_evidence_id) return null;
+    const evidence = getAttributionEvidence(this.db, request.execution_evidence_id);
+    if (!evidence || evidence.evidence_method !== "credential_signature") return null;
+    return {
+      evidence_id: evidence.id,
+      verified_at: evidence.verified_at,
+      verified: evidence.details.verified === true,
+      commit_sha: evidence.details.commit_sha ?? null,
+      target_head_sha: evidence.details.target_head_sha ?? null,
+      fingerprint: evidence.details.fingerprint ?? null,
+      credential_id: evidence.credential_id,
+      user_id: evidence.details.signer_user_id ?? null,
+      reason: evidence.details.reason ?? null,
+      authorization_evidence_id: evidence.details.authorization_evidence_id ?? null,
+      authorization_evidence_method: evidence.details.authorization_evidence_method ?? null,
+    };
   }
 
   update(
@@ -1668,14 +1704,13 @@ export class AuthQueue {
       const stored = this.requireRequest(id);
       return exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
     })();
-    if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
-    }
+    if (exitCode === 0) this.afterSuccessfulMerge(completed);
+    const resolved = this.requireRequest(id);
     this.broadcast({
       event: "auth:resolved",
-      data: this.buildResolvedPayload(completed)
+      data: this.buildResolvedPayload(resolved)
     });
-    return completed;
+    return resolved;
   }
 
   expireStale(): AuthRequest[] {
@@ -1749,10 +1784,13 @@ export class AuthQueue {
       const recovered = this.getRequest(id);
       if (recovered) {
         this.afterSuccessfulMerge(recovered);
-        this.broadcast({
-          event: "auth:resolved",
-          data: this.buildResolvedPayload(recovered)
-        });
+        const finalized = this.readRequestByExactId(id);
+        if (finalized) {
+          this.broadcast({
+            event: "auth:resolved",
+            data: this.buildResolvedPayload(finalized)
+          });
+        }
       }
       authLog("warn", "auth_request_periodic_recovery_success", {
         subsystem: "auth",
@@ -1937,12 +1975,11 @@ export class AuthQueue {
     })();
     // Bug: 2164775 — run idempotent success finalizers before the resolved
     // broadcast so consumers observe the resolved work-unit/ledger state.
-    if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
-    }
+    if (exitCode === 0) this.afterSuccessfulMerge(completed);
+    const resolved = this.requireRequest(id);
     this.broadcast({
       event: "auth:resolved",
-      data: this.buildResolvedPayload(completed)
+      data: this.buildResolvedPayload(resolved)
     });
 
     // Bug: 0c44fec — after a successful merge (exit_code=0), auto-dismiss any
@@ -1957,8 +1994,9 @@ export class AuthQueue {
     }
 
     const attributed = this.ensureSuccessfulExecutionEvidence(completed);
-    const mergeHeadSha = attributed.merge_head_sha ?? this.resolveMergeHeadShaForRequest(attributed);
-    const finalized: AuthRequest = { ...attributed, merge_head_sha: mergeHeadSha };
+    const evidenced = this.attachSuccessfulSignatureEvidence(attributed);
+    const mergeHeadSha = evidenced.merge_head_sha ?? this.resolveMergeHeadShaForRequest(evidenced);
+    const finalized: AuthRequest = { ...evidenced, merge_head_sha: mergeHeadSha };
 
     this.autoDismissDuplicates(finalized);
     this.revalidatePendingMergeRequests(finalized);
@@ -1978,6 +2016,84 @@ export class AuthQueue {
     }
     this.archiveCompletedWorkerThreads(finalized);
     this.markSuccessfulMergeFinalized(finalized, mergeHeadSha);
+  }
+
+  private attachSuccessfulSignatureEvidence(request: AuthRequest): AuthRequest {
+    if (!isAuthMergeCommand(request) || !request.requested_by_user_id) return request;
+
+    const authorizationEvidence = request.execution_evidence_id
+      ? getAttributionEvidence(this.db, request.execution_evidence_id)
+      : null;
+    if (authorizationEvidence?.evidence_method === "credential_signature") return request;
+
+    const commitSha = extractSuccessfulMergeCommitSha(request.output);
+    const cwd = request.target_repo_root ?? request.cwd;
+    let targetHeadSha: string | null = null;
+    if (cwd && request.base_branch) {
+      try {
+        targetHeadSha = resolveBranchHeadSha(cwd, request.base_branch);
+      } catch {
+        targetHeadSha = null;
+      }
+    }
+    let verification: MergeSignatureVerification;
+    try {
+      verification = verifySuccessfulMergeCommitSignature(
+        this.db,
+        cwd,
+        commitSha,
+        targetHeadSha,
+      );
+    } catch {
+      verification = {
+        verified: false,
+        commit_sha: commitSha,
+        fingerprint: null,
+        credential_id: null,
+        user_id: null,
+        reason: "verification_error",
+      };
+    }
+    const verifiedAt = request.resolved_at ?? this.now();
+    return this.db.transaction(() => {
+      const current = this.readRequestByExactId(request.id);
+      if (!current) throw new Error(`Auth request '${request.id}' disappeared during finalization.`);
+      if (current.execution_evidence_id !== (authorizationEvidence?.id ?? null)) {
+        const existing = current.execution_evidence_id
+          ? getAttributionEvidence(this.db, current.execution_evidence_id)
+          : null;
+        if (existing?.evidence_method === "credential_signature") return current;
+        throw new Error("Auth execution evidence changed during signature finalization.");
+      }
+
+      const evidence = addAttributionEvidence(this.db, {
+        evidence_method: "credential_signature",
+        credential_id: verification.credential_id,
+        details: {
+          auth_request_id: request.id,
+          authorizer_user_id: request.approved_by_user_id,
+          executor_user_id: systemAction().user_id,
+          approval_source: request.approval_source,
+          verified: verification.verified,
+          commit_sha: verification.commit_sha,
+          target_head_sha: targetHeadSha,
+          fingerprint: verification.fingerprint,
+          signer_user_id: verification.user_id,
+          reason: verification.reason,
+          authorization_evidence_id: authorizationEvidence?.id ?? null,
+          authorization_evidence_method: authorizationEvidence?.evidence_method ?? null,
+        },
+      }, verifiedAt);
+      const update = this.db.prepare(
+        "UPDATE auth_requests SET execution_evidence_id = ?, updated_at = ? WHERE id = ? AND execution_evidence_id IS ?",
+      ).run(evidence.id, verifiedAt, request.id, authorizationEvidence?.id ?? null);
+      if (update.changes !== 1) {
+        throw new Error("Auth signature evidence pointer update was not applied.");
+      }
+      const finalized = this.readRequestByExactId(request.id);
+      if (!finalized) throw new Error(`Auth request '${request.id}' disappeared during finalization.`);
+      return finalized;
+    })();
   }
 
   private sweepSuccessfulMergeFinalizers(): void {
@@ -3030,6 +3146,8 @@ export class AuthQueue {
       // Bug: 6d7411b — emit conversation_id so the channel server can match
       // events across session restarts within the same conversation.
       conversation_id: request.conversation_id,
+      execution_evidence_id: request.execution_evidence_id,
+      signature_verification: this.signatureVerificationForRequest(request),
       action_outcomes: this.actionOutcomeSummary(request.id)
     };
   }
