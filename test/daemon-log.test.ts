@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openDb, type Db } from "../src/db.js";
 import {
   configureDaemonLogger,
+  flushDaemonLogger,
   pruneDaemonLogs,
   rotateStderrLogSegments,
   runDaemonLogMaintenance,
@@ -110,6 +111,7 @@ describe("daemon logger", () => {
     });
     logger("warn", "warn_row_kept", { subsystem: "test" });
     logger("error", "error_row_kept", { subsystem: "test" });
+    flushDaemonLogger();
 
     const rows = db
       .prepare("SELECT level, event FROM daemon_log ORDER BY ts, rowid")
@@ -146,6 +148,54 @@ describe("daemon logger", () => {
 
     expect(fs.readFileSync(`${logPath}.1`, "utf8")).toBe("second-segment");
     expect(fs.readFileSync(`${logPath}.2`, "utf8")).toBe("first-segment");
+  });
+});
+
+describe("daemon log batching", () => {
+  it("keeps persisted rows off the write path until the batch is flushed", () => {
+    const logger = configureDaemonLogger(db);
+
+    logger("info", "queued_row", { subsystem: "test" });
+    logger("warn", "queued_warn", { subsystem: "test" });
+
+    const before = db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number };
+    expect(before.count).toBe(0);
+
+    flushDaemonLogger();
+
+    const after = db
+      .prepare("SELECT event FROM daemon_log ORDER BY ts, rowid")
+      .all() as Array<{ event: string }>;
+    expect(after).toEqual([{ event: "queued_row" }, { event: "queued_warn" }]);
+  });
+
+  it("is a no-op when there is nothing queued", () => {
+    configureDaemonLogger(db);
+    expect(() => flushDaemonLogger()).not.toThrow();
+    flushDaemonLogger();
+    const rows = db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get() as { count: number };
+    expect(rows.count).toBe(0);
+  });
+
+  it("abandons rows still queued against a previous connection on reconfigure", () => {
+    const first = configureDaemonLogger(db);
+    first("info", "orphaned_row", { subsystem: "test" });
+    // Reconfigure to a fresh database without flushing; the stale row is dropped
+    // rather than replayed against the wrong (or closed) connection.
+    const nextDb = openDb(path.join(tempDir, "mandible-next.db"));
+    try {
+      const second = configureDaemonLogger(nextDb);
+      second("info", "fresh_row", { subsystem: "test" });
+      flushDaemonLogger();
+      const rows = nextDb
+        .prepare("SELECT event FROM daemon_log ORDER BY ts, rowid")
+        .all() as Array<{ event: string }>;
+      expect(rows).toEqual([{ event: "fresh_row" }]);
+    } finally {
+      // Restore the shared logger binding for the outer afterEach/db teardown.
+      configureDaemonLogger(db);
+      nextDb.close();
+    }
   });
 });
 
@@ -235,6 +285,7 @@ describe("request logging", () => {
     );
 
     await transport.processOnce();
+    flushDaemonLogger();
 
     const row = db
       .prepare("SELECT * FROM daemon_log WHERE event = 'file_rpc_request'")
@@ -285,6 +336,7 @@ describe("request logging", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+    flushDaemonLogger();
 
     const row = db
       .prepare("SELECT * FROM daemon_log WHERE event = 'http_request'")
@@ -307,6 +359,7 @@ describe("system log route daemon_log source", () => {
   it("returns daemon_log rows when a database is provided", async () => {
     const logger = configureDaemonLogger(db);
     logger("warn", "system_route_row", { subsystem: "test", issue_id: "issue-route" });
+    flushDaemonLogger();
 
     const routes = new TestRoutes();
     registerSystemRoutes(routes, { getRepos: () => [] }, db);
@@ -334,6 +387,7 @@ describe("system log route daemon_log source", () => {
       detail: "needle",
     });
     logger("warn", "auth_warning", { subsystem: "auth", auth_request_id: "auth-2" });
+    flushDaemonLogger();
 
     const routes = new TestRoutes();
     registerSystemRoutes(routes, { getRepos: () => [] }, db);

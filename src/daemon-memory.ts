@@ -46,6 +46,7 @@ export class DaemonMemoryDiagnostics {
   private readonly warningClearFraction: number;
   private warning = false;
   private highWater: ProcessMemoryValues = emptyMemoryValues();
+  private last: DaemonMemorySnapshot = emptyMemorySnapshot();
 
   constructor(options: DaemonMemoryDiagnosticsOptions) {
     this.logger = options.logger;
@@ -56,6 +57,7 @@ export class DaemonMemoryDiagnostics {
       uptime: options.sources?.uptime ?? process.uptime,
       totalMemory: options.sources?.totalMemory ?? os.totalmem,
     };
+    this.last = { ...this.last, warningThresholdFraction: this.warningFraction };
   }
 
   sample(): DaemonMemorySnapshot {
@@ -66,7 +68,7 @@ export class DaemonMemoryDiagnostics {
     this.highWater = maxMemoryValues(this.highWater, usage);
     this.updateWarningState(usage.rss, totalMemory, rssFraction);
 
-    return {
+    this.last = {
       ...usage,
       uptime: this.sources.uptime(),
       totalMemory,
@@ -75,6 +77,16 @@ export class DaemonMemoryDiagnostics {
       warning: this.warning,
       highWater: { ...this.highWater },
     };
+    return { ...this.last };
+  }
+
+  /**
+   * Return the most recent sampled snapshot without collecting a new one.
+   * Read paths such as the health endpoint use this so sampling and warning
+   * evaluation stay on the periodic diagnostics timer.
+   */
+  snapshot(): DaemonMemorySnapshot {
+    return { ...this.last };
   }
 
   private updateWarningState(rss: number, totalMemory: number, rssFraction: number): void {
@@ -120,6 +132,18 @@ function normalizeWarningFraction(value: number | undefined): number {
 
 function emptyMemoryValues(): ProcessMemoryValues {
   return { rss: 0, heapTotal: 0, heapUsed: 0, external: 0, arrayBuffers: 0 };
+}
+
+function emptyMemorySnapshot(): DaemonMemorySnapshot {
+  return {
+    ...emptyMemoryValues(),
+    uptime: 0,
+    totalMemory: 0,
+    rssFraction: 0,
+    warningThresholdFraction: DEFAULT_MEMORY_WARNING_FRACTION,
+    warning: false,
+    highWater: emptyMemoryValues(),
+  };
 }
 
 function maxMemoryValues(left: ProcessMemoryValues, right: ProcessMemoryValues): ProcessMemoryValues {
