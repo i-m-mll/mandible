@@ -1,4 +1,5 @@
 import { build, context } from 'esbuild';
+import { rm } from 'node:fs/promises';
 
 const isWatch = process.argv.includes('--watch');
 
@@ -32,5 +33,6 @@ if (isWatch) {
   const ctx = await context(buildOptions);
   await ctx.watch();
 } else {
+  await rm(buildOptions.outdir, { recursive: true, force: true });
   await build(buildOptions);
 }
