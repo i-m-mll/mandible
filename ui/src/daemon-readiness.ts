@@ -25,6 +25,12 @@ export interface DaemonHealthSnapshot {
    * missing value is treated as "not ready" so the splash errs on the safe side.
    */
   ready?: boolean;
+  /** false while the first deferred startup reconciliation is still running. */
+  warm?: boolean;
+  startup_epoch?: string;
+  startup_commit?: {
+    hash?: string;
+  };
   instance?: {
     role: 'main' | 'preview' | 'dev' | 'test';
     operational_mutations: 'allow' | 'reject';
@@ -62,6 +68,52 @@ export function daemonIsReady(health: DaemonHealthSnapshot | null | undefined): 
   return !daemonNeedsSplash(health);
 }
 
+/** Return the per-process startup epoch exposed by newer daemons. */
+export function daemonStartupEpoch(
+  health: DaemonHealthSnapshot | null | undefined,
+): string | null {
+  return health?.startup_epoch?.trim() || null;
+}
+
+/** Return a usable build-version proof, excluding compatibility placeholders. */
+export function daemonStartupCommit(
+  health: DaemonHealthSnapshot | null | undefined,
+): string | null {
+  const hash = health?.startup_commit?.hash?.trim();
+  return hash && hash !== 'unknown' ? hash : null;
+}
+
+/** Whether a health snapshot belongs to a different startup commit. */
+export function daemonEpochChanged(
+  health: DaemonHealthSnapshot | null | undefined,
+  previousEpoch: string | null,
+): boolean {
+  const currentEpoch = daemonStartupEpoch(health);
+  return previousEpoch !== null && currentEpoch !== null && currentEpoch !== previousEpoch;
+}
+
+export function daemonCommitChanged(
+  health: DaemonHealthSnapshot | null | undefined,
+  previousCommit: string | null,
+): boolean {
+  const currentCommit = daemonStartupCommit(health);
+  return previousCommit !== null && currentCommit !== null && currentCommit !== previousCommit;
+}
+
+/** A splash may release only after readiness and, when required, a new epoch. */
+export function daemonIsReadyAfterEpoch(
+  health: DaemonHealthSnapshot | null | undefined,
+  previousEpoch: string | null,
+  requireNewEpoch: boolean,
+): boolean {
+  return daemonIsReady(health) && (!requireNewEpoch || daemonEpochChanged(health, previousEpoch));
+}
+
+/** Missing warm is treated as warm for compatibility with older daemons. */
+export function daemonIsWarm(health: DaemonHealthSnapshot | null | undefined): boolean {
+  return health?.warm !== false;
+}
+
 /**
  * Whether a cold-mount `/api/health` probe should ENTER the splash. This is
  * deliberately stricter than {@link daemonNeedsSplash}: it requires an EXPLICIT
@@ -89,4 +141,12 @@ export function shouldEnterSplashOnProbe(health: DaemonHealthSnapshot | null | u
     return false;
   }
   return health.rebuilding === true || health.ready === false;
+}
+
+/** Catch a missed rebuild event while the normal application shell is visible. */
+export function shouldEnterSplashOnBackgroundProbe(
+  health: DaemonHealthSnapshot | null | undefined,
+  previousEpoch: string | null,
+): boolean {
+  return shouldEnterSplashOnProbe(health) || daemonEpochChanged(health, previousEpoch);
 }

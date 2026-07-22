@@ -19,10 +19,9 @@ if (typeof dbPath !== "string" || !dbPath) {
   throw new Error("ingestion worker requires a database path");
 }
 
-const db = openDb(dbPath);
 // A synchronous busy wait in this thread does not freeze HTTP, but short waits
 // plus explicit retry give shutdown and newer dirty paths a chance to proceed.
-db.pragma("busy_timeout = 100");
+const db = openDb(dbPath, { busyTimeoutMs: 100 });
 setDb(db);
 
 const send = (message: IngestionWorkerResponse): void => port.postMessage(message);

@@ -8,7 +8,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
-import { isDaemonReady, setDaemonReady } from "../src/lifecycle.js";
+import {
+  isDaemonReady,
+  isDaemonWarm,
+  setDaemonReady,
+  setDaemonWarm,
+} from "../src/lifecycle.js";
 import type { Db } from "../src/db.js";
 import type { HealthResponse } from "../src/types.js";
 
@@ -19,7 +24,12 @@ interface TestServer {
 
 let testServer: TestServer | null = null;
 
-function startServer(opts: { isReady?: () => boolean; isRebuilding?: () => boolean }): Promise<TestServer> {
+function startServer(opts: {
+  isReady?: () => boolean;
+  isWarm?: () => boolean;
+  isRebuilding?: () => boolean;
+  startupEpoch?: string;
+}): Promise<TestServer> {
   const router = new Router();
   const server = createServer({
     db: {} as Db,
@@ -28,7 +38,9 @@ function startServer(opts: { isReady?: () => boolean; isRebuilding?: () => boole
     version: "test",
     router,
     getStartupInfo: () => null,
+    startupEpoch: opts.startupEpoch,
     isReady: opts.isReady,
+    isWarm: opts.isWarm,
     isRebuilding: opts.isRebuilding,
     getMemoryDiagnostics: () => ({
       rss: 100,
@@ -65,8 +77,11 @@ afterEach(async () => {
   }
 });
 
-describe("lifecycle readiness flag", () => {
-  beforeEach(() => setDaemonReady(false));
+describe("lifecycle readiness flags", () => {
+  beforeEach(() => {
+    setDaemonReady(false);
+    setDaemonWarm(false);
+  });
 
   it("round-trips set/get and starts armed-off after a reset", () => {
     setDaemonReady(false);
@@ -75,6 +90,14 @@ describe("lifecycle readiness flag", () => {
     expect(isDaemonReady()).toBe(true);
     setDaemonReady(false);
     expect(isDaemonReady()).toBe(false);
+  });
+
+  it("tracks warm independently from mutation readiness", () => {
+    expect(isDaemonWarm()).toBe(false);
+    setDaemonReady(true);
+    expect(isDaemonWarm()).toBe(false);
+    setDaemonWarm(true);
+    expect(isDaemonWarm()).toBe(true);
   });
 });
 
@@ -124,6 +147,20 @@ describe("/api/health readiness", () => {
     await startServer({});
     const health = await getHealth();
     expect(health.ready).toBe(true);
+    expect(health.warm).toBe(true);
+  });
+
+  it("reports warm independently after first-pass startup reconciliation", async () => {
+    let warm = false;
+    await startServer({ isReady: () => true, isWarm: () => warm });
+    expect((await getHealth()).warm).toBe(false);
+    warm = true;
+    expect((await getHealth()).warm).toBe(true);
+  });
+
+  it("exposes a per-start epoch independently of startup commit compatibility", async () => {
+    await startServer({ startupEpoch: "daemon-start-2" });
+    expect((await getHealth()).startup_epoch).toBe("daemon-start-2");
   });
 });
 

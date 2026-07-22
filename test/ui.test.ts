@@ -788,6 +788,26 @@ describe('app shell', () => {
     });
   });
 
+  it('shows non-blocking workspace population status while the daemon is not warm', async () => {
+    stubEventSource();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/health') {
+        return Promise.resolve(new Response(JSON.stringify({ ready: true, warm: false }), {
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }));
+
+    render(h(App, {}));
+
+    expect(await screen.findByText('Still loading workspace data…')).toBeTruthy();
+    expect(await screen.findByLabelText('Main navigation')).toBeTruthy();
+  });
+
   it('renders the Spaces preview notice from boot instance data before health resolves', async () => {
     stubEventSource();
     (window as Window & { __MANDIBLE_BOOTSTRAP__?: { instance: InstanceInfo } }).__MANDIBLE_BOOTSTRAP__ = {
@@ -3268,6 +3288,36 @@ function jsonResponse(body: unknown): Promise<Response> {
 }
 
 describe('ArtifactsView', () => {
+  it('shows artifact load failures once below the detail header', async () => {
+    const artifact = makeArtifactFixture('d', 'failed-detail.md', {
+      id: 'artifact:dddddddddddd',
+    });
+    const artifactSeries = makeArtifactSeries('failed-detail', [artifact], 'failed-detail.md');
+    const notFound = () => Promise.resolve(new Response(JSON.stringify({ error: 'artifact not found' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.endsWith('/content')) return notFound();
+      if (url.includes(encodeURIComponent(artifact.id))) return notFound();
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(screen.getAllByText('artifact not found')).toHaveLength(1));
+    const error = screen.getByText('artifact not found');
+    const header = document.querySelector('.artifact-detail__header');
+    const body = document.querySelector('.artifact-detail__pane');
+    expect(header).toBeTruthy();
+    expect(body?.contains(error)).toBe(true);
+    expect(header?.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('renders HumbleB knowledge backrefs in artifact detail', async () => {
     const artifact = {
       id: 'artifact:aaaaaaaaaaaa',

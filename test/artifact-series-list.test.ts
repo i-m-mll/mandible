@@ -270,4 +270,37 @@ describe("artifact series list", () => {
       ],
     });
   });
+
+  it("round-trips projected short artifact ids through direct artifact routes", async () => {
+    const selected = recordArtifactVersion(db, {
+      source_kind: "managed",
+      series_key: "managed:round-trip",
+      logical_name: "round-trip",
+      content: "round trip\n",
+      media_type: "text/plain",
+      role: "report",
+    }, 1000);
+    const router = createRouter();
+    const list = await router.invoke({
+      method: "GET",
+      url: "/api/artifacts/series?summary=true",
+    });
+    const publicId = (list.body as any).series[0].latest_version.artifact_id as string;
+    const encodedId = encodeURIComponent(publicId);
+
+    expect(publicId).toBe(`artifact:${selected.artifact.content_hash.slice(0, 12)}`);
+
+    const [detail, content, check] = await Promise.all([
+      router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}` }),
+      router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}/content` }),
+      router.invoke({ method: "GET", url: `/api/artifacts/${encodedId}/check` }),
+    ]);
+
+    expect(detail.status).toBe(200);
+    expect((detail.body as any).artifact.id).toBe(publicId);
+    expect(content.status).toBe(200);
+    expect((content.body as any).content.artifact_id).toBe(publicId);
+    expect(check.status).toBe(200);
+    expect((check.body as any).check.artifact_id).toBe(publicId);
+  });
 });

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import hljs from 'highlight.js/lib/core';
 import bash from 'highlight.js/lib/languages/bash';
 import cpp from 'highlight.js/lib/languages/cpp';
@@ -17,6 +17,8 @@ import sql from 'highlight.js/lib/languages/sql';
 import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
   deleteArtifactDraft,
   getArtifact,
@@ -401,7 +403,7 @@ export function ArtifactsView({
     setError(null);
   }, [initialSeriesRef, initialVersionNo]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedSeriesRef) {
       versionsRequestIdRef.current += 1;
       setVersionHistory(null);
@@ -411,12 +413,23 @@ export function ArtifactsView({
     const requestId = versionsRequestIdRef.current + 1;
     versionsRequestIdRef.current = requestId;
     const controller = new AbortController();
+    const requestKey = detailRequestKey('artifact-versions', { ref: selectedSeriesRef });
+    const cached = readPersistedDetail<ArtifactVersionHistory>('artifact-versions', requestKey);
+    if (cached) {
+      const newestFirst = sortedVersionHistory(cached);
+      setVersionHistory(newestFirst);
+      const cachedSelection = selectedVersionNo === null
+        ? newestFirst.versions[0] ?? null
+        : newestFirst.versions.find((version) => version.version_no === selectedVersionNo) ?? null;
+      setSelectedArtifactId(cachedSelection?.artifact_id ?? null);
+    }
     setDetailLoading(true);
     setError(null);
     getArtifactVersions(selectedSeriesRef, { signal: controller.signal })
       .then((history) => {
         if (versionsRequestIdRef.current !== requestId) return;
         const newestFirst = sortedVersionHistory(history);
+        writePersistedDetail('artifact-versions', requestKey, newestFirst);
         setVersionHistory(newestFirst);
         const selectedVersion = selectedVersionNo === null
           ? newestFirst.versions[0] ?? null
@@ -438,17 +451,21 @@ export function ArtifactsView({
     };
   }, [selectedSeriesRef, selectedVersionNo]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedArtifactId) return;
     if (selectedArtifact?.id === selectedArtifactId && resolution?.artifact?.id === selectedArtifactId) return;
     const requestId = artifactRequestIdRef.current + 1;
     artifactRequestIdRef.current = requestId;
     const controller = new AbortController();
+    const requestKey = detailRequestKey('artifact-record', { id: selectedArtifactId });
+    const cached = readPersistedDetail<ArtifactRecord>('artifact-record', requestKey);
+    if (cached?.id === selectedArtifactId) setSelectedArtifact(cached);
     setDetailLoading(true);
     setError(null);
     getArtifact(selectedArtifactId, { signal: controller.signal })
       .then((artifact) => {
         if (artifactRequestIdRef.current !== requestId || artifact.id !== selectedArtifactId) return;
+        writePersistedDetail('artifact-record', requestKey, artifact);
         setSelectedArtifact(artifact);
       })
       .catch((err) => {
@@ -463,7 +480,7 @@ export function ArtifactsView({
     };
   }, [resolution?.artifact?.id, selectedArtifact?.id, selectedArtifactId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedArtifactId) {
       contentRequestIdRef.current += 1;
       setArtifactContent(null);
@@ -478,12 +495,15 @@ export function ArtifactsView({
     const requestId = contentRequestIdRef.current + 1;
     contentRequestIdRef.current = requestId;
     const controller = new AbortController();
-    setArtifactContent(null);
+    const requestKey = detailRequestKey('artifact-content', { id: artifactId });
+    const cached = readPersistedDetail<ArtifactContentResult>('artifact-content', requestKey);
+    setArtifactContent(cached?.artifact_id === artifactId ? cached : null);
     setContentLoading(true);
     setContentError(null);
     getArtifactContent(artifactId, { signal: controller.signal })
       .then((content) => {
         if (contentRequestIdRef.current !== requestId || content.artifact_id !== artifactId) return;
+        writePersistedDetail('artifact-content', requestKey, content);
         setArtifactContent(content);
       })
       .catch((err) => {
@@ -498,7 +518,7 @@ export function ArtifactsView({
     };
   }, [selectedArtifactId]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!selectedArtifact || selectedArtifact.id !== selectedArtifactId) {
       knowledgeRequestIdRef.current += 1;
       setKnowledgeBackrefs([]);
@@ -509,12 +529,17 @@ export function ArtifactsView({
     const requestId = knowledgeRequestIdRef.current + 1;
     knowledgeRequestIdRef.current = requestId;
     const controller = new AbortController();
+    const requestKey = detailRequestKey('artifact-backrefs', { id: selectedArtifact.id });
+    const cached = readPersistedDetail<KnowledgeBackrefRecord[]>('artifact-backrefs', requestKey);
     setKnowledgeLoading(true);
     setKnowledgeError(null);
-    setKnowledgeBackrefs([]);
+    setKnowledgeBackrefs(cached ?? []);
     getArtifactKnowledgeBackrefs(selectedArtifact.id, { signal: controller.signal })
       .then((backrefs) => {
-        if (knowledgeRequestIdRef.current === requestId) setKnowledgeBackrefs(backrefs);
+        if (knowledgeRequestIdRef.current === requestId) {
+          writePersistedDetail('artifact-backrefs', requestKey, backrefs);
+          setKnowledgeBackrefs(backrefs);
+        }
       })
       .catch((err) => {
         if (isAbortError(err)) return;
@@ -529,11 +554,15 @@ export function ArtifactsView({
   }, [selectedArtifact?.id, selectedArtifactId]);
 
   const facetOptions = useMemo(() => buildFacetOptions(facetSeries), [facetSeries]);
+  const coherentVersionHistory = selectedSeriesRef && versionHistory
+    && seriesRecordRef(versionHistory.series) === selectedSeriesRef
+    ? versionHistory
+    : null;
   const selectedVersion = useMemo(() => (
     selectedVersionNo === null
-      ? versionHistory?.versions.find((version) => version.artifact_id === selectedArtifactId) ?? versionHistory?.versions[0] ?? null
-      : versionHistory?.versions.find((version) => version.version_no === selectedVersionNo) ?? null
-  ), [selectedArtifactId, selectedVersionNo, versionHistory]);
+      ? coherentVersionHistory?.versions.find((version) => version.artifact_id === selectedArtifactId) ?? coherentVersionHistory?.versions[0] ?? null
+      : coherentVersionHistory?.versions.find((version) => version.version_no === selectedVersionNo) ?? null
+  ), [coherentVersionHistory, selectedArtifactId, selectedVersionNo]);
   const selectedSeries = useMemo(() => (
     series.find((entry) => seriesRef(entry) === selectedSeriesRef) ?? null
   ), [selectedSeriesRef, series]);
@@ -559,8 +588,8 @@ export function ArtifactsView({
   const selectVersion = (versionNo: number | null) => {
     setSelectedVersionNo(versionNo);
     const version = versionNo === null
-      ? versionHistory?.versions[0] ?? null
-      : versionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
+      ? coherentVersionHistory?.versions[0] ?? null
+      : coherentVersionHistory?.versions.find((candidate) => candidate.version_no === versionNo) ?? null;
     setSelectedArtifactId(version?.artifact_id ?? null);
     setResolution(null);
     if (!selectedSeriesRef) return;
@@ -670,9 +699,9 @@ export function ArtifactsView({
               ))}
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
-        {error && <div className="artifacts-error">{error}</div>}
+        {error && !coherentSelectedArtifact && <div className="artifacts-error">{error}</div>}
         {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
-          <div className="artifacts-empty" role="status">Loading artifact...</div>
+          <LoadingSkeleton variant="detail" label="Loading artifact..." />
         )}
         {!detailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
@@ -686,9 +715,10 @@ export function ArtifactsView({
         {coherentSelectedArtifact && (
           <ArtifactDetail
             artifact={coherentSelectedArtifact}
+            detailError={error}
             resolution={resolution}
-            series={versionHistory?.series ?? selectedSeries ?? null}
-            versions={versionHistory?.versions ?? []}
+            series={coherentVersionHistory?.series ?? selectedSeries ?? null}
+            versions={coherentVersionHistory?.versions ?? []}
             selectedVersion={selectedVersion}
             selectedVersionNo={selectedVersionNo}
             versionHistoryOpen={versionHistoryOpen}
@@ -699,7 +729,7 @@ export function ArtifactsView({
             onMetadataOpenChange={setDetailMetadataOpen}
             content={coherentArtifactContent}
             contentLoading={coherentContentLoading}
-            contentError={contentError}
+            contentError={error ? null : contentError}
             knowledgeBackrefs={knowledgeBackrefs}
             knowledgeLoading={knowledgeLoading}
             knowledgeError={knowledgeError}
@@ -732,6 +762,7 @@ function FacetSelect({ label, value, options, onChange }: {
 
 export type ArtifactDetailProps = {
   artifact: ArtifactRecord;
+  detailError?: string | null;
   resolution: ArtifactResolveResult | null;
   series: ArtifactSeriesRecord | ArtifactSeriesSummary | null;
   versions: ArtifactVersionRecord[];
@@ -753,6 +784,7 @@ export type ArtifactDetailProps = {
 
 export function ArtifactDetail({
   artifact,
+  detailError = null,
   resolution,
   series,
   versions,
@@ -1317,6 +1349,7 @@ export function ArtifactDetail({
       )}
       overlays={overlays}
     >
+        {detailError && <div className="artifacts-error">{detailError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}

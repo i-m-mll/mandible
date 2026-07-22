@@ -26,6 +26,7 @@ export function getPidFilePath(): string {
 // critical init finishes, and resets it false at the top of startDaemon so a
 // re-entrant start in the same process re-arms the gate.
 let daemonReady = false;
+let daemonWarm = false;
 
 export function isDaemonReady(): boolean {
   return daemonReady;
@@ -33,6 +34,15 @@ export function isDaemonReady(): boolean {
 
 export function setDaemonReady(ready: boolean): void {
   daemonReady = ready;
+}
+
+/** Whether the daemon's first deferred startup reconciliation has completed. */
+export function isDaemonWarm(): boolean {
+  return daemonWarm;
+}
+
+export function setDaemonWarm(warm: boolean): void {
+  daemonWarm = warm;
 }
 
 export function writePidFile(pid: number = process.pid, pidFilePath: string = getPidFilePath()): void {

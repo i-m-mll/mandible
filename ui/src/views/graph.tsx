@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import {
   Background,
   Controls,
@@ -30,6 +30,9 @@ import { appColors } from '../theme';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { useRegisterAppBottomPanel } from '../app-shell';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { LoadingSkeleton } from '../components/LoadingSkeleton';
 
 type GraphFetchParams = {
   mode: GraphMode
@@ -712,9 +715,26 @@ function DetailPane({
   const ledgerIssueId = node?.type === 'issue' && typeof node.detail?.ledger_issue_id === 'string'
     ? node.detail.ledger_issue_id
     : null;
-  const [ledgerDetail, setLedgerDetail] = useState<LedgerIssueDetailProjection | null>(null);
-  const [ledgerLoading, setLedgerLoading] = useState(false);
-  const [ledgerError, setLedgerError] = useState<string | null>(null);
+  const ledgerRequestKey = ledgerIssueId
+    ? detailRequestKey('issue', { issueId: ledgerIssueId })
+    : null;
+  const loadLedgerDetail = useCallback(
+    (_signal: AbortSignal) => {
+      if (!ledgerIssueId) return Promise.reject(new Error('No issue selected'));
+      return getLedgerIssueDetail(ledgerIssueId);
+    },
+    [ledgerIssueId],
+  );
+  const {
+    data: ledgerDetail,
+    setData: setLedgerDetail,
+    loading: ledgerLoading,
+    error: ledgerError,
+  } = useKeyedAsyncDetail<LedgerIssueDetailProjection>({
+    requestKey: ledgerRequestKey,
+    namespace: 'issue-detail',
+    load: loadLedgerDetail,
+  });
   // Add-to-Space picker visibility for the selected ledger issue (child 08c312a).
   // The graph stays a *picker*: it sends the selected node to a Space the user
   // chooses, never opening the Space editor here.
@@ -724,33 +744,6 @@ function DetailPane({
     // Reset the picker whenever the selected node changes so it never leaks
     // across selections.
     setSpacePickerOpen(false);
-  }, [ledgerIssueId]);
-
-  useEffect(() => {
-    let active = true;
-    if (!ledgerIssueId) {
-      setLedgerDetail(null);
-      setLedgerError(null);
-      setLedgerLoading(false);
-      return () => {
-        active = false;
-      };
-    }
-    setLedgerLoading(true);
-    setLedgerError(null);
-    getLedgerIssueDetail(ledgerIssueId)
-      .then((detail) => {
-        if (active) setLedgerDetail(detail);
-      })
-      .catch((error: unknown) => {
-        if (active) setLedgerError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (active) setLedgerLoading(false);
-      });
-    return () => {
-      active = false;
-    };
   }, [ledgerIssueId]);
 
   if (!node) {
@@ -778,7 +771,7 @@ function DetailPane({
     return (
       <aside className="graph-detail-pane graph-detail-pane--ledger">
         {ledgerLoading && !ledgerDetail ? (
-          <div className="graph-detail-pane__empty">Loading issue...</div>
+          <LoadingSkeleton variant="detail" label="Loading issue detail" />
         ) : ledgerError && !ledgerDetail ? (
           <div className="graph-detail-pane__empty">{ledgerError}</div>
         ) : ledgerDetail ? (
@@ -936,7 +929,10 @@ export function GraphView({
   sidebarHidden = false,
 }: GraphViewProps): JSX.Element {
   const routeMode = coerceGraphMode(initialMode);
-  const [payload, setPayload] = useState<GraphPayload>({ nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET });
+  const [payloadState, setPayloadState] = useState<{
+    requestKey: string | null;
+    value: GraphPayload;
+  }>({ requestKey: null, value: { nodes: [], edges: [], mode: DEFAULT_GRAPH_PRESET } });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [spec, setSpec] = useState<GraphSpecState>({
@@ -959,28 +955,39 @@ export function GraphView({
     DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT,
   );
   const lastFocusedNodeOpenedRef = useRef<string | null>(null);
+  const graphRequest = useMemo<GraphFetchParams>(() => ({
+    mode: spec.preset,
+    since: spec.since === 'all' ? undefined : spec.since,
+    status: spec.status === 'all' ? 'all' : undefined,
+    repos: spec.repos,
+    branches: spec.branches,
+    limit: spec.limit,
+    nodeTypes: spec.nodeTypes,
+    edgeTypes: spec.edgeTypes,
+  }), [spec]);
+  const graphRequestKey = useMemo(
+    () => detailRequestKey('graph', graphRequest),
+    [graphRequest],
+  );
+  const payload = payloadState.requestKey === graphRequestKey
+    ? payloadState.value
+    : { nodes: [], edges: [], mode: spec.preset };
 
   useEffect(() => {
     setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));
   }, [routeMode]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     let active = true;
+    const cached = readPersistedDetail<GraphPayload>('graph', graphRequestKey);
+    if (cached) setPayloadState({ requestKey: graphRequestKey, value: cached });
     setLoading(true);
     setError(null);
-    getGraph({
-      mode: spec.preset,
-      since: spec.since === 'all' ? undefined : spec.since,
-      status: spec.status === 'all' ? 'all' : undefined,
-      repos: spec.repos,
-      branches: spec.branches,
-      limit: spec.limit,
-      nodeTypes: spec.nodeTypes,
-      edgeTypes: spec.edgeTypes,
-    })
+    getGraph(graphRequest)
       .then((data) => {
         if (!active) return;
-        setPayload(data);
+        writePersistedDetail('graph', graphRequestKey, data);
+        setPayloadState({ requestKey: graphRequestKey, value: data });
         if (initialFocus && data.nodes.some((node) => node.id === initialFocus)) {
           setSelectedNodeId(initialFocus);
           if (lastFocusedNodeOpenedRef.current !== initialFocus) {
@@ -1004,7 +1011,7 @@ export function GraphView({
     return () => {
       active = false;
     };
-  }, [spec, refreshToken, initialFocus]);
+  }, [graphRequest, graphRequestKey, refreshToken, initialFocus]);
 
   const lenses = (payload.modes ?? Object.entries(MODE_LABELS).map(([id, label]) => ({
     id: id as GraphMode,
@@ -1257,15 +1264,15 @@ export function GraphView({
 
       <div className="graph-workspace">
         <div className="graph-canvas-wrap">
-          {loading && <div className="graph-loading">Loading graph...</div>}
-          {error && <div className="graph-error">{error}</div>}
+          {loading && flowNodes.length === 0 && <LoadingSkeleton variant="canvas" label="Loading graph" />}
+          {error && flowNodes.length === 0 && <div className="graph-error">{error}</div>}
           {!loading && !error && flowNodes.length === 0 && (
             <div className="graph-empty">
               <h3>No graph data</h3>
               <p>{MODE_LABELS[spec.preset]} has no visible nodes for the current spec.</p>
             </div>
           )}
-          {!loading && !error && flowNodes.length > 0 && (
+          {flowNodes.length > 0 && (
             <ReactFlow
               key={flowSignature}
               nodes={flowNodes}

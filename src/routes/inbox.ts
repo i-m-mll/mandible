@@ -204,6 +204,20 @@ function queryAuthResultsForSession(
   return out;
 }
 
+export function countGlobalInboxBadge(db: ReturnType<typeof getDb>): number {
+  const continuation = db.prepare(
+    `SELECT COUNT(*) AS count FROM sessions
+     WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL
+       AND status IN ('ended', 'dead')`,
+  ).get() as { count: number };
+  const authResults = queryAuthResultsForSession(db, {
+    sessionId: "",
+    repoRoot: null,
+    branch: null,
+  });
+  return Number(continuation.count) + authResults.length;
+}
+
 // Bug: f3dbb3e — mapWorkUnitRow and computeLiveness extracted to work-unit-utils.ts
 
 export function registerInboxRoutes(

@@ -3,7 +3,18 @@
 // fails, OR rebuilding === true, OR ready !== true.
 import { describe, expect, it } from "vitest";
 
-import { daemonIsReady, daemonNeedsSplash, shouldEnterSplashOnProbe } from "../ui/src/daemon-readiness";
+import {
+  daemonEpochChanged,
+  daemonCommitChanged,
+  daemonIsReady,
+  daemonIsReadyAfterEpoch,
+  daemonIsWarm,
+  daemonNeedsSplash,
+  daemonStartupEpoch,
+  daemonStartupCommit,
+  shouldEnterSplashOnBackgroundProbe,
+  shouldEnterSplashOnProbe,
+} from "../ui/src/daemon-readiness";
 
 describe("daemonNeedsSplash", () => {
   it("keeps the splash up when the health fetch failed (null)", () => {
@@ -29,6 +40,53 @@ describe("daemonNeedsSplash", () => {
     expect(daemonNeedsSplash({ ready: true })).toBe(false);
     expect(daemonNeedsSplash({ ready: true, rebuilding: false })).toBe(false);
     expect(daemonIsReady({ ready: true })).toBe(true);
+  });
+});
+
+describe("daemon startup epoch", () => {
+  const oldEpoch = "a".repeat(40);
+  const newEpoch = "b".repeat(40);
+
+  it("requires a usable changed commit before a rebuild splash releases", () => {
+    expect(daemonStartupCommit({ startup_commit: { hash: "unknown" } })).toBeNull();
+    expect(daemonStartupEpoch({ startup_epoch: newEpoch })).toBe(newEpoch);
+    expect(daemonEpochChanged({ startup_epoch: newEpoch }, oldEpoch)).toBe(true);
+    expect(daemonIsReadyAfterEpoch({ ready: true, startup_epoch: oldEpoch }, oldEpoch, true)).toBe(false);
+    expect(daemonIsReadyAfterEpoch({ ready: true }, oldEpoch, true)).toBe(false);
+    expect(daemonIsReadyAfterEpoch({ ready: true, startup_epoch: newEpoch }, oldEpoch, true)).toBe(true);
+    expect(daemonCommitChanged({ startup_commit: { hash: newEpoch } }, oldEpoch)).toBe(true);
+  });
+
+  it("preserves ordinary startup behavior when a new epoch is not required", () => {
+    expect(daemonIsReadyAfterEpoch({ ready: true }, null, false)).toBe(true);
+    expect(daemonIsReadyAfterEpoch({ ready: false }, null, false)).toBe(false);
+  });
+
+  it("uses background epoch drift to recover a missed rebuild event", () => {
+    expect(shouldEnterSplashOnBackgroundProbe(
+      { ready: true, startup_epoch: newEpoch, startup_commit: { hash: oldEpoch } },
+      oldEpoch,
+    )).toBe(true);
+    expect(shouldEnterSplashOnBackgroundProbe(
+      { ready: true, startup_epoch: oldEpoch },
+      oldEpoch,
+    )).toBe(false);
+  });
+
+  it("does not require a new commit for an ordinary same-process startup", () => {
+    const starting = { ready: false, startup_epoch: oldEpoch, startup_commit: { hash: oldEpoch } };
+    expect(shouldEnterSplashOnBackgroundProbe(starting, oldEpoch)).toBe(true);
+    expect(daemonEpochChanged(starting, oldEpoch)).toBe(false);
+    expect(daemonIsReadyAfterEpoch({ ...starting, ready: true }, oldEpoch, false)).toBe(true);
+  });
+});
+
+describe("daemonIsWarm", () => {
+  it("shows population only for an explicit cold warm tier", () => {
+    expect(daemonIsWarm({ warm: false })).toBe(false);
+    expect(daemonIsWarm({ warm: true })).toBe(true);
+    expect(daemonIsWarm({})).toBe(true);
+    expect(daemonIsWarm(null)).toBe(true);
   });
 });
 

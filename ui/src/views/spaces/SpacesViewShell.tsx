@@ -15,7 +15,7 @@
 // (./types.ts); the shell only threads the active-renderer choice through so the
 // nav scaffold is reachable before the renderers land.
 
-import { useCallback, useEffect, useMemo, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'preact/hooks';
 import type { ComponentType } from 'preact';
 
 import {
@@ -27,6 +27,8 @@ import {
   type SpaceRenderer,
 } from '../../api';
 import { PreviewDisabledNotice } from '../../components/shared/PreviewDisabledNotice';
+import { LoadingSkeleton } from '../../components/LoadingSkeleton';
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../../detail-cache';
 // `api.ts` re-exports the SpaceRenderer *type* only; the runtime value const
 // lives in the canonical contracts module (README §2 permits importing wire
 // records from `../../../src/contracts`).
@@ -188,13 +190,17 @@ export function SpacesViewShell({
     [loadSpace, loadSpaceFactPacket],
   );
   const [selectedSpace, setSelectedSpace] = useState<Space | null>(null);
-  const [selectedFactPacket, setSelectedFactPacket] = useState<SpaceFactPacket | null>(null);
+  const [selectedFactPacket, setSelectedFactPacket] = useState<SpaceFactPacket | null>(() => (
+    spaceId
+      ? readPersistedDetail<SpaceFactPacket>('spaces', detailRequestKey('spaces', { spaceId }))
+      : null
+  ));
   const [selectedSnapshot, setSelectedSnapshot] = useState<SpaceSelectionSnapshot | null>(
     () => loadCachedSelection(spaceId),
   );
   const [spaceLoadError, setSpaceLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!spaceId) {
       setSelectedSpace(null);
       setSelectedFactPacket(null);
@@ -203,8 +209,10 @@ export function SpacesViewShell({
       return undefined;
     }
     let cancelled = false;
+    const requestKey = detailRequestKey('spaces', { spaceId });
+    const cachedPacket = readPersistedDetail<SpaceFactPacket>('spaces', requestKey);
     setSelectedSpace((current) => (current?.id === spaceId ? current : null));
-    setSelectedFactPacket((current) => (current?.space.id === spaceId ? current : null));
+    setSelectedFactPacket((current) => (current?.space.id === spaceId ? current : cachedPacket));
     setSelectedSnapshot((current) => (current?.id === spaceId ? current : loadCachedSelection(spaceId)));
     setSpaceLoadError(null);
     resolvedLoadSpaceFactPacket(spaceId)
@@ -214,6 +222,7 @@ export function SpacesViewShell({
           const snapshot = snapshotFromSpace(space);
           setSelectedSpace(space);
           setSelectedFactPacket(packet);
+          writePersistedDetail('spaces', requestKey, packet);
           setSelectedSnapshot(snapshot);
           persistCachedSelection(snapshot);
         }
@@ -322,13 +331,13 @@ export function SpacesViewShell({
                 Select a space, or create one with the <strong>+</strong> in the sidebar.
               </p>
             </div>
-          ) : spaceLoadError && !explicitRenderer && !selectedSpace && !selectedSnapshot ? (
+          ) : spaceLoadError && !explicitRenderer && !selectedSpace && !selectedSnapshot && !selectedFactPacket ? (
             <div className="spaces-shell__empty" data-testid="spaces-shell-empty">
               <p className="spaces-shell__empty-text">{spaceLoadError}</p>
             </div>
           ) : waitingForFactPacket ? (
-            <div className="spaces-shell__empty" data-testid="spaces-shell-loading">
-              <p className="spaces-shell__empty-text">Loading space...</p>
+            <div data-testid="spaces-shell-loading">
+              <LoadingSkeleton variant="canvas" label="Loading space" />
             </div>
           ) : MountPoint ? (
             <MountPoint
