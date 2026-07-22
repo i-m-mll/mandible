@@ -297,7 +297,7 @@ describe("auth merge Mandible preflight", () => {
   });
 
   it("resumes MERGE_HEAD before running Mandible auth check", () => {
-    fs.writeFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), git(["rev-parse", "feature/demo"]), "utf8");
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
 
     const result = run(["auth", "merge", "feature/demo"]);
 
@@ -306,6 +306,80 @@ describe("auth merge Mandible preflight", () => {
     expect(result.stderr).toContain("commit.gpgsign is set to false");
     expect(result.stderr).not.toContain("Mandible merge preflight failed");
   });
+
+  it("refuses to resume when MERGE_HEAD does not match the requested source", () => {
+    const mergeHead = git(["rev-parse", "feature/demo"]);
+    git(["branch", "feature/other", "main"]);
+    fs.writeFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), `${mergeHead}\n`, "utf8");
+
+    const result = run(["auth", "merge", "feature/other"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("MERGE_HEAD does not match the requested source commit");
+    expect(fs.readFileSync(path.join(tempDir, ".git", "MERGE_HEAD"), "utf8")).toBe(`${mergeHead}\n`);
+    expect(git(["rev-parse", "--abbrev-ref", "HEAD"])).toBe("main");
+  });
+
+  it("refuses to resume when the staged index contains unrelated changes", () => {
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
+    fs.writeFileSync(path.join(tempDir, "tracked.txt"), "unrelated staged edit\n", "utf8");
+    git(["add", "tracked.txt"]);
+
+    const result = run(["auth", "merge", "feature/demo"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("staged index does not match the expected merge tree");
+    expect(fs.existsSync(path.join(tempDir, ".git", "MERGE_HEAD"))).toBe(true);
+    expect(fs.readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("unrelated staged edit\n");
+  });
+
+  it("refuses to resume when unrelated unstaged tracked changes are present", () => {
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
+    fs.writeFileSync(path.join(tempDir, "tracked.txt"), "unrelated unstaged edit\n", "utf8");
+
+    const result = run(["auth", "merge", "feature/demo"]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("unexpected unstaged tracked changes");
+    expect(fs.existsSync(path.join(tempDir, ".git", "MERGE_HEAD"))).toBe(true);
+    expect(fs.readFileSync(path.join(tempDir, "tracked.txt"), "utf8")).toBe("unrelated unstaged edit\n");
+  });
+
+  it("resumes with git merge --continue exactly once and runs normal success finalization", () => {
+    const featureSha = git(["rev-parse", "feature/demo"]);
+    git(["merge", "--no-ff", "--no-commit", "feature/demo"]);
+    const realGit = spawnSync("bash", ["-lc", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-resume-git-"));
+    const continueLog = path.join(fakeBin, "continue.log");
+    fs.writeFileSync(path.join(fakeBin, "git"), [
+      "#!/usr/bin/env bash",
+      "if [[ \"$*\" == *\"merge --continue\"* ]]; then",
+      `  printf 'continue\\n' >> ${JSON.stringify(continueLog)}`,
+      `  exec ${JSON.stringify(realGit)} -c commit.gpgsign=false merge --continue`,
+      "fi",
+      `exec ${JSON.stringify(realGit)} \"$@\"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    try {
+      const result = runCleanupHelper([
+        "prompt_confirm() { printf 'y'; }",
+        "preflight_signing_check() { :; }",
+        "main feature/demo --into main",
+      ].join("\n"), tempDir, {
+        PATH: `${fakeBin}:${process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin"}`,
+        GIT_EDITOR: "true",
+      });
+
+      expect(result.status).toBe(0);
+      expect(fs.readFileSync(continueLog, "utf8").trim().split("\n")).toEqual(["continue"]);
+      expect(fs.existsSync(path.join(tempDir, ".git", "MERGE_HEAD"))).toBe(false);
+      expect(git(["merge-base", "--is-ancestor", featureSha, "main"])).toBe("");
+      expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  }, 15_000);
 });
 
 // Child issue 8921e84: docs-branch promotion via a short-lived proxy branch.

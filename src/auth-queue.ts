@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 
@@ -74,6 +74,11 @@ type MergeTreeResult =
   | { status: "clean"; tree: string; files: string[]; message: string }
   | { status: "conflict"; files: string[]; message: string }
   | { status: "error"; files: string[]; message: string };
+
+type StaleMergeRecovery =
+  | { outcome: "completed" }
+  | { outcome: "requeued"; detail: string }
+  | { outcome: "failed"; detail: string };
 
 export class AuthQueueError extends Error {
   readonly code: "not_found" | "invalid_status" | "invalid_command" | "merge_conflict" | "merge_check_failed";
@@ -223,68 +228,18 @@ export class AuthQueue {
    * daemon was killed (e.g. by the post-merge hook) before the executor could
    * record the result.
    *
-   * Two cases:
-   * 1. Approved with output containing merge evidence → mark completed (exit 0)
-   * 2. Approved with empty/no output, older than 5 min → mark completed (exit 1)
-   *    as interrupted execution (Bug: 68aa754)
+   * Merge recovery is based on repository state, never console text. A head
+   * already contained in the base is finalized successfully. A cleanly
+   * identifiable interrupted merge is aborted and requeued for approval. Any
+   * state whose provenance cannot be proven fails closed without mutating Git.
    */
   private recoverStuckRequests(): void {
     const now = this.now();
     const STUCK_THRESHOLD_MS = 5 * 60 * 1000;
     const cutoff = now - STUCK_THRESHOLD_MS;
 
-    const recoveredSuccessIds: string[] = [];
-    const recoveredFailureIds: string[] = [];
-    const runRecovery = this.db.transaction(() => {
-      // Case 1: approved/executing with output — check for merge evidence or
-      // stale partial output from a killed executor.
-      const withOutput = this.db
-        .prepare(
-          "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND output IS NOT NULL AND output != '' AND exit_code IS NULL"
-        )
-        .all() as Record<string, unknown>[];
-
-      const successUpdate = this.db.prepare(
-        "UPDATE auth_requests SET status = 'completed', exit_code = 0, resolved_at = ?, updated_at = ? WHERE id = ?"
-      );
-      const failUpdate = this.db.prepare(
-        "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
-      );
-
-      for (const row of withOutput) {
-        const output = String(row.output ?? "");
-        if (output.includes("Merge made by") || output.includes("Fast-forward")) {
-          successUpdate.run(now, now, row.id);
-          recoveredSuccessIds.push(String(row.id));
-          continue;
-        }
-        if (Number(row.approved_at ?? 0) < cutoff) {
-          failUpdate.run(
-            now,
-            now,
-            "Stuck in approved state with partial output — execution interrupted (likely daemon restart)",
-            row.id
-          );
-          recoveredFailureIds.push(String(row.id));
-        }
-      }
-
-      // Case 2: approved with empty output, older than 5 minutes — execution interrupted
-      // Bug: 68aa754 — stuck in approved state with no output means the executor
-      // never ran or was killed before producing any output (likely daemon restart)
-      const emptyApproved = this.db
-        .prepare(
-          "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') AND (output IS NULL OR output = '') AND exit_code IS NULL AND approved_at < ?"
-        )
-        .all(cutoff) as Record<string, unknown>[];
-
-      for (const row of emptyApproved) {
-        failUpdate.run(now, now, "Stuck in approved state — execution interrupted (likely daemon restart)", row.id);
-        recoveredFailureIds.push(String(row.id));
-      }
-    });
-
-    runRecovery();
+    const { recoveredSuccessIds, recoveredFailureIds, requeuedIds } =
+      this.recoverStaleExecutions(cutoff, "daemon restart");
 
     for (const id of recoveredSuccessIds) {
       const recovered = this.getRequest(id);
@@ -317,7 +272,165 @@ export class AuthQueue {
       });
     }
 
+    for (const id of requeuedIds) {
+      const requeued = this.getRequest(id);
+      if (requeued) {
+        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+      }
+      authLog("warn", "auth_request_recovered_requeued", {
+        subsystem: "auth",
+        auth_request_id: id,
+        reason: "interrupted_merge_aborted_safely",
+      });
+    }
+
     this.sweepSuccessfulMergeFinalizers();
+  }
+
+  private recoverStaleExecutions(
+    cutoff: number,
+    context: string,
+    excludeInFlight = false,
+  ): { recoveredSuccessIds: string[]; recoveredFailureIds: string[]; requeuedIds: string[] } {
+    const now = this.now();
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') " +
+          "AND exit_code IS NULL AND approved_at < ?"
+      )
+      .all(cutoff) as Record<string, unknown>[];
+    const recoveredSuccessIds: string[] = [];
+    const recoveredFailureIds: string[] = [];
+    const requeuedIds: string[] = [];
+
+    const complete = this.db.prepare(
+      "UPDATE auth_requests SET status = 'completed', exit_code = ?, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
+    );
+    const requeue = this.db.prepare(
+      `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
+       exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
+       approval_source = 'manual', approval_lease_id = NULL WHERE id = ?`
+    );
+
+    for (const row of rows) {
+      const request = mapRow(row);
+      if (excludeInFlight && this.inFlight.has(request.id)) {
+        continue;
+      }
+      if (request.type === "merge" && isAuthMergeCommand(request)) {
+        const recovery = this.inspectStaleMerge(request);
+        if (recovery.outcome === "completed") {
+          complete.run(0, now, now, null, request.id);
+          recoveredSuccessIds.push(request.id);
+        } else if (recovery.outcome === "requeued") {
+          requeue.run(now + this.ttlMs, now, request.id);
+          requeuedIds.push(request.id);
+        } else {
+          complete.run(1, now, now, `Interrupted auth merge (${context}): ${recovery.detail}`, request.id);
+          recoveredFailureIds.push(request.id);
+        }
+        continue;
+      }
+
+      complete.run(1, now, now, `Execution interrupted (${context}); repository recovery is unavailable for this request type.`, request.id);
+      recoveredFailureIds.push(request.id);
+    }
+
+    return { recoveredSuccessIds, recoveredFailureIds, requeuedIds };
+  }
+
+  private inspectStaleMerge(request: AuthRequest): StaleMergeRecovery {
+    const checkoutPaths = [request.cwd, request.target_repo_root].filter(
+      (value): value is string => Boolean(value),
+    );
+    if (checkoutPaths.length === 0 || !request.base_branch || !request.head_branch) {
+      return { outcome: "failed", detail: "missing repository, base branch, or head branch metadata" };
+    }
+
+    try {
+      const gitAt = (cwd: string, args: string[]): string => execFileSync("git", args, {
+        cwd,
+        encoding: "utf8",
+        timeout: 5000,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+      }).trim();
+      const identities = checkoutPaths.map((path) => ({
+        topLevel: realpathSync(gitAt(path, ["rev-parse", "--path-format=absolute", "--show-toplevel"])),
+        commonDir: realpathSync(gitAt(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"])),
+      }));
+      const identity = identities[0];
+      if (!identity || identities.some(
+        (candidate) => candidate.topLevel !== identity.topLevel || candidate.commonDir !== identity.commonDir,
+      )) {
+        return { outcome: "failed", detail: "cwd and target_repo_root do not identify the same Git checkout" };
+      }
+      const cwd = identity.topLevel;
+      const git = (args: string[]): string => gitAt(cwd, args);
+
+      const expectedHead = request.merge_head_sha ?? git([
+        "rev-parse", "--verify", `refs/heads/${request.head_branch}^{commit}`,
+      ]);
+      try {
+        git(["merge-base", "--is-ancestor", expectedHead, `refs/heads/${request.base_branch}`]);
+        return { outcome: "completed" };
+      } catch {
+        // A non-zero ancestor check is the expected interrupted/unmerged case.
+      }
+
+      const gitDir = git(["rev-parse", "--path-format=absolute", "--git-dir"]);
+      const mergeHeadPath = join(gitDir, "MERGE_HEAD");
+      const trackedStatus = git(["status", "--porcelain", "--untracked-files=no"]);
+      if (!existsSync(mergeHeadPath)) {
+        if (!trackedStatus) {
+          return { outcome: "requeued", detail: "executor stopped before changing the repository" };
+        }
+        return { outcome: "failed", detail: "tracked changes exist without MERGE_HEAD; provenance is ambiguous" };
+      }
+
+      const currentBranch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]);
+      if (currentBranch !== request.base_branch) {
+        return { outcome: "failed", detail: `MERGE_HEAD is on ${currentBranch}, not requested base ${request.base_branch}` };
+      }
+      const mergeHeads = git(["rev-parse", "--verify", "MERGE_HEAD"]).split(/\s+/).filter(Boolean);
+      if (mergeHeads.length !== 1 || mergeHeads[0] !== expectedHead) {
+        return { outcome: "failed", detail: "MERGE_HEAD does not match the requested head commit" };
+      }
+      if (!trackedStatus) {
+        return { outcome: "failed", detail: "MERGE_HEAD exists without staged merge changes" };
+      }
+      if (git(["diff", "--name-only", "--diff-filter=U"])) {
+        return { outcome: "failed", detail: "merge has unresolved conflicts" };
+      }
+      const hasUnstagedChanges = trackedStatus.split(/\r?\n/).some((line) => line.length >= 2 && line[1] !== " ");
+      if (hasUnstagedChanges) {
+        return { outcome: "failed", detail: "merge checkout also contains unstaged tracked changes" };
+      }
+      const head = git(["rev-parse", "HEAD"]);
+      const originalHead = git(["rev-parse", "ORIG_HEAD"]);
+      if (head !== originalHead) {
+        return { outcome: "failed", detail: "HEAD no longer matches the merge's recorded ORIG_HEAD" };
+      }
+      const expectedMerge = this.mergeTree(cwd, head, expectedHead);
+      if (expectedMerge.status !== "clean") {
+        return { outcome: "failed", detail: `could not derive the expected merge tree: ${expectedMerge.message}` };
+      }
+      const indexTree = git(["write-tree"]);
+      if (indexTree !== expectedMerge.tree) {
+        return { outcome: "failed", detail: "staged index does not match the expected merge tree" };
+      }
+
+      git(["merge", "--abort"]);
+      const remainingStatus = git(["status", "--porcelain", "--untracked-files=no"]);
+      if (existsSync(mergeHeadPath) || remainingStatus) {
+        return { outcome: "failed", detail: "git merge --abort did not restore a clean tracked checkout" };
+      }
+      return { outcome: "requeued", detail: "interrupted merge was aborted safely" };
+    } catch (error) {
+      return {
+        outcome: "failed",
+        detail: `repository inspection failed: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
   }
 
   /**
@@ -1411,54 +1524,39 @@ export class AuthQueue {
     const STUCK_RUNTIME_THRESHOLD_MS = 10 * 60 * 1000;
     const cutoff = now - STUCK_RUNTIME_THRESHOLD_MS;
 
-    const recoveredIds: string[] = [];
-    const runRecovery = this.db.transaction(() => {
-      const stuckRows = this.db
-        .prepare(
-          "SELECT * FROM auth_requests WHERE status IN ('approved', 'executing') " +
-            "AND exit_code IS NULL AND approved_at < ? " +
-            "AND (output IS NULL OR output = '' OR (output NOT LIKE '%Merge made by%' AND output NOT LIKE '%Fast-forward%'))"
-        )
-        .all(cutoff) as Record<string, unknown>[];
+    const { recoveredSuccessIds, recoveredFailureIds, requeuedIds } =
+      this.recoverStaleExecutions(cutoff, "periodic recovery", true);
 
-      if (stuckRows.length === 0) {
-        return;
-      }
-
-      const failUpdate = this.db.prepare(
-        "UPDATE auth_requests SET status = 'completed', exit_code = 1, resolved_at = ?, updated_at = ?, error = ? WHERE id = ?"
-      );
-
-      for (const row of stuckRows) {
-        failUpdate.run(
-          now,
-          now,
-          "Stuck in approved state for >10 minutes — execution interrupted (periodic recovery)",
-          row.id
-        );
-        recoveredIds.push(String(row.id));
-      }
-    });
-
-    runRecovery();
-
-    if (recoveredIds.length === 0) {
+    if (recoveredSuccessIds.length + recoveredFailureIds.length + requeuedIds.length === 0) {
       return;
     }
 
-    for (const id of recoveredIds) {
+    for (const id of recoveredSuccessIds) {
       const recovered = this.getRequest(id);
       if (recovered) {
+        this.afterSuccessfulMerge(recovered);
         this.broadcast({
           event: "auth:resolved",
           data: this.buildResolvedPayload(recovered)
         });
       }
-      authLog("warn", "auth_request_periodic_recovery_interrupted", {
+      authLog("warn", "auth_request_periodic_recovery_success", {
         subsystem: "auth",
         auth_request_id: id,
-        reason: "approved_without_merge_evidence_after_10min",
+        reason: "merged_head_observed_in_base",
       });
+    }
+    for (const id of recoveredFailureIds) {
+      const recovered = this.getRequest(id);
+      if (recovered) {
+        this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(recovered) });
+      }
+    }
+    for (const id of requeuedIds) {
+      const requeued = this.getRequest(id);
+      if (requeued) {
+        this.broadcast({ event: "auth:updated", data: { request: requeued } });
+      }
     }
   }
 
@@ -1724,7 +1822,8 @@ export class AuthQueue {
       const stdout = execFileSync("git", ["merge-tree", "--write-tree", base, head], {
         cwd,
         encoding: "utf8",
-        maxBuffer: 10 * 1024 * 1024
+        maxBuffer: 10 * 1024 * 1024,
+        env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
       }).trim();
       const tree = stdout.split(/\s+/)[0] ?? "";
       if (!tree) {
