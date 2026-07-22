@@ -3268,6 +3268,36 @@ function jsonResponse(body: unknown): Promise<Response> {
 }
 
 describe('ArtifactsView', () => {
+  it('shows artifact load failures once below the detail header', async () => {
+    const artifact = makeArtifactFixture('d', 'failed-detail.md', {
+      id: 'artifact:dddddddddddd',
+    });
+    const artifactSeries = makeArtifactSeries('failed-detail', [artifact], 'failed-detail.md');
+    const notFound = () => Promise.resolve(new Response(JSON.stringify({ error: 'artifact not found' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo) => {
+      const url = String(input);
+      if (url.startsWith('/api/artifacts/series?')) return jsonResponse({ series: [artifactSeries.summary] });
+      if (url.startsWith('/api/artifacts/versions?')) return jsonResponse({ history: artifactSeries.history });
+      if (url.endsWith('/knowledge-backrefs')) return jsonResponse({ backrefs: [] });
+      if (url.endsWith('/content')) return notFound();
+      if (url.includes(encodeURIComponent(artifact.id))) return notFound();
+      return Promise.reject(new Error(`unexpected fetch ${url}`));
+    }));
+
+    render(h(ArtifactsView, {}));
+
+    await waitFor(() => expect(screen.getAllByText('artifact not found')).toHaveLength(1));
+    const error = screen.getByText('artifact not found');
+    const header = document.querySelector('.artifact-detail__header');
+    const body = document.querySelector('.artifact-detail__pane');
+    expect(header).toBeTruthy();
+    expect(body?.contains(error)).toBe(true);
+    expect(header?.compareDocumentPosition(error) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
   it('renders HumbleB knowledge backrefs in artifact detail', async () => {
     const artifact = {
       id: 'artifact:aaaaaaaaaaaa',

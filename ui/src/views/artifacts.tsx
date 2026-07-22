@@ -670,7 +670,7 @@ export function ArtifactsView({
               ))}
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
-        {error && <div className="artifacts-error">{error}</div>}
+        {error && !coherentSelectedArtifact && <div className="artifacts-error">{error}</div>}
         {(detailLoading || detailPending) && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty" role="status">Loading artifact...</div>
         )}
@@ -686,6 +686,7 @@ export function ArtifactsView({
         {coherentSelectedArtifact && (
           <ArtifactDetail
             artifact={coherentSelectedArtifact}
+            detailError={error}
             resolution={resolution}
             series={versionHistory?.series ?? selectedSeries ?? null}
             versions={versionHistory?.versions ?? []}
@@ -699,7 +700,7 @@ export function ArtifactsView({
             onMetadataOpenChange={setDetailMetadataOpen}
             content={coherentArtifactContent}
             contentLoading={coherentContentLoading}
-            contentError={contentError}
+            contentError={error ? null : contentError}
             knowledgeBackrefs={knowledgeBackrefs}
             knowledgeLoading={knowledgeLoading}
             knowledgeError={knowledgeError}
@@ -732,6 +733,7 @@ function FacetSelect({ label, value, options, onChange }: {
 
 export type ArtifactDetailProps = {
   artifact: ArtifactRecord;
+  detailError?: string | null;
   resolution: ArtifactResolveResult | null;
   series: ArtifactSeriesRecord | ArtifactSeriesSummary | null;
   versions: ArtifactVersionRecord[];
@@ -753,6 +755,7 @@ export type ArtifactDetailProps = {
 
 export function ArtifactDetail({
   artifact,
+  detailError = null,
   resolution,
   series,
   versions,
@@ -1317,6 +1320,7 @@ export function ArtifactDetail({
       )}
       overlays={overlays}
     >
+        {detailError && <div className="artifacts-error">{detailError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
