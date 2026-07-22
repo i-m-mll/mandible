@@ -119,39 +119,54 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'spaces',
 ];
 
-const LazyAuthQueueView = lazy(() =>
-  import('./views/auth').then((module) => ({ default: module.AuthQueueView })),
-);
-const LazyArtifactsView = lazy(() =>
-  import('./views/artifacts').then((module) => ({ default: module.ArtifactsView })),
-);
-const LazyInboxView = lazy(() =>
-  import('./views/inbox').then((module) => ({ default: module.InboxView })),
-);
-const LazyIssuesView = lazy(() =>
-  import('./views/issues').then((module) => ({ default: module.IssuesView })),
-);
-const LazyConversationsView = lazy(() =>
-  import('./views/conversations').then((module) => ({ default: module.ConversationsView })),
-);
-const LazySettingsView = lazy(() =>
-  import('./views/settings').then((module) => ({ default: module.SettingsView })),
-);
-const LazyWorkOverviewView = lazy(() =>
-  import('./views/work').then((module) => ({ default: module.WorkOverviewView })),
-);
-const LazyLogsView = lazy(() =>
-  import('./views/logs').then((module) => ({ default: module.LogsView })),
-);
-const LazyGraphView = lazy(() =>
-  import('./views/graph').then((module) => ({ default: module.GraphView })),
-);
-const LazyTimelineView = lazy(() =>
-  import('./views/timeline').then((module) => ({ default: module.TimelineView })),
-);
-const LazySpacesTab = lazy(() =>
-  import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab })),
-);
+const loadAuthQueueView = () =>
+  import('./views/auth').then((module) => ({ default: module.AuthQueueView }));
+const loadArtifactsView = () =>
+  import('./views/artifacts').then((module) => ({ default: module.ArtifactsView }));
+const loadInboxView = () =>
+  import('./views/inbox').then((module) => ({ default: module.InboxView }));
+const loadIssuesView = () =>
+  import('./views/issues').then((module) => ({ default: module.IssuesView }));
+const loadConversationsView = () =>
+  import('./views/conversations').then((module) => ({ default: module.ConversationsView }));
+const loadSettingsView = () =>
+  import('./views/settings').then((module) => ({ default: module.SettingsView }));
+const loadWorkOverviewView = () =>
+  import('./views/work').then((module) => ({ default: module.WorkOverviewView }));
+const loadLogsView = () =>
+  import('./views/logs').then((module) => ({ default: module.LogsView }));
+const loadGraphView = () =>
+  import('./views/graph').then((module) => ({ default: module.GraphView }));
+const loadTimelineView = () =>
+  import('./views/timeline').then((module) => ({ default: module.TimelineView }));
+const loadSpacesTab = () =>
+  import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab }));
+
+const LazyAuthQueueView = lazy(loadAuthQueueView);
+const LazyArtifactsView = lazy(loadArtifactsView);
+const LazyInboxView = lazy(loadInboxView);
+const LazyIssuesView = lazy(loadIssuesView);
+const LazyConversationsView = lazy(loadConversationsView);
+const LazySettingsView = lazy(loadSettingsView);
+const LazyWorkOverviewView = lazy(loadWorkOverviewView);
+const LazyLogsView = lazy(loadLogsView);
+const LazyGraphView = lazy(loadGraphView);
+const LazyTimelineView = lazy(loadTimelineView);
+const LazySpacesTab = lazy(loadSpacesTab);
+
+const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>> = {
+  auth: loadAuthQueueView,
+  artifacts: loadArtifactsView,
+  inbox: loadInboxView,
+  issues: loadIssuesView,
+  console: loadConversationsView,
+  settings: loadSettingsView,
+  work: loadWorkOverviewView,
+  logs: loadLogsView,
+  graph: loadGraphView,
+  timeline: loadTimelineView,
+  spaces: loadSpacesTab,
+};
 
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   bottomPanel: null,
@@ -1785,6 +1800,10 @@ function App(): JSX.Element {
 
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
+  const initialRoute = parseHashRoute();
+  if (isRenderableTab(initialRoute.tab)) {
+    void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
+  }
   render(<App />, mountNode);
 }
 
