@@ -46,6 +46,7 @@ import { registerRedirectRoutes } from "./routes/redirects.js";
 import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
 import { registerWorkflowRoutes } from "./routes/workflows.js";
+import { registerDashboardRoutes } from "./routes/dashboard.js";
 import { importClaudeMd, computeContentHash } from "./presets.js";
 import { startIngestion, stopIngestionGracefully } from "./ingestion.js";
 import { WorkUnitReconciler } from "./work-unit-reconciler.js";
@@ -145,6 +146,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
+  registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
   registerHookRoutes(router);
   // Bug: 61bee4e — preset routes for convention management
