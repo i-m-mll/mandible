@@ -72,6 +72,11 @@ describe("operator setup idempotency", () => {
   });
 });
 
+// Valid public-shape samples for the credential allowlist.
+const SSH_FINGERPRINT = `SHA256:${"A".repeat(43)}`;
+const SSH_PUBLIC_LINE = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} user@host`;
+const AGE_RECIPIENT = `age1${"q".repeat(58)}`;
+
 describe("credential immutability and fingerprint uniqueness", () => {
   function operator() {
     return setupOperator(db, { slug: "op", display_name: "Operator", email: "op@x.io" });
@@ -79,20 +84,23 @@ describe("credential immutability and fingerprint uniqueness", () => {
 
   it("allows one active credential per fingerprint and blocks a second", () => {
     const op = operator();
-    addCredential(db, op.id, { type: "ssh_key", fingerprint: "SHA256:aaa" });
+    addCredential(db, op.id, { type: "ssh_key", fingerprint: SSH_FINGERPRINT });
     expect(() =>
-      addCredential(db, op.id, { type: "ssh_key", fingerprint: "SHA256:aaa" }),
+      addCredential(db, op.id, { type: "ssh_key", fingerprint: SSH_FINGERPRINT }),
     ).toThrow(UserRegistryError);
   });
 
   it("permits revoke-then-re-add of the same fingerprint", () => {
     const op = operator();
-    const cred = addCredential(db, op.id, { type: "yubikey_recipient", fingerprint: "age1xyz" });
+    const cred = addCredential(db, op.id, {
+      type: "yubikey_recipient",
+      fingerprint: AGE_RECIPIENT,
+    });
     revokeCredential(db, cred.id);
 
     const readded = addCredential(db, op.id, {
       type: "yubikey_recipient",
-      fingerprint: "age1xyz",
+      fingerprint: AGE_RECIPIENT,
     });
     expect(readded.status).toBe("active");
     expect(readded.id).not.toBe(cred.id);
@@ -109,28 +117,101 @@ describe("credential immutability and fingerprint uniqueness", () => {
       addCredential(db, op.id, { type: "totp", fingerprint: "x" }),
     ).toThrow(UserRegistryError);
   });
-});
 
-describe("no private material is ever accepted", () => {
-  const PRIVATE_KEY_SAMPLE =
-    "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE==\n-----END OPENSSH PRIVATE KEY-----";
-
-  it("rejects private key material in public_material", () => {
-    const op = setupOperator(db, { slug: "op", display_name: "Op" });
+  it("accepts valid public shapes for each credential type", () => {
+    const op = operator();
     expect(() =>
       addCredential(db, op.id, {
         type: "ssh_key",
-        fingerprint: "SHA256:bbb",
-        public_material: PRIVATE_KEY_SAMPLE,
+        fingerprint: SSH_FINGERPRINT,
+        public_material: SSH_PUBLIC_LINE,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      addCredential(db, op.id, { type: "yubikey_recipient", fingerprint: AGE_RECIPIENT }),
+    ).not.toThrow();
+    expect(() =>
+      addCredential(db, op.id, { type: "api_token", fingerprint: "tokfp-abc123DEF456" }),
+    ).not.toThrow();
+  });
+});
+
+describe("no private material is ever accepted", () => {
+  const PEM_PRIVATE_KEY =
+    "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjE==\n-----END OPENSSH PRIVATE KEY-----";
+  const PPK_DOCUMENT =
+    "PuTTY-User-Key-File-3: ssh-ed25519\nEncryption: none\nPrivate-Lines: 1\nAAAABBBBCCCC";
+  // A raw base64/DER blob (no OpenSSH prefix): must fail the allowlist, not a denylist.
+  const BASE64_DER_BLOB = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQ";
+
+  function op() {
+    return setupOperator(db, { slug: "op", display_name: "Op" });
+  }
+
+  it("rejects a PEM private key in public_material", () => {
+    expect(() =>
+      addCredential(db, op().id, {
+        type: "ssh_key",
+        fingerprint: SSH_FINGERPRINT,
+        public_material: PEM_PRIVATE_KEY,
       }),
     ).toThrow(/private key/i);
   });
 
-  it("rejects private key material smuggled into the fingerprint", () => {
-    const op = setupOperator(db, { slug: "op", display_name: "Op" });
+  it("rejects a PEM private key smuggled into the fingerprint", () => {
     expect(() =>
-      addCredential(db, op.id, { type: "ssh_key", fingerprint: PRIVATE_KEY_SAMPLE }),
+      addCredential(db, op().id, { type: "ssh_key", fingerprint: PEM_PRIVATE_KEY }),
     ).toThrow(/private key/i);
+  });
+
+  it("rejects a private key hidden in a metadata value", () => {
+    expect(() =>
+      addCredential(db, op().id, {
+        type: "ssh_key",
+        fingerprint: SSH_FINGERPRINT,
+        metadata: { note: "backup", stash: { key: PEM_PRIVATE_KEY } },
+      }),
+    ).toThrow(/private key/i);
+  });
+
+  it("rejects a private key hidden in the label", () => {
+    expect(() =>
+      addCredential(db, op().id, {
+        type: "ssh_key",
+        fingerprint: SSH_FINGERPRINT,
+        label: PEM_PRIVATE_KEY,
+      }),
+    ).toThrow(/private key/i);
+  });
+
+  it("rejects a PuTTY PPK document in public_material", () => {
+    expect(() =>
+      addCredential(db, op().id, {
+        type: "ssh_key",
+        fingerprint: SSH_FINGERPRINT,
+        public_material: PPK_DOCUMENT,
+      }),
+    ).toThrow(/private key/i);
+  });
+
+  it("rejects a base64/DER blob in public_material via the allowlist", () => {
+    expect(() =>
+      addCredential(db, op().id, {
+        type: "ssh_key",
+        fingerprint: SSH_FINGERPRINT,
+        public_material: BASE64_DER_BLOB,
+      }),
+    ).toThrow(/single-line OpenSSH public key/i);
+  });
+
+  it("enforces the metadata size cap", () => {
+    expect(() =>
+      addCredential(db, op().id, {
+        type: "api_token",
+        fingerprint: "tokfp-abc123",
+        metadata: { blob: "z".repeat(5000) },
+      }),
+    ).toThrow(/exceeds/i);
   });
 });
 

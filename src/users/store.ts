@@ -153,19 +153,157 @@ function serializeMetadata(metadata: Record<string, unknown> | undefined): strin
   return JSON.stringify(metadata);
 }
 
+// --- credential material validation ---
+//
+// Credentials never hold private key material. Validation is defence-in-depth:
+//   1. Size caps on every string field.
+//   2. A generic denylist run over EVERY string input, including every string
+//      value found recursively inside metadata — a private key smuggled through
+//      `label` or `metadata` is rejected just like one in `public_material`.
+//   3. A per-type allowlist that accepts only known-good public shapes for
+//      `fingerprint`/`public_material`. Allowlist-first means novel encodings
+//      (base64/DER private blobs, unknown formats) fail closed rather than
+//      slipping past a denylist.
+// The store is the airtight layer: HTTP/file-RPC callers reach it only through
+// addCredential, so they cannot skip this.
+
+const MAX_FINGERPRINT = 512;
+const MAX_PUBLIC_MATERIAL = 4096;
+const MAX_LABEL = 256;
+const MAX_METADATA_BYTES = 4096;
+
+// Reject any recognizable private-key document, wherever it appears.
+const PRIVATE_MATERIAL_DENYLIST: readonly RegExp[] = [
+  /-----BEGIN [^-]*PRIVATE KEY-----/i,
+  /PuTTY-User-Key-File/i,
+  /Private-Lines:/i,
+  /BEGIN PGP PRIVATE/i,
+];
+
+// Public-shape allowlists.
+const SSH_SHA256_FINGERPRINT = /^SHA256:[A-Za-z0-9+/=]{40,50}$/;
+const SSH_PUBLIC_LINE =
+  /^(ssh-(ed25519|rsa|dss)|ecdsa-sha2-[a-z0-9-]+|sk-(ssh-ed25519|ecdsa-sha2-nistp256)@openssh\.com) [A-Za-z0-9+/=]+( [^\n]{0,256})?$/;
+const AGE_RECIPIENT = /^age1[a-z0-9]{10,100}$/;
+// api_token: an opaque hash/identifier, single line, no embedded material.
+const API_TOKEN_FINGERPRINT = /^[A-Za-z0-9][A-Za-z0-9+/=_.:-]{7,511}$/;
+
+function collectStrings(value: unknown, out: string[]): void {
+  if (typeof value === "string") {
+    out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) collectStrings(item, out);
+  } else if (value && typeof value === "object") {
+    for (const item of Object.values(value)) collectStrings(item, out);
+  }
+}
+
+function assertNoDenylistedMaterial(value: string, field: string): void {
+  for (const pattern of PRIVATE_MATERIAL_DENYLIST) {
+    if (pattern.test(value)) {
+      throw new UserRegistryError(
+        "forbidden",
+        `Refusing to store private key material in ${field}. Credentials hold public/fingerprint material only.`,
+      );
+    }
+  }
+}
+
 /**
- * The registry never stores private key material. Reject anything that looks
- * like a PEM/OpenSSH private key in a credential's fingerprint or public
- * material. Private delegated-signing key files live under
- * config/delegated-signing and are out of scope for this table.
+ * Validate a credential's material before it is persisted. Throws a typed
+ * UserRegistryError on any cap violation, denylisted private material (in any
+ * field including nested metadata), or a fingerprint/public_material that does
+ * not match the allowlisted public shape for its type.
  */
-function assertNoPrivateMaterial(value: string | null | undefined, field: string): void {
-  if (!value) return;
-  if (/private key/i.test(value)) {
+function validateCredentialMaterial(input: AddCredentialInput): void {
+  const fingerprint = input.fingerprint.trim();
+  const publicMaterial = input.public_material?.trim() || null;
+  const label = input.label ?? null;
+
+  // 1. Size caps.
+  if (fingerprint.length > MAX_FINGERPRINT) {
+    throw new UserRegistryError("invalid", `fingerprint exceeds ${MAX_FINGERPRINT} characters.`);
+  }
+  if (publicMaterial && publicMaterial.length > MAX_PUBLIC_MATERIAL) {
     throw new UserRegistryError(
-      "forbidden",
-      `Refusing to store private key material in ${field}. Credentials hold public/fingerprint material only.`,
+      "invalid",
+      `public_material exceeds ${MAX_PUBLIC_MATERIAL} characters.`,
     );
+  }
+  if (label !== null && label.length > MAX_LABEL) {
+    throw new UserRegistryError("invalid", `label exceeds ${MAX_LABEL} characters.`);
+  }
+  if (input.metadata !== undefined) {
+    const bytes = Buffer.byteLength(serializeMetadata(input.metadata), "utf8");
+    if (bytes > MAX_METADATA_BYTES) {
+      throw new UserRegistryError("invalid", `metadata exceeds ${MAX_METADATA_BYTES} bytes.`);
+    }
+  }
+
+  // 2. Generic denylist over every string input, including nested metadata.
+  const denyTargets: Array<[string, string]> = [["fingerprint", fingerprint]];
+  if (publicMaterial) denyTargets.push(["public_material", publicMaterial]);
+  if (label !== null) denyTargets.push(["label", label]);
+  if (input.metadata !== undefined) {
+    const strings: string[] = [];
+    collectStrings(input.metadata, strings);
+    for (const value of strings) denyTargets.push(["metadata", value]);
+  }
+  for (const [field, value] of denyTargets) assertNoDenylistedMaterial(value, field);
+
+  // 3. Per-type public-shape allowlist.
+  switch (input.type) {
+    case "ssh_key":
+    case "delegated_ssh_key": {
+      if (!SSH_SHA256_FINGERPRINT.test(fingerprint)) {
+        throw new UserRegistryError(
+          "invalid",
+          `fingerprint for ${input.type} must be an ssh-keygen SHA256 fingerprint (SHA256:<base64>).`,
+        );
+      }
+      if (publicMaterial && !SSH_PUBLIC_LINE.test(publicMaterial)) {
+        throw new UserRegistryError(
+          "invalid",
+          `public_material for ${input.type} must be a single-line OpenSSH public key.`,
+        );
+      }
+      break;
+    }
+    case "yubikey_recipient": {
+      if (!AGE_RECIPIENT.test(fingerprint)) {
+        throw new UserRegistryError(
+          "invalid",
+          "fingerprint for yubikey_recipient must be an age recipient (age1…).",
+        );
+      }
+      if (publicMaterial && !AGE_RECIPIENT.test(publicMaterial)) {
+        throw new UserRegistryError(
+          "invalid",
+          "public_material for yubikey_recipient must be an age recipient (age1…).",
+        );
+      }
+      break;
+    }
+    case "api_token": {
+      if (!API_TOKEN_FINGERPRINT.test(fingerprint)) {
+        throw new UserRegistryError(
+          "invalid",
+          "fingerprint for api_token must be an opaque single-line hash/identifier.",
+        );
+      }
+      if (publicMaterial) {
+        throw new UserRegistryError(
+          "invalid",
+          "api_token credentials carry no public_material.",
+        );
+      }
+      break;
+    }
+    default: {
+      // Unknown types are already rejected by the vocabulary check in
+      // addCredential; fail closed here as well.
+      throw new UserRegistryError("invalid", `Unsupported credential type '${input.type}'.`);
+    }
   }
 }
 
@@ -315,8 +453,8 @@ export function addCredential(
   }
   const fingerprint = input.fingerprint.trim();
   if (!fingerprint) throw new UserRegistryError("invalid", "fingerprint is required.");
-  assertNoPrivateMaterial(fingerprint, "fingerprint");
-  assertNoPrivateMaterial(input.public_material, "public_material");
+  validateCredentialMaterial({ ...input, fingerprint });
+  const publicMaterial = input.public_material?.trim() || null;
 
   const id = ulid(now);
   try {
@@ -329,7 +467,7 @@ export function addCredential(
       user.id,
       input.type,
       fingerprint,
-      input.public_material ?? null,
+      publicMaterial,
       input.label ?? null,
       now,
       serializeMetadata(input.metadata),

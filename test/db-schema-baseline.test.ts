@@ -167,17 +167,26 @@ describe.sequential("fresh schema baseline", () => {
       expect(settings(migrated)).toEqual(settings(baseline));
       expect(builtinAuthHooks(migrated)).toEqual(builtinAuthHooks(baseline));
 
-      // The single seeded `system` user must be byte-identical on both paths.
+      // The single seeded `system` user must be byte-identical on both paths,
+      // across every column.
       const seededUsers = (db: Db) =>
-        db.prepare("SELECT id, slug, kind, status, created_at FROM users ORDER BY id").all();
+        db.prepare(
+          `SELECT id, slug, kind, display_name, email, status,
+                  created_at, updated_at, metadata_json
+             FROM users ORDER BY id`,
+        ).all();
       expect(seededUsers(migrated)).toEqual(seededUsers(baseline));
       expect(seededUsers(baseline)).toEqual([
         {
           id: "00000000000000000000000000",
           slug: "system",
           kind: "system",
+          display_name: "System",
+          email: null,
           status: "active",
           created_at: 0,
+          updated_at: 0,
+          metadata_json: "{}",
         },
       ]);
 

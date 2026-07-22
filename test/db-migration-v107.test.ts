@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, openDb, type Db } from "../src/db.js";
+import { MIGRATIONS } from "../src/db-migrations.js";
 
 describe("migration v107: user registry core", () => {
   let tempDir: string;
@@ -73,11 +74,23 @@ describe("migration v107: user registry core", () => {
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
-  it("is idempotent when re-run against an already-migrated database", () => {
+  it("re-executing the v107 statements against a migrated DB is idempotent", () => {
     migrate(db);
-    // Re-running must not throw or duplicate the system user (INSERT OR IGNORE).
-    expect(() => migrate(db)).not.toThrow();
+
+    const v107 = MIGRATIONS.find((m) => m.version === 107);
+    expect(v107).toBeDefined();
+    // migrate() alone would short-circuit (version already 107), so exercise
+    // idempotence by re-running the raw statements a second time. CREATE TABLE /
+    // INDEX IF NOT EXISTS and INSERT OR IGNORE must all be safely repeatable.
+    expect(() => {
+      for (const statement of v107!.statements) db.exec(statement);
+    }).not.toThrow();
+
+    // Still exactly one system user, no duplicate rows.
     expect(db.prepare("SELECT COUNT(*) AS n FROM users").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT id, slug FROM users").all()).toEqual([
+      { id: "00000000000000000000000000", slug: "system" },
+    ]);
   });
 
   it("enforces at most one active credential per fingerprint via the partial index", () => {
