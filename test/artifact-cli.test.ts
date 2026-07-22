@@ -161,13 +161,58 @@ describe("artifact CLI", () => {
     const result = run(["artifact", "--help"], process.cwd());
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("artifact:<unique-hash-prefix>  immutable artifact (normal compact ID)");
-    expect(result.stdout).toContain("artifact:<logical-id>          logical artifact");
-    expect(result.stdout).toContain("artifact-blob:<full-hash>      immutable artifact bytes (full typed form)");
+    expect(result.stdout).toContain("artifact:<short-id>            logical artifact");
+    expect(result.stdout).toContain("artifact-version:<short-id>    specific artifact version");
+    expect(result.stdout).toContain("artifact-blob:<short-hash>     immutable artifact bytes only");
+    expect(result.stdout).toContain("[--blob-only]");
     expect(result.stdout).toContain("mandible artifact associate <ref> --project <project>");
     expect(result.stdout).toContain("mandible artifact versions <ref>");
     expect(result.stdout).toContain("mandible artifact diff <refA> <refB>");
     expect(result.stdout).toContain("mandible artifact record <path> --kind tracked_repo|local_only|managed");
+  });
+
+  it("records a logical version by default and requires --blob-only for byte-only ingest", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
+        return {
+          status: 200,
+          body: { result: {
+            created: true,
+            artifact: { id: "artifact:logical-report", ref: "artifact:logical" },
+            series: { id: "artifact-series:report", ref: "artifact-series:report", version_count: 1 },
+            version: { id: "artifact-version:report-v1", ref: "artifact-version:report", version_no: 1 },
+            warnings: [],
+          } },
+        };
+      }
+      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
+        return {
+          status: 200,
+          body: { artifact: { id: "artifact:sha256:abc", ref: "artifact-blob:abc", custody_mode: "link" } },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const env = { MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}` };
+      const ordinary = await runAsync(["artifact", "ingest", "report.md", "--json"], tempDir, env);
+      const blobOnly = await runAsync(["artifact", "ingest", "report.md", "--blob-only", "--json"], tempDir, env);
+
+      expect(ordinary.status).toBe(0);
+      expect(JSON.parse(ordinary.stdout).registered[0].version.ref).toBe("artifact-version:report");
+      expect(blobOnly.status).toBe(0);
+      expect(JSON.parse(blobOnly.stdout).registered[0]).toMatchObject({
+        blob_only: true,
+        artifact: { ref: "artifact-blob:abc" },
+      });
+      expect(recorder.requests.map((request) => request.url)).toEqual([
+        "/api/artifacts/versions",
+        "/api/artifacts/ingest",
+      ]);
+    } finally {
+      await recorder.close();
+    }
   });
 
   it("prints canonical resolve targets", async () => {
@@ -481,26 +526,25 @@ describe("artifact CLI", () => {
           body: { id: "issue-1", display_id: "abc", project: { repo_id: "mandible" } },
         };
       }
-      if (request.method === "POST" && request.path === "/api/artifacts/ingest") {
+      if (request.method === "POST" && request.path === "/api/artifacts/versions") {
         const body = request.body as Record<string, unknown>;
-        // The real transport injects content_path from the attachment; the mock
+        // The real transport injects path from the attachment; the mock
         // daemon reads the attachment the CLI staged in the spool dir.
         const attachments = request.attachments as Record<string, string> | undefined;
-        const attachmentName = attachments?.content_path;
+        const attachmentName = attachments?.path;
         const bytes = typeof attachmentName === "string"
           ? fs.readFileSync(path.join(spoolDir, attachmentName), "utf8")
           : "";
         attachmentReads.push({ ref: body, bytes });
         return {
           status: 200,
-          body: {
-            artifact: {
-              id: "artifact:deadbeefcafe",
-              custody_mode: "copy",
-              availability: "present",
-              metadata: { recoverability: "mandible_cas" },
-            },
-          },
+          body: { result: {
+            created: true,
+            artifact: { id: "artifact:logical-report" },
+            series: { id: "artifact-series:report", ref: "artifact-series:report", version_count: 1 },
+            version: { id: "artifact-version:report-v1", ref: "artifact-version:report", version_no: 1 },
+            warnings: [],
+          } },
         };
       }
       return { status: 404, body: { error: "unexpected", path: request.path } };
@@ -513,21 +557,18 @@ describe("artifact CLI", () => {
       });
 
       expect(result.status).toBe(0);
-      expect(JSON.parse(result.stdout).registered[0].artifact).toMatchObject({
-        custody_mode: "copy",
-        availability: "present",
-      });
+      expect(JSON.parse(result.stdout).registered[0].version.ref).toBe("artifact-version:report");
       expect(seen.map((request) => request.path)).toEqual([
         "/api/ledger/issues/abc",
-        "/api/artifacts/ingest",
+        "/api/artifacts/versions",
       ]);
-      const ingest = seen.find((request) => request.path === "/api/artifacts/ingest")!;
-      const ingestBody = ingest.body as Record<string, unknown>;
-      expect(ingestBody).toMatchObject({ custody_mode: "copy", filename: "report.md", media_type: "text/plain" });
+      const record = seen.find((request) => request.path === "/api/artifacts/versions")!;
+      const recordBody = record.body as Record<string, unknown>;
+      expect(recordBody).toMatchObject({ source_kind: "managed", custody_mode: "copy", media_type: "text/plain" });
       // Bytes are NOT inline in the request body — they ride as an attachment.
-      expect(ingestBody).not.toHaveProperty("content_base64");
-      expect(ingestBody).not.toHaveProperty("content_path");
-      expect((ingest.attachments as Record<string, string>).content_path).toMatch(/\.attach-content_path$/);
+      expect(recordBody).not.toHaveProperty("content_base64");
+      expect(recordBody).not.toHaveProperty("path");
+      expect((record.attachments as Record<string, string>).path).toMatch(/\.attach-path$/);
       expect(attachmentReads).toHaveLength(1);
       expect(attachmentReads[0].bytes).toBe("# Report\n\nReady.\n");
     } finally {
@@ -621,13 +662,19 @@ describe("artifact CLI", () => {
 
     let attachmentSize = -1;
     const timer = startFileRpcResponder(spoolDir, (request) => {
-      if (request.method === "POST" && request.path === "/api/artifacts/ingest") {
+      if (request.method === "POST" && request.path === "/api/artifacts/versions") {
         const attachments = request.attachments as Record<string, string> | undefined;
-        const name = attachments?.content_path;
+        const name = attachments?.path;
         attachmentSize = typeof name === "string" ? fs.statSync(path.join(spoolDir, name)).size : -1;
         return {
           status: 200,
-          body: { artifact: { id: "artifact:bbbbbbbbbbbb", custody_mode: "copy", availability: "present" } },
+          body: { result: {
+            created: true,
+            artifact: { id: "artifact:logical-big" },
+            series: { id: "artifact-series:big", ref: "artifact-series:big", version_count: 1 },
+            version: { id: "artifact-version:big-v1", ref: "artifact-version:big", version_no: 1 },
+            warnings: [],
+          } },
         };
       }
       return { status: 404, body: { error: "unexpected" } };
@@ -713,23 +760,22 @@ describe("artifact CLI", () => {
       .toContain("symlink_resolved_to_durable_target");
   });
 
-  it("sends a daemon-visible content_path (not base64) for local HTTP copy ingest (issue 833e972)", async () => {
+  it("sends a daemon-visible path (not base64) for local HTTP copy ingest (issue 833e972)", async () => {
     fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
     const bigPath = path.join(tempDir, "_artifacts", "packet.zip");
     fs.writeFileSync(bigPath, Buffer.alloc(2 * 1024 * 1024, 7)); // 2 MiB, over ARG_MAX
 
     const recorder = await startHttpRecorder((req) => {
-      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
-        const body = req.body as Record<string, unknown>;
+      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
         return {
           status: 200,
-          body: {
-            artifact: {
-              id: `artifact:${String(body.sha256).slice(0, 12)}`,
-              custody_mode: "copy",
-              availability: "present",
-            },
-          },
+          body: { result: {
+            created: true,
+            artifact: { id: "artifact:logical-packet" },
+            series: { id: "artifact-series:packet", ref: "artifact-series:packet", version_count: 1 },
+            version: { id: "artifact-version:packet-v1", ref: "artifact-version:packet", version_no: 1 },
+            warnings: [],
+          } },
         };
       }
       return { status: 404, body: { error: "unexpected" } };
@@ -741,36 +787,29 @@ describe("artifact CLI", () => {
       });
 
       expect(result.status).toBe(0);
-      const ingest = recorder.requests.find((entry) => entry.url === "/api/artifacts/ingest");
-      expect(ingest).toBeDefined();
-      const body = ingest!.body as Record<string, unknown>;
+      const record = recorder.requests.find((entry) => entry.url === "/api/artifacts/versions");
+      expect(record).toBeDefined();
+      const body = record!.body as Record<string, unknown>;
       // Bytes never travel in-band: a daemon-visible absolute path is sent.
       // (realpath comparison: macOS resolves /var -> /private/var for the cwd.)
       expect(body).not.toHaveProperty("content_base64");
       expect(body).not.toHaveProperty("content_buffer");
-      expect(fs.realpathSync(body.content_path as string)).toBe(fs.realpathSync(bigPath));
+      expect(fs.realpathSync(body.path as string)).toBe(fs.realpathSync(bigPath));
       expect(body.custody_mode).toBe("copy");
-      expect(body.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(body.source_kind).toBe("local_only");
     } finally {
       await recorder.close();
     }
   });
 
-  it("reports an explicit failure when the daemon does not store path-based bytes (issue 833e972)", async () => {
+  it("reports an explicit failure when the daemon cannot record the logical version", async () => {
     fs.mkdirSync(path.join(tempDir, "_artifacts"), { recursive: true });
     fs.writeFileSync(path.join(tempDir, "_artifacts", "packet.zip"), Buffer.alloc(1024 * 1024, 3));
 
-    // Simulate an older daemon: it ignores content_path and stores a hash-only
-    // record (availability "unchecked") rather than copying the bytes.
+    // Simulate a daemon that rejects the logical version mutation.
     const recorder = await startHttpRecorder((req) => {
-      if (req.method === "POST" && req.url === "/api/artifacts/ingest") {
-        const body = req.body as Record<string, unknown>;
-        return {
-          status: 200,
-          body: {
-            artifact: { id: `artifact:sha256:${body.sha256}`, custody_mode: "external", availability: "unchecked" },
-          },
-        };
+      if (req.method === "POST" && req.url === "/api/artifacts/versions") {
+        return { status: 422, body: { error: "logical version rejected" } };
       }
       return { status: 404, body: { error: "unexpected" } };
     });
@@ -783,7 +822,7 @@ describe("artifact CLI", () => {
       expect(result.status).not.toBe(0);
       const payload = JSON.parse(result.stdout);
       expect(payload.failed).toHaveLength(1);
-      expect(payload.failed[0].error).toMatch(/daemon_did_not_store_bytes/);
+      expect(payload.failed[0].error).toMatch(/api_version_record_failed/);
       // Never a raw "argument list too long" / transport-level leak.
       expect(result.stderr).not.toMatch(/argument list too long/);
     } finally {

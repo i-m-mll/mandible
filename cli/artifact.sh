@@ -70,10 +70,11 @@ artifact_api_request() {
 usage() {
   cat <<'EOF'
 Usage:
-  mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--dry-run] [--json]
+  mandible artifact ingest <path...> [--issue <id>] [--role <role>] [--managed|--copy|--link] [--upload] [--allow-local-only] [--allow-dirty-link] [--blob-only] [--dry-run] [--json]
   mandible artifact ref <uri...> [--issue <id>] [--role <role>] [--json]
   mandible artifact link <artifact-ref> --issue <id> [--role <role>] [--relation references|output|evidence|handoff] [--pinned|--living] [--json]
   mandible artifact resolve <ref> [--json]
+  mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]
   mandible artifact list [--repo <repo>] [--issue <id>] [--role <role>] [--custody <mode>] [--json]
   mandible artifact associate <ref> --project <project> [--canonical] [--role <role>] [--title <title>] [--json]
   mandible artifact associations [--project <project>] [--canonical] [--json]
@@ -105,10 +106,9 @@ Recoverability:
   mandible_cas  bytes are stored in Mandible artifact storage.
 
 Artifact refs:
-  artifact:<unique-hash-prefix>  immutable artifact (normal compact ID).
-  artifact:<logical-id>          logical artifact.
-  artifact-version:<id>          specific artifact version.
-  artifact-blob:<full-hash>      immutable artifact bytes (full typed form).
+  artifact:<short-id>            logical artifact.
+  artifact-version:<short-id>    specific artifact version.
+  artifact-blob:<short-hash>     immutable artifact bytes only.
 EOF
 }
 
@@ -568,16 +568,47 @@ payload_for_path() {
 
 print_batch_human() {
   jq -r '
-    (.registered[]? | "registered \(.artifact.id) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")"),
+    (.registered[]? |
+      if .version then "registered \(.version.ref // .version.id) in \(.series.ref // .series.id)"
+      elif .blob_only then "registered blob \(.artifact.ref // .artifact.id)"
+      else "registered \(.artifact.ref // .artifact.id) \(.artifact.custody_mode) \(.artifact.metadata.recoverability // .artifact.reference.recoverability // "-")" end),
     (.linked[]? | "linked \(.artifact.id) \(.link.link_type) issue:\(.link.entity_id[0:8])"),
     (.failed[]? | "failed \(.input // .ref // "-") \(.error)")
   '
 }
 
+artifact_version_payload_for_path() {
+  local payload="$1" path_arg="$2" issue_id_value="$3"
+  local abs source_kind
+  abs="$(python_path abs "$path_arg")"
+  source_kind="$(printf '%s' "$payload" | jq -r 'if .metadata.recoverability == "repo_commit" then "tracked_repo" else "local_only" end')"
+  printf '%s' "$payload" | jq \
+    --arg source_kind "$source_kind" \
+    --arg path "$abs" \
+    --arg issue "$issue_id_value" \
+    '{source_kind:$source_kind, path:$path,
+      logical_name, role, media_type, custody_mode,
+      title:(.metadata.title // null)}
+      + (if $issue != "" then {issue:$issue} else {} end)'
+}
+
+artifact_version_payload_for_upload() {
+  local payload="$1" issue_id_value="$2"
+  printf '%s' "$payload" | jq \
+    --arg issue "$issue_id_value" \
+    '{source_kind:"managed",
+      series_key:(if (.metadata.git.repo_id // "") != "" and (.metadata.git.relative_path // "") != ""
+        then "repo:" + .metadata.git.repo_id + ":" + .metadata.git.relative_path
+        else "local:" + (.metadata.source_path // .filename) end),
+      logical_name, role, media_type, custody_mode,
+      title:(.metadata.title // null)}
+      + (if $issue != "" then {issue:$issue} else {} end)'
+}
+
 cmd_ingest_like() {
   local mode="$1"
   shift
-  local issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 relation="references"
+  local issue="" role="" json=0 dry_run=0 allow_local=0 allow_dirty=0 upload=0 mode_explicit=0 blob_only=0 relation="references"
   local paths=()
   while (( $# > 0 )); do
     case "$1" in
@@ -589,6 +620,7 @@ cmd_ingest_like() {
       --upload) upload=1; shift ;;
       --allow-local-only) allow_local=1; shift ;;
       --allow-dirty-link) allow_dirty=1; shift ;;
+      --blob-only) blob_only=1; shift ;;
       --dry-run) dry_run=1; shift ;;
       --json) json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
@@ -607,7 +639,7 @@ cmd_ingest_like() {
   fi
   [[ -n "$issue" ]] && resolve_issue "$issue"
 
-  local registered='[]' failed='[]' planned='[]' payload response result
+  local registered='[]' failed='[]' planned='[]' payload response result version_payload version_response
   local needs_bytes=0
   [[ "$mode" == "copy" || "$mode" == "managed" ]] && needs_bytes=1
   for path_arg in "${paths[@]}"; do
@@ -616,11 +648,35 @@ cmd_ingest_like() {
       if (( dry_run )); then
         # No bytes are generated in dry-run; annotate how bytes would travel so
         # --json stays informative without ever building base64 (issue 833e972).
-        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" --argjson needs_bytes "$needs_bytes" \
+        registered="$(printf '%s' "$registered" | jq --argjson payload "$payload" --argjson needs_bytes "$needs_bytes" --argjson blob_only "$blob_only" \
           '. + [{input:($payload.metadata.git.relative_path // $payload.filename),
+                 identity_mode:(if $blob_only == 1 then "blob_only" else "artifact_version" end),
                  planned_payload:(if $needs_bytes == 1
                    then ($payload + {content_transport:"daemon-visible path or file-RPC attachment (bytes omitted in dry-run)"})
                    else $payload end)}]')"
+      elif (( ! blob_only )); then
+        local abs resp_tmp resp_status err
+        abs="$(python_path abs "$path_arg")"
+        if (( upload )) || api_is_file_rpc; then
+          version_payload="$(artifact_version_payload_for_upload "$payload" "${issue_id:-}")"
+          resp_tmp="$(mktemp)"
+          resp_status="$(api_send_content POST "/api/artifacts/versions" "$version_payload" "path" "$abs" "$resp_tmp")"
+          if [[ ! "$resp_status" =~ ^2 ]]; then
+            err="$(explain_transport_failure "$resp_tmp" "api_version_record_failed")"
+            failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" --arg error "$err" '. + [{input:$input, error:$error}]')"
+            rm -f "$resp_tmp"
+            continue
+          fi
+          version_response="$(cat "$resp_tmp")"
+          rm -f "$resp_tmp"
+        else
+          version_payload="$(artifact_version_payload_for_path "$payload" "$path_arg" "${issue_id:-}")"
+          version_response="$(artifact_api_request POST "/api/artifacts/versions" "$version_payload")" || {
+            failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" '. + [{input:$input, error:"api_version_record_failed"}]')"
+            continue
+          }
+        fi
+        registered="$(printf '%s' "$registered" | jq --argjson result "$(printf '%s' "$version_response" | jq '.result')" '. + [$result]')"
       elif (( needs_bytes )); then
         local abs resp_tmp resp_status err availability
         abs="$(python_path abs "$path_arg")"
@@ -634,7 +690,7 @@ cmd_ingest_like() {
             rm -f "$resp_tmp"
             continue
           fi
-          registered="$(printf '%s' "$registered" | jq --argjson artifact "$(jq '.artifact' "$resp_tmp")" '. + [{artifact:$artifact}]')"
+          registered="$(printf '%s' "$registered" | jq --argjson artifact "$(jq '.artifact' "$resp_tmp")" '. + [{artifact:$artifact, blob_only:true}]')"
         else
           err="$(explain_transport_failure "$resp_tmp" "api_ingest_failed")"
           failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" --arg error "$err" '. + [{input:$input, error:$error}]')"
@@ -647,7 +703,7 @@ cmd_ingest_like() {
           failed="$(printf '%s' "$failed" | jq --arg input "$path_arg" '. + [{input:$input, error:"api_ingest_failed"}]')"
           continue
         }
-        registered="$(printf '%s' "$registered" | jq --argjson artifact "$(printf '%s' "$response" | jq '.artifact')" '. + [{artifact:$artifact}]')"
+        registered="$(printf '%s' "$registered" | jq --argjson artifact "$(printf '%s' "$response" | jq '.artifact')" '. + [{artifact:$artifact, blob_only:true}]')"
       fi
     else
       failed="$(printf '%s' "$failed" | jq --argjson item "$payload" '. + [$item]')"
@@ -792,6 +848,75 @@ cmd_resolve() {
       | "\(.status) \(.target_type // "legacy_artifact") \(.target_id // .artifact.id // "-") \(.normalized_ref)",
         ( (.warnings // [])[] | "warning: \(.)" )'
   fi
+}
+
+cmd_format() {
+  local ref="" format="id" label="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --as) format="$2"; shift 2 ;;
+      --label) label="$2"; shift 2 ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible artifact format <ref> [--as id|url|markdown|full] [--label <text>] [--json]" 2
+  case "$format" in id|ref|url|markdown|full) ;; *) die "Unknown --as format: $format" 2 ;; esac
+  require_tools
+  local response identity full_id encoded_ref web_base url markdown result target_type series_ref version_no
+  response="$(api_get "/api/artifacts/resolve?ref=$(urlencode "$ref")")" \
+    || die "${RED}Failed to resolve artifact ref.${RESET}" 1
+  identity="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
+    .resolution as $r
+    | if $r.status != "resolved" then error("artifact ref did not resolve")
+      elif ($input_ref | test("^artifact-series:"; "i")) and $r.series then
+        ($r.series.ref // $r.series.id)
+        + (if ($input_ref | test("@[0-9]+$")) and $r.version then "@" + ($r.version.version_no | tostring) else "" end)
+      elif $r.target_type == "artifact" then ($r.logical_artifact.ref // $r.logical_artifact.id)
+      elif $r.target_type == "artifact_version" then ($r.artifact_version.ref // $r.version.ref // $r.target_id)
+      elif $r.target_type == "artifact_blob" then ($r.artifact_blob.ref // $r.target_id)
+      else error("unsupported artifact target type") end
+  ')" || die "${RED}Artifact ref did not resolve to a typed identity.${RESET}" 1
+  full_id="$(printf '%s\n' "$response" | jq -er --arg input_ref "$ref" '
+    .resolution as $r
+    | if ($input_ref | test("^artifact-series:"; "i")) and $r.series then
+        $r.series.id + (if ($input_ref | test("@[0-9]+$")) and $r.version then "@" + ($r.version.version_no | tostring) else "" end)
+      else $r.target_id end')"
+  target_type="$(printf '%s\n' "$response" | jq -r --arg input_ref "$ref" '
+    if ($input_ref | test("^artifact-series:"; "i")) then "artifact_series" else .resolution.target_type end')"
+  web_base="${MANDIBLE_WEB_BASE:-http://localhost:${MANDIBLE_PORT:-19420}}"
+  if [[ "$target_type" == "artifact_series" ]]; then
+    series_ref="${identity%@*}"
+    version_no=""
+    [[ "$identity" == *@* ]] && version_no="${identity##*@}"
+    encoded_ref="$(jq -nr --arg value "$series_ref" '$value | @uri')"
+    url="${web_base}/#/artifacts?series=${encoded_ref}"
+    [[ -n "$version_no" ]] && url+="&version=${version_no}"
+    url+="&sidebar=hidden"
+  else
+    encoded_ref="$(jq -nr --arg value "$identity" '$value | @uri')"
+    url="${web_base}/#/artifacts?ref=${encoded_ref}&sidebar=hidden"
+  fi
+  [[ -n "$label" ]] || label="$identity"
+  markdown="[${label}](${url})"
+  result="$(jq -n \
+    --arg ref "$identity" \
+    --arg full_id "$full_id" \
+    --arg target_type "$target_type" \
+    --arg url "$url" \
+    --arg markdown "$markdown" \
+    '{ref:$ref, full_id:$full_id, target_type:$target_type, url:$url, markdown:$markdown}')"
+  if (( json )); then
+    printf '%s\n' "$result" | jq .
+    return
+  fi
+  case "$format" in
+    id|ref) printf '%s\n' "$identity" ;;
+    full) printf '%s\n' "$full_id" ;;
+    url) printf '%s\n' "$url" ;;
+    markdown) printf '%s\n' "$markdown" ;;
+  esac
 }
 
 cmd_list() {
@@ -1010,7 +1135,7 @@ cmd_versions() {
       | ($s.ref // ($s.id | sub("^artifact-series:"; "artifact:"))) as $artifact_ref
       | "artifact \($artifact_ref) [\($s.source_kind)] \($s.version_count) version(s)\(if $s.title then " — \($s.title)" else "" end)",
       (.history.versions[]
-        | "  v\(.version_no) \(.source_kind) \(.artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
+        | "  v\(.version_no) \(.source_kind) \(.ref // .id // .artifact_id)\(if .commit_sha then " @\(.commit_sha[0:12])" else "" end)\(if .label then " (\(.label))" else "" end)")'
   fi
 }
 
@@ -1042,9 +1167,9 @@ cmd_diff() {
   fi
 }
 
-# EXPLICIT version recording (issue f7a994e). The only write path into version
-# history; ordinary ingest/preview/check never mutate it. For local-only files
-# this is the explicit observation command.
+# Explicit version recording remains available when callers need to control the
+# series identity or source kind. Ordinary named ingest now records a version by
+# default; --blob-only is the explicit byte-identity escape hatch.
 cmd_record() {
   local kind="" input_path="" ref="" series_key="" logical_name="" label="" note="" role="" title="" custody="" provider="" repo="" issue="" json=0
   while (( $# > 0 )); do
@@ -1113,9 +1238,9 @@ cmd_record() {
   else
     printf '%s\n' "$response" | jq -r '
       .result as $r
-      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version.id)",
-        "series \($r.series.id) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
-        "artifact \($r.artifact.id)",
+      | "\(if $r.created then "recorded" else "exists" end) v\($r.version.version_no) \($r.version.ref // $r.version.id)",
+        "series \($r.series.ref // $r.series.id) [\($r.series.source_kind)] \($r.series.version_count) version(s)",
+        "artifact \($r.artifact.ref // $r.artifact.id)",
         ( ($r.warnings // [])[] | "warning: \(.)" )'
   fi
 }
@@ -1460,6 +1585,7 @@ case "$cmd" in
   ref) cmd_ref "$@" ;;
   link) cmd_link "$@" ;;
   resolve) cmd_resolve "$@" ;;
+  format) cmd_format "$@" ;;
   list) cmd_list "$@" ;;
   associate) cmd_associate "$@" ;;
   associations) cmd_associations "$@" ;;

@@ -4663,6 +4663,8 @@ describe('ArtifactsView', () => {
               ref,
               scheme: kind === 'series' ? 'artifact-series' : `artifact-${kind}`,
               normalized_ref: ref,
+              target_type: kind === 'blob' ? 'artifact_blob' : kind === 'version' ? 'artifact_version' : 'artifact',
+              artifact_blob: kind === 'blob' ? { id: ref, ref } : undefined,
               artifact,
               alias: null,
               series: kind === 'blob' ? undefined : artifactSeries.history.series,
@@ -4692,12 +4694,13 @@ describe('ArtifactsView', () => {
 
       render(h(ArtifactsView, { initialRef: ref }));
 
-      await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe(artifact.metadata.title));
       if (kind === 'blob') {
+        await screen.findByRole('heading', { name: ref });
+        expect(screen.getByText(/Artifact blobs identify bytes/)).toBeTruthy();
+        expect(screen.getByRole('link', { name: '7da339a' }).getAttribute('href')).toContain('issue=7da339a');
         expect(versionRequests).toEqual([]);
-        expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value).toBe('');
-        expect(screen.getByLabelText('Artifact version').querySelectorAll('option')).toHaveLength(1);
       } else {
+        await waitFor(() => expect(document.querySelector('.artifact-detail h2')?.textContent).toBe(artifact.metadata.title));
         await waitFor(() => expect(versionRequests).toHaveLength(1));
         await waitFor(() => {
           expect((screen.getByLabelText('Artifact version') as HTMLSelectElement).value)
