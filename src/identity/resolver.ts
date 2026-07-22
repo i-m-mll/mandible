@@ -16,6 +16,7 @@
 // never an authorization input and is not applied to legacy call sites here.
 
 import type { Db } from "../db.js";
+import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
 import {
   SYSTEM_USER_ID,
   createUser,
@@ -193,6 +194,27 @@ export function resolveSessionAttributionResult(
       .all(binding_type, normalizeBindingValue(value), scope, scope, scope) as Array<{ user_id: string }>;
     if (rows.length > 1) return { status: "conflict" };
     if (rows.length === 1) matchedUserIds.add(rows[0].user_id);
+  }
+  if (matchedUserIds.size === 0) return { status: "no_match" };
+  if (matchedUserIds.size > 1) return { status: "conflict" };
+  return {
+    status: "resolved",
+    attribution: { user_id: [...matchedUserIds][0], evidence_method: "session_claim" },
+  };
+}
+
+/** Resolve an allowlisted provider to the agent owning its session env keys. */
+export function resolveProviderSessionAttributionResult(
+  db: Db,
+  provider: string,
+): SessionAttributionResolution {
+  const matchedUserIds = new Set<string>();
+  for (const providerSessionEnv of providerSessionEnvBindingValues(provider)) {
+    const result = resolveSessionAttributionResult(db, {
+      provider_session_env: providerSessionEnv,
+    });
+    if (result.status === "conflict") return result;
+    if (result.status === "resolved") matchedUserIds.add(result.attribution.user_id);
   }
   if (matchedUserIds.size === 0) return { status: "no_match" };
   if (matchedUserIds.size > 1) return { status: "conflict" };

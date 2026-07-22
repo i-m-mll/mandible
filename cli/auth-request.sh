@@ -540,6 +540,10 @@ execution_mode="daemon"
 # target_repo_root: the protected-branch worktree path. Used for tier-2 inbox
 # scoping (any session in the same project) once the project grace window passes.
 target_session_id="${MANDIBLE_SESSION_ID:-}"
+# Requester attribution uses the provider-native session id already carried by
+# the CLI's allowlisted ambient identity contract. Keep this distinct from the
+# Mandible target session above, which only scopes resolution notifications.
+requester_session_id=$(api_ambient_session_id)
 # Bug: 6d7411b — conversation_id persists across Claude Code resumes, unlike
 # MANDIBLE_SESSION_ID which is regenerated on each channel-server restart.
 # Stored alongside the auth request so the new session can match on it.
@@ -590,6 +594,7 @@ payload=$(jq -nc \
   --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
+  --arg session_id "$requester_session_id" \
   --arg target_session_id "$target_session_id" \
   --arg target_repo_root "$target_repo_root" \
   --arg conversation_id "$conversation_id" \
@@ -618,6 +623,7 @@ payload=$(jq -nc \
     issues: $issue_closures,
     actions: $actions,
     depends_on_id: (if $depends_on_id == "" then null else $depends_on_id end),
+    session_id: (if $session_id == "" then null else $session_id end),
     target_session_id: (if $target_session_id == "" then null else $target_session_id end),
     target_repo_root: (if $target_repo_root == "" then null else $target_repo_root end),
     conversation_id: (if $conversation_id == "" then null else $conversation_id end),
