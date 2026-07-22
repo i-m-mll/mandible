@@ -707,10 +707,15 @@ function AuthCard({
     return renderUnifiedDiffFallbackHtml(diffSections[selectedFile]?.hunks || '');
   }, [diffSections, selectedFile]);
 
-  // Determine console output: prefer streaming outputs, fall back to request.output
-  const rawConsoleOutput = executionOutput ||
-    (typeof request.output === 'string' ? request.output : '');
-  const consoleText = useMemo(() => stripAnsi(rawConsoleOutput), [rawConsoleOutput]);
+  // Determine console output: prefer streaming outputs, fall back to request.output.
+  // Streamed output is already ANSI-stripped incrementally in the reducer, so we
+  // only strip the persisted fallback here — no re-stripping the whole buffer per
+  // chunk.
+  const consoleText = useMemo(() => {
+    if (executionOutput) return executionOutput;
+    const fallback = typeof request.output === 'string' ? request.output : '';
+    return stripAnsi(fallback);
+  }, [executionOutput, request.output]);
   const hasConsoleOutput = consoleText.trim().length > 0;
 
   const stats = getStats(request);
@@ -773,10 +778,12 @@ function AuthCard({
     }
   }, [isApproved]);
 
-  // Auto-scroll console to bottom when output updates
+  // Auto-scroll console to bottom when output updates. Use 'auto' (instant):
+  // 'smooth' restarts an animation on every streamed chunk, which stacks up and
+  // janks while output is arriving fast.
   useEffect(() => {
     if (showConsole && consoleEndRef.current) {
-      consoleEndRef.current.scrollIntoView({ behavior: 'smooth' });
+      consoleEndRef.current.scrollIntoView({ behavior: 'auto' });
     }
   }, [showConsole, consoleText]);
 
@@ -1189,9 +1196,13 @@ function AuthRequestDetail({
     () => specContent ? linkifyArtifactRefs(renderMarkdown(specContent)) : '',
     [specContent],
   );
-  const rawConsoleOutput = executionOutput ||
-    (typeof request.output === 'string' ? request.output : '');
-  const consoleText = useMemo(() => stripAnsi(rawConsoleOutput), [rawConsoleOutput]);
+  // Streamed output is already ANSI-stripped in the reducer; only strip the
+  // persisted fallback here.
+  const consoleText = useMemo(() => {
+    if (executionOutput) return executionOutput;
+    const fallback = typeof request.output === 'string' ? request.output : '';
+    return stripAnsi(fallback);
+  }, [executionOutput, request.output]);
   const hasConsoleOutput = consoleText.trim().length > 0;
 
   const stats = getStats(request);

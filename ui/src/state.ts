@@ -249,6 +249,46 @@ function upsertById<T>(items: T[], getId: (item: T) => string, nextItem: T): T[]
   return updated;
 }
 
+/**
+ * Maximum retained streamed auth output per request, in characters. A merge can
+ * emit a very long transcript; the console only shows the tail, so the reducer
+ * keeps a bounded window rather than growing without limit.
+ */
+const MAX_AUTH_OUTPUT_CHARS = 262_144;
+
+/** Strip ANSI escape sequences so streamed output stores clean display text. */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+}
+
+/**
+ * Extract the request id and text from an `auth:output` SSE payload.
+ * Bug: f690657 — the payload shape is { type, data: { request_id, stream, text,
+ * timestamp } }, so request_id and text are nested under `data`, not top-level.
+ * Shared by the reducer and the app-level output coalescer so both agree on the
+ * event shape.
+ */
+function parseAuthOutputEvent(payload: SSEPayload): { requestId: string; text: string } {
+  const outputData =
+    payload.data && typeof payload.data === 'object'
+      ? (payload.data as Record<string, unknown>)
+      : null;
+  const requestId = String(outputData?.request_id ?? payload.request_id ?? '');
+  const text = String(outputData?.text ?? payload.output ?? payload.chunk ?? '');
+  return { requestId, text };
+}
+
+/** Extract the request id from an `auth:resolved` SSE payload ('' if absent). */
+function parseAuthResolvedId(payload: SSEPayload): string {
+  const rd = (payload.data && typeof payload.data === 'object' ? payload.data : payload) as Record<
+    string,
+    unknown
+  >;
+  const rId = rd.request_id ?? payload.request_id;
+  return rId ? String(rId) : '';
+}
+
 function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'sse':
@@ -276,11 +316,20 @@ function appReducer(state: AppState, action: AppAction): AppState {
     }
     case 'authOutput': {
       const existing = state.authOutputs[action.requestId] || '';
+      // Incremental ANSI-strip: strip only the appended chunk, not the whole
+      // accumulated buffer, so streaming stays O(total) instead of O(n^2).
+      let combined = `${existing}${stripAnsi(action.chunk)}`;
+      // Bounded buffer: cap retained output so a very long merge cannot grow
+      // the reducer state without limit. The console shows the tail, so drop
+      // from the front when the cap is exceeded.
+      if (combined.length > MAX_AUTH_OUTPUT_CHARS) {
+        combined = combined.slice(combined.length - MAX_AUTH_OUTPUT_CHARS);
+      }
       return {
         ...state,
         authOutputs: {
           ...state.authOutputs,
-          [action.requestId]: `${existing}${action.chunk}`,
+          [action.requestId]: combined,
         },
       };
     }
@@ -678,18 +727,7 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
       }
       return state;
     case 'auth:output': {
-      // Bug: f690657 — SSE payload is { type, data: { request_id, stream, text, timestamp } }.
-      // The request_id and text are nested under data, NOT at the top level.
-      const outputData =
-        payload.data && typeof payload.data === 'object'
-          ? (payload.data as Record<string, unknown>)
-          : null;
-      const outputId = String(
-        outputData?.request_id ?? payload.request_id ?? '',
-      );
-      const outputText = String(
-        outputData?.text ?? payload.output ?? payload.chunk ?? '',
-      );
+      const { requestId: outputId, text: outputText } = parseAuthOutputEvent(payload);
       if (outputId && outputText) {
         return appReducer(state, {
           type: 'authOutput',
@@ -701,7 +739,7 @@ function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
     }
     case 'auth:resolved': {
       const rd = (payload.data && typeof payload.data === 'object' ? payload.data : payload) as Record<string, unknown>;
-      const rId = rd.request_id ?? payload.request_id;
+      const rId = parseAuthResolvedId(payload) || undefined;
       const rStatus = rd.status ?? rd.decision ?? payload.status ?? payload.decision;
       if (rId && rStatus) {
         const resolvedAt = typeof rd.resolved_at === 'number' ? rd.resolved_at : undefined;
@@ -977,4 +1015,7 @@ export {
   loadCachedState,
   saveCachedState,
   selectBadgeCounts,
+  parseAuthOutputEvent,
+  parseAuthResolvedId,
+  MAX_AUTH_OUTPUT_CHARS,
 };
