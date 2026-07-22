@@ -255,16 +255,37 @@ const DEPRECATED_REAPER_SETTINGS = new Set([
   "reaper_cleanup_orphan_mcps",
 ]);
 
+// Issue 708dc4c / finding 4 — client-auth settings are not managed through the
+// generic settings API. Reads are hidden and writes/reads of a specific key 403.
+const CLIENT_AUTH_SETTING_PREFIX = "client_auth.";
+
+function isClientAuthSettingKey(key: string): boolean {
+  return key.startsWith(CLIENT_AUTH_SETTING_PREFIX);
+}
+
+function clientAuthSettingForbidden(): { error: string; code: string; hint: string } {
+  return {
+    error: "client_auth settings are managed only through the /api/client-auth routes.",
+    code: "client_auth_setting_protected",
+    hint: "Use GET/PUT /api/client-auth/mode and /api/client-auth/status.",
+  };
+}
+
 export function registerSettingsRoutes(server: RouteRegistrar): void {
   const db = getDb();
 
-  // GET /api/settings — returns all settings as { key: value } object
+  // GET /api/settings — returns all settings as { key: value } object.
+  // Issue 708dc4c / finding 4 — `client_auth.*` keys are hidden from the generic
+  // settings surface. The pepper lives on disk (never in settings); the mode is
+  // read/written only through the dedicated guarded /api/client-auth routes, so
+  // it cannot be flipped or an internal secret overwritten via generic settings.
   server.get("/api/settings", (_req, res) => {
     const rows = db
       .prepare("SELECT key, value FROM settings ORDER BY key")
       .all() as Array<{ key: string; value: string }>;
     const result: Record<string, string> = {};
     for (const row of rows) {
+      if (isClientAuthSettingKey(row.key)) continue;
       result[row.key] = row.value;
     }
     sendJson(res, 200, result);
@@ -348,6 +369,10 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       sendJson(res, 400, { error: "Missing key" });
       return;
     }
+    if (isClientAuthSettingKey(key)) {
+      sendJson(res, 403, clientAuthSettingForbidden());
+      return;
+    }
     const row = db
       .prepare("SELECT value FROM settings WHERE key = ?")
       .get(key) as { value: string } | undefined;
@@ -363,6 +388,10 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
     const key = req.params.key;
     if (!key) {
       sendJson(res, 400, { error: "Missing key" });
+      return;
+    }
+    if (isClientAuthSettingKey(key)) {
+      sendJson(res, 403, clientAuthSettingForbidden());
       return;
     }
     const body = readBody<{ value?: unknown }>(req);

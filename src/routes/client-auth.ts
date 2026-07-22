@@ -1,19 +1,30 @@
 // Client-authentication routes (issue 708dc4c):
-//   POST /api/users/:ref/tokens        mint an api_token (raw token returned once)
-//   GET  /api/users/:ref/tokens        list a user's api_token credentials (no secrets)
-//   GET  /api/client-auth/status       current mode + unattributed-write telemetry
-//   PUT  /api/client-auth/mode         set mode (compat | strict)
+//   POST /api/client-auth/handshake   dashboard acquires an ephemeral operator token
+//   GET  /api/client-auth/status      current mode + unattributed-write telemetry (read)
+//   PUT  /api/client-auth/mode        set mode (operator only, both directions)
+//   POST /api/users/:ref/tokens       mint an api_token (self or operator)
+//   GET  /api/users/:ref/tokens       list a user's api_token credentials (self or operator)
 //
-// Token revocation reuses the existing credential-revoke route
-// (POST /api/users/credentials/:id/revoke) since a token is an api_token
-// credential. These routes only handle authentication material; authorization
-// is out of scope for this lane.
+// Token revocation reuses the guarded credential-revoke route in routes/users.ts.
+// All management routes require an authenticated identity regardless of mode —
+// they administer authentication itself (finding 2). Bootstrappability comes from
+// the filesystem bootstrap token and the compat handshake.
 
 import { getDb } from "../db.js";
-import type { ClientAuthGate, RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import type { ClientAuthenticator } from "../client-auth/authenticator.js";
+import {
+  ClientAuthzError,
+  requireOperator,
+  requireSelfOrOperator,
+} from "../client-auth/authz.js";
 import { getClientAuthMode, setClientAuthMode } from "../client-auth/mode.js";
-import { mintApiToken } from "../client-auth/tokens.js";
-import { listCredentials, UserRegistryError } from "../users/store.js";
+import {
+  getOperator,
+  listCredentials,
+  resolveUserOrThrow,
+  UserRegistryError,
+} from "../users/store.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { sendJson } from "./http.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
@@ -28,6 +39,10 @@ function optionalString(body: Record<string, unknown>, key: string): string | un
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
   if (error instanceof UserRegistryError) {
     const status = error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400;
     sendJson(res, status, { error: error.message, code: error.code });
@@ -39,14 +54,74 @@ function handleError(res: ResponseLike, error: unknown): void {
 
 export function registerClientAuthRoutes(
   router: RouteRegistrar,
-  gate?: ClientAuthGate,
+  authenticator: ClientAuthenticator,
 ): void {
-  // Mint a bearer token for a user. The raw token is returned exactly once and
-  // never persisted; only its peppered hash is stored as an api_token credential.
+  // Dashboard handshake. Allowed anonymously in COMPAT (the browser write
+  // boundary already blocks SSRF/DNS-rebinding on this POST); in STRICT the
+  // generic gate rejects an anonymous call before we get here, so a caller must
+  // present an already-valid token. Returns an ephemeral operator token the
+  // dashboard stores in localStorage. Not counted toward the ratchet.
+  router.post("/api/client-auth/handshake", (_req, res) => {
+    try {
+      const operator = getOperator(getDb());
+      if (!operator) {
+        sendJson(res, 409, {
+          error: "operator_not_configured",
+          code: "operator_not_configured",
+          hint: "Run `mandible user setup` to create the local operator first.",
+        });
+        return;
+      }
+      const token = authenticator.issueEphemeralToken(
+        { user_id: operator.id, slug: operator.slug },
+        "dashboard_handshake",
+      );
+      sendJson(res, 200, {
+        token,
+        user: { id: operator.id, slug: operator.slug },
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  // Current client-auth mode and the unattributed-write ratchet (read).
+  router.get("/api/client-auth/status", (_req, res) => {
+    try {
+      sendJson(res, 200, {
+        mode: getClientAuthMode(getDb()),
+        telemetry: authenticator.telemetrySnapshot(),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  // Set client-auth mode. Requires an authenticated OPERATOR in BOTH directions:
+  // compat->strict proves provisioning works before lockout is possible;
+  // strict->compat prevents an anonymous downgrade.
+  router.put("/api/client-auth/mode", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      const body = bodyRecord(req);
+      const mode = optionalString(body, "mode");
+      if (!mode) throw new UserRegistryError("invalid", "mode is required.");
+      const applied = setClientAuthMode(getDb(), mode);
+      sendJson(res, 200, { mode: applied });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow", countUnattributed: false });
+
+  // Mint a bearer token for a user. Self-service, or operator for another user.
+  // The raw token is returned exactly once and never persisted.
   router.post("/api/users/:ref/tokens", (req, res) => {
     try {
+      const db = getDb();
+      const target = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, target.id);
       const body = bodyRecord(req);
-      const minted = mintApiToken(getDb(), req.params.ref, {
+      const minted = authenticator.mintApiToken(target.id, {
         label: optionalString(body, "label") ?? null,
       });
       sendJson(res, 201, {
@@ -56,42 +131,20 @@ export function registerClientAuthRoutes(
     } catch (error) {
       handleError(res, error);
     }
-  }, { fileRpc: "allow" });
+  }, { fileRpc: "allow", countUnattributed: false });
 
   // List a user's api_token credentials (metadata only — never the raw token).
   router.get("/api/users/:ref/tokens", (req, res) => {
     try {
+      const db = getDb();
+      const target = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, target.id);
       const query = req.query ?? {};
       const includeRevoked = query.all === "1" || query.all === "true";
-      const tokens = listCredentials(getDb(), req.params.ref, { includeRevoked }).filter(
+      const tokens = listCredentials(db, target.id, { includeRevoked }).filter(
         (credential) => credential.type === "api_token",
       );
       sendJson(res, 200, { tokens });
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { fileRpc: "allow" });
-
-  // Current client-auth mode and the unattributed-write ratchet.
-  router.get("/api/client-auth/status", (_req, res) => {
-    try {
-      sendJson(res, 200, {
-        mode: getClientAuthMode(getDb()),
-        telemetry: gate?.telemetrySnapshot ? gate.telemetrySnapshot() : null,
-      });
-    } catch (error) {
-      handleError(res, error);
-    }
-  }, { fileRpc: "allow" });
-
-  // Set client-auth mode. Toggling to strict makes anonymous mutations rejected.
-  router.put("/api/client-auth/mode", (req, res) => {
-    try {
-      const body = bodyRecord(req);
-      const mode = optionalString(body, "mode");
-      if (!mode) throw new UserRegistryError("invalid", "mode is required.");
-      const applied = setClientAuthMode(getDb(), mode);
-      sendJson(res, 200, { mode: applied });
     } catch (error) {
       handleError(res, error);
     }

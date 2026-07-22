@@ -23,7 +23,7 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   // Existing helper wrappers and command-specific request builders that derive
   // API paths in variables. New entries here should be reviewed instead of
   // silently escaping the route-policy coverage lint.
-  "cli/artifact.sh:95 api_send POST \"$endpoint\" \"$payload\"",
+  "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
   "cli/conversations.sh:65 api_get \"$request\")",
   "cli/conversations.sh:130 api_get \"$request\")",

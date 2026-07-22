@@ -1,42 +1,33 @@
 // API token minting and verification.
 //
 // Tokens are per-user bearer secrets. The raw token is shown to the caller
-// exactly once at mint time and is NEVER stored. What is persisted is a salted
-// (peppered) HMAC-SHA256 of the raw token, stored as the fingerprint of an
-// `api_token` credential (wave-1 `user_credentials` table, validated in
-// src/users/store.ts). Verification recomputes the HMAC over the presented
-// token and looks the resulting fingerprint up directly (unique-indexed), so a
-// database leak alone never yields a usable token and the lookup stays O(1).
+// exactly once at mint time and is NEVER stored. What is persisted is a peppered
+// HMAC-SHA256 of the raw token, stored as the fingerprint of an `api_token`
+// credential (wave-1 `user_credentials` table, validated in src/users/store.ts).
+// Verification recomputes the HMAC over the presented token and looks the
+// resulting fingerprint up directly (unique-indexed), so a database leak alone
+// never yields a usable token and the lookup stays O(1).
 //
-// The pepper is a per-install secret held in the existing `settings` KV table
-// (`client_auth.token_pepper`), generated lazily on first use. No schema change.
+// The pepper is a per-install secret held on the filesystem (see secret-store),
+// loaded once at startup and passed in here. These functions never touch the
+// settings table and never write, so an unknown token in compat mode resolves to
+// anonymous with zero side effects (finding 7).
 
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Db } from "../db.js";
 import { addCredential, getUserById } from "../users/store.js";
 import type { User, UserCredential } from "../users/types.js";
-import { getSetting, setSetting } from "./settings-kv.js";
 
 /** Human-recognizable prefix so a leaked token is identifiable as a Mandible PAT. */
 export const API_TOKEN_PREFIX = "mandible_pat_";
 const TOKEN_ENTROPY_BYTES = 32;
-const PEPPER_SETTING_KEY = "client_auth.token_pepper";
-
-function getOrCreatePepper(db: Db, now: number = Date.now()): string {
-  const existing = getSetting(db, PEPPER_SETTING_KEY);
-  if (existing) return existing;
-  const pepper = randomBytes(32).toString("base64url");
-  setSetting(db, PEPPER_SETTING_KEY, pepper, now);
-  return pepper;
-}
 
 /**
- * Compute the stored fingerprint for a raw token: `sha256:<hex>` of the
- * peppered HMAC. This shape satisfies the api_token fingerprint allowlist in
- * the user store (opaque single-line identifier).
+ * Compute the stored fingerprint for a raw token: `sha256:<hex>` of the peppered
+ * HMAC. This shape satisfies the api_token fingerprint allowlist in the user
+ * store (opaque single-line identifier). Pure function — no I/O.
  */
-export function fingerprintForToken(db: Db, rawToken: string): string {
-  const pepper = getOrCreatePepper(db);
+export function fingerprintForToken(pepper: string, rawToken: string): string {
   const digest = createHmac("sha256", pepper).update(rawToken, "utf8").digest("hex");
   return `sha256:${digest}`;
 }
@@ -75,12 +66,13 @@ export interface MintedToken {
  */
 export function mintApiToken(
   db: Db,
+  pepper: string,
   userRef: string,
   opts: { label?: string | null } = {},
   now: number = Date.now(),
 ): MintedToken {
   const token = generateRawToken();
-  const fingerprint = fingerprintForToken(db, token);
+  const fingerprint = fingerprintForToken(pepper, token);
   const credential = addCredential(
     db,
     userRef,
@@ -105,10 +97,15 @@ interface CredentialLookupRow {
  * Resolve a raw bearer token to its owning user via the persisted api_token
  * credential. Returns null for absent/malformed tokens, unknown fingerprints,
  * revoked credentials (only `active` rows are considered), or a retired user.
+ * Read-only: never writes, never throws on garbage input.
  */
-export function verifyApiToken(db: Db, rawToken: string | null | undefined): VerifiedToken | null {
+export function verifyApiToken(
+  db: Db,
+  pepper: string,
+  rawToken: string | null | undefined,
+): VerifiedToken | null {
   if (!rawToken || !rawToken.startsWith(API_TOKEN_PREFIX)) return null;
-  const fingerprint = fingerprintForToken(db, rawToken);
+  const fingerprint = fingerprintForToken(pepper, rawToken);
   const row = db
     .prepare(
       `SELECT id, user_id, fingerprint FROM user_credentials

@@ -1,4 +1,5 @@
 import type { MandibleEvent } from '../../src/contracts';
+import { clientAuthTokenParam } from './client-auth-token';
 
 export type SSEPayload = MandibleEvent;
 
@@ -31,11 +32,20 @@ export class SSEClient {
     this.currentBackoff = this.backoffMs;
   }
 
+  private withClientAuthToken(url: string): string {
+    const param = clientAuthTokenParam();
+    if (!param) return url;
+    return url.includes('?') ? `${url}&${param}` : `${url}?${param}`;
+  }
+
   connect(): void {
     if (this.eventSource || this.closed) {
       return;
     }
-    const source = new this.EventSourceImpl(this.url);
+    // Issue 708dc4c — EventSource cannot set an Authorization header, so the
+    // client-auth token rides as a query param (resolved fresh at each connect
+    // so a re-handshook token is picked up on reconnect).
+    const source = new this.EventSourceImpl(this.withClientAuthToken(this.url));
 
     // Use addEventListener for the message handler -- more reliable across
     // browsers than assigning to onmessage, and works identically for

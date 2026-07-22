@@ -30,6 +30,7 @@ import {
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
+import { ensureClientAuthToken, installClientAuthFetch } from './client-auth-token';
 import { daemonIsReady, shouldEnterSplashOnProbe, type DaemonHealthSnapshot } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
@@ -1785,7 +1786,13 @@ function App(): JSX.Element {
 
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
-  render(<App />, mountNode);
+  // Issue 708dc4c — attach the client-auth token to every /api request, then
+  // acquire one via the handshake before first render so operator mutations
+  // authenticate (in strict mode too, using a token persisted during compat).
+  installClientAuthFetch();
+  void ensureClientAuthToken().finally(() => {
+    render(<App />, mountNode);
+  });
 }
 
 export { App };

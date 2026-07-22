@@ -87,7 +87,6 @@ export interface ClientAuthGate {
   mode(): ClientAuthMode;
   recordUnattributedWrite(record: UnattributedWriteRecord): void;
   telemetrySnapshot?(): unknown;
-  bootstrapToken?(): string | null;
 }
 
 /** Presentation transport for a credential, used to label the resolved source. */
@@ -119,6 +118,11 @@ export type FileRpcPolicy = "allow" | "deny" | {
 
 export interface RouteOptions {
   fileRpc: FileRpcPolicy;
+  // Issue 708dc4c — set false on infrastructure mutations (e.g. the client-auth
+  // handshake) that should NOT count toward the unattributed-write ratchet, so
+  // the operator's own dashboard boot does not keep the counter permanently
+  // above zero and mask readiness for strict mode. Defaults to true.
+  countUnattributed?: boolean;
 }
 
 export interface RoutePolicyEntry {
@@ -392,12 +396,14 @@ export class Router implements RouteRegistrar {
             });
             return true;
           }
-          gate.recordUnattributedWrite({
-            method: normalizedMethod,
-            pathname,
-            transport: telemetryTransport,
-            category: operationalMutationCategoryForRoute(normalizedMethod, route.path),
-          });
+          if (route.options.countUnattributed !== false) {
+            gate.recordUnattributedWrite({
+              method: normalizedMethod,
+              pathname,
+              transport: telemetryTransport,
+              category: operationalMutationCategoryForRoute(normalizedMethod, route.path),
+            });
+          }
         }
       }
 
@@ -547,7 +553,6 @@ export interface ServerOptions {
 export function createServer(options: ServerOptions): http.Server {
   const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady } = options;
   const instance = options.instance ?? resolveInstanceInfo();
-  const bootstrapToken = (): string | null => options.clientAuth?.bootstrapToken?.() ?? null;
 
   router.get("/api/health", (_req, res) => {
     const startupCommit =
@@ -632,6 +637,12 @@ export function createServer(options: ServerOptions): http.Server {
 
     // SSE endpoints handled directly (long-lived connections don't fit the router)
     if (pathname === "/api/events" && method === "GET") {
+      // Issue 708dc4c — EventSource cannot set an Authorization header, so the
+      // dashboard passes its client-auth token as a `token` query param. SSE is
+      // a read; phase-1 keeps reads open, so the token is accepted here for
+      // forward per-client identity (scoping is deferred to the permissions
+      // child) and never gates the stream. The request logger records only the
+      // pathname, never the query string, so the token is not logged.
       const topics = parseTopics(url?.searchParams, null);
       sse.addClient(req, res, topics);
       return;
@@ -648,7 +659,7 @@ export function createServer(options: ServerOptions): http.Server {
       const handled = await router.handle(req, res);
       if (!handled) {
         if (!isApi && (method === "GET" || method === "HEAD")) {
-          const served = await handleStaticRequest(method, pathname, req, res, instance, bootstrapToken);
+          const served = await handleStaticRequest(method, pathname, req, res, instance);
           if (served) {
             return;
           }
@@ -681,6 +692,11 @@ export function attachWebSocketUpgrade(
   ) => void
 ): void {
   server.on("upgrade", (req, socket, head) => {
+    // Issue 708dc4c / finding 5 (deferred): WebSocket console upgrades are
+    // guarded by the browser boundary (loopback Host/Origin/Sec-Fetch-Site) but
+    // are NOT covered by the client-auth gate. Strict mode phase-1 scope is the
+    // HTTP router + file-RPC only; console-WS client authentication belongs to
+    // the permissions umbrella child, tracked separately.
     const boundary = validateDaemonBrowserBoundary(req);
     if (!boundary.ok) {
       socket.write(
@@ -799,13 +815,12 @@ async function handleStaticRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   instance: InstanceInfo,
-  getBootstrapToken?: () => string | null,
 ): Promise<boolean> {
   const filePath = resolveStaticPath(pathname);
   if (!filePath) {
     return false;
   }
-  return sendFile(req, res, filePath, method, instance, getBootstrapToken);
+  return sendFile(req, res, filePath, method, instance);
 }
 
 const PWA_FILES = new Set([
@@ -856,7 +871,6 @@ async function sendFile(
   filePath: string,
   method: string,
   instance: InstanceInfo,
-  getBootstrapToken?: () => string | null,
 ): Promise<boolean> {
   try {
     const stat = await fs.promises.stat(filePath);
@@ -865,7 +879,7 @@ async function sendFile(
     }
     if (filePath === UI_INDEX_PATH) {
       const raw = await fs.promises.readFile(filePath, "utf8");
-      const body = injectBootstrapData(raw, instance, getBootstrapToken?.() ?? null);
+      const body = injectBootstrapData(raw, instance);
       res.writeHead(200, {
         "Content-Type": getContentType(filePath),
         "Content-Length": Buffer.byteLength(body),
@@ -919,20 +933,14 @@ function isNotModified(header: string | string[] | undefined, mtime: Date): bool
   return fileSeconds <= sinceSeconds;
 }
 
-function injectBootstrapData(
-  html: string,
-  instance: InstanceInfo,
-  clientAuthToken: string | null = null,
-): string {
-  // Issue 708dc4c — the dashboard bootstrap handshake: embed the operator's
-  // ephemeral token so operator UI mutations authenticate as the operator, even
-  // in strict mode. Absent an operator (or client-auth gate), the field is
-  // simply omitted and the dashboard falls back to compat-mode anonymous calls.
-  const bootstrap: { instance: InstanceInfo; client_auth?: { token: string } } = { instance };
-  if (clientAuthToken) {
-    bootstrap.client_auth = { token: clientAuthToken };
-  }
-  const json = JSON.stringify(bootstrap).replace(/[<>&]/g, (char) => {
+function injectBootstrapData(html: string, instance: InstanceInfo): string {
+  // Issue 708dc4c — the served HTML carries NO client-auth token. Embedding a
+  // token here would expose operator identity to any loopback-response reader
+  // (SSRF, misconfigured proxy). The dashboard instead acquires an ephemeral
+  // token via POST /api/client-auth/handshake (which passes the browser write
+  // boundary), and the same-user CLI reads the operator bootstrap token from a
+  // 0600 file. Only non-secret instance metadata is injected.
+  const json = JSON.stringify({ instance }).replace(/[<>&]/g, (char) => {
     switch (char) {
       case "<":
         return "\\u003c";

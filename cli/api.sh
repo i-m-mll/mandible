@@ -11,6 +11,35 @@ api_is_file_rpc() {
   [[ "${MANDIBLE_BASE}" == file://* ]]
 }
 
+# Issue 708dc4c — resolve the client-auth config dir, mirroring the daemon's
+# getMandibleConfigDir (src/platform-paths.ts). Used only to locate the operator
+# bootstrap-token file; the MANDIBLE_CONFIG_DIR override is honored first.
+api_client_auth_config_dir() {
+  if [[ -n "${MANDIBLE_CONFIG_DIR:-}" ]]; then
+    printf '%s' "$MANDIBLE_CONFIG_DIR"
+    return
+  fi
+  case "$(uname -s)" in
+    Darwin) printf '%s/Library/Application Support/Mandible/config' "$HOME" ;;
+    *) printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/mandible" ;;
+  esac
+}
+
+# Resolve the client-auth bearer/capability token: MANDIBLE_TOKEN wins, else the
+# same-user operator bootstrap-token file (filesystem trust, like file-RPC).
+api_client_token() {
+  if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
+    printf '%s' "$MANDIBLE_TOKEN"
+    return
+  fi
+  local token_file line
+  token_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
+  if [[ -r "$token_file" ]]; then
+    IFS= read -r line < "$token_file" || true
+    printf '%s' "$line"
+  fi
+}
+
 api_file_rpc_dir() {
   local value="${MANDIBLE_BASE#file://}"
   case "$value" in
@@ -119,7 +148,7 @@ api_report_final_http_failure() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response
+  local body_tmp="" stderr_tmp retryable empty_response token token_cfg=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -132,13 +161,21 @@ api_http_exchange() {
   fi
   stderr_tmp=$(mktemp)
 
+  # Issue 708dc4c (finding 6) — present the client-auth bearer token via a 0600
+  # curl config file, never on argv (which is visible in `ps`). Resolve it from
+  # MANDIBLE_TOKEN or the same-user operator bootstrap-token file.
+  token="$(api_client_token)"
+  if [[ -n "$token" ]]; then
+    token_cfg=$(mktemp)
+    chmod 600 "$token_cfg" 2>/dev/null || true
+    printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
+  fi
+
   while true; do
     : > "$output_file"
     : > "$stderr_tmp"
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
-    # Issue 708dc4c — present the client-auth bearer token when configured so the
-    # CLI authenticates as its user (required for mutations under strict mode).
-    [[ -n "${MANDIBLE_TOKEN:-}" ]] && curl_args+=(-H "Authorization: Bearer ${MANDIBLE_TOKEN}")
+    [[ -n "$token_cfg" ]] && curl_args+=(--config "$token_cfg")
     if [[ "$method" != "GET" ]]; then
       curl_args+=(-X "$method" -H 'Content-Type: application/json')
       (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
@@ -174,6 +211,7 @@ api_http_exchange() {
 
   rm -f "$stderr_tmp"
   [[ -z "$body_tmp" ]] || rm -f "$body_tmp"
+  [[ -z "$token_cfg" ]] || rm -f "$token_cfg"
   printf '%s' "$http_status"
 }
 
@@ -643,7 +681,10 @@ api_file_rpc_exchange() {
   # metadata payload is read from disk, not passed as a jq argument.
   body_tmp="$(mktemp)"
   if [[ -n "$data" ]]; then printf '%s' "$data" > "$body_tmp"; else printf 'null' > "$body_tmp"; fi
-  jq -n \
+  # Issue 708dc4c (finding 6) — the capability token is read from the environment
+  # inside jq ($ENV) so it is never placed on jq's argv (visible in `ps`). It
+  # still lands in the spool request file, which is the file-RPC trust anchor.
+  MANDIBLE_CLIENT_TOKEN="$(api_client_token)" jq -n \
     --arg id "$request_id" \
     --arg method "$method" \
     --arg path "$request_path" \
@@ -651,12 +692,11 @@ api_file_rpc_exchange() {
     --arg provider_session_id "$session_id" \
     --arg attach_field "$attach_field" \
     --arg attach_name "$attach_name" \
-    --arg capability_token "${MANDIBLE_TOKEN:-}" \
     --slurpfile body "$body_tmp" \
     '{id:$id, method:$method, path:$path}
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
-     + (if $capability_token != "" then {capability_token:$capability_token} else {} end)
+     + (if ($ENV.MANDIBLE_CLIENT_TOKEN // "") != "" then {capability_token:$ENV.MANDIBLE_CLIENT_TOKEN} else {} end)
      + (if $method != "GET" and $provider != "" and $provider_session_id != ""
         then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
         else {} end)' > "$request_tmp"

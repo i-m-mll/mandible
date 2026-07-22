@@ -8,7 +8,6 @@ import { Router } from "../src/server.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { mintApiToken } from "../src/client-auth/tokens.js";
 import { createUser, setupOperator } from "../src/users/store.js";
 
 let tempDir = "";
@@ -31,7 +30,7 @@ beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-client-auth-gate-"));
   db = openDb(path.join(tempDir, "mandible.db"));
   setDb(db);
-  authenticator = new ClientAuthenticator(db);
+  authenticator = new ClientAuthenticator(db, { secretsDir: path.join(tempDir, "client-auth") });
   router = buildRouter();
 });
 
@@ -50,7 +49,7 @@ describe("client-auth gate: middleware resolution matrix", () => {
 
   it("compat mode: resolves a valid token to its user without counting", async () => {
     const user = createUser(db, { slug: "agent-x", kind: "agent", display_name: "Agent X" });
-    const { token } = mintApiToken(db, user.slug);
+    const { token } = authenticator.mintApiToken(user.slug);
     const response = await router.invoke({
       method: "POST",
       url: "/api/write",
@@ -76,7 +75,7 @@ describe("client-auth gate: middleware resolution matrix", () => {
   it("strict mode: allows a token-authenticated mutation", async () => {
     setClientAuthMode(db, "strict");
     const user = createUser(db, { slug: "agent-y", kind: "agent", display_name: "Agent Y" });
-    const { token } = mintApiToken(db, user.slug);
+    const { token } = authenticator.mintApiToken(user.slug);
     const response = await router.invoke({
       method: "POST",
       url: "/api/write",
@@ -144,7 +143,7 @@ describe("client-auth gate: file-RPC capability tokens", () => {
   it("strict: a valid capability token in the envelope authenticates", async () => {
     setClientAuthMode(db, "strict");
     const user = createUser(db, { slug: "agent-rpc", kind: "agent", display_name: "Agent RPC" });
-    const { token } = mintApiToken(db, user.slug);
+    const { token } = authenticator.mintApiToken(user.slug);
     const transport = new FileRpcTransport({ router, dir: path.join(tempDir, "rpc") });
     const response = await runFileRpc(transport, {
       method: "POST",

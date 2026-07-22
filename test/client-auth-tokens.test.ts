@@ -5,14 +5,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDb, type Db } from "../src/db.js";
 import { createUser, revokeCredential, updateUser } from "../src/users/store.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import {
   API_TOKEN_PREFIX,
   fingerprintForToken,
   generateRawToken,
-  mintApiToken,
   normalizeBearer,
   verifyApiToken,
 } from "../src/client-auth/tokens.js";
+import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
 import {
   DEFAULT_CLIENT_AUTH_MODE,
   getClientAuthMode,
@@ -21,11 +22,15 @@ import {
 import { ClientAuthTelemetry } from "../src/client-auth/telemetry.js";
 
 let tempDir = "";
+let secretsDir = "";
 let db: Db;
+let pepper = "";
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-client-auth-"));
+  secretsDir = path.join(tempDir, "client-auth");
   db = openDb(path.join(tempDir, "mandible.db"));
+  pepper = loadOrCreatePepper(db, secretsDir);
 });
 
 afterEach(() => {
@@ -37,10 +42,14 @@ function makeAgent() {
   return createUser(db, { slug: "agent-x", kind: "agent", display_name: "Agent X" });
 }
 
+function authenticator() {
+  return new ClientAuthenticator(db, { secretsDir });
+}
+
 describe("api token minting and verification", () => {
   it("mints a token whose raw value is never stored and round-trips to its user", () => {
     const user = makeAgent();
-    const { token, credential } = mintApiToken(db, user.slug, { label: "ci" });
+    const { token, credential } = authenticator().mintApiToken(user.slug, { label: "ci" });
 
     expect(token.startsWith(API_TOKEN_PREFIX)).toBe(true);
     expect(credential.type).toBe("api_token");
@@ -49,14 +58,14 @@ describe("api token minting and verification", () => {
     expect(credential.fingerprint).toMatch(/^sha256:[0-9a-f]{64}$/);
     expect(credential.fingerprint).not.toContain(token);
 
-    const verified = verifyApiToken(db, token);
+    const verified = verifyApiToken(db, pepper, token);
     expect(verified?.user.id).toBe(user.id);
     expect(verified?.credentialId).toBe(credential.id);
   });
 
   it("stores no row anywhere containing the raw token", () => {
     const user = makeAgent();
-    const { token } = mintApiToken(db, user.slug);
+    const { token } = authenticator().mintApiToken(user.slug);
     const rows = db
       .prepare("SELECT fingerprint, public_material, label, metadata_json FROM user_credentials")
       .all() as Array<Record<string, unknown>>;
@@ -67,35 +76,57 @@ describe("api token minting and verification", () => {
     }
   });
 
-  it("rejects a revoked token", () => {
-    const user = makeAgent();
-    const { token, credential } = mintApiToken(db, user.slug);
-    expect(verifyApiToken(db, token)).not.toBeNull();
-
-    revokeCredential(db, credential.id);
-    expect(verifyApiToken(db, token)).toBeNull();
+  it("keeps the pepper on disk, never in the settings table", () => {
+    makeAgent();
+    const pepperFile = path.join(secretsDir, "pepper");
+    expect(fs.existsSync(pepperFile)).toBe(true);
+    const row = db
+      .prepare("SELECT value FROM settings WHERE key = 'client_auth.token_pepper'")
+      .get();
+    expect(row).toBeUndefined();
   });
 
-  it("rejects an unknown or malformed token", () => {
+  it("migrates a legacy pepper row into the file and deletes the row", () => {
+    // Simulate a database written by the pre-review build.
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('client_auth.token_pepper', 'legacy-pepper', 0)",
+    ).run();
+    const freshSecrets = path.join(tempDir, "migrated");
+    const loaded = loadOrCreatePepper(db, freshSecrets);
+    expect(loaded).toBe("legacy-pepper");
+    expect(fs.readFileSync(path.join(freshSecrets, "pepper"), "utf8").trim()).toBe("legacy-pepper");
+    expect(
+      db.prepare("SELECT value FROM settings WHERE key = 'client_auth.token_pepper'").get(),
+    ).toBeUndefined();
+  });
+
+  it("rejects a revoked token", () => {
+    const user = makeAgent();
+    const { token, credential } = authenticator().mintApiToken(user.slug);
+    expect(verifyApiToken(db, pepper, token)).not.toBeNull();
+
+    revokeCredential(db, credential.id);
+    expect(verifyApiToken(db, pepper, token)).toBeNull();
+  });
+
+  it("rejects an unknown or malformed token without side effects", () => {
     makeAgent();
-    expect(verifyApiToken(db, null)).toBeNull();
-    expect(verifyApiToken(db, "")).toBeNull();
-    expect(verifyApiToken(db, "not-a-mandible-token")).toBeNull();
-    expect(verifyApiToken(db, generateRawToken())).toBeNull();
+    expect(verifyApiToken(db, pepper, null)).toBeNull();
+    expect(verifyApiToken(db, pepper, "")).toBeNull();
+    expect(verifyApiToken(db, pepper, "not-a-mandible-token")).toBeNull();
+    expect(verifyApiToken(db, pepper, generateRawToken())).toBeNull();
   });
 
   it("rejects a valid token whose user has been retired", () => {
     const user = makeAgent();
-    const { token } = mintApiToken(db, user.slug);
+    const { token } = authenticator().mintApiToken(user.slug);
     updateUser(db, user.id, { status: "retired" });
-    expect(verifyApiToken(db, token)).toBeNull();
+    expect(verifyApiToken(db, pepper, token)).toBeNull();
   });
 
-  it("hashes deterministically with a stable per-install pepper", () => {
+  it("hashes deterministically with a stable pepper", () => {
     const token = generateRawToken();
-    const first = fingerprintForToken(db, token);
-    const second = fingerprintForToken(db, token);
-    expect(first).toBe(second);
+    expect(fingerprintForToken(pepper, token)).toBe(fingerprintForToken(pepper, token));
   });
 
   it("normalizes bearer scheme prefixes", () => {

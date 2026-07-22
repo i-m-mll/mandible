@@ -122,6 +122,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // default: unauthenticated loopback still works and unattributed writes are
   // counted; strict mode rejects anonymous mutations).
   const clientAuth = new ClientAuthenticator(db);
+  // Write the operator's daemon-lifetime bootstrap token to a 0600 file so the
+  // same-user CLI can authenticate without any token on the wire (issue 708dc4c
+  // finding 1). No-op when no operator is configured yet.
+  try {
+    clientAuth.refreshBootstrapTokenFile();
+  } catch (error) {
+    logger("warn", "client_auth_bootstrap_token_write_failed", { error: String(error) });
+  }
 
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });

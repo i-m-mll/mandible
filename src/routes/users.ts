@@ -20,6 +20,7 @@ import type {
   UserKind,
   UserStatus,
 } from "../users/types.js";
+import { ClientAuthzError, requireSelfOrOperator } from "../client-auth/authz.js";
 import { sendJson } from "./http.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
@@ -41,6 +42,10 @@ function optionalMetadata(body: Record<string, unknown>): Record<string, unknown
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
   if (error instanceof UserRegistryError) {
     const status =
       error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400;
@@ -90,7 +95,19 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.post("/api/users/credentials/:id/revoke", (req, res) => {
     try {
-      const credential = revokeCredential(getDb(), req.params.id);
+      // Issue 708dc4c / finding 2 — revoking a credential (incl. api_tokens) is
+      // an authentication-administration action: require the credential's owner
+      // or the operator. Resolve the owner before revoking so authorization is
+      // checked against the real credential, not a caller-supplied user ref.
+      const db = getDb();
+      const owner = db
+        .prepare("SELECT user_id FROM user_credentials WHERE id = ?")
+        .get(req.params.id) as { user_id: string } | undefined;
+      if (!owner) {
+        throw new UserRegistryError("not_found", `No credential '${req.params.id}'.`);
+      }
+      requireSelfOrOperator(db, req, owner.user_id);
+      const credential = revokeCredential(db, req.params.id);
       sendJson(res, 200, { credential });
     } catch (error) {
       handleError(res, error);

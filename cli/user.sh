@@ -114,12 +114,12 @@ cmd_list() {
     esac
   done
   require_tools
-  local qs="" response
-  [[ -n "$kind" ]] && qs="?kind=$(urlencode "$kind")"
+  local query="" response
+  [[ -n "$kind" ]] && query="?kind=$(urlencode "$kind")"
   if [[ -n "$status" ]]; then
-    [[ -n "$qs" ]] && qs="${qs}&status=$(urlencode "$status")" || qs="?status=$(urlencode "$status")"
+    [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status")" || query="?status=$(urlencode "$status")"
   fi
-  response="$(api_get "/api/users${qs}")" || die "${RED}Failed to list users.${RESET}" 1
+  response="$(api_get "/api/users${query}")" || die "${RED}Failed to list users.${RESET}" 1
   emit "$response" "$json" '.users[]? | "\(.slug)\t\(.kind)\t\(.status)\t\(.display_name)\t\(.email // "-")"'
 }
 
@@ -237,9 +237,9 @@ credential_list() {
   done
   [[ -n "$ref" ]] || die "Usage: mandible user credential list <ref> [--all] [--json]" 2
   require_tools
-  local qs="" response
-  (( all )) && qs="?all=1"
-  response="$(api_get "/api/users/$(urlencode "$ref")/credentials${qs}")" \
+  local query="" response
+  (( all )) && query="?all=1"
+  response="$(api_get "/api/users/$(urlencode "$ref")/credentials${query}")" \
     || die "${RED}Failed to list credentials.${RESET}" 1
   emit "$response" "$json" '.credentials[]? | "\(.id)\t\(.type)\t\(.fingerprint)\t\(.status)\t\(.label // "-")"'
 }
@@ -288,9 +288,9 @@ token_list() {
   done
   [[ -n "$ref" ]] || die "Usage: mandible user token list <ref> [--all] [--json]" 2
   require_tools
-  local qs="" response
-  (( all )) && qs="?all=1"
-  response="$(api_get "/api/users/$(urlencode "$ref")/tokens${qs}")" \
+  local query="" response
+  (( all )) && query="?all=1"
+  response="$(api_get "/api/users/$(urlencode "$ref")/tokens${query}")" \
     || die "${RED}Failed to list tokens.${RESET}" 1
   emit "$response" "$json" '.tokens[]? | "\(.id)\t\(.status)\t\(.label // "-")\t\(.created_at)"'
 }
