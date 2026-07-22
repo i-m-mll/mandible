@@ -1,4 +1,5 @@
 import type { Db } from "../db.js";
+import { systemAction } from "../identity/resolver.js";
 import { LedgerStore } from "./store.js";
 
 export interface IssueReferenceBackfillOptions {
@@ -70,7 +71,7 @@ export function runIssueReferenceBackfill(
       source_entity_id: source.source_entity_id,
       body: source.body,
       source: "system",
-      actor: { actor_type: "system" },
+      actor: { actor_type: "system", attribution: systemAction() },
     });
   }
 

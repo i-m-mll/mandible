@@ -24,7 +24,15 @@ import {
   systemAction,
 } from "../src/identity/resolver.js";
 import type { UserKind } from "../src/users/types.js";
-import type { LedgerActorType } from "../src/ledger/types.js";
+import type { LedgerActorInput, LedgerActorType } from "../src/ledger/types.js";
+
+if (false) {
+  // Compile-time regression lock: removing the required attribution field must
+  // make this @ts-expect-error directive fail as unused.
+  // @ts-expect-error LedgerActorInput requires explicit attribution.
+  const unattributedActor: LedgerActorInput = {};
+  void unattributedActor;
+}
 
 let tempDir = "";
 let db: Db;
@@ -109,37 +117,67 @@ describe("legacy actor tuple is frozen (F1: stable ids)", () => {
 });
 
 describe("fail-closed attribution (F2: no unattributed new writes)", () => {
-  it("attributes every mutation lacking an explicit context to the system user, never null", () => {
-    const store = new LedgerStore(db);
+  it("rejects missing attribution at runtime instead of inventing a system principal", () => {
+    const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
     const projectId = createProject();
+    const attributed = { attribution: systemAction() };
+    const issue = store.createIssue({ project_id: projectId, title: "Attributed", ...attributed });
+    const other = store.createIssue({ project_id: projectId, title: "Target", ...attributed });
+    const comment = store.addComment(issue.id, { body: "Before", ...attributed });
+    const conflict = store.recordConflict({
+      adapter: "git_bug",
+      project_id: projectId,
+      entity_type: "issue",
+      entity_id: issue.id,
+      field: "title",
+      local_value: "a",
+      remote_value: "b",
+      ...attributed,
+    });
 
-    const issue = store.createIssue({ project_id: projectId, title: "Sys", actor_type: "agent" });
-    expect(issue.author_user_id).toBe(SYSTEM_USER_ID);
-    expect(issue.evidence_method).toBe("system_internal");
-
-    const comment = store.addComment(issue.id, { body: "c", actor_type: "agent" });
-    expect(comment.author_user_id).toBe(SYSTEM_USER_ID);
-
-    const checkpoint = store.addIssueCheckpoint(issue.id, { kind: "note", payload: {} });
-    expect(checkpoint.author_user_id).toBe(SYSTEM_USER_ID);
-
-    store.setLabel(issue.id, "a-label", true);
-    const other = store.createIssue({ project_id: projectId, title: "Target", actor_type: "agent" });
-    store.upsertIssueRelationship({
+    const missing = /explicit attribution context/;
+    expect(() => store.createIssue({ project_id: projectId, title: "Missing" } as never)).toThrow(missing);
+    expect(() => store.updateIssue(issue.id, { title: "Missing" }, {} as never)).toThrow(missing);
+    expect(() => store.addComment(issue.id, { body: "Missing" } as never)).toThrow(missing);
+    expect(() => store.addIssueCheckpoint(issue.id, { kind: "note", payload: {} } as never)).toThrow(missing);
+    expect(() => store.updateComment(comment.id, { body: "Missing" }, {} as never)).toThrow(missing);
+    expect(() => store.setLabel(issue.id, "missing", true, "mandible", {} as never)).toThrow(missing);
+    expect(() => store.recordEvent({
+      entity_type: "issue",
+      entity_id: issue.id,
+      event_type: "missing",
+      project_id: projectId,
+    } as never)).toThrow(missing);
+    expect(() => store.upsertIssueRelationship({
       source_issue_id: issue.id,
       target_issue_id: other.id,
       relationship_type: "related",
-    });
+    } as never)).toThrow(missing);
+    expect(() => store.linkRelationshipEdges({
+      source_entity: { entity_type: "issue", entity_id: issue.id },
+      target_entities: [{ entity_type: "issue", entity_id: other.id }],
+    } as never)).toThrow(missing);
+    expect(() => store.recordExternalRef({
+      entity_type: "issue",
+      entity_id: issue.id,
+      adapter: "git_bug",
+      external_id: "missing",
+      external_kind: "git_bug_issue",
+    } as never)).toThrow(missing);
+    expect(() => store.recordConflict({
+      adapter: "git_bug",
+      entity_type: "issue",
+      entity_id: issue.id,
+      field: "missing",
+      local_value: null,
+      remote_value: null,
+    } as never)).toThrow(missing);
+    expect(() => store.resolveConflict(conflict.id, { resolution: "missing" } as never)).toThrow(missing);
+    const outbox = store.listOutbox({ adapter: "git_bug", status: "pending" })[0];
+    expect(() => store.markOutbox(outbox.id, "applied", {}, {} as never)).toThrow(missing);
 
-    const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
-    expect(events.length).toBeGreaterThan(0);
-    for (const event of events) {
-      expect(event.actor_user_id).toBe(SYSTEM_USER_ID);
-      expect(event.evidence_method).toBe("system_internal");
-    }
-
-    const revisions = store.listBodyRevisions({ entity_type: "issue_body", entity_id: issue.id });
-    expect(revisions[0].actor_user_id).toBe(SYSTEM_USER_ID);
+    expect(store.getIssue(issue.id).title).toBe("Attributed");
+    expect(store.getComment(comment.id).body).toBe("Before");
   });
 
   it("records an explicit non-system principal in the parallel columns", () => {
@@ -163,7 +201,11 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
     const author = createUser(db, { slug: "author", kind: "human", display_name: "Author" });
     const editor = createUser(db, { slug: "editor", kind: "agent", display_name: "Editor" });
 
-    const issue = store.createIssue({ project_id: projectId, title: "Iso" });
+    const issue = store.createIssue({
+      project_id: projectId,
+      title: "Iso",
+      attribution: { user_id: author.id, evidence_method: "session_claim" },
+    });
     const comment = store.addComment(issue.id, {
       body: "Original",
       author_display: "Author",
@@ -197,6 +239,8 @@ describe("evidence_method vocabulary (F3)", () => {
 
   it("resolver constructors emit only locked values", () => {
     expect(systemAction().evidence_method).toBe("system_internal");
+    expect(() => localDefaultAttribution(db)).toThrow(/operator attribution is unavailable/i);
+    setupOperator(db, { display_name: "Operator" });
     expect(localDefaultAttribution(db).evidence_method).toBe("local_default");
     const agent = createUser(db, { slug: "sess", kind: "agent", display_name: "Sess" });
     addBinding(db, agent.id, { binding_type: "app_name", value: "claude-code" });

@@ -1,6 +1,5 @@
 import type { Db } from "../db.js";
 import { LedgerStore } from "./store.js";
-import { systemAction } from "../identity/resolver.js";
 import type { LedgerActorInput } from "./types.js";
 
 export const MARKDOWN_BODY_ESCAPE_POLICY_SETTING = "ledger.markdown_body_escape_policy";
@@ -48,12 +47,15 @@ export interface MarkdownBodyAuditResult {
   };
 }
 
-export interface NormalizeMarkdownBodyOptions {
-  apply?: boolean;
+interface NormalizeMarkdownBodyBaseOptions {
   scope?: MarkdownBodyAuditScope;
   normalize_all_matches?: boolean;
-  actor?: LedgerActorInput;
 }
+
+export type NormalizeMarkdownBodyOptions = NormalizeMarkdownBodyBaseOptions & (
+  | { apply?: false; actor?: never }
+  | { apply: true; actor: LedgerActorInput }
+);
 
 export interface NormalizeMarkdownBodyResult extends MarkdownBodyAuditResult {
   applied: boolean;
@@ -196,11 +198,7 @@ export function normalizeEscapedMarkdownBodies(
   }
 
   const store = new LedgerStore(db);
-  const actor: LedgerActorInput = options.actor ?? {
-    actor_type: "system",
-    author_display: "Mandible",
-    attribution: systemAction(),
-  };
+  const actor = options.actor;
   const eventIds: string[] = [];
   let normalized = 0;
 

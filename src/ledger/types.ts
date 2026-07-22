@@ -130,12 +130,10 @@ export interface LedgerActorInput {
   actor_type?: LedgerActorType;
   author_display?: string;
   /**
-   * Resolved user attribution. When set, the store writes the parallel
-   * `*_user_id`/evidence columns and derives `actor_type` from the user's kind.
-   * When absent, only the legacy actor columns are written (user_id stays NULL,
-   * meaning legacy/unresolved).
+   * Resolved user attribution for every durable ledger write. Historical rows
+   * may retain NULL user ids, but new writes cannot create unresolved rows.
    */
-  attribution?: LedgerAttributionInput;
+  attribution: LedgerAttributionInput;
 }
 
 export interface LedgerProject {

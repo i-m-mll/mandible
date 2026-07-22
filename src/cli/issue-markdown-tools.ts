@@ -41,18 +41,24 @@ function main(argv: string[]): number {
       return 0;
     }
     if (args.command === "normalize") {
-      const result = normalizeEscapedMarkdownBodies(db, {
-        apply: args.apply,
-        scope: args.scope,
-        normalize_all_matches: args.allMatches,
-        // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI");
-        // real identity is the system user in the parallel columns (issue 92813cc).
-        actor: {
-          actor_type: "mandible_user",
-          author_display: "Mandible CLI",
-          attribution: systemAction(),
-        },
-      });
+      const result = args.apply
+        ? normalizeEscapedMarkdownBodies(db, {
+            apply: true,
+            scope: args.scope,
+            normalize_all_matches: args.allMatches,
+            // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI");
+            // real identity is the system user in the parallel columns (issue 92813cc).
+            actor: {
+              actor_type: "mandible_user",
+              author_display: "Mandible CLI",
+              attribution: systemAction(),
+            },
+          })
+        : normalizeEscapedMarkdownBodies(db, {
+            apply: false,
+            scope: args.scope,
+            normalize_all_matches: args.allMatches,
+          });
       printResult(result, args.json);
       return 0;
     }

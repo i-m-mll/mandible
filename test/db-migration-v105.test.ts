@@ -318,8 +318,8 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     expect(marker()).toEqual({ value: "done" });
 
     const expectedProjection = {
-      last_export_artifact_id: `artifact:sha256:${exportHash}`,
-      pre_export_snapshot_artifact_id: `artifact:sha256:${snapshotHash}`,
+      last_export_artifact_id: `artifact:${exportHash.slice(0, 12)}`,
+      pre_export_snapshot_artifact_id: `artifact:${snapshotHash.slice(0, 12)}`,
     };
     expect(getSpaceExport(db, "export-one")).toMatchObject(expectedProjection);
     expect(findSpaceExport(db, "checkout-one", "docs", "space.md")).toMatchObject(

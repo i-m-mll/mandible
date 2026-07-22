@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CURRENT_SCHEMA_VERSION, migrate, openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   LEDGER_BACKUP_TABLES,
   METADATA_BACKUP_TABLES,
@@ -21,6 +22,7 @@ import type { LedgerEventSource } from "../src/ledger/types.js";
 let tempDir = "";
 let dbPath = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-"));
@@ -45,6 +47,7 @@ function createProject(root = path.join(tempDir, "repo")) {
 
 function createIssue(store: LedgerStore, projectId: string, title = "Ledger issue") {
   return store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: "Body",
@@ -383,6 +386,7 @@ describe("ledger issue heads", () => {
     const before = getLedgerIssueHead(db, issue.id);
 
     store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "New digest-affecting comment",
       actor_type: "agent",
       author_display: "Codex",
@@ -404,6 +408,7 @@ describe("ledger issue heads", () => {
     const before = getLedgerIssueHead(db, issue.id);
 
     store.addIssueCheckpoint(issue.id, {
+      ...SYSTEM_ACTOR,
       kind: "delegation-manifest",
       payload: [{ issue: issue.short_id, digest: before.digest, branch: "feature/demo", scope: "demo" }],
       actor_type: "agent",
@@ -424,6 +429,7 @@ describe("ledger issue heads", () => {
     const created = getLedgerIssueHead(db, issue.id);
 
     store.addIssueCheckpoint(issue.id, {
+      ...SYSTEM_ACTOR,
       kind: "delegation-manifest",
       payload: [],
       actor_type: "agent",
@@ -434,6 +440,7 @@ describe("ledger issue heads", () => {
     const checkpointHead = getLedgerIssueHead(db, issue.id);
 
     store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "Later umbrella coordination comment",
       actor_type: "agent",
       author_display: "Codex",
@@ -459,6 +466,7 @@ describe("ledger issue heads", () => {
     const beforeUnrelated = getLedgerIssueHead(db, unrelated.id);
 
     store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
       link_type: "references",
@@ -474,6 +482,7 @@ describe("ledger issue heads", () => {
     expect(getLedgerIssueHead(db, unrelated.id).digest).toBe(beforeUnrelated.digest);
 
     store.unlinkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
       link_type: "references",
@@ -498,6 +507,7 @@ describe("ledger issue heads", () => {
     const beforeTarget = getLedgerIssueHead(db, target.id);
 
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: source.id,
       target_issue_id: target.id,
       relationship_type: "blocks",
@@ -562,6 +572,7 @@ describe("ledger store", () => {
     const store = new LedgerStore(db, { outboxAdapters: ["git_bug"] });
 
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Imported",
       source: "git_bug" satisfies LedgerEventSource,
@@ -577,6 +588,7 @@ describe("ledger store", () => {
     const issue = createIssue(store, project.project.id);
 
     const comment = store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "A comment",
       actor_type: "mandible_user",
       author_display: "Mandible User",
@@ -603,8 +615,8 @@ describe("ledger store", () => {
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
 
-    const updated = store.updateIssue(issue.id, { title: "Renamed", body: "After" });
-    const noOp = store.updateIssue(issue.id, { body: "After" });
+    const updated = store.updateIssue(issue.id, { title: "Renamed", body: "After" }, SYSTEM_ACTOR);
+    const noOp = store.updateIssue(issue.id, { body: "After" }, SYSTEM_ACTOR);
     const issueEvents = store.listEvents({ entity_type: "issue", entity_id: issue.id });
     const revisions = store.listBodyRevisions({ entity_type: "issue_body", entity_id: issue.id });
 
@@ -631,12 +643,18 @@ describe("ledger store", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
-    const comment = store.addComment(issue.id, { body: "Before" });
+    const comment = store.addComment(issue.id, { body: "Before", ...SYSTEM_ACTOR });
     const base = store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id })[0];
 
-    store.updateComment(comment.id, { body: "After" }, { base_body_revision_id: base.id });
+    store.updateComment(comment.id, { body: "After" }, {
+      base_body_revision_id: base.id,
+      ...SYSTEM_ACTOR,
+    });
     expect(() => {
-      store.updateComment(comment.id, { body: "Again" }, { base_body_revision_id: base.id });
+      store.updateComment(comment.id, { body: "Again" }, {
+        base_body_revision_id: base.id,
+        ...SYSTEM_ACTOR,
+      });
     }).toThrow(/stale body revision/);
 
     const revisions = store.listBodyRevisions({ entity_type: "comment_body", entity_id: comment.id });
@@ -656,8 +674,8 @@ describe("ledger store", () => {
     });
     const issue = createIssue(store, project.project.id);
 
-    const closed = store.setIssueStatus(issue.id, "closed", "merged");
-    const reopened = store.setIssueStatus(issue.id, "open", null);
+    const closed = store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
+    const reopened = store.setIssueStatus(issue.id, "open", null, SYSTEM_ACTOR);
     const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
 
     expect(closed).toMatchObject({ status: "closed", resolution: "merged" });
@@ -681,8 +699,8 @@ describe("ledger store", () => {
     });
     const issue = createIssue(store, project.project.id);
 
-    store.setIssueStatus(issue.id, "closed", "merged");
-    store.setIssueStatus(issue.id, "closed", "merged");
+    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
 
     const events = store.listEvents({ entity_type: "issue", entity_id: issue.id });
     expect(events.map((event) => event.event_type)).toEqual([
@@ -697,8 +715,8 @@ describe("ledger store", () => {
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
 
-    const updated = store.setWorkerStatus(issue.id, "in_progress");
-    const branch = store.addIssueBranch(issue.id, "feature/demo");
+    const updated = store.setWorkerStatus(issue.id, "in_progress", SYSTEM_ACTOR);
+    const branch = store.addIssueBranch(issue.id, "feature/demo", "primary", SYSTEM_ACTOR);
 
     expect(updated.worker_status).toBe("in_progress");
     expect(branch).toMatchObject({
@@ -732,9 +750,9 @@ describe("ledger store", () => {
     const store = new LedgerStore(db);
     const issue = createIssue(store, project.project.id);
 
-    expect(store.setLabel(issue.id, "umbrella", true).changed).toBe(true);
-    expect(store.setLabel(issue.id, "umbrella", true).changed).toBe(false);
-    expect(store.setLabel(issue.id, "umbrella", false).changed).toBe(true);
+    expect(store.setLabel(issue.id, "umbrella", true, "mandible", SYSTEM_ACTOR).changed).toBe(true);
+    expect(store.setLabel(issue.id, "umbrella", true, "mandible", SYSTEM_ACTOR).changed).toBe(false);
+    expect(store.setLabel(issue.id, "umbrella", false, "mandible", SYSTEM_ACTOR).changed).toBe(true);
 
     const events = store
       .listEvents({ entity_type: "issue", entity_id: issue.id })
@@ -746,11 +764,13 @@ describe("ledger store", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const first = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "First",
       aliases: [{ alias_kind: "git_bug_short", alias: "abcd111" }],
     });
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Second",
       aliases: [{ alias_kind: "git_bug_short", alias: "abcd222" }],
@@ -772,6 +792,7 @@ describe("ledger store", () => {
     const child = createIssue(store, project.project.id, "Child");
 
     const relationship = store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -779,6 +800,7 @@ describe("ledger store", () => {
       metadata: { order: 1 },
     });
     const ref = store.recordExternalRef({
+      ...SYSTEM_ACTOR,
       entity_type: "issue",
       entity_id: parent.id,
       adapter: "git_bug",
@@ -788,6 +810,7 @@ describe("ledger store", () => {
       remote_hash: "remote",
     });
     const conflict = store.recordConflict({
+      ...SYSTEM_ACTOR,
       adapter: "git_bug",
       project_id: project.project.id,
       entity_type: "issue",
@@ -796,10 +819,12 @@ describe("ledger store", () => {
       local_value: "Local",
       remote_value: "Remote",
     });
-    const outbox = store.markOutbox(store.listOutbox({ status: "pending" })[0].id, "processing", {
-      attempt_count: 1,
-      last_attempt_at: 100,
-    });
+    const outbox = store.markOutbox(
+      store.listOutbox({ status: "pending" })[0].id,
+      "processing",
+      { attempt_count: 1, last_attempt_at: 100 },
+      SYSTEM_ACTOR,
+    );
 
     expect(relationship.id).toMatch(/^rel_/);
     expect(ref.id).toMatch(/^xref_/);
@@ -829,11 +854,13 @@ describe("ledger store", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const target = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Target",
       aliases: [{ alias_kind: "git_bug_short", alias: "abcd123" }],
     });
     const source = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Source",
       body: "See [issue:abcd123].",
@@ -861,6 +888,7 @@ describe("ledger store", () => {
       entity_id: relationship.id,
     }).length;
     store.reconcileTextIssueReferences({
+      actor: SYSTEM_ACTOR,
       source_issue_id: source.id,
       source_entity_type: "issue_body",
       source_entity_id: source.id,
@@ -872,17 +900,19 @@ describe("ledger store", () => {
     })).toHaveLength(eventsAfterCreate);
 
     store.addComment(source.id, {
+      ...SYSTEM_ACTOR,
       body: "Also [issue:abcd123].",
       actor_type: "agent",
       author_display: "Codex",
     });
-    store.updateIssue(source.id, { body: "No reference now." });
+    store.updateIssue(source.id, { body: "No reference now." }, SYSTEM_ACTOR);
     expect(db.prepare(
       "SELECT deleted_at FROM ledger_issue_relationships WHERE id = ?",
     ).get(relationship.id)).toEqual({ deleted_at: null });
 
     const comment = store.getIssueDetail(source.id).comments[0];
     store.reconcileTextIssueReferences({
+      actor: SYSTEM_ACTOR,
       source_issue_id: source.id,
       source_entity_type: "comment",
       source_entity_id: comment.id,
@@ -900,16 +930,19 @@ describe("ledger store", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const target = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Target",
       aliases: [{ alias_kind: "git_bug_short", alias: "beef123" }],
     });
     const source = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Source",
       body: "Initially empty",
     });
     const skipped = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Skipped",
       body: `See [issue:${target.short_id}].`,
@@ -957,19 +990,21 @@ describe("ledger store", () => {
     const store = new LedgerStore(db);
     const target = createIssue(store, project.project.id, "Manual target");
     const source = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.project.id,
       title: "Manual source",
       body: "No refs yet.",
     });
     const relationship = store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: source.id,
       target_issue_id: target.id,
       relationship_type: "references",
       provenance: "manual",
     });
 
-    store.updateIssue(source.id, { body: `See [issue:${target.short_id}].` });
-    store.updateIssue(source.id, { body: "Removed derived ref." });
+    store.updateIssue(source.id, { body: `See [issue:${target.short_id}].` }, SYSTEM_ACTOR);
+    store.updateIssue(source.id, { body: "Removed derived ref." }, SYSTEM_ACTOR);
 
     expect(db.prepare(
       "SELECT provenance, deleted_at FROM ledger_issue_relationships WHERE id = ?",
@@ -996,7 +1031,7 @@ describe("ledger store", () => {
       ],
       link_type: "references",
       note: "coordination context",
-      actor: { actor_type: "agent", actor_id: "codex" },
+      actor: { actor_type: "agent", actor_id: "codex", ...SYSTEM_ACTOR },
     });
 
     expect(result.edges).toHaveLength(2);
@@ -1028,11 +1063,13 @@ describe("ledger store", () => {
     const source = createIssue(store, project.project.id, "Src unlink");
     const target = createIssue(store, project.project.id, "Tgt unlink");
     const linked = store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
     });
 
     const unlinked = store.unlinkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
     });
@@ -1053,12 +1090,14 @@ describe("ledger store", () => {
     const source = createIssue(store, project.project.id, "Src comment");
     const target = createIssue(store, project.project.id, "Tgt comment");
     const comment = store.addComment(target.id, {
+      ...SYSTEM_ACTOR,
       body: "Precise anchor",
       actor_type: "agent",
       author_display: "Codex",
     });
 
     const linked = store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "comment", entity_id: comment.id }],
     });
@@ -1070,7 +1109,7 @@ describe("ledger store", () => {
 
     db.prepare("UPDATE ledger_comments SET deleted_at = ? WHERE id = ?").run(Date.now(), comment.id);
     const degraded = store.degradeCommentTargetRelationshipEdges(comment.id, {
-      actor: { actor_type: "system" },
+      actor: { actor_type: "system", ...SYSTEM_ACTOR },
       occurred_at: Date.now(),
     });
 

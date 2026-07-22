@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { buildProjectTimelineProjection } from "../src/ledger/timeline-projection.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -816,6 +817,7 @@ describe("project timeline projection", () => {
     });
     const store = new LedgerStore(fixture.db);
     const coordination = store.createIssue({
+      attribution: systemAction(),
       project_id: checkout.project.id,
       title: "Feedbax coordination",
       body: "Project-local coordination body.",
@@ -825,6 +827,7 @@ describe("project timeline projection", () => {
       created_at: 1_900_000_000_000,
     });
     const feature = store.createIssue({
+      attribution: systemAction(),
       project_id: checkout.project.id,
       title: "Feedbax feature",
       body: "Project-local feature body.",

@@ -5,8 +5,8 @@
 // operator, an authenticated session, or a git-bug import author) into an
 // `AttributionContext` that the ledger store records in parallel `*_user_id`
 // columns. The resolver never produces an anonymous actor: every path resolves
-// to a concrete user, falling back to the seeded `system` user (fixed sentinel
-// id), so no new write can produce an unattributed (NULL) row.
+// to a concrete user or fails closed, so no new write can produce an
+// unattributed (NULL) row.
 //
 // The parallel `*_user_id` columns are the real identity. The legacy
 // `actor_id`/`actor_type`/`author_display` tuple is FROZEN provenance at every
@@ -102,9 +102,8 @@ export function projectActorType(kind: UserKind): LedgerActorType {
 
 /**
  * Attribution for a daemon-internal write with no external principal. Pure: it
- * needs no database because the `system` user carries a fixed sentinel id. This
- * is also the store's fallback for any write lacking an explicit context, so a
- * new write always carries a non-null user.
+ * needs no database because the `system` user carries a fixed sentinel id.
+ * Callers use this only after classifying the write as genuinely internal.
  */
 export function systemAction(): AttributionContext {
   return { user_id: SYSTEM_USER_ID, evidence_method: "system_internal" };
@@ -112,13 +111,16 @@ export function systemAction(): AttributionContext {
 
 /**
  * Attribution for a local HTTP/CLI write, resolved to the configured operator.
- * Falls back to the `system` user when no operator has been set up so the write
- * is still attributed to a concrete, non-null user.
+ * Missing operator configuration fails closed: an HTTP/CLI action is not a
+ * daemon-internal system action and must not be silently reclassified as one.
  */
 export function localDefaultAttribution(db: Db): AttributionContext {
   const operator = getOperator(db);
+  if (!operator) {
+    throw new Error("Local operator attribution is unavailable");
+  }
   return {
-    user_id: operator ? operator.id : SYSTEM_USER_ID,
+    user_id: operator.id,
     evidence_method: "local_default",
   };
 }
@@ -145,8 +147,9 @@ const SESSION_BINDING_ORDER: ReadonlyArray<{
  * Resolve a session write to a user via active `user_bindings`. Fails closed:
  * returns null when no binding matches, and also when more than one active user
  * somehow shares a binding (structurally prevented by the unique index, but
- * never guessed here). A null return lets the caller fall back to a system or
- * local-default attribution rather than guessing a human identity.
+ * never guessed here). A null return leaves classification to the caller: it
+ * must either establish another explicit principal or reject the write, and
+ * may use system attribution only for a genuinely daemon-internal action.
  */
 export function resolveSessionAttribution(
   db: Db,
@@ -173,8 +176,8 @@ export function resolveSessionAttribution(
 // --- LedgerActorInput adapters (used at write call sites) ---
 
 /**
- * A daemon-internal system actor. Callers pass this explicitly; the store also
- * uses systemAction() as the implicit fallback when no attribution is supplied.
+ * A daemon-internal system actor. Callers must pass this explicitly; the store
+ * never substitutes system attribution for an omitted principal.
  */
 export function systemActor(authorizerUserId?: string | null): LedgerActorInput {
   const attribution = systemAction();

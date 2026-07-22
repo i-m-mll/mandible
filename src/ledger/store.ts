@@ -10,8 +10,7 @@ import {
   createStableIssueId,
 } from "./ids.js";
 import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
-import { SYSTEM_USER_ID } from "../users/store.js";
-import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
+import { assertEvidenceMethod } from "../identity/resolver.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -132,7 +131,7 @@ export interface UpsertRelationshipInput {
   confidence?: string;
   metadata?: Record<string, unknown>;
   source?: LedgerEventSource;
-  actor?: LedgerActorInput;
+  actor: LedgerActorInput;
   created_at?: number;
 }
 
@@ -150,7 +149,7 @@ export interface LinkRelationshipEdgesInput {
   action_id?: string;
   metadata?: Record<string, unknown>;
   source?: LedgerEventSource;
-  actor?: LedgerActorInput;
+  actor: LedgerActorInput;
   created_at?: number;
 }
 
@@ -160,7 +159,7 @@ export interface UnlinkRelationshipEdgesInput {
   link_type?: LedgerRelationshipType;
   action_id?: string;
   source?: LedgerEventSource;
-  actor?: LedgerActorInput;
+  actor: LedgerActorInput;
   occurred_at?: number;
 }
 
@@ -170,10 +169,10 @@ export interface ReconcileTextIssueReferencesInput {
   source_entity_id: string;
   body: string;
   source?: LedgerEventSource;
-  actor?: LedgerActorInput;
+  actor: LedgerActorInput;
 }
 
-export interface RecordExternalRefInput {
+export interface RecordExternalRefInput extends LedgerActorInput {
   id?: string;
   entity_type: string;
   entity_id: string;
@@ -189,7 +188,7 @@ export interface RecordExternalRefInput {
   source?: LedgerEventSource;
 }
 
-export interface RecordConflictInput {
+export interface RecordConflictInput extends LedgerActorInput {
   id?: string;
   adapter: string;
   project_id?: string;
@@ -248,15 +247,17 @@ export class LedgerStore {
    * into stable ids, so this lane never changes it and never derives it from the
    * user's kind.
    *
-   * The parallel `*_user_id`/evidence columns carry the real identity. A write
-   * that supplies no attribution is still attributed to the seeded `system` user
-   * via `systemAction()` — a NULL user_id is reachable only for pre-migration
-   * rows, never from a new write. `evidence_method` is validated against the
-   * locked vocabulary at this boundary.
+   * The parallel `*_user_id`/evidence columns carry the real identity.
+   * `attribution` is required at the TypeScript boundary, so a NULL user_id is
+   * reachable only for pre-migration rows, never from a new write.
+   * `evidence_method` is validated against the locked vocabulary here.
    */
   private resolveActor(input: LedgerActorInput): ResolvedActor {
+    if (!input?.attribution) {
+      throw new Error("Ledger write requires an explicit attribution context");
+    }
     const base = normalizeActor(input);
-    const attribution = input.attribution ?? systemAction();
+    const attribution = input.attribution;
     assertEvidenceMethod(attribution.evidence_method);
     return {
       actor_id: base.actor_id,
@@ -264,6 +265,7 @@ export class LedgerStore {
       actor_user_id: attribution.user_id,
       evidence_method: attribution.evidence_method,
       evidence_id: attribution.evidence_id ?? null,
+      attribution,
     };
   }
 
@@ -386,7 +388,7 @@ export class LedgerStore {
     return issue;
   }
 
-  updateIssue(id: string, patch: UpdateLedgerIssuePatch, actor: UpdateLedgerIssueOptions = {}): LedgerIssue {
+  updateIssue(id: string, patch: UpdateLedgerIssuePatch, actor: UpdateLedgerIssueOptions): LedgerIssue {
     const existing = this.requireIssue(id);
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
@@ -480,8 +482,8 @@ export class LedgerStore {
   applyImportedIssuePatch(
     id: string,
     patch: UpdateLedgerIssuePatch,
-    source: LedgerEventSource = "git_bug",
-    actor: LedgerActorInput = { actor_type: "external_adapter" },
+    source: LedgerEventSource,
+    actor: LedgerActorInput,
   ): { changed: boolean; issue: LedgerIssue } {
     const existing = this.requireIssue(id);
     const now = Date.now();
@@ -599,7 +601,7 @@ export class LedgerStore {
     id: string,
     status: LedgerIssueStatus,
     resolution: LedgerIssueResolution | null = null,
-    actor: LedgerActorInput = {},
+    actor: LedgerActorInput,
     source: LedgerEventSource = "mandible",
   ): LedgerIssue {
     const existing = this.requireIssue(id);
@@ -644,7 +646,7 @@ export class LedgerStore {
   setWorkerStatus(
     id: string,
     workerStatus: LedgerWorkerStatus,
-    actor: LedgerActorInput = {},
+    actor: LedgerActorInput,
     source: LedgerEventSource = "mandible",
   ): LedgerIssue {
     const existing = this.requireIssue(id);
@@ -696,7 +698,7 @@ export class LedgerStore {
     issueId: string,
     branch: string,
     role: LedgerIssueBranchRole = "primary",
-    actor: LedgerActorInput = {},
+    actor: LedgerActorInput,
     source: LedgerEventSource = "mandible",
   ): LedgerIssueBranch {
     const issue = this.requireIssue(issueId);
@@ -936,8 +938,8 @@ export class LedgerStore {
   applyImportedCommentPatch(
     id: string,
     patch: UpdateLedgerCommentPatch,
-    source: LedgerEventSource = "import",
-    actorInput: LedgerActorInput = { actor_type: "external_adapter" },
+    source: LedgerEventSource,
+    actorInput: LedgerActorInput,
   ): { changed: boolean; comment: LedgerComment } {
     const existing = this.getComment(id);
     const issue = this.requireIssue(existing.issue_id);
@@ -1017,7 +1019,7 @@ export class LedgerStore {
     return { changed: true, comment };
   }
 
-  updateComment(id: string, patch: UpdateLedgerCommentPatch, actorInput: UpdateLedgerCommentOptions = {}): LedgerComment {
+  updateComment(id: string, patch: UpdateLedgerCommentPatch, actorInput: UpdateLedgerCommentOptions): LedgerComment {
     const existing = this.getComment(id);
     const issue = this.requireIssue(existing.issue_id);
     const actor = this.resolveActor(actorInput);
@@ -1104,10 +1106,10 @@ export class LedgerStore {
     entity_id: string;
     next_body: string;
     payload: Record<string, unknown>;
-    actor?: LedgerActorInput;
+    actor: LedgerActorInput;
     occurred_at?: number;
   }): LedgerEvent | null {
-    const actor = this.resolveActor(input.actor ?? { actor_type: "system" });
+    const actor = this.resolveActor(input.actor);
     const now = input.occurred_at ?? Date.now();
     const emitted: LedgerSsePayload[] = [];
     const target = input.entity_type === "issue"
@@ -1170,7 +1172,7 @@ export class LedgerStore {
     label: string,
     present: boolean,
     source: LedgerEventSource = "mandible",
-    actor: LedgerActorInput = {},
+    actor: LedgerActorInput,
   ): { changed: boolean; label: LedgerLabel | null } {
     const issue = this.requireIssue(issueId);
     const emitted: LedgerSsePayload[] = [];
@@ -1241,7 +1243,7 @@ export class LedgerStore {
     const now = input.created_at ?? Date.now();
     const id = input.id ?? createLedgerId("rel", { now });
     const source = input.source ?? "mandible";
-    const actor = this.resolveActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor);
 
     const run = this.db.transaction(() => {
       const existing = this.db.prepare(
@@ -1336,7 +1338,7 @@ export class LedgerStore {
     const now = input.created_at ?? Date.now();
     const actionId = input.action_id ?? createLedgerId("edge", { now });
     const source = input.source ?? "mandible";
-    const actor = this.resolveActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor);
     const linkType = input.link_type ?? "references";
     const provenance = input.provenance ?? "manual";
     const note = normalizeOptionalText(input.note);
@@ -1480,7 +1482,7 @@ export class LedgerStore {
     const now = input.occurred_at ?? Date.now();
     const actionId = input.action_id ?? createLedgerId("edge", { now });
     const source = input.source ?? "mandible";
-    const actor = this.resolveActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor);
     const linkType = input.link_type ?? "references";
     const sourceEntity = this.resolveRelationshipEntity(input.source_entity);
     const targetEntities = uniqueRelationshipEntities(
@@ -1577,13 +1579,13 @@ export class LedgerStore {
 
   degradeCommentTargetRelationshipEdges(
     commentId: string,
-    input: { actor?: LedgerActorInput; source?: LedgerEventSource; occurred_at?: number } = {},
+    input: { actor: LedgerActorInput; source?: LedgerEventSource; occurred_at?: number },
   ): LedgerRelationshipEdge[] {
     const comment = this.getComment(commentId);
     const issue = this.requireIssue(comment.issue_id);
     const now = input.occurred_at ?? Date.now();
     const source = input.source ?? "system";
-    const actor = this.resolveActor(input.actor ?? { actor_type: "system" });
+    const actor = this.resolveActor(input.actor);
     const emitted: LedgerSsePayload[] = [];
 
     const run = this.db.transaction(() => {
@@ -1666,7 +1668,7 @@ export class LedgerStore {
   reconcileTextIssueReferences(input: ReconcileTextIssueReferencesInput): void {
     const sourceIssue = this.requireIssue(input.source_issue_id);
     const source = input.source ?? "mandible";
-    const actor = this.resolveActor(input.actor ?? {});
+    const actor = this.resolveActor(input.actor);
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
 
@@ -1738,6 +1740,7 @@ export class LedgerStore {
     const id = input.id ?? createLedgerId("xref", { now });
     const metadataJson = jsonStringify(input.metadata ?? {});
     const projectId = input.project_id ?? "";
+    const actor = this.resolveActor(input);
 
     const run = this.db.transaction(() => {
       const existing = this.db.prepare(
@@ -1805,11 +1808,11 @@ export class LedgerStore {
         entity_type: "external_ref",
         entity_id: ref.id,
         event_type: "external_ref.recorded",
-        actor_id: null,
-        actor_type: "system",
-        actor_user_id: SYSTEM_USER_ID,
-        evidence_method: "system_internal",
-        evidence_id: null,
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
         source,
         payload: { external_ref_id: ref.id, entity_type: input.entity_type, entity_id: input.entity_id },
         project_id: projectId,
@@ -1835,6 +1838,7 @@ export class LedgerStore {
     const remoteValueJson = jsonStringify(input.remote_value);
     const baseValueJson = jsonStringify(input.base_value ?? null);
     const status = input.status ?? "open";
+    const actor = this.resolveActor(input);
 
     const run = this.db.transaction(() => {
       const existing = this.db.prepare(
@@ -1882,11 +1886,11 @@ export class LedgerStore {
         entity_type: "conflict",
         entity_id: id,
         event_type: "conflict.created",
-        actor_id: null,
-        actor_type: "system",
-        actor_user_id: SYSTEM_USER_ID,
-        evidence_method: "system_internal",
-        evidence_id: null,
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
         source,
         payload: { conflict_id: id, entity_type: input.entity_type, entity_id: input.entity_id },
         project_id: projectId,
@@ -1940,10 +1944,16 @@ export class LedgerStore {
     return conflict;
   }
 
-  markOutbox(id: string, status: LedgerOutboxStatus, patch: MarkOutboxPatch = {}): LedgerOutbox {
+  markOutbox(
+    id: string,
+    status: LedgerOutboxStatus,
+    patch: MarkOutboxPatch,
+    actorInput: LedgerActorInput,
+  ): LedgerOutbox {
     const existing = this.requireOutbox(id);
     const emitted: LedgerSsePayload[] = [];
     const now = Date.now();
+    const actor = this.resolveActor(actorInput);
 
     const run = this.db.transaction(() => {
       this.db.prepare(
@@ -1962,11 +1972,11 @@ export class LedgerStore {
         entity_type: "outbox",
         entity_id: id,
         event_type: "outbox.updated",
-        actor_id: null,
-        actor_type: "system",
-        actor_user_id: SYSTEM_USER_ID,
-        evidence_method: "system_internal",
-        evidence_id: null,
+        actor_id: actor.actor_id,
+        actor_type: actor.actor_type,
+        actor_user_id: actor.actor_user_id,
+        evidence_method: actor.evidence_method,
+        evidence_id: actor.evidence_id,
         source: "system",
         payload: { outbox_id: id, status },
         project_id: existing.project_id,
@@ -2812,14 +2822,14 @@ function normalizeActor(input: LedgerActorInput): {
  * A ledger write actor after user-attribution resolution (umbrella 8e2e8b2 /
  * issue 92813cc). `actor_id`/`actor_type` are the legacy provenance columns
  * (hashed into stable ids); `actor_user_id`/`evidence_method`/`evidence_id` are
- * the parallel user-principal columns. `actor_user_id` is null for legacy
- * callers that pass no attribution, which is a valid "legacy/unresolved" state.
+ * the parallel user-principal columns. New writes always carry a non-null
+ * `actor_user_id`; only rows predating the attribution migration may be NULL.
  */
-interface ResolvedActor {
+interface ResolvedActor extends LedgerActorInput {
   actor_id: string | null;
   actor_type: LedgerActorType;
-  actor_user_id: string | null;
-  evidence_method: string | null;
+  actor_user_id: string;
+  evidence_method: string;
   evidence_id: string | null;
 }
 

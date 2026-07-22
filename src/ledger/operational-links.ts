@@ -686,6 +686,7 @@ function maybeRecordLinkEvent(
   new LedgerStore(db).recordEvent({
     ...input,
     actor_type: "system",
+    attribution: systemAction(),
     enqueueOutbox: false,
   });
 }

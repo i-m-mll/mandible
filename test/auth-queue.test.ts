@@ -8,9 +8,12 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { AuthHookManager } from "../src/auth-hooks.js";
 import { migrate } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
+
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
@@ -108,6 +111,7 @@ function createLedgerIssue(
   title = `Issue ${shortId}`,
 ) {
   return new LedgerStore(db).createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: "Body",
@@ -870,6 +874,7 @@ describe("auth queue", () => {
         status: "running",
       });
       new LedgerStore(db).addIssueCheckpoint(parent.id, {
+        ...SYSTEM_ACTOR,
         kind: "parent-role",
         payload: { session_id: "parent-thread", mechanism: "thread", assumed_at: Date.now() },
         actor_type: "mandible_user",
