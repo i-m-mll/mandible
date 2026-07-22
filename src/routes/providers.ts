@@ -7,16 +7,16 @@ import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scann
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } from "../artifact-content.js";
 import {
-  addArtifactBundleMembers,
+  addArtifactBundleMembersAsync,
   associateProjectArtifact,
-  createArtifactBundle,
+  createArtifactBundleAsync,
   getArtifactBundle,
   getArtifact,
   getProviderCapabilities,
   getProviderDetail,
   getProviderHealth,
   getArtifactDraft,
-  ingestArtifact,
+  ingestArtifactAsync,
   ingestProviderManifest,
   ingestProviderManifestFile,
   deleteArtifactDraft,
@@ -26,11 +26,11 @@ import {
   listArtifacts,
   listProjectArtifactAssociations,
   listProviders,
-  planLocalArtifactPath,
+  planLocalArtifactPathAsync,
   projectArtifactPublicValue,
   publishArtifactDraft,
   recordArtifactVersion,
-  registerLocalArtifactPath,
+  registerLocalArtifactPathAsync,
   registerProvider,
   resolveAndLinkArtifact,
   resolveArtifactRef,
@@ -38,7 +38,7 @@ import {
   resolveArtifactVersionHistory,
   rebaseArtifactDraft,
   saveArtifactDraft,
-  snapshotArtifactBytes,
+  snapshotArtifactBytesAsync,
 } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
 import { sendJson } from "./http.js";
@@ -168,7 +168,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/artifacts/ingest", (req, res) => {
+  app.post("/api/artifacts/ingest", async (req, res) => {
     try {
       const body = bodyRecord(req);
       const localPath = typeof body.path === "string" && body.path.trim()
@@ -177,18 +177,18 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
           ? body.local_path
           : undefined;
       if (localPath) {
-        const result = registerLocalArtifactPath(getDb(), { ...body, path: localPath });
+        const result = await registerLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
         sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
         return;
       }
-      const artifact = ingestArtifact(getDb(), body);
+      const artifact = await ingestArtifactAsync(getDb(), body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);
     }
   }, { fileRpc: "allow" });
 
-  app.post("/api/artifacts/plan", (req, res) => {
+  app.post("/api/artifacts/plan", async (req, res) => {
     try {
       const body = bodyRecord(req);
       const localPath = typeof body.path === "string" && body.path.trim()
@@ -200,7 +200,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "path is required" });
         return;
       }
-      const plan = planLocalArtifactPath(getDb(), { ...body, path: localPath });
+      const plan = await planLocalArtifactPathAsync(getDb(), { ...body, path: localPath });
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { plan }));
     } catch (error) {
       handleError(res, error);
@@ -393,9 +393,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { fileRpc: "allow" });
 
-  app.post("/api/artifacts/snapshot", (req, res) => {
+  app.post("/api/artifacts/snapshot", async (req, res) => {
     try {
-      const artifact = snapshotArtifactBytes(getDb(), bodyRecord(req));
+      const artifact = await snapshotArtifactBytesAsync(getDb(), bodyRecord(req));
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);
@@ -543,20 +543,20 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
   }, { fileRpc: "allow" });
 
-  app.post("/api/artifacts/bundles", (req, res) => {
+  app.post("/api/artifacts/bundles", async (req, res) => {
     try {
-      const result = createArtifactBundle(getDb(), bodyRecord(req) as unknown as Parameters<typeof createArtifactBundle>[1]);
+      const result = await createArtifactBundleAsync(getDb(), bodyRecord(req) as unknown as Parameters<typeof createArtifactBundleAsync>[1]);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
     }
   }, { fileRpc: "allow" });
 
-  app.post("/api/artifacts/bundles/:id/members", (req, res) => {
+  app.post("/api/artifacts/bundles/:id/members", async (req, res) => {
     try {
       const body = bodyRecord(req);
       const members = Array.isArray(body.members) ? body.members : [];
-      const result = addArtifactBundleMembers(getDb(), req.params.id, members as Parameters<typeof addArtifactBundleMembers>[2]);
+      const result = await addArtifactBundleMembersAsync(getDb(), req.params.id, members as Parameters<typeof addArtifactBundleMembersAsync>[2]);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);

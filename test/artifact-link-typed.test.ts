@@ -82,12 +82,14 @@ function createResponse(): ResponseLike & { statusCode: number; payload: unknown
   };
 }
 
-function postRoute(routePath: string, body: Record<string, unknown>): { statusCode: number; payload: any } {
+async function postRoute(routePath: string, body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   const routes = new TestRoutes();
   registerProviderRoutes(routes);
   const req = { method: "POST", url: routePath, params: {}, query: {}, body } as RequestLike;
   const res = createResponse();
-  routes.handler("POST", routePath)(req, res);
+  // Several artifact routes (ingest/plan/snapshot/bundles) are async because
+  // their file read+hash runs in the off-thread ingest pool; await the handler.
+  await routes.handler("POST", routePath)(req, res);
   return { statusCode: res.statusCode, payload: res.payload };
 }
 function getRoute(
@@ -110,13 +112,13 @@ function getGraphRoute(query: Record<string, string>): { statusCode: number; pay
   routes.handler("GET", "/api/graph")(req, res);
   return { statusCode: res.statusCode, payload: res.payload };
 }
-function postLink(body: Record<string, unknown>): { statusCode: number; payload: any } {
+function postLink(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   return postRoute("/api/artifacts/link", body);
 }
-function postIngest(body: Record<string, unknown>): { statusCode: number; payload: any } {
+function postIngest(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   return postRoute("/api/artifacts/ingest", body);
 }
-function postSnapshot(body: Record<string, unknown>): { statusCode: number; payload: any } {
+function postSnapshot(body: Record<string, unknown>): Promise<{ statusCode: number; payload: any }> {
   return postRoute("/api/artifacts/snapshot", body);
 }
 
@@ -485,10 +487,10 @@ describe("evidence links must be pinned", () => {
     expect(link!.artifact_id).toBe(head.id);
   });
 
-  it("rejects a living issue-evidence link at the ROUTE (POST /api/artifacts/link)", () => {
+  it("rejects a living issue-evidence link at the ROUTE (POST /api/artifacts/link)", async () => {
     const issueId = createLedgerIssue("issueevidenceroute");
     const { seriesId } = makeSeriesWithHead("series-evidence-route", "v1\n");
-    const res = postLink({
+    const res = await postLink({
       ref: seriesId,
       entity_type: "issue",
       entity_id: issueId,
@@ -499,10 +501,10 @@ describe("evidence links must be pinned", () => {
     expect(res.payload).toEqual({ error: "evidence_links_must_be_pinned" });
   });
 
-  it("the route creates a living references link end to end", () => {
+  it("the route creates a living references link end to end", async () => {
     const issueId = createLedgerIssue("issuerouteok");
     const { seriesId, head } = makeSeriesWithHead("series-route-ok", "v1\n");
-    const res = postLink({
+    const res = await postLink({
       ref: seriesId,
       entity_type: "issue",
       entity_id: issueId,
@@ -520,7 +522,7 @@ describe("evidence links must be pinned", () => {
 // ingest (which forwards caller-supplied link/links straight to the upsert)
 // cannot bypass the route + resolveAndLinkArtifact guards.
 describe("chokepoint enforcement in registerArtifactLink", () => {
-  it("projects provider manifest ingest and provider detail responses", () => {
+  it("projects provider manifest ingest and provider detail responses", async () => {
     const body = {
       provider_id: "provider-public-ids",
       manifest: {
@@ -528,8 +530,8 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
         artifacts: [{ id: "report", content: "report\n" }],
       },
     };
-    const registered = postRoute("/api/providers/register-manifest", body);
-    const ingested = postRoute("/api/provider-manifests/ingest", body);
+    const registered = await postRoute("/api/providers/register-manifest", body);
+    const ingested = await postRoute("/api/provider-manifests/ingest", body);
     const detail = getRoute("/api/providers/:id", { id: "provider-public-ids" });
 
     for (const response of [registered, ingested, detail]) {
@@ -547,13 +549,13 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(JSON.stringify(graph.payload)).not.toContain("artifact:sha256:");
   });
 
-  it("projects repository-scan artifact responses", () => {
+  it("projects repository-scan artifact responses", async () => {
     const repoRoot = path.join(tempDir, "scan-repo");
     fs.mkdirSync(path.join(repoRoot, "results"), { recursive: true });
     fs.writeFileSync(path.join(repoRoot, "results", "summary.md"), "# Summary\n", "utf8");
     createProjectCheckout("scan-provider", repoRoot);
 
-    const response = postRoute("/api/artifacts/scan-repos", {
+    const response = await postRoute("/api/artifacts/scan-repos", {
       roots: [{ root: repoRoot, repo_id: "scan-provider" }],
       register: true,
     });
@@ -563,9 +565,9 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(JSON.stringify(response.payload)).not.toContain("artifact:sha256:");
   });
 
-  it("emits current compact ids from ingest and snapshot APIs", () => {
-    const ingest = postIngest({ content: "ingest output\n", custody_mode: "copy" });
-    const snapshot = postSnapshot({ content: "snapshot output\n", custody_mode: "managed" });
+  it("emits current compact ids from ingest and snapshot APIs", async () => {
+    const ingest = await postIngest({ content: "ingest output\n", custody_mode: "copy" });
+    const snapshot = await postSnapshot({ content: "snapshot output\n", custody_mode: "managed" });
     for (const response of [ingest, snapshot]) {
       expect(response.statusCode).toBe(200);
       expect(response.payload.artifact.id).toMatch(/^artifact:[a-f0-9]{12,64}$/);
@@ -573,10 +575,10 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     }
   });
 
-  it("rejects a living issue+evidence link forwarded through POST /api/artifacts/ingest", () => {
+  it("rejects a living issue+evidence link forwarded through POST /api/artifacts/ingest", async () => {
     const issueId = createLedgerIssue("issueingestev");
     const { seriesId } = makeSeriesWithHead("series-ingest-ev", "v1\n");
-    const res = postIngest({
+    const res = await postIngest({
       media_type: "application/json",
       json: { payload: "evidence" },
       link: {
@@ -637,9 +639,9 @@ describe("chokepoint enforcement in registerArtifactLink", () => {
     expect(row).toEqual({ link_kind: "living", series_id: seriesId, artifact_id: null });
   });
 
-  it("leaves the pinned ingest path unaffected (default link_kind, no series required)", () => {
+  it("leaves the pinned ingest path unaffected (default link_kind, no series required)", async () => {
     const issueId = createLedgerIssue("issuepinnedingest");
-    const res = postIngest({
+    const res = await postIngest({
       media_type: "application/json",
       json: { payload: "pinned" },
       link: {
