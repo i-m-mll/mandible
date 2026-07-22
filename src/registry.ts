@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_active TEXT,
   channel_connected_at INTEGER,
   channel_last_tool_call INTEGER,
-  owner_user_id TEXT,
+  owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
@@ -207,13 +207,8 @@ function ensureSessionColumns(db: SqliteDatabase): void {
     db.exec("ALTER TABLE sessions ADD COLUMN conversation_id TEXT");
   }
   if (!names.has("owner_user_id")) {
-    const hasUsers = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'users'")
-      .get();
     db.exec(
-      hasUsers
-        ? "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL"
-        : "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT",
+      "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL",
     );
   }
 }
