@@ -214,7 +214,7 @@ describe("auth request action execution", () => {
       expect(completionEvent).toEqual({
         actor_type: "system",
         actor_user_id: systemAction().user_id,
-        evidence_method: "hardware_presence",
+        evidence_method: "credential_signature",
         evidence_id: finalized.execution_evidence_id,
       });
       const evidence = db.prepare("SELECT details_json FROM attribution_evidence WHERE id = ?")
@@ -222,7 +222,13 @@ describe("auth request action execution", () => {
       expect(JSON.parse(evidence.details_json)).toMatchObject({
         authorizer_user_id: finalized.approved_by_user_id,
         executor_user_id: systemAction().user_id,
+        verified: false,
+        authorization_evidence_method: "hardware_presence",
       });
+      const authorizationEvidenceId = JSON.parse(evidence.details_json)
+        .authorization_evidence_id as string;
+      expect(db.prepare("SELECT evidence_method FROM attribution_evidence WHERE id = ?")
+        .get(authorizationEvidenceId)).toEqual({ evidence_method: "hardware_presence" });
 
       expect(queue.listActions(request.id).map((action) => action.state)).toEqual([
         "applied",

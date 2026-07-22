@@ -201,6 +201,7 @@ export function registerAuthRoutes(
       requested_by_user_id: request.requested_by_user_id,
       approved_by_user_id: request.approved_by_user_id,
       execution_evidence_id: request.execution_evidence_id,
+      signature_verification: authQueue.getSignatureVerification(request.id),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
       // Bug: 4e32923 — include scoping fields omitted from the original response literal

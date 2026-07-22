@@ -211,8 +211,8 @@
       "description": "Update mutable fields on a user (display name, email, status)."
     },
     {
-      "name": "mandible user credential add <ref> --type <t> --fingerprint <f> [--public-material <m>] [--label <l>] [--json]",
-      "description": "Add an immutable credential (ssh_key|yubikey_recipient|delegated_ssh_key|api_token). At most one active credential per fingerprint; no private key material is accepted."
+      "name": "mandible user credential add <ref> (--type <t> --fingerprint <f> [--public-material <m>] | --from-git-signingkey) [--label <l>] [--json]",
+      "description": "Add an immutable credential (ssh_key|yubikey_recipient|delegated_ssh_key|api_token), or derive an ssh_key credential from git user.signingkey. At most one active credential per fingerprint; no private key material is accepted."
     },
     {
       "name": "mandible user credential revoke <id> [--json]",
