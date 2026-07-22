@@ -291,6 +291,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   setDaemonReady(true);
   logger("info", "daemon_ready", { port: actualPort });
 
+  // Visible-first boot no longer requests /api/work/repos on every route, so
+  // start the yielding scanner explicitly. Its completion event advances the
+  // warm tier after the first reconciliation pass, even when a recent scan is
+  // reused from the persisted skip window.
+  void workScanner.scanAllAsync({ skip_recent: true }).catch((error) => {
+    logger("warn", "startup_work_scan_failed", { error: String(error) });
+  });
+
   // Resolve the startup epoch after critical readiness. A slow git process must
   // not delay mutation safety; health temporarily reports an unknown epoch and
   // rebuild clients continue polling until the real commit is available.
