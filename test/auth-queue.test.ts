@@ -836,6 +836,407 @@ describe("auth queue", () => {
     }
   });
 
+  it("resolves a committed unit via the branch snapshot hash after the branch is deleted (batched)", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/snap-child", { "child.txt": "child\n" });
+      const childHead = git(repo, ["rev-parse", "feature/snap-child"]);
+      git(repo, ["checkout", "-b", "integration/snap-batch", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/snap-child", "-m", "merge child work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/snap-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/snap-batch", "-m", "merge integration"]);
+      // Delete the branch: only the last_commit_hash snapshot proves containment,
+      // which for-each-ref --merged could never see.
+      git(repo, ["branch", "-D", "feature/snap-child"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/snap-child', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-snap', 'snap123', ?, 'feature/snap-child', 'partition', 'committed', ?)`
+      ).run(path.basename(repo), now);
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/snap-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/snap-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      queue.setResult(request.id, 0, "ok");
+
+      expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-snap'").get())
+        .toEqual({ state: "resolved", resolved_at: now });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("does not resolve a squash-merged committed unit whose original tip is unreachable (batched)", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      // Unrelated integration branch supplies a valid, mergeable request head.
+      git(repo, ["checkout", "-b", "integration/squash-batch", "main"]);
+      writeFile(repo, "unrelated.txt", "unrelated\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "integration work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/squash-batch"]);
+
+      // The child's work reaches main through a squash commit, so its original
+      // tip is not an ancestor of main or of the request head.
+      commitOnBranch(repo, "feature/squash-child", { "squash.txt": "squash\n" });
+      const childHead = git(repo, ["rev-parse", "feature/squash-child"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--squash", "feature/squash-child"]);
+      git(repo, ["commit", "-m", "squash child work"]);
+      git(repo, ["branch", "-D", "feature/squash-child"]);
+      git(repo, ["merge", "--no-ff", "integration/squash-batch", "-m", "merge integration"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/squash-child', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-squash', 'squash123', ?, 'feature/squash-child', 'partition', 'committed', ?)`
+      ).run(path.basename(repo), now);
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/squash-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/squash-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      queue.setResult(request.id, 0, "ok");
+
+      expect(db.prepare(
+        "SELECT state, resolved_at FROM work_units WHERE id = 'wu-squash'",
+      ).get()).toEqual({ state: "committed", resolved_at: null });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("batches ancestry checks into a bounded number of git spawns", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const rp = fs.realpathSync(repo);
+    const db = createMigratedDb();
+    const traceDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-git-trace-"));
+    const traceLog = path.join(traceDir, "git-calls.log");
+    const realGit = execFileSync("which", ["git"], { encoding: "utf8" }).trim();
+    const shim = path.join(traceDir, "git");
+    fs.writeFileSync(
+      shim,
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(traceLog)}\nexec ${JSON.stringify(realGit)} "$@"\n`,
+      { mode: 0o755 },
+    );
+    try {
+      git(repo, ["checkout", "-b", "integration/budget-batch", "main"]);
+      writeFile(repo, "budget.txt", "budget\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "integration work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/budget-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/budget-batch", "-m", "merge integration"]);
+
+      registerWorkRepo(db, repo);
+      // 50 committed candidate rows in one repo, each with a distinct branch and a
+      // (deliberately unresolvable) 40-hex snapshot hash so the batch probes both
+      // targets and the tip map exactly once, not per row.
+      const dummyHash = "0".repeat(40);
+      const insertBranch = db.prepare(
+        "INSERT INTO branches (repo_root, branch, last_commit_hash) VALUES (?, ?, ?)",
+      );
+      const insertUnit = db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES (?, ?, ?, ?, 'partition', 'committed', ?)`,
+      );
+      for (let i = 0; i < 50; i += 1) {
+        const branch = `feature/budget-${i}`;
+        insertBranch.run(rp, branch, dummyHash);
+        insertUnit.run(`wu-budget-${i}`, `budget${i}`, path.basename(repo), branch, now);
+      }
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/budget-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: rp,
+        target_repo_root: rp,
+        base_branch: "main",
+        head_branch: "integration/budget-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      const prevPath = process.env.PATH;
+      process.env.PATH = `${traceDir}${path.delimiter}${prevPath ?? ""}`;
+      try {
+        now = 1000;
+        queue.setResult(request.id, 0, "ok");
+      } finally {
+        process.env.PATH = prevPath;
+      }
+      queue.dispose();
+
+      const lines = fs.readFileSync(traceLog, "utf8").split("\n").map((l) => l.trim()).filter(Boolean);
+      const revListSpawns = lines.filter((l) => l.startsWith("rev-list ") && !l.includes("--count")).length;
+      const forEachRefSpawns = lines.filter((l) => l.startsWith("for-each-ref ")).length;
+      // 2 targets (merge_head_sha, refs/heads/main) + 1 tip map for 50 rows.
+      expect(revListSpawns + forEachRefSpawns).toBeLessThanOrEqual(4);
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(traceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("retires stale abandoned units from future scans without deleting them, sparing fresh rows", () => {
+    let now = 10_000;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      git(repo, ["checkout", "-b", "integration/retire-batch", "main"]);
+      writeFile(repo, "retire.txt", "retire\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "integration work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/retire-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/retire-batch", "-m", "merge integration"]);
+
+      registerWorkRepo(db, repo);
+      // Stale abandoned row: aged well past the retention window; never merged.
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-stale-retire', 'stale123', ?, 'feature/retire-stale', 'partition', 'abandoned', 0)`
+      ).run(path.basename(repo));
+      // Fresh abandoned row: created now, must not be retired.
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-fresh-retire', 'fresh123', ?, 'feature/retire-fresh', 'partition', 'abandoned', ?)`
+      ).run(path.basename(repo), now);
+
+      const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/retire-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/retire-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      queue.setResult(request.id, 0, "ok");
+
+      // Retired, but not deleted: row survives with its abandoned state.
+      expect(db.prepare(
+        "SELECT state, merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-retire'",
+      ).get()).toEqual({ state: "abandoned", merge_scan_retired_at: now });
+      // Fresh row is untouched.
+      expect(db.prepare(
+        "SELECT state, merge_scan_retired_at FROM work_units WHERE id = 'wu-fresh-retire'",
+      ).get()).toEqual({ state: "abandoned", merge_scan_retired_at: null });
+
+      // Re-running the finalizer sweep changes nothing (NULL-guarded idempotency).
+      (queue as unknown as { resolveWorkUnitsOnMerge(r: unknown): void })
+        .resolveWorkUnitsOnMerge(queue.getRequest(request.id));
+      expect(db.prepare(
+        "SELECT merge_scan_retired_at FROM work_units WHERE id = 'wu-stale-retire'",
+      ).get()).toEqual({ merge_scan_retired_at: now });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("excludes an already-retired abandoned unit from a later merge that contains its branch", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      // The child branch really is merged, so absent retirement it would resolve.
+      commitOnBranch(repo, "feature/excluded-child", { "child.txt": "child\n" });
+      const childHead = git(repo, ["rev-parse", "feature/excluded-child"]);
+      git(repo, ["checkout", "-b", "integration/excluded-batch", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/excluded-child", "-m", "merge child work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/excluded-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/excluded-batch", "-m", "merge integration"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/excluded-child', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      // Pre-retired by a prior sweep: excluded from the candidate query entirely.
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at, merge_scan_retired_at)
+         VALUES ('wu-excluded', 'excl123', ?, 'feature/excluded-child', 'partition', 'abandoned', 0, 5)`
+      ).run(path.basename(repo));
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/excluded-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/excluded-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      queue.setResult(request.id, 0, "ok");
+
+      expect(db.prepare(
+        "SELECT state, resolved_at FROM work_units WHERE id = 'wu-excluded'",
+      ).get()).toEqual({ state: "abandoned", resolved_at: null });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves a stale abandoned unit that the current merge contains before retiring it", () => {
+    let now = 10_000;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/order-child", { "child.txt": "child\n" });
+      const childHead = git(repo, ["rev-parse", "feature/order-child"]);
+      git(repo, ["checkout", "-b", "integration/order-batch", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/order-child", "-m", "merge child work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/order-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/order-batch", "-m", "merge integration"]);
+      git(repo, ["branch", "-D", "feature/order-child"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/order-child', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      // Stale (created_at 0) and not yet retired: the scan must still get it.
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-order', 'order123', ?, 'feature/order-child', 'partition', 'abandoned', 0)`
+      ).run(path.basename(repo));
+
+      const queue = new AuthQueue({ db, now: () => now, workUnitAbandonedScanRetentionMs: 1000 });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/order-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/order-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      queue.setResult(request.id, 0, "ok");
+
+      // Resolved in the same pass; the sweep only touches rows still abandoned,
+      // so this resolved row is never retired.
+      expect(db.prepare(
+        "SELECT state, resolved_at, merge_scan_retired_at FROM work_units WHERE id = 'wu-order'",
+      ).get()).toEqual({ state: "resolved", resolved_at: now, merge_scan_retired_at: null });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("scans and does not throw when work_units lacks the retirement column", () => {
+    let now = 0;
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    // Simulate a lightweight DB whose work_units predates migration 107.
+    db.exec("ALTER TABLE work_units DROP COLUMN merge_scan_retired_at");
+    try {
+      commitOnBranch(repo, "feature/nocol-child", { "child.txt": "child\n" });
+      const childHead = git(repo, ["rev-parse", "feature/nocol-child"]);
+      git(repo, ["checkout", "-b", "integration/nocol-batch", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/nocol-child", "-m", "merge child work"]);
+      const integrationHead = git(repo, ["rev-parse", "integration/nocol-batch"]);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "integration/nocol-batch", "-m", "merge integration"]);
+      git(repo, ["branch", "-D", "feature/nocol-child"]);
+
+      registerWorkRepo(db, repo);
+      db.prepare(
+        `INSERT INTO branches (repo_root, branch, last_commit_hash)
+         VALUES (?, 'feature/nocol-child', ?)`
+      ).run(fs.realpathSync(repo), childHead);
+      db.prepare(
+        `INSERT INTO work_units (id, issue_id, repo_id, branch, kind, state, created_at)
+         VALUES ('wu-nocol', 'nocol123', ?, 'feature/nocol-child', 'partition', 'committed', ?)`
+      ).run(path.basename(repo), now);
+
+      const queue = new AuthQueue({ db, now: () => now });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge integration/nocol-batch --into main",
+        title: "Merge integration",
+        repo: path.basename(repo),
+        cwd: repo,
+        base_branch: "main",
+        head_branch: "integration/nocol-batch",
+        merge_head_sha: integrationHead,
+        execution_mode: "remote",
+      });
+
+      now = 1000;
+      expect(() => queue.setResult(request.id, 0, "ok")).not.toThrow();
+      expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-nocol'").get())
+        .toEqual({ state: "resolved", resolved_at: now });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("archives only reliably linked terminal Codex worker threads after successful merge", () => {
     const archived: string[] = [];
     const db = createMigratedDb();

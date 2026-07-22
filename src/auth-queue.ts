@@ -148,6 +148,104 @@ export interface AuthQueueOptions {
   hookManager?: AuthHookManager;
   autoApprover?: AuthAutoApprover;
   codexThreadArchiver?: CodexThreadArchiver;
+  // Issue 93d978e — override the abandoned-work-unit merge-scan retention
+  // window (default 30 days) so tests can exercise the retirement sweep.
+  workUnitAbandonedScanRetentionMs?: number;
+}
+
+const SHA40_RE = /^[0-9a-f]{40}$/i;
+const REFS_HEADS_PREFIX = "refs/heads/";
+
+/**
+ * Issue 93d978e — batches merge-side work-unit ancestry checks.
+ *
+ * Replaces per-row `git merge-base --is-ancestor` spawns with a lazily built
+ * per-`(repoRoot, target)` reachable-commit hash set (one `git rev-list <target>`)
+ * plus one `git for-each-ref refs/heads` tip map per root. This is provably
+ * equivalent to the per-row check: `is-ancestor A B` ⇔ `A ∈ rev-list(B)`
+ * (inclusive of B itself). Unlike `for-each-ref --merged`, the reachable-set
+ * approach still resolves deleted-branch `last_commit_hash` snapshots and
+ * request-head-only evidence, so it preserves current semantics exactly.
+ *
+ * One instance is constructed per `workUnitsMergedByRequest` call and never
+ * shared across requests — the repo state has changed by definition. Any git
+ * failure resolves to `false`, matching the previous `gitIsAncestor` catch-all.
+ */
+class AncestryBatch {
+  // key = `${root}\0${target}`; null = rev-list failed (cached, no re-spawn).
+  private readonly reachable = new Map<string, Set<string> | null>();
+  // per-root branch tip map; null = for-each-ref failed.
+  private readonly tips = new Map<string, Map<string, string> | null>();
+
+  isAncestor(root: string, candidate: string, target: string): boolean {
+    let resolved: string | null;
+    if (SHA40_RE.test(candidate)) {
+      resolved = candidate.toLowerCase();
+    } else if (candidate.startsWith(REFS_HEADS_PREFIX)) {
+      const name = candidate.slice(REFS_HEADS_PREFIX.length);
+      resolved = this.tipsFor(root)?.get(name) ?? null;
+    } else {
+      resolved = null;
+    }
+    if (!resolved) return false;
+    const set = this.reachableFor(root, target);
+    return set ? set.has(resolved) : false;
+  }
+
+  private reachableFor(root: string, target: string): Set<string> | null {
+    const key = `${root}\0${target}`;
+    const cached = this.reachable.get(key);
+    if (cached !== undefined) return cached;
+    let result: Set<string> | null = null;
+    try {
+      const out = execFileSync("git", ["rev-list", target], {
+        cwd: root,
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 10000,
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      result = new Set<string>();
+      for (const line of out.split("\n")) {
+        const sha = line.trim().toLowerCase();
+        if (sha) result.add(sha);
+      }
+    } catch {
+      result = null;
+    }
+    this.reachable.set(key, result);
+    return result;
+  }
+
+  private tipsFor(root: string): Map<string, string> | null {
+    const cached = this.tips.get(root);
+    if (cached !== undefined) return cached;
+    let result: Map<string, string> | null = null;
+    try {
+      const out = execFileSync(
+        "git",
+        ["for-each-ref", "--format=%(objectname) %(refname)", REFS_HEADS_PREFIX],
+        { cwd: root, encoding: "utf8", stdio: "pipe", timeout: 5000 },
+      );
+      result = new Map<string, string>();
+      for (const line of out.split("\n")) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        const space = trimmed.indexOf(" ");
+        if (space < 0) continue;
+        const sha = trimmed.slice(0, space).toLowerCase();
+        const refname = trimmed.slice(space + 1);
+        const name = refname.startsWith(REFS_HEADS_PREFIX)
+          ? refname.slice(REFS_HEADS_PREFIX.length)
+          : refname;
+        result.set(name, sha);
+      }
+    } catch {
+      result = null;
+    }
+    this.tips.set(root, result);
+    return result;
+  }
 }
 
 export class AuthQueue {
@@ -159,6 +257,13 @@ export class AuthQueue {
   private readonly hookManager: AuthHookManager;
   private readonly autoApprover?: AuthAutoApprover;
   private readonly codexThreadArchiver: CodexThreadArchiver;
+  // Issue 93d978e — abandoned work units older than this window are retired
+  // from merge-side ancestry scans (reversible tombstone, not deletion).
+  private readonly workUnitAbandonedScanRetentionMs: number;
+  // Issue 93d978e — memoized presence of work_units.merge_scan_retired_at.
+  // Lightweight test DBs that create work_units ad hoc lack the column; when
+  // absent, both the scan filter and the retirement sweep are skipped.
+  private workUnitRetirementColumn: boolean | undefined;
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly executionEnvs = new Map<string, NodeJS.ProcessEnv>();
   private executionChain: Promise<void> = Promise.resolve();
@@ -187,6 +292,8 @@ export class AuthQueue {
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
     this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
+    this.workUnitAbandonedScanRetentionMs =
+      options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
     this.recoverSelfMergeShutdown();
@@ -2600,6 +2707,28 @@ export class AuthQueue {
       }
     }
 
+    // Issue 93d978e — retire abandoned rows that have aged past the retention
+    // window from future merge-side ancestry scans. Runs AFTER the step 3 scan
+    // so the current merge still gets its chance at every stale row. This is a
+    // reversible tombstone (clearing merge_scan_retired_at re-admits the row),
+    // not a deletion — state and provenance are preserved. The NULL guard keeps
+    // it idempotent across finalizer re-runs.
+    if (this.workUnitsHaveRetirementColumn()) {
+      const retireCutoff = now - this.workUnitAbandonedScanRetentionMs;
+      const retired = this.db.prepare(
+        `UPDATE work_units SET merge_scan_retired_at = ?
+         WHERE state = 'abandoned' AND merge_scan_retired_at IS NULL
+           AND COALESCE(last_commit_at, continuation_at, activated_at, created_at) < ?`
+      ).run(now, retireCutoff);
+      if (retired.changes > 0) {
+        authLog("info", "auth_work_units_scan_retired", {
+          subsystem: "auth",
+          auth_request_id: completed.id,
+          retired_count: retired.changes,
+        });
+      }
+    }
+
     // 4. Match by explicit close-on-merge issue IDs. Mandible-Issue trailers and
     // issue_references are provenance links, not completion signals.
     const allIssueIds = [...explicitClosureIssueRefs];
@@ -2667,6 +2796,25 @@ export class AuthQueue {
     }
   }
 
+  // Issue 93d978e — memoized presence of the merge_scan_retired_at column.
+  // Lightweight test DBs that create work_units ad hoc lack it; when false,
+  // the retirement filter and sweep are skipped so behavior matches pre-107.
+  private workUnitsHaveRetirementColumn(): boolean {
+    if (this.workUnitRetirementColumn === undefined) {
+      try {
+        const cols = this.db
+          .prepare("PRAGMA table_info(work_units)")
+          .all() as Array<{ name: string }>;
+        this.workUnitRetirementColumn = cols.some(
+          (col) => col.name === "merge_scan_retired_at",
+        );
+      } catch {
+        this.workUnitRetirementColumn = false;
+      }
+    }
+    return this.workUnitRetirementColumn;
+  }
+
   private workUnitsMergedByRequest(completed: AuthRequest): Array<{
     id: string;
     issue_id: string;
@@ -2675,6 +2823,11 @@ export class AuthQueue {
     if (completed.type !== "merge" || !completed.base_branch) {
       return [];
     }
+    // Issue 93d978e — retired abandoned rows are excluded from merge scans;
+    // guarded so DBs without the column behave exactly as before.
+    const retirementFilter = this.workUnitsHaveRetirementColumn()
+      ? "AND (wu.state != 'abandoned' OR wu.merge_scan_retired_at IS NULL)"
+      : "";
     const candidates = this.db.prepare(
       `SELECT
          wu.id,
@@ -2689,6 +2842,7 @@ export class AuthQueue {
        LEFT JOIN branches b ON b.branch = wu.branch
        WHERE wu.state IN ('open', 'committed', 'abandoned')
          AND wu.branch IS NOT NULL
+         ${retirementFilter}
          AND (wu.auth_request_id IS NULL OR wu.auth_request_id = ?)
        ORDER BY wu.id`
     ).all(completed.id) as Array<{
@@ -2703,6 +2857,9 @@ export class AuthQueue {
     }>;
 
     const repoRoots = this.authRequestRepoRoots(completed);
+    // Issue 93d978e — one batch per call; the reachable-commit sets and branch
+    // tip maps are cached for this request only (the repo changed by definition).
+    const batch = new AncestryBatch();
     const resolved = new Map<string, {
       id: string;
       issue_id: string;
@@ -2728,6 +2885,7 @@ export class AuthQueue {
         lastCommitHash,
         completed,
         { requestHeadOnly: row.state === "abandoned" },
+        batch,
       ))) {
         resolved.set(row.id, {
           id: row.id,
@@ -2822,6 +2980,7 @@ export class AuthQueue {
     lastCommitHash: string | null,
     completed: AuthRequest,
     options: { requestHeadOnly?: boolean } = {},
+    batch?: AncestryBatch,
   ): boolean {
     // Abandoned work needs request-specific evidence; base ancestry alone can
     // match stale work that landed before this auth request.
@@ -2840,9 +2999,15 @@ export class AuthQueue {
       `refs/heads/${branch}`,
     ].filter((value): value is string => Boolean(value));
 
+    // Issue 93d978e — route through the per-request batch when supplied so the
+    // reachable-commit set is built once per (root, target); fall back to the
+    // per-row spawn only for callers that do not pass a batch.
     for (const candidate of candidates) {
       for (const target of targets) {
-        if (this.gitIsAncestor(repoRoot, candidate, target)) {
+        const merged = batch
+          ? batch.isAncestor(repoRoot, candidate, target)
+          : this.gitIsAncestor(repoRoot, candidate, target);
+        if (merged) {
           return true;
         }
       }

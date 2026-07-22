@@ -2915,6 +2915,17 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_trash_entries_branch
          ON trash_entries(project_id, branch, created_at DESC)`
     ]
+  },
+  {
+    version: 107,
+    name: "work_unit_merge_scan_retirement",
+    // Issue 93d978e — reversible tombstone excluding stale abandoned work units
+    // from merge-side ancestry scans. Nullable ms-epoch marker; the row, its
+    // state, and its provenance survive. Clearing it re-admits the row. The
+    // additive column is added by a guarded hook (ensureWorkUnitMergeScanRetirementColumn)
+    // so re-migration over a DB that already has the column is idempotent,
+    // matching the pattern used for the v106 branch-reaping columns.
+    statements: []
   }
 ];
 
@@ -2985,6 +2996,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 106) {
         ensureBranchReapingKnowledgeColumns(db);
+      }
+      if (migration.version === 107) {
+        ensureWorkUnitMergeScanRetirementColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5457,6 +5471,31 @@ function ensureBranchReapingKnowledgeColumns(db: Db): void {
     ) {
       throw new Error(`migration 106 verification: branches.${name} has divergent definition`);
     }
+  }
+}
+
+// Issue 93d978e (migration 107) — additive nullable tombstone column for the
+// merge-scan retirement sweep. Guarded so re-running migrate over a database
+// that already has the column (e.g. version-rewind test fixtures) is a no-op
+// rather than a duplicate-column error.
+function ensureWorkUnitMergeScanRetirementColumn(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_units'")
+    .get();
+  if (!table) return;
+  const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+  }>;
+  const existing = columns.find((column) => column.name === "merge_scan_retired_at");
+  if (!existing) {
+    db.exec("ALTER TABLE work_units ADD COLUMN merge_scan_retired_at INTEGER");
+    return;
+  }
+  if (existing.type.toUpperCase() !== "INTEGER") {
+    throw new Error(
+      "migration 107 verification: work_units.merge_scan_retired_at has divergent definition",
+    );
   }
 }
 
