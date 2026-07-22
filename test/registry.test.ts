@@ -230,4 +230,96 @@ describe("session registry", () => {
     const updated = registry.getSession("reuse-session");
     expect(updated?.status).toBe("dead");
   });
+
+  it("bounds the default sessions page and paginates with a stable cursor", () => {
+    const registry = createRegistry();
+    const ids: string[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const id = `page-${i}`;
+      ids.push(id);
+      registry.registerSession({ id, app: "claude", status: "ended" });
+    }
+
+    const first = registry.listSessionsPage({ limit: 2 });
+    expect(first.total).toBe(5);
+    expect(first.sessions.length).toBe(2);
+    expect(first.returned).toBe(2);
+    expect(first.scope).toBe("default");
+    expect(first.limit).toBe(2);
+    expect(first.nextCursor).toBeTruthy();
+
+    const seen = new Set(first.sessions.map((s) => s.id));
+    let cursor = first.nextCursor;
+    let guard = 0;
+    while (cursor && guard < 10) {
+      guard += 1;
+      const next = registry.listSessionsPage({ limit: 2, cursor });
+      for (const s of next.sessions) {
+        expect(seen.has(s.id)).toBe(false);
+        seen.add(s.id);
+      }
+      cursor = next.nextCursor;
+    }
+    expect(seen.size).toBe(5);
+    for (const id of ids) {
+      expect(seen.has(id)).toBe(true);
+    }
+  });
+
+  it("returns full history with scope 'all' and no cursor", () => {
+    const registry = createRegistry();
+    for (let i = 0; i < 3; i += 1) {
+      registry.registerSession({ id: `all-${i}`, app: "claude", status: "ended" });
+    }
+    const page = registry.listSessionsPage({ scope: "all" });
+    expect(page.total).toBe(3);
+    expect(page.sessions.length).toBe(3);
+    expect(page.nextCursor).toBeNull();
+    expect(page.limit).toBeNull();
+    expect(page.scope).toBe("all");
+  });
+
+  it("applies the status filter to the paginated total and rows", () => {
+    const registry = createRegistry();
+    registry.registerSession({ id: "act-1", app: "claude", status: "active" });
+    registry.registerSession({ id: "end-1", app: "claude", status: "ended" });
+    registry.registerSession({ id: "end-2", app: "claude", status: "ended" });
+    const page = registry.listSessionsPage({ status: "ended" });
+    expect(page.total).toBe(2);
+    expect(page.sessions.every((s) => s.status === "ended")).toBe(true);
+  });
+
+  it("derives liveness for a batched page including dead and live pids", async () => {
+    const registry = createRegistry();
+    const child = spawn("sleep", ["0.2"]);
+    const pid = child.pid ?? 0;
+    expect(pid).toBeGreaterThan(0);
+    const pidStart = await waitForPidStart(pid);
+    if (child.exitCode === null) {
+      child.kill();
+    }
+    if (child.exitCode === null) {
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+
+    registry.registerSession({
+      id: "batch-dead",
+      app: "claude",
+      pid,
+      pid_start: pidStart,
+      status: "active",
+    });
+    registry.registerSession({
+      id: "batch-live",
+      app: "claude",
+      pid: process.pid,
+      pid_start: readPidStartTime(process.pid),
+      status: "active",
+    });
+
+    const page = registry.listSessionsPage({ scope: "all" });
+    const byId = new Map(page.sessions.map((s) => [s.id, s]));
+    expect(byId.get("batch-dead")?.status).toBe("dead");
+    expect(byId.get("batch-live")?.status).toBe("active");
+  });
 });
