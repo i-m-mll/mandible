@@ -3327,6 +3327,27 @@ export function migrate(db: Db): void {
   // newer than v105 may execute until every older post-DDL migration and v105
   // itself have completed successfully.
   applySchemaMigrations(db, afterV105);
+
+  // Integration reconciliation (umbrella c16807e): the additive-column hooks for
+  // v107 (branches.has_upstream/upstream), v108 (work_units.merge_scan_retired_at),
+  // and v109 (auth_requests.merge_finalizer_state) were renumbered during
+  // integration. A database that previously ran an intermediate feature-branch
+  // daemon may already have recorded v107/v108 under DIFFERENT meanings, so those
+  // exact migrations are no longer in `pending` and their per-version hooks never
+  // fire — leaving the renumbered columns permanently absent. All three hooks are
+  // guarded and idempotent, so converge the full column set for ANY database
+  // migrating from a recorded version below 109, not only at the exact version
+  // numbers. This runs AFTER applySchemaMigrations(afterV105) so a normal
+  // low-version replay (whose per-version hooks already added the columns in
+  // canonical order) is a no-op here and only an intermediate-version DB missing
+  // the columns is repaired.
+  if (currentVersion < 109) {
+    db.transaction(() => {
+      ensureBranchUpstreamColumns(db);
+      ensureWorkUnitMergeScanRetirementColumn(db);
+      ensureAuthRequestMergeFinalizerStateColumn(db);
+    })();
+  }
 }
 
 /**
