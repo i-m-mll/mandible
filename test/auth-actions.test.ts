@@ -8,12 +8,14 @@ import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
 
 const tempDirs: string[] = [];
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -42,6 +44,7 @@ function createLedgerIssue(db: Db, alias = "act123") {
     remoteUrl: "",
   });
   const issue = new LedgerStore(db).createIssue({
+    ...SYSTEM_ACTOR,
     project_id: project.project.id,
     title: "Auth action target",
     body: "Body",
@@ -279,6 +282,7 @@ describe("auth request action execution", () => {
     try {
       const first = createLedgerIssue(db, "stale1");
       const secondIssue = new LedgerStore(db).createIssue({
+        ...SYSTEM_ACTOR,
         project_id: first.issue.project_id,
         title: "Second stale target",
         body: "Body",
@@ -299,8 +303,8 @@ describe("auth request action execution", () => {
         ],
       });
 
-      new LedgerStore(db).addComment(first.issue.id, { body: "Moved", source: "mandible" });
-      new LedgerStore(db).addComment(secondIssue.id, { body: "Moved", source: "mandible" });
+      new LedgerStore(db).addComment(first.issue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
+      new LedgerStore(db).addComment(secondIssue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 
       const actions = queue.listActions(request.id);

@@ -33,6 +33,7 @@ import {
 } from "./ledger/operational-links.js";
 import { getLedgerIssueHead } from "./ledger/issue-heads.js";
 import { LedgerStore } from "./ledger/store.js";
+import { systemAction } from "./identity/resolver.js";
 import type {
   LedgerRelationshipType,
   LedgerWorkerStatus,
@@ -2068,10 +2069,17 @@ export class AuthQueue {
     const detail = digestMoved
       ? `Applied after target digest moved from ${action.target_digest} to ${currentDigest}`
       : null;
+    // The legacy actor tuple ('agent' + session id + display) is FROZEN — it is
+    // hashed into stable event ids, so it stays byte-identical to base behavior
+    // (umbrella 8e2e8b2 / issue 92813cc). The real principal is recorded in the
+    // parallel user-attribution columns: auth-queue ledger writes are applied by
+    // the daemon on merge, so they attribute to the system user. The
+    // approving-user-as-authorizer wiring is owned by issue 6349203.
     const actor = {
       actor_type: "agent" as const,
       actor_id: request.session_id ?? request.target_session_id ?? null,
       author_display: "Mandible auth action",
+      attribution: systemAction(),
     };
     switch (action.kind) {
       case "comment_add":

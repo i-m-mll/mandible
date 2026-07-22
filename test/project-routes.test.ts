@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { addProject } from "../src/ledger/project-registry.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -8,6 +9,7 @@ import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerProjectRoutes } from "../src/routes/projects.js";
 import { resolveLedgerIssueLinkFromDb } from "../src/routes/redirects.js";
 import { Router } from "../src/server.js";
+import { setupOperator } from "../src/users/store.js";
 
 let db: Db;
 let router: Router;
@@ -21,6 +23,7 @@ const fakeScanner = {
 beforeEach(() => {
   db = new Database(":memory:");
   migrate(db);
+  setupOperator(db, { display_name: "Route test operator" });
   setDb(db);
   router = new Router();
   registerProjectRoutes(router);
@@ -323,6 +326,7 @@ describe("canonical project_key round-trip", () => {
       body: "body",
       actor_type: "agent",
       author_display: "Test",
+      attribution: systemAction(),
     });
     return { project, issue };
   }

@@ -7,6 +7,7 @@ import {
   normalizeEscapedMarkdownBodies,
   type MarkdownBodyAuditScope,
 } from "../ledger/markdown-body.js";
+import { localDefaultAttribution } from "../identity/resolver.js";
 import {
   exportIssueMarkdownFiles,
   type IssueMarkdownExportOptions,
@@ -40,12 +41,24 @@ function main(argv: string[]): number {
       return 0;
     }
     if (args.command === "normalize") {
-      const result = normalizeEscapedMarkdownBodies(db, {
-        apply: args.apply,
-        scope: args.scope,
-        normalize_all_matches: args.allMatches,
-        actor: { actor_type: "mandible_user", author_display: "Mandible CLI" },
-      });
+      const result = args.apply
+        ? normalizeEscapedMarkdownBodies(db, {
+            apply: true,
+            scope: args.scope,
+            normalize_all_matches: args.allMatches,
+            // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI");
+            // real identity is the local operator in parallel columns (issue 92813cc).
+            actor: {
+              actor_type: "mandible_user",
+              author_display: "Mandible CLI",
+              attribution: localDefaultAttribution(db),
+            },
+          })
+        : normalizeEscapedMarkdownBodies(db, {
+            apply: false,
+            scope: args.scope,
+            normalize_all_matches: args.allMatches,
+          });
       printResult(result, args.json);
       return 0;
     }
