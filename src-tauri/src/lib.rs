@@ -4,11 +4,13 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tauri::{command, AppHandle, Manager};
 
 const DEFAULT_PORT: u16 = 19420;
 const DEFAULT_LAUNCH_MODE: &str = "on_demand";
+static CLIENT_AUTH_BOOTSTRAP_CONSUMED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -105,6 +107,152 @@ fn daemon_stop(app: AppHandle) -> Result<DaemonStatus, String> {
 fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
     let _ = daemon_stop(app.clone());
     daemon_start(app)
+}
+
+/// Navigate the bundled desktop shell to an enrolled dashboard without ever
+/// returning the raw same-user bootstrap proof across IPC. The proof exists
+/// only in the injected fragment; fragments are not sent to the daemon and the
+/// UI removes it before its first API request.
+#[command]
+fn client_auth_enroll(app: AppHandle) -> Result<bool, String> {
+    if CLIENT_AUTH_BOOTSTRAP_CONSUMED.swap(true, Ordering::AcqRel) {
+        return Ok(false);
+    }
+    verify_same_user_daemon(&app)?;
+    let Some(token) = read_client_auth_bootstrap(&client_auth_bootstrap_path())? else {
+        return Ok(false);
+    };
+    fs::remove_file(client_auth_bootstrap_path())
+        .map_err(|error| format!("failed to consume client-auth bootstrap file: {error}"))?;
+    if !token
+        .chars()
+        .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | '~'))
+    {
+        return Err("client-auth bootstrap contains invalid URL-fragment characters".to_string());
+    }
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "desktop main window is unavailable".to_string())?;
+    let url = format!(
+        "http://127.0.0.1:{}/#/?mandible_auth={token}",
+        daemon_port()
+    );
+    let encoded = serde_json::to_string(&url)
+        .map_err(|error| format!("failed to encode dashboard enrollment URL: {error}"))?;
+    window
+        .eval(&format!("window.location.replace({encoded});"))
+        .map_err(|error| format!("failed to navigate to enrolled dashboard: {error}"))?;
+    Ok(true)
+}
+
+fn verify_same_user_daemon(app: &AppHandle) -> Result<(), String> {
+    let pid = read_pid_file(pid_file_path())
+        .ok_or_else(|| "refusing desktop enrollment without a daemon pid file".to_string())?;
+    if !process_alive(pid) || !check_health(daemon_port()) {
+        return Err(
+            "refusing desktop enrollment because the recorded daemon is not healthy".to_string(),
+        );
+    }
+    #[cfg(unix)]
+    {
+        let current_uid = Command::new("id")
+            .arg("-u")
+            .output()
+            .map_err(|error| format!("failed to inspect desktop uid: {error}"))?;
+        let daemon_uid = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "uid="])
+            .output()
+            .map_err(|error| format!("failed to inspect daemon uid: {error}"))?;
+        let current_uid = String::from_utf8_lossy(&current_uid.stdout);
+        let daemon_uid = String::from_utf8_lossy(&daemon_uid.stdout);
+        if current_uid.trim().is_empty() || !daemon_uid.trim().eq(current_uid.trim()) {
+            return Err(
+                "refusing desktop enrollment for a daemon owned by another user".to_string(),
+            );
+        }
+
+        let expected_entry = resolve_daemon_entry(app)?
+            .canonicalize()
+            .map_err(|error| format!("failed to canonicalize daemon entry: {error}"))?;
+        let daemon_command = Command::new("ps")
+            .args(["-p", &pid.to_string(), "-o", "command="])
+            .output()
+            .map_err(|error| format!("failed to inspect daemon command: {error}"))?;
+        let command = String::from_utf8_lossy(&daemon_command.stdout);
+        if !daemon_command.status.success()
+            || !command.contains(&expected_entry.display().to_string())
+        {
+            return Err(
+                "refusing desktop enrollment for an unexpected listener process".to_string(),
+            );
+        }
+    }
+    Ok(())
+}
+
+fn read_client_auth_bootstrap(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("failed to inspect client-auth bootstrap: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err("client-auth bootstrap is not a protected regular file".to_string());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err("client-auth bootstrap permissions are broader than 0600".to_string());
+        }
+    }
+    let token = fs::read_to_string(path)
+        .map_err(|error| format!("failed to read client-auth bootstrap: {error}"))?;
+    let token = token.trim();
+    Ok((!token.is_empty()).then(|| token.to_string()))
+}
+
+fn client_auth_bootstrap_path() -> PathBuf {
+    mandible_config_dir()
+        .join("client-auth")
+        .join("bootstrap-token")
+}
+
+fn mandible_config_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("MANDIBLE_CONFIG_DIR") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    #[cfg(target_os = "macos")]
+    {
+        home.join("Library")
+            .join("Application Support")
+            .join("Mandible")
+            .join("config")
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::env::var("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join(".config"))
+            .join("mandible")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::env::var("APPDATA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| home.join("AppData").join("Roaming"))
+            .join("Mandible")
+            .join("config")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    {
+        home.join(".config").join("mandible")
+    }
 }
 
 fn get_daemon_status(app: &AppHandle) -> Result<DaemonStatus, String> {
@@ -467,9 +615,52 @@ pub fn run() {
             daemon_start,
             daemon_stop,
             daemon_restart,
+            client_auth_enroll,
             zone2_status,
             zone2_bootstrap
         ])
         .run(tauri::generate_context!())
         .expect("error while running Mandible app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::read_client_auth_bootstrap;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("mandible-tauri-auth-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn reads_a_protected_bootstrap_token() {
+        let path = temp_path("protected");
+        fs::write(&path, "desktop-token\n").expect("write bootstrap");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+        }
+        assert_eq!(
+            read_client_auth_bootstrap(&path).expect("read bootstrap"),
+            Some("desktop-token".to_string()),
+        );
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_group_readable_bootstrap_token() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = temp_path("broad");
+        fs::write(&path, "desktop-token").expect("write bootstrap");
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).expect("chmod");
+        assert!(read_client_auth_bootstrap(&path).is_err());
+        fs::remove_file(path).expect("cleanup");
+    }
 }

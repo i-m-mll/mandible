@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { SDKBackend } from "../src/backends/sdk-backend.js";
+import { buildMandibleChannelEnvironment, SDKBackend } from "../src/backends/sdk-backend.js";
 import type { ConsoleSession, Logger } from "../src/types.js";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => {
@@ -48,6 +48,24 @@ function makeLogger(): Logger {
 }
 
 describe("SDKBackend lifecycle", () => {
+  it("injects the provisioned token into SDK and channel-server environments", () => {
+    const backend = new SDKBackend(
+      makeMeta({ env: { MANDIBLE_TOKEN: "caller-token" } }),
+      makeLogger(),
+      undefined,
+      "agent-token",
+    );
+    const sdkEnv = (backend as unknown as { buildClientEnv(): Record<string, string> }).buildClientEnv();
+    expect(sdkEnv.MANDIBLE_TOKEN).toBe("agent-token");
+    expect(sdkEnv.MANDIBLE_MANAGED_CLIENT).toBe("1");
+    expect(buildMandibleChannelEnvironment("session-1", "/repo", "agent-token")).toEqual({
+      MANDIBLE_SESSION_ID: "session-1",
+      MANDIBLE_MANAGED_CLIENT: "1",
+      CLAUDE_CWD: "/repo",
+      MANDIBLE_TOKEN: "agent-token",
+    });
+  });
+
   it("turns SDK setup failures into structured error results", async () => {
     const backend = new SDKBackend(makeMeta(), makeLogger());
 

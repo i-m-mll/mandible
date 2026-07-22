@@ -8,6 +8,7 @@
 #   PATCH /api/users/<ref>                   update
 #   GET  /api/users/operator                 current operator
 #   POST /api/users/setup                    idempotent operator setup
+#   dashboard-link                          same-user dashboard enrollment URL
 #   GET  /api/users/<ref>/credentials        list credentials
 #   POST /api/users/<ref>/credentials        add credential
 #   POST /api/users/credentials/<id>/revoke  revoke credential
@@ -31,12 +32,16 @@ usage() {
   cat <<'EOF'
 Usage:
   mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--json]
+  mandible user dashboard-link
   mandible user list [--kind <k>] [--status <s>] [--json]
   mandible user show <ref> [--json]
   mandible user update <ref> [--name <n>] [--email <e>] [--status active|retired] [--json]
   mandible user credential add <ref> --type <t> --fingerprint <f> [--public-material <m>] [--label <l>] [--json]
   mandible user credential revoke <id> [--json]
   mandible user credential list <ref> [--all] [--json]
+  mandible user token mint <ref> [--label <l>] [--json]
+  mandible user token list <ref> [--all] [--json]
+  mandible user token revoke <credential-id> [--json]
   mandible user binding add <ref> --type <t> --value <v> [--scope <s>] [--json]
   mandible user binding rm <id> [--json]
   mandible user binding list <ref> [--json]
@@ -45,6 +50,11 @@ Setup is idempotent and is the only way the local human operator is created.
 Defaults for --name/--email come from git config user.name / user.email.
 Credentials are immutable: revoke then add, never mutate a fingerprint. No
 private key material is ever accepted.
+
+Tokens are per-user bearer secrets stored hashed (never in the clear). The raw
+token is printed once at mint time and cannot be retrieved again; export it as
+MANDIBLE_TOKEN for the CLI to authenticate. Revoke a token via its credential id.
+Use dashboard-link to enroll a browser without placing a bearer token in an HTTP URL.
 EOF
 }
 
@@ -95,6 +105,23 @@ cmd_setup() {
   emit "$response" "$json" '.user | "id: \(.id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
 }
 
+cmd_dashboard_link() {
+  require_tools
+  local token encoded base bootstrap_file=""
+  if [[ -z "${MANDIBLE_TOKEN:-}" ]]; then
+    bootstrap_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
+  fi
+  token="$(api_client_token)"
+  [[ -n "$token" ]] \
+    || die "No operator bootstrap token is available. Run mandible user setup first." 1
+  encoded="$(jq -rn --arg value "$token" '$value|@uri')"
+  base="$(api_base)"
+  [[ "$base" == http://* || "$base" == https://* ]] \
+    || die "Dashboard enrollment requires an HTTP Mandible endpoint." 1
+  [[ -z "$bootstrap_file" ]] || rm -f -- "$bootstrap_file"
+  printf '%s/#/?mandible_auth=%s\n' "${base%/}" "$encoded"
+}
+
 cmd_list() {
   local kind="" status="" json=0
   while (( $# > 0 )); do
@@ -107,12 +134,12 @@ cmd_list() {
     esac
   done
   require_tools
-  local qs="" response
-  [[ -n "$kind" ]] && qs="?kind=$(urlencode "$kind")"
+  local query="" response
+  [[ -n "$kind" ]] && query="?kind=$(urlencode "$kind")"
   if [[ -n "$status" ]]; then
-    [[ -n "$qs" ]] && qs="${qs}&status=$(urlencode "$status")" || qs="?status=$(urlencode "$status")"
+    [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status")" || query="?status=$(urlencode "$status")"
   fi
-  response="$(api_get "/api/users${qs}")" || die "${RED}Failed to list users.${RESET}" 1
+  response="$(api_get "/api/users${query}")" || die "${RED}Failed to list users.${RESET}" 1
   emit "$response" "$json" '.users[]? | "\(.slug)\t\(.kind)\t\(.status)\t\(.display_name)\t\(.email // "-")"'
 }
 
@@ -230,11 +257,62 @@ credential_list() {
   done
   [[ -n "$ref" ]] || die "Usage: mandible user credential list <ref> [--all] [--json]" 2
   require_tools
-  local qs="" response
-  (( all )) && qs="?all=1"
-  response="$(api_get "/api/users/$(urlencode "$ref")/credentials${qs}")" \
+  local query="" response
+  (( all )) && query="?all=1"
+  response="$(api_get "/api/users/$(urlencode "$ref")/credentials${query}")" \
     || die "${RED}Failed to list credentials.${RESET}" 1
   emit "$response" "$json" '.credentials[]? | "\(.id)\t\(.type)\t\(.fingerprint)\t\(.status)\t\(.label // "-")"'
+}
+
+cmd_token() {
+  local sub="${1:-}"; shift || true
+  case "$sub" in
+    mint)   token_mint "$@" ;;
+    list)   token_list "$@" ;;
+    revoke) credential_revoke "$@" ;;
+    *) die "Unknown token subcommand: ${sub:-}. Use mint|list|revoke." 2 ;;
+  esac
+}
+
+token_mint() {
+  local ref="" label="" json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --label) label="$2"; shift 2 ;;
+      --json)  json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible user token mint <ref> [--label <l>] [--json]" 2
+  require_tools
+  local payload response
+  payload="$(jq -n --arg label "$label" \
+    '{} + (if $label == "" then {} else {label:$label} end)')"
+  response="$(api_send POST "/api/users/$(urlencode "$ref")/tokens" "$payload")" \
+    || die "${RED}Failed to mint token.${RESET}" 1
+  err "${GREEN}Token minted. Copy it now — it will not be shown again.${RESET}"
+  emit "$response" "$json" \
+    '"token: \(.token)", "credential: \(.credential.id) [\(.credential.status)]"'
+}
+
+token_list() {
+  local ref="" all=0 json=0
+  while (( $# > 0 )); do
+    case "$1" in
+      --all)  all=1; shift ;;
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
+    esac
+  done
+  [[ -n "$ref" ]] || die "Usage: mandible user token list <ref> [--all] [--json]" 2
+  require_tools
+  local query="" response
+  (( all )) && query="?all=1"
+  response="$(api_get "/api/users/$(urlencode "$ref")/tokens${query}")" \
+    || die "${RED}Failed to list tokens.${RESET}" 1
+  emit "$response" "$json" '.tokens[]? | "\(.id)\t\(.status)\t\(.label // "-")\t\(.created_at)"'
 }
 
 cmd_binding() {
@@ -315,10 +393,12 @@ fi
 cmd="$1"; shift
 case "$cmd" in
   setup)      cmd_setup "$@" ;;
+  dashboard-link) cmd_dashboard_link "$@" ;;
   list)       cmd_list "$@" ;;
   show)       cmd_show "$@" ;;
   update)     cmd_update "$@" ;;
   credential) cmd_credential "$@" ;;
+  token)      cmd_token "$@" ;;
   binding)    cmd_binding "$@" ;;
   *) die "Unknown user subcommand: $cmd" 2 ;;
 esac

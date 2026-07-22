@@ -4,6 +4,7 @@ import { FitAddon } from '@xterm/addon-fit';
 import '@xterm/xterm/css/xterm.css';
 import { restartConsoleSession, startConsoleSession } from '../../api';
 import { getTerminalTheme } from '../../theme';
+import { clientAuthWebSocketProtocols } from '../../client-auth-token';
 
 export type TerminalViewState = {
   containerRef: { current: HTMLDivElement | null };
@@ -114,7 +115,7 @@ export function useTerminalView({
     }
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/terminal/${encodeURIComponent(sessionId)}`;
-    const ws = new WebSocket(wsUrl);
+    const ws = new WebSocket(wsUrl, clientAuthWebSocketProtocols());
     ws.binaryType = 'arraybuffer';
     wsRef.current = ws;
     setWsStatus('connecting');

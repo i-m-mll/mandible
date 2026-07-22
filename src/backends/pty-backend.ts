@@ -75,16 +75,22 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
   private promptQuietFallbackTimer: NodeJS.Timeout | null = null;
   private screenObserver: PtyScreenObserver | null = null;
   private pendingPtyPermission: PendingPtyPermission | null = null;
+  private readonly mandibleTokenSource: string | (() => string | null) | null;
   private lastPtyOutputAt = 0;
   private lastPromptFlushedAt: number | null = null;
   private destroyed = false;
 
-  constructor(meta: ConsoleSession, logger: Logger) {
+  constructor(
+    meta: ConsoleSession,
+    logger: Logger,
+    mandibleToken: string | (() => string | null) | null = null,
+  ) {
     super();
     this.id = meta.id;
     this.meta = meta;
     this.ringBuffer = new RingBuffer();
     this.logger = logger;
+    this.mandibleTokenSource = mandibleToken;
     if (shouldEnablePtyScreenModel(meta)) {
       this.screenObserver = new PtyScreenObserver({
         sessionId: meta.id,
@@ -785,6 +791,16 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
       cleaned[k] = v;
     }
     Object.assign(cleaned, extraEnv);
+    // Issue 708dc4c — never inherit or accept a caller-supplied daemon token.
+    // SessionManager provisions the token for the resolved agent user and this
+    // final assignment prevents either process.env or persisted session env
+    // from promoting the child to some other identity.
+    delete cleaned["MANDIBLE_TOKEN"];
+    cleaned["MANDIBLE_MANAGED_CLIENT"] = "1";
+    const mandibleToken = typeof this.mandibleTokenSource === "function"
+      ? this.mandibleTokenSource()
+      : this.mandibleTokenSource;
+    if (mandibleToken) cleaned["MANDIBLE_TOKEN"] = mandibleToken;
     // Bug: b5aba0e — channel-enabled PTY: expose session ID for channel server discovery
     if (this.meta.channel_enabled) {
       cleaned["MANDIBLE_SESSION_ID"] = this.meta.mandible_session_id ?? this.id;

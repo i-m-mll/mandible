@@ -63,6 +63,19 @@
     return window.__TAURI__.core.invoke(command, args);
   }
 
+  async function redirectToDashboard(status) {
+    try {
+      // Rust performs the one-time fragment navigation internally so the raw
+      // bootstrap proof is never returned to JavaScript across Tauri IPC.
+      const enrolled = await invoke("client_auth_enroll");
+      if (enrolled === true) return;
+    } catch {
+      // A missing or invalid protected file must not become an anonymous
+      // operator credential. Strict mode will keep mutations locked.
+    }
+    window.location.replace(`http://127.0.0.1:${status.port}`);
+  }
+
   async function refreshStatus() {
     if (!hasTauri()) {
       window.location.replace("http://127.0.0.1:19420");
@@ -75,7 +88,7 @@
 
       if (status.healthy) {
         window.setTimeout(() => {
-          window.location.replace(`http://127.0.0.1:${status.port}`);
+          void redirectToDashboard(status);
         }, REDIRECT_DELAY_MS);
         return;
       }
@@ -106,7 +119,7 @@
       const status = await invoke("daemon_start");
       updateStatus(status);
       if (status.healthy) {
-        window.location.replace(`http://127.0.0.1:${status.port}`);
+        await redirectToDashboard(status);
         return;
       }
       schedulePoll();

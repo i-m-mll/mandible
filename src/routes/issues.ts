@@ -5,7 +5,11 @@ import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
-import { localDefaultAttribution } from "../identity/resolver.js";
+import type { AttributionContext } from "../identity/resolver.js";
+import {
+  attributionForRequest,
+  operatorOnlyManagedSessionRoute,
+} from "../client-auth/authz.js";
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_BRANCH_ROLES,
@@ -57,11 +61,11 @@ import {
   resolveOperationalIssueRef,
 } from "../ledger/operational-links.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
-import type { RouteOptions } from "../server.js";
+import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
 
-export interface RouteHandler<Request = unknown, Response = unknown> {
-  (req: Request, res: Response): void | Promise<void>;
+export interface RouteHandler<Request = RequestLike, Response = ResponseLike> {
+  (req: Request, res: Response): unknown;
 }
 
 export interface IssueServer {
@@ -517,7 +521,12 @@ function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection):
   };
 }
 
-function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[]): Record<string, unknown> {
+function refreshDelegationManifest(
+  db: Db,
+  umbrellaId: string,
+  childIds: string[],
+  attribution: AttributionContext,
+): Record<string, unknown> {
   // The first payload entry is the umbrella's own head, marked `self: true`.
   // It is an explicit stored baseline for the umbrella itself, not a child
   // entry: `mandible issue changed --since-issue` compares it directly and its
@@ -535,7 +544,7 @@ function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[
     payload,
     actor_type: "mandible_user",
     author_display: "Mandible",
-    attribution: localDefaultAttribution(db),
+    attribution,
     source: "mandible",
   });
   return checkpointResponse(checkpoint);
@@ -1069,7 +1078,13 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
   };
 }
 
-function linkMissingUmbrellaChildren(db: Db, umbrellaId: string, childIds: string[], note: string): {
+function linkMissingUmbrellaChildren(
+  db: Db,
+  umbrellaId: string,
+  childIds: string[],
+  note: string,
+  attribution: AttributionContext,
+): {
   beforeIds: string[];
   missingIds: string[];
   action_id: string | null;
@@ -1084,7 +1099,7 @@ function linkMissingUmbrellaChildren(db: Db, umbrellaId: string, childIds: strin
     link_type: "parent_child",
     provenance: "manual",
     note,
-    actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
+    actor: { actor_type: "mandible_user", author_display: "Mandible", attribution },
     source: "mandible",
   });
   return { beforeIds, missingIds, action_id: result.action_id };
@@ -1095,6 +1110,7 @@ function buildUmbrellaAdoptionResponse(
   umbrellaId: string,
   childRefs: string[],
   kind: "adopt" | "reconcile",
+  attribution: AttributionContext,
 ): Record<string, unknown> {
   const resolved = resolveIssueRefs(db, childRefs);
   const linked = linkMissingUmbrellaChildren(
@@ -1102,9 +1118,10 @@ function buildUmbrellaAdoptionResponse(
     umbrellaId,
     resolved.ids,
     kind === "adopt" ? "Umbrella child adoption" : "Umbrella child-table reconciliation",
+    attribution,
   );
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
-  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds);
+  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds, attribution);
   const status = buildUmbrellaStatus(db, umbrellaId);
   return {
     ...status,
@@ -1125,9 +1142,13 @@ function buildUmbrellaAdoptionResponse(
   };
 }
 
-function buildUmbrellaManifestRefreshResponse(db: Db, umbrellaId: string): Record<string, unknown> {
+function buildUmbrellaManifestRefreshResponse(
+  db: Db,
+  umbrellaId: string,
+  attribution: AttributionContext,
+): Record<string, unknown> {
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
-  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds);
+  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds, attribution);
   const status = buildUmbrellaStatus(db, umbrellaId);
   return {
     ...status,
@@ -1310,7 +1331,13 @@ export function registerIssueRoutes(
       return;
     }
     try {
-      sendJson(res, 200, buildUmbrellaAdoptionResponse(db, resolved.issue_id, childRefs, "adopt"));
+      sendJson(res, 200, buildUmbrellaAdoptionResponse(
+        db,
+        resolved.issue_id,
+        childRefs,
+        "adopt",
+        attributionForRequest(db, req),
+      ));
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
     }
@@ -1338,6 +1365,7 @@ export function registerIssueRoutes(
           resolved.issue_id,
           parseCanonicalUmbrellaChildRefs(umbrella.body),
           "reconcile",
+          attributionForRequest(db, req),
         ),
       );
     } catch (error) {
@@ -1358,7 +1386,11 @@ export function registerIssueRoutes(
       return;
     }
     try {
-      sendJson(res, 200, buildUmbrellaManifestRefreshResponse(db, resolved.issue_id));
+      sendJson(res, 200, buildUmbrellaManifestRefreshResponse(
+        db,
+        resolved.issue_id,
+        attributionForRequest(db, req),
+      ));
     } catch (error) {
       sendJson(res, 400, {
         error: error instanceof Error ? error.message : "failed to refresh umbrella manifest",
@@ -1430,7 +1462,7 @@ export function registerIssueRoutes(
       },
       actor_type: "mandible_user",
       author_display: "Mandible",
-      attribution: localDefaultAttribution(db),
+      attribution: attributionForRequest(db, req),
       source: "mandible",
       created_at: now,
     });
@@ -1535,7 +1567,7 @@ export function registerIssueRoutes(
         link_type: linkType as LedgerRelationshipType,
         provenance: provenance as LedgerRelationshipProvenance,
         note: typeof body.note === "string" ? body.note : null,
-        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
+        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         source: "mandible",
       });
       sendJson(res, 200, result);
@@ -1586,7 +1618,7 @@ export function registerIssueRoutes(
         source_entity: sourceEntity,
         target_entities: targetEntities,
         link_type: linkType as LedgerRelationshipType,
-        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
+        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         source: "mandible",
       });
       sendJson(res, 200, result);
@@ -1719,7 +1751,7 @@ export function registerIssueRoutes(
       kind: kindFromLabels(labels),
       actor_type: "mandible_user",
       author_display: "Mandible",
-      attribution: localDefaultAttribution(db),
+      attribution: attributionForRequest(db, req),
       source: "mandible",
     });
     sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
@@ -1753,7 +1785,7 @@ export function registerIssueRoutes(
       body: message,
       actor_type: "mandible_user",
       author_display: "Mandible",
-      attribution: localDefaultAttribution(db),
+      attribution: attributionForRequest(db, req),
       source: "mandible",
       reopen: body?.reopen === true,
     });
@@ -1789,7 +1821,7 @@ export function registerIssueRoutes(
         payload,
         actor_type: "mandible_user",
         author_display: "Mandible",
-        attribution: localDefaultAttribution(db),
+        attribution: attributionForRequest(db, req),
         source: "mandible",
       });
       sendJson(res, 200, checkpointResponse(checkpoint));
@@ -1856,7 +1888,7 @@ export function registerIssueRoutes(
       const comment = store.updateComment(commentId, patch, {
         actor_type: "mandible_user",
         author_display: "Mandible",
-        attribution: localDefaultAttribution(db),
+        attribution: attributionForRequest(db, req),
         base_body_revision_id: typeof body.base_revision_id === "string"
           ? body.base_revision_id
           : typeof body.base_body_revision_id === "string"
@@ -1921,7 +1953,7 @@ export function registerIssueRoutes(
         store.updateIssue(resolved.issue_id, patch, {
           actor_type: "mandible_user",
           author_display: "Mandible",
-          attribution: localDefaultAttribution(db),
+          attribution: attributionForRequest(db, req),
           base_body_revision_id: typeof body.base_body_revision_id === "string"
             ? body.base_body_revision_id
             : typeof body.base_revision_id === "string"
@@ -1955,7 +1987,7 @@ export function registerIssueRoutes(
         resolved.issue_id,
         (status ?? current.status) as LedgerIssueStatus,
         resolution as LedgerIssueResolution | null,
-        { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
+        { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         "mandible",
       );
     }
@@ -1983,7 +2015,7 @@ export function registerIssueRoutes(
     new LedgerStore(db).setWorkerStatus(
       resolved.issue_id,
       workerStatus as LedgerWorkerStatus,
-      { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
+      { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
@@ -2016,7 +2048,7 @@ export function registerIssueRoutes(
       resolved.issue_id,
       branch,
       role as LedgerIssueBranchRole,
-      { actor_type: "mandible_user", author_display: "Mandible", attribution: localDefaultAttribution(db) },
+      { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
@@ -2054,7 +2086,7 @@ export function registerIssueRoutes(
     new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
       actor_type: "mandible_user",
       author_display: "Mandible",
-      attribution: localDefaultAttribution(db),
+      attribution: attributionForRequest(db, req),
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   }, { fileRpc: "allow" });
@@ -2077,7 +2109,7 @@ export function registerIssueRoutes(
         status,
         actor_type: "mandible_user",
         author_display: "Mandible",
-        attribution: localDefaultAttribution(conflictDb),
+        attribution: attributionForRequest(conflictDb, req),
       });
       sendJson(res, 200, { ok: true, conflict });
     } catch (error) {
@@ -2465,7 +2497,7 @@ export function registerIssueRoutes(
 
   // POST /api/issues/:repoId/:issueId/spawn — spawn an SDK console session for this issue
   // Bug: cbbb3d9 — spawn agent from issue hub
-  server.post("/api/issues/:repoId/:issueId/spawn", (req, res) => {
+  server.post("/api/issues/:repoId/:issueId/spawn", operatorOnlyManagedSessionRoute((req, res) => {
     const repoIdParam = getParam(req, "repoId");
     const issueIdParam = getParam(req, "issueId");
     if (!repoIdParam || !issueIdParam) {
@@ -2585,7 +2617,7 @@ export function registerIssueRoutes(
       branch,
       cwd,
     });
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   return issueScanner;
 }

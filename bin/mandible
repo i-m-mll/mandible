@@ -21,7 +21,7 @@
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
-  user <subcommand>                User registry (setup, list, show, credential, binding)
+#   user <subcommand>                User registry (setup, list, show, credential, token, binding)
 #   claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
 #   instructions <subcommand>        Install or diff the Mandible instruction fragment
 #   work-unit <subcommand>           Policy-free work-unit lifecycle client
@@ -64,7 +64,7 @@ Commands:
   artifact <subcommand>            Register, resolve, link, and check artifacts
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
-  user <subcommand>                User registry (setup, list, show, credential, binding)
+  user <subcommand>                User registry (setup, list, show, credential, token, binding)
   claude-integration <subcommand>  Install/uninstall Claude hook and statusline integration
   instructions <subcommand>        Install or diff the Mandible instruction fragment
   work-unit <subcommand>           Policy-free work-unit lifecycle client

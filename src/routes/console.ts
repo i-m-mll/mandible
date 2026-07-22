@@ -8,15 +8,19 @@ import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
 import { AcpBackend } from "../backends/acp-backend.js";
-import type { RouteRegistrar } from "../server.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type {
   ConsoleInteractionMode,
   ConsoleSession,
   ConsoleSessionInput,
   ConsoleTransportLane,
 } from "../types.js";
-import { replaceSessionInstructionArtifacts } from "../presets.js";
 import { sendJson } from "./http.js";
+import {
+  ClientAuthzError,
+  operatorOnlyManagedSessionRoute,
+  requireOperator,
+} from "../client-auth/authz.js";
 
 const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
@@ -137,6 +141,7 @@ function parseSessionOptionsBody(
       "maxCostUsd",
       "systemPrompt",
       "settingSourcesOverride",
+      "presetIds",
     ];
     if (sdkOnlyKeys.some((key) => record[key] !== undefined)) {
       return { ok: false, error: "unsupported_session_option" };
@@ -158,6 +163,63 @@ function enrichWithProcessing(backend: { meta: ConsoleSession }): ConsoleSession
   return { ...meta, is_processing: false };
 }
 
+function requireManagedSessionAccess(
+  req: RequestLike,
+  res: ResponseLike,
+  manager: SessionManager,
+  session: { meta: Pick<ConsoleSession, "id" | "command" | "is_operator"> },
+): boolean {
+  if (!sessionIsCredentialBearing(manager, session)) return true;
+  try {
+    requireOperator(getDb(), req);
+    return true;
+  } catch (error) {
+    if (error instanceof ClientAuthzError) {
+      sendJson(res, error.status, { error: error.message, code: error.code });
+      return false;
+    }
+    throw error;
+  }
+}
+
+function sessionIsCredentialBearing(
+  manager: SessionManager,
+  session: { meta: Pick<ConsoleSession, "id" | "is_operator"> },
+): boolean {
+  const classifier = (manager as SessionManager & {
+    isCredentialBearing?: (id: string) => boolean;
+  }).isCredentialBearing;
+  // Concrete SessionManager instances always expose the pinned classifier.
+  // The fallback preserves isolated route-test doubles and fails closed for
+  // the historically privileged operator marker.
+  return typeof classifier === "function"
+    ? classifier.call(manager, session.meta.id)
+    : session.meta.is_operator;
+}
+
+function requireOperatorRoute(req: RequestLike, res: ResponseLike): boolean {
+  try {
+    requireOperator(getDb(), req);
+    return true;
+  } catch (error) {
+    if (error instanceof ClientAuthzError) {
+      sendJson(res, error.status, { error: error.message, code: error.code });
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isOperatorRequest(req: RequestLike): boolean {
+  try {
+    requireOperator(getDb(), req);
+    return true;
+  } catch (error) {
+    if (error instanceof ClientAuthzError) return false;
+    throw error;
+  }
+}
+
 export function registerConsoleRoutes(
   server: RouteRegistrar,
   manager: SessionManager
@@ -166,15 +228,19 @@ export function registerConsoleRoutes(
   // ------------------------------------------------------------------
   // GET /api/console/sessions — list all sessions
   // ------------------------------------------------------------------
-  server.get("/api/console/sessions", (_req, res) => {
-    const sessions = manager.getAll().map((s) => enrichWithProcessing(s));
+  server.get("/api/console/sessions", (req, res) => {
+    const sessions = manager.getAll()
+      .filter((session) => (
+        !sessionIsCredentialBearing(manager, session) || isOperatorRequest(req)
+      ))
+      .map((s) => enrichWithProcessing(s));
     res.status(200).json({ sessions });
   }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // POST /api/console/sessions — create a new session
   // ------------------------------------------------------------------
-  server.post("/api/console/sessions", (req, res) => {
+  server.post("/api/console/sessions", operatorOnlyManagedSessionRoute((req, res) => {
     const body = (req.body ?? {}) as Partial<ConsoleSessionInput & { interaction_mode?: string }>;
 
     if (!body.label || typeof body.label !== "string") {
@@ -185,7 +251,14 @@ export function registerConsoleRoutes(
       sendJson(res, 400, { error: "missing_command" });
       return;
     }
-
+    // Issue 708dc4c — operator-session identity is an internal daemon role,
+    // never a caller-selectable console flag. Otherwise an anonymous compat
+    // caller or ordinary strict identity could make the spawner inject the
+    // operator credential into an arbitrary child process.
+    if (body.is_operator === true) {
+      sendJson(res, 403, { error: "operator_session_reserved" });
+      return;
+    }
     const input: ConsoleSessionInput = {
       label: body.label,
       command: body.command,
@@ -195,7 +268,7 @@ export function registerConsoleRoutes(
       cols: typeof body.cols === "number" ? body.cols : 120,
       rows: typeof body.rows === "number" ? body.rows : 30,
       auto_restart: body.auto_restart === true,
-      is_operator: body.is_operator === true,
+      is_operator: false,
       interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
         ? body.interaction_mode as ConsoleInteractionMode
         : "both",
@@ -225,7 +298,7 @@ export function registerConsoleRoutes(
     }
     const ptySession = manager.get(session.id);
     res.status(201).json({ session: ptySession?.meta ?? session });
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/sessions/:id — single session
@@ -236,6 +309,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     res.status(200).json({ session: enrichWithProcessing(ptySession) });
   }, { fileRpc: "deny" });
 
@@ -246,6 +320,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
 
     const body = (req.body ?? {}) as { model?: unknown; label?: unknown };
     const patch: Partial<Pick<ConsoleSession, "label" | "args">> = {};
@@ -272,6 +347,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
 
     const parsed = parseSessionOptionsBody(session.meta.backend_type, req.body ?? {});
     if (!parsed.ok) {
@@ -279,12 +355,6 @@ export function registerConsoleRoutes(
       return;
     }
     const body = parsed.options;
-
-    // Issue 2181ffd — Persist instruction selections as artifact-version refs.
-    if (body.presetIds !== undefined) {
-      const db = getDb();
-      replaceSessionInstructionArtifacts(db, id, body.presetIds);
-    }
 
     const nextSession = manager.updateOptions(id, body);
     res.status(200).json({ session: nextSession });
@@ -300,6 +370,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     if (ptySession.meta.is_operator) {
       sendJson(res, 403, { error: "cannot_delete_operator" });
       return;
@@ -318,6 +389,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     if (ptySession.meta.status === "running") {
       sendJson(res, 400, { error: "already_running" });
       return;
@@ -336,6 +408,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     if (ptySession.meta.status !== "running") {
       sendJson(res, 400, { error: "not_running" });
       return;
@@ -355,6 +428,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     if (ptySession.meta.status === "running") {
       manager.stop(id, "SIGHUP");
     }
@@ -374,6 +448,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     const query = req.query ?? {};
     const limitRaw = typeof query.limit === "string" ? Number.parseInt(query.limit, 10) : 500;
     const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 2000)) : 500;
@@ -396,6 +471,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
     const query = req.query ?? {};
     const messageIndex = typeof query.message_index === "string"
       ? Number.parseInt(query.message_index, 10)
@@ -429,6 +505,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
     res.status(200).json({ requests: manager.getPermissions(id) });
   }, { fileRpc: "deny" });
 
@@ -439,6 +516,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
 
     const decision = (req.body ?? {}) as { decision?: unknown };
     if (!isPermissionDecision(decision.decision)) {
@@ -465,6 +543,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
     res.status(200).json({ usage: manager.getUsage(id) });
   }, { fileRpc: "deny" });
 
@@ -478,6 +557,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     const body = (req.body ?? {}) as { cols?: unknown; rows?: unknown };
     const cols = typeof body.cols === "number" ? body.cols : NaN;
     const rows = typeof body.rows === "number" ? body.rows : NaN;
@@ -499,6 +579,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, ptySession)) return;
     const buf = ptySession.getBufferSnapshot();
     res.status(200).json({
       data: buf.toString("base64"),
@@ -514,6 +595,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
 
     const body = (req.body ?? {}) as { prompt?: unknown };
     if (typeof body.prompt !== "string" || !body.prompt.trim()) {
@@ -546,6 +628,7 @@ export function registerConsoleRoutes(
       sendJson(res, 404, { error: "not_found" });
       return;
     }
+    if (!requireManagedSessionAccess(req, res, manager, session)) return;
 
     const cancelled = manager.cancelPrompt(id);
     if (!cancelled) {
@@ -559,7 +642,7 @@ export function registerConsoleRoutes(
   // ------------------------------------------------------------------
   // GET /api/console/pinned — ordered list of pinned session IDs
   // ------------------------------------------------------------------
-  server.get("/api/console/pinned", (_req, res) => {
+  server.get("/api/console/pinned", (req, res) => {
     const db = getDb();
     const row = db
       .prepare("SELECT value FROM settings WHERE key = 'console_pinned_sessions'")
@@ -569,6 +652,12 @@ export function registerConsoleRoutes(
       ids = JSON.parse(row?.value ?? "[]") as string[];
     } catch {
       ids = [];
+    }
+    const operatorId = db.prepare(
+      "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
+    ).pluck().get() as string | undefined;
+    if (operatorId && !isOperatorRequest(req)) {
+      ids = ids.filter((id) => id !== operatorId);
     }
     res.status(200).json({ ids });
   }, { fileRpc: "deny" });
@@ -582,19 +671,42 @@ export function registerConsoleRoutes(
       sendJson(res, 400, { error: "missing_ids_array" });
       return;
     }
-    const ids = (body.ids as unknown[]).filter((id) => typeof id === "string") as string[];
+    const requestedIds = (body.ids as unknown[]).filter((id) => typeof id === "string") as string[];
     const db = getDb();
+    const operatorId = db.prepare(
+      "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
+    ).pluck().get() as string | undefined;
+    let responseIds = requestedIds;
+    let persistedIds = requestedIds;
+    if (operatorId && !isOperatorRequest(req)) {
+      // Non-operators never see the operator pin. Preserve its current shared
+      // membership when they replace their visible list, and do not let them
+      // add it by guessing the hidden ID.
+      const currentRow = db.prepare(
+        "SELECT value FROM settings WHERE key = 'console_pinned_sessions'",
+      ).get() as { value: string } | undefined;
+      let operatorWasPinned = false;
+      try {
+        operatorWasPinned = (JSON.parse(currentRow?.value ?? "[]") as unknown[])
+          .includes(operatorId);
+      } catch {
+        operatorWasPinned = false;
+      }
+      responseIds = requestedIds.filter((id) => id !== operatorId);
+      persistedIds = operatorWasPinned ? [...responseIds, operatorId] : responseIds;
+    }
     db.prepare(
       `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
-    ).run("console_pinned_sessions", JSON.stringify(ids), Date.now());
-    res.status(200).json({ ids });
+    ).run("console_pinned_sessions", JSON.stringify(persistedIds), Date.now());
+    res.status(200).json({ ids: responseIds });
   }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
   // GET /api/console/operator — operator session details
   // ------------------------------------------------------------------
-  server.get("/api/console/operator", (_req, res) => {
+  server.get("/api/console/operator", (req, res) => {
+    if (!requireOperatorRoute(req, res)) return;
     const operatorSession = manager.getAll().find((s) => s.meta.is_operator);
     res.status(200).json({ session: operatorSession?.meta ?? null });
   }, { fileRpc: "deny" });
@@ -602,7 +714,8 @@ export function registerConsoleRoutes(
   // ------------------------------------------------------------------
   // POST /api/console/operator/restart — kill and restart operator
   // ------------------------------------------------------------------
-  server.post("/api/console/operator/restart", (_req, res) => {
+  server.post("/api/console/operator/restart", (req, res) => {
+    if (!requireOperatorRoute(req, res)) return;
     const operatorSession = manager.getAll().find((s) => s.meta.is_operator);
     if (!operatorSession) {
       sendJson(res, 404, { error: "not_found" });

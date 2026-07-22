@@ -13,7 +13,7 @@ import type {
   PermissionRequest,
   UsageAwareBackend,
 } from "./agentic-backend.js";
-import { getDb } from "./db.js";
+import { getDb, type Db } from "./db.js";
 import { SessionRegistry } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
@@ -38,6 +38,8 @@ import type {
   Logger,
 } from "./types.js";
 import { replaceSessionInstructionArtifacts } from "./presets.js";
+import type { ClientAuthenticator } from "./client-auth/authenticator.js";
+import { getOperator } from "./users/store.js";
 
 interface ConsoleSessionRow {
   id: string;
@@ -103,6 +105,45 @@ const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
 };
 
 export const TERMINAL_BACKEND_RETENTION_LIMIT = 64;
+
+export interface SessionClientIdentity {
+  user_id: string;
+  slug: string;
+}
+
+/**
+ * Resolve the identity a Mandible-owned agent process is allowed to use.
+ * Operator consoles bind only to the configured operator. Other agents require
+ * exactly one active app_name binding for their command; zero or ambiguous
+ * bindings deliberately produce no credential instead of falling back to the
+ * operator or daemon-launching caller.
+ */
+export function resolveSessionClientIdentity(
+  db: Db,
+  session: Pick<ConsoleSession, "id" | "command" | "is_operator">,
+  { allowUnpersistedOperator = false }: { allowUnpersistedOperator?: boolean } = {},
+): SessionClientIdentity | null {
+  if (session.is_operator) {
+    const canonical = db.prepare(
+      "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
+    ).get() as { value: string } | undefined;
+    if (!allowUnpersistedOperator && canonical?.value !== session.id) return null;
+    const operator = getOperator(db);
+    return operator ? { user_id: operator.id, slug: operator.slug } : null;
+  }
+  const matches = db.prepare(
+    `SELECT DISTINCT u.id, u.slug
+       FROM user_bindings b
+       JOIN users u ON u.id = b.user_id
+      WHERE b.binding_type = 'app_name'
+        AND b.status = 'active'
+        AND u.status = 'active'
+        AND lower(b.value) = lower(?)
+      ORDER BY u.id`,
+  ).all(session.command) as Array<{ id: string; slug: string }>;
+  if (matches.length !== 1) return null;
+  return { user_id: matches[0].id, slug: matches[0].slug };
+}
 
 /**
  * Lightweight metadata holder for a backend whose process, terminal ring, and
@@ -320,16 +361,24 @@ export class SessionManager {
   private logger: Logger;
   private sessionRegistry: SessionRegistry | null;
   private codexThreadArchiver: CodexThreadArchiver;
+  private clientAuth: ClientAuthenticator | null;
+  private clientTokens = new Map<string, string>();
+  // Credential eligibility and identity are pinned when a session backend is
+  // constructed. Binding edits must never turn previously admitted plain work
+  // into credential-bearing work (or create a temporary unbound auth window).
+  private clientIdentities = new Map<string, SessionClientIdentity | null>();
 
   constructor(
     _db: unknown,
     logger: Logger,
     sessionRegistry?: SessionRegistry,
     codexThreadArchiver: CodexThreadArchiver = defaultCodexThreadArchiver,
+    clientAuth?: ClientAuthenticator,
   ) {
     this.logger = logger;
     this.sessionRegistry = sessionRegistry ?? null;
     this.codexThreadArchiver = codexThreadArchiver;
+    this.clientAuth = clientAuth ?? null;
   }
 
   init(): void {
@@ -348,6 +397,7 @@ export class SessionManager {
 
     for (const row of rows) {
       const session = rowToSession(row);
+      this.pinClientIdentity(session);
       if (session.status !== "running" && !retainedTerminalIds.has(session.id)) {
         this.sessions.set(session.id, new DormantBackend(session));
         continue;
@@ -379,13 +429,22 @@ export class SessionManager {
     }
   }
 
-  create(input: ConsoleSessionInput): ConsoleSession {
+  create(
+    input: ConsoleSessionInput,
+    { allowOperator = false }: { allowOperator?: boolean } = {},
+  ): ConsoleSession {
+    if (input.is_operator && !allowOperator) {
+      throw new Error("Operator sessions may only be created by SessionManager.startOperator().");
+    }
     const db = getDb();
     const id = randomUUID();
     const now = Date.now();
 
     const args = input.args ?? [];
-    const env = input.env ?? {};
+    const env = { ...(input.env ?? {}) };
+    // Raw daemon credentials are never persisted in console_sessions. A fresh
+    // token is provisioned from the resolved agent-user binding below.
+    delete env.MANDIBLE_TOKEN;
     const cols = input.cols ?? 120;
     const rows = input.rows ?? 30;
     const auto_restart = input.auto_restart ? 1 : 0;
@@ -461,21 +520,21 @@ export class SessionManager {
     });
 
     // Issue 2181ffd — Store instruction attachments as pinned artifact versions.
-    if (input.presetIds && input.presetIds.length > 0) {
-      replaceSessionInstructionArtifacts(db, id, input.presetIds);
-    }
+    const pinnedPresetIds = input.presetIds && input.presetIds.length > 0
+      ? replaceSessionInstructionArtifacts(db, id, input.presetIds)
+      : [];
 
-    const backend = this.createBackend(session, backend_type);
+    const backend = this.createBackend(session, backend_type, { allowUnpersistedOperator: allowOperator });
 
     // Bug: 61bee4e — If presetIds are set, update the SDK backend options
-    if (input.presetIds && input.presetIds.length > 0 && backend instanceof SDKBackend) {
-      backend.updateOptions({ presetIds: input.presetIds });
+    if (pinnedPresetIds.length > 0 && backend instanceof SDKBackend) {
+      backend.updateOptions({ presetIds: pinnedPresetIds });
     }
 
     // Bug: 790433d — If presetIds are set on a PTY session, pass them so the
     // preset union is appended at launch via --append-system-prompt
-    if (input.presetIds && input.presetIds.length > 0 && backend instanceof PTYBackend) {
-      backend.setPresetIds(input.presetIds);
+    if (pinnedPresetIds.length > 0 && backend instanceof PTYBackend) {
+      backend.setPresetIds(pinnedPresetIds);
     }
 
     this.sessions.set(id, backend);
@@ -500,6 +559,15 @@ export class SessionManager {
 
   getAll(): AgenticBackend[] {
     return Array.from(this.sessions.values());
+  }
+
+  /** Whether controlling this session can activate its pinned client credential. */
+  isCredentialBearing(id: string): boolean {
+    const session = this.sessions.get(id)?.meta;
+    if (!session) return false;
+    if (session.is_operator) return true;
+    this.pinClientIdentity(session);
+    return this.clientIdentities.get(id) !== null;
   }
 
   getRetentionStats(): { retainedTerminal: number; dormant: number } {
@@ -536,6 +604,8 @@ export class SessionManager {
     }
     getDb().prepare("DELETE FROM console_sessions WHERE id = ?").run(id);
     this.sessions.delete(id);
+    this.revokeClientToken(id);
+    this.clientIdentities.delete(id);
     broadcast("console:session:deleted", { id });
   }
 
@@ -606,24 +676,31 @@ export class SessionManager {
 
   updateOptions(id: string, options: SDKBackendOptions | AcpBackendOptions): ConsoleSession {
     const session = this.requireSession(id);
+    const requestedPresetIds = (options as SDKBackendOptions).presetIds;
+    const safeOptions = requestedPresetIds !== undefined
+      ? {
+          ...options,
+          presetIds: replaceSessionInstructionArtifacts(getDb(), id, requestedPresetIds),
+        } as SDKBackendOptions | AcpBackendOptions
+      : options;
     const patch: Partial<Pick<ConsoleSession, "args" | "allowed_tools">> = {};
 
-    if (typeof options.model === "string") {
+    if (typeof safeOptions.model === "string") {
       const nextArgs = stripModelArgs(session.meta.args);
-      const model = options.model.trim();
+      const model = safeOptions.model.trim();
       if (model) {
         nextArgs.push("--model", model);
       }
       patch.args = nextArgs;
     }
 
-    if (options.allowedTools !== undefined) {
-      patch.allowed_tools = [...options.allowedTools];
+    if (safeOptions.allowedTools !== undefined) {
+      patch.allowed_tools = [...safeOptions.allowedTools];
     }
 
     const nextSession = Object.keys(patch).length > 0 ? this.updateConfig(id, patch, { silent: true }) : session.meta;
     if (this.isConfigurableBackend<SDKBackendOptions | AcpBackendOptions>(session)) {
-      session.updateOptions(options);
+      session.updateOptions(safeOptions);
     }
     return nextSession;
   }
@@ -711,7 +788,7 @@ export class SessionManager {
     const session = this.create({
       label: "Operator",
       ...OPERATOR_DEFAULTS,
-    });
+    }, { allowOperator: true });
 
     db.prepare(
       `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
@@ -739,19 +816,79 @@ export class SessionManager {
         // Best effort
       }
     }
+    for (const id of this.clientTokens.keys()) this.revokeClientToken(id);
+    this.clientIdentities.clear();
   }
 
-  private createBackend(session: ConsoleSession, type: BackendType): AgenticBackend {
+  private createBackend(
+    session: ConsoleSession,
+    type: BackendType,
+    options: { allowUnpersistedOperator?: boolean } = {},
+  ): AgenticBackend {
+    this.pinClientIdentity(session, options);
+    // The operator bootstrap file is a one-time human/Tauri enrollment proof.
+    // Remove it before constructing any non-operator backend so an agent under
+    // the same OS uid can never read or race that credential directly.
+    if (!session.is_operator) this.clientAuth?.revokeOperatorBootstrap?.();
+    const token = () => this.clientTokenFor(session, options);
     if (type === "sdk") {
-      return new SDKBackend(session, this.logger, this.sessionRegistry ?? undefined);
+      return new SDKBackend(session, this.logger, this.sessionRegistry ?? undefined, token);
     }
     if (type === "spawn") {
-      return new SpawnBackend(session, this.logger);
+      return new SpawnBackend(session, this.logger, token);
     }
     if (type === "acp") {
-      return new AcpBackend(session, this.logger);
+      return new AcpBackend(session, this.logger, token);
     }
-    return new PTYBackend(session, this.logger);
+    return new PTYBackend(session, this.logger, token);
+  }
+
+  private clientTokenFor(
+    session: ConsoleSession,
+    options: { allowUnpersistedOperator?: boolean } = {},
+  ): string | null {
+    if (!this.clientAuth) return null;
+    const existing = this.clientTokens.get(session.id);
+    if (existing) {
+      if (this.clientAuth.authenticate(existing, "in_process")) return existing;
+      this.clientTokens.delete(session.id);
+    }
+    this.pinClientIdentity(session, options);
+    const identity = this.clientIdentities.get(session.id) ?? null;
+    if (!identity) {
+      if (this.clientAuth.mode() === "strict") {
+        this.logger("warn", "client_auth_agent_identity_unresolved", {
+          session_id: session.id,
+          command: session.command,
+        });
+      }
+      return null;
+    }
+    const token = this.clientAuth.issueEphemeralToken(
+      identity,
+      `agent_session:${session.id}`,
+      { ttlMs: null },
+    );
+    this.clientTokens.set(session.id, token);
+    return token;
+  }
+
+  private pinClientIdentity(
+    session: ConsoleSession,
+    options: { allowUnpersistedOperator?: boolean } = {},
+  ): void {
+    if (this.clientIdentities.has(session.id)) return;
+    this.clientIdentities.set(
+      session.id,
+      resolveSessionClientIdentity(getDb(), session, options),
+    );
+  }
+
+  private revokeClientToken(id: string): void {
+    const token = this.clientTokens.get(id);
+    if (!token) return;
+    this.clientTokens.delete(id);
+    this.clientAuth?.revokeEphemeralToken(token);
   }
 
   private wireBackend(backend: AgenticBackend): void {

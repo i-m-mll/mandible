@@ -1,10 +1,12 @@
 import { getDb } from "../db.js";
+import type { ClientAuthenticator } from "../client-auth/authenticator.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import {
   addBinding,
   addCredential,
   createUser,
   getOperator,
+  getOperatorId,
   listBindings,
   listCredentials,
   listUsers,
@@ -20,6 +22,11 @@ import type {
   UserKind,
   UserStatus,
 } from "../users/types.js";
+import {
+  ClientAuthzError,
+  requireOperator,
+  requireSelfOrOperator,
+} from "../client-auth/authz.js";
 import { sendJson } from "./http.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
@@ -41,6 +48,10 @@ function optionalMetadata(body: Record<string, unknown>): Record<string, unknown
 }
 
 function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
   if (error instanceof UserRegistryError) {
     const status =
       error.code === "not_found" ? 404 : error.code === "conflict" ? 409 : 400;
@@ -60,7 +71,10 @@ function userView(db: ReturnType<typeof getDb>, ref: string) {
   };
 }
 
-export function registerUserRoutes(router: RouteRegistrar): void {
+export function registerUserRoutes(
+  router: RouteRegistrar,
+  authenticator?: ClientAuthenticator,
+): void {
   // Literal subpaths must register before /api/users/:ref so the param route
   // does not shadow them.
 
@@ -75,13 +89,22 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.post("/api/users/setup", (req, res) => {
     try {
+      const db = getDb();
+      // First-run setup is the explicit bootstrap path. Once an operator
+      // exists, every identity/configuration update requires that operator's
+      // authenticated token; generic settings can never reassign it.
+      if (getOperatorId(db) !== null) requireOperator(db, req);
       const body = bodyRecord(req);
-      const user = setupOperator(getDb(), {
+      const user = setupOperator(db, {
         slug: optionalString(body, "slug"),
         display_name: optionalString(body, "display_name"),
         email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,
         metadata: optionalMetadata(body),
       });
+      // First setup happens after ClientAuthenticator construction. Publish the
+      // new same-user bootstrap credential immediately so subsequent protected
+      // setup/token/dashboard enrollment calls do not require a daemon restart.
+      authenticator?.refreshBootstrapTokenFile();
       sendJson(res, 200, { user });
     } catch (error) {
       handleError(res, error);
@@ -90,7 +113,19 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.post("/api/users/credentials/:id/revoke", (req, res) => {
     try {
-      const credential = revokeCredential(getDb(), req.params.id);
+      // Issue 708dc4c / finding 2 — revoking a credential (incl. api_tokens) is
+      // an authentication-administration action: require the credential's owner
+      // or the operator. Resolve the owner before revoking so authorization is
+      // checked against the real credential, not a caller-supplied user ref.
+      const db = getDb();
+      const owner = db
+        .prepare("SELECT user_id FROM user_credentials WHERE id = ?")
+        .get(req.params.id) as { user_id: string } | undefined;
+      if (!owner) {
+        throw new UserRegistryError("not_found", `No credential '${req.params.id}'.`);
+      }
+      requireSelfOrOperator(db, req, owner.user_id);
+      const credential = revokeCredential(db, req.params.id);
       sendJson(res, 200, { credential });
     } catch (error) {
       handleError(res, error);
@@ -99,7 +134,11 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.delete("/api/users/bindings/:id", (req, res) => {
     try {
-      removeBinding(getDb(), req.params.id);
+      const db = getDb();
+      // Bindings decide which identity a spawned client receives. They are
+      // operator-administered configuration, not self-service profile data.
+      requireOperator(db, req);
+      removeBinding(db, req.params.id);
       sendJson(res, 200, { ok: true });
     } catch (error) {
       handleError(res, error);
@@ -121,6 +160,7 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.post("/api/users", (req, res) => {
     try {
+      requireOperator(getDb(), req);
       const body = bodyRecord(req);
       const slug = optionalString(body, "slug");
       const kind = optionalString(body, "kind");
@@ -144,9 +184,12 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.get("/api/users/:ref/credentials", (req, res) => {
     try {
+      const db = getDb();
+      const target = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, target.id);
       const query = req.query ?? {};
       const includeRevoked = query.all === "1" || query.all === "true";
-      const credentials = listCredentials(getDb(), req.params.ref, { includeRevoked });
+      const credentials = listCredentials(db, target.id, { includeRevoked });
       sendJson(res, 200, { credentials });
     } catch (error) {
       handleError(res, error);
@@ -155,12 +198,15 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.post("/api/users/:ref/credentials", (req, res) => {
     try {
+      const db = getDb();
+      const target = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, target.id);
       const body = bodyRecord(req);
       const type = optionalString(body, "type");
       const fingerprint = optionalString(body, "fingerprint");
       if (!type) throw new UserRegistryError("invalid", "type is required.");
       if (!fingerprint) throw new UserRegistryError("invalid", "fingerprint is required.");
-      const credential = addCredential(getDb(), req.params.ref, {
+      const credential = addCredential(db, target.id, {
         type,
         fingerprint,
         public_material: "public_material" in body
@@ -185,12 +231,14 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.post("/api/users/:ref/bindings", (req, res) => {
     try {
+      const db = getDb();
+      requireOperator(db, req);
       const body = bodyRecord(req);
       const bindingType = optionalString(body, "binding_type");
       const value = optionalString(body, "value");
       if (!bindingType) throw new UserRegistryError("invalid", "binding_type is required.");
       if (!value) throw new UserRegistryError("invalid", "value is required.");
-      const binding = addBinding(getDb(), req.params.ref, {
+      const binding = addBinding(db, req.params.ref, {
         binding_type: bindingType as BindingType,
         value,
         scope: "scope" in body ? (optionalString(body, "scope") ?? null) : null,
@@ -203,7 +251,10 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.get("/api/users/:ref", (req, res) => {
     try {
-      sendJson(res, 200, { user: userView(getDb(), req.params.ref) });
+      const db = getDb();
+      const target = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, target.id);
+      sendJson(res, 200, { user: userView(db, target.id) });
     } catch (error) {
       handleError(res, error);
     }
@@ -211,8 +262,11 @@ export function registerUserRoutes(router: RouteRegistrar): void {
 
   router.patch("/api/users/:ref", (req, res) => {
     try {
+      const db = getDb();
+      const target = resolveUserOrThrow(db, req.params.ref);
+      requireSelfOrOperator(db, req, target.id);
       const body = bodyRecord(req);
-      const user = updateUser(getDb(), req.params.ref, {
+      const user = updateUser(db, target.id, {
         display_name: optionalString(body, "display_name"),
         email: "email" in body ? (optionalString(body, "email") ?? null) : undefined,
         status: optionalString(body, "status") as UserStatus | undefined,
