@@ -246,6 +246,12 @@ export interface AuthMergeCheckReport {
 export interface CodexArchiveReplayResult {
   request_id: string;
   archived: number;
+  // Issue 75f52ac — count of candidates that HAD a provider handle but whose
+  // codex archive CLI attempt failed (error/timeout). Distinct from
+  // "definitively not archivable" candidates, which are filtered out of the
+  // candidate list before any attempt. The Stage 3 finalizer step propagates a
+  // non-zero count as a step failure so the bounded retry re-attempts it.
+  attempt_failures: number;
   candidates: Array<{
     provider_session_id: string;
     console_session_id: string | null;
@@ -2388,7 +2394,19 @@ export class AuthQueue {
       {
         name: "archive_worker_threads",
         run: async () => {
-          archivedThreadCount = (await this.archiveCompletedWorkerThreads(finalized)).archived;
+          const archiveResult = await this.archiveCompletedWorkerThreads(finalized);
+          archivedThreadCount = archiveResult.archived;
+          // Issue 75f52ac — a candidate with a provider handle whose codex
+          // archive CLI attempt failed (error/timeout) must not silently resolve
+          // this step: propagate it as a step failure so the FinalizerQueue's
+          // bounded retry (FINALIZER_MAX_ATTEMPTS, then failed-and-surfaced) owns
+          // it. Handle-less "definitively not archivable" candidates are already
+          // excluded from the list, so any attempt failure here is retryable.
+          if (archiveResult.attempt_failures > 0) {
+            throw new Error(
+              `codex thread archive failed for ${archiveResult.attempt_failures} candidate(s)`,
+            );
+          }
         },
       },
     ];
@@ -3631,6 +3649,7 @@ export class AuthQueue {
     const result: CodexArchiveReplayResult = {
       request_id: completed.id,
       archived: 0,
+      attempt_failures: 0,
       candidates: [],
     };
     if (completed.type !== "merge") {
@@ -3643,6 +3662,11 @@ export class AuthQueue {
         const archived = await safeArchiveCodexThread(this.codexThreadArchiver, candidate.provider_session_id);
         if (archived) {
           result.archived += 1;
+        } else {
+          // Every candidate has a provider handle (listing filters out the
+          // handle-less "definitively not archivable" rows), so a false result
+          // means the codex archive CLI attempt failed (error/timeout).
+          result.attempt_failures += 1;
         }
         result.candidates.push({ ...candidate, archived });
       }
@@ -3655,6 +3679,9 @@ export class AuthQueue {
         });
       }
     } catch (err) {
+      // Candidate-listing failure (e.g. a transient DB error) is also a
+      // retryable attempt failure, not a definitive completion.
+      result.attempt_failures += 1;
       authLog("warn", "auth_completed_worker_thread_archive_failed", {
         subsystem: "auth",
         auth_request_id: completed.id,

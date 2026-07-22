@@ -410,4 +410,61 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       db.close();
     }
   });
+
+  // Integration reconciliation (issue 75f52ac) — a codex archive CLI attempt
+  // failure must not silently resolve the archive step; it is propagated to the
+  // finalizer's bounded retry rather than durably marked done and lost.
+  it("retries the archive step when the codex archive attempt fails, then finalizes it failed", async () => {
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    let archiveCalls = 0;
+    const queue = new AuthQueue({
+      db,
+      broadcast: (event) => events.push(event),
+      codexThreadArchiver: {
+        archive: async () => {
+          archiveCalls += 1;
+          throw new Error("codex archive boom");
+        },
+        unarchive: async () => undefined,
+      },
+    });
+    const sweep = () => (queue as unknown as { sweepSuccessfulMergeFinalizers(): void })
+      .sweepSuccessfulMergeFinalizers();
+    try {
+      const id = submitSuccessfulRequest(queue);
+      insertCodexWorkUnit(db, "wu-archive-fail", id, "thread-archive-fail");
+
+      // Attempt 1 (via setResult) leaves the archive step retryable, not finalized.
+      queue.setResult(id, 0, "ok");
+      await queue.drainFinalizers();
+      expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
+      expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
+
+      // Attempts 2 and 3 via the sweep. After the third the step is failed@max
+      // and the request finalizes regardless.
+      sweep();
+      await queue.drainFinalizers();
+      expect(queue.getRequest(id)?.merge_finalized_at).toBeNull();
+      sweep();
+      await queue.drainFinalizers();
+
+      const finalizedRow = queue.getRequest(id);
+      expect(finalizedRow?.merge_finalized_at).not.toBeNull();
+      const state = JSON.parse(finalizedRow?.merge_finalizer_state ?? "{}");
+      expect(state.archive_worker_threads.state).toBe("failed");
+      expect(state.archive_worker_threads.attempts).toBe(3);
+      // The CLI attempt was actually retried each pass, not skipped.
+      expect(archiveCalls).toBe(3);
+
+      const finalized = eventsFor(events, id, "auth:finalized")[0].data as {
+        steps: Array<{ name: string; state: string }>;
+      };
+      const archiveStep = finalized.steps.find((s) => s.name === "archive_worker_threads");
+      expect(archiveStep?.state).toBe("failed");
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
 });
