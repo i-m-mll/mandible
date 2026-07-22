@@ -301,11 +301,16 @@ export interface GitBugIssue {
   labels: string[];
   author: string;
   created_at: string;
-  description: string;
+  // Perf (issue e5fc02b): the set-based /api/issues list projection omits
+  // description to keep list payloads small and avoid rehydrating every issue
+  // body. Detail projections (GitBugIssueDetail) still populate it, so the
+  // field is optional on the shared summary type rather than always present.
+  description?: string;
   parent_id?: string;  // derived from parent:<human_id> label
 }
 
 export interface GitBugIssueDetail extends GitBugIssue {
+  description: string;
   comments: GitBugComment[];
 }
 

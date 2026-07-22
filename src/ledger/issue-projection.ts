@@ -7,7 +7,20 @@ import type {
 } from "../types.js";
 import type { RepoInfo, WorkScanner } from "../work-scanner.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
-import type { LedgerIssueDetail } from "./types.js";
+import type { LedgerIssue, LedgerIssueDetail } from "./types.js";
+
+// SQLite compiled into better-sqlite3 caps a statement at 32766 bound
+// parameters. Chunk IN() lists well under that so a project with thousands of
+// issues never overflows the limit.
+const IN_CLAUSE_CHUNK = 900;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
+}
 
 /**
  * Build the issue summary projection used by the existing issue routes.
@@ -23,9 +36,11 @@ export function listLedgerIssueSummaries(
   const store = new LedgerStore(db);
   const summaries: IssueRepoSummary[] = [];
   for (const checkout of checkouts) {
-    const issues = store
-      .listIssues({ project_id: checkout.project_id })
-      .map((issue) => ledgerIssueToRouteIssue(db, checkout, store.getIssueDetail(issue.id)));
+    const issues = buildProjectIssueSummaries(
+      db,
+      checkout,
+      store.listIssues({ project_id: checkout.project_id }),
+    );
     if (issues.length === 0) continue;
     summaries.push({
       repo_id: checkout.repo_id,
@@ -39,6 +54,124 @@ export function listLedgerIssueSummaries(
     });
   }
   return summaries.sort((a, b) => a.repo_name.localeCompare(b.repo_name));
+}
+
+/**
+ * Set-based issue summary projection for the /api/issues list endpoint.
+ *
+ * Replaces the previous per-issue `getIssueDetail` fan-out (7 queries each,
+ * ~22k queries per call across the ledger). All per-issue data the list rows
+ * need — labels and derived parent refs — is fetched with a fixed, small number
+ * of batched queries over the whole project id set. Descriptions are omitted
+ * from list rows: the endpoint no longer rehydrates every issue body, and the
+ * UI two-stage detail fetch supplies the body on selection.
+ */
+function buildProjectIssueSummaries(
+  db: Db,
+  checkout: CheckoutProjection,
+  issues: LedgerIssue[],
+): GitBugIssue[] {
+  if (issues.length === 0) return [];
+  const issueIds = issues.map((issue) => issue.id);
+  const labelsByIssue = batchLabelsByIssue(db, issueIds);
+  const parentByIssue = batchParentRefsByIssue(db, checkout.project_id, issueIds, labelsByIssue);
+  return issues.map((issue) => ({
+    id: issue.short_id || issue.id.slice(0, 7),
+    repo_id: checkout.repo_id,
+    repo_name: checkout.repo_name,
+    title: issue.title,
+    status: issue.status,
+    labels: labelsByIssue.get(issue.id) ?? [],
+    author: issue.author_display,
+    created_at: new Date(issue.created_at).toISOString(),
+    parent_id: parentByIssue.get(issue.id),
+  }));
+}
+
+/**
+ * Batch active labels per issue, sorted, matching the per-issue projection's
+ * `deleted_at IS NULL` filter and alphabetical order.
+ */
+function batchLabelsByIssue(db: Db, issueIds: string[]): Map<string, string[]> {
+  const labels = new Map<string, string[]>();
+  for (const ids of chunk(issueIds, IN_CLAUSE_CHUNK)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = db.prepare(
+      `SELECT issue_id, label FROM ledger_labels
+       WHERE deleted_at IS NULL AND issue_id IN (${placeholders})
+       ORDER BY issue_id, label`,
+    ).all(...ids) as Array<{ issue_id: string; label: string }>;
+    for (const row of rows) {
+      const group = labels.get(row.issue_id) ?? [];
+      group.push(row.label);
+      labels.set(row.issue_id, group);
+    }
+  }
+  return labels;
+}
+
+/**
+ * Derive each issue's parent ref set-wise, preserving the per-issue
+ * `parentRef` precedence: a legacy `parent:<id>` label wins; otherwise the
+ * earliest active incoming parent_child relationship, resolved to the parent's
+ * primary alias (falling back to the raw source issue id).
+ */
+function batchParentRefsByIssue(
+  db: Db,
+  projectId: string,
+  issueIds: string[],
+  labelsByIssue: Map<string, string[]>,
+): Map<string, string> {
+  const parents = new Map<string, string>();
+
+  const needsRelationship: string[] = [];
+  for (const issueId of issueIds) {
+    const legacy = (labelsByIssue.get(issueId) ?? [])
+      .find((label) => label.startsWith("parent:"))
+      ?.slice("parent:".length);
+    if (legacy) parents.set(issueId, legacy);
+    else needsRelationship.push(issueId);
+  }
+  if (needsRelationship.length === 0) return parents;
+
+  // Earliest active incoming parent_child relationship per target issue.
+  const parentSourceByIssue = new Map<string, string>();
+  for (const ids of chunk(needsRelationship, IN_CLAUSE_CHUNK)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = db.prepare(
+      `SELECT target_issue_id, source_issue_id FROM ledger_issue_relationships
+       WHERE relationship_type = 'parent_child'
+         AND deleted_at IS NULL
+         AND target_issue_id IN (${placeholders})
+       ORDER BY target_issue_id, created_at, id`,
+    ).all(...ids) as Array<{ target_issue_id: string; source_issue_id: string }>;
+    for (const row of rows) {
+      if (!parentSourceByIssue.has(row.target_issue_id)) {
+        parentSourceByIssue.set(row.target_issue_id, row.source_issue_id);
+      }
+    }
+  }
+  if (parentSourceByIssue.size === 0) return parents;
+
+  // Primary alias per parent source issue, scoped to this project.
+  const parentSourceIds = Array.from(new Set(parentSourceByIssue.values()));
+  const aliasBySource = new Map<string, string>();
+  for (const ids of chunk(parentSourceIds, IN_CLAUSE_CHUNK)) {
+    const placeholders = ids.map(() => "?").join(", ");
+    const rows = db.prepare(
+      `SELECT issue_id, alias FROM ledger_issue_aliases
+       WHERE project_id = ? AND issue_id IN (${placeholders})
+       ORDER BY issue_id, is_primary DESC, alias_kind`,
+    ).all(projectId, ...ids) as Array<{ issue_id: string; alias: string }>;
+    for (const row of rows) {
+      if (!aliasBySource.has(row.issue_id)) aliasBySource.set(row.issue_id, row.alias);
+    }
+  }
+
+  for (const [issueId, sourceId] of parentSourceByIssue) {
+    parents.set(issueId, aliasBySource.get(sourceId) ?? sourceId);
+  }
+  return parents;
 }
 
 export function findLedgerIssueAcrossRepos(
@@ -259,6 +392,7 @@ function ledgerIssueToRouteDetail(
 ): GitBugIssueDetail {
   return {
     ...ledgerIssueToRouteIssue(db, checkout, detail),
+    description: detail.body,
     comments: detail.comments
       .filter((comment) => comment.deleted_at === null)
       .map((comment): GitBugComment => ({
