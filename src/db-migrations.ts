@@ -2925,6 +2925,35 @@ export const MIGRATIONS: readonly Migration[] = [
     // added by the guarded post-migration below so a schema-rewind replay against
     // a baseline that already carries them is idempotent.
     statements: []
+  },
+  {
+    // Integration reconciliation (umbrella c16807e): originally version 107 on
+    // the auth chain (issue 93d978e); renumbered to 108 because 651e820's
+    // branch_upstream_cache took 107 (it merged first).
+    version: 108,
+    name: "work_unit_merge_scan_retirement",
+    // Issue 93d978e — reversible tombstone excluding stale abandoned work units
+    // from merge-side ancestry scans. Nullable ms-epoch marker; the row, its
+    // state, and its provenance survive. Clearing it re-admits the row. The
+    // additive column is added by a guarded hook (ensureWorkUnitMergeScanRetirementColumn)
+    // so re-migration over a DB that already has the column is idempotent,
+    // matching the pattern used for the v106 branch-reaping columns.
+    statements: []
+  },
+  {
+    // Integration reconciliation (umbrella c16807e): originally version 108 on
+    // the auth chain (issue 75f52ac); renumbered to 109 after 93d978e's
+    // migration shifted to 108.
+    version: 109,
+    name: "auth_request_merge_finalizer_state",
+    // Issue 75f52ac — per-step durable state for the background finalizer queue.
+    // Nullable JSON column recording each Stage 3 finalizer step's state,
+    // attempts, and last error so a daemon restart mid-finalizer resumes the
+    // remaining steps instead of losing or double-applying work. The additive
+    // column is added by a guarded hook (ensureAuthRequestMergeFinalizerStateColumn)
+    // so re-migration over a DB that already has the column is idempotent,
+    // matching the v106/v107 additive-column pattern.
+    statements: []
   }
 ];
 
@@ -2998,6 +3027,12 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 107) {
         ensureBranchUpstreamColumns(db);
+      }
+      if (migration.version === 108) {
+        ensureWorkUnitMergeScanRetirementColumn(db);
+      }
+      if (migration.version === 109) {
+        ensureAuthRequestMergeFinalizerStateColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5503,6 +5538,44 @@ function ensureBranchUpstreamColumns(db: Db): void {
     db.exec("ALTER TABLE branches ADD COLUMN upstream TEXT");
   } else if (upstream.type.toUpperCase() !== "TEXT") {
     throw new Error("migration 107 verification: branches.upstream has divergent definition");
+  }
+}
+
+// Issue 93d978e (migration 108 after integration reconciliation) — additive
+// nullable tombstone column for the merge-scan retirement sweep. Guarded so
+// re-running migrate over a database that already has the column (e.g.
+// version-rewind test fixtures) is a no-op rather than a duplicate-column error.
+function ensureWorkUnitMergeScanRetirementColumn(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_units'")
+    .get();
+  if (!table) return;
+  const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+  }>;
+  const existing = columns.find((column) => column.name === "merge_scan_retired_at");
+  if (!existing) {
+    db.exec("ALTER TABLE work_units ADD COLUMN merge_scan_retired_at INTEGER");
+    return;
+  }
+  if (existing.type.toUpperCase() !== "INTEGER") {
+    throw new Error(
+      "migration 108 verification: work_units.merge_scan_retired_at has divergent definition",
+    );
+  }
+}
+
+// Issue 75f52ac (migration 109 after integration reconciliation) — additive
+// nullable JSON column recording the background finalizer queue's per-step
+// durable state. Guarded so re-running migrate over a database that already has
+// the column (version-rewind fixtures) is a no-op rather than a
+// duplicate-column error.
+function ensureAuthRequestMergeFinalizerStateColumn(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("merge_finalizer_state")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_finalizer_state TEXT");
   }
 }
 

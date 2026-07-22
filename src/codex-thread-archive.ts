@@ -1,11 +1,17 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
 import type { AuthRequest } from "./types.js";
 
+// Issue 75f52ac — archiving spawns the codex CLI (up to 15 s). Running it via
+// promisified execFile instead of execFileSync keeps the daemon event loop free
+// while Stage 3 finalizers run in the background queue.
+const execFileAsync = promisify(execFile);
+
 export interface CodexThreadArchiver {
-  archive(threadId: string): void;
-  unarchive(threadId: string): void;
+  archive(threadId: string): Promise<void>;
+  unarchive(threadId: string): Promise<void>;
 }
 
 export interface WorkerThreadArchiveCandidate {
@@ -16,7 +22,7 @@ export interface WorkerThreadArchiveCandidate {
   work_unit_id: string | null;
 }
 
-type CodexCommandRunner = typeof execFileSync;
+type CodexCommandRunner = typeof execFileAsync;
 type CodexThreadArchiveCommand = "archive" | "unarchive";
 
 interface RankedArchiveCandidate extends WorkerThreadArchiveCandidate {
@@ -24,19 +30,18 @@ interface RankedArchiveCandidate extends WorkerThreadArchiveCandidate {
 }
 
 export class CodexCliThreadArchiver implements CodexThreadArchiver {
-  constructor(private readonly execFile: CodexCommandRunner = execFileSync) {}
+  constructor(private readonly execFile: CodexCommandRunner = execFileAsync) {}
 
-  archive(threadId: string): void {
-    this.run("archive", threadId);
+  async archive(threadId: string): Promise<void> {
+    await this.run("archive", threadId);
   }
 
-  unarchive(threadId: string): void {
-    this.run("unarchive", threadId);
+  async unarchive(threadId: string): Promise<void> {
+    await this.run("unarchive", threadId);
   }
 
-  private run(command: CodexThreadArchiveCommand, threadId: string): void {
-    this.execFile("codex", [command, threadId], {
-      stdio: "pipe",
+  private async run(command: CodexThreadArchiveCommand, threadId: string): Promise<void> {
+    await this.execFile("codex", [command, threadId], {
       timeout: 15_000,
     });
   }
@@ -44,13 +49,13 @@ export class CodexCliThreadArchiver implements CodexThreadArchiver {
 
 export const defaultCodexThreadArchiver = new CodexCliThreadArchiver();
 
-export function safeArchiveCodexThread(
+export async function safeArchiveCodexThread(
   archiver: CodexThreadArchiver,
   threadId: string,
   log: (message: string) => void = console.warn,
-): boolean {
+): Promise<boolean> {
   try {
-    archiver.archive(threadId);
+    await archiver.archive(threadId);
     return true;
   } catch (error) {
     log(`[codex-thread-archive] failed to archive ${threadId}: ${errorMessage(error)}`);
@@ -58,13 +63,13 @@ export function safeArchiveCodexThread(
   }
 }
 
-export function safeUnarchiveCodexThread(
+export async function safeUnarchiveCodexThread(
   archiver: CodexThreadArchiver,
   threadId: string,
   log: (message: string) => void = console.warn,
-): boolean {
+): Promise<boolean> {
   try {
-    archiver.unarchive(threadId);
+    await archiver.unarchive(threadId);
     return true;
   } catch (error) {
     log(`[codex-thread-archive] failed to unarchive ${threadId}: ${errorMessage(error)}`);

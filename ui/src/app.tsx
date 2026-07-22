@@ -62,7 +62,16 @@ import type { AuthRequest } from './views/auth';
 import type { IssueRepoSummary } from './views/issues';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { GraphNodeType } from './views/graph';
-import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
+import {
+  appReducer,
+  initialState,
+  loadCachedState,
+  saveCachedState,
+  selectBadgeCounts,
+  parseAuthOutputEvent,
+  parseAuthResolvedId,
+} from './state';
+import { createAuthOutputCoalescer } from './auth-output-coalescer';
 import type { BugRef, ConsoleSession } from './state';
 import { normalizeAppThemeMode, resolveAppThemeMode, type AppThemeMode } from './theme';
 import {
@@ -850,6 +859,29 @@ function App(): JSX.Element {
         scheduleIssuesRefresh();
       }
     };
+    // Coalesce streamed auth output: buffer chunks and flush one batched
+    // dispatch per frame instead of re-rendering the whole app per chunk. Badge
+    // counts do not change on output, so this path skips the per-chunk badge
+    // fetch and dashboard-cache invalidation entirely.
+    const outputCoalescer = createAuthOutputCoalescer((requestId, chunk) =>
+      dispatch({ type: 'authOutput', requestId, chunk }),
+    );
+    const authOutputHandler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
+      const { requestId, text } = parseAuthOutputEvent(payload);
+      if (requestId && text) {
+        outputCoalescer.push(requestId, text);
+      }
+    };
+    const authResolvedHandler = (payload: SSEPayload) => {
+      // Terminal flush: drain this request's buffered output before applying the
+      // resolution so the final chunk is never dropped or delivered late.
+      const requestId = parseAuthResolvedId(payload);
+      if (requestId) {
+        outputCoalescer.flush(requestId);
+      }
+      handler(payload);
+    };
     const conversationHandler = (payload: SSEPayload) => {
       handler(payload);
       const data = typeof payload.data === 'object' && payload.data !== null ? payload.data : payload;
@@ -961,8 +993,11 @@ function App(): JSX.Element {
       client.on('session:ended', handler),
       client.on('auth:new', handler),
       client.on('auth:updated', handler),
-      client.on('auth:output', handler),
-      client.on('auth:resolved', handler),
+      client.on('auth:output', authOutputHandler),
+      // Issue 75f52ac — auth:merged flips the row early (perceived-latency fix);
+      // it reuses the resolved handler (terminal output flush + row dispatch).
+      client.on('auth:merged', authResolvedHandler),
+      client.on('auth:resolved', authResolvedHandler),
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
@@ -992,7 +1027,11 @@ function App(): JSX.Element {
       client.on('session:ended', graphRefreshHandler),
       client.on('auth:new', graphRefreshHandler),
       client.on('auth:updated', graphRefreshHandler),
+      client.on('auth:merged', graphRefreshHandler),
       client.on('auth:resolved', graphRefreshHandler),
+      // Issue 75f52ac — auth:finalized only invalidates cached graph/queue data
+      // (background finalizers landed); the row already flipped at auth:merged.
+      client.on('auth:finalized', graphRefreshHandler),
       client.on('ledger:issue:created', graphRefreshHandler),
       client.on('ledger:issue:updated', graphRefreshHandler),
       client.on('ledger:issue:closed', graphRefreshHandler),
@@ -1038,6 +1077,7 @@ function App(): JSX.Element {
       if (issuesRefreshTimer !== null) window.clearTimeout(issuesRefreshTimer);
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       offState();
+      outputCoalescer.dispose();
       client.close();
     };
   }, [loadDashboardBadges]);

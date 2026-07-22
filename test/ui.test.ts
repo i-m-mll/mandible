@@ -4,7 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
 
-import { appReducer, applySSEEvent, initialState, selectBadgeCounts } from '../ui/src/state';
+import {
+  appReducer,
+  applySSEEvent,
+  initialState,
+  selectBadgeCounts,
+  parseAuthOutputEvent,
+  parseAuthResolvedId,
+  MAX_AUTH_OUTPUT_CHARS,
+} from '../ui/src/state';
 import { App } from '../ui/src/app';
 import {
   getWorkCompare,
@@ -5098,5 +5106,59 @@ describe('SSE handling', () => {
       chunk: 'line2\n',
     });
     expect(state.authOutputs.a1).toBe('line1\nline2\n');
+  });
+
+  it('strips ANSI escape sequences from appended output', () => {
+    let state = appReducer(initialState, {
+      type: 'authOutput',
+      requestId: 'a1',
+      chunk: '\x1b[32mgreen\x1b[0m\n',
+    });
+    state = appReducer(state, {
+      type: 'authOutput',
+      requestId: 'a1',
+      chunk: '\x1b[1mbold\x1b[0m done\n',
+    });
+    expect(state.authOutputs.a1).toBe('green\nbold done\n');
+  });
+
+  it('bounds retained output to the tail when it exceeds the cap', () => {
+    const head = 'H'.repeat(MAX_AUTH_OUTPUT_CHARS);
+    let state = appReducer(initialState, {
+      type: 'authOutput',
+      requestId: 'a1',
+      chunk: head,
+    });
+    state = appReducer(state, {
+      type: 'authOutput',
+      requestId: 'a1',
+      chunk: 'TAIL',
+    });
+    expect(state.authOutputs.a1.length).toBe(MAX_AUTH_OUTPUT_CHARS);
+    expect(state.authOutputs.a1.endsWith('TAIL')).toBe(true);
+  });
+
+  it('routes auth:output SSE events through the reducer with ANSI stripped', () => {
+    const state = applySSEEvent(initialState, {
+      type: 'auth:output',
+      data: { request_id: 'a1', text: '\x1b[31mred\x1b[0m line\n' },
+    });
+    expect(state.authOutputs.a1).toBe('red line\n');
+  });
+
+  it('parses auth:output and auth:resolved event shapes', () => {
+    expect(
+      parseAuthOutputEvent({
+        type: 'auth:output',
+        data: { request_id: 'a1', text: 'hello' },
+      }),
+    ).toEqual({ requestId: 'a1', text: 'hello' });
+    expect(
+      parseAuthResolvedId({
+        type: 'auth:resolved',
+        data: { request_id: 'a2', status: 'completed' },
+      }),
+    ).toBe('a2');
+    expect(parseAuthResolvedId({ type: 'auth:resolved' })).toBe('');
   });
 });

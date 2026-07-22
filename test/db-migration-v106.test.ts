@@ -28,8 +28,10 @@ describe("migration v106: trash custody records", () => {
 
   it("adds the sequential record table with retention and lifecycle constraints", () => {
     migrate(db);
+    // Re-migration from the rewound v105 fixture also applies the additive v107,
+    // v108, and v109 columns, advancing the schema version past 106.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "107",
+      value: "109",
     });
     const columns = db.prepare("PRAGMA table_info(trash_entries)").all() as Array<{ name: string }>;
     expect(columns.map((column) => column.name)).toEqual(expect.arrayContaining([

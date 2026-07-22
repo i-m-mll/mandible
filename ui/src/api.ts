@@ -462,6 +462,12 @@ export function invalidateApiGetCache(
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
+  // Streamed auth output does not change any dashboard count, so the badge
+  // cache is left intact for that event; every other family below can move a
+  // count and refreshes the badges key.
+  if (type !== 'auth:output') {
+    invalidateApiGetCache('/api/dashboard/badges');
+  }
   if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
@@ -577,8 +583,10 @@ export type DashboardBadgeCounts = {
 };
 
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
-  const response = await apiGet('/api/dashboard/badges');
-  return (await response.json()) as DashboardBadgeCounts;
+  // Served through the shared SWR cache so a burst of SSE events collapses to a
+  // single in-flight fetch. Count-changing events invalidate this key via
+  // invalidateDashboardApiCacheForEvent; the short TTL is burst protection only.
+  return cachedApiGetJson<DashboardBadgeCounts>('/api/dashboard/badges');
 }
 
 // Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the
