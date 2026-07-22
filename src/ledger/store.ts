@@ -11,6 +11,7 @@ import {
 } from "./ids.js";
 import { parseIssueReferences, type ParsedIssueReference } from "./issue-xrefs.js";
 import { assertEvidenceMethod } from "../identity/resolver.js";
+import { getUserById } from "../users/store.js";
 import type {
   LedgerActorInput,
   LedgerActorType,
@@ -259,6 +260,13 @@ export class LedgerStore {
     const base = normalizeActor(input);
     const attribution = input.attribution;
     assertEvidenceMethod(attribution.evidence_method);
+    if (typeof attribution.user_id !== "string" || !attribution.user_id.trim()) {
+      throw new Error("Ledger write requires a non-empty attribution user_id");
+    }
+    const user = getUserById(this.db, attribution.user_id);
+    if (!user || user.status !== "active") {
+      throw new Error(`Ledger write attribution user '${attribution.user_id}' is not active`);
+    }
     return {
       actor_id: base.actor_id,
       actor_type: base.actor_type,

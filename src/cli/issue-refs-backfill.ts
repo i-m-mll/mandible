@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getDbPath, openDb, type Db } from "../db.js";
+import { localDefaultAttribution } from "../identity/resolver.js";
 import {
   runIssueReferenceBackfill,
   type IssueReferenceBackfillOptions,
@@ -26,7 +27,15 @@ function runApply(options: CliOptions): IssueReferenceBackfillResult {
   const db = openDb(options.dbPath);
   db.pragma("busy_timeout = 5000");
   try {
-    return runIssueReferenceBackfill(db, options, { dryRun: false });
+    return runIssueReferenceBackfill(db, options, {
+      dryRun: false,
+      actor: {
+        // Preserve the historical stable-ID tuple; the parallel attribution
+        // records the real operator principal.
+        actor_type: "system",
+        attribution: localDefaultAttribution(db),
+      },
+    });
   } finally {
     db.close();
   }
@@ -45,7 +54,13 @@ async function runDryRun(options: CliOptions): Promise<IssueReferenceBackfillRes
 
   const db = openDb(tempDbPath);
   try {
-    return runIssueReferenceBackfill(db, options, { dryRun: true });
+    return runIssueReferenceBackfill(db, options, {
+      dryRun: true,
+      actor: {
+        actor_type: "system",
+        attribution: localDefaultAttribution(db),
+      },
+    });
   } finally {
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });

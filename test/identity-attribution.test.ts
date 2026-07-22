@@ -180,6 +180,25 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
     expect(store.getComment(comment.id).body).toBe("Before");
   });
 
+  it("rejects malformed and inactive attribution principals at runtime", () => {
+    const store = new LedgerStore(db);
+    const projectId = createProject();
+    const create = (userId: unknown) => store.createIssue({
+      project_id: projectId,
+      title: "Malformed principal",
+      attribution: { user_id: userId, evidence_method: "system_internal" },
+    } as never);
+
+    expect(() => create(null)).toThrow(/non-empty attribution user_id/);
+    expect(() => create(42)).toThrow(/non-empty attribution user_id/);
+    expect(() => create("   ")).toThrow(/non-empty attribution user_id/);
+
+    const retired = createUser(db, { slug: "retired", kind: "agent", display_name: "Retired" });
+    db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(retired.id);
+    expect(() => create(retired.id)).toThrow(/is not active/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM ledger_issues").get()).toEqual({ n: 0 });
+  });
+
   it("records an explicit non-system principal in the parallel columns", () => {
     const store = new LedgerStore(db);
     const projectId = createProject();
@@ -276,6 +295,42 @@ describe("session binding resolution (F5: fail closed)", () => {
     addBinding(db, a.id, { binding_type: "app_name", value: "shared" });
     expect(() => addBinding(db, b.id, { binding_type: "app_name", value: "shared" })).toThrow();
   });
+
+  it("rejects conflicting signals, retired owners, and out-of-scope bindings", () => {
+    const a = createUser(db, { slug: "signal-a", kind: "agent", display_name: "Signal A" });
+    const b = createUser(db, { slug: "signal-b", kind: "agent", display_name: "Signal B" });
+    addBinding(db, a.id, { binding_type: "provider_session_env", value: "session-a" });
+    addBinding(db, b.id, { binding_type: "app_name", value: "app-b" });
+    expect(resolveSessionAttribution(db, {
+      provider_session_env: "session-a",
+      app_name: "app-b",
+    })).toBeNull();
+
+    db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(a.id);
+    expect(resolveSessionAttribution(db, { provider_session_env: "session-a" })).toBeNull();
+
+    const scoped = createUser(db, { slug: "scoped", kind: "agent", display_name: "Scoped" });
+    addBinding(db, scoped.id, { binding_type: "process_pattern", value: "worker", scope: "project-a" });
+    expect(resolveSessionAttribution(db, { process_pattern: "worker" })).toBeNull();
+    expect(resolveSessionAttribution(db, {
+      process_pattern: "worker",
+      binding_scope: "project-b",
+    })).toBeNull();
+    expect(resolveSessionAttribution(db, {
+      process_pattern: "worker",
+      binding_scope: "project-a",
+    })?.user_id).toBe(scoped.id);
+  });
+
+  it("accepts multiple signals only when they converge on one active user", () => {
+    const agent = createUser(db, { slug: "converged", kind: "agent", display_name: "Converged" });
+    addBinding(db, agent.id, { binding_type: "provider_session_env", value: "session-c" });
+    addBinding(db, agent.id, { binding_type: "app_name", value: "app-c" });
+    expect(resolveSessionAttribution(db, {
+      provider_session_env: "session-c",
+      app_name: "app-c",
+    })?.user_id).toBe(agent.id);
+  });
 });
 
 describe("shadow users for git-bug imports (F4)", () => {
@@ -298,6 +353,33 @@ describe("shadow users for git-bug imports (F4)", () => {
     const gitBug = mintShadowUser(db, { adapter: "git_bug", project_id: "p1", author_name: "Same Name" });
     const github = mintShadowUser(db, { adapter: "github", project_id: "p1", author_name: "Same Name" });
     expect(gitBug.id).not.toBe(github.id);
+  });
+
+  it("rejects external-author bindings owned by non-external or retired users", () => {
+    const human = createUser(db, { slug: "human", kind: "human", display_name: "Human" });
+    addBinding(db, human.id, {
+      binding_type: "external_author",
+      value: "Ada",
+      scope: "git_bug::p1",
+    });
+    expect(() => mintShadowUser(db, {
+      adapter: "git_bug",
+      project_id: "p1",
+      author_name: "Ada",
+    })).toThrow(/ineligible owner/);
+
+    const external = createUser(db, { slug: "retired-ext", kind: "external", display_name: "Retired" });
+    addBinding(db, external.id, {
+      binding_type: "external_author",
+      value: "Grace",
+      scope: "git_bug::p1",
+    });
+    db.prepare("UPDATE users SET status = 'retired' WHERE id = ?").run(external.id);
+    expect(() => mintShadowUser(db, {
+      adapter: "git_bug",
+      project_id: "p1",
+      author_name: "Grace",
+    })).toThrow(/ineligible owner/);
   });
 });
 

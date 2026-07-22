@@ -131,6 +131,7 @@ export interface SessionAttributionSignals {
   provider_session_env?: string | null;
   process_pattern?: string | null;
   git_author_email?: string | null;
+  binding_scope?: string | null;
 }
 
 const SESSION_BINDING_ORDER: ReadonlyArray<{
@@ -155,22 +156,28 @@ export function resolveSessionAttribution(
   db: Db,
   signals: SessionAttributionSignals,
 ): AttributionContext | null {
+  const matchedUserIds = new Set<string>();
   for (const { key, binding_type } of SESSION_BINDING_ORDER) {
     const value = signals[key];
     if (!value) continue;
+    const scope = signals.binding_scope ?? null;
     const rows = db
       .prepare(
-        `SELECT user_id FROM user_bindings
-         WHERE binding_type = ? AND value = ? AND status = 'active'
+        `SELECT DISTINCT b.user_id
+         FROM user_bindings b
+         JOIN users u ON u.id = b.user_id
+         WHERE b.binding_type = ? AND b.value = ?
+           AND b.status = 'active' AND u.status = 'active'
+           AND ((? IS NULL AND b.scope IS NULL)
+             OR (? IS NOT NULL AND (b.scope IS NULL OR b.scope = ?)))
          LIMIT 2`,
       )
-      .all(binding_type, normalizeBindingValue(value)) as Array<{ user_id: string }>;
-    if (rows.length === 1) {
-      return { user_id: rows[0].user_id, evidence_method: "session_claim" };
-    }
-    // 0 or an impossible >1 both fail closed.
+      .all(binding_type, normalizeBindingValue(value), scope, scope, scope) as Array<{ user_id: string }>;
+    if (rows.length > 1) return null;
+    if (rows.length === 1) matchedUserIds.add(rows[0].user_id);
   }
-  return null;
+  if (matchedUserIds.size !== 1) return null;
+  return { user_id: [...matchedUserIds][0], evidence_method: "session_claim" };
 }
 
 // --- LedgerActorInput adapters (used at write call sites) ---
@@ -235,7 +242,12 @@ function findShadowUser(db: Db, value: string, scope: string): User | null {
        LIMIT 1`,
     )
     .get(SHADOW_BINDING_TYPE, value, scope) as { user_id: string } | undefined;
-  return row ? getUserById(db, row.user_id) : null;
+  if (!row) return null;
+  const user = getUserById(db, row.user_id);
+  if (!user || user.kind !== "external" || user.status !== "active") {
+    throw new Error(`External-author binding '${scope}:${value}' has an ineligible owner`);
+  }
+  return user;
 }
 
 /**
@@ -263,18 +275,20 @@ export function mintShadowUser(db: Db, request: ShadowUserRequest): User {
       slug = `${slug}-${suffix}`;
     }
     try {
-      const user = createUser(db, {
-        slug,
-        kind: "external",
-        display_name: request.author_name,
-        metadata: { adapter: request.adapter, project_id: request.project_id, shadow: true },
-      });
-      addBinding(db, user.id, {
-        binding_type: SHADOW_BINDING_TYPE,
-        value,
-        scope,
-      });
-      return user;
+      return db.transaction(() => {
+        const user = createUser(db, {
+          slug,
+          kind: "external",
+          display_name: request.author_name,
+          metadata: { adapter: request.adapter, project_id: request.project_id, shadow: true },
+        });
+        addBinding(db, user.id, {
+          binding_type: SHADOW_BINDING_TYPE,
+          value,
+          scope,
+        });
+        return user;
+      })();
     } catch (error) {
       if (isUniqueConstraint(error)) {
         const winner = findShadowUser(db, value, scope);

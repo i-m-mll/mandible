@@ -7,7 +7,7 @@ import {
   normalizeEscapedMarkdownBodies,
   type MarkdownBodyAuditScope,
 } from "../ledger/markdown-body.js";
-import { systemAction } from "../identity/resolver.js";
+import { localDefaultAttribution } from "../identity/resolver.js";
 import {
   exportIssueMarkdownFiles,
   type IssueMarkdownExportOptions,
@@ -51,7 +51,7 @@ function main(argv: string[]): number {
             actor: {
               actor_type: "mandible_user",
               author_display: "Mandible CLI",
-              attribution: systemAction(),
+              attribution: localDefaultAttribution(db),
             },
           })
         : normalizeEscapedMarkdownBodies(db, {

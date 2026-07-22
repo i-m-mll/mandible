@@ -1,6 +1,6 @@
 import type { Db } from "../db.js";
-import { systemAction } from "../identity/resolver.js";
 import { LedgerStore } from "./store.js";
+import type { LedgerActorInput } from "./types.js";
 
 export interface IssueReferenceBackfillOptions {
   project?: string;
@@ -49,7 +49,7 @@ interface TextSource {
 export function runIssueReferenceBackfill(
   db: Db,
   options: IssueReferenceBackfillOptions = {},
-  resultOptions: { dryRun?: boolean } = {},
+  resultOptions: { dryRun?: boolean; actor: LedgerActorInput },
 ): IssueReferenceBackfillResult {
   const projectId = options.project ? resolveProjectId(db, options.project) : null;
   const store = new LedgerStore(db, { broadcaster: () => undefined });
@@ -71,7 +71,7 @@ export function runIssueReferenceBackfill(
       source_entity_id: source.source_entity_id,
       body: source.body,
       source: "system",
-      actor: { actor_type: "system", attribution: systemAction() },
+      actor: resultOptions.actor,
     });
   }
 

@@ -958,12 +958,12 @@ describe("ledger store", () => {
       project: project.project.display_name,
       issue: source.short_id,
       since: 1500,
-    });
+    }, { actor: SYSTEM_ACTOR });
     const second = runIssueReferenceBackfill(db, {
       project: project.project.display_name,
       issue: source.short_id,
       since: 1500,
-    });
+    }, { actor: SYSTEM_ACTOR });
 
     expect(first.processed).toEqual({ issue_bodies: 1, comments: 0 });
     expect(first.delta).toMatchObject({
