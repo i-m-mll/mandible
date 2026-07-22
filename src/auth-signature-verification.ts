@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -24,6 +24,7 @@ export interface MergeSignatureVerification {
 const MERGE_RESULT_PREFIX = "MANDIBLE_MERGE_RESULT ";
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{40,64}$/i;
 const SSH_FINGERPRINT_PATTERN = /SHA256:[A-Za-z0-9+/=]+/;
+const TRUSTED_SSH_KEYGEN_PATHS = ["/usr/bin/ssh-keygen", "/bin/ssh-keygen"];
 
 /** Extract the actual post-merge commit recorded by the successful merge script. */
 export function extractSuccessfulMergeCommitSha(output: string): string | null {
@@ -85,7 +86,13 @@ function unverified(
 }
 
 function verificationEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+  };
   delete env.GIT_CONFIG_COUNT;
   delete env.GIT_CONFIG_PARAMETERS;
   delete env.GIT_DIR;
@@ -95,6 +102,10 @@ function verificationEnv(): NodeJS.ProcessEnv {
     if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) delete env[key];
   }
   return env;
+}
+
+function trustedSshKeygenPath(): string | null {
+  return TRUSTED_SSH_KEYGEN_PATHS.find((candidate) => existsSync(candidate)) ?? null;
 }
 
 /**
@@ -108,6 +119,8 @@ export function verifyMergeCommitSignature(
 ): MergeSignatureVerification {
   if (!cwd) return unverified(commitSha, "missing_repository_path");
   if (!commitSha) return unverified(null, "missing_merge_commit_sha");
+  const sshKeygenPath = trustedSshKeygenPath();
+  if (!sshKeygenPath) return unverified(commitSha, "trusted_ssh_keygen_unavailable");
 
   const credentials = activeSigningCredentials(db);
   const allowed = credentials.flatMap((credential) => {
@@ -125,6 +138,12 @@ export function verifyMergeCommitSignature(
         "gpg.format=ssh",
         "-c",
         `gpg.ssh.allowedSignersFile=${allowedSignersPath}`,
+        "-c",
+        `gpg.ssh.program=${sshKeygenPath}`,
+        "-c",
+        "gpg.ssh.revocationFile=/dev/null",
+        "-c",
+        "gpg.minTrustLevel=fully",
         "verify-commit",
         commitSha,
       ],

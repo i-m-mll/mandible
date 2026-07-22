@@ -674,7 +674,12 @@ describe("auth queue", () => {
       queue.dispose();
 
       now = 6 * 60 * 1000;
-      const restarted = new AuthQueue({ db, now: () => now });
+      const events: SseEvent[] = [];
+      const restarted = new AuthQueue({
+        db,
+        now: () => now,
+        broadcast: (event) => events.push(event),
+      });
       try {
         const recovered = restarted.getRequest(request.id);
         const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
@@ -682,6 +687,13 @@ describe("auth queue", () => {
         expect(recovered?.status).toBe("completed");
         expect(recovered?.exit_code).toBe(0);
         expect(recovered?.merge_finalized_at).toBe(now);
+        const resolvedEvent = events.find((event) => event.event === "auth:resolved");
+        expect(resolvedEvent?.data).toMatchObject({
+          execution_evidence_id: recovered?.execution_evidence_id,
+          signature_verification: {
+            evidence_id: recovered?.execution_evidence_id,
+          },
+        });
         expect(workUnit.state).toBe("resolved");
         expect(workUnit.resolved_at).toBe(now);
       } finally {

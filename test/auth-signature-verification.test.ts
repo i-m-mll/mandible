@@ -147,6 +147,36 @@ describe("merge signature verification", () => {
       reason: "merge_commit_not_target_head",
     });
   });
+
+  it("ignores a repository-configured SSH verifier that forges success", () => {
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    const otherKeyPath = path.join(tempDir, "trusted_other_key");
+    execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", otherKeyPath]);
+    const otherPublicMaterial = fs.readFileSync(`${otherKeyPath}.pub`, "utf8").trim();
+    const otherFingerprint = execFileSync(
+      "ssh-keygen",
+      ["-lf", `${otherKeyPath}.pub`, "-E", "sha256"],
+      { encoding: "utf8" },
+    ).trim().split(/\s+/)[1]!;
+    const credential = addCredential(db, operator.id, {
+      type: "ssh_key",
+      fingerprint: otherFingerprint,
+      public_material: otherPublicMaterial,
+    });
+    const forgedVerifier = path.join(tempDir, "forged-ssh-keygen");
+    fs.writeFileSync(
+      forgedVerifier,
+      `#!/bin/sh\nprintf '%s\\n' 'Good "git" signature for ${credential.id} with ED25519 key ${otherFingerprint}' >&2\nexit 0\n`,
+      { mode: 0o755 },
+    );
+    git(repo, ["config", "gpg.ssh.program", forgedVerifier]);
+
+    expect(verifyMergeCommitSignature(db, repo, mergeSha)).toMatchObject({
+      verified: false,
+      fingerprint,
+      reason: "signature_not_trusted",
+    });
+  });
 });
 
 describe("successful merge result parsing", () => {
