@@ -28,7 +28,10 @@ export type IssueSummary = {
   labels: string[];
   author: string;
   created_at: string;
-  description: string;
+  // Perf (issue e5fc02b): the /api/issues list projection omits description.
+  // The body arrives via the two-stage detail fetch on selection; the
+  // synthesized instant-paint detail treats an absent description as empty.
+  description?: string;
   parent_id?: string;  // derived from parent:<human_id> label
 };
 
