@@ -15,6 +15,7 @@ import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { renderInlineMarkdown } from '../lib/markdown';
+import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 
 // --- Types ---
 
@@ -744,7 +745,9 @@ export function IssuesView({
     const issueId = selectedIssueId;
     const requestSeq = detailRequestSeqRef.current + 1;
     detailRequestSeqRef.current = requestSeq;
-    const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId);
+    const persistedKey = detailRequestKey('issue', { repoId, issueId });
+    const cachedDetail = getCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId)
+      ?? readPersistedDetail<LedgerIssueDetailProjection>('issue-detail', persistedKey);
     const hasCachedDetail = Boolean(cachedDetail && ledgerDetailMatchesSelection(cachedDetail, repoId, issueId));
     if (hasCachedDetail && cachedDetail) {
       setLedgerIssueDetail(cachedDetail);
@@ -775,6 +778,7 @@ export function IssuesView({
       .then((detail) => {
         if (detailRequestSeqRef.current !== requestSeq) return;
         putCachedIssueDetail(issueDetailCacheRef.current, repoId, issueId, detail);
+        writePersistedDetail('issue-detail', persistedKey, detail);
         setLedgerIssueDetail(detail);
       })
       .catch(() => {
@@ -821,6 +825,11 @@ export function IssuesView({
       const detail = await getLedgerIssueDetailByRef(selectedRepoId, selectedIssueId);
       if (detailRequestSeqRef.current === requestSeq) {
         putCachedIssueDetail(issueDetailCacheRef.current, selectedRepoId, selectedIssueId, detail);
+        writePersistedDetail(
+          'issue-detail',
+          detailRequestKey('issue', { repoId: selectedRepoId, issueId: selectedIssueId }),
+          detail,
+        );
         setLedgerIssueDetail(detail);
       }
     } catch {

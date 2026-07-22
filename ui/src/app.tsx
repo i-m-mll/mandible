@@ -13,10 +13,10 @@ import {
   getAuthQueue,
   getConsoleSessions,
   getConversations,
+  getDashboardBadges,
   getInboxGlobal,
   getIssueRepos,
   getRepoBranches,
-  getSessions,
   getSettings,
   getWorkRepos,
   invalidateDashboardApiCacheForEvent,
@@ -27,10 +27,20 @@ import {
   updateAuthRequestField,
   updateSetting,
   type InstanceInfo,
+  type DashboardBadgeCounts,
 } from './api';
 import { createSSEClient } from './sse-client';
 import type { SSEPayload } from './sse-client';
-import { daemonIsReady, shouldEnterSplashOnProbe, type DaemonHealthSnapshot } from './daemon-readiness';
+import {
+  daemonEpochChanged,
+  daemonCommitChanged,
+  daemonIsReadyAfterEpoch,
+  daemonIsWarm,
+  daemonStartupEpoch,
+  daemonStartupCommit,
+  shouldEnterSplashOnBackgroundProbe,
+  type DaemonHealthSnapshot,
+} from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
 import {
   hashWithViewSidebarHidden,
@@ -49,7 +59,6 @@ import {
 } from './app-shell';
 import type { AuthRequest } from './views/auth';
 import type { IssueRepoSummary } from './views/issues';
-import type { SessionRecord } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { GraphNodeType } from './views/graph';
 import { appReducer, initialState, loadCachedState, saveCachedState, selectBadgeCounts } from './state';
@@ -68,6 +77,7 @@ import {
   LogsIcon,
   ProjectsIcon,
 } from './components/icons/TabIcons';
+import { LoadingSkeleton } from './components/LoadingSkeleton';
 
 import '@xterm/xterm/css/xterm.css';
 import '@xyflow/react/dist/style.css';
@@ -91,6 +101,7 @@ import './views/spaces/SpaceTypeIndicator.css';
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
+const LAST_SEEN_STARTUP_EPOCH_KEY = 'mandible-last-seen-startup-epoch';
 const SPACES_LAST_VIEW_KEY = 'mandible.spaces.lastView:v1';
 const THEME_COLOR_BY_RESOLVED_THEME = {
   dark: '#0b0f14',
@@ -119,39 +130,54 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'spaces',
 ];
 
-const LazyAuthQueueView = lazy(() =>
-  import('./views/auth').then((module) => ({ default: module.AuthQueueView })),
-);
-const LazyArtifactsView = lazy(() =>
-  import('./views/artifacts').then((module) => ({ default: module.ArtifactsView })),
-);
-const LazyInboxView = lazy(() =>
-  import('./views/inbox').then((module) => ({ default: module.InboxView })),
-);
-const LazyIssuesView = lazy(() =>
-  import('./views/issues').then((module) => ({ default: module.IssuesView })),
-);
-const LazyConversationsView = lazy(() =>
-  import('./views/conversations').then((module) => ({ default: module.ConversationsView })),
-);
-const LazySettingsView = lazy(() =>
-  import('./views/settings').then((module) => ({ default: module.SettingsView })),
-);
-const LazyWorkOverviewView = lazy(() =>
-  import('./views/work').then((module) => ({ default: module.WorkOverviewView })),
-);
-const LazyLogsView = lazy(() =>
-  import('./views/logs').then((module) => ({ default: module.LogsView })),
-);
-const LazyGraphView = lazy(() =>
-  import('./views/graph').then((module) => ({ default: module.GraphView })),
-);
-const LazyTimelineView = lazy(() =>
-  import('./views/timeline').then((module) => ({ default: module.TimelineView })),
-);
-const LazySpacesTab = lazy(() =>
-  import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab })),
-);
+const loadAuthQueueView = () =>
+  import('./views/auth').then((module) => ({ default: module.AuthQueueView }));
+const loadArtifactsView = () =>
+  import('./views/artifacts').then((module) => ({ default: module.ArtifactsView }));
+const loadInboxView = () =>
+  import('./views/inbox').then((module) => ({ default: module.InboxView }));
+const loadIssuesView = () =>
+  import('./views/issues').then((module) => ({ default: module.IssuesView }));
+const loadConversationsView = () =>
+  import('./views/conversations').then((module) => ({ default: module.ConversationsView }));
+const loadSettingsView = () =>
+  import('./views/settings').then((module) => ({ default: module.SettingsView }));
+const loadWorkOverviewView = () =>
+  import('./views/work').then((module) => ({ default: module.WorkOverviewView }));
+const loadLogsView = () =>
+  import('./views/logs').then((module) => ({ default: module.LogsView }));
+const loadGraphView = () =>
+  import('./views/graph').then((module) => ({ default: module.GraphView }));
+const loadTimelineView = () =>
+  import('./views/timeline').then((module) => ({ default: module.TimelineView }));
+const loadSpacesTab = () =>
+  import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab }));
+
+const LazyAuthQueueView = lazy(loadAuthQueueView);
+const LazyArtifactsView = lazy(loadArtifactsView);
+const LazyInboxView = lazy(loadInboxView);
+const LazyIssuesView = lazy(loadIssuesView);
+const LazyConversationsView = lazy(loadConversationsView);
+const LazySettingsView = lazy(loadSettingsView);
+const LazyWorkOverviewView = lazy(loadWorkOverviewView);
+const LazyLogsView = lazy(loadLogsView);
+const LazyGraphView = lazy(loadGraphView);
+const LazyTimelineView = lazy(loadTimelineView);
+const LazySpacesTab = lazy(loadSpacesTab);
+
+const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>> = {
+  auth: loadAuthQueueView,
+  artifacts: loadArtifactsView,
+  inbox: loadInboxView,
+  issues: loadIssuesView,
+  console: loadConversationsView,
+  settings: loadSettingsView,
+  work: loadWorkOverviewView,
+  logs: loadLogsView,
+  graph: loadGraphView,
+  timeline: loadTimelineView,
+  spaces: loadSpacesTab,
+};
 
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   bottomPanel: null,
@@ -228,6 +254,24 @@ function setLastSeenCommit(hash: string): void {
   }
   try {
     window.localStorage.setItem(LAST_SEEN_COMMIT_KEY, hash);
+  } catch {
+    return;
+  }
+}
+
+function getLastSeenStartupEpoch(): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage.getItem(LAST_SEEN_STARTUP_EPOCH_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setLastSeenStartupEpoch(epoch: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LAST_SEEN_STARTUP_EPOCH_KEY, epoch);
   } catch {
     return;
   }
@@ -394,17 +438,19 @@ function routeForTab(
 }
 
 function TabChunkFallback(): JSX.Element {
-  return (
-    <div className="app-tab-loading" role="status" aria-live="polite">
-      Loading...
-    </div>
-  );
+  return <LoadingSkeleton variant="tab" label="Loading view" />;
 }
 
 // Bug: 326a3e2 — rebuilding/restarting splash on self-merge
 // Bug: 645f8a8 — also used as a generic "daemon starting" splash for pages
 // loaded mid-startup (the daemon is alive but not yet ready for mutations).
-function RebuildingSplash({ reason = 'rebuilding' }: { reason?: 'rebuilding' | 'starting' }): JSX.Element {
+function RebuildingSplash({
+  reason = 'rebuilding',
+  epochStalled = false,
+}: {
+  reason?: 'rebuilding' | 'starting';
+  epochStalled?: boolean;
+}): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
   return (
     <div className="rebuilding-splash">
@@ -414,7 +460,9 @@ function RebuildingSplash({ reason = 'rebuilding' }: { reason?: 'rebuilding' | '
           {isRebuilding ? 'Rebuilding & restarting…' : 'Starting Mandible…'}
         </div>
         <div className="rebuilding-splash__subtitle">
-          {isRebuilding
+          {epochStalled
+            ? 'The daemon is ready, but its startup commit has not changed. The rebuild may not have completed.'
+            : isRebuilding
             ? 'Mandible is restarting after a self-merge. This page will reload automatically.'
             : 'Mandible is finishing startup. This page will reload automatically when it is ready.'}
         </div>
@@ -457,10 +505,18 @@ function App(): JSX.Element {
   // down/restarting) that detects a not-ready daemon via the mount probe / poll,
   // even though it never saw the mandible:rebuilding SSE event.
   const [daemonStarting, setDaemonStarting] = useState(false);
+  const [daemonWarm, setDaemonWarm] = useState(true);
+  const [epochStalled, setEpochStalled] = useState(false);
+  const splashEpochRef = useRef<string | null>(null);
+  const splashCommitRef = useRef<string | null>(null);
+  const requireNewEpochRef = useRef(false);
+  const requireNewCommitRef = useRef(false);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
+  const [dashboardBadges, setDashboardBadges] = useState<DashboardBadgeCounts | null>(null);
+  const lastDashboardSseAtRef = useRef(0);
 
   const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
     setBottomPanel(descriptor);
@@ -644,125 +700,93 @@ function App(): JSX.Element {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [navigateToHash, navigateToSettings]);
 
-  useEffect(() => {
-    let active = true;
-    // Bug: 73ef02f — legacy session registry data remains for backend/session
-    // integrations while the Monitor frontend route is retired.
-    getSessions<SessionRecord>('?include=issues')
-      .then((sessions) => {
-        if (active) {
-          dispatch({ type: 'setSessions', sessions });
-        }
-      })
-      .catch(() => undefined);
-
-    getAuthQueue<AuthRequest>()
-      .then((queue) => {
-        if (active) {
-          dispatch({ type: 'setAuthQueue', queue });
-        }
-      })
-      .catch(() => undefined);
-
-    getAuthHistory<AuthRequest>(200)
-      .then((history) => {
-        if (active) {
-          dispatch({ type: 'setAuthHistory', history });
-        }
-      })
-      .catch(() => undefined);
-
-    const loadWork = async () => {
-      try {
-        const repos = await getWorkRepos<WorkRepo>();
-        if (!active) {
-          return;
-        }
-        dispatch({ type: 'setWorkRepos', repos });
-        await Promise.all(
-          repos.map(async (repo) => {
-            const repoId = getRepoId(repo);
-            if (!repoId) {
-              return;
-            }
-            const branches = await getRepoBranches<WorkBranch>(repoId);
-            if (active) {
-              dispatch({ type: 'setRepoBranches', repoId, branches });
-            }
-          }),
-        );
-      } catch {
-        return;
-      }
-    };
-
-    loadWork();
-
-    getIssueRepos<IssueRepoSummary>()
-      .then((repos) => {
-        if (active) {
-          dispatch({ type: 'setIssueRepos', repos });
-        }
-      })
-      .catch(() => undefined);
-
-    getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
-      .then((result) => {
-        if (active) {
-          dispatch({ type: 'setConversations', conversations: result.conversations });
-        }
-      })
-      .catch(() => undefined);
-
-    getSettings()
-      .then((settings) => {
-        if (active) {
-          dispatch({ type: 'setSettings', settings });
-        }
-      })
-      .catch(() => undefined);
-
-    dispatch({ type: 'setInboxLoading', loading: true });
-    getInboxGlobal()
-      .then((data) => {
-        if (active) {
-          dispatch({ type: 'setInboxData', data });
-        }
-      })
-      .catch(() => {
-        if (active) {
-          dispatch({ type: 'setInboxLoading', loading: false });
-        }
-      });
-
-    // Load initial console sessions list
-    getConsoleSessions<ConsoleSession>()
-      .then((sessions) => {
-        if (active) {
-          dispatch({
-            type: 'setConsoleSessions',
-            sessions: sessions.map((session) => ({
-              pinned: false,
-              unread_count: 0,
-              ...session,
-            })),
-          });
-        }
-      })
-      .catch(() => undefined);
-
-    return () => {
-      active = false;
-    };
+  const loadDashboardBadges = useCallback(async () => {
+    try {
+      setDashboardBadges(await getDashboardBadges());
+    } catch {
+      // Cached full-view state remains a usable fallback when the aggregate is unavailable.
+    }
   }, []);
+
+  const loadWorkData = useCallback(async (includeBranches: boolean) => {
+    const repos = await getWorkRepos<WorkRepo>();
+    dispatch({ type: 'setWorkRepos', repos });
+    if (!includeBranches) return;
+    await Promise.all(repos.map(async (repo) => {
+      const repoId = getRepoId(repo);
+      if (!repoId) return;
+      const branches = await getRepoBranches<WorkBranch>(repoId);
+      dispatch({ type: 'setRepoBranches', repoId, branches });
+    }));
+  }, []);
+
+  const loadVisibleRouteData = useCallback(async (tab: Route['tab']) => {
+    try {
+      switch (tab) {
+        case 'auth':
+          await Promise.all([
+            getAuthQueue<AuthRequest>().then((queue) => dispatch({ type: 'setAuthQueue', queue })),
+            getAuthHistory<AuthRequest>(200).then((history) => dispatch({ type: 'setAuthHistory', history })),
+            loadWorkData(true),
+          ]);
+          return;
+        case 'console':
+        case 'chat-history':
+          await Promise.all([
+            getConversations({ limit: 50, group: true, exclude_subagents: true, min_blocks: 1 })
+              .then((result) => dispatch({ type: 'setConversations', conversations: result.conversations })),
+            getConsoleSessions<ConsoleSession>().then((sessions) => dispatch({
+              type: 'setConsoleSessions',
+              sessions: sessions.map((session) => ({ pinned: false, unread_count: 0, ...session })),
+            })),
+            loadWorkData(false),
+          ]);
+          return;
+        case 'issues':
+          await getIssueRepos<IssueRepoSummary>()
+            .then((repos) => {
+              if (repos.length > 0) dispatch({ type: 'setIssueRepos', repos });
+            });
+          return;
+        case 'inbox':
+          dispatch({ type: 'setInboxLoading', loading: true });
+          await getInboxGlobal().then((data) => dispatch({ type: 'setInboxData', data }));
+          return;
+        case 'settings':
+          await getSettings().then((settings) => dispatch({ type: 'setSettings', settings }));
+          return;
+        case 'work':
+          await loadWorkData(true);
+          return;
+        case 'timeline':
+          await loadWorkData(false);
+          return;
+        default:
+          return;
+      }
+    } catch {
+      if (tab === 'inbox') dispatch({ type: 'setInboxLoading', loading: false });
+    }
+  }, [loadWorkData]);
+
+  useEffect(() => {
+    // Start the visible view request before the small global aggregate.
+    void loadVisibleRouteData(route.tab);
+    void getSettings()
+      .then((settings) => dispatch({ type: 'setSettings', settings }))
+      .catch(() => undefined);
+    void loadDashboardBadges();
+  }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
 
   // SSE real-time updates: register handlers FIRST, then connect, so no
   // events arrive before we are ready to dispatch them.
   useEffect(() => {
     const client = createSSEClient();
     const handler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
       invalidateDashboardApiCacheForEvent(payload.type);
       dispatch({ type: 'sse', payload });
+      void loadDashboardBadges();
     };
     const conversationHandler = (payload: SSEPayload) => {
       handler(payload);
@@ -849,6 +873,11 @@ function App(): JSX.Element {
 
     // Bug: 326a3e2 — show full-page splash when daemon is about to restart
     const rebuildingHandler = () => {
+      splashEpochRef.current = getLastSeenStartupEpoch();
+      splashCommitRef.current = getLastSeenCommit();
+      requireNewEpochRef.current = true;
+      requireNewCommitRef.current = true;
+      setEpochStalled(false);
       setRebuilding(true);
     };
 
@@ -910,33 +939,21 @@ function App(): JSX.Element {
       unsubscribes.forEach((unsubscribe) => unsubscribe());
       client.close();
     };
-  }, []);
+  }, [loadDashboardBadges]);
 
   // Fallback polling: periodically fetch fresh data so the UI stays current
   // even if the SSE connection drops events or disconnects silently.
   useEffect(() => {
     const POLL_INTERVAL = 10_000;
+    const SSE_FRESH_FOR = 30_000;
     const timer = window.setInterval(() => {
-      getSessions<SessionRecord>('?include=issues')
-        .then((sessions) => dispatch({ type: 'setSessions', sessions }))
-        .catch(() => undefined);
-      getAuthQueue<AuthRequest>()
-        .then((queue) => dispatch({ type: 'setAuthQueue', queue }))
-        .catch(() => undefined);
-      getAuthHistory<AuthRequest>(200)
-        .then((history) => dispatch({ type: 'setAuthHistory', history }))
-        .catch(() => undefined);
-      // Bug: a2c8d43 — poll issueRepos so the Issues tab refreshes once the
-      // background IssueScanner finishes after a daemon restart. Guard: only
-      // dispatch if the result is non-empty so we never overwrite valid cached
-      // data with an empty list from a cold cache response.
-      getIssueRepos<IssueRepoSummary>()
-        .then((repos) => { if (repos.length > 0) dispatch({ type: 'setIssueRepos', repos }); })
-        .catch(() => undefined);
+      if (Date.now() - lastDashboardSseAtRef.current < SSE_FRESH_FOR) return;
+      void loadVisibleRouteData(route.tab);
+      void loadDashboardBadges();
     }, POLL_INTERVAL);
 
     return () => window.clearInterval(timer);
-  }, []);
+  }, [route.tab, loadDashboardBadges, loadVisibleRouteData]);
 
   // Bug: 645f8a8 — splash is active for either a self-merge rebuild (SSE-driven)
   // or a mid-startup / not-ready daemon (probe-driven). Mutations are gated off
@@ -944,7 +961,9 @@ function App(): JSX.Element {
   const splashActive = rebuilding || daemonStarting;
   const daemonReady = !splashActive;
 
-  // Bug: 645f8a8 — initial mount probe. A page (re)loaded mid-rebuild or
+  // Initial mount plus low-cost background probe. Besides detecting explicit
+  // not-ready states, the epoch comparison catches a self-merge whose SSE
+  // rebuilding event was missed while EventSource was reconnecting.
   // mid-startup will not have seen the mandible:rebuilding SSE event. Probe
   // /api/health once on mount; enter the splash ONLY on a POSITIVE not-ready
   // signal — a successful health response that reports rebuilding or ready
@@ -954,8 +973,9 @@ function App(): JSX.Element {
   // every normal load. (The POLL predicate keeps the splash up through the
   // exit/restart gap once it is already active — that is a different question.)
   useEffect(() => {
+    if (splashActive) return;
     let cancelled = false;
-    void (async () => {
+    const probe = async () => {
       let health: DaemonHealthSnapshot | null = null;
       try {
         const res = await fetch('/api/health');
@@ -967,17 +987,35 @@ function App(): JSX.Element {
       if (health?.instance) {
         setInstanceInfo(health.instance);
       }
-      if (!shouldEnterSplashOnProbe(health)) return; // ready, or unreachable cold mount — render normally
+      setDaemonWarm(daemonIsWarm(health));
+      const previousEpoch = getLastSeenStartupEpoch();
+      const previousCommit = getLastSeenCommit();
+      const currentEpoch = daemonStartupEpoch(health);
+      const currentCommit = daemonStartupCommit(health);
+      if (!shouldEnterSplashOnBackgroundProbe(health, previousEpoch)) {
+        if (currentEpoch && !previousEpoch) setLastSeenStartupEpoch(currentEpoch);
+        if (currentCommit && !previousCommit) setLastSeenCommit(currentCommit);
+        return;
+      }
+      splashEpochRef.current = previousEpoch ?? currentEpoch;
+      splashCommitRef.current = previousCommit ?? currentCommit;
+      requireNewEpochRef.current = health?.rebuilding === true
+        || daemonEpochChanged(health, previousEpoch);
+      requireNewCommitRef.current = requireNewEpochRef.current;
+      setEpochStalled(false);
       if (health?.rebuilding) {
         setRebuilding(true);
       } else {
         setDaemonStarting(true);
       }
-    })();
+    };
+    void probe();
+    const timer = window.setInterval(() => { void probe(); }, 5_000);
     return () => {
       cancelled = true;
+      window.clearInterval(timer);
     };
-  }, []);
+  }, [splashActive]);
 
   // Bug: 326a3e2 — poll /api/health every 2s while the splash is active; reload
   // when the daemon reports it is ready.
@@ -998,9 +1036,34 @@ function App(): JSX.Element {
           const res = await fetch('/api/health');
           if (!res.ok) return; // not up yet — keep polling
           const data = (await res.json()) as DaemonHealthSnapshot;
-          // Reload only once the restarted daemon is ready for normal mutations.
-          if (daemonIsReady(data)) {
+          setDaemonWarm(daemonIsWarm(data));
+          const currentEpoch = daemonStartupEpoch(data);
+          const currentCommit = daemonStartupCommit(data);
+          if (data.rebuilding && !splashEpochRef.current && currentEpoch) {
+            splashEpochRef.current = currentEpoch;
+          }
+          if (data.rebuilding && !splashCommitRef.current && currentCommit) {
+            splashCommitRef.current = currentCommit;
+          }
+          // Reload only once the restarted daemon is mutation-safe and, for a
+          // rebuild, its startup commit differs from the connected daemon.
+          if (daemonIsReadyAfterEpoch(
+            data,
+            splashEpochRef.current,
+            requireNewEpochRef.current,
+          ) && (
+            !requireNewCommitRef.current
+            || daemonCommitChanged(data, splashCommitRef.current)
+          )) {
+            if (currentEpoch) setLastSeenStartupEpoch(currentEpoch);
+            if (currentCommit) setLastSeenCommit(currentCommit);
             window.location.reload();
+          } else if (
+            requireNewEpochRef.current
+            && data.ready === true
+            && data.rebuilding !== true
+          ) {
+            setEpochStalled(true);
           }
         } catch {
           // Server not yet up — keep polling
@@ -1033,7 +1096,10 @@ function App(): JSX.Element {
     state.settings,
   ]);
 
-  const badges = useMemo(() => selectBadgeCounts(state), [state]);
+  const badges = useMemo(() => ({
+    ...selectBadgeCounts(state),
+    ...(dashboardBadges ?? {}),
+  }), [dashboardBadges, state]);
   const headerDisplayMode = (state.settings.header_display_mode ?? 'icons') as 'text' | 'icons' | 'both';
   const railDisplayMode = headerDisplayMode === 'both' ? 'both' : 'icons';
 
@@ -1064,6 +1130,7 @@ function App(): JSX.Element {
       // Set to 'approved' locally for immediate feedback; the SSE auth:resolved
       // event will update to 'completed' when the command finishes.
       dispatch({ type: 'authResolved', requestId, status: 'approved' });
+      void loadDashboardBadges();
     } catch (err) {
       // Bug: f690657 — do NOT dispatch a local status change on failure.
       // Dispatching status:'error' made isHistoryStatus() return true, which hid
@@ -1080,6 +1147,7 @@ function App(): JSX.Element {
     try {
       await rejectAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'rejected' });
+      void loadDashboardBadges();
     } catch {
       // Do not set a local error status — the server state is unchanged.
       // The action simply failed; inFlight cleanup in runAction is sufficient.
@@ -1090,6 +1158,7 @@ function App(): JSX.Element {
     try {
       await retryAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'pending' });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1099,6 +1168,7 @@ function App(): JSX.Element {
     try {
       await dismissAuthRequest(requestId);
       dispatch({ type: 'authResolved', requestId, status: 'dismissed' });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1172,6 +1242,7 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('continuation', sessionId);
       dispatch({ type: 'ackInboxContinuation', sessionId });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1181,6 +1252,7 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('auth_result', requestId);
       dispatch({ type: 'ackInboxAuthResult', requestId });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1269,6 +1341,7 @@ function App(): JSX.Element {
     try {
       await ackAllInbox();
       dispatch({ type: 'ackAllInboxItems' });
+      void loadDashboardBadges();
     } catch {
       return;
     }
@@ -1498,11 +1571,19 @@ function App(): JSX.Element {
   // Bug: 326a3e2 — full-page rebuild splash replaces normal UI entirely
   // Bug: 645f8a8 — also covers the mid-startup / not-ready daemon case.
   if (splashActive) {
-    return <RebuildingSplash reason={rebuilding ? 'rebuilding' : 'starting'} />;
+    return <RebuildingSplash
+      reason={rebuilding ? 'rebuilding' : 'starting'}
+      epochStalled={epochStalled}
+    />;
   }
 
   return (
     <div className="app-shell">
+      {!daemonWarm && (
+        <div className="daemon-warm-status" role="status" aria-live="polite">
+          Still loading workspace data…
+        </div>
+      )}
       {state.daemonReload && (
         <div className="daemon-toast" role="status" aria-live="polite">
           <span>Daemon reloaded</span>
@@ -1785,6 +1866,10 @@ function App(): JSX.Element {
 
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
+  const initialRoute = parseHashRoute();
+  if (isRenderableTab(initialRoute.tab)) {
+    void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
+  }
   render(<App />, mountNode);
 }
 

@@ -19,7 +19,9 @@ const ROOT_DIR = resolveRootDir();
 const UI_DIR = path.join(ROOT_DIR, "ui");
 const UI_INDEX_PATH = path.join(UI_DIR, "index.html");
 const UI_DIST_DIR = path.join(UI_DIR, "dist");
+const UI_ASSET_MANIFEST_PATH = path.join(UI_DIST_DIR, "asset-manifest.json");
 const UI_BOOTSTRAP_SCRIPT_RE = /<script\s+id="mandible-bootstrap"\s+type="application\/json"><\/script>/;
+const HASHED_ASSET_NAME_RE = /-[A-Za-z0-9_-]{8,}\.[^.]+$/;
 const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -36,6 +38,12 @@ const MIME_TYPES: Record<string, string> = {
   ".ico": "image/x-icon",
   ".txt": "text/plain; charset=utf-8",
   ".wasm": "application/wasm"
+};
+
+type UiAssetManifest = {
+  version: 1;
+  entryPreloads: string[];
+  routes: Record<string, string>;
 };
 
 // --- Express-like request/response types ---
@@ -423,6 +431,7 @@ export interface ServerOptions {
   version: string;
   router: Router;
   getStartupInfo: () => StartupCommitInfo | null;
+  startupEpoch?: string;
   // Bug: 4db692a — health endpoint includes rebuilding flag so the UI
   // doesn't reload while the daemon is still alive but about to restart.
   isRebuilding?: () => boolean;
@@ -431,6 +440,9 @@ export interface ServerOptions {
   // e.g. unit tests). The real daemon wires this to the lifecycle readiness
   // flag so health reports false until critical startup work completes.
   isReady?: () => boolean;
+  // Optional second-tier readiness source. Omitted servers are warm by default
+  // for backward compatibility with existing embedders and tests.
+  isWarm?: () => boolean;
   getMemoryDiagnostics?: () => DaemonMemorySnapshot;
   getEventLoopDiagnostics?: () => EventLoopLagSnapshot;
   instance?: InstanceInfo;
@@ -438,7 +450,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): http.Server {
-  const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady } = options;
+  const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady, isWarm } = options;
   const instance = options.instance ?? resolveInstanceInfo();
 
   router.get("/api/health", (_req, res) => {
@@ -453,14 +465,17 @@ export function createServer(options: ServerOptions): http.Server {
     // "ready !== true" as "keep the splash up / block mutations". A server
     // created without a readiness source (tests) reports ready by default.
     const ready = isReady?.() ?? true;
+    const warm = isWarm?.() ?? true;
     const payload: HealthResponse = {
       status: "ok",
       uptime: process.uptime(),
       version,
+      ...(options.startupEpoch ? { startup_epoch: options.startupEpoch } : {}),
       startup_commit: startupCommit,
       instance,
       ...(options.fileRpcDir ? { file_rpc_dir: options.fileRpcDir } : {}),
       ready,
+      warm,
       ...(rebuilding ? { rebuilding: true } : {}),
       ...(options.getMemoryDiagnostics ? { memory: options.getMemoryDiagnostics() } : {}),
       ...(options.getEventLoopDiagnostics ? { eventLoop: options.getEventLoopDiagnostics() } : {}),
@@ -743,7 +758,8 @@ async function sendFile(
     }
     if (filePath === UI_INDEX_PATH) {
       const raw = await fs.promises.readFile(filePath, "utf8");
-      const body = injectBootstrapData(raw, instance);
+      const manifest = await readUiAssetManifest();
+      const body = injectBootstrapData(injectAssetPreloads(raw, manifest), instance);
       res.writeHead(200, {
         "Content-Type": getContentType(filePath),
         "Content-Length": Buffer.byteLength(body),
@@ -758,9 +774,11 @@ async function sendFile(
       return true;
     }
     const lastModified = stat.mtime.toUTCString();
-    if (isNotModified(req.headers["if-modified-since"], stat.mtime)) {
+    const immutable = isImmutableBuildAsset(filePath);
+    const cacheControl = immutable ? "public, max-age=31536000, immutable" : "no-cache";
+    if (!immutable && isNotModified(req.headers["if-modified-since"], stat.mtime)) {
       res.writeHead(304, {
-        "Cache-Control": "no-cache",
+        "Cache-Control": cacheControl,
         "Last-Modified": lastModified,
       });
       res.end();
@@ -769,7 +787,7 @@ async function sendFile(
     res.writeHead(200, {
       "Content-Type": getContentType(filePath),
       "Content-Length": stat.size,
-      "Cache-Control": "no-cache",
+      "Cache-Control": cacheControl,
       "Last-Modified": lastModified,
     });
     if (method === "HEAD") {
@@ -785,6 +803,53 @@ async function sendFile(
     }
     throw error;
   }
+}
+
+function isImmutableBuildAsset(filePath: string): boolean {
+  const relative = path.relative(UI_DIST_DIR, filePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  return HASHED_ASSET_NAME_RE.test(path.basename(filePath));
+}
+
+async function readUiAssetManifest(): Promise<UiAssetManifest | null> {
+  try {
+    const parsed = JSON.parse(await fs.promises.readFile(UI_ASSET_MANIFEST_PATH, "utf8")) as Partial<UiAssetManifest>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.entryPreloads) || !isStringRecord(parsed.routes)) {
+      return null;
+    }
+    const entryPreloads = parsed.entryPreloads.filter(isSafeDistAssetUrl);
+    const routes = Object.fromEntries(
+      Object.entries(parsed.routes).filter((entry): entry is [string, string] => isSafeDistAssetUrl(entry[1])),
+    );
+    return { version: 1, entryPreloads, routes };
+  } catch (error) {
+    if (isNotFound(error) || error instanceof SyntaxError) return null;
+    throw error;
+  }
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+    && Object.values(value as Record<string, unknown>).every((entry) => typeof entry === "string");
+}
+
+function isSafeDistAssetUrl(value: unknown): value is string {
+  return typeof value === "string" && /^\/dist\/[A-Za-z0-9_./-]+$/.test(value) && !value.includes("..");
+}
+
+function injectAssetPreloads(html: string, manifest: UiAssetManifest | null): string {
+  if (!manifest) return html;
+  const entryLinks = manifest.entryPreloads
+    .map((href) => `    <link rel="modulepreload" href="${href}" />`)
+    .join("\n");
+  const routeJson = JSON.stringify(manifest.routes).replace(/[<>&]/g, (char) => ({
+    "<": "\\u003c",
+    ">": "\\u003e",
+    "&": "\\u0026",
+  })[char] ?? char);
+  const routePreload = `    <script>(function(){var r=${routeJson},p=(location.hash||\"#/spaces\").replace(/^#\\/?/,\"\").split(\"?\")[0]||\"spaces\";if([\"conversations\",\"chats\",\"chat-history\",\"sessions\"].includes(p))p=\"console\";if(p===\"review\")p=\"work\";if(p===\"presets\")p=\"artifacts\";var h=r[p]||r.spaces;if(h){var l=document.createElement(\"link\");l.rel=\"modulepreload\";l.href=h;document.head.appendChild(l)}})();</script>`;
+  const injected = [entryLinks, routePreload].filter(Boolean).join("\n");
+  return html.replace(/\s*<\/head>/, `\n${injected}\n  </head>`);
 }
 
 function isNotModified(header: string | string[] | undefined, mtime: Date): boolean {

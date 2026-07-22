@@ -1,0 +1,134 @@
+import { cleanup, render, screen, waitFor } from "@testing-library/preact";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { h } from "preact";
+
+import { App } from "../ui/src/app";
+import { invalidateApiGetCache } from "../ui/src/api";
+
+class MockEventSource {
+  static instances: MockEventSource[] = [];
+  readonly listeners = new Map<string, Array<(event: MessageEvent) => void>>();
+  readyState = 1;
+  onerror: (() => void) | null = null;
+  onopen: (() => void) | null = null;
+
+  constructor(_url: string) {
+    MockEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, listener: (event: MessageEvent) => void): void {
+    const current = this.listeners.get(type) ?? [];
+    current.push(listener);
+    this.listeners.set(type, current);
+  }
+
+  removeEventListener(): void {}
+  close(): void { this.readyState = 2; }
+
+  emit(type: string, data: unknown): void {
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
+    for (const listener of this.listeners.get(type) ?? []) listener(event);
+  }
+}
+
+function jsonResponse(body: unknown): Promise<Response> {
+  return Promise.resolve(new Response(JSON.stringify(body), {
+    headers: { "content-type": "application/json" },
+  }));
+}
+
+describe("visible-first dashboard boot", () => {
+  beforeEach(() => {
+    MockEventSource.instances = [];
+    vi.stubGlobal("EventSource", MockEventSource);
+    vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+      matches: false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })));
+    if (typeof window.localStorage.removeItem === "function") {
+      window.localStorage.removeItem("mandible_state_cache");
+      window.localStorage.removeItem("mandible.spaces.lastView:v1");
+    }
+    window.history.replaceState(null, "", "#/issues");
+  });
+
+  afterEach(() => {
+    invalidateApiGetCache();
+    cleanup();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("requests the visible view before badges and defers heavy off-screen tabs", async () => {
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "/api/issues") return jsonResponse({ repos: [] });
+      if (url === "/api/settings") return jsonResponse({});
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 3, inbox: 2, work: 1 });
+      if (url === "/api/health") {
+        return jsonResponse({
+          status: "ok",
+          ready: true,
+          startup_commit: { hash: "test", summary: "test", date: "" },
+          instance: null,
+        });
+      }
+      if (url === "/api/work/repos") return jsonResponse({ repos: [] });
+      return jsonResponse([]);
+    }));
+
+    render(h(App, {}));
+    await waitFor(() => expect(requests).toContain("/api/dashboard/badges"));
+    await waitFor(() => expect(screen.getByLabelText("Auth").textContent).toContain("3"));
+    expect(screen.getByLabelText("Inbox").textContent).toContain("2");
+    expect(screen.getByLabelText("Projects").textContent).toContain("1");
+
+    expect(requests.indexOf("/api/issues")).toBeLessThan(requests.indexOf("/api/dashboard/badges"));
+    expect(requests).not.toContain("/api/auth/queue");
+    expect(requests.some((url) => url.startsWith("/api/auth/history"))).toBe(false);
+    expect(requests).not.toContain("/api/work/repos");
+    expect(requests.some((url) => url.startsWith("/api/conversations"))).toBe(false);
+    expect(requests).not.toContain("/api/inbox/global");
+    expect(requests).not.toContain("/api/console/sessions");
+
+    window.location.hash = "#/work";
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await waitFor(() => expect(requests).toContain("/api/work/repos"));
+  });
+
+  it("suppresses fallback polling while dashboard SSE is fresh", async () => {
+    vi.useFakeTimers();
+    const requests: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "/api/issues") return jsonResponse({ repos: [] });
+      if (url === "/api/dashboard/badges") return jsonResponse({ auth: 0, inbox: 0, work: 0 });
+      if (url === "/api/health") {
+        return jsonResponse({ status: "ok", ready: true, startup_commit: { hash: "test" } });
+      }
+      return jsonResponse({});
+    }));
+
+    render(h(App, {}));
+    await vi.runAllTicks();
+    await Promise.resolve();
+    const source = MockEventSource.instances[0];
+    expect(source).toBeTruthy();
+    source.emit("message", { type: "auth:new", data: { request: { id: "a", status: "pending" } } });
+    await Promise.resolve();
+    const issueRequestsAfterSse = requests.filter((url) => url === "/api/issues").length;
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(requests.filter((url) => url === "/api/issues")).toHaveLength(issueRequestsAfterSse);
+
+    await vi.advanceTimersByTimeAsync(20_000);
+
+    expect(requests.filter((url) => url === "/api/issues").length).toBeGreaterThan(issueRequestsAfterSse);
+  });
+});

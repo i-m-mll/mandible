@@ -18,6 +18,9 @@ import {
 import { LedgerIssueDetail } from '../../components/ledger/IssueDetail';
 import { parseResourceRef, type ParsedResourceRef } from '../../resource-refs';
 import { ArtifactDetail } from '../artifacts';
+import { LoadingSkeleton } from '../../components/LoadingSkeleton';
+import { detailRequestKey } from '../../detail-cache';
+import { useKeyedAsyncDetail } from '../../hooks/useKeyedAsyncDetail';
 
 export type SpaceReferenceDetailTarget =
   | { kind: 'issue'; ref: string }
@@ -55,37 +58,21 @@ export function SpaceReferenceDetailContent({
 }
 
 export function IssueReferenceDetail({ issueRef }: { issueRef: string }): JSX.Element {
-  const [detail, setDetail] = useState<LedgerIssueDetailProjection | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setDetail(null);
-    getLedgerIssueDetailByIssueId(issueRef)
-      .then((next) => {
-        if (!cancelled) setDetail(next);
-      })
-      .catch((err) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [issueRef]);
+  const loadDetail = useCallback(
+    (_signal: AbortSignal) => getLedgerIssueDetailByIssueId(issueRef),
+    [issueRef],
+  );
+  const { data: detail, loading, error } = useKeyedAsyncDetail<LedgerIssueDetailProjection>({
+    requestKey: detailRequestKey('issue', { issueId: issueRef }),
+    namespace: 'issue-detail',
+    load: loadDetail,
+  });
 
   if (error) return <div className="space-reference-detail__error">Failed to load issue: {error}</div>;
   if (!detail) {
-    return (
-      <div className="space-reference-detail__empty">
-        {loading ? 'Loading issue...' : 'No issue detail.'}
-      </div>
-    );
+    return loading
+      ? <LoadingSkeleton variant="detail" label="Loading issue detail" />
+      : <div className="space-reference-detail__empty">No issue detail.</div>;
   }
 
   return (
@@ -213,11 +200,9 @@ export function ArtifactReferenceDetail({ artifactRef }: { artifactRef: string }
 
   if (error) return <div className="space-reference-detail__error">Failed to load artifact: {error}</div>;
   if (!artifact) {
-    return (
-      <div className="space-reference-detail__empty">
-        {loading ? 'Loading artifact...' : 'No artifact detail.'}
-      </div>
-    );
+    return loading
+      ? <LoadingSkeleton variant="detail" label="Loading artifact detail" />
+      : <div className="space-reference-detail__empty">No artifact detail.</div>;
   }
 
   return (

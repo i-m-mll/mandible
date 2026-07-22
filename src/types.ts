@@ -24,6 +24,8 @@ export interface HealthResponse {
   status: "ok";
   uptime: number;
   version: string;
+  /** Unique per daemon process/start, independent of the checked-out commit. */
+  startup_epoch?: string;
   startup_commit: StartupCommitInfo;
   instance: InstanceInfo;
   file_rpc_dir?: string;
@@ -38,6 +40,10 @@ export interface HealthResponse {
   // not strictly true, so a freshly-listening-but-still-starting process does
   // not let users fire actions into a half-initialized daemon.
   ready?: boolean;
+  // Second readiness tier. false means the daemon is mutation-safe but its
+  // first deferred startup reconciliation is still populating cached data.
+  // Optional so older health clients and lightweight test servers remain valid.
+  warm?: boolean;
   // Lightweight, constant-space process diagnostics. Optional for response
   // compatibility with older daemons and test servers that do not wire a
   // process-lifetime collector.
