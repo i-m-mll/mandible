@@ -134,12 +134,12 @@ export function registerSessionRoutes(
   discovery?: SessionDiscovery,
   issueScanner?: IssueScanner,
 ): void {
-  server.post("/api/sessions/discover", (req, res) => {
+  server.post("/api/sessions/discover", async (req, res) => {
     if (!discovery) {
       sendJson(res, 501, { error: "Session discovery not configured" });
       return;
     }
-    const result = discovery.discoverSessions();
+    const result = await discovery.discoverSessions();
     sendJson(res, 200, result);
   }, { fileRpc: "deny" });
 

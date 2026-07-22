@@ -2915,6 +2915,16 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_trash_entries_branch
          ON trash_entries(project_id, branch, created_at DESC)`
     ]
+  },
+  {
+    version: 107,
+    name: "branch_upstream_cache",
+    // Issue 651e820 — persist per-branch upstream tracking info during scans so
+    // GET /api/work/repos/:id/branches serves it from the DB instead of spawning
+    // `git rev-parse @{upstream}` per branch on every request. The columns are
+    // added by the guarded post-migration below so a schema-rewind replay against
+    // a baseline that already carries them is idempotent.
+    statements: []
   }
 ];
 
@@ -2985,6 +2995,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 106) {
         ensureBranchReapingKnowledgeColumns(db);
+      }
+      if (migration.version === 107) {
+        ensureBranchUpstreamColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5457,6 +5470,39 @@ function ensureBranchReapingKnowledgeColumns(db: Db): void {
     ) {
       throw new Error(`migration 106 verification: branches.${name} has divergent definition`);
     }
+  }
+}
+
+function ensureBranchUpstreamColumns(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'branches'")
+    .get();
+  if (!table) return;
+
+  const columnInfo = () =>
+    db.prepare("PRAGMA table_info(branches)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+
+  const hasUpstream = columnInfo().find((column) => column.name === "has_upstream");
+  if (!hasUpstream) {
+    db.exec("ALTER TABLE branches ADD COLUMN has_upstream INTEGER NOT NULL DEFAULT 0");
+  } else if (
+    hasUpstream.type.toUpperCase() !== "INTEGER" ||
+    hasUpstream.notnull !== 1 ||
+    hasUpstream.dflt_value !== "0"
+  ) {
+    throw new Error("migration 107 verification: branches.has_upstream has divergent definition");
+  }
+
+  const upstream = columnInfo().find((column) => column.name === "upstream");
+  if (!upstream) {
+    db.exec("ALTER TABLE branches ADD COLUMN upstream TEXT");
+  } else if (upstream.type.toUpperCase() !== "TEXT") {
+    throw new Error("migration 107 verification: branches.upstream has divergent definition");
   }
 }
 

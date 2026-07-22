@@ -331,20 +331,22 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // worktrees. Run it after the daemon is healthy so startup callers are not
   // blocked by machine-size-dependent discovery latency.
   const startupDiscoveryTimer = setTimeout(() => {
-    try {
-      const activeSessions = sessionRegistry.listSessions({ status: "active" });
-      if (activeSessions.length === 0) {
-        const result = sessionDiscovery.discoverSessions();
-        if (result.discovered > 0 || result.dead_reaped > 0) {
-          logger("info", "startup_discovery", { ...result });
+    void (async () => {
+      try {
+        const activeSessions = sessionRegistry.listSessions({ status: "active" });
+        if (activeSessions.length === 0) {
+          const result = await sessionDiscovery.discoverSessions();
+          if (result.discovered > 0 || result.dead_reaped > 0) {
+            logger("info", "startup_discovery", { ...result });
+          }
         }
+      } catch (error) {
+        logger("warn", "startup_discovery_failed", { error: String(error) });
+      } finally {
+        startupSessionDiscoveryComplete = true;
+        updateWarmReadiness();
       }
-    } catch (error) {
-      logger("warn", "startup_discovery_failed", { error: String(error) });
-    } finally {
-      startupSessionDiscoveryComplete = true;
-      updateWarmReadiness();
-    }
+    })();
   }, STARTUP_DISCOVERY_DELAY_MS);
   if (typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
     startupDiscoveryTimer.unref();
