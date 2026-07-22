@@ -30,6 +30,12 @@ export type SessionRecord = {
   end_time?: string;
   updated_at?: string;
   last_active?: string | null;
+  owner_user_id?: string | null;
+  owner?: {
+    id: string;
+    display_name: string;
+    kind: 'human' | 'agent' | 'system' | 'external';
+  } | null;
   parent_id?: string;
   parentId?: string;
   children?: SessionRecord[];

@@ -896,10 +896,29 @@ export async function getIssueContext(repoId: string, issueId: string): Promise<
 
 export type LedgerActorType = 'mandible_user' | 'agent' | 'system' | 'external_adapter';
 
+export type ReadUserIdentity = {
+  id: string;
+  display_name: string;
+  kind: 'human' | 'agent' | 'system' | 'external';
+};
+
+export type AttributionReadProjection = {
+  user: ReadUserIdentity | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
+  credential: {
+    id: string;
+    type: string;
+    label: string | null;
+  } | null;
+};
+
 export type LedgerIssueDetailActor = {
   id: string | null;
   type: LedgerActorType;
   display: string;
+  legacy_display: string;
+  attribution: AttributionReadProjection | null;
 };
 
 export type LedgerIssueDetailComment = {
@@ -1049,6 +1068,7 @@ export type LedgerIssueDetailSession = {
   updated_at: string | null;
   ended_at: string | null;
   last_active: string | null;
+  owner: ReadUserIdentity | null;
   has_conversation: boolean;
   link_type: string;
   link_source: string;
@@ -1071,6 +1091,9 @@ export type LedgerIssueDetailAuthRequest = {
   skipped_at: number | null;
   exit_code: number | null;
   error: string | null;
+  requester: ReadUserIdentity | null;
+  approver: ReadUserIdentity | null;
+  execution_evidence: AttributionReadProjection | null;
   link_type: string;
   link_source: string;
   link_created_at: number | null;
@@ -2826,6 +2849,21 @@ export type ProjectPickerItem = {
   display_name: string | null;
 };
 
+export type ProjectPermissionGrant = {
+  id: string;
+  subject_type: 'user' | 'group';
+  subject_id: string;
+  resource_type: 'project';
+  resource_id: string;
+  permission: 'read' | 'write' | 'admin';
+};
+
+export type ProjectAccessSettings = {
+  project_id: string;
+  restricted: boolean;
+  grants: ProjectPermissionGrant[];
+};
+
 export type SpaceFactPacket = {
   space: ContractSpace;
   items: ContractSpaceItem[];
@@ -2854,6 +2892,30 @@ export async function listProjectsForPicker(): Promise<ProjectPickerItem[]> {
     project_key: p.project_key,
     display_name: p.display_name ?? null,
   }));
+}
+
+export async function getProjectAccessSettings(projectRef: string): Promise<ProjectAccessSettings> {
+  const response = await apiGet(`/api/projects/${encodeURIComponent(projectRef)}/access`);
+  return await parseMaybeJson(response) as ProjectAccessSettings;
+}
+
+export async function updateProjectAccessSettings(
+  projectRef: string,
+  restricted: boolean,
+): Promise<ProjectAccessSettings> {
+  const response = await fetch(`/api/projects/${encodeURIComponent(projectRef)}/access`, {
+    method: 'PATCH',
+    headers: { ...DEFAULT_HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ restricted }),
+  });
+  const payload = await parseMaybeJson(response);
+  if (!response.ok) {
+    const error = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as { error?: unknown }).error
+      : null;
+    throw new Error(typeof error === 'string' ? error : `PATCH project access failed: ${response.status}`);
+  }
+  return payload as ProjectAccessSettings;
 }
 
 export async function getSpace(spaceId: string): Promise<ContractSpace> {

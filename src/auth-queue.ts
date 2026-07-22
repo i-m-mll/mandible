@@ -6,6 +6,11 @@ import Database from "better-sqlite3";
 
 import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js";
 import {
+  extractSuccessfulMergeCommitSha,
+  verifySuccessfulMergeCommitSignature,
+  type MergeSignatureVerification,
+} from "./auth-signature-verification.js";
+import {
   addAuthRequestAction,
   countAuthRequestActions,
   deleteAuthRequestAction,
@@ -33,6 +38,24 @@ import {
 } from "./ledger/operational-links.js";
 import { getLedgerIssueHead } from "./ledger/issue-heads.js";
 import { LedgerStore } from "./ledger/store.js";
+import {
+  assertEvidenceMethod,
+  localDefaultAttribution,
+  resolveSessionIdAttributionResult,
+  systemAction,
+  type AttributionContext,
+} from "./identity/resolver.js";
+import {
+  AttributionReadResolver,
+  authAttributionReadFields,
+} from "./identity/read-projection.js";
+import {
+  addAttributionEvidence,
+  getAttributionEvidence,
+  getDelegatedSigningLease,
+  getOperator,
+  getUserById,
+} from "./users/store.js";
 import type {
   LedgerRelationshipType,
   LedgerWorkerStatus,
@@ -173,7 +196,8 @@ export class AuthQueue {
     this.db = options.db ?? getDb();
     this.now = options.now ?? (() => Date.now());
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
-    this.broadcast = options.broadcast ?? defaultBroadcast;
+    const broadcast = options.broadcast ?? defaultBroadcast;
+    this.broadcast = (event) => broadcast(projectAuthAttributionEvent(this.db, event));
     this.executor = options.executor ?? executeAuthCommand;
     this.hookManager = options.hookManager ?? new AuthHookManager(this.db);
     this.autoApprover = options.autoApprover;
@@ -245,10 +269,13 @@ export class AuthQueue {
       const recovered = this.getRequest(id);
       if (recovered) {
         this.afterSuccessfulMerge(recovered);
-        this.broadcast({
-          event: "auth:resolved",
-          data: this.buildResolvedPayload(recovered)
-        });
+        const finalized = this.readRequestByExactId(id);
+        if (finalized) {
+          this.broadcast({
+            event: "auth:resolved",
+            data: this.buildResolvedPayload(finalized)
+          });
+        }
         authLog("warn", "auth_request_recovered_success", {
           subsystem: "auth",
           auth_request_id: id,
@@ -309,7 +336,8 @@ export class AuthQueue {
     const requeue = this.db.prepare(
       `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
        exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-       approval_source = 'manual', approval_lease_id = NULL WHERE id = ?`
+       approval_source = 'manual', approval_lease_id = NULL,
+       approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`
     );
 
     for (const row of rows) {
@@ -488,7 +516,7 @@ export class AuthQueue {
     return this.archiveCompletedWorkerThreads(request, { logSummary: false });
   }
 
-  submit(payload: AuthRequestInput): AuthRequest {
+  submit(payload: AuthRequestInput, requestedByUserId?: string): AuthRequest {
     const mergeCheck = this.checkMergeIndependence(payload);
     if (mergeCheck.status === "conflict") {
       const firstConflict = mergeCheck.conflicts[0];
@@ -510,9 +538,13 @@ export class AuthQueue {
     }
 
     const now = this.now();
+    const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
     const request: AuthRequest = {
       id: randomUUID(),
       session_id: payload.session_id ?? null,
+      requested_by_user_id: requesterUserId,
+      approved_by_user_id: null,
+      execution_evidence_id: null,
       type: payload.type ?? "merge",
       command: payload.command,
       title: payload.title,
@@ -564,6 +596,9 @@ export class AuthQueue {
       `INSERT INTO auth_requests (
         id,
         session_id,
+        requested_by_user_id,
+        approved_by_user_id,
+        execution_evidence_id,
         type,
         command,
         title,
@@ -609,6 +644,9 @@ export class AuthQueue {
       ) VALUES (
         @id,
         @session_id,
+        @requested_by_user_id,
+        @approved_by_user_id,
+        @execution_evidence_id,
         @type,
         @command,
         @title,
@@ -697,6 +735,43 @@ export class AuthQueue {
     }
 
     return request;
+  }
+
+  private resolveRequesterUserId(
+    payload: AuthRequestInput,
+    requestedByUserId?: string,
+  ): string {
+    const explicit = requestedByUserId?.trim();
+    if (explicit) {
+      const user = getUserById(this.db, explicit);
+      if (!user || user.status !== "active") {
+        throw new Error(`Auth requester user '${explicit}' is not active.`);
+      }
+      return user.id;
+    }
+    if (payload.session_id) {
+      const resolved = resolveSessionIdAttributionResult(this.db, payload.session_id);
+      if (resolved.status === "conflict") {
+        throw new Error("Auth requester session claims resolve to conflicting users.");
+      }
+      if (resolved.status === "resolved") return resolved.attribution.user_id;
+    }
+    // Trusted in-process callers retain the local-operator default. Transport
+    // routes resolve and pass an authenticated/session principal explicitly,
+    // so anonymous network input can never reach this compatibility seam.
+    return localDefaultAttribution(this.db).user_id;
+  }
+
+  private resolveApproverUserId(candidate?: string): string {
+    const operator = getOperator(this.db);
+    if (!operator || operator.status !== "active") {
+      throw new Error("Auth approval requires an active configured operator.");
+    }
+    const userId = candidate?.trim() || operator.id;
+    if (userId !== operator.id) {
+      throw new Error("Auth approval identity does not match the configured operator.");
+    }
+    return operator.id;
   }
 
   listActions(requestId: string): AuthRequestAction[] {
@@ -920,10 +995,38 @@ export class AuthQueue {
     if (!resolved.ok) {
       return null;
     }
+    return this.readRequestByExactId(resolved.id);
+  }
+
+  getSignatureVerification(id: string): Record<string, unknown> | null {
+    const request = this.requireRequest(id);
+    return this.signatureVerificationForRequest(request);
+  }
+
+  private readRequestByExactId(id: string): AuthRequest | null {
     const row = this.db
       .prepare("SELECT * FROM auth_requests WHERE id = ?")
-      .get(resolved.id) as Record<string, unknown> | undefined;
+      .get(id) as Record<string, unknown> | undefined;
     return row ? mapRow(row) : null;
+  }
+
+  private signatureVerificationForRequest(request: AuthRequest): Record<string, unknown> | null {
+    if (!request.execution_evidence_id) return null;
+    const evidence = getAttributionEvidence(this.db, request.execution_evidence_id);
+    if (!evidence || evidence.evidence_method !== "credential_signature") return null;
+    return {
+      evidence_id: evidence.id,
+      verified_at: evidence.verified_at,
+      verified: evidence.details.verified === true,
+      commit_sha: evidence.details.commit_sha ?? null,
+      target_head_sha: evidence.details.target_head_sha ?? null,
+      fingerprint: evidence.details.fingerprint ?? null,
+      credential_id: evidence.credential_id,
+      user_id: evidence.details.signer_user_id ?? null,
+      reason: evidence.details.reason ?? null,
+      authorization_evidence_id: evidence.details.authorization_evidence_id ?? null,
+      authorization_evidence_method: evidence.details.authorization_evidence_method ?? null,
+    };
   }
 
   update(
@@ -1007,6 +1110,10 @@ export class AuthQueue {
       updates.push("status = 'pending'");
       updates.push("resolved_at = NULL");
       updates.push("approved_at = NULL");
+      updates.push("approved_by_user_id = NULL");
+      updates.push("execution_evidence_id = NULL");
+      updates.push("approval_source = 'manual'");
+      updates.push("approval_lease_id = NULL");
       updates.push("exit_code = NULL");
       updates.push("error = NULL");
       updates.push("output = ''");
@@ -1102,7 +1209,9 @@ export class AuthQueue {
     this.db
       .prepare(
         "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-          "approved_at = NULL, exit_code = NULL, error = NULL, output = '', " +
+          "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
+          "approval_source = 'manual', approval_lease_id = NULL, " +
+          "exit_code = NULL, error = NULL, output = '', " +
           "updated_at = ?, expires_at = ? WHERE id = ?"
       )
       .run(now, now + this.ttlMs, id);
@@ -1131,7 +1240,9 @@ export class AuthQueue {
     this.db
       .prepare(
         "UPDATE auth_requests SET status = 'pending', resolved_at = NULL, " +
-          "approved_at = NULL, exit_code = NULL, error = NULL, output = '', " +
+          "approved_at = NULL, approved_by_user_id = NULL, execution_evidence_id = NULL, " +
+          "approval_source = 'manual', approval_lease_id = NULL, " +
+          "exit_code = NULL, error = NULL, output = '', " +
           "updated_at = ?, expires_at = ? WHERE id = ?"
       )
       .run(now, now + this.ttlMs, id);
@@ -1215,7 +1326,7 @@ export class AuthQueue {
     });
   }
 
-  approve(id: string, approval?: AuthApprovalContext): AuthRequest {
+  approve(id: string, approval?: AuthApprovalContext, approvedByUserId?: string): AuthRequest {
     this.expireStale();
     let request = this.requireRequest(id);
     if (request.status !== "pending") {
@@ -1253,12 +1364,22 @@ export class AuthQueue {
     }
 
     const effectiveApproval = approval ?? this.autoApprover?.getActiveApprovalContext() ?? undefined;
+    const approverUserId = this.resolveApproverUserId(
+      effectiveApproval?.approverUserId ?? approvedByUserId,
+    );
 
     this.db
       .prepare(
-        "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ? WHERE id = ?"
+        "UPDATE auth_requests SET status = 'executing', approved_at = ?, updated_at = ?, approval_source = ?, approval_lease_id = ?, approved_by_user_id = ?, execution_evidence_id = NULL WHERE id = ?"
       )
-      .run(now, now, effectiveApproval?.source ?? "manual", effectiveApproval?.leaseId ?? null, id);
+      .run(
+        now,
+        now,
+        effectiveApproval?.source ?? "manual",
+        effectiveApproval?.leaseId ?? null,
+        approverUserId,
+        id,
+      );
 
     const executing = this.requireRequest(id);
     const executionEnv = {
@@ -1268,6 +1389,7 @@ export class AuthQueue {
     if (Object.keys(executionEnv).length > 0) {
       this.executionEnvs.set(executing.id, executionEnv);
     }
+    this.broadcast({ event: "auth:updated", data: { request: executing } });
     this.executeInBackground(executing);
     return executing;
   }
@@ -1350,6 +1472,119 @@ export class AuthQueue {
       text: "Auth phase: delegated signing key ready; starting git work...\n",
       timestamp: Date.now(),
     });
+  }
+
+  private attachDelegatedExecutionEvidence(
+    requestId: string,
+    approval: AuthApprovalContext,
+    verifiedAt: number = this.now(),
+  ): AuthRequest {
+    const request = this.requireRequest(requestId);
+    if (request.execution_evidence_id) return request;
+    if (!request.approved_by_user_id || request.approved_by_user_id !== approval.approverUserId) {
+      throw new Error("Auth execution evidence approver does not match the approved request.");
+    }
+    const lease = getDelegatedSigningLease(this.db, approval.leaseId);
+    if (!lease) {
+      throw new Error(`Delegated signing lease '${approval.leaseId}' is not registered.`);
+    }
+    if (
+      lease.owner_user_id !== request.approved_by_user_id ||
+      verifiedAt < lease.minted_at ||
+      verifiedAt > lease.expires_at
+    ) {
+      throw new Error("Delegated signing lease is not valid for this approver and execution time.");
+    }
+    const evidenceMethod = approval.source === "auto_lease"
+      ? "delegated_lease"
+      : "hardware_presence";
+    assertEvidenceMethod(evidenceMethod);
+    const evidence = addAttributionEvidence(this.db, {
+      evidence_method: evidenceMethod,
+      credential_id: lease.credential_id,
+      lease_id: lease.id,
+      details: {
+        auth_request_id: request.id,
+        authorizer_user_id: request.approved_by_user_id,
+        executor_user_id: systemAction().user_id,
+        approval_source: approval.source,
+      },
+    }, verifiedAt);
+    this.db.prepare(
+      "UPDATE auth_requests SET execution_evidence_id = ?, updated_at = ? WHERE id = ? AND execution_evidence_id IS NULL",
+    ).run(evidence.id, verifiedAt, request.id);
+    return this.requireRequest(request.id);
+  }
+
+  private ensureSuccessfulExecutionEvidence(request: AuthRequest): AuthRequest {
+    if (!isAuthMergeCommand(request) || request.execution_evidence_id) return request;
+    // Rows predating v109 remain untouched and retain their legacy system-only
+    // completion attribution.
+    if (!request.requested_by_user_id) return request;
+    if (!request.approved_by_user_id) {
+      throw new Error("Attributed auth merge completed without an approving user.");
+    }
+    if (
+      request.approval_lease_id &&
+      (request.approval_source === "auto_lease" || request.approval_source === "presence_challenge")
+    ) {
+      return this.attachDelegatedExecutionEvidence(
+        request.id,
+        {
+          source: request.approval_source,
+          leaseId: request.approval_lease_id,
+          approverUserId: request.approved_by_user_id,
+          env: {},
+        },
+        request.last_executed_at ?? request.resolved_at ?? this.now(),
+      );
+    }
+    if (request.approval_source !== "manual") {
+      throw new Error(`Unsupported attributed auth approval source '${request.approval_source}'.`);
+    }
+    const verifiedAt = request.resolved_at ?? this.now();
+    const evidence = addAttributionEvidence(this.db, {
+      evidence_method: "hardware_presence",
+      details: {
+        auth_request_id: request.id,
+        authorizer_user_id: request.approved_by_user_id,
+        executor_user_id: systemAction().user_id,
+        approval_source: "manual",
+        verification_basis: "successful_interactive_merge_execution",
+      },
+    }, verifiedAt);
+    this.db.prepare(
+      "UPDATE auth_requests SET execution_evidence_id = ?, updated_at = ? WHERE id = ? AND execution_evidence_id IS NULL",
+    ).run(evidence.id, verifiedAt, request.id);
+    return this.requireRequest(request.id);
+  }
+
+  private finalizationAttribution(request: AuthRequest): AttributionContext {
+    if (!request.execution_evidence_id) {
+      if (request.requested_by_user_id && isAuthMergeCommand(request)) {
+        throw new Error("Attributed auth merge finalization requires execution evidence.");
+      }
+      const legacy = systemAction();
+      if (request.approved_by_user_id) legacy.authorizer_user_id = request.approved_by_user_id;
+      return legacy;
+    }
+    if (!request.approved_by_user_id) {
+      throw new Error("Auth execution evidence is missing its approving user.");
+    }
+    const evidence = getAttributionEvidence(this.db, request.execution_evidence_id);
+    if (!evidence) {
+      throw new Error(`Auth execution evidence '${request.execution_evidence_id}' is missing.`);
+    }
+    assertEvidenceMethod(evidence.evidence_method);
+    if (evidence.details.authorizer_user_id !== request.approved_by_user_id) {
+      throw new Error("Auth execution evidence authorizer does not match the approved request.");
+    }
+    return {
+      user_id: systemAction().user_id,
+      evidence_method: evidence.evidence_method,
+      evidence_id: evidence.id,
+      authorizer_user_id: request.approved_by_user_id,
+    };
   }
 
   private needsPresenceChallenge(request: AuthRequest): boolean {
@@ -1445,23 +1680,43 @@ export class AuthQueue {
 
   setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest {
     this.expireStale();
-    this.requireRequest(id);
-    const now = this.now();
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?"
-      )
-      .run(now, now, exitCode, output, error ?? null, id);
-
-    const completed = this.requireRequest(id);
-    if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
+    const request = this.requireRequest(id);
+    if (isAuthMergeCommand(request) && request.requested_by_user_id !== null && request.status !== "executing") {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Attributed auth merge result cannot be recorded while request is ${request.status}.`,
+        request.status,
+      );
     }
+    if (
+      exitCode === 0 &&
+      isAuthMergeCommand(request) &&
+      request.requested_by_user_id !== null &&
+      request.approved_by_user_id === null
+    ) {
+      throw new AuthQueueError(
+        "invalid_status",
+        "Attributed auth merge results require an approving user before completion.",
+        request.status,
+      );
+    }
+    const now = this.now();
+    const completed = this.db.transaction(() => {
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, output = ?, error = ? WHERE id = ?"
+        )
+        .run(now, now, exitCode, output, error ?? null, id);
+      const stored = this.requireRequest(id);
+      return exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+    })();
+    if (exitCode === 0) this.afterSuccessfulMerge(completed);
+    const resolved = this.requireRequest(id);
     this.broadcast({
       event: "auth:resolved",
-      data: this.buildResolvedPayload(completed)
+      data: this.buildResolvedPayload(resolved)
     });
-    return completed;
+    return resolved;
   }
 
   expireStale(): AuthRequest[] {
@@ -1535,10 +1790,13 @@ export class AuthQueue {
       const recovered = this.getRequest(id);
       if (recovered) {
         this.afterSuccessfulMerge(recovered);
-        this.broadcast({
-          event: "auth:resolved",
-          data: this.buildResolvedPayload(recovered)
-        });
+        const finalized = this.readRequestByExactId(id);
+        if (finalized) {
+          this.broadcast({
+            event: "auth:resolved",
+            data: this.buildResolvedPayload(finalized)
+          });
+        }
       }
       authLog("warn", "auth_request_periodic_recovery_success", {
         subsystem: "auth",
@@ -1574,6 +1832,7 @@ export class AuthQueue {
     const runPromise = this.executionChain
       .catch(() => undefined)
       .then(async () => {
+        let executionResult: AuthExecutionResult | null = null;
         try {
           await this.prepareAuthExecution(request);
           const executedAt = Date.now();
@@ -1589,6 +1848,7 @@ export class AuthQueue {
             onOutput: (chunk) => this.handleOutput(chunk),
             env: this.executionEnvs.get(request.id),
           });
+          executionResult = result;
 
           // Bug: 4afab83 — run post-auth hooks after successful execution,
           // BEFORE reporting completion. Hook failures don't change the
@@ -1660,7 +1920,15 @@ export class AuthQueue {
           }
         } catch (error) {
           const message = error instanceof Error ? error.message : "Execution failed.";
-          this.storeExecutionResult(request.id, null, message);
+          if (executionResult?.exit_code === 0) {
+            authLog("error", "auth_success_finalization_deferred", {
+              subsystem: "auth",
+              auth_request_id: request.id,
+              error: message,
+            });
+          } else {
+            this.storeExecutionResult(request.id, null, message);
+          }
         } finally {
           this.inFlight.delete(request.id);
           this.executionEnvs.delete(request.id);
@@ -1702,21 +1970,22 @@ export class AuthQueue {
       errorText = tailLines(result.output, 20);
     }
 
-    this.db
-      .prepare(
-        "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, error = ? WHERE id = ?"
-      )
-      .run(now, now, exitCode, errorText, id);
-
-    const completed = this.requireRequest(id);
+    const completed = this.db.transaction(() => {
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET status = 'completed', resolved_at = ?, updated_at = ?, exit_code = ?, error = ? WHERE id = ?"
+        )
+        .run(now, now, exitCode, errorText, id);
+      const stored = this.requireRequest(id);
+      return exitCode === 0 ? this.ensureSuccessfulExecutionEvidence(stored) : stored;
+    })();
     // Bug: 2164775 — run idempotent success finalizers before the resolved
     // broadcast so consumers observe the resolved work-unit/ledger state.
-    if (exitCode === 0) {
-      this.afterSuccessfulMerge(completed);
-    }
+    if (exitCode === 0) this.afterSuccessfulMerge(completed);
+    const resolved = this.requireRequest(id);
     this.broadcast({
       event: "auth:resolved",
-      data: this.buildResolvedPayload(completed)
+      data: this.buildResolvedPayload(resolved)
     });
 
     // Bug: 0c44fec — after a successful merge (exit_code=0), auto-dismiss any
@@ -1730,8 +1999,10 @@ export class AuthQueue {
       return;
     }
 
-    const mergeHeadSha = completed.merge_head_sha ?? this.resolveMergeHeadShaForRequest(completed);
-    const finalized: AuthRequest = { ...completed, merge_head_sha: mergeHeadSha };
+    const attributed = this.ensureSuccessfulExecutionEvidence(completed);
+    const evidenced = this.attachSuccessfulSignatureEvidence(attributed);
+    const mergeHeadSha = evidenced.merge_head_sha ?? this.resolveMergeHeadShaForRequest(evidenced);
+    const finalized: AuthRequest = { ...evidenced, merge_head_sha: mergeHeadSha };
 
     this.autoDismissDuplicates(finalized);
     this.revalidatePendingMergeRequests(finalized);
@@ -1751,6 +2022,84 @@ export class AuthQueue {
     }
     this.archiveCompletedWorkerThreads(finalized);
     this.markSuccessfulMergeFinalized(finalized, mergeHeadSha);
+  }
+
+  private attachSuccessfulSignatureEvidence(request: AuthRequest): AuthRequest {
+    if (!isAuthMergeCommand(request) || !request.requested_by_user_id) return request;
+
+    const authorizationEvidence = request.execution_evidence_id
+      ? getAttributionEvidence(this.db, request.execution_evidence_id)
+      : null;
+    if (authorizationEvidence?.evidence_method === "credential_signature") return request;
+
+    const commitSha = extractSuccessfulMergeCommitSha(request.output);
+    const cwd = request.target_repo_root ?? request.cwd;
+    let targetHeadSha: string | null = null;
+    if (cwd && request.base_branch) {
+      try {
+        targetHeadSha = resolveBranchHeadSha(cwd, request.base_branch);
+      } catch {
+        targetHeadSha = null;
+      }
+    }
+    let verification: MergeSignatureVerification;
+    try {
+      verification = verifySuccessfulMergeCommitSignature(
+        this.db,
+        cwd,
+        commitSha,
+        targetHeadSha,
+      );
+    } catch {
+      verification = {
+        verified: false,
+        commit_sha: commitSha,
+        fingerprint: null,
+        credential_id: null,
+        user_id: null,
+        reason: "verification_error",
+      };
+    }
+    const verifiedAt = request.resolved_at ?? this.now();
+    return this.db.transaction(() => {
+      const current = this.readRequestByExactId(request.id);
+      if (!current) throw new Error(`Auth request '${request.id}' disappeared during finalization.`);
+      if (current.execution_evidence_id !== (authorizationEvidence?.id ?? null)) {
+        const existing = current.execution_evidence_id
+          ? getAttributionEvidence(this.db, current.execution_evidence_id)
+          : null;
+        if (existing?.evidence_method === "credential_signature") return current;
+        throw new Error("Auth execution evidence changed during signature finalization.");
+      }
+
+      const evidence = addAttributionEvidence(this.db, {
+        evidence_method: "credential_signature",
+        credential_id: verification.credential_id,
+        details: {
+          auth_request_id: request.id,
+          authorizer_user_id: request.approved_by_user_id,
+          executor_user_id: systemAction().user_id,
+          approval_source: request.approval_source,
+          verified: verification.verified,
+          commit_sha: verification.commit_sha,
+          target_head_sha: targetHeadSha,
+          fingerprint: verification.fingerprint,
+          signer_user_id: verification.user_id,
+          reason: verification.reason,
+          authorization_evidence_id: authorizationEvidence?.id ?? null,
+          authorization_evidence_method: authorizationEvidence?.evidence_method ?? null,
+        },
+      }, verifiedAt);
+      const update = this.db.prepare(
+        "UPDATE auth_requests SET execution_evidence_id = ?, updated_at = ? WHERE id = ? AND execution_evidence_id IS ?",
+      ).run(evidence.id, verifiedAt, request.id, authorizationEvidence?.id ?? null);
+      if (update.changes !== 1) {
+        throw new Error("Auth signature evidence pointer update was not applied.");
+      }
+      const finalized = this.readRequestByExactId(request.id);
+      if (!finalized) throw new Error(`Auth request '${request.id}' disappeared during finalization.`);
+      return finalized;
+    })();
   }
 
   private sweepSuccessfulMergeFinalizers(): void {
@@ -1994,6 +2343,8 @@ export class AuthQueue {
         merge_output: request.output,
         approval_source: request.approval_source,
         approval_lease_id: request.approval_lease_id,
+        approved_by_user_id: request.approved_by_user_id,
+        execution_evidence_id: request.execution_evidence_id,
       });
     } catch (error) {
       authLog("warn", "auth_ledger_completion_failed", {
@@ -2068,10 +2419,17 @@ export class AuthQueue {
     const detail = digestMoved
       ? `Applied after target digest moved from ${action.target_digest} to ${currentDigest}`
       : null;
+    // The legacy actor tuple ('agent' + session id + display) is FROZEN — it is
+    // hashed into stable event ids, so it stays byte-identical to base behavior
+    // (umbrella 8e2e8b2 / issue 92813cc). The real principal is recorded in the
+    // parallel user-attribution columns: auth-queue ledger writes are applied by
+    // the daemon on merge, so they attribute to the system user. The
+    // approving human is carried as the authorizer in the attached evidence.
     const actor = {
       actor_type: "agent" as const,
       actor_id: request.session_id ?? request.target_session_id ?? null,
       author_display: "Mandible auth action",
+      attribution: this.finalizationAttribution(request),
     };
     switch (action.kind) {
       case "comment_add":
@@ -2105,6 +2463,8 @@ export class AuthQueue {
           merge_output: request.output,
           approval_source: request.approval_source,
           approval_lease_id: request.approval_lease_id,
+          approved_by_user_id: request.approved_by_user_id,
+          execution_evidence_id: request.execution_evidence_id,
         });
         break;
       case "worker_status_set": {
@@ -2792,6 +3152,8 @@ export class AuthQueue {
       // Bug: 6d7411b — emit conversation_id so the channel server can match
       // events across session restarts within the same conversation.
       conversation_id: request.conversation_id,
+      execution_evidence_id: request.execution_evidence_id,
+      signature_verification: this.signatureVerificationForRequest(request),
       action_outcomes: this.actionOutcomeSummary(request.id)
     };
   }
@@ -2846,6 +3208,27 @@ export class AuthQueue {
     return request;
   }
 
+}
+
+function projectAuthAttributionEvent(
+  db: InstanceType<typeof Database>,
+  event: SseEvent,
+): SseEvent {
+  if (event.event !== "auth:new" && event.event !== "auth:updated") return event;
+  if (!event.data || typeof event.data !== "object") return event;
+  const data = event.data as Record<string, unknown>;
+  if (!data.request || typeof data.request !== "object") return event;
+  const request = data.request as AuthRequest;
+  return {
+    ...event,
+    data: {
+      ...data,
+      request: {
+        ...request,
+        ...authAttributionReadFields(new AttributionReadResolver(db), request),
+      },
+    },
+  };
 }
 
 // Bug: 929c6d0 — extract the last N lines from a string for error output summaries.
@@ -2985,6 +3368,9 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
   return {
     id: String(row.id),
     session_id: row.session_id == null ? null : String(row.session_id),
+    requested_by_user_id: row.requested_by_user_id == null ? null : String(row.requested_by_user_id),
+    approved_by_user_id: row.approved_by_user_id == null ? null : String(row.approved_by_user_id),
+    execution_evidence_id: row.execution_evidence_id == null ? null : String(row.execution_evidence_id),
     type,
     command: String(row.command),
     title: String(row.title),

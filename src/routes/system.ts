@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Db } from "../db.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 import { tableExists } from "../db-introspection.js";
 import { broadcast } from "../sse.js";
 import type { RequestLike, RouteRegistrar } from "../server.js";
@@ -224,7 +225,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
     sendJson(res, 200, { ok: true });
   }, { fileRpc: "deny" });
 
-  server.post("/api/system/open-path", (req, res) => {
+  server.post("/api/system/open-path", globalCapabilityRoute("open_path", (req, res) => {
     const body = readBody<{ path?: string }>(req);
     if (!body || typeof body.path !== "string" || !body.path.trim()) {
       sendJson(res, 400, { error: "missing or invalid path" });
@@ -271,7 +272,7 @@ export function registerSystemRoutes(server: RouteRegistrar, workScanner: WorkSc
       }
       sendJson(res, 200, { ok: true });
     });
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 }
 
 function queryDaemonLog(db: Db, filters: LogFilters): {

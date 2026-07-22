@@ -8,19 +8,51 @@ import { describe, expect, it } from "vitest";
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { AuthHookManager } from "../src/auth-hooks.js";
 import { migrate } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
+import {
+  addCredential,
+  addDelegatedSigningLease,
+  getOperator,
+  setupOperator,
+} from "../src/users/store.js";
+
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   migrate(db);
+  setupOperator(db, { slug: "auth-test-operator", display_name: "Auth Test Operator" }, 1);
   return db;
 }
 
 function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
   const db = createMigratedDb();
   return new AuthQueue({ db, ...options });
+}
+
+function registerTestDelegatedLease(
+  db: InstanceType<typeof Database>,
+  id: string,
+  now = Date.now(),
+): string {
+  const operator = getOperator(db)!;
+  const credential = addCredential(db, operator.id, {
+    type: "delegated_ssh_key",
+    fingerprint: `SHA256:${"A".repeat(43)}`,
+    public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} auth-test`,
+  }, now - 1000);
+  addDelegatedSigningLease(db, {
+    id,
+    credential_id: credential.id,
+    owner_user_id: operator.id,
+    minted_at: now - 1000,
+    expires_at: now + 60_000,
+    mint_method: "fresh_presence",
+  });
+  return operator.id;
 }
 
 function createNoopHookManager(): AuthHookManager {
@@ -42,10 +74,15 @@ async function waitForStatus(queue: AuthQueue, id: string, status: string, timeo
 }
 
 function git(cwd: string, args: string[]): string {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+  delete env.GIT_CONFIG_COUNT;
+  for (const key of Object.keys(env)) {
+    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) delete env[key];
+  }
   return execFileSync("git", args, {
     cwd,
     encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    env,
   }).trim();
 }
 
@@ -53,6 +90,53 @@ function writeFile(repo: string, relativePath: string, content: string): void {
   const fullPath = path.join(repo, relativePath);
   fs.mkdirSync(path.dirname(fullPath), { recursive: true });
   fs.writeFileSync(fullPath, content, "utf8");
+}
+
+function executionEvidenceChain(
+  db: InstanceType<typeof Database>,
+  executionEvidenceId: string,
+): {
+  signature: { evidence_method: string; credential_id: string | null; details_json: string };
+  authorization: { evidence_method: string; lease_id: string | null; details_json: string };
+} {
+  const signature = db.prepare(
+    "SELECT evidence_method, credential_id, details_json FROM attribution_evidence WHERE id = ?",
+  ).get(executionEvidenceId) as {
+    evidence_method: string;
+    credential_id: string | null;
+    details_json: string;
+  };
+  const authorizationId = JSON.parse(signature.details_json).authorization_evidence_id as string;
+  const authorization = db.prepare(
+    "SELECT evidence_method, lease_id, details_json FROM attribution_evidence WHERE id = ?",
+  ).get(authorizationId) as {
+    evidence_method: string;
+    lease_id: string | null;
+    details_json: string;
+  };
+  return { signature, authorization };
+}
+
+function configureSigningCredential(
+  db: InstanceType<typeof Database>,
+  repo: string,
+  type: "ssh_key" | "delegated_ssh_key",
+): { credentialId: string; keyPath: string; operatorId: string } {
+  const keyPath = path.join(repo, ".mandible-test-signing-key");
+  execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", keyPath]);
+  const publicMaterial = fs.readFileSync(`${keyPath}.pub`, "utf8").trim();
+  const fingerprint = execFileSync("ssh-keygen", ["-lf", `${keyPath}.pub`, "-E", "sha256"], {
+    encoding: "utf8",
+  }).trim().split(/\s+/)[1]!;
+  const operator = getOperator(db)!;
+  const credential = addCredential(db, operator.id, {
+    type,
+    fingerprint,
+    public_material: publicMaterial,
+  });
+  git(repo, ["config", "gpg.format", "ssh"]);
+  git(repo, ["config", "user.signingkey", keyPath]);
+  return { credentialId: credential.id, keyPath, operatorId: operator.id };
 }
 
 function createAuthCheckRepo(): string {
@@ -108,6 +192,7 @@ function createLedgerIssue(
   title = `Issue ${shortId}`,
 ) {
   return new LedgerStore(db).createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: "Body",
@@ -347,6 +432,10 @@ describe("auth queue", () => {
         expect(recovered?.status).toBe("pending");
         expect(recovered?.exit_code).toBeNull();
         expect(recovered?.approved_at).toBeNull();
+        expect(recovered?.approved_by_user_id).toBeNull();
+        expect(recovered?.execution_evidence_id).toBeNull();
+        expect(() => restarted.setResult(request.id, 0, "late remote result"))
+          .toThrow(/cannot be recorded while request is pending/);
         expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
         expect(git(repo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
       } finally {
@@ -585,7 +674,12 @@ describe("auth queue", () => {
       queue.dispose();
 
       now = 6 * 60 * 1000;
-      const restarted = new AuthQueue({ db, now: () => now });
+      const events: SseEvent[] = [];
+      const restarted = new AuthQueue({
+        db,
+        now: () => now,
+        broadcast: (event) => events.push(event),
+      });
       try {
         const recovered = restarted.getRequest(request.id);
         const workUnit = db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-recovered'")
@@ -593,6 +687,13 @@ describe("auth queue", () => {
         expect(recovered?.status).toBe("completed");
         expect(recovered?.exit_code).toBe(0);
         expect(recovered?.merge_finalized_at).toBe(now);
+        const resolvedEvent = events.find((event) => event.event === "auth:resolved");
+        expect(resolvedEvent?.data).toMatchObject({
+          execution_evidence_id: recovered?.execution_evidence_id,
+          signature_verification: {
+            evidence_id: recovered?.execution_evidence_id,
+          },
+        });
         expect(workUnit.state).toBe("resolved");
         expect(workUnit.resolved_at).toBe(now);
       } finally {
@@ -641,6 +742,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-child'").get())
@@ -702,6 +804,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare(
@@ -769,6 +872,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare(
@@ -824,6 +928,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare(
@@ -870,6 +975,7 @@ describe("auth queue", () => {
         status: "running",
       });
       new LedgerStore(db).addIssueCheckpoint(parent.id, {
+        ...SYSTEM_ACTOR,
         kind: "parent-role",
         payload: { session_id: "parent-thread", mechanism: "thread", assumed_at: Date.now() },
         actor_type: "mandible_user",
@@ -912,6 +1018,7 @@ describe("auth queue", () => {
         authRequestId: request.id,
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
 
       expect(archived).toEqual(["thread-worker"]);
@@ -969,6 +1076,7 @@ describe("auth queue", () => {
         authRequestId: request.id,
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
       const finalizedAt = queue.getRequest(request.id)?.merge_finalized_at;
       const replay = queue.replayCodexThreadArchives(request.id);
@@ -1012,6 +1120,7 @@ describe("auth queue", () => {
       merge_head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       execution_mode: "remote"
     });
+    queue.approve(completed.id);
     queue.setResult(completed.id, 0, "ok");
     queue.dispose();
 
@@ -1192,12 +1301,184 @@ describe("auth queue", () => {
 
       const approved = queue.approve(request.id);
       expect(approved.cwd).toBe(fs.realpathSync(repo));
-      await waitForStatus(queue, request.id, "completed");
+      const resolved = await waitForStatus(queue, request.id, "completed");
       expect(calls).toEqual([fs.realpathSync(repo)]);
+      const operator = getOperator(db)!;
+      expect(resolved).toMatchObject({
+        requested_by_user_id: operator.id,
+        approved_by_user_id: operator.id,
+      });
+      const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
+      expect(evidence.signature.evidence_method).toBe("credential_signature");
+      expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
+        verified: false,
+        authorization_evidence_method: "hardware_presence",
+      });
+      expect(evidence.authorization.evidence_method).toBe("hardware_presence");
+      expect(evidence.authorization.lease_id).toBeNull();
+      expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
+        authorizer_user_id: operator.id,
+      });
       queue.dispose();
     } finally {
       db.close();
       fs.rmSync(featureWorktree, { recursive: true, force: true });
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("composes interactive approval with verified credential-signature evidence", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    try {
+      commitOnBranch(repo, "feature/signed-interactive", { "signed.txt": "signed\n" });
+      registerWorkRepo(db, repo);
+      const signing = configureSigningCredential(db, repo, "ssh_key");
+      const queue = new AuthQueue({
+        db,
+        broadcast: (event) => events.push(event),
+        executor: async (options) => {
+          git(options.cwd!, ["merge", "--no-ff", "--no-edit", "-S", "feature/signed-interactive"]);
+          const mergeSha = git(options.cwd!, ["rev-parse", "HEAD"]);
+          const output = `MANDIBLE_MERGE_RESULT {"merge_sha":"${mergeSha}"}\n`;
+          options.onOutput?.({
+            request_id: options.request_id,
+            stream: "stderr",
+            text: output,
+            timestamp: Date.now(),
+          });
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "",
+            stderr: output,
+            output,
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/signed-interactive --into main",
+        title: "Merge signed interactive",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/signed-interactive",
+        cwd: repo,
+      });
+      queue.approve(request.id);
+      const resolved = await waitForStatus(queue, request.id, "completed");
+      const chain = executionEvidenceChain(db, resolved!.execution_evidence_id!);
+      expect(chain.signature).toMatchObject({
+        evidence_method: "credential_signature",
+        credential_id: signing.credentialId,
+      });
+      const signatureDetails = JSON.parse(chain.signature.details_json);
+      expect(signatureDetails).toMatchObject({
+        verified: true,
+        signer_user_id: signing.operatorId,
+        authorization_evidence_method: "hardware_presence",
+      });
+      expect(signatureDetails.commit_sha).toBe(git(repo, ["rev-parse", "main"]));
+      expect(signatureDetails.target_head_sha).toBe(signatureDetails.commit_sha);
+      expect(chain.authorization.evidence_method).toBe("hardware_presence");
+      expect(queue.getSignatureVerification(request.id)).toMatchObject({
+        verified: true,
+        credential_id: signing.credentialId,
+        user_id: signing.operatorId,
+      });
+      const resolvedEvent = events.findLast((event) => event.event === "auth:resolved");
+      expect(resolvedEvent?.data).toMatchObject({
+        execution_evidence_id: resolved!.execution_evidence_id,
+        signature_verification: {
+          verified: true,
+          credential_id: signing.credentialId,
+          user_id: signing.operatorId,
+        },
+      });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("composes delegated lease authorization with verified delegated-key evidence", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const now = Date.now();
+    try {
+      commitOnBranch(repo, "feature/signed-delegated", { "delegated.txt": "delegated\n" });
+      registerWorkRepo(db, repo);
+      const signing = configureSigningCredential(db, repo, "delegated_ssh_key");
+      addDelegatedSigningLease(db, {
+        id: "verified-delegated-lease",
+        credential_id: signing.credentialId,
+        owner_user_id: signing.operatorId,
+        minted_at: now - 1000,
+        expires_at: now + 60_000,
+        mint_method: "reused_lease",
+      });
+      const queue = new AuthQueue({
+        db,
+        autoApprover: {
+          getActiveApprovalContext: () => ({
+            source: "auto_lease",
+            leaseId: "verified-delegated-lease",
+            approverUserId: signing.operatorId,
+            env: { SSH_AUTH_SOCK: "/tmp/test-delegated.sock" },
+          }),
+        },
+        executor: async (options) => {
+          git(options.cwd!, ["merge", "--no-ff", "--no-edit", "-S", "feature/signed-delegated"]);
+          const mergeSha = git(options.cwd!, ["rev-parse", "HEAD"]);
+          const output = `MANDIBLE_MERGE_RESULT {"merge_sha":"${mergeSha}"}\n`;
+          options.onOutput?.({
+            request_id: options.request_id,
+            stream: "stderr",
+            text: output,
+            timestamp: now,
+          });
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "",
+            stderr: output,
+            output,
+            started_at: now,
+            finished_at: now,
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/signed-delegated --into main",
+        title: "Merge signed delegated",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/signed-delegated",
+        cwd: repo,
+      });
+      const resolved = await waitForStatus(queue, request.id, "completed");
+      const chain = executionEvidenceChain(db, resolved!.execution_evidence_id!);
+      expect(JSON.parse(chain.signature.details_json)).toMatchObject({
+        verified: true,
+        signer_user_id: signing.operatorId,
+        authorization_evidence_method: "delegated_lease",
+      });
+      expect(chain.authorization).toMatchObject({
+        evidence_method: "delegated_lease",
+        lease_id: "verified-delegated-lease",
+      });
+      queue.dispose();
+    } finally {
+      db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
@@ -1329,11 +1610,15 @@ describe("auth queue", () => {
 
   it("auto-approves new requests while a lease is active and passes scoped env", async () => {
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-    const queue = createQueue({
+    const db = createMigratedDb();
+    const approverUserId = getOperator(db)!.id;
+    const queue = new AuthQueue({
+      db,
       autoApprover: {
         getActiveApprovalContext: () => ({
           source: "auto_lease",
           leaseId: "lease-1",
+          approverUserId,
           env: {
             SSH_AUTH_SOCK: "/tmp/mandible-agent.sock",
             GIT_CONFIG_COUNT: "1",
@@ -1369,10 +1654,15 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.SSH_AUTH_SOCK).toBe("/tmp/mandible-agent.sock");
     expect(calls[0]?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+    queue.dispose();
+    db.close();
   });
 
   it("auto-approves pending requests when a lease is enabled", () => {
-    const queue = createQueue({
+    const db = createMigratedDb();
+    const approverUserId = getOperator(db)!.id;
+    const queue = new AuthQueue({
+      db,
       executor: async () => ({
         exit_code: 0,
         signal: null,
@@ -1389,17 +1679,89 @@ describe("auth queue", () => {
     const approved = queue.autoApprovePending({
       source: "auto_lease",
       leaseId: "lease-2",
+      approverUserId,
       env: { SSH_AUTH_SOCK: "/tmp/agent.sock" },
     });
 
     expect(approved.map((r) => r.id)).toEqual([first.id, second.id]);
     expect(queue.getRequest(first.id)?.approval_source).toBe("auto_lease");
     expect(queue.getRequest(second.id)?.approval_lease_id).toBe("lease-2");
+    queue.dispose();
+    db.close();
+  });
+
+  it("records delegated_lease execution evidence when an active lease is reused", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const approverUserId = registerTestDelegatedLease(db, "lease-reuse");
+    try {
+      commitOnBranch(repo, "feature/lease-reuse", { "reuse.txt": "reuse\n" });
+      registerWorkRepo(db, repo);
+      const queue = new AuthQueue({
+        db,
+        autoApprover: {
+          getActiveApprovalContext: () => ({
+            source: "auto_lease",
+            leaseId: "lease-reuse",
+            approverUserId,
+            env: {
+              SSH_AUTH_SOCK: "/tmp/reused.sock",
+              GIT_CONFIG_COUNT: "1",
+              GIT_CONFIG_KEY_0: "user.signingkey",
+              GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
+            },
+          }),
+        },
+        executor: async (options) => {
+          expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "ok\n",
+            stderr: "",
+            output: "ok\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const submitted = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/lease-reuse --into main",
+        title: "Merge feature/lease-reuse",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/lease-reuse",
+        cwd: repo,
+      });
+      expect(submitted.status).toBe("executing");
+      const resolved = await waitForStatus(queue, submitted.id, "completed");
+      const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
+      expect(evidence.signature.evidence_method).toBe("credential_signature");
+      expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
+        verified: false,
+        authorization_evidence_method: "delegated_lease",
+      });
+      expect(evidence.authorization).toMatchObject({
+        evidence_method: "delegated_lease",
+        lease_id: "lease-reuse",
+      });
+      expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
+        authorizer_user_id: approverUserId,
+      });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("runs a delegated signing presence challenge before spawning auth merge execution", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
+    const approverUserId = registerTestDelegatedLease(db, "presence-1");
     const order: string[] = [];
     const events: SseEvent[] = [];
     try {
@@ -1425,6 +1787,7 @@ describe("auth queue", () => {
             return {
               source: "presence_challenge",
               leaseId: "presence-1",
+              approverUserId,
               env: {
                 SSH_AUTH_SOCK: "/tmp/presence.sock",
                 MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
@@ -1437,6 +1800,7 @@ describe("auth queue", () => {
         },
         executor: async (options) => {
           order.push("executor");
+          expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
           expect(options.env?.SSH_AUTH_SOCK).toBe("/tmp/presence.sock");
           expect(options.env?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
           return {
@@ -1467,6 +1831,19 @@ describe("auth queue", () => {
       expect(order).toEqual(["challenge", "executor"]);
       expect(resolved?.approval_source).toBe("presence_challenge");
       expect(resolved?.approval_lease_id).toBe("presence-1");
+      const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
+      expect(evidence.signature.evidence_method).toBe("credential_signature");
+      expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
+        verified: false,
+        authorization_evidence_method: "hardware_presence",
+      });
+      expect(evidence.authorization).toMatchObject({
+        evidence_method: "hardware_presence",
+        lease_id: "presence-1",
+      });
+      expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
+        authorizer_user_id: approverUserId,
+      });
       const output = events
         .filter((event) => event.event === "auth:output")
         .map((event) => ((event.data as { text?: string }).text ?? ""))
@@ -1767,8 +2144,10 @@ describe("auth queue", () => {
     const request = queue.submit({
       command: "mandible auth merge feature/foo",
       title: "Merge foo",
-      cwd: "/wrong/repo"
+      cwd: "/wrong/repo",
+      execution_mode: "remote",
     });
+    queue.approve(request.id);
     queue.setResult(request.id, 1, "Not a git repository", "cwd was wrong");
 
     // Update cwd and reset to pending in a single PUT

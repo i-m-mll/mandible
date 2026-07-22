@@ -5,6 +5,11 @@ import { getDb, type Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { mapWorkUnitRow, computeLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "../ledger/store.js";
+import type { AttributionContext } from "../identity/resolver.js";
+import {
+  attributionForRequest,
+  operatorOnlyManagedSessionRoute,
+} from "../client-auth/authz.js";
 import {
   LEDGER_ISSUE_KINDS,
   LEDGER_ISSUE_BRANCH_ROLES,
@@ -56,11 +61,18 @@ import {
   resolveOperationalIssueRef,
 } from "../ledger/operational-links.js";
 import type { GitBugIssueDetail, IssueRepoSummary } from "../types.js";
-import type { RouteOptions } from "../server.js";
+import type { RequestLike, ResponseLike, RouteOptions } from "../server.js";
 import { sendJson } from "./http.js";
+import {
+  PermissionError,
+  evaluateProjectAccess,
+  requireProjectAccess,
+  sendPermissionError,
+  type ProjectRole,
+} from "../permissions/store.js";
 
-export interface RouteHandler<Request = unknown, Response = unknown> {
-  (req: Request, res: Response): void | Promise<void>;
+export interface RouteHandler<Request = RequestLike, Response = ResponseLike> {
+  (req: Request, res: Response): unknown;
 }
 
 export interface IssueServer {
@@ -248,6 +260,16 @@ function resolveRelationshipEntityRef(
   } catch {
     return resolvedIssue;
   }
+}
+
+function relationshipEntityIssueId(
+  db: Db,
+  entity: { entity_type: LedgerRelationshipEntityType; entity_id: string },
+): string | null {
+  if (entity.entity_type === "issue") return entity.entity_id;
+  const row = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+    .get(entity.entity_id) as { issue_id: string } | undefined;
+  return row?.issue_id ?? null;
 }
 
 function sendLedgerIssueProjection(
@@ -516,7 +538,12 @@ function buildUmbrellaChildDrift(db: Db, umbrella: LedgerIssueDetailProjection):
   };
 }
 
-function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[]): Record<string, unknown> {
+function refreshDelegationManifest(
+  db: Db,
+  umbrellaId: string,
+  childIds: string[],
+  attribution: AttributionContext,
+): Record<string, unknown> {
   // The first payload entry is the umbrella's own head, marked `self: true`.
   // It is an explicit stored baseline for the umbrella itself, not a child
   // entry: `mandible issue changed --since-issue` compares it directly and its
@@ -534,6 +561,7 @@ function refreshDelegationManifest(db: Db, umbrellaId: string, childIds: string[
     payload,
     actor_type: "mandible_user",
     author_display: "Mandible",
+    attribution,
     source: "mandible",
   });
   return checkpointResponse(checkpoint);
@@ -1067,7 +1095,13 @@ export function buildUmbrellaStatus(db: Db, issueId: string, options: { deep?: b
   };
 }
 
-function linkMissingUmbrellaChildren(db: Db, umbrellaId: string, childIds: string[], note: string): {
+function linkMissingUmbrellaChildren(
+  db: Db,
+  umbrellaId: string,
+  childIds: string[],
+  note: string,
+  attribution: AttributionContext,
+): {
   beforeIds: string[];
   missingIds: string[];
   action_id: string | null;
@@ -1082,7 +1116,7 @@ function linkMissingUmbrellaChildren(db: Db, umbrellaId: string, childIds: strin
     link_type: "parent_child",
     provenance: "manual",
     note,
-    actor: { actor_type: "mandible_user", author_display: "Mandible" },
+    actor: { actor_type: "mandible_user", author_display: "Mandible", attribution },
     source: "mandible",
   });
   return { beforeIds, missingIds, action_id: result.action_id };
@@ -1093,6 +1127,7 @@ function buildUmbrellaAdoptionResponse(
   umbrellaId: string,
   childRefs: string[],
   kind: "adopt" | "reconcile",
+  attribution: AttributionContext,
 ): Record<string, unknown> {
   const resolved = resolveIssueRefs(db, childRefs);
   const linked = linkMissingUmbrellaChildren(
@@ -1100,9 +1135,10 @@ function buildUmbrellaAdoptionResponse(
     umbrellaId,
     resolved.ids,
     kind === "adopt" ? "Umbrella child adoption" : "Umbrella child-table reconciliation",
+    attribution,
   );
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
-  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds);
+  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds, attribution);
   const status = buildUmbrellaStatus(db, umbrellaId);
   return {
     ...status,
@@ -1123,9 +1159,13 @@ function buildUmbrellaAdoptionResponse(
   };
 }
 
-function buildUmbrellaManifestRefreshResponse(db: Db, umbrellaId: string): Record<string, unknown> {
+function buildUmbrellaManifestRefreshResponse(
+  db: Db,
+  umbrellaId: string,
+  attribution: AttributionContext,
+): Record<string, unknown> {
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
-  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds);
+  const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds, attribution);
   const status = buildUmbrellaStatus(db, umbrellaId);
   return {
     ...status,
@@ -1183,6 +1223,31 @@ function resolveContextLedgerIssueId(db: Db, issueId: string, repoId: string): s
     return resolved.ok ? resolved.issue_id : null;
   } catch {
     return null;
+  }
+}
+
+function enforceIssueProjectAccess(
+  db: Db,
+  req: RequestLike,
+  res: ResponseLike,
+  issueId: string,
+  role: ProjectRole,
+): boolean {
+  const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?")
+    .get(issueId) as { project_id: string } | undefined;
+  if (!row) {
+    sendJson(res, 404, { error: "ledger issue not found" });
+    return false;
+  }
+  try {
+    requireProjectAccess(db, req, row.project_id, role);
+    return true;
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      sendPermissionError(res, error);
+      return false;
+    }
+    throw error;
   }
 }
 
@@ -1246,6 +1311,16 @@ export function registerIssueRoutes(
       status: statusFilter,
       label: labelFilter,
     });
+    summaries = summaries.filter((summary) => {
+      const project = resolveProjectRef(db, summary.project_key ?? summary.repo_id);
+      if (project.ambiguous) return false;
+      if (!project.ok || !project.project) return true;
+      return evaluateProjectAccess(db, {
+        identity: req.client_identity ?? null,
+        project_id: project.project.id,
+        required_role: "read",
+      }).allowed;
+    });
 
     sendJson(res, 200, summaries);
   }, { fileRpc: "allow" });
@@ -1263,6 +1338,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     sendLedgerIssueProjection(res, db, resolved.issue_id, [], {
       stage: getQueryParam(req, "stage") === "initial" ? "initial" : "full",
       profile: getQueryParam(req, "profile") === "1",
@@ -1281,6 +1357,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     try {
       const deep = getQueryParam(req, "deep") === "true";
       sendJson(res, 200, buildUmbrellaStatus(db, resolved.issue_id, { deep }));
@@ -1307,8 +1384,15 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
-      sendJson(res, 200, buildUmbrellaAdoptionResponse(db, resolved.issue_id, childRefs, "adopt"));
+      sendJson(res, 200, buildUmbrellaAdoptionResponse(
+        db,
+        resolved.issue_id,
+        childRefs,
+        "adopt",
+        attributionForRequest(db, req),
+      ));
     } catch (error) {
       sendJson(res, 400, { error: error instanceof Error ? error.message : "failed to adopt children" });
     }
@@ -1326,6 +1410,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
       const umbrella = buildLedgerIssueDetailProjection(db, resolved.issue_id);
       sendJson(
@@ -1336,6 +1421,7 @@ export function registerIssueRoutes(
           resolved.issue_id,
           parseCanonicalUmbrellaChildRefs(umbrella.body),
           "reconcile",
+          attributionForRequest(db, req),
         ),
       );
     } catch (error) {
@@ -1355,8 +1441,13 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
-      sendJson(res, 200, buildUmbrellaManifestRefreshResponse(db, resolved.issue_id));
+      sendJson(res, 200, buildUmbrellaManifestRefreshResponse(
+        db,
+        resolved.issue_id,
+        attributionForRequest(db, req),
+      ));
     } catch (error) {
       sendJson(res, 400, {
         error: error instanceof Error ? error.message : "failed to refresh umbrella manifest",
@@ -1376,6 +1467,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     sendJson(res, 200, buildParentRoleStatus(db, resolved.issue_id));
   }, { fileRpc: "allow" });
 
@@ -1401,6 +1493,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const reconcileBlocker = parentRoleReconcileBlocker(db, resolved.issue_id);
     if (reconcileBlocker) {
       sendJson(res, 409, reconcileBlocker);
@@ -1428,6 +1521,7 @@ export function registerIssueRoutes(
       },
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: attributionForRequest(db, req),
       source: "mandible",
       created_at: now,
     });
@@ -1457,6 +1551,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     try {
       sendJson(res, 200, getLedgerIssueHead(db, resolved.issue_id, at === null ? {} : { at }));
     } catch (error) {
@@ -1476,6 +1571,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const revisions = new LedgerStore(db).listBodyRevisions({
       entity_type: "issue_body",
       entity_id: resolved.issue_id,
@@ -1525,6 +1621,12 @@ export function registerIssueRoutes(
       }
       targetEntities.push(targetEntity);
     }
+    const issueIds = new Set([sourceEntity, ...targetEntities]
+      .map((entity) => relationshipEntityIssueId(db, entity))
+      .filter((id): id is string => id !== null));
+    for (const issueId of issueIds) {
+      if (!enforceIssueProjectAccess(db, req, res, issueId, "write")) return;
+    }
     try {
       const result = new LedgerStore(db).linkRelationshipEdges({
         source_entity: sourceEntity,
@@ -1532,7 +1634,7 @@ export function registerIssueRoutes(
         link_type: linkType as LedgerRelationshipType,
         provenance: provenance as LedgerRelationshipProvenance,
         note: typeof body.note === "string" ? body.note : null,
-        actor: { actor_type: "mandible_user", author_display: "Mandible" },
+        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         source: "mandible",
       });
       sendJson(res, 200, result);
@@ -1578,12 +1680,18 @@ export function registerIssueRoutes(
       }
       targetEntities.push(targetEntity);
     }
+    const issueIds = new Set([sourceEntity, ...targetEntities]
+      .map((entity) => relationshipEntityIssueId(db, entity))
+      .filter((id): id is string => id !== null));
+    for (const issueId of issueIds) {
+      if (!enforceIssueProjectAccess(db, req, res, issueId, "write")) return;
+    }
     try {
       const result = new LedgerStore(db).unlinkRelationshipEdges({
         source_entity: sourceEntity,
         target_entities: targetEntities,
         link_type: linkType as LedgerRelationshipType,
-        actor: { actor_type: "mandible_user", author_display: "Mandible" },
+        actor: { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         source: "mandible",
       });
       sendJson(res, 200, result);
@@ -1599,6 +1707,13 @@ export function registerIssueRoutes(
       return;
     }
     const db = getDb();
+    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+      .get(commentId) as { issue_id: string } | undefined;
+    if (!owner) {
+      sendJson(res, 404, { error: "comment not found" });
+      return;
+    }
+    if (!enforceIssueProjectAccess(db, req, res, owner.issue_id, "read")) return;
     const store = new LedgerStore(db);
     try {
       store.getComment(commentId);
@@ -1707,6 +1822,15 @@ export function registerIssueRoutes(
         return;
       }
     }
+    try {
+      requireProjectAccess(db, req, project.id, "write");
+    } catch (error) {
+      if (error instanceof PermissionError) {
+        sendPermissionError(res, error);
+        return;
+      }
+      throw error;
+    }
     const store = new LedgerStore(db);
     const issue = store.createIssue({
       project_id: project.id,
@@ -1716,6 +1840,7 @@ export function registerIssueRoutes(
       kind: kindFromLabels(labels),
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: attributionForRequest(db, req),
       source: "mandible",
     });
     sendLedgerIssueProjection(res, db, issue.id, markdownPolicy.warnings);
@@ -1743,12 +1868,14 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     const markdownPolicy = applyMarkdownBodyPolicy(res, db, message);
     if (!markdownPolicy.ok) return;
     new LedgerStore(db).addComment(resolved.issue_id, {
       body: message,
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: attributionForRequest(db, req),
       source: "mandible",
       reopen: body?.reopen === true,
     });
@@ -1778,12 +1905,14 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     try {
       const checkpoint = new LedgerStore(db).addIssueCheckpoint(resolved.issue_id, {
         kind,
         payload,
         actor_type: "mandible_user",
         author_display: "Mandible",
+        attribution: attributionForRequest(db, req),
         source: "mandible",
       });
       sendJson(res, 200, checkpointResponse(checkpoint));
@@ -1804,6 +1933,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const kind = getQueryParam(req, "kind");
     const latest = getQueryParam(req, "latest");
     const store = new LedgerStore(db);
@@ -1845,11 +1975,19 @@ export function registerIssueRoutes(
       sendJson(res, 400, { error: "body or author_display is required" });
       return;
     }
+    const owner = db.prepare("SELECT issue_id FROM ledger_comments WHERE id = ?")
+      .get(commentId) as { issue_id: string } | undefined;
+    if (!owner) {
+      sendJson(res, 404, { error: "comment not found" });
+      return;
+    }
+    if (!enforceIssueProjectAccess(db, req, res, owner.issue_id, "write")) return;
     const store = new LedgerStore(db);
     try {
       const comment = store.updateComment(commentId, patch, {
         actor_type: "mandible_user",
         author_display: "Mandible",
+        attribution: attributionForRequest(db, req),
         base_body_revision_id: typeof body.base_revision_id === "string"
           ? body.base_revision_id
           : typeof body.base_body_revision_id === "string"
@@ -1880,6 +2018,7 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
 
     let markdownWarnings: MarkdownBodyPolicyWarning[] = [];
     const patch: {
@@ -1914,6 +2053,7 @@ export function registerIssueRoutes(
         store.updateIssue(resolved.issue_id, patch, {
           actor_type: "mandible_user",
           author_display: "Mandible",
+          attribution: attributionForRequest(db, req),
           base_body_revision_id: typeof body.base_body_revision_id === "string"
             ? body.base_body_revision_id
             : typeof body.base_revision_id === "string"
@@ -1947,7 +2087,7 @@ export function registerIssueRoutes(
         resolved.issue_id,
         (status ?? current.status) as LedgerIssueStatus,
         resolution as LedgerIssueResolution | null,
-        { actor_type: "mandible_user", author_display: "Mandible" },
+        { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
         "mandible",
       );
     }
@@ -1972,10 +2112,11 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).setWorkerStatus(
       resolved.issue_id,
       workerStatus as LedgerWorkerStatus,
-      { actor_type: "mandible_user", author_display: "Mandible" },
+      { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
@@ -2004,11 +2145,12 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).addIssueBranch(
       resolved.issue_id,
       branch,
       role as LedgerIssueBranchRole,
-      { actor_type: "mandible_user", author_display: "Mandible" },
+      { actor_type: "mandible_user", author_display: "Mandible", attribution: attributionForRequest(db, req) },
       "mandible",
     );
     sendLedgerIssueProjection(res, db, resolved.issue_id);
@@ -2043,9 +2185,11 @@ export function registerIssueRoutes(
       sendJson(res, resolved.status, { error: resolved.error });
       return;
     }
+    if (!enforceIssueProjectAccess(db, req, res, resolved.issue_id, "write")) return;
     new LedgerStore(db).setLabel(resolved.issue_id, label, present, "mandible", {
       actor_type: "mandible_user",
       author_display: "Mandible",
+      attribution: attributionForRequest(db, req),
     });
     sendLedgerIssueProjection(res, db, resolved.issue_id);
   }, { fileRpc: "allow" });
@@ -2062,11 +2206,13 @@ export function registerIssueRoutes(
       : "keep_mandible";
     const status = body.status === "dismissed" ? "dismissed" : "resolved";
     try {
-      const conflict = new LedgerStore(getDb()).resolveConflict(conflictId, {
+      const conflictDb = getDb();
+      const conflict = new LedgerStore(conflictDb).resolveConflict(conflictId, {
         resolution,
         status,
         actor_type: "mandible_user",
         author_display: "Mandible",
+        attribution: attributionForRequest(conflictDb, req),
       });
       sendJson(res, 200, { ok: true, conflict });
     } catch (error) {
@@ -2086,6 +2232,9 @@ export function registerIssueRoutes(
     try {
       const result = findLedgerIssueAcrossRepos(db, workScanner, issueId);
       if (result.ok) {
+        const ledgerIssueId = resolveContextLedgerIssueId(db, result.detail.id, result.detail.repo_id);
+        if (ledgerIssueId
+          && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
         sendJson(res, 200, result.detail);
         return;
       }
@@ -2111,6 +2260,13 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
+    const operationalIssue = resolveOperationalIssueRef(db, issue_id, repo_id);
+    if (!operationalIssue.ok && operationalIssue.error === "ambiguous") {
+      sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
+      return;
+    }
+    if (operationalIssue.ok
+      && !enforceIssueProjectAccess(db, req, res, operationalIssue.issue_id, "write")) return;
     const resolvedAt = Date.now();
     db.prepare(
       `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
@@ -2143,6 +2299,13 @@ export function registerIssueRoutes(
     }
 
     const db = getDb();
+    const resolved = resolveLedgerIssueId(db, issueId);
+    if (!resolved.ok && resolved.status === 409) {
+      sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
+      return;
+    }
+    if (resolved.ok
+      && !enforceIssueProjectAccess(db, req, res, resolved.issue_id, "read")) return;
     const rows = db.prepare(
       `SELECT commit_sha, repo_id, resolved_at
        FROM issue_resolutions
@@ -2172,6 +2335,12 @@ export function registerIssueRoutes(
       sendJson(res, result.status, { error: result.error });
       return;
     }
+    const ledgerIssueId = resolveContextLedgerIssueId(
+      db,
+      result.resolved.issue.id,
+      result.resolved.repoId,
+    );
+    if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
     sendJson(res, 200, result.resolved.issue);
   }, { fileRpc: "deny" });
 
@@ -2198,6 +2367,7 @@ export function registerIssueRoutes(
     }
     const { repoId, issue } = resolvedIssue.resolved;
     const ledgerIssueId = resolveContextLedgerIssueId(db, issue.id, repoId);
+    if (ledgerIssueId && !enforceIssueProjectAccess(db, req, res, ledgerIssueId, "read")) return;
 
     // 2. Work unit for this issue+repo
     const workUnitRow = ledgerIssueId
@@ -2454,7 +2624,7 @@ export function registerIssueRoutes(
 
   // POST /api/issues/:repoId/:issueId/spawn — spawn an SDK console session for this issue
   // Bug: cbbb3d9 — spawn agent from issue hub
-  server.post("/api/issues/:repoId/:issueId/spawn", (req, res) => {
+  server.post("/api/issues/:repoId/:issueId/spawn", operatorOnlyManagedSessionRoute((req, res) => {
     const repoIdParam = getParam(req, "repoId");
     const issueIdParam = getParam(req, "issueId");
     if (!repoIdParam || !issueIdParam) {
@@ -2574,7 +2744,7 @@ export function registerIssueRoutes(
       branch,
       cwd,
     });
-  }, { fileRpc: "deny" });
+  }), { fileRpc: "deny" });
 
   return issueScanner;
 }

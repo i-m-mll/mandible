@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { buildLedgerIssueDetailProjection } from "../src/ledger/issue-detail.js";
 import {
   ISSUE_MARKDOWN_EXPORT_CONFIG_SETTING,
@@ -19,6 +20,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 
 let tempDir = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-markdown-"));
@@ -47,12 +49,14 @@ describe("ledger escaped Markdown audit and normalization", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.id,
       title: "Escaped",
       body: "First\\n\\nSecond\\n- item",
       created_at: 1000,
     });
     const comment = store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "Comment\\n\\nDetails",
       created_at: 1100,
     });
@@ -71,12 +75,14 @@ describe("ledger escaped Markdown audit and normalization", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.id,
       title: "Normalize",
       body: "First\\n\\nSecond with `literal\\nexample`\\n- item",
       created_at: 1000,
     });
     const comment = store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "Comment\\n\\nDetails",
       created_at: 1100,
     });
@@ -87,6 +93,7 @@ describe("ledger escaped Markdown audit and normalization", () => {
 
     const result = normalizeEscapedMarkdownBodies(db, {
       apply: true,
+      actor: SYSTEM_ACTOR,
       scope: { issue_refs: [issue.id] },
     });
 
@@ -114,7 +121,7 @@ describe("ledger escaped Markdown audit and normalization", () => {
   });
 
   it("refuses apply without explicit target scope or all-matches opt-in", () => {
-    expect(() => normalizeEscapedMarkdownBodies(db, { apply: true })).toThrow(
+    expect(() => normalizeEscapedMarkdownBodies(db, { apply: true, actor: SYSTEM_ACTOR })).toThrow(
       /requires explicit targets/,
     );
   });
@@ -131,6 +138,7 @@ describe("ledger issue Markdown export", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.id,
       title: "Export Me",
       body: "Body",
@@ -139,6 +147,7 @@ describe("ledger issue Markdown export", () => {
       aliases: [{ alias_kind: "git_bug_short", alias: "abc1234" }],
     });
     store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "A comment",
       author_display: "Codex",
       actor_type: "agent",
@@ -160,6 +169,7 @@ describe("ledger issue Markdown export", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.id,
       title: "Export Path",
       body: "Before",
@@ -172,7 +182,7 @@ describe("ledger issue Markdown export", () => {
     expect(first.files[0].path).toMatch(/exports\/mandible--prj_.*\/[a-z0-9]+\.md$/);
     expect(fs.readFileSync(first.files[0].path, "utf8")).toContain("Before");
 
-    store.updateIssue(issue.id, { body: "After" });
+    store.updateIssue(issue.id, { body: "After" }, SYSTEM_ACTOR);
     const second = exportIssueMarkdownFiles(db, { out_dir: outDir, issue_refs: [issue.id] });
 
     expect(second.files[0].path).toBe(first.files[0].path);
@@ -183,6 +193,7 @@ describe("ledger issue Markdown export", () => {
     const project = createProject();
     const store = new LedgerStore(db);
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: project.id,
       title: "Configured",
       body: "Configured body",

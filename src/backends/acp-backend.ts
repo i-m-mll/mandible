@@ -117,16 +117,22 @@ implements
   private pendingRequestMethods: Map<string, string> = new Map();
   private authMethods: AcpAuthMethod[] = [];
   private agentCapabilities: Record<string, unknown> | null = null;
+  private readonly mandibleTokenSource: string | (() => string | null) | null;
 
   get isProcessing(): boolean {
     return this.processing;
   }
 
-  constructor(meta: ConsoleSession, logger: Logger) {
+  constructor(
+    meta: ConsoleSession,
+    logger: Logger,
+    mandibleToken: string | (() => string | null) | null = null,
+  ) {
     super();
     this.id = meta.id;
     this.meta = meta;
     this.logger = logger;
+    this.mandibleTokenSource = mandibleToken;
     this.autoAllowedTools = new Set(meta.allowed_tools ?? []);
     this.mapper = createAcpMapperState({
       sessionId: meta.provider_session_id,
@@ -803,6 +809,12 @@ implements
       cleaned[key] = value;
     }
     Object.assign(cleaned, extraEnv);
+    delete cleaned.MANDIBLE_TOKEN;
+    cleaned.MANDIBLE_MANAGED_CLIENT = "1";
+    const mandibleToken = typeof this.mandibleTokenSource === "function"
+      ? this.mandibleTokenSource()
+      : this.mandibleTokenSource;
+    if (mandibleToken) cleaned.MANDIBLE_TOKEN = mandibleToken;
     return cleaned;
   }
 

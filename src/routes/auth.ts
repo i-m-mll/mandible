@@ -10,12 +10,19 @@ import {
 } from "../auth-context.js";
 import { getDaemonLogger } from "../daemon-log.js";
 import { getDb, resolvePrefix } from "../db.js";
-import type { ResponseLike, RouteRegistrar } from "../server.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
+import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
+import {
+  AttributionReadResolver,
+  authAttributionReadFields,
+} from "../identity/read-projection.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { readBody } from "./http.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 
 const authRouteLog = getDaemonLogger();
 
@@ -40,6 +47,11 @@ export function registerAuthRoutes(
     const payload = parseAuthRequestPayload(readBody<Record<string, unknown>>(req));
     if (!payload) {
       res.status(400).json({ error: "Invalid auth request payload." });
+      return;
+    }
+    const requester = resolveAuthRequester(req, payload);
+    if (!requester.ok) {
+      res.status(requester.status).json({ error: requester.error, code: requester.code });
       return;
     }
 
@@ -128,7 +140,7 @@ export function registerAuthRoutes(
     }
 
     try {
-      const request = authQueue.submit(payload);
+      const request = authQueue.submit(payload, requester.userId);
       res.status(201).json({ request_id: request.id });
     } catch (error) {
       handleQueueError(error, res);
@@ -191,6 +203,11 @@ export function registerAuthRoutes(
       execution_mode: request.execution_mode,
       approval_source: request.approval_source,
       approval_lease_id: request.approval_lease_id,
+      requested_by_user_id: request.requested_by_user_id,
+      approved_by_user_id: request.approved_by_user_id,
+      execution_evidence_id: request.execution_evidence_id,
+      signature_verification: authQueue.getSignatureVerification(request.id),
+      ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
       actions: authQueue.listActions(request.id),
       // Bug: 4e32923 — include scoping fields omitted from the original response literal
@@ -305,12 +322,14 @@ export function registerAuthRoutes(
       requests = requests.filter((r) => r.type === typeFilter);
     }
     // Bug: 0b83252 — resolve depends_on_status for each request with a dependency
+    const attributionResolver = new AttributionReadResolver(getDb());
     const enriched = requests.map((r) => {
       const dep = r.depends_on_id ? authQueue.getRequest(r.depends_on_id) : null;
       return {
         ...r,
         depends_on_status: dep ? dep.status : null,
         action_count: authQueue.countActions(r.id),
+        ...authAttributionReadFields(attributionResolver, r),
       };
     });
     res.json({ requests: enriched });
@@ -331,22 +350,25 @@ export function registerAuthRoutes(
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
+    const attributionResolver = new AttributionReadResolver(getDb());
     res.json({
       requests: requests.map((r) => ({
         ...r,
         action_count: authQueue.countActions(r.id),
+        ...authAttributionReadFields(attributionResolver, r),
       })),
     });
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/approve", (req, res) => {
+  app.post("/api/auth/request/:id/approve", globalCapabilityRoute("approve_auth", (req, res) => {
     try {
-      const request = authQueue.approve(req.params.id);
+      const identity = req.client_identity!;
+      const request = authQueue.approve(req.params.id, undefined, identity.user_id);
       res.status(202).json({ request_id: request.id, status: request.status });
     } catch (error) {
       handleQueueError(error, res);
     }
-  }, { fileRpc: "deny" });
+  }, { authenticated: true }), { fileRpc: "deny" });
 
   app.post("/api/auth/request/:id/reject", (req, res) => {
     try {
@@ -439,6 +461,7 @@ export function registerAuthRoutes(
   app.post("/api/auth/auto-approve/setup", async (req, res) => {
     const body = readBody<Record<string, unknown>>(req);
     try {
+      requireOperator(getDb(), req);
       const status = await autoApproveManager.setupDelegatedSigning({
         name: typeof body.name === "string" ? body.name : undefined,
         email: typeof body.email === "string" ? body.email : undefined,
@@ -456,6 +479,7 @@ export function registerAuthRoutes(
     const duration =
       typeof body.duration_minutes === "number" ? body.duration_minutes : undefined;
     try {
+      requireOperator(getDb(), req);
       const status = await autoApproveManager.enable(duration);
       const approval = autoApproveManager.getActiveApprovalContext();
       const approved = approval ? authQueue.autoApprovePending(approval) : [];
@@ -465,11 +489,59 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/auto-approve/disable", (_req, res) => {
-    res.json(autoApproveManager.disable());
+  app.post("/api/auth/auto-approve/disable", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      res.json(autoApproveManager.disable());
+    } catch (error) {
+      handleQueueError(error, res);
+    }
   }, { fileRpc: "deny" });
 
   return authQueue;
+}
+
+function resolveAuthRequester(
+  req: RequestLike,
+  payload: AuthRequestInput,
+): { ok: true; userId: string } | { ok: false; status: number; code: string; error: string } {
+  const authenticatedUserId = req.client_identity?.user_id ?? null;
+  const sessionResolution = payload.session_id
+    ? resolveSessionIdAttributionResult(getDb(), payload.session_id)
+    : { status: "no_match" as const };
+  if (sessionResolution.status === "conflict") {
+    return {
+      ok: false,
+      status: 403,
+      code: "requester_session_conflict",
+      error: "Auth request session claims resolve to conflicting users.",
+    };
+  }
+  const sessionAttribution = sessionResolution.status === "resolved"
+    ? sessionResolution.attribution
+    : null;
+  if (
+    authenticatedUserId &&
+    sessionAttribution &&
+    authenticatedUserId !== sessionAttribution.user_id
+  ) {
+    return {
+      ok: false,
+      status: 403,
+      code: "requester_identity_mismatch",
+      error: "Authenticated client and session binding resolve to different users.",
+    };
+  }
+  const userId = authenticatedUserId ?? sessionAttribution?.user_id ?? null;
+  if (!userId) {
+    return {
+      ok: false,
+      status: 401,
+      code: "requester_identity_required",
+      error: "Auth request submission requires an authenticated client or an unambiguous session binding.",
+    };
+  }
+  return { ok: true, userId };
 }
 
 // Bug: dd21c1e — valid auth request types for input validation
@@ -801,6 +873,10 @@ function isHttpError(error: unknown): error is { status: number; message: string
 }
 
 function handleQueueError(error: unknown, res: ResponseLike): void {
+  if (error instanceof ClientAuthzError) {
+    res.status(error.status).json({ error: error.message, code: error.code });
+    return;
+  }
   if (error instanceof AuthActionValidationError) {
     res.status(error.status).json({ error: error.message });
     return;

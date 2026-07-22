@@ -14,6 +14,8 @@ import {
 import type { LedgerNamespacePolicy } from "../ledger/types.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { sendJson } from "./http.js";
+import { requireOperator } from "../client-auth/authz.js";
+import { projectAccessSettings, setProjectRestricted } from "../permissions/store.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
   return req.body && typeof req.body === "object" && !Array.isArray(req.body)
@@ -113,6 +115,29 @@ export function registerProjectRoutes(router: RouteRegistrar): void {
         remote_url: optionalString(body, "remote_url") ?? null,
       });
       sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.get("/api/projects/:ref/access", (req, res) => {
+    try {
+      sendJson(res, 200, projectAccessSettings(getDb(), req.params.ref));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  router.patch("/api/projects/:ref/access", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const body = bodyRecord(req);
+      if (typeof body.restricted !== "boolean") {
+        throw new ProjectRegistryError("restricted must be a boolean", "invalid_restricted");
+      }
+      setProjectRestricted(db, req.params.ref, body.restricted);
+      sendJson(res, 200, projectAccessSettings(db, req.params.ref));
     } catch (error) {
       handleError(res, error);
     }

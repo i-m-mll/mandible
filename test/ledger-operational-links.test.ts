@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   applyAuthRequestLedgerCompletion,
   linkAuthRequestToLedgerIssue,
@@ -17,6 +18,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 
 let tempDir = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-operational-"));
@@ -41,6 +43,7 @@ function createProject(name: string, remoteUrl = "") {
 
 function createIssue(projectId: string, alias: string, title = `Issue ${alias}`) {
   return new LedgerStore(db).createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: "Body",
@@ -353,7 +356,13 @@ describe("ledger operational links", () => {
     ).run(resolvedAt, resolvedAt, "auth_replay");
 
     await new Promise((resolve) => setTimeout(resolve, 2));
-    store.setIssueStatus(resolvedIssue.id, "open", null, { actor_type: "mandible_user" }, "mandible");
+    store.setIssueStatus(
+      resolvedIssue.id,
+      "open",
+      null,
+      { actor_type: "mandible_user", ...SYSTEM_ACTOR },
+      "mandible",
+    );
     const reopenedAt = store
       .listEvents({ entity_type: "issue", entity_id: resolvedIssue.id })
       .find((event) => event.event_type === "issue.reopened")?.occurred_at;

@@ -45,12 +45,18 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
   private promptQueue: string[] = [];
   private processing = false;
   private destroyed = false;
+  private readonly mandibleTokenSource: string | (() => string | null) | null;
 
-  constructor(meta: ConsoleSession, logger: Logger) {
+  constructor(
+    meta: ConsoleSession,
+    logger: Logger,
+    mandibleToken: string | (() => string | null) | null = null,
+  ) {
     super();
     this.id = meta.id;
     this.meta = meta;
     this.logger = logger;
+    this.mandibleTokenSource = mandibleToken;
   }
 
   // SpawnBackend is prompt-driven: start() makes the backend ready to receive
@@ -607,6 +613,12 @@ export class SpawnBackend extends EventEmitter implements AgenticBackend {
       cleaned[k] = v;
     }
     Object.assign(cleaned, extraEnv);
+    delete cleaned.MANDIBLE_TOKEN;
+    cleaned.MANDIBLE_MANAGED_CLIENT = "1";
+    const mandibleToken = typeof this.mandibleTokenSource === "function"
+      ? this.mandibleTokenSource()
+      : this.mandibleTokenSource;
+    if (mandibleToken) cleaned.MANDIBLE_TOKEN = mandibleToken;
     return cleaned;
   }
 

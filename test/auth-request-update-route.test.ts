@@ -6,6 +6,7 @@ import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { migrate, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
+import { setupOperator } from "../src/users/store.js";
 
 let db: Db | null = null;
 
@@ -18,6 +19,7 @@ describe("auth request update route", () => {
   it("rebinds a pending request to a new merge head", async () => {
     db = new Database(":memory:");
     migrate(db);
+    setupOperator(db, { slug: "auth-route-test", display_name: "Auth Route Test" });
     const router = new Router();
     const queue = new AuthQueue({ db });
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
@@ -46,6 +48,7 @@ describe("auth request update route", () => {
   it("rejects an invalid merge head without changing the request", async () => {
     db = new Database(":memory:");
     migrate(db);
+    setupOperator(db, { slug: "auth-route-test", display_name: "Auth Route Test" });
     const router = new Router();
     const queue = new AuthQueue({ db });
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));

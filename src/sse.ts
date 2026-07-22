@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SSEEvent, SseEvent, StartupCommitInfo } from "./types.js";
+import type { ResolvedClientIdentity } from "./server.js";
 import { getDb } from "./db.js";
 import { isSpaceEvent, type SpaceEvent } from "./spaces/events.js";
 
@@ -9,6 +10,7 @@ interface SseClient {
   req: IncomingMessage;
   res: ServerResponse;
   topics: string[];
+  identity: ResolvedClientIdentity | null;
   remove: () => void;
   removed: boolean;
 }
@@ -33,7 +35,12 @@ export class SseManager {
     }
   }
 
-  addClient(req: IncomingMessage, res: ServerResponse, topics: string[]): void {
+  addClient(
+    req: IncomingMessage,
+    res: ServerResponse,
+    topics: string[],
+    identity: ResolvedClientIdentity | null = null,
+  ): void {
     res.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -44,6 +51,7 @@ export class SseManager {
       req,
       res,
       topics,
+      identity,
       remove: () => this.removeClient(client),
       removed: false,
     };
@@ -83,6 +91,15 @@ export class SseManager {
 
   count(): number {
     return this.clients.size;
+  }
+
+  /** Identity retention hook for later per-user event scoping. */
+  countForUser(userId: string): number {
+    let count = 0;
+    for (const client of this.clients) {
+      if (client.identity?.user_id === userId) count += 1;
+    }
+    return count;
   }
 
   private maybeSendReloadEvent(client: SseClient): void {

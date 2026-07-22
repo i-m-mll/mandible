@@ -2,6 +2,7 @@ import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerSpacesRoutes } from "../src/routes/spaces.js";
 import { Router } from "../src/server.js";
@@ -12,6 +13,7 @@ import { SPACE_EVENT_VALUES, SPACE_EVENTS, isSpaceEvent } from "../src/spaces/ev
 
 let db: Db;
 let router: Router;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 const PROJECT_ID = "prj-spaces-test";
 const OTHER_PROJECT_ID = "prj-spaces-other";
@@ -26,6 +28,7 @@ function seedProject(id: string, name: string): void {
 function createIssue(projectId: string, title: string, opts: { labels?: string[] } = {}): string {
   const store = new LedgerStore(db);
   const issue = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: "",
@@ -35,7 +38,7 @@ function createIssue(projectId: string, title: string, opts: { labels?: string[]
     author_display: "Codex",
   });
   for (const label of opts.labels ?? []) {
-    store.setLabel(issue.id, label, true);
+    store.setLabel(issue.id, label, true, "mandible", SYSTEM_ACTOR);
   }
   return issue.id;
 }
@@ -217,7 +220,10 @@ describe("space items + project scoping + idempotency", () => {
   it("accepts a cross-project comment ref into a project-scoped space (universal membership, 812df41)", async () => {
     const spaceId = await makeSpace();
     const foreignIssue = createIssue(OTHER_PROJECT_ID, "Foreign with comment");
-    const comment = new LedgerStore(db).addComment(foreignIssue, { body: "hi", source: "mandible" });
+    const comment = new LedgerStore(db).addComment(
+      foreignIssue,
+      { body: "hi", source: "mandible", ...SYSTEM_ACTOR },
+    );
     const added = await call("POST", `/api/spaces/${spaceId}/items`, {
       ref_type: "comment",
       ref_id: comment.id,
@@ -484,7 +490,10 @@ describe("seed-from-filter", () => {
 describe("unified ref resolver", () => {
   it("resolves issue, comment, artifact, mandible, and repo refs to typed results", async () => {
     const issueId = createIssue(PROJECT_ID, "Resolvable");
-    const comment = new LedgerStore(db).addComment(issueId, { body: "c", source: "mandible" });
+    const comment = new LedgerStore(db).addComment(
+      issueId,
+      { body: "c", source: "mandible", ...SYSTEM_ACTOR },
+    );
     const artifactHash = "be22e0e199e2253c034e9eff70a5c37ba19a483f3e3f3d3270c596d1c1b60cf4";
     insertArtifact("art-3", artifactHash);
 

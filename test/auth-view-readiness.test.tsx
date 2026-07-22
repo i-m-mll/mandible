@@ -314,3 +314,40 @@ describe('AuthQueueView persisted action expansion', () => {
     await waitFor(() => expect(localStorage.getItem(storageKey)).toBe('["action-1"]'));
   });
 });
+
+describe('AuthQueueView attribution', () => {
+  it('shows requester, approver, and credential-signature verification', () => {
+    const attributedRequest: AuthRequest = {
+      ...pendingRequest,
+      requester: { id: 'user-agent', display_name: 'Request Agent', kind: 'agent' },
+      approver: { id: 'user-human', display_name: 'Human Approver', kind: 'human' },
+      execution_evidence: {
+        user: null,
+        evidence_method: 'credential_signature',
+        evidence_id: 'evidence-1',
+        credential: { id: 'credential-1', type: 'ssh_key', label: 'YubiKey signing key' },
+      },
+      verified_signature: true,
+    };
+    render(
+      <AuthQueueView
+        queue={[attributedRequest]}
+        historyQueue={[]}
+        outputs={{}}
+        selectedAuthId="req-1"
+        daemonReady={true}
+        onApprove={() => undefined}
+        onReject={() => undefined}
+        onRetry={() => undefined}
+        onDismiss={() => undefined}
+      />,
+    );
+
+    expect(screen.getByLabelText('Show attribution for Request Agent')).toBeTruthy();
+    expect(screen.getByLabelText('Show attribution for Human Approver')).toBeTruthy();
+    expect(screen.getByText('Verified signature')).toBeTruthy();
+    fireEvent.click(screen.getByLabelText('Show attribution for Human Approver'));
+    expect(screen.getByText('credential signature')).toBeTruthy();
+    expect(screen.getByText('YubiKey signing key')).toBeTruthy();
+  });
+});

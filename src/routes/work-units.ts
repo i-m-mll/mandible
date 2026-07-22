@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   normalizeAmbientProviderIdentity,
+  providerSessionEnvBindingValues,
   type AmbientProviderIdentity,
 } from "../ambient-provider-identity.js";
 import { getDb } from "../db.js";
@@ -8,7 +9,8 @@ import { linkWorkUnitToLedgerIssue, resolveOperationalIssueRef } from "../ledger
 import type { RequestLike, RouteRegistrar } from "../server.js";
 import type { SessionRegistry } from "../registry.js";
 import type { SessionManager } from "../session-manager.js";
-import type { WorkUnit, WorkUnitState } from "../types.js";
+import type { Logger, WorkUnit, WorkUnitState } from "../types.js";
+import { resolveSessionOwnerUserId } from "../session-ownership.js";
 import { readBody, sendJson } from "./http.js";
 import {
   mapWorkUnitRow as mapRow,
@@ -113,6 +115,7 @@ export function registerWorkUnitRoutes(
   server: RouteRegistrar,
   sessionRegistry: SessionRegistry,
   sessionManager: SessionManager,
+  logger: Logger = () => undefined,
 ): void {
   const db = getDb();
 
@@ -167,12 +170,22 @@ export function registerWorkUnitRoutes(
     const kind = body.kind && ["solo", "partition", "integration"].includes(body.kind)
       ? body.kind
       : "solo";
+    const ownerUserId = resolveSessionOwnerUserId(
+      db,
+      {
+        provider_session_envs: ambientIdentity
+          ? providerSessionEnvBindingValues(ambientIdentity.provider)
+          : [],
+      },
+      logger,
+      { source: "work_unit", entity_id: id },
+    );
 
     db.prepare(
       `INSERT INTO work_units (
         id, issue_id, repo_id, branch, parent_branch, kind, state, assigned_session_id,
-        provider, provider_session_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?)`
+        provider, provider_session_id, created_at, owner_user_id
+      ) VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)`
     ).run(
       id,
       body.issue_id,
@@ -184,6 +197,7 @@ export function registerWorkUnitRoutes(
       ambientIdentity?.provider ?? null,
       ambientIdentity?.provider_session_id ?? null,
       now,
+      ownerUserId,
     );
 
     const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);
@@ -241,11 +255,22 @@ export function registerWorkUnitRoutes(
     } else {
       // No existing work unit — create one in committed state (auto-claim)
       const id = randomUUID();
+      const ownerUserId = resolveSessionOwnerUserId(
+        db,
+        {
+          provider_session_envs: ambientIdentity
+            ? providerSessionEnvBindingValues(ambientIdentity.provider)
+            : [],
+        },
+        logger,
+        { source: "work_unit", entity_id: id },
+      );
       db.prepare(
         `INSERT INTO work_units (
           id, issue_id, repo_id, branch, kind, state, assigned_session_id,
-          provider, provider_session_id, created_at, activated_at, last_commit_at
-        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?)`
+          provider, provider_session_id, created_at, activated_at, last_commit_at,
+          owner_user_id
+        ) VALUES (?, ?, ?, ?, 'solo', 'committed', ?, ?, ?, ?, ?, ?, ?)`
       ).run(
         id,
         body.issue_id,
@@ -257,6 +282,7 @@ export function registerWorkUnitRoutes(
         now,
         now,
         now,
+        ownerUserId,
       );
 
       const ledgerIssueId = linkLedgerIssue(db, id, body.issue_id, body.repo_id);

@@ -168,6 +168,21 @@ export type TimelineEvent = {
   ordinal: number;
   display_headline: string;
   headline_source: string;
+  author?: {
+    display: string;
+    legacy_display: string;
+    attribution: {
+      user: {
+        id: string;
+        display_name: string;
+        kind: 'human' | 'agent' | 'system' | 'external';
+      } | null;
+      evidence_method: string | null;
+      evidence_id: string | null;
+      credential: { id: string; type: string; label: string | null } | null;
+    } | null;
+    source: string | null;
+  } | null;
   body: string | null;
   state: {
     event_type: string;

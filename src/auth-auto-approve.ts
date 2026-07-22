@@ -10,6 +10,13 @@ import { getDb } from "./db.js";
 import { getMandibleConfigPath } from "./platform-paths.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type { SseEvent } from "./types.js";
+import {
+  addCredential,
+  addDelegatedSigningLease,
+  findActiveCredentialByFingerprint,
+  getOperator,
+} from "./users/store.js";
+import type { UserCredential } from "./users/types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -20,6 +27,7 @@ const PROVIDER = "yubikey-age";
 export interface AuthApprovalContext {
   source: "auto_lease" | "presence_challenge";
   leaseId: string;
+  approverUserId: string;
   env: NodeJS.ProcessEnv;
 }
 
@@ -64,6 +72,8 @@ export interface AuthAutoApproveOptions {
 
 interface ActiveLease {
   id: string;
+  credentialId: string;
+  ownerUserId: string;
   enabledUntil: number;
   sshAgentPid: string;
   sshAuthSock: string;
@@ -107,6 +117,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     return {
       source: "auto_lease",
       leaseId: this.activeLease.id,
+      approverUserId: this.activeLease.ownerUserId,
       env: {
         SSH_AUTH_SOCK: this.activeLease.sshAuthSock,
         MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
@@ -161,6 +172,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       await runWithInput("age", ["-r", ageRecipient, "-o", paths.encryptedPassphrase], passphrase);
       fs.chmodSync(paths.encryptedPassphrase, 0o600);
       fs.writeFileSync(paths.recipient, `${ageRecipient}\n`, { mode: 0o600 });
+      await this.ensureDelegatedSigningCredentials(ageRecipient);
     } catch (error) {
       for (const file of [paths.privateKey, paths.publicKey, paths.encryptedPassphrase, paths.recipient]) {
         if (fs.existsSync(file)) fs.rmSync(file, { force: true });
@@ -199,6 +211,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     return {
       source: "presence_challenge",
       leaseId: lease.id,
+      approverUserId: lease.ownerUserId,
       env: {
         SSH_AUTH_SOCK: lease.sshAuthSock,
         MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
@@ -219,6 +232,12 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     }
 
     const paths = this.paths();
+    const ageRecipient = fs.readFileSync(paths.recipient, "utf8").trim();
+    const credential = await this.ensureDelegatedSigningCredentials(ageRecipient);
+    const operator = getOperator(this.db);
+    if (!operator) {
+      throw new Error("Delegated signing requires a configured local operator.");
+    }
     const identity = await execFileText("age-plugin-yubikey", ["--identity"]);
     if (!identity.trim()) {
       throw new Error("No age-plugin-yubikey identity available from the inserted YubiKey.");
@@ -242,15 +261,93 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       throw error;
     }
 
-    const enabledUntil = this.now() + durationSeconds * 1000;
+    const mintedAt = this.now();
+    const enabledUntil = mintedAt + durationSeconds * 1000;
+    const id = randomUUID();
+    try {
+      addDelegatedSigningLease(this.db, {
+        id,
+        credential_id: credential.id,
+        owner_user_id: operator.id,
+        minted_at: mintedAt,
+        expires_at: enabledUntil,
+        mint_method: "fresh_presence",
+      });
+    } catch (error) {
+      await stopSshAgent(agent.sshAgentPid);
+      throw error;
+    }
     return {
-      id: randomUUID(),
+      id,
+      credentialId: credential.id,
+      ownerUserId: operator.id,
       enabledUntil,
       sshAgentPid: agent.sshAgentPid,
       sshAuthSock: agent.sshAuthSock,
       timer: null,
       publicKeyPath: paths.publicKey,
     };
+  }
+
+  private async ensureDelegatedSigningCredentials(ageRecipient: string): Promise<UserCredential> {
+    const operator = getOperator(this.db);
+    if (!operator) {
+      throw new Error("Delegated signing setup requires a configured local operator.");
+    }
+    const paths = this.paths();
+    const publicKey = fs.readFileSync(paths.publicKey, "utf8").trim();
+    const fingerprintOutput = await execFileText(
+      "ssh-keygen",
+      ["-lf", paths.publicKey, "-E", "sha256"],
+    );
+    const fingerprint = fingerprintOutput.match(/SHA256:[A-Za-z0-9+/=]{40,50}/)?.[0] ?? null;
+    if (!fingerprint) {
+      throw new Error("Could not derive the delegated SSH public-key fingerprint.");
+    }
+    const delegated = this.ensureCredential({
+      ownerUserId: operator.id,
+      type: "delegated_ssh_key",
+      fingerprint,
+      publicMaterial: publicKey,
+      label: "Mandible delegated signing",
+    });
+    this.ensureCredential({
+      ownerUserId: operator.id,
+      type: "yubikey_recipient",
+      fingerprint: ageRecipient,
+      publicMaterial: ageRecipient,
+      label: "Mandible delegated signing YubiKey recipient",
+    });
+    return delegated;
+  }
+
+  private ensureCredential(input: {
+    ownerUserId: string;
+    type: "delegated_ssh_key" | "yubikey_recipient";
+    fingerprint: string;
+    publicMaterial: string;
+    label: string;
+  }): UserCredential {
+    const existing = findActiveCredentialByFingerprint(this.db, input.fingerprint);
+    if (existing) {
+      if (
+        existing.user_id !== input.ownerUserId ||
+        existing.type !== input.type ||
+        existing.public_material !== input.publicMaterial
+      ) {
+        throw new Error(
+          `Credential fingerprint ${input.fingerprint} is already bound to incompatible identity material.`,
+        );
+      }
+      return existing;
+    }
+    return addCredential(this.db, input.ownerUserId, {
+      type: input.type,
+      fingerprint: input.fingerprint,
+      public_material: input.publicMaterial,
+      label: input.label,
+      metadata: { provider: PROVIDER, managed_by: "delegated_signing_setup" },
+    }, this.now());
   }
 
   disable(reason = "disabled"): AuthAutoApproveStatus {

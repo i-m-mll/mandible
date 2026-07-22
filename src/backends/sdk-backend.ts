@@ -78,6 +78,19 @@ export interface SDKBackendOptions {
   settingSourcesOverride?: string[];
 }
 
+export function buildMandibleChannelEnvironment(
+  sessionId: string,
+  cwd: string,
+  mandibleToken: string | null,
+): Record<string, string> {
+  return {
+    MANDIBLE_SESSION_ID: sessionId,
+    MANDIBLE_MANAGED_CLIENT: "1",
+    CLAUDE_CWD: cwd,
+    ...(mandibleToken ? { MANDIBLE_TOKEN: mandibleToken } : {}),
+  };
+}
+
 export class SDKBackend extends EventEmitter
 implements
   AgenticBackend,
@@ -101,6 +114,7 @@ implements
   private activeQuery: ClaudeQuery | null = null;
   private abortController: AbortController | null = null;
   private destroyed = false;
+  private readonly mandibleTokenSource: string | (() => string | null) | null;
   /** Bug: 790433d — Message index counter for parameter snapshots */
   private messageIndex = 0;
 
@@ -109,12 +123,18 @@ implements
     return this.processing;
   }
 
-  constructor(meta: ConsoleSession, logger: Logger, sessionRegistry?: SessionRegistry) {
+  constructor(
+    meta: ConsoleSession,
+    logger: Logger,
+    sessionRegistry?: SessionRegistry,
+    mandibleToken: string | (() => string | null) | null = null,
+  ) {
     super();
     this.id = meta.id;
     this.meta = meta;
     this.logger = logger;
     this.sessionRegistry = sessionRegistry;
+    this.mandibleTokenSource = mandibleToken;
     this.autoAllowedTools = new Set(meta.allowed_tools ?? []);
     this.options = {
       model: this.extractModel(meta.args) ?? undefined,
@@ -603,10 +623,7 @@ implements
     return {
       abortController,
       cwd,
-      env: {
-        ...process.env,
-        ...this.meta.env,
-      },
+      env: this.buildClientEnv(),
       model: this.options.model ?? this.extractModel(this.meta.args) ?? undefined,
       systemPrompt,
       permissionMode,
@@ -663,12 +680,27 @@ implements
         type: "stdio",
         command: process.execPath,
         args: [channelServerPath],
-        env: {
-          MANDIBLE_SESSION_ID: sessionId,
-          CLAUDE_CWD: cwd,
-        },
+        env: buildMandibleChannelEnvironment(sessionId, cwd, this.currentMandibleToken()),
       },
     };
+  }
+
+  private buildClientEnv(): Record<string, string | undefined> {
+    const env = { ...process.env, ...this.meta.env };
+    // The daemon may itself have been launched from a token-bearing CLI. Never
+    // leak that credential into an SDK child; only the session's provisioned
+    // agent credential may cross this boundary.
+    delete env.MANDIBLE_TOKEN;
+    env.MANDIBLE_MANAGED_CLIENT = "1";
+    const mandibleToken = this.currentMandibleToken();
+    if (mandibleToken) env.MANDIBLE_TOKEN = mandibleToken;
+    return env;
+  }
+
+  private currentMandibleToken(): string | null {
+    return typeof this.mandibleTokenSource === "function"
+      ? this.mandibleTokenSource()
+      : this.mandibleTokenSource;
   }
 
   private buildHooks(): Partial<Record<HookInput["hook_event_name"], HookCallbackMatcher[]>> {

@@ -10,6 +10,7 @@ import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
+import { addBinding, setupOperator } from "../src/users/store.js";
 
 // Child issue 8921e84 (regression-only half): the `Mandible-Issue:` trailer
 // gate in src/routes/auth.ts ALREADY rejects bare-commit branches. Docs-branch
@@ -34,6 +35,11 @@ function git(cwd: string, args: string[]): string {
 function createMigratedDb(): Db {
   const db = new Database(":memory:");
   migrate(db);
+  const operator = setupOperator(db, { slug: "docs-auth-test", display_name: "Docs Auth Test" });
+  addBinding(db, operator.id, {
+    binding_type: "provider_session_env",
+    value: "docs-auth-session",
+  });
   return db;
 }
 
@@ -83,6 +89,7 @@ async function submitDocsMerge(
         type: "merge",
         command: `mandible auth merge ${docsBranch} --into main`,
         title: `Promote ${docsBranch}`,
+        session_id: "docs-auth-session",
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: docsBranch,
