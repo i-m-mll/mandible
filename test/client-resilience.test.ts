@@ -49,11 +49,13 @@ afterEach(async () => {
 });
 
 describe("CLI client resilience", () => {
-  it("classifies only transport/5xx statuses as retryable and bounds backoff", async () => {
+  it("classifies only known transient statuses as retryable and bounds backoff", async () => {
     const result = await runBash([
       `source ${JSON.stringify(API_SH)}`,
       "api_http_retryable_status 000; printf '000=%s\\n' $?",
+      "api_http_retryable_status 500; printf '500=%s\\n' $?",
       "api_http_retryable_status 503; printf '503=%s\\n' $?",
+      "api_http_retryable_status 429; printf '429=%s\\n' $?",
       "api_http_retryable_status 404; printf '404=%s\\n' $?",
       "printf 'delay=%s\\n' \"$(api_http_retry_delay_ms 12)\"",
     ].join("\n"), {
@@ -63,10 +65,10 @@ describe("CLI client resilience", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("000=0\n503=0\n404=1\ndelay=40\n");
+    expect(result.stdout).toBe("000=0\n500=1\n503=0\n429=0\n404=1\ndelay=40\n");
   });
 
-  it("retries retryable 5xx responses but not deterministic 4xx responses", async () => {
+  it("retries transient read responses but not deterministic client failures", async () => {
     let flakyRequests = 0;
     let missingRequests = 0;
     let emptyMissingRequests = 0;
@@ -137,6 +139,40 @@ describe("CLI client resilience", () => {
     expect(emptyMissingRequests).toBe(1);
     expect(emptyMissing.stdout).toBe("404\n");
     expect(emptyMissing.stderr).toBe("");
+  });
+
+  it("does not retry deterministic server failures and reports their structured body", async () => {
+    let failedRequests = 0;
+    const port = await listen((_req, res) => {
+      failedRequests += 1;
+      res.statusCode = 500;
+      res.setHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        error: "operator_not_configured",
+        message: "Run mandible user setup --agents --json",
+      }));
+    });
+
+    const result = await runBash([
+      `source ${JSON.stringify(API_SH)}`,
+      "api_get /deterministic",
+      "exit $?",
+    ].join("\n"), {
+      MANDIBLE_BASE: `http://127.0.0.1:${port}`,
+      MANDIBLE_HTTP_RETRIES: "2",
+      MANDIBLE_HTTP_RETRY_BASE_MS: "1",
+      MANDIBLE_HTTP_RETRY_MAX_MS: "1",
+      MANDIBLE_HTTP_RETRY_JITTER_MS: "0",
+    });
+
+    expect(result.status).toBe(22);
+    expect(failedRequests).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("status=500");
+    expect(result.stderr).toContain('"error":"operator_not_configured"');
+    expect(result.stderr).toContain("Run mandible user setup --agents --json");
+    expect(result.stderr).not.toContain("transient failure");
+    expect(result.stderr).not.toContain("busy or timed out");
   });
 
   it("distinguishes a reachable not-ready daemon from an unreachable daemon", async () => {
