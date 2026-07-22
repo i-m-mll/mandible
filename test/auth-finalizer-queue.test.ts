@@ -367,4 +367,47 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       db.close();
     }
   });
+
+  // Integration reconciliation (issue 75f52ac) — at-least-once auth:finalized.
+  it("broadcasts auth:finalized before writing the durable merge_finalized_at marker", async () => {
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    let markerAtBroadcast: number | null | undefined;
+    const queue = new AuthQueue({
+      db,
+      broadcast: (event) => {
+        events.push(event);
+        if (event.event === "auth:finalized") {
+          // Observe the durable marker at the exact moment the event is emitted.
+          // If the event fires before the marker is persisted, the row is still
+          // sweep-eligible — so a crash here re-emits (at-least-once) rather than
+          // permanently dropping the event.
+          const requestId = (event.data as { request_id: string }).request_id;
+          const row = db
+            .prepare("SELECT merge_finalized_at FROM auth_requests WHERE id = ?")
+            .get(requestId) as { merge_finalized_at: number | null } | undefined;
+          markerAtBroadcast = row?.merge_finalized_at ?? null;
+        }
+      },
+    });
+    try {
+      const id = submitSuccessfulRequest(queue);
+      queue.setResult(id, 0, "ok");
+      await queue.drainFinalizers();
+
+      // The marker was unset when auth:finalized fired...
+      expect(markerAtBroadcast).toBeNull();
+      // ...and is persisted once the pass completes.
+      const persisted = queue.getRequest(id)?.merge_finalized_at;
+      expect(persisted).not.toBeNull();
+      // The payload carries the timestamp that was persisted (not a stale null).
+      const finalized = eventsFor(events, id, "auth:finalized")[0].data as {
+        merge_finalized_at: number | null;
+      };
+      expect(finalized.merge_finalized_at).toBe(persisted);
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
 });

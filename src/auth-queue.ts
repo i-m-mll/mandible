@@ -2435,11 +2435,22 @@ export class AuthQueue {
       return;
     }
 
-    this.markSuccessfulMergeFinalized(finalized, mergeHeadSha);
+    // At-least-once delivery contract (integration reconciliation, issue 75f52ac):
+    // broadcast auth:finalized BEFORE writing the durable merge_finalized_at
+    // marker. The periodic/startup sweep excludes marker-set rows, so a marker
+    // written before the broadcast would permanently drop the event if the daemon
+    // died in between. Broadcasting first means a crash after the broadcast but
+    // before the marker write causes the next sweep to re-finalize and emit a
+    // DUPLICATE auth:finalized — consumers tolerate this because finalization
+    // handling (cache/graph invalidation, work-unit reconciliation) is idempotent.
+    const finalizedAt = this.now();
     const finalizedRowData = this.db
       .prepare("SELECT * FROM auth_requests WHERE id = ?")
       .get(requestId) as Record<string, unknown> | undefined;
     const finalizedRow = finalizedRowData ? mapRow(finalizedRowData) : finalized;
+    // The durable marker has not been written yet; surface the timestamp we are
+    // about to persist in the payload so it matches the durable row.
+    finalizedRow.merge_finalized_at = finalizedRow.merge_finalized_at ?? finalizedAt;
     const failedSteps = FINALIZER_STEP_NAMES.filter((name) => state[name]?.state === "failed");
     if (failedSteps.length > 0) {
       authLog("warn", "auth_finalizer_completed_with_failures", {
@@ -2452,6 +2463,7 @@ export class AuthQueue {
       event: "auth:finalized",
       data: this.buildFinalizedPayload(finalizedRow, state, resolvedWorkUnitIds, archivedThreadCount),
     });
+    this.markSuccessfulMergeFinalized(finalized, mergeHeadSha, finalizedAt);
   }
 
   /** Test / self-merge restart hook — resolve once all enqueued finalizers settle. */
@@ -3103,11 +3115,14 @@ export class AuthQueue {
     }
   }
 
-  private markSuccessfulMergeFinalized(request: AuthRequest, mergeHeadSha: string | null): void {
+  private markSuccessfulMergeFinalized(
+    request: AuthRequest,
+    mergeHeadSha: string | null,
+    finalizedAt: number = this.now(),
+  ): void {
     if (request.type !== "merge") {
       return;
     }
-    const finalizedAt = this.now();
     this.db
       .prepare(
         "UPDATE auth_requests SET merge_head_sha = COALESCE(merge_head_sha, ?), merge_finalized_at = COALESCE(merge_finalized_at, ?), updated_at = ? WHERE id = ?"
