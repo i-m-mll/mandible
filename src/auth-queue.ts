@@ -18,6 +18,7 @@ import {
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import { isAuthMergeCommand, resolveAuthMergeExecutionContext, resolveBranchHeadSha } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
+import { canonicalRepoKeyForPath, canonicalRepoKeysForRef } from "./repo-identity.js";
 import {
   defaultCodexThreadArchiver,
   listCompletedWorkerThreadArchiveCandidates,
@@ -151,6 +152,9 @@ export interface AuthQueueOptions {
   // Issue 93d978e — override the abandoned-work-unit merge-scan retention
   // window (default 30 days) so tests can exercise the retirement sweep.
   workUnitAbandonedScanRetentionMs?: number;
+  // Issue ded17e6 — injectable process-restart hook so the self-merge drain
+  // can be exercised without exiting the test runner. Defaults to process.exit.
+  restartFn?: () => void;
 }
 
 const SHA40_RE = /^[0-9a-f]{40}$/i;
@@ -266,7 +270,13 @@ export class AuthQueue {
   private workUnitRetirementColumn: boolean | undefined;
   private readonly inFlight = new Map<string, Promise<void>>();
   private readonly executionEnvs = new Map<string, NodeJS.ProcessEnv>();
-  private executionChain: Promise<void> = Promise.resolve();
+  // Issue ded17e6 — one execution chain per canonical repo identity. Merges in
+  // distinct physical repos run concurrently; merges in the same repo (across
+  // any path/symlink alias) stay strictly FIFO. Unresolvable identities share a
+  // single conservative global chain (UNRESOLVED_CHAIN_KEY).
+  private readonly executionChains = new Map<string, Promise<void>>();
+  // Issue ded17e6 — injectable restart hook for the self-merge drain.
+  private readonly restartFn: () => void;
   private expiryTimer: ReturnType<typeof setInterval> | null = null;
   private disposed = false;
   // Bug: 4db692a — tracks whether the daemon is about to restart after a
@@ -282,6 +292,14 @@ export class AuthQueue {
   // instant that never recorded a result are recovered immediately instead of
   // waiting out the multi-minute stuck-request threshold.
   private static readonly SELF_MERGE_SHUTDOWN_KEY = "auth_self_merge_shutdown_at";
+  // Issue ded17e6 — shared chain for requests whose repo identity cannot be
+  // resolved (deleted checkout, malformed request, non-merge command). These
+  // serialize conservatively with each other, never with resolvable repos.
+  private static readonly UNRESOLVED_CHAIN_KEY = "\0mandible-unresolved-repo\0";
+  // Issue ded17e6 — cap on how long a self-merge restart waits for foreign-repo
+  // executions to drain before forcing the restart (the shutdown marker plus
+  // startup recovery is the backstop for anything still running).
+  private static readonly SELF_MERGE_DRAIN_CAP_MS = 60_000;
 
   constructor(options: AuthQueueOptions = {}) {
     this.db = options.db ?? getDb();
@@ -294,6 +312,7 @@ export class AuthQueue {
     this.codexThreadArchiver = options.codexThreadArchiver ?? defaultCodexThreadArchiver;
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
+    this.restartFn = options.restartFn ?? (() => process.exit(0));
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
     this.recoverSelfMergeShutdown();
@@ -1836,7 +1855,11 @@ export class AuthQueue {
       return;
     }
 
-    const runPromise = this.executionChain
+    // Issue ded17e6 — chain onto this request's canonical repo identity so only
+    // same-repo merges serialize; distinct repos proceed concurrently.
+    const chainKey = this.chainKeyForRequest(request);
+    const prior = this.executionChains.get(chainKey) ?? Promise.resolve();
+    const runPromise = prior
       .catch(() => undefined)
       .then(async () => {
         try {
@@ -1931,8 +1954,11 @@ export class AuthQueue {
                 subsystem: "auth",
                 auth_request_id: request.id,
                 delay_ms: 2000,
+                drain_cap_ms: AuthQueue.SELF_MERGE_DRAIN_CAP_MS,
               });
-              setTimeout(() => process.exit(0), 2000);
+              // Issue ded17e6 — drain foreign-repo executions (per-repo chains
+              // mean another repo's merge may be in flight) before restarting.
+              void this.drainAndRestart(request.id);
             }
           }
         } catch (error) {
@@ -1944,8 +1970,55 @@ export class AuthQueue {
         }
       });
 
-    this.executionChain = runPromise.catch(() => undefined);
+    const tail = runPromise.catch(() => undefined);
+    this.executionChains.set(chainKey, tail);
     this.inFlight.set(request.id, runPromise);
+    // Bound map growth: drop the chain entry once this settles, but only if no
+    // later request has already chained onto it (admission is synchronous, so
+    // the stored tail is authoritative at this microtask).
+    void tail.finally(() => {
+      if (this.executionChains.get(chainKey) === tail) {
+        this.executionChains.delete(chainKey);
+      }
+    });
+  }
+
+  /**
+   * Issue ded17e6 — canonical execution-chain key for a request. Merge requests
+   * carry `target_repo_root` (populated at approval) and `cwd`; both resolve to
+   * the realpath'd Git common dir. Anything unresolvable shares the conservative
+   * global chain so unknown identities never run concurrently with each other.
+   */
+  private chainKeyForRequest(request: AuthRequest): string {
+    return (
+      canonicalRepoKeyForPath(request.target_repo_root ?? request.cwd) ??
+      AuthQueue.UNRESOLVED_CHAIN_KEY
+    );
+  }
+
+  /**
+   * Issue ded17e6 — after a successful self-merge, drain any foreign-repo
+   * executions still in flight (up to the drain cap) before restarting so a
+   * concurrent unrelated merge is not killed mid-flight, then restart. The
+   * durable shutdown marker plus startup recovery remains the backstop when the
+   * drain times out.
+   */
+  private async drainAndRestart(selfRequestId: string): Promise<void> {
+    const foreign = [...this.inFlight.entries()]
+      .filter(([id]) => id !== selfRequestId)
+      .map(([, promise]) => promise);
+    if (foreign.length > 0) {
+      await Promise.race([
+        Promise.allSettled(foreign),
+        new Promise<void>((resolve) =>
+          setTimeout(resolve, AuthQueue.SELF_MERGE_DRAIN_CAP_MS)
+        ),
+      ]);
+    }
+    // Bug: 03d6cb0 — preserve the SSE-flush delay before exit so auth:resolved
+    // reaches the channel server before the daemon goes down.
+    await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+    this.restartFn();
   }
 
   private handleOutput(chunk: AuthOutputChunk): void {
@@ -2053,10 +2126,6 @@ export class AuthQueue {
     const args: unknown[] = [baseBranch];
     let where = "type = 'merge' AND base_branch = ? AND head_branch IS NOT NULL " +
       "AND status IN ('pending', 'approved', 'executing')";
-    if (repo) {
-      where += " AND repo = ?";
-      args.push(repo);
-    }
     if (excludeId) {
       where += " AND id != ?";
       args.push(excludeId);
@@ -2067,7 +2136,16 @@ export class AuthQueue {
           "ORDER BY COALESCE(skipped_at, created_at) ASC, created_at ASC"
       )
       .all(...args) as Record<string, unknown>[];
-    return rows.map((row) => mapRow(row));
+    const mapped = rows.map((row) => mapRow(row));
+    // Issue ded17e6 — repo filtering moved out of SQL so it can be canonical.
+    // A null repo means "no repo constraint" (unchanged), otherwise keep only
+    // rows whose repo denotes the same physical repo (path/symlink/string alias
+    // aware, with exact-string fallback).
+    if (!repo) {
+      return mapped;
+    }
+    const repoKeys = canonicalRepoKeysForRef(this.db, repo);
+    return mapped.filter((request) => this.repoRefsMatch(repo, repoKeys, request.repo ?? null));
   }
 
   private mergeQueueFingerprint(requests: AuthRequest[]): string {
@@ -2525,22 +2603,23 @@ export class AuthQueue {
       completed.base_branch,
       completed.head_branch,
     ];
-    let where = "id != ? AND base_branch = ? AND head_branch = ? ";
-    if (completed.repo) {
-      where += "AND repo = ? ";
-      args.push(completed.repo);
-    } else {
-      where += "AND repo IS NULL ";
-    }
-    where +=
+    // Issue ded17e6 — repo filtering moved out of SQL so sibling matching is
+    // canonical (path/symlink/string alias aware). A null completed.repo keeps
+    // the original "match only null-repo siblings" behavior via the string
+    // fallback in repoRefsMatch.
+    const where =
+      "id != ? AND base_branch = ? AND head_branch = ? " +
       "AND (status IN ('pending', 'expired') " +
       "OR (status = 'completed' AND exit_code IS NOT NULL AND exit_code != 0))";
 
-    const siblings = this.db
+    const completedRepo = completed.repo ?? null;
+    const completedKeys = canonicalRepoKeysForRef(this.db, completedRepo);
+    const siblings = (this.db
       .prepare(
         `SELECT * FROM auth_requests WHERE ${where}`
       )
-      .all(...args) as Record<string, unknown>[];
+      .all(...args) as Record<string, unknown>[])
+      .filter((row) => this.repoRefsMatch(completedRepo, completedKeys, (row.repo as string | null) ?? null));
 
     if (siblings.length === 0) {
       return;
@@ -2857,6 +2936,10 @@ export class AuthQueue {
     }>;
 
     const repoRoots = this.authRequestRepoRoots(completed);
+    // Issue ded17e6 — canonical repo identity for the completed request, computed
+    // once. Unifies path/symlink aliases and the `dotfiles`/`.dotfiles` repo-string
+    // mismatch so those work units resolve on merge.
+    const requestKeys = this.canonicalKeysForRequest(completed);
     // Issue 93d978e — one batch per call; the reachable-commit sets and branch
     // tip maps are cached for this request only (the repo changed by definition).
     const batch = new AncestryBatch();
@@ -2869,11 +2952,11 @@ export class AuthQueue {
       if (row.branch === completed.head_branch) {
         continue;
       }
-      if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots)) {
+      if (!this.workUnitRepoMatchesRequest(row.repo_id, completed, repoRoots, requestKeys)) {
         continue;
       }
       const branchSnapshotMatchesRequest = row.repo_root
-        ? this.workUnitRepoMatchesRequest(row.repo_root, completed, repoRoots)
+        ? this.workUnitRepoMatchesRequest(row.repo_root, completed, repoRoots, requestKeys)
         : true;
       const roots = [...repoRoots];
       if (row.repo_root && branchSnapshotMatchesRequest) roots.unshift(row.repo_root);
@@ -2963,15 +3046,76 @@ export class AuthQueue {
     return [...roots];
   }
 
-  private workUnitRepoMatchesRequest(repoId: string, completed: AuthRequest, repoRoots: string[]): boolean {
+  private workUnitRepoMatchesRequest(
+    repoValue: string,
+    completed: AuthRequest,
+    repoRoots: string[],
+    requestKeys: Set<string>,
+  ): boolean {
+    // Issue ded17e6 — canonical identity match first. Resolve the work unit's
+    // repo value (a repo string like "dotfiles" or a checkout root path) to its
+    // canonical keys and match against the request's precomputed key set. This
+    // is what makes work unit repo_id="dotfiles" resolve against request
+    // repo=".dotfiles" when the registry roots both at one physical repo.
+    if (requestKeys.size > 0) {
+      for (const key of canonicalRepoKeysForRef(this.db, repoValue)) {
+        if (requestKeys.has(key)) {
+          return true;
+        }
+      }
+      const pathKey = canonicalRepoKeyForPath(repoValue);
+      if (pathKey && requestKeys.has(pathKey)) {
+        return true;
+      }
+    }
+    // String-based fallback (unchanged) — never matches less than before.
     if (!completed.repo && repoRoots.length === 0) {
       return true;
     }
-    if (repoId === completed.repo || repoRoots.includes(repoId)) {
+    if (repoValue === completed.repo || repoRoots.includes(repoValue)) {
       return true;
     }
-    const suffix = `/${repoId}`;
+    const suffix = `/${repoValue}`;
     return Boolean(completed.repo?.endsWith(suffix)) || repoRoots.some((root) => root.endsWith(suffix));
+  }
+
+  /**
+   * Issue ded17e6 — the canonical repo keys reachable from a completed request:
+   * its resolved execution roots (target_repo_root, cwd) plus every key its
+   * free-form `repo` string resolves to through the registry.
+   */
+  private canonicalKeysForRequest(request: AuthRequest): Set<string> {
+    const keys = new Set<string>();
+    for (const path of [request.target_repo_root, request.cwd]) {
+      const key = canonicalRepoKeyForPath(path);
+      if (key) {
+        keys.add(key);
+      }
+    }
+    for (const key of canonicalRepoKeysForRef(this.db, request.repo)) {
+      keys.add(key);
+    }
+    return keys;
+  }
+
+  /**
+   * Issue ded17e6 — do two free-form repo refs denote the same physical repo?
+   * When both resolve to canonical keys, canonical identity is authoritative
+   * (intersection required). When either side resolves to no key (registry-less
+   * DBs, deleted checkouts), fall back to today's exact string comparison so no
+   * previously-matching pair stops matching.
+   */
+  private repoRefsMatch(refA: string | null, keysA: Set<string>, refB: string | null): boolean {
+    const keysB = canonicalRepoKeysForRef(this.db, refB);
+    if (keysA.size > 0 && keysB.size > 0) {
+      for (const key of keysA) {
+        if (keysB.has(key)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    return refA === refB;
   }
 
   private workUnitBranchWasMerged(
