@@ -31,9 +31,19 @@ const GIT_TIMEOUT_MS = 5000;
 // Process-level memo keyed on the raw input path.
 const pathKeyCache = new Map<string, CacheEntry>();
 
+// Issue ded17e6 hardening — last successfully resolved key per exact input
+// path, never overwritten with null. A path that once resolved to a canonical
+// key keeps that key available as a stable fallback when a later resolution
+// transiently fails (git timeout, momentary permission error). Without this,
+// one alias of a physical repo failing resolution while another alias still
+// resolves would route two same-repo merges onto different execution chains
+// (canonical vs. unresolved) and run them concurrently.
+const lastGoodKeyCache = new Map<string, string>();
+
 /** Test hook — reset the process-level identity memo. */
 export function clearRepoIdentityCache(): void {
   pathKeyCache.clear();
+  lastGoodKeyCache.clear();
 }
 
 /**
@@ -49,12 +59,20 @@ export function canonicalRepoKeyForPath(inputPath: string | null | undefined): s
   if (cached) {
     const ttl = cached.key === null ? FAILURE_TTL_MS : SUCCESS_TTL_MS;
     if (now - cached.at < ttl) {
-      return cached.key;
+      // A fresh failure still prefers the last-known-good key over unresolved.
+      return cached.key ?? lastGoodKeyCache.get(inputPath) ?? null;
     }
   }
   const key = computeCanonicalKey(inputPath);
   pathKeyCache.set(inputPath, { key, at: now });
-  return key;
+  if (key !== null) {
+    lastGoodKeyCache.set(inputPath, key);
+    return key;
+  }
+  // Transient resolution failure: reuse the last successfully memoized key for
+  // this exact path (stale-but-stable beats unresolved). Only paths that never
+  // resolved fall through to null and share the conservative unresolved chain.
+  return lastGoodKeyCache.get(inputPath) ?? null;
 }
 
 function computeCanonicalKey(inputPath: string): string | null {

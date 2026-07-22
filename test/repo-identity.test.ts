@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { migrate } from "../src/db.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
@@ -76,6 +76,38 @@ describe("canonicalRepoKeyForPath", () => {
     expect(canonicalRepoKeyForPath(repo)).toBe(key);
 
     // After clearing the cache the missing path resolves to null.
+    clearRepoIdentityCache();
+    expect(canonicalRepoKeyForPath(repo)).toBeNull();
+  });
+
+  // Issue ded17e6 hardening — a transient resolution failure for a path that
+  // previously resolved must reuse the last-known-good key (stale-but-stable
+  // beats unresolved), so two same-repo merges never split onto the canonical
+  // and the unresolved execution chains and run concurrently.
+  it("reuses the last-known-good key when a later resolution transiently fails", () => {
+    const repo = initRepo();
+
+    // First resolution succeeds and memoizes the canonical key.
+    const key = canonicalRepoKeyForPath(repo);
+    expect(key).not.toBeNull();
+
+    // Delete the checkout so a real git recompute now FAILS, and advance the
+    // clock past the success TTL so the memoized success entry is stale — this
+    // forces a recompute (a genuine transient failure) rather than a cache hit.
+    fs.rmSync(repo, { recursive: true, force: true });
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 6 * 60 * 1000);
+    try {
+      // Recompute fails, but the last-known-good key is returned rather than null.
+      expect(canonicalRepoKeyForPath(repo)).toBe(key);
+    } finally {
+      nowSpy.mockRestore();
+    }
+
+    // A path that NEVER resolved has no last-known-good and still returns null.
+    const plain = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-repo-id-never-"));
+    expect(canonicalRepoKeyForPath(plain)).toBeNull();
+
+    // Clearing the cache drops the last-known-good fallback too.
     clearRepoIdentityCache();
     expect(canonicalRepoKeyForPath(repo)).toBeNull();
   });
