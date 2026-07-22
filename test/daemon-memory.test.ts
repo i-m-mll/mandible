@@ -46,6 +46,37 @@ describe("daemon memory diagnostics", () => {
     ]);
   });
 
+  it("returns the last sample from snapshot without collecting a new one", () => {
+    let current = values(20);
+    let usageCalls = 0;
+    const diagnostics = new DaemonMemoryDiagnostics({
+      logger: () => undefined,
+      warningFraction: 0.5,
+      sources: {
+        memoryUsage: () => {
+          usageCalls += 1;
+          return current;
+        },
+        uptime: () => 7,
+        totalMemory: () => 100,
+      },
+    });
+
+    // Before any sample, snapshot reports an empty seed and reads no source.
+    expect(diagnostics.snapshot()).toMatchObject({ rss: 0, warning: false });
+    expect(usageCalls).toBe(0);
+
+    diagnostics.sample();
+    const callsAfterSample = usageCalls;
+    current = values(90);
+
+    // snapshot reflects the prior sample and does not re-read process memory,
+    // so a burst of health polls cannot trip the warning transition.
+    const snap = diagnostics.snapshot();
+    expect(snap).toMatchObject({ rss: 20, warning: false });
+    expect(usageCalls).toBe(callsAfterSample);
+  });
+
   it("remains constant-space across a deterministic soak", () => {
     let iteration = 0;
     const diagnostics = new DaemonMemoryDiagnostics({
