@@ -193,6 +193,9 @@ export interface AuthRequestAction extends AuthRequestActionInput {
 export interface AuthRequest {
   id: string;
   session_id: string | null;
+  requested_by_user_id: string | null;
+  approved_by_user_id: string | null;
+  execution_evidence_id: string | null;
   type: AuthRequestType;
   command: string;
   title: string;

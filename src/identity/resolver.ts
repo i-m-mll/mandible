@@ -180,6 +180,27 @@ export function resolveSessionAttribution(
   return { user_id: [...matchedUserIds][0], evidence_method: "session_claim" };
 }
 
+/**
+ * Resolve an auth/inbox session reference using the same fail-closed binding
+ * rules as live session writes. The session id itself is a
+ * `provider_session_env` signal; when the Mandible session row exists, its app
+ * is an additional claim that must resolve to the same user.
+ */
+export function resolveSessionIdAttribution(
+  db: Db,
+  sessionId: string,
+): AttributionContext | null {
+  const normalized = normalizeBindingValue(sessionId);
+  if (!normalized) return null;
+  const row = db
+    .prepare("SELECT app FROM sessions WHERE id = ?")
+    .get(normalized) as { app: string } | undefined;
+  return resolveSessionAttribution(db, {
+    provider_session_env: normalized,
+    app_name: row?.app ?? null,
+  });
+}
+
 // --- LedgerActorInput adapters (used at write call sites) ---
 
 /**

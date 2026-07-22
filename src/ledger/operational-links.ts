@@ -2,8 +2,9 @@ import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
-import { systemAction } from "../identity/resolver.js";
-import type { LedgerIssueResolution } from "./types.js";
+import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
+import { getAttributionEvidence } from "../users/store.js";
+import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -57,6 +58,7 @@ interface LinkOptions {
   now?: number;
   metadata?: Record<string, unknown>;
   recordEvent?: boolean;
+  actor?: LedgerActorInput;
 }
 
 export function ledgerOperationalLinksAvailable(db: Db): boolean {
@@ -222,7 +224,7 @@ export function linkAuthRequestToLedgerIssue(
     source: "auth_queue",
     project_id: resolved.project_id,
     payload: { auth_request_id: input.auth_request_id, issue_id: resolved.issue_id, link_type: linkType },
-  });
+  }, input.actor);
   return { ok: true, issue_id: resolved.issue_id, project_id: resolved.project_id };
 }
 
@@ -261,7 +263,7 @@ export function linkCommitToLedgerIssue(
     source: "auth_queue",
     project_id: resolved.project_id,
     payload: { commit_sha: input.commit_sha, issue_id: resolved.issue_id, link_type: linkType },
-  });
+  }, input.actor);
   return { ok: true, issue_id: resolved.issue_id, project_id: resolved.project_id };
 }
 
@@ -277,6 +279,7 @@ export function syncAuthRequestLedgerLinks(
     commit_message?: string | null;
     merge_output?: string | null;
     recordEvent?: boolean;
+    actor?: LedgerActorInput;
   },
 ): OperationalLinkResult[] {
   const refs = new Map<string, "references" | "resolves">();
@@ -300,6 +303,7 @@ export function syncAuthRequestLedgerLinks(
       link_type: linkType,
       metadata: { source_fields: sourceFieldsForAuthRef(ref, { ...input, action_issue_closures: actionIssueClosures }) },
       recordEvent: input.recordEvent,
+      actor: input.actor,
     }));
   }
   return results;
@@ -318,10 +322,13 @@ export function applyAuthRequestLedgerCompletion(
     merge_output?: string | null;
     approval_source?: string | null;
     approval_lease_id?: string | null;
+    approved_by_user_id?: string | null;
+    execution_evidence_id?: string | null;
     resolution?: LedgerIssueResolution;
   },
 ): OperationalLinkResult[] {
-  const results = syncAuthRequestLedgerLinks(db, { ...input, recordEvent: true });
+  const actor = authFinalizationActor(db, input);
+  const results = syncAuthRequestLedgerLinks(db, { ...input, recordEvent: true, actor });
   if (!ledgerOperationalLinksAvailable(db)) return results;
 
   const store = new LedgerStore(db);
@@ -343,7 +350,7 @@ export function applyAuthRequestLedgerCompletion(
       entity_id: input.auth_request_id,
       event_type: "auth_request.completed",
       actor_type: "system",
-      attribution: systemAction(),
+      attribution: actor.attribution,
       source: "auth_queue",
       project_id: issue.project_id,
       enqueueOutbox: false,
@@ -352,6 +359,8 @@ export function applyAuthRequestLedgerCompletion(
         issue_id: issueId,
         approval_source: input.approval_source ?? null,
         approval_lease_id: input.approval_lease_id ?? null,
+        approved_by_user_id: input.approved_by_user_id ?? null,
+        execution_evidence_id: input.execution_evidence_id ?? null,
       },
     });
     if (hasActiveLabel(db, issueId, "coordination")) {
@@ -365,7 +374,7 @@ export function applyAuthRequestLedgerCompletion(
       {
         actor_type: "system",
         actor_id: input.approval_lease_id ?? null,
-        attribution: systemAction(),
+        attribution: actor.attribution,
       },
     );
     if (mergeSha) {
@@ -374,7 +383,7 @@ export function applyAuthRequestLedgerCompletion(
         issueId,
         commitSha: mergeSha,
         repoRef: input.repo_ref ?? "",
-      });
+      }, actor);
     }
     store.setIssueStatus(
       issueId,
@@ -383,12 +392,48 @@ export function applyAuthRequestLedgerCompletion(
       {
         actor_type: "system",
         actor_id: input.approval_lease_id ?? null,
-        attribution: systemAction(),
+        attribution: actor.attribution,
       },
       "auth_queue",
     );
   }
   return results;
+}
+
+function authFinalizationActor(
+  db: Db,
+  input: {
+    approved_by_user_id?: string | null;
+    execution_evidence_id?: string | null;
+  },
+): LedgerActorInput {
+  const approvedBy = input.approved_by_user_id ?? null;
+  const evidenceId = input.execution_evidence_id ?? null;
+  if (!evidenceId) {
+    const attribution = systemAction();
+    if (approvedBy) attribution.authorizer_user_id = approvedBy;
+    return { actor_type: "system", attribution };
+  }
+  if (!approvedBy) {
+    throw new Error("Auth finalization evidence requires an approving user.");
+  }
+  const evidence = getAttributionEvidence(db, evidenceId);
+  if (!evidence) {
+    throw new Error(`Auth finalization evidence '${evidenceId}' is missing.`);
+  }
+  assertEvidenceMethod(evidence.evidence_method);
+  if (evidence.details.authorizer_user_id !== approvedBy) {
+    throw new Error("Auth finalization evidence authorizer does not match the approved request.");
+  }
+  return {
+    actor_type: "system",
+    attribution: {
+      ...systemAction(),
+      evidence_method: evidence.evidence_method,
+      evidence_id: evidence.id,
+      authorizer_user_id: approvedBy,
+    },
+  };
 }
 
 function authRequestCompletedAt(db: Db, authRequestId: string): number | null {
@@ -681,12 +726,14 @@ function maybeRecordLinkEvent(
     project_id: string;
     payload: Record<string, unknown>;
   },
+  actor?: LedgerActorInput,
 ): void {
   if (recordEvent === false) return;
   new LedgerStore(db).recordEvent({
     ...input,
-    actor_type: "system",
-    attribution: systemAction(),
+    actor_type: actor?.actor_type ?? "system",
+    actor_id: actor?.actor_id ?? null,
+    attribution: actor?.attribution ?? systemAction(),
     enqueueOutbox: false,
   });
 }
@@ -817,6 +864,7 @@ function hasActiveLabel(db: Db, issueId: string, label: string): boolean {
 function recordIssueResolution(
   db: Db,
   input: { authRequestId: string; issueId: string; commitSha: string; repoRef: string },
+  actor?: LedgerActorInput,
 ): void {
   const now = Date.now();
   const issue = new LedgerStore(db).getIssue(input.issueId);
@@ -833,6 +881,7 @@ function recordIssueResolution(
     repo_ref: input.repoRef,
     now,
     recordEvent: true,
+    actor,
   });
 }
 

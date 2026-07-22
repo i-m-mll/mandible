@@ -210,14 +210,14 @@ function restoreArtifactTargetTablesToV90(): void {
 describe("migration v105: canonical Spaces export artifacts", () => {
   it("completes v105 before applying a synthetic later migration", () => {
     const migrations = MIGRATIONS as Migration[];
-    expect(migrations.at(-1)?.version).toBe(108);
+    expect(migrations.at(-1)?.version).toBe(109);
     migrations.push({
-      version: 109,
+      version: 110,
       name: "test_v105_ordering_boundary",
       statements: [
         `INSERT INTO meta (key, value)
          VALUES (
-           'test.v109.observed_v105',
+           'test.v110.observed_v105',
            COALESCE((SELECT value FROM meta WHERE key = '${COMPLETION_KEY}'), 'missing')
          )`,
       ],
@@ -225,13 +225,13 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     try {
       expect(() => migrate(db)).not.toThrow();
       expect(db.prepare(
-        "SELECT value FROM meta WHERE key = 'test.v109.observed_v105'",
+        "SELECT value FROM meta WHERE key = 'test.v110.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "109",
+        value: "110",
       });
     } finally {
-      expect(migrations.pop()?.version).toBe(109);
+      expect(migrations.pop()?.version).toBe(110);
     }
   });
 
@@ -246,7 +246,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
 
     expect(marker()).toEqual({ value: "done" });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "108",
+      value: "109",
     });
   });
 
@@ -313,7 +313,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "108",
+      value: "109",
     });
     expect(marker()).toEqual({ value: "done" });
 

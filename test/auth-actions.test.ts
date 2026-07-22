@@ -6,13 +6,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, migrate, setDb, type Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
+import { addBinding, setupOperator } from "../src/users/store.js";
 
 const tempDirs: string[] = [];
 const SYSTEM_ACTOR = { attribution: systemAction() };
@@ -26,6 +27,8 @@ afterEach(() => {
 function createMigratedDb(): Db {
   const db = new Database(":memory:");
   migrate(db);
+  setDb(db);
+  setupOperator(db, { slug: "auth-action-test", display_name: "Auth Action Test" }, 1);
   return db;
 }
 
@@ -183,6 +186,7 @@ describe("auth request action execution", () => {
         title: "Execute staged actions",
         cwd: repoRoot,
         repo: path.basename(repoRoot),
+        execution_mode: "remote",
         actions: [
           { kind: "comment_add", target_issue_ref: issue.short_id, payload: { body: "Closeout comment" } },
           { kind: "label_add", target_issue_ref: issue.short_id, payload: { label: "verified" } },
@@ -192,12 +196,33 @@ describe("auth request action execution", () => {
         ],
       });
 
+      queue.approve(request.id);
       now = 11_000;
       queue.setResult(
         request.id,
         0,
         'MANDIBLE_MERGE_RESULT {"merge_sha":"abc123def456","declared_issues":["exec123"],"auto_close_issues":[]}',
       );
+
+      const finalized = queue.getRequest(request.id)!;
+      const completionEvent = db.prepare(
+        `SELECT actor_type, actor_user_id, evidence_method, evidence_id
+         FROM ledger_events
+         WHERE entity_type = 'auth_request' AND entity_id = ? AND event_type = 'auth_request.completed'
+         LIMIT 1`,
+      ).get(request.id);
+      expect(completionEvent).toEqual({
+        actor_type: "system",
+        actor_user_id: systemAction().user_id,
+        evidence_method: "hardware_presence",
+        evidence_id: finalized.execution_evidence_id,
+      });
+      const evidence = db.prepare("SELECT details_json FROM attribution_evidence WHERE id = ?")
+        .get(finalized.execution_evidence_id) as { details_json: string };
+      expect(JSON.parse(evidence.details_json)).toMatchObject({
+        authorizer_user_id: finalized.approved_by_user_id,
+        executor_user_id: systemAction().user_id,
+      });
 
       expect(queue.listActions(request.id).map((action) => action.state)).toEqual([
         "applied",
@@ -251,6 +276,7 @@ describe("auth request action execution", () => {
         title: "Failure isolation",
         cwd: repoRoot,
         repo: path.basename(repoRoot),
+        execution_mode: "remote",
         actions: [
           { kind: "comment_add", target_issue_ref: "missing123", payload: { body: "Will fail" } },
           { kind: "label_add", target_issue_ref: issue.short_id, payload: { label: "still-applied" } },
@@ -260,6 +286,7 @@ describe("auth request action execution", () => {
       const actions = queue.listActions(request.id);
       db.prepare("UPDATE auth_request_actions SET state = 'vetoed' WHERE id = ?").run(actions[2].id);
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 
       const after = queue.listActions(request.id);
@@ -297,6 +324,7 @@ describe("auth request action execution", () => {
         title: "Stale action handling",
         cwd: first.repoRoot,
         repo: path.basename(first.repoRoot),
+        execution_mode: "remote",
         actions: [
           { kind: "issue_close", target_issue_ref: first.issue.short_id, payload: { on_stale: "skip" } },
           { kind: "issue_close", target_issue_ref: secondIssue.short_id, payload: {} },
@@ -305,6 +333,7 @@ describe("auth request action execution", () => {
 
       new LedgerStore(db).addComment(first.issue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
       new LedgerStore(db).addComment(secondIssue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 
       const actions = queue.listActions(request.id);
@@ -330,9 +359,11 @@ describe("auth request action execution", () => {
         title: "Legacy close",
         cwd: repoRoot,
         repo: path.basename(repoRoot),
+        execution_mode: "remote",
         issue_closures: [issue.short_id],
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 
       expect(queue.listActions(request.id)).toEqual([]);
@@ -461,6 +492,10 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      addBinding(db, "auth-action-test", {
+        binding_type: "provider_session_env",
+        value: "auth-action-route-session",
+      });
 
       const submit = await router.invoke({
         method: "POST",
@@ -468,6 +503,7 @@ describe("auth request action routes", () => {
         body: {
           command: "echo route",
           title: "Route staged actions",
+          session_id: "auth-action-route-session",
           actions: [{ kind: "comment_add", target_issue_ref: "abc123", payload: { body: "One" } }],
         },
       });
@@ -514,7 +550,6 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-
       const request = queue.submit({
         command: "echo route",
         title: "Route veto",
@@ -557,6 +592,10 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+      addBinding(db, "auth-action-test", {
+        binding_type: "provider_session_env",
+        value: "auth-action-invalid-session",
+      });
 
       const response = await router.invoke({
         method: "POST",
@@ -564,6 +603,7 @@ describe("auth request action routes", () => {
         body: {
           command: "echo bad",
           title: "Bad staged action",
+          session_id: "auth-action-invalid-session",
           actions: [{ kind: "label_add", target_issue_ref: "abc123", payload: {} }],
         },
       });

@@ -88,6 +88,22 @@ export interface DelegatedSigningLease {
   mint_method: MintMethod;
 }
 
+export interface AddAttributionEvidenceInput {
+  evidence_method: string;
+  credential_id?: string | null;
+  lease_id?: string | null;
+  details?: Record<string, unknown>;
+}
+
+export interface AddDelegatedSigningLeaseInput {
+  id: string;
+  credential_id: string;
+  owner_user_id: string;
+  minted_at: number;
+  expires_at: number;
+  mint_method: MintMethod;
+}
+
 export interface CreateUserInput {
   slug: string;
   kind: UserKind;

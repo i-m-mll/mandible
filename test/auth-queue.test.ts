@@ -12,18 +12,47 @@ import { systemAction } from "../src/identity/resolver.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
+import {
+  addCredential,
+  addDelegatedSigningLease,
+  getOperator,
+  setupOperator,
+} from "../src/users/store.js";
 
 const SYSTEM_ACTOR = { attribution: systemAction() };
 
 function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   migrate(db);
+  setupOperator(db, { slug: "auth-test-operator", display_name: "Auth Test Operator" }, 1);
   return db;
 }
 
 function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
   const db = createMigratedDb();
   return new AuthQueue({ db, ...options });
+}
+
+function registerTestDelegatedLease(
+  db: InstanceType<typeof Database>,
+  id: string,
+  now = Date.now(),
+): string {
+  const operator = getOperator(db)!;
+  const credential = addCredential(db, operator.id, {
+    type: "delegated_ssh_key",
+    fingerprint: `SHA256:${"A".repeat(43)}`,
+    public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"A".repeat(20)} auth-test`,
+  }, now - 1000);
+  addDelegatedSigningLease(db, {
+    id,
+    credential_id: credential.id,
+    owner_user_id: operator.id,
+    minted_at: now - 1000,
+    expires_at: now + 60_000,
+    mint_method: "fresh_presence",
+  });
+  return operator.id;
 }
 
 function createNoopHookManager(): AuthHookManager {
@@ -645,6 +674,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-child'").get())
@@ -706,6 +736,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare(
@@ -773,6 +804,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare(
@@ -828,6 +860,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
 
       expect(db.prepare(
@@ -917,6 +950,7 @@ describe("auth queue", () => {
         authRequestId: request.id,
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
 
       expect(archived).toEqual(["thread-worker"]);
@@ -974,6 +1008,7 @@ describe("auth queue", () => {
         authRequestId: request.id,
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}\n");
       const finalizedAt = queue.getRequest(request.id)?.merge_finalized_at;
       const replay = queue.replayCodexThreadArchives(request.id);
@@ -1017,6 +1052,7 @@ describe("auth queue", () => {
       merge_head_sha: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       execution_mode: "remote"
     });
+    queue.approve(completed.id);
     queue.setResult(completed.id, 0, "ok");
     queue.dispose();
 
@@ -1197,8 +1233,23 @@ describe("auth queue", () => {
 
       const approved = queue.approve(request.id);
       expect(approved.cwd).toBe(fs.realpathSync(repo));
-      await waitForStatus(queue, request.id, "completed");
+      const resolved = await waitForStatus(queue, request.id, "completed");
       expect(calls).toEqual([fs.realpathSync(repo)]);
+      const operator = getOperator(db)!;
+      expect(resolved).toMatchObject({
+        requested_by_user_id: operator.id,
+        approved_by_user_id: operator.id,
+      });
+      const evidence = db.prepare(
+        "SELECT evidence_method, lease_id, details_json FROM attribution_evidence WHERE id = ?",
+      ).get(resolved?.execution_evidence_id) as {
+        evidence_method: string;
+        lease_id: string | null;
+        details_json: string;
+      };
+      expect(evidence.evidence_method).toBe("hardware_presence");
+      expect(evidence.lease_id).toBeNull();
+      expect(JSON.parse(evidence.details_json)).toMatchObject({ authorizer_user_id: operator.id });
       queue.dispose();
     } finally {
       db.close();
@@ -1334,11 +1385,15 @@ describe("auth queue", () => {
 
   it("auto-approves new requests while a lease is active and passes scoped env", async () => {
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
-    const queue = createQueue({
+    const db = createMigratedDb();
+    const approverUserId = getOperator(db)!.id;
+    const queue = new AuthQueue({
+      db,
       autoApprover: {
         getActiveApprovalContext: () => ({
           source: "auto_lease",
           leaseId: "lease-1",
+          approverUserId,
           env: {
             SSH_AUTH_SOCK: "/tmp/mandible-agent.sock",
             GIT_CONFIG_COUNT: "1",
@@ -1374,10 +1429,15 @@ describe("auth queue", () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.SSH_AUTH_SOCK).toBe("/tmp/mandible-agent.sock");
     expect(calls[0]?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+    queue.dispose();
+    db.close();
   });
 
   it("auto-approves pending requests when a lease is enabled", () => {
-    const queue = createQueue({
+    const db = createMigratedDb();
+    const approverUserId = getOperator(db)!.id;
+    const queue = new AuthQueue({
+      db,
       executor: async () => ({
         exit_code: 0,
         signal: null,
@@ -1394,17 +1454,85 @@ describe("auth queue", () => {
     const approved = queue.autoApprovePending({
       source: "auto_lease",
       leaseId: "lease-2",
+      approverUserId,
       env: { SSH_AUTH_SOCK: "/tmp/agent.sock" },
     });
 
     expect(approved.map((r) => r.id)).toEqual([first.id, second.id]);
     expect(queue.getRequest(first.id)?.approval_source).toBe("auto_lease");
     expect(queue.getRequest(second.id)?.approval_lease_id).toBe("lease-2");
+    queue.dispose();
+    db.close();
+  });
+
+  it("records delegated_lease execution evidence when an active lease is reused", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const approverUserId = registerTestDelegatedLease(db, "lease-reuse");
+    try {
+      commitOnBranch(repo, "feature/lease-reuse", { "reuse.txt": "reuse\n" });
+      registerWorkRepo(db, repo);
+      const queue = new AuthQueue({
+        db,
+        autoApprover: {
+          getActiveApprovalContext: () => ({
+            source: "auto_lease",
+            leaseId: "lease-reuse",
+            approverUserId,
+            env: {
+              SSH_AUTH_SOCK: "/tmp/reused.sock",
+              GIT_CONFIG_COUNT: "1",
+              GIT_CONFIG_KEY_0: "user.signingkey",
+              GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
+            },
+          }),
+        },
+        executor: async (options) => {
+          expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "ok\n",
+            stderr: "",
+            output: "ok\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const submitted = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/lease-reuse --into main",
+        title: "Merge feature/lease-reuse",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/lease-reuse",
+        cwd: repo,
+      });
+      expect(submitted.status).toBe("executing");
+      const resolved = await waitForStatus(queue, submitted.id, "completed");
+      const evidence = db.prepare(
+        "SELECT evidence_method, lease_id, details_json FROM attribution_evidence WHERE id = ?",
+      ).get(resolved?.execution_evidence_id) as {
+        evidence_method: string;
+        lease_id: string;
+        details_json: string;
+      };
+      expect(evidence).toMatchObject({ evidence_method: "delegated_lease", lease_id: "lease-reuse" });
+      expect(JSON.parse(evidence.details_json)).toMatchObject({ authorizer_user_id: approverUserId });
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it("runs a delegated signing presence challenge before spawning auth merge execution", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
+    const approverUserId = registerTestDelegatedLease(db, "presence-1");
     const order: string[] = [];
     const events: SseEvent[] = [];
     try {
@@ -1430,6 +1558,7 @@ describe("auth queue", () => {
             return {
               source: "presence_challenge",
               leaseId: "presence-1",
+              approverUserId,
               env: {
                 SSH_AUTH_SOCK: "/tmp/presence.sock",
                 MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
@@ -1442,6 +1571,7 @@ describe("auth queue", () => {
         },
         executor: async (options) => {
           order.push("executor");
+          expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
           expect(options.env?.SSH_AUTH_SOCK).toBe("/tmp/presence.sock");
           expect(options.env?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
           return {
@@ -1472,6 +1602,15 @@ describe("auth queue", () => {
       expect(order).toEqual(["challenge", "executor"]);
       expect(resolved?.approval_source).toBe("presence_challenge");
       expect(resolved?.approval_lease_id).toBe("presence-1");
+      const evidence = db.prepare(
+        "SELECT evidence_method, lease_id, details_json FROM attribution_evidence WHERE id = ?",
+      ).get(resolved?.execution_evidence_id) as {
+        evidence_method: string;
+        lease_id: string;
+        details_json: string;
+      };
+      expect(evidence).toMatchObject({ evidence_method: "hardware_presence", lease_id: "presence-1" });
+      expect(JSON.parse(evidence.details_json)).toMatchObject({ authorizer_user_id: approverUserId });
       const output = events
         .filter((event) => event.event === "auth:output")
         .map((event) => ((event.data as { text?: string }).text ?? ""))
