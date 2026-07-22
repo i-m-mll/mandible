@@ -210,14 +210,14 @@ function restoreArtifactTargetTablesToV90(): void {
 describe("migration v105: canonical Spaces export artifacts", () => {
   it("completes v105 before applying a synthetic later migration", () => {
     const migrations = MIGRATIONS as Migration[];
-    expect(migrations.at(-1)?.version).toBe(106);
+    expect(migrations.at(-1)?.version).toBe(107);
     migrations.push({
-      version: 107,
+      version: 108,
       name: "test_v105_ordering_boundary",
       statements: [
         `INSERT INTO meta (key, value)
          VALUES (
-           'test.v107.observed_v105',
+           'test.v108.observed_v105',
            COALESCE((SELECT value FROM meta WHERE key = '${COMPLETION_KEY}'), 'missing')
          )`,
       ],
@@ -225,20 +225,20 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     try {
       expect(() => migrate(db)).not.toThrow();
       expect(db.prepare(
-        "SELECT value FROM meta WHERE key = 'test.v107.observed_v105'",
+        "SELECT value FROM meta WHERE key = 'test.v108.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "107",
+        value: "108",
       });
     } finally {
-      expect(migrations.pop()?.version).toBe(107);
+      expect(migrations.pop()?.version).toBe(108);
     }
   });
 
   it("recovers a missing v105 marker without lowering a newer schema version", () => {
     migrate(db);
     db.exec(`
-      UPDATE meta SET value = '106' WHERE key = 'schema_version';
+      UPDATE meta SET value = '107' WHERE key = 'schema_version';
       DELETE FROM meta WHERE key = '${COMPLETION_KEY}';
     `);
 
@@ -246,7 +246,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
 
     expect(marker()).toEqual({ value: "done" });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "106",
+      value: "107",
     });
   });
 
@@ -313,7 +313,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "106",
+      value: "107",
     });
     expect(marker()).toEqual({ value: "done" });
 

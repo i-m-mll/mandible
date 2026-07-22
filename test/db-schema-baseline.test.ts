@@ -144,7 +144,7 @@ function builtinAuthHooks(db: Db): Array<Record<string, string | number>> {
 }
 
 function assertHealthyDatabase(db: Db): void {
-  expect(CURRENT_SCHEMA_VERSION).toBe(106);
+  expect(CURRENT_SCHEMA_VERSION).toBe(107);
   expect(schemaVersion(db)).toBe(String(CURRENT_SCHEMA_VERSION));
   expect(db.pragma("foreign_key_check")).toEqual([]);
   expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
@@ -166,6 +166,29 @@ describe.sequential("fresh schema baseline", () => {
       expect(completedPostMigrations(migrated)).toEqual(completedPostMigrations(baseline));
       expect(settings(migrated)).toEqual(settings(baseline));
       expect(builtinAuthHooks(migrated)).toEqual(builtinAuthHooks(baseline));
+
+      // The single seeded `system` user must be byte-identical on both paths,
+      // across every column.
+      const seededUsers = (db: Db) =>
+        db.prepare(
+          `SELECT id, slug, kind, display_name, email, status,
+                  created_at, updated_at, metadata_json
+             FROM users ORDER BY id`,
+        ).all();
+      expect(seededUsers(migrated)).toEqual(seededUsers(baseline));
+      expect(seededUsers(baseline)).toEqual([
+        {
+          id: "00000000000000000000000000",
+          slug: "system",
+          kind: "system",
+          display_name: "System",
+          email: null,
+          status: "active",
+          created_at: 0,
+          updated_at: 0,
+          metadata_json: "{}",
+        },
+      ]);
 
       expect(migrated.prepare("SELECT app, status, task FROM sessions WHERE id = ?").get(
         "fixture-session-v1",

@@ -2915,6 +2915,100 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_trash_entries_branch
          ON trash_entries(project_id, branch, created_at DESC)`
     ]
+  },
+  {
+    version: 107,
+    name: "user_registry_core",
+    // Umbrella 8e2e8b2 / issue e89c2b0 — foundation tables for the user system:
+    // identities, immutable credentials, claimed bindings, verified attribution
+    // evidence, and delegated-signing leases. Only the `system` user is seeded
+    // (fixed sentinel id, created_at=0 so fresh-baseline and migrated DBs agree
+    // byte-for-byte). The local human operator is created only by
+    // `mandible user setup`; migrations never prompt. Credentials are immutable:
+    // revoke + add, never mutate a fingerprint. Credential `type` is an
+    // app-validated vocabulary, not a DB CHECK enum, so new types need no table
+    // rebuild. No private key material is ever stored here.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS users (
+        id            TEXT PRIMARY KEY,
+        slug          TEXT NOT NULL UNIQUE,
+        kind          TEXT NOT NULL
+                        CHECK(kind IN ('human','agent','system','external')),
+        display_name  TEXT NOT NULL,
+        email         TEXT,
+        status        TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active','retired')),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')
+      )`,
+      `CREATE TABLE IF NOT EXISTS user_credentials (
+        id              TEXT PRIMARY KEY,
+        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        type            TEXT NOT NULL,
+        fingerprint     TEXT NOT NULL,
+        public_material TEXT,
+        label           TEXT,
+        status          TEXT NOT NULL DEFAULT 'active'
+                          CHECK(status IN ('active','revoked')),
+        created_at      INTEGER NOT NULL,
+        revoked_at      INTEGER,
+        metadata_json   TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_credentials_active_fingerprint
+        ON user_credentials(fingerprint) WHERE status = 'active'`,
+      `CREATE INDEX IF NOT EXISTS idx_user_credentials_user
+        ON user_credentials(user_id)`,
+      `CREATE TABLE IF NOT EXISTS delegated_signing_leases (
+        id            TEXT PRIMARY KEY,
+        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        minted_at     INTEGER NOT NULL,
+        expires_at    INTEGER NOT NULL,
+        mint_method   TEXT NOT NULL
+                        CHECK(mint_method IN ('fresh_presence','reused_lease'))
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_delegated_signing_leases_credential
+        ON delegated_signing_leases(credential_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_delegated_signing_leases_owner
+        ON delegated_signing_leases(owner_user_id)`,
+      `CREATE TABLE IF NOT EXISTS attribution_evidence (
+        id              TEXT PRIMARY KEY,
+        evidence_method TEXT NOT NULL,
+        credential_id   TEXT REFERENCES user_credentials(id) ON DELETE SET NULL,
+        lease_id        TEXT REFERENCES delegated_signing_leases(id) ON DELETE SET NULL,
+        verified_at     INTEGER NOT NULL,
+        details_json    TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(details_json) AND json_type(details_json)='object')
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_attribution_evidence_credential
+        ON attribution_evidence(credential_id) WHERE credential_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_attribution_evidence_lease
+        ON attribution_evidence(lease_id) WHERE lease_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS user_bindings (
+        id           TEXT PRIMARY KEY,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        binding_type TEXT NOT NULL
+                       CHECK(binding_type IN ('app_name','provider_session_env','process_pattern','git_author_email','external_author')),
+        value        TEXT NOT NULL,
+        scope        TEXT,
+        status       TEXT NOT NULL DEFAULT 'active'
+                       CHECK(status IN ('active','inactive')),
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_user_bindings_user
+        ON user_bindings(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_user_bindings_lookup
+        ON user_bindings(binding_type, value)`,
+      `INSERT OR IGNORE INTO users (
+        id, slug, kind, display_name, email, status, created_at, updated_at, metadata_json
+      ) VALUES (
+        '00000000000000000000000000', 'system', 'system', 'System', NULL, 'active', 0, 0, '{}'
+      )`
+    ]
   }
 ];
 
