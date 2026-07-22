@@ -5,6 +5,7 @@ import { getProjectTimeline } from '../api';
 import { useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
+import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import type { WorkRepo } from './work';
 import {
@@ -2358,6 +2359,17 @@ function TimelineInspector({
           </div>
           <dl className="timeline-meta timeline-meta--event">
             <div><dt>Timestamp</dt><dd>{formatDateTime(selectedEvent.timestamp)}</dd></div>
+            {selectedEvent.author ? (
+              <div>
+                <dt>Author</dt>
+                <dd>
+                  <AttributionIdentity
+                    display={selectedEvent.author.display}
+                    attribution={selectedEvent.author.attribution}
+                  />
+                </dd>
+              </div>
+            ) : null}
           </dl>
           {selectedEvent.state ? (
             <div className="timeline-state-pill">

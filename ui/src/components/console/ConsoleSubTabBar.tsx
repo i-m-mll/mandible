@@ -97,7 +97,7 @@ export function ConsoleSubTabBar({
             type="button"
             className={tabClass}
             onClick={() => onSelect(session.id)}
-            title={session.label}
+            title={session.owner ? `${session.label} · ${session.owner.display_name}` : session.label}
           >
             {/* Agent type indicator */}
             <span
@@ -114,6 +114,10 @@ export function ConsoleSubTabBar({
 
             {/* Session name */}
             <span className="console-tab__name">{session.label}</span>
+
+            {session.owner && (
+              <span className="console-tab__owner">{session.owner.display_name}</span>
+            )}
 
             <span
               className="console-tab__lane"

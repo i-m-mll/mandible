@@ -11,7 +11,13 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { registerIssueRoutes } from "../src/routes/issues.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addBinding, createUser, setupOperator } from "../src/users/store.js";
+import {
+  addAttributionEvidence,
+  addBinding,
+  addCredential,
+  createUser,
+  setupOperator,
+} from "../src/users/store.js";
 
 describe("client-auth durable attribution", () => {
   let tempDir: string;
@@ -177,6 +183,18 @@ describe("client-auth durable attribution", () => {
     });
     expect(approved.status).toBe(202);
 
+    const signingCredential = addCredential(db, operatorId, {
+      type: "ssh_key",
+      fingerprint: `SHA256:${"S".repeat(43)}`,
+      label: "Operator signing key",
+    });
+    const executionEvidence = addAttributionEvidence(db, {
+      evidence_method: "credential_signature",
+      credential_id: signingCredential.id,
+    });
+    db.prepare("UPDATE auth_requests SET execution_evidence_id = ? WHERE id = ?")
+      .run(executionEvidence.id, requestId);
+
     const detail = await router.invoke({
       method: "GET",
       url: `/api/auth/request/${requestId}`,
@@ -187,7 +205,25 @@ describe("client-auth durable attribution", () => {
     expect(detail.body).toMatchObject({
       requested_by_user_id: agent.id,
       approved_by_user_id: operatorId,
-      execution_evidence_id: null,
+      execution_evidence_id: executionEvidence.id,
+      requester: { id: agent.id, display_name: "Auth Request Agent", kind: "agent" },
+      approver: { id: operatorId, display_name: "Operator", kind: "human" },
+      execution_evidence: {
+        evidence_method: "credential_signature",
+        credential: { id: signingCredential.id, label: "Operator signing key" },
+      },
+      verified_signature: true,
+    });
+
+    db.prepare("UPDATE attribution_evidence SET evidence_method = 'session_claim' WHERE id = ?")
+      .run(executionEvidence.id);
+    const nonSignatureDetail = await router.invoke({
+      method: "GET",
+      url: `/api/auth/request/${requestId}`,
+    });
+    expect(nonSignatureDetail.body).toMatchObject({
+      execution_evidence: { evidence_method: "session_claim" },
+      verified_signature: false,
     });
 
     const mismatched = await router.invoke({

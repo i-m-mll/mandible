@@ -5,6 +5,7 @@ import { resolveAmbientProviderIdentity } from "../src/ambient-provider-identity
 import { migrate, setDb, type Db } from "../src/db.js";
 import { SessionRegistry } from "../src/registry.js";
 import { registerWorkUnitRoutes } from "../src/routes/work-units.js";
+import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { registerUserRoutes } from "../src/routes/users.js";
 import { Router } from "../src/server.js";
 import { SessionManager } from "../src/session-manager.js";
@@ -109,6 +110,25 @@ describe("session and work-unit ownership", () => {
     expect(owner("sessions", "unknown-1")).toBeNull();
     expect(owner("sessions", "unknown-2")).toBeNull();
     expect(logger).toHaveBeenCalledTimes(1);
+  });
+
+  it("projects resolved owners on the session list", async () => {
+    setupAgentUsers(db);
+    const codex = getUserBySlug(db, "codex")!;
+    const registry = new SessionRegistry(db);
+    registry.registerSession({ id: "owned-session", app: "codex" });
+    const router = new Router();
+    registerSessionRoutes(router, registry);
+
+    const response = await router.invoke({ method: "GET", url: "/api/sessions" });
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "owned-session",
+        owner_user_id: codex.id,
+        owner: { id: codex.id, display_name: codex.display_name, kind: "agent" },
+      }),
+    ]));
   });
 
   it("pins console ownership at creation and assigns operator consoles to the operator", () => {

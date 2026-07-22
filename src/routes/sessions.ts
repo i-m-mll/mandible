@@ -17,6 +17,7 @@ import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
+import { AttributionReadResolver } from "../identity/read-projection.js";
 import { readBody, sendJson } from "./http.js";
 
 function linkSessionLedgerIssue(
@@ -237,6 +238,11 @@ export function registerSessionRoutes(
     }
 
     const sessions = registry.listSessions(options);
+    const attributionResolver = new AttributionReadResolver(getDb());
+    const sessionsWithOwners = sessions.map((session) => ({
+      ...session,
+      owner: session.owner ?? attributionResolver.user(session.owner_user_id),
+    }));
 
     if (query.include === "issues" || query.include === "all_issues") {
       const showAll = query.include === "all_issues";
@@ -274,7 +280,7 @@ export function registerSessionRoutes(
         projectMap.set(proj.session_id, existing);
       }
 
-      const enriched = sessions.map((s) => ({
+      const enriched = sessionsWithOwners.map((s) => ({
         ...s,
         issues: linkMap.get(s.id) ?? [],
         projects: projectMap.get(s.id) ?? [],
@@ -283,7 +289,7 @@ export function registerSessionRoutes(
       return;
     }
 
-    sendJson(res, 200, sessions);
+    sendJson(res, 200, sessionsWithOwners);
   }, { fileRpc: "deny" });
 
   // Bug: 568eca7 — lightweight endpoint returning just pinned session IDs

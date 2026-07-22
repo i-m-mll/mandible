@@ -1,5 +1,6 @@
 import type { ComponentChildren } from 'preact';
 import { useState } from 'preact/hooks';
+import type { AttributionReadProjection, ReadUserIdentity } from '../../api';
 
 export type DetailHeaderIdentityProps = {
   contextLabel?: string | null;
@@ -28,6 +29,71 @@ export function DetailHeaderIdentity({
       <code className={shortIdClassName}>{shortId}</code>
       <CopyRefButton value={copyValue} label={copyLabel ?? `Copy ${copyValue}`} />
       {children}
+    </div>
+  );
+}
+
+export function AttributionIdentity({
+  display,
+  user,
+  attribution,
+  source,
+  className = '',
+}: {
+  display: string;
+  user?: ReadUserIdentity | null;
+  attribution?: AttributionReadProjection | null;
+  source?: string | null;
+  className?: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const resolvedUser = attribution?.user ?? user ?? null;
+  const hasProvenance = Boolean(
+    resolvedUser || attribution?.evidence_method || attribution?.credential || source,
+  );
+  if (!hasProvenance) return <span className={className || undefined}>{display}</span>;
+
+  return (
+    <span className={`attribution-identity${className ? ` ${className}` : ''}`}>
+      <button
+        type="button"
+        className="attribution-identity__trigger"
+        aria-label={`Show attribution for ${display}`}
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="attribution-identity__name">{display}</span>
+        {resolvedUser?.kind && (
+          <span className={`attribution-identity__kind attribution-identity__kind--${resolvedUser.kind}`}>
+            {resolvedUser.kind}
+          </span>
+        )}
+      </button>
+      {open && (
+        <dl className="attribution-identity__popover">
+          {resolvedUser && <IdentityRow label="User" value={resolvedUser.display_name} />}
+          {resolvedUser && <IdentityRow label="Kind" value={resolvedUser.kind} />}
+          {attribution?.evidence_method && (
+            <IdentityRow label="Evidence" value={attribution.evidence_method.replace(/_/g, ' ')} />
+          )}
+          {source && <IdentityRow label="Source" value={source.replace(/_/g, ' ')} />}
+          {attribution?.credential && (
+            <IdentityRow
+              label="Credential"
+              value={attribution.credential.label || attribution.credential.type}
+            />
+          )}
+        </dl>
+      )}
+    </span>
+  );
+}
+
+function IdentityRow({ label, value }: { label: string; value: string }): JSX.Element {
+  return (
+    <div>
+      <dt>{label}</dt>
+      <dd>{value}</dd>
     </div>
   );
 }

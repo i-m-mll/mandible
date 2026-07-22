@@ -10,6 +10,7 @@ import { LedgerStore } from "../src/ledger/store.js";
 import { registerTimelineRoutes } from "../src/routes/timeline.js";
 import type { ProjectTimelineProjection } from "../src/types.js";
 import { createTimelineFixture, type TimelineFixture } from "./timeline-fixtures.js";
+import { createUser } from "../src/users/store.js";
 
 let tempDir = "";
 let fixture: TimelineFixture;
@@ -25,6 +26,40 @@ afterEach(() => {
 });
 
 describe("project timeline projection", () => {
+  it("passes resolved attribution through body and comment events", () => {
+    const user = createUser(fixture.db, {
+      slug: "timeline-agent",
+      kind: "agent",
+      display_name: "Timeline Agent",
+    });
+    fixture.db.prepare(
+      `UPDATE ledger_issues
+          SET author_user_id = ?, evidence_method = 'session_claim', author_display = 'Mandible'
+        WHERE id = ?`,
+    ).run(user.id, fixture.issues.rootA.id);
+    fixture.db.prepare(
+      `UPDATE ledger_comments
+          SET author_user_id = ?, evidence_method = 'session_claim', author_display = 'Mandible'
+        WHERE id = ?`,
+    ).run(user.id, fixture.comments.rootARefs);
+
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_id: fixture.project.id,
+      root_policy: "explicit",
+      explicit_root_issue_ids: [fixture.issues.rootA.id],
+    });
+    const body = projection.events.find((event) => event.kind === "body");
+    const comment = projection.events.find((event) => (
+      event.source_entity.id === fixture.comments.rootARefs
+    ));
+    expect(body?.author).toMatchObject({
+      display: "Timeline Agent",
+      legacy_display: "Mandible",
+      attribution: { user: { id: user.id, kind: "agent" }, evidence_method: "session_claim" },
+    });
+    expect(comment?.author).toMatchObject({ display: "Timeline Agent" });
+  });
+
   it("projects coordination roots on one global time axis without per-row domains", () => {
     const projection = buildProjectTimelineProjection(fixture.db, {
       project_id: fixture.project.id,

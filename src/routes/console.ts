@@ -4,6 +4,7 @@
  */
 
 import { getDb } from "../db.js";
+import { AttributionReadResolver } from "../identity/read-projection.js";
 import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
@@ -229,11 +230,18 @@ export function registerConsoleRoutes(
   // GET /api/console/sessions — list all sessions
   // ------------------------------------------------------------------
   server.get("/api/console/sessions", (req, res) => {
+    const attributionResolver = new AttributionReadResolver(getDb());
     const sessions = manager.getAll()
       .filter((session) => (
         !sessionIsCredentialBearing(manager, session) || isOperatorRequest(req)
       ))
-      .map((s) => enrichWithProcessing(s));
+      .map((s) => {
+        const session = enrichWithProcessing(s);
+        return {
+          ...session,
+          owner: session.owner ?? attributionResolver.user(session.owner_user_id),
+        };
+      });
     res.status(200).json({ sessions });
   }, { fileRpc: "deny" });
 

@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { Db } from "../db.js";
 import { columnExists, tableExists } from "../db-introspection.js";
+import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import type { GraphEdge, GraphNode, GraphQueryParams } from "../types.js";
 
 interface ProjectInfo {
@@ -25,6 +26,9 @@ interface IssueRow {
   author_actor_id: string | null;
   author_actor_type: string;
   author_display: string;
+  author_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
   source: string;
   created_at: number | string;
   updated_at: number | string;
@@ -598,7 +602,8 @@ export function buildLedgerIssueProjection(
   const projectInfos = getProjectInfos(db);
   const issueRows = db.prepare(
     `SELECT id, short_id, project_id, title, body, status, resolution, kind, priority,
-            author_actor_id, author_actor_type, author_display, source,
+            author_actor_id, author_actor_type, author_display,
+            author_user_id, evidence_method, evidence_id, source,
             created_at, updated_at, closed_at
        FROM ledger_issues
       WHERE deleted_at IS NULL
@@ -634,6 +639,7 @@ export function buildLedgerIssueProjection(
     visibleIssueIds.has(rel.source_issue_id) && visibleIssueIds.has(rel.target_issue_id)
   );
   const layoutHints = buildLayoutHints(visibleIssueIds, relationships);
+  const attributionResolver = new AttributionReadResolver(db);
 
   const issueNodeIdByLedgerId = new Map<string, string>();
   const issueNodeIds = new Set<string>();
@@ -674,6 +680,16 @@ export function buildLedgerIssueProjection(
     const bodyExcerpt = issue.body.trim().slice(0, 360);
     const annotations = [...authAnnotations, ...sessionSummary.live];
     const graphActivityAt = activityByIssue.get(issue.id) ?? maxTimestamp(issue.updated_at, issue.created_at);
+    const authorAttribution = attributionResolver.attribution({
+      user_id: issue.author_user_id,
+      evidence_method: issue.evidence_method,
+      evidence_id: issue.evidence_id,
+    });
+    const authorDisplay = resolvedActorDisplay(
+      issue.author_display,
+      issue.author_actor_type,
+      authorAttribution,
+    );
 
     return {
       id: nodeId,
@@ -689,7 +705,7 @@ export function buildLedgerIssueProjection(
         issue_id: displayId,
         kind: issue.kind,
         priority: issue.priority,
-        author: issue.author_display,
+        author: authorDisplay,
         comments: comments?.count ?? 0,
         children: relationshipSummary.children,
         parents: relationshipSummary.parents,
@@ -715,6 +731,8 @@ export function buildLedgerIssueProjection(
         source: issue.source,
         author_actor_id: issue.author_actor_id,
         author_actor_type: issue.author_actor_type,
+        author_legacy_display: issue.author_display,
+        author_attribution: authorAttribution,
         closed_at: toIso(issue.closed_at),
         issue_created_at: toIso(issue.created_at),
         issue_updated_at: toIso(issue.updated_at),

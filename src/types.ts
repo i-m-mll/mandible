@@ -7,6 +7,10 @@ import type {
   LedgerPriority,
   LedgerRelationshipType,
 } from "./ledger/types.js";
+import type {
+  AttributionReadProjection,
+  ReadUserIdentity,
+} from "./identity/read-projection.js";
 
 export interface SSEEvent {
   type: string;
@@ -122,6 +126,8 @@ export interface Session {
   // Bug: 0b454df — channel-connected session tracking
   channel_connected_at: number | null;
   channel_last_tool_call: number | null;
+  owner_user_id: string | null;
+  owner?: ReadUserIdentity | null;
   children?: Session[];
 }
 
@@ -295,6 +301,8 @@ export interface GitBugIssue {
   status: "open" | "closed";
   labels: string[];
   author: string;
+  author_legacy_display?: string;
+  author_attribution?: AttributionReadProjection | null;
   created_at: string;
   description: string;
   parent_id?: string;  // derived from parent:<human_id> label
@@ -307,6 +315,8 @@ export interface GitBugIssueDetail extends GitBugIssue {
 export interface GitBugComment {
   id: string;
   author: string;
+  author_legacy_display?: string;
+  author_attribution?: AttributionReadProjection | null;
   date: string;
   body: string;
 }
@@ -468,6 +478,11 @@ export interface TimelineEvent {
   ordinal: number;
   display_headline: string;
   headline_source: TimelineHeadlineSource;
+  author?: {
+    display: string;
+    legacy_display: string;
+    attribution: AttributionReadProjection | null;
+  } | null;
   body: string | null;
   state: {
     event_type: string;
@@ -665,6 +680,8 @@ export interface ConsoleSession {
   agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
   /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
   channel_enabled: boolean;
+  owner_user_id: string | null;
+  owner?: ReadUserIdentity | null;
   /** Bug: 81c9d85 — derived from backend.processing, not stored in DB. */
   is_processing?: boolean;
   /** Derived from PTY screen state. Not stored in DB. */
