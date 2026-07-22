@@ -13,7 +13,7 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
-import { resolveSessionIdAttribution } from "../identity/resolver.js";
+import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
 import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
@@ -495,8 +495,19 @@ function resolveAuthRequester(
   payload: AuthRequestInput,
 ): { ok: true; userId: string } | { ok: false; status: number; code: string; error: string } {
   const authenticatedUserId = req.client_identity?.user_id ?? null;
-  const sessionAttribution = payload.session_id
-    ? resolveSessionIdAttribution(getDb(), payload.session_id)
+  const sessionResolution = payload.session_id
+    ? resolveSessionIdAttributionResult(getDb(), payload.session_id)
+    : { status: "no_match" as const };
+  if (sessionResolution.status === "conflict") {
+    return {
+      ok: false,
+      status: 403,
+      code: "requester_session_conflict",
+      error: "Auth request session claims resolve to conflicting users.",
+    };
+  }
+  const sessionAttribution = sessionResolution.status === "resolved"
+    ? sessionResolution.attribution
     : null;
   if (
     authenticatedUserId &&

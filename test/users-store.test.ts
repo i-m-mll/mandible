@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
 import {
   addBinding,
+  addAttributionEvidence,
   addCredential,
   createUser,
   getOperatorId,
@@ -241,5 +242,13 @@ describe("bindings and users", () => {
     const updated = updateUser(db, "agent-a", { status: "retired", display_name: "Agent A2" });
     expect(updated.status).toBe("retired");
     expect(updated.display_name).toBe("Agent A2");
+  });
+});
+
+describe("attribution evidence", () => {
+  it("rejects evidence methods outside the locked vocabulary", () => {
+    expect(() => addAttributionEvidence(db, {
+      evidence_method: "invented_evidence",
+    } as never)).toThrow(/Invalid evidence_method/);
   });
 });

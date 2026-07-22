@@ -30,7 +30,7 @@ import { registerAuthRoutes } from "../src/routes/auth.js";
 import { registerInboxRoutes } from "../src/routes/inbox.js";
 import type { RequestLike, ResponseLike, RouteHandler, RouteRegistrar } from "../src/server.js";
 import type { SseEvent } from "../src/types.js";
-import { addBinding, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 // --- DB helpers ---------------------------------------------------------
 
@@ -1741,6 +1741,24 @@ describe("inbox acknowledgement attribution", () => {
       expect(legacy.statusCode).toBe(200);
       expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("legacy-ack"))
         .toEqual({ acknowledged_by: "unbound-legacy-session" });
+
+      seedAuthRow(db, { id: "conflict-ack", target_session_id: null, target_repo_root: null, resolved_at: 3 });
+      const other = createUser(db, {
+        slug: "inbox-conflicting-app",
+        kind: "agent",
+        display_name: "Inbox Conflicting App",
+      });
+      addBinding(db, other.slug, { binding_type: "app_name", value: "inbox-conflict-app" });
+      db.prepare("INSERT INTO sessions (id, app, status) VALUES (?, ?, 'active')")
+        .run("bound-ack-session", "inbox-conflict-app");
+      const conflict = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
+        params: { type: "auth_result", id: "conflict-ack" },
+        body: { session_id: "bound-ack-session" },
+        client_identity: null,
+      });
+      expect(conflict.statusCode).toBe(403);
+      expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("conflict-ack"))
+        .toEqual({ acknowledged_by: null });
     } finally {
       db.close();
     }

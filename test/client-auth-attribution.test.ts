@@ -202,5 +202,30 @@ describe("client-auth durable attribution", () => {
       transport: "http",
     });
     expect(mismatched.status).toBe(403);
+
+    const conflictingAgent = createUser(db, {
+      slug: "auth-conflicting-app-agent",
+      kind: "agent",
+      display_name: "Auth Conflicting App Agent",
+    });
+    addBinding(db, conflictingAgent.slug, {
+      binding_type: "app_name",
+      value: "conflicting-auth-app",
+    });
+    db.prepare("INSERT INTO sessions (id, app, status) VALUES (?, ?, 'active')")
+      .run("auth-request-agent-session", "conflicting-auth-app");
+    const conflicting = await router.invoke({
+      method: "POST",
+      url: "/api/auth/request",
+      body: {
+        command: "echo conflict",
+        title: "Conflicting session claims",
+        session_id: "auth-request-agent-session",
+      },
+      credential: agentToken,
+      transport: "http",
+    });
+    expect(conflicting.status).toBe(403);
+    expect(conflicting.body).toMatchObject({ code: "requester_session_conflict" });
   });
 });

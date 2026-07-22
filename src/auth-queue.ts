@@ -36,7 +36,7 @@ import { LedgerStore } from "./ledger/store.js";
 import {
   assertEvidenceMethod,
   localDefaultAttribution,
-  resolveSessionIdAttribution,
+  resolveSessionIdAttributionResult,
   systemAction,
   type AttributionContext,
 } from "./identity/resolver.js";
@@ -323,7 +323,8 @@ export class AuthQueue {
     const requeue = this.db.prepare(
       `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
        exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-       approval_source = 'manual', approval_lease_id = NULL WHERE id = ?`
+       approval_source = 'manual', approval_lease_id = NULL,
+       approved_by_user_id = NULL, execution_evidence_id = NULL WHERE id = ?`
     );
 
     for (const row of rows) {
@@ -736,8 +737,11 @@ export class AuthQueue {
       return user.id;
     }
     if (payload.session_id) {
-      const resolved = resolveSessionIdAttribution(this.db, payload.session_id);
-      if (resolved) return resolved.user_id;
+      const resolved = resolveSessionIdAttributionResult(this.db, payload.session_id);
+      if (resolved.status === "conflict") {
+        throw new Error("Auth requester session claims resolve to conflicting users.");
+      }
+      if (resolved.status === "resolved") return resolved.attribution.user_id;
     }
     // Trusted in-process callers retain the local-operator default. Transport
     // routes resolve and pass an authenticated/session principal explicitly,
@@ -1635,6 +1639,13 @@ export class AuthQueue {
   setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest {
     this.expireStale();
     const request = this.requireRequest(id);
+    if (isAuthMergeCommand(request) && request.requested_by_user_id !== null && request.status !== "executing") {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Attributed auth merge result cannot be recorded while request is ${request.status}.`,
+        request.status,
+      );
+    }
     if (
       exitCode === 0 &&
       isAuthMergeCommand(request) &&

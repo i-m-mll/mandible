@@ -380,6 +380,10 @@ describe("auth queue", () => {
         expect(recovered?.status).toBe("pending");
         expect(recovered?.exit_code).toBeNull();
         expect(recovered?.approved_at).toBeNull();
+        expect(recovered?.approved_by_user_id).toBeNull();
+        expect(recovered?.execution_evidence_id).toBeNull();
+        expect(() => restarted.setResult(request.id, 0, "late remote result"))
+          .toThrow(/cannot be recorded while request is pending/);
         expect(fs.existsSync(path.join(repo, ".git", "MERGE_HEAD"))).toBe(false);
         expect(git(repo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
       } finally {
@@ -1911,8 +1915,10 @@ describe("auth queue", () => {
     const request = queue.submit({
       command: "mandible auth merge feature/foo",
       title: "Merge foo",
-      cwd: "/wrong/repo"
+      cwd: "/wrong/repo",
+      execution_mode: "remote",
     });
+    queue.approve(request.id);
     queue.setResult(request.id, 1, "Not a git repository", "cwd was wrong");
 
     // Update cwd and reset to pending in a single PUT

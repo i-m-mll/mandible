@@ -16,7 +16,7 @@ import {
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
-import { resolveSessionIdAttribution } from "../identity/resolver.js";
+import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
 import type { ResolvedClientIdentity } from "../server.js";
 
 // Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
@@ -71,7 +71,15 @@ function acknowledgementValue(
   const identity = req && typeof req === "object"
     ? (req as { client_identity?: ResolvedClientIdentity | null }).client_identity ?? null
     : null;
-  const sessionAttribution = sessionId ? resolveSessionIdAttribution(db, sessionId) : null;
+  const sessionResolution = sessionId
+    ? resolveSessionIdAttributionResult(db, sessionId)
+    : { status: "no_match" as const };
+  if (sessionResolution.status === "conflict") {
+    return { ok: false, error: "Acknowledgement session claims resolve to conflicting users." };
+  }
+  const sessionAttribution = sessionResolution.status === "resolved"
+    ? sessionResolution.attribution
+    : null;
   if (identity && sessionAttribution && identity.user_id !== sessionAttribution.user_id) {
     return { ok: false, error: "Authenticated client and acknowledgement session resolve to different users." };
   }

@@ -3,6 +3,7 @@ import { ulid } from "./ids.js";
 import {
   BINDING_TYPES,
   CREDENTIAL_TYPES,
+  assertEvidenceMethod,
   type AddBindingInput,
   type AddAttributionEvidenceInput,
   type AddCredentialInput,
@@ -156,6 +157,7 @@ function mapBinding(row: BindingRow): UserBinding {
 }
 
 function mapEvidence(row: EvidenceRow): AttributionEvidence {
+  assertEvidenceMethod(row.evidence_method);
   return {
     id: row.id,
     evidence_method: row.evidence_method,
@@ -602,9 +604,7 @@ export function addAttributionEvidence(
   input: AddAttributionEvidenceInput,
   now: number = Date.now(),
 ): AttributionEvidence {
-  if (!input.evidence_method.trim()) {
-    throw new UserRegistryError("invalid", "evidence_method is required.");
-  }
+  assertEvidenceMethod(input.evidence_method);
   const id = ulid(now);
   db.prepare(
     `INSERT INTO attribution_evidence (
@@ -799,14 +799,7 @@ export function listEvidence(db: Db, credentialId?: string): AttributionEvidence
   const rows = db
     .prepare(`SELECT * FROM attribution_evidence${where} ORDER BY verified_at ASC`)
     .all(...params) as EvidenceRow[];
-  return rows.map((row) => ({
-    id: row.id,
-    evidence_method: row.evidence_method,
-    credential_id: row.credential_id,
-    lease_id: row.lease_id,
-    verified_at: row.verified_at,
-    details: parseJsonObject(row.details_json),
-  }));
+  return rows.map(mapEvidence);
 }
 
 // --- internals ---
