@@ -74,6 +74,11 @@ function queryBoolean(req: RequestLike, key: string): boolean | undefined {
   return undefined;
 }
 
+function resolveArtifactRouteRecord(id: string) {
+  const db = getDb();
+  return getArtifact(db, id) ?? resolveArtifactSurfaceRefReadonlyFull(db, id).artifact;
+}
+
 function bodyStringArray(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return undefined;
   return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
@@ -590,7 +595,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/content", async (req, res) => {
-    const content = await getArtifactContentAsync(getDb(), req.params.id);
+    const artifact = resolveArtifactRouteRecord(req.params.id);
+    const content = artifact ? await getArtifactContentAsync(getDb(), artifact.id) : null;
     if (!content) {
       sendJson(res, 404, { error: "artifact not found" });
       return;
@@ -599,7 +605,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/check", (req, res) => {
-    const check = checkArtifactMaterialization(getDb(), req.params.id);
+    const artifact = resolveArtifactRouteRecord(req.params.id);
+    const check = artifact ? checkArtifactMaterialization(getDb(), artifact.id) : null;
     if (!check) {
       sendJson(res, 404, { error: "artifact not found" });
       return;
@@ -608,9 +615,10 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
+    const artifact = resolveArtifactRouteRecord(req.params.id);
     const backrefs = listKnowledgeBackrefs(getDb(), {
       sourceType: "artifact",
-      sourceId: req.params.id,
+      sourceId: artifact?.id ?? req.params.id,
       providerId: queryString(req, "provider") ?? queryString(req, "provider_id"),
       refType: queryString(req, "ref_type"),
       limit: queryNumber(req, "limit"),
@@ -621,10 +629,11 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     try {
+      const artifact = resolveArtifactRouteRecord(req.params.id);
       const backref = createKnowledgeBackref(getDb(), {
         ...bodyRecord(req),
         source_type: "artifact",
-        source_id: req.params.id,
+        source_id: artifact?.id ?? req.params.id,
       });
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { backref }));
     } catch (error) {
@@ -633,7 +642,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   }, { fileRpc: "deny" });
 
   app.get("/api/artifacts/:id", (req, res) => {
-    const artifact = getArtifact(getDb(), req.params.id);
+    const artifact = resolveArtifactRouteRecord(req.params.id);
     if (!artifact) {
       sendJson(res, 404, { error: "artifact not found" });
       return;
