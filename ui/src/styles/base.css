@@ -478,6 +478,20 @@ a {
   opacity: 0.7;
 }
 
+.daemon-warm-status {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 999;
+  padding: 6px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface-popover);
+  color: var(--text-muted);
+  font-size: 12px;
+  box-shadow: var(--shadow-soft);
+}
+
 .error-toast {
   position: fixed;
   top: 16px;

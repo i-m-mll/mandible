@@ -423,6 +423,7 @@ export interface ServerOptions {
   version: string;
   router: Router;
   getStartupInfo: () => StartupCommitInfo | null;
+  startupEpoch?: string;
   // Bug: 4db692a — health endpoint includes rebuilding flag so the UI
   // doesn't reload while the daemon is still alive but about to restart.
   isRebuilding?: () => boolean;
@@ -431,6 +432,9 @@ export interface ServerOptions {
   // e.g. unit tests). The real daemon wires this to the lifecycle readiness
   // flag so health reports false until critical startup work completes.
   isReady?: () => boolean;
+  // Optional second-tier readiness source. Omitted servers are warm by default
+  // for backward compatibility with existing embedders and tests.
+  isWarm?: () => boolean;
   getMemoryDiagnostics?: () => DaemonMemorySnapshot;
   getEventLoopDiagnostics?: () => EventLoopLagSnapshot;
   instance?: InstanceInfo;
@@ -438,7 +442,7 @@ export interface ServerOptions {
 }
 
 export function createServer(options: ServerOptions): http.Server {
-  const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady } = options;
+  const { sse, logger, version, router, getStartupInfo, isRebuilding, isReady, isWarm } = options;
   const instance = options.instance ?? resolveInstanceInfo();
 
   router.get("/api/health", (_req, res) => {
@@ -453,14 +457,17 @@ export function createServer(options: ServerOptions): http.Server {
     // "ready !== true" as "keep the splash up / block mutations". A server
     // created without a readiness source (tests) reports ready by default.
     const ready = isReady?.() ?? true;
+    const warm = isWarm?.() ?? true;
     const payload: HealthResponse = {
       status: "ok",
       uptime: process.uptime(),
       version,
+      ...(options.startupEpoch ? { startup_epoch: options.startupEpoch } : {}),
       startup_commit: startupCommit,
       instance,
       ...(options.fileRpcDir ? { file_rpc_dir: options.fileRpcDir } : {}),
       ready,
+      warm,
       ...(rebuilding ? { rebuilding: true } : {}),
       ...(options.getMemoryDiagnostics ? { memory: options.getMemoryDiagnostics() } : {}),
       ...(options.getEventLoopDiagnostics ? { eventLoop: options.getEventLoopDiagnostics() } : {}),
