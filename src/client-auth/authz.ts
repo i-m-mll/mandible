@@ -6,9 +6,10 @@
 // compat/strict mode (the mode gate governs ordinary mutations; these routes are
 // always guarded because they administer authentication itself).
 //
-// Bootstrappability: the filesystem bootstrap-token and the compat handshake
-// give the operator an authenticated identity without any prior token, so
-// "always require auth" never becomes an unrecoverable lockout.
+// Bootstrappability: the filesystem bootstrap token gives same-user CLI calls
+// an authenticated identity and can enroll the dashboard through a fragment
+// that is stripped before API traffic. The handshake never authenticates an
+// anonymous caller.
 //
 // This is deliberately narrow — authentication-material administration only, not
 // general project authorization, which is the permissions umbrella child.

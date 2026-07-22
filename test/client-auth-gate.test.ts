@@ -8,7 +8,8 @@ import { Router } from "../src/server.js";
 import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { createUser, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, removeBinding, setupOperator } from "../src/users/store.js";
+import { SessionManager } from "../src/session-manager.js";
 
 let tempDir = "";
 let db: Db;
@@ -111,6 +112,14 @@ describe("client-auth gate: middleware resolution matrix", () => {
       ok: true,
       identity: { user_id: operator.id, method: "ephemeral", source: "http_bearer" },
     });
+    const replay = await router.invoke({
+      method: "POST",
+      url: "/api/write",
+      body: {},
+      credential: `Bearer ${token}`,
+      transport: "http",
+    });
+    expect(replay.status).toBe(401);
   });
 
   it("reuses one bootstrap token for the daemon lifetime", () => {
@@ -120,6 +129,56 @@ describe("client-auth gate: middleware resolution matrix", () => {
 
   it("returns no bootstrap token before an operator is configured", () => {
     expect(authenticator.bootstrapToken()).toBeNull();
+  });
+
+  it("expires ephemeral credentials and caps retained state", () => {
+    let now = 1_000;
+    const bounded = new ClientAuthenticator(db, {
+      secretsDir: path.join(tempDir, "bounded-client-auth"),
+      maxEphemeralTokens: 2,
+      now: () => now,
+    });
+    const user = createUser(db, { slug: "agent-bound", kind: "agent", display_name: "Agent Bound" });
+    const identity = { user_id: user.id, slug: user.slug };
+    const first = bounded.issueEphemeralToken(identity, "first", { ttlMs: 100 });
+    now += 1;
+    const second = bounded.issueEphemeralToken(identity, "second", { ttlMs: 100 });
+    now += 1;
+    const third = bounded.issueEphemeralToken(identity, "third", { ttlMs: 100 });
+    expect(bounded.authenticate(first)).toBeNull();
+    expect(bounded.authenticate(second)).not.toBeNull();
+    expect(bounded.authenticate(third)).not.toBeNull();
+
+    now += 100;
+    expect(bounded.authenticate(second)).toBeNull();
+    expect(bounded.authenticate(third)).toBeNull();
+  });
+
+  it("invalidates a spawned-agent capability when its identity binding is removed", () => {
+    setupOperator(db, { slug: "operator", display_name: "Operator" });
+    authenticator.refreshBootstrapTokenFile();
+    const bootstrapPath = path.join(tempDir, "client-auth", "bootstrap-token");
+    expect(fs.existsSync(bootstrapPath)).toBe(true);
+    const user = createUser(db, { slug: "bound-agent", kind: "agent", display_name: "Bound Agent" });
+    const binding = addBinding(db, user.id, { binding_type: "app_name", value: "claude" });
+    const manager = new SessionManager(db, () => undefined, undefined, undefined, authenticator);
+    const session = manager.create({ label: "Claude", command: "claude", backend_type: "sdk" });
+    expect(fs.existsSync(bootstrapPath)).toBe(false);
+    const backend = manager.get(session.id) as unknown as {
+      buildClientEnv(): Record<string, string | undefined>;
+    };
+    const token = backend.buildClientEnv().MANDIBLE_TOKEN;
+    expect(token).toBeTruthy();
+    expect(authenticator.authenticate(token)).toMatchObject({ user_id: user.id });
+
+    removeBinding(db, binding.id);
+    expect(authenticator.authenticate(token)).toBeNull();
+    addBinding(db, user.id, { binding_type: "app_name", value: "claude" });
+    const rotated = backend.buildClientEnv().MANDIBLE_TOKEN;
+    expect(rotated).toBeTruthy();
+    expect(rotated).not.toBe(token);
+    expect(authenticator.authenticate(rotated)).toMatchObject({ user_id: user.id });
+    manager.close();
   });
 });
 

@@ -637,21 +637,29 @@ export function createServer(options: ServerOptions): http.Server {
 
     // SSE endpoints handled directly (long-lived connections don't fit the router)
     if (pathname === "/api/events" && method === "GET") {
-      // Issue 708dc4c — EventSource cannot set an Authorization header, so the
-      // dashboard passes its client-auth token as a `token` query param. SSE is
-      // a read; phase-1 keeps reads open, so the token is accepted here for
-      // forward per-client identity (scoping is deferred to the permissions
-      // child) and never gates the stream. The request logger records only the
-      // pathname, never the query string, so the token is not logged.
+      // Legacy EventSource clients remain anonymous in phase 1. Query-string
+      // bearer tokens are deliberately ignored: URLs leak through browser and
+      // proxy surfaces. Authenticated dashboard clients use POST below.
       const topics = parseTopics(url?.searchParams, null);
-      sse.addClient(req, res, topics);
+      sse.addClient(req, res, topics, null);
       return;
     }
 
     if (pathname === "/api/events/subscribe" && method === "POST") {
+      const identity = options.clientAuth?.authenticate(
+        bearerFromHeaders(req.headers),
+        "http_bearer",
+      ) ?? null;
+      if (options.clientAuth?.mode() === "strict" && !identity) {
+        writeJsonResponse(res, 401, {
+          error: "authentication_required",
+          reason: "client_auth_strict_mode",
+        });
+        return;
+      }
       const body = await readIncomingBody(req);
       const topics = parseTopics(url?.searchParams, body);
-      sse.addClient(req, res, topics);
+      sse.addClient(req, res, topics, identity);
       return;
     }
 

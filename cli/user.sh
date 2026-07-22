@@ -8,6 +8,7 @@
 #   PATCH /api/users/<ref>                   update
 #   GET  /api/users/operator                 current operator
 #   POST /api/users/setup                    idempotent operator setup
+#   dashboard-link                          same-user dashboard enrollment URL
 #   GET  /api/users/<ref>/credentials        list credentials
 #   POST /api/users/<ref>/credentials        add credential
 #   POST /api/users/credentials/<id>/revoke  revoke credential
@@ -31,6 +32,7 @@ usage() {
   cat <<'EOF'
 Usage:
   mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--json]
+  mandible user dashboard-link
   mandible user list [--kind <k>] [--status <s>] [--json]
   mandible user show <ref> [--json]
   mandible user update <ref> [--name <n>] [--email <e>] [--status active|retired] [--json]
@@ -52,6 +54,7 @@ private key material is ever accepted.
 Tokens are per-user bearer secrets stored hashed (never in the clear). The raw
 token is printed once at mint time and cannot be retrieved again; export it as
 MANDIBLE_TOKEN for the CLI to authenticate. Revoke a token via its credential id.
+Use dashboard-link to enroll a browser without placing a bearer token in an HTTP URL.
 EOF
 }
 
@@ -100,6 +103,23 @@ cmd_setup() {
   response="$(api_send POST "/api/users/setup" "$payload")" || die "${RED}Setup failed.${RESET}" 1
   err "${GREEN}Operator ready.${RESET}"
   emit "$response" "$json" '.user | "id: \(.id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
+}
+
+cmd_dashboard_link() {
+  require_tools
+  local token encoded base bootstrap_file=""
+  if [[ -z "${MANDIBLE_TOKEN:-}" ]]; then
+    bootstrap_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
+  fi
+  token="$(api_client_token)"
+  [[ -n "$token" ]] \
+    || die "No operator bootstrap token is available. Run mandible user setup first." 1
+  encoded="$(jq -rn --arg value "$token" '$value|@uri')"
+  base="$(api_base)"
+  [[ "$base" == http://* || "$base" == https://* ]] \
+    || die "Dashboard enrollment requires an HTTP Mandible endpoint." 1
+  [[ -z "$bootstrap_file" ]] || rm -f -- "$bootstrap_file"
+  printf '%s/#/?mandible_auth=%s\n' "${base%/}" "$encoded"
 }
 
 cmd_list() {
@@ -373,6 +393,7 @@ fi
 cmd="$1"; shift
 case "$cmd" in
   setup)      cmd_setup "$@" ;;
+  dashboard-link) cmd_dashboard_link "$@" ;;
   list)       cmd_list "$@" ;;
   show)       cmd_show "$@" ;;
   update)     cmd_update "$@" ;;

@@ -17,6 +17,7 @@ import type {
 } from "../types.js";
 import { replaceSessionInstructionArtifacts } from "../presets.js";
 import { sendJson } from "./http.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 
 const SDK_THINKING_EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 const SDK_PERMISSION_MODES = new Set(["default", "acceptEdits", "bypassPermissions"]);
@@ -185,6 +186,23 @@ export function registerConsoleRoutes(
       sendJson(res, 400, { error: "missing_command" });
       return;
     }
+    // Issue 708dc4c — operator-session identity is an internal daemon role,
+    // never a caller-selectable console flag. Otherwise an anonymous compat
+    // caller or ordinary strict identity could make the spawner inject the
+    // operator credential into an arbitrary child process.
+    if (body.is_operator === true) {
+      sendJson(res, 403, { error: "operator_session_reserved" });
+      return;
+    }
+    try {
+      requireOperator(getDb(), req);
+    } catch (error) {
+      if (error instanceof ClientAuthzError) {
+        sendJson(res, error.status, { error: error.message, code: error.code });
+        return;
+      }
+      throw error;
+    }
 
     const input: ConsoleSessionInput = {
       label: body.label,
@@ -195,7 +213,7 @@ export function registerConsoleRoutes(
       cols: typeof body.cols === "number" ? body.cols : 120,
       rows: typeof body.rows === "number" ? body.rows : 30,
       auto_restart: body.auto_restart === true,
-      is_operator: body.is_operator === true,
+      is_operator: false,
       interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
         ? body.interaction_mode as ConsoleInteractionMode
         : "both",

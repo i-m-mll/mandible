@@ -19,6 +19,7 @@ import { getMandibleConfigDir } from "../platform-paths.js";
 
 const PEPPER_FILE = "pepper";
 const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
+const DASHBOARD_SESSION_FILE = "dashboard-session.json";
 /** Legacy location: the pepper used to live in the settings KV table. */
 const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
 
@@ -28,23 +29,27 @@ export function defaultClientAuthDir(): string {
 
 function ensureDir(dir: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  try {
-    fs.chmodSync(dir, 0o700);
-  } catch {
-    // Some mounts do not support chmod; the creation mode still documents intent.
-  }
+  fs.chmodSync(dir, 0o700);
 }
 
 function writeSecretFile(filePath: string, contents: string): void {
   ensureDir(path.dirname(filePath));
-  const tmp = `${filePath}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, contents, { mode: 0o600 });
-  fs.renameSync(tmp, filePath);
+  const tmp = `${filePath}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
   try {
+    fs.writeFileSync(tmp, contents, { mode: 0o600, flag: "wx" });
+    fs.renameSync(tmp, filePath);
     fs.chmodSync(filePath, 0o600);
-  } catch {
-    // best effort
+  } finally {
+    fs.rmSync(tmp, { force: true });
   }
+}
+
+function readProtectedSecretFile(filePath: string): string | null {
+  if (!fs.existsSync(filePath)) return null;
+  ensureDir(path.dirname(filePath));
+  fs.chmodSync(filePath, 0o600);
+  const contents = fs.readFileSync(filePath, "utf8").trim();
+  return contents || null;
 }
 
 /**
@@ -55,43 +60,52 @@ function writeSecretFile(filePath: string, contents: string): void {
  */
 export function loadOrCreatePepper(db: Db, dir: string = defaultClientAuthDir()): string {
   const pepperPath = path.join(dir, PEPPER_FILE);
-  if (fs.existsSync(pepperPath)) {
-    const existing = fs.readFileSync(pepperPath, "utf8").trim();
-    if (existing) {
-      migrateLegacyPepperRow(db);
-      return existing;
-    }
+  const existing = readProtectedSecretFile(pepperPath);
+  if (existing) {
+    migrateLegacyPepperRow(db);
+    return existing;
   }
 
   const legacy = readLegacyPepperRow(db);
   if (legacy) {
-    writeSecretFile(pepperPath, legacy);
+    writePepperExclusively(pepperPath, legacy);
     deleteLegacyPepperRow(db);
-    return legacy;
+    return readRequiredSecretFile(pepperPath);
   }
 
   const pepper = randomBytes(32).toString("base64url");
-  writeSecretFile(pepperPath, pepper);
-  return pepper;
+  writePepperExclusively(pepperPath, pepper);
+  return readRequiredSecretFile(pepperPath);
+}
+
+function writePepperExclusively(pepperPath: string, pepper: string): void {
+  ensureDir(path.dirname(pepperPath));
+  try {
+    fs.writeFileSync(pepperPath, pepper, { mode: 0o600, flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  fs.chmodSync(pepperPath, 0o600);
+}
+
+function readRequiredSecretFile(filePath: string): string {
+  const value = readProtectedSecretFile(filePath);
+  if (!value) throw new Error(`Client-auth secret is empty: ${filePath}`);
+  return value;
 }
 
 function readLegacyPepperRow(db: Db): string | null {
-  try {
-    const row = db
-      .prepare("SELECT value FROM settings WHERE key = ?")
-      .get(LEGACY_PEPPER_SETTING_KEY) as { value: string } | undefined;
-    const value = row?.value?.trim();
-    return value ? value : null;
-  } catch {
-    return null;
-  }
+  const row = db
+    .prepare("SELECT value FROM settings WHERE key = ?")
+    .get(LEGACY_PEPPER_SETTING_KEY) as { value: string } | undefined;
+  const value = row?.value?.trim();
+  return value ? value : null;
 }
 
 function deleteLegacyPepperRow(db: Db): void {
-  try {
-    db.prepare("DELETE FROM settings WHERE key = ?").run(LEGACY_PEPPER_SETTING_KEY);
-  } catch {
-    // best effort — a stale row is harmless once the file is authoritative.
+  db.prepare("DELETE FROM settings WHERE key = ?").run(LEGACY_PEPPER_SETTING_KEY);
+  if (readLegacyPepperRow(db) !== null) {
+    throw new Error("Failed to remove the legacy client-auth pepper from settings.");
   }
 }
 
@@ -121,4 +135,53 @@ export function writeBootstrapTokenFile(token: string | null, dir: string = defa
 
 export function bootstrapTokenFilePath(dir: string = defaultClientAuthDir()): string {
   return path.join(dir, BOOTSTRAP_TOKEN_FILE);
+}
+
+export interface StoredDashboardSession {
+  token_fingerprint: string;
+  user_id: string;
+  slug: string;
+  created_at: number;
+  expires_at: number;
+}
+
+export function readDashboardSession(
+  dir: string = defaultClientAuthDir(),
+): StoredDashboardSession | null {
+  const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
+  const raw = readProtectedSecretFile(filePath);
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  const value = parsed as Record<string, unknown>;
+  if (
+    typeof value.token_fingerprint !== "string"
+    || !/^sha256:[0-9a-f]{64}$/.test(value.token_fingerprint)
+    || typeof value.user_id !== "string"
+    || typeof value.slug !== "string"
+    || typeof value.created_at !== "number"
+    || typeof value.expires_at !== "number"
+  ) {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  return value as unknown as StoredDashboardSession;
+}
+
+export function writeDashboardSession(
+  session: StoredDashboardSession | null,
+  dir: string = defaultClientAuthDir(),
+): void {
+  const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
+  if (session) {
+    writeSecretFile(filePath, JSON.stringify(session));
+    return;
+  }
+  fs.rmSync(filePath, { force: true });
 }

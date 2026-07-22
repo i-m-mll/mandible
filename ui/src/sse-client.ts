@@ -1,5 +1,5 @@
 import type { MandibleEvent } from '../../src/contracts';
-import { clientAuthTokenParam } from './client-auth-token';
+import { getStoredToken } from './client-auth-token';
 
 export type SSEPayload = MandibleEvent;
 
@@ -7,6 +7,7 @@ export type SSEHandler = (payload: SSEPayload) => void;
 
 export type SSEClientOptions = {
   url?: string;
+  fetchImpl?: typeof fetch;
   EventSourceImpl?: typeof EventSource;
   backoffMs?: number;
   maxBackoffMs?: number;
@@ -14,62 +15,39 @@ export type SSEClientOptions = {
 
 export class SSEClient {
   private url: string;
-  private EventSourceImpl: typeof EventSource;
+  private fetchImpl: typeof fetch;
+  private EventSourceImpl: typeof EventSource | null;
   private backoffMs: number;
   private maxBackoffMs: number;
   private listeners: Map<string, Set<SSEHandler>> = new Map();
+  private abortController: AbortController | null = null;
   private eventSource: EventSource | null = null;
+  private connecting = false;
   private retryTimer: number | null = null;
   private currentBackoff: number;
   private closed = false;
   private pendingEvents: SSEPayload[] = [];
 
   constructor(options: SSEClientOptions = {}) {
-    this.url = options.url || '/api/events';
-    this.EventSourceImpl = options.EventSourceImpl || EventSource;
+    this.url = options.url || '/api/events/subscribe';
+    this.fetchImpl = options.fetchImpl || fetch.bind(window);
+    this.EventSourceImpl = options.EventSourceImpl
+      ?? (typeof EventSource === 'function' ? EventSource : null);
     this.backoffMs = options.backoffMs ?? 500;
     this.maxBackoffMs = options.maxBackoffMs ?? 15000;
     this.currentBackoff = this.backoffMs;
   }
 
-  private withClientAuthToken(url: string): string {
-    const param = clientAuthTokenParam();
-    if (!param) return url;
-    return url.includes('?') ? `${url}&${param}` : `${url}?${param}`;
-  }
-
   connect(): void {
-    if (this.eventSource || this.closed) {
+    if (this.abortController || this.eventSource || this.connecting || this.closed) {
       return;
     }
-    // Issue 708dc4c — EventSource cannot set an Authorization header, so the
-    // client-auth token rides as a query param (resolved fresh at each connect
-    // so a re-handshook token is picked up on reconnect).
-    const source = new this.EventSourceImpl(this.withClientAuthToken(this.url));
-
-    // Use addEventListener for the message handler -- more reliable across
-    // browsers than assigning to onmessage, and works identically for
-    // unnamed SSE events (server sends "data:" without an "event:" line).
-    const messageHandler = (event: MessageEvent) => {
-      this.handleMessage(event.data);
-    };
-    source.addEventListener('message', messageHandler);
-
-    source.onerror = () => {
-      // Only manually reconnect when EventSource has given up (readyState
-      // CLOSED = 2).  When readyState is CONNECTING (0), the browser is
-      // already retrying on its own -- closing the source here would destroy
-      // that automatic reconnection and create a gap where events are lost.
-      if (source.readyState === 2) {
-        this.scheduleReconnect();
-      }
-    };
-
-    source.onopen = () => {
-      this.currentBackoff = this.backoffMs;
-    };
-
-    this.eventSource = source;
+    if (!getStoredToken()) {
+      this.openAnonymousEventSource();
+      return;
+    }
+    this.connecting = true;
+    void this.openFetchStream();
   }
 
   close(): void {
@@ -78,10 +56,11 @@ export class SSEClient {
       window.clearTimeout(this.retryTimer);
       this.retryTimer = null;
     }
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
+    this.abortController?.abort();
+    this.abortController = null;
+    this.eventSource?.close();
+    this.eventSource = null;
+    this.connecting = false;
   }
 
   on(type: string, handler: SSEHandler): () => void {
@@ -132,15 +111,80 @@ export class SSEClient {
     if (this.retryTimer || this.closed) {
       return;
     }
-    if (this.eventSource) {
-      this.eventSource.close();
-      this.eventSource = null;
-    }
+    this.eventSource?.close();
+    this.eventSource = null;
     this.retryTimer = window.setTimeout(() => {
       this.retryTimer = null;
       this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
       this.connect();
     }, this.currentBackoff);
+  }
+
+  private openAnonymousEventSource(): void {
+    if (!this.EventSourceImpl) {
+      this.scheduleReconnect();
+      return;
+    }
+    const legacyUrl = this.url === '/api/events/subscribe' ? '/api/events' : this.url;
+    const source = new this.EventSourceImpl(legacyUrl);
+    source.addEventListener('message', (event: MessageEvent) => {
+      this.handleMessage(event.data);
+    });
+    source.onerror = () => {
+      if (source.readyState === 2) this.scheduleReconnect();
+    };
+    source.onopen = () => {
+      this.currentBackoff = this.backoffMs;
+    };
+    this.eventSource = source;
+  }
+
+  private async openFetchStream(): Promise<void> {
+    const controller = new AbortController();
+    this.abortController = controller;
+    let shouldReconnect = false;
+    try {
+      // Fetch can carry Authorization through the global client-auth wrapper;
+      // unlike EventSource, no bearer credential is placed in the URL.
+      const response = await this.fetchImpl(this.url, {
+        method: 'POST',
+        headers: { Accept: 'text/event-stream' },
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`SSE subscribe failed (${response.status})`);
+      }
+      this.currentBackoff = this.backoffMs;
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      while (!this.closed && !controller.signal.aborted) {
+        const { done, value } = await reader.read();
+        if (done) {
+          shouldReconnect = true;
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
+        let boundary = buffer.indexOf('\n\n');
+        while (boundary >= 0) {
+          const frame = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary + 2);
+          const data = frame
+            .split('\n')
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart())
+            .join('\n');
+          if (data) this.handleMessage(data);
+          boundary = buffer.indexOf('\n\n');
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && !this.closed) shouldReconnect = true;
+    } finally {
+      if (this.abortController === controller) this.abortController = null;
+      this.connecting = false;
+    }
+    if (shouldReconnect) this.scheduleReconnect();
   }
 
   private parsePayload(data: string): SSEPayload {

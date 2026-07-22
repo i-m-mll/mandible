@@ -100,6 +100,36 @@ describe("api token minting and verification", () => {
     ).toBeUndefined();
   });
 
+  it("repairs permissions on an existing pepper file before using it", () => {
+    const pepperFile = path.join(secretsDir, "pepper");
+    fs.chmodSync(secretsDir, 0o755);
+    fs.chmodSync(pepperFile, 0o644);
+    expect(loadOrCreatePepper(db, secretsDir)).toBe(pepper);
+    expect(fs.statSync(secretsDir).mode & 0o777).toBe(0o700);
+    expect(fs.statSync(pepperFile).mode & 0o777).toBe(0o600);
+  });
+
+  it("fails closed when a migrated legacy pepper cannot be deleted", () => {
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('client_auth.token_pepper', 'legacy-pepper', 0)",
+    ).run();
+    const failingDb = {
+      prepare(sql: string) {
+        if (sql.startsWith("DELETE FROM settings")) {
+          throw new Error("simulated read-only database");
+        }
+        return db.prepare(sql);
+      },
+    } as unknown as Db;
+    const freshSecrets = path.join(tempDir, "failed-migration");
+    expect(() => loadOrCreatePepper(failingDb, freshSecrets)).toThrow(
+      "simulated read-only database",
+    );
+    expect(
+      db.prepare("SELECT value FROM settings WHERE key = 'client_auth.token_pepper'").get(),
+    ).toBeDefined();
+  });
+
   it("rejects a revoked token", () => {
     const user = makeAgent();
     const { token, credential } = authenticator().mintApiToken(user.slug);

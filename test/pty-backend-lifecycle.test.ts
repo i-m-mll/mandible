@@ -189,6 +189,25 @@ describe("PTYBackend lifecycle", () => {
     ]);
   });
 
+  it("overrides inherited and caller-supplied Mandible tokens with the provisioned agent token", () => {
+    const previous = process.env.MANDIBLE_TOKEN;
+    process.env.MANDIBLE_TOKEN = "daemon-launch-token";
+    try {
+      const backend = new PTYBackend(
+        makeMeta({ env: { MANDIBLE_TOKEN: "caller-token" } }),
+        makeLogger(),
+        "agent-token",
+      );
+      backend.start();
+      const [, , options] = ptyMock.spawn.mock.calls[0];
+      expect((options as { env: Record<string, string> }).env.MANDIBLE_TOKEN).toBe("agent-token");
+      expect((options as { env: Record<string, string> }).env.MANDIBLE_MANAGED_CLIENT).toBe("1");
+    } finally {
+      if (previous === undefined) delete process.env.MANDIBLE_TOKEN;
+      else process.env.MANDIBLE_TOKEN = previous;
+    }
+  });
+
   it("formats multi-line composer prompts as bracketed paste plus submit", () => {
     expect(formatPtyPromptInput("one line")).toBe("one line\r");
     expect(formatPtyPromptInput("line one\nline two")).toBe("\x1b[200~line one\nline two\x1b[201~\r");

@@ -1,0 +1,109 @@
+// @vitest-environment jsdom
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+
+import {
+  ensureClientAuthToken,
+  getStoredToken,
+  installClientAuthFetch,
+} from "../ui/src/client-auth-token.js";
+import { SSEClient } from "../ui/src/sse-client.js";
+
+class MemoryStorage implements Storage {
+  private values = new Map<string, string>();
+
+  get length(): number { return this.values.size; }
+  clear(): void { this.values.clear(); }
+  getItem(key: string): string | null { return this.values.get(key) ?? null; }
+  key(index: number): string | null { return [...this.values.keys()][index] ?? null; }
+  removeItem(key: string): void { this.values.delete(key); }
+  setItem(key: string, value: string): void { this.values.set(key, value); }
+}
+
+beforeEach(() => {
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: new MemoryStorage(),
+  });
+});
+
+afterEach(() => {
+  window.localStorage.clear();
+  window.history.replaceState(null, "", "/");
+  vi.restoreAllMocks();
+});
+
+describe("dashboard client-auth enrollment", () => {
+  it("adopts a same-user fragment credential, strips it, and renews with Authorization", async () => {
+    window.history.replaceState(null, "", "/#/issues?repo=mandible&mandible_auth=bootstrap-secret");
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer bootstrap-secret");
+      return new Response(JSON.stringify({ token: "dashboard-session" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    window.fetch = fetchMock as typeof window.fetch;
+    installClientAuthFetch();
+
+    await expect(ensureClientAuthToken()).resolves.toBe("dashboard-session");
+    expect(getStoredToken()).toBe("dashboard-session");
+    expect(window.location.hash).toBe("#/issues?repo=mandible");
+    expect(window.location.href).not.toContain("bootstrap-secret");
+  });
+
+  it("has the Tauri shell request a one-time protected proof and redirect with a fragment", () => {
+    const bootstrap = fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "bootstrap", "bootstrap.js"),
+      "utf8",
+    );
+    const rust = fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "src", "lib.rs"),
+      "utf8",
+    );
+    expect(bootstrap).toContain('invoke("client_auth_enroll")');
+    expect(bootstrap).not.toContain("mandible_auth=");
+    expect(rust).toContain("CLIENT_AUTH_BOOTSTRAP_CONSUMED.swap(true");
+    expect(rust).toContain("verify_same_user_daemon(&app)");
+    expect(rust).toContain("refusing desktop enrollment for an unexpected listener process");
+    expect(rust).toContain("window.location.replace({encoded})");
+    expect(rust).toContain("#/?mandible_auth={token}");
+    expect(rust).toContain('join("client-auth")');
+    expect(rust).toContain('join("bootstrap-token")');
+  });
+});
+
+describe("dashboard SSE transport", () => {
+  it("uses an authenticated-header-capable POST stream and never a query bearer", async () => {
+    window.localStorage.setItem("mandible.client_auth.token", "dashboard-session");
+    let requestedUrl = "";
+    let requestedInit: RequestInit | undefined;
+    const encoder = new TextEncoder();
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      requestedUrl = String(input);
+      requestedInit = init;
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode('data: {"type":"test:event","data":{"ok":true}}\n\n'));
+          controller.close();
+        },
+      });
+      return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+    });
+    const client = new SSEClient({ fetchImpl: fetchImpl as typeof fetch });
+    const received = new Promise<void>((resolve) => {
+      client.on("test:event", () => {
+        client.close();
+        resolve();
+      });
+    });
+
+    client.connect();
+    await received;
+    expect(requestedUrl).toBe("/api/events/subscribe");
+    expect(requestedUrl).not.toContain("token=");
+    expect(requestedInit?.method).toBe("POST");
+  });
+});

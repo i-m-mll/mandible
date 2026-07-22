@@ -257,17 +257,18 @@ const DEPRECATED_REAPER_SETTINGS = new Set([
 
 // Issue 708dc4c / finding 4 — client-auth settings are not managed through the
 // generic settings API. Reads are hidden and writes/reads of a specific key 403.
-const CLIENT_AUTH_SETTING_PREFIX = "client_auth.";
+const PROTECTED_SETTING_KEYS = new Set(["client_auth", "user.operator_id"]);
 
-function isClientAuthSettingKey(key: string): boolean {
-  return key.startsWith(CLIENT_AUTH_SETTING_PREFIX);
+function isProtectedIdentitySettingKey(key: string): boolean {
+  const normalized = key.trim().toLowerCase();
+  return PROTECTED_SETTING_KEYS.has(normalized) || normalized.startsWith("client_auth.");
 }
 
 function clientAuthSettingForbidden(): { error: string; code: string; hint: string } {
   return {
-    error: "client_auth settings are managed only through the /api/client-auth routes.",
-    code: "client_auth_setting_protected",
-    hint: "Use GET/PUT /api/client-auth/mode and /api/client-auth/status.",
+    error: "Authentication and operator identity settings are not managed through generic settings.",
+    code: "identity_setting_protected",
+    hint: "Use the explicit /api/client-auth and /api/users/setup authorization paths.",
   };
 }
 
@@ -285,7 +286,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       .all() as Array<{ key: string; value: string }>;
     const result: Record<string, string> = {};
     for (const row of rows) {
-      if (isClientAuthSettingKey(row.key)) continue;
+      if (isProtectedIdentitySettingKey(row.key)) continue;
       result[row.key] = row.value;
     }
     sendJson(res, 200, result);
@@ -369,7 +370,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       sendJson(res, 400, { error: "Missing key" });
       return;
     }
-    if (isClientAuthSettingKey(key)) {
+    if (isProtectedIdentitySettingKey(key)) {
       sendJson(res, 403, clientAuthSettingForbidden());
       return;
     }
@@ -390,7 +391,7 @@ export function registerSettingsRoutes(server: RouteRegistrar): void {
       sendJson(res, 400, { error: "Missing key" });
       return;
     }
-    if (isClientAuthSettingKey(key)) {
+    if (isProtectedIdentitySettingKey(key)) {
       sendJson(res, 403, clientAuthSettingForbidden());
       return;
     }

@@ -122,15 +122,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // default: unauthenticated loopback still works and unattributed writes are
   // counted; strict mode rejects anonymous mutations).
   const clientAuth = new ClientAuthenticator(db);
-  // Write the operator's daemon-lifetime bootstrap token to a 0600 file so the
-  // same-user CLI can authenticate without any token on the wire (issue 708dc4c
-  // finding 1). No-op when no operator is configured yet.
-  try {
-    clientAuth.refreshBootstrapTokenFile();
-  } catch (error) {
-    logger("warn", "client_auth_bootstrap_token_write_failed", { error: String(error) });
-  }
-
   // Create router and register all partition routes
   const router = new Router({ logger, instance, clientAuth });
   const sessionRegistry = new SessionRegistry(db);
@@ -157,7 +148,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
-  const sessionManager = new SessionManager(db, logger, sessionRegistry);
+  const sessionManager = new SessionManager(
+    db,
+    logger,
+    sessionRegistry,
+    undefined,
+    clientAuth,
+  );
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
   registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
@@ -177,7 +174,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
-  registerUserRoutes(router);
+  registerUserRoutes(router, clientAuth);
   // Issue: 708dc4c — client-auth token mint/list, mode toggle, and telemetry.
   registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
@@ -247,6 +244,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const actualPort = await startServer(server, port, { logger });
   writePidFile(process.pid, options.pidFilePath);
   logger("info", "server_started", { port: actualPort });
+
+  // Publish the same-user bootstrap credential only after this daemon owns the
+  // listen endpoint. A losing concurrent startup must never overwrite the
+  // credential used by the live daemon.
+  clientAuth.refreshBootstrapTokenFile();
 
   // Initialize console session manager: reconcile DB state, restart operator if configured.
   try {

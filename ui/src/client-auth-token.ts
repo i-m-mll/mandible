@@ -2,11 +2,11 @@
 //
 // The served HTML carries no token (that would leak operator identity to any
 // loopback-response reader). Instead the dashboard acquires an ephemeral
-// operator token via POST /api/client-auth/handshake and persists it in
-// localStorage, so a dashboard that handshook in compat keeps working after a
-// flip to strict (within the daemon lifetime). Every same-origin /api request
-// then carries `Authorization: Bearer <token>`; SSE (which cannot set headers)
-// carries the token as a query param.
+// operator session via an authenticated POST /api/client-auth/handshake and
+// persists it in localStorage. The server persists the bounded session in a
+// protected file, so a strict dashboard can renew it after daemon restart.
+// Every same-origin /api request, including fetch-based SSE, carries an
+// Authorization header; bearer values never ride in URLs.
 
 const STORAGE_KEY = 'mandible.client_auth.token';
 const HANDSHAKE_PATH = '/api/client-auth/handshake';
@@ -47,10 +47,24 @@ function clearStoredToken(): void {
   }
 }
 
-/** Query-string fragment (without leading ? or &) attaching the token for SSE. */
-export function clientAuthTokenParam(): string {
-  const token = getStoredToken();
-  return token ? `token=${encodeURIComponent(token)}` : '';
+function adoptTokenFromUrlFragment(): void {
+  if (typeof window === 'undefined') return;
+  const hash = window.location.hash;
+  const queryIndex = hash.indexOf('?');
+  if (queryIndex < 0) return;
+  const route = hash.slice(0, queryIndex);
+  const params = new URLSearchParams(hash.slice(queryIndex + 1));
+  const token = params.get('mandible_auth');
+  if (!token) return;
+  setStoredToken(token);
+  params.delete('mandible_auth');
+  const remaining = params.toString();
+  const nextHash = `${route}${remaining ? `?${remaining}` : ''}`;
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${window.location.search}${nextHash}`,
+  );
 }
 
 function isSameOriginApiRequest(url: string): boolean {
@@ -98,7 +112,7 @@ export function installClientAuthFetch(): void {
       headers.set('Authorization', `Bearer ${token}`);
     }
     const response = await originalFetch(input, { ...init, headers });
-    if (response.status === 401) {
+    if (response.status === 401 && getStoredToken() === token) {
       clearStoredToken();
     }
     return response;
@@ -106,27 +120,27 @@ export function installClientAuthFetch(): void {
 }
 
 /**
- * Ensure a client-auth token is available: reuse the stored one, else perform
- * the compat handshake and store the result. Returns the token or null (e.g. no
- * operator configured, or strict mode with no prior token — the dashboard then
- * operates anonymously in compat or surfaces auth failures in strict).
+ * Renew an enrolled dashboard session on every boot. The handshake requires
+ * the existing operator identity; an anonymous compat caller or unrelated
+ * strict-mode identity can never use it to acquire operator privilege.
  */
 export async function ensureClientAuthToken(): Promise<string | null> {
+  adoptTokenFromUrlFragment();
   const existing = getStoredToken();
-  if (existing) return existing;
+  if (!existing) return null;
   try {
     const response = await fetch(HANDSHAKE_PATH, {
       method: 'POST',
       headers: { Accept: 'application/json' },
     });
-    if (!response.ok) return null;
+    if (!response.ok) return getStoredToken();
     const body = (await response.json()) as { token?: unknown };
     if (typeof body.token === 'string' && body.token) {
       setStoredToken(body.token);
       return body.token;
     }
-    return null;
+    return getStoredToken();
   } catch {
-    return null;
+    return getStoredToken();
   }
 }

@@ -47,6 +47,24 @@ function makeJsonResponse(): {
 }
 
 describe("console prompt route", () => {
+  it("rejects caller-selected operator sessions before invoking the spawner", () => {
+    const { server, routes } = makeRegistrar();
+    const manager = { create: vi.fn(), start: vi.fn(), get: vi.fn() };
+    registerConsoleRoutes(server, manager as never);
+    const route = routes.find(
+      (item) => item.method === "POST" && item.path === "/api/console/sessions",
+    );
+    const { res, payloads } = makeJsonResponse();
+
+    route?.handler({
+      params: {},
+      body: { label: "Fake Operator", command: "bash", is_operator: true },
+    } as never, res as never);
+
+    expect(manager.create).not.toHaveBeenCalled();
+    expect(payloads).toEqual([{ code: 403, payload: { error: "operator_session_reserved" } }]);
+  });
+
   it("does not route composer prompts to non-owned or external sessions", () => {
     const { server, routes } = makeRegistrar();
     const manager = {

@@ -12,12 +12,13 @@ import { registerUserRoutes } from "../src/routes/users.js";
 import { registerSettingsRoutes } from "../src/routes/settings.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { createUser, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;
 let authenticator: ClientAuthenticator;
 let server: http.Server;
+let sse: SseManager;
 let port = 0;
 
 function bearer(token: string): Record<string, string> {
@@ -26,10 +27,8 @@ function bearer(token: string): Record<string, string> {
 
 /** Set up the operator and return a valid operator bearer token. */
 function operatorToken(): string {
-  setupOperator(db, { display_name: "Op", email: "op@example.com" });
-  const token = authenticator.bootstrapToken();
-  if (!token) throw new Error("expected an operator bootstrap token");
-  return token;
+  const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+  return authenticator.mintApiToken(operator.id, { label: "test-operator" }).token;
 }
 
 beforeEach(async () => {
@@ -45,12 +44,13 @@ beforeEach(async () => {
     res.json({ ok: true });
   }, { fileRpc: "allow" });
   registerClientAuthRoutes(router, authenticator);
-  registerUserRoutes(router);
+  registerUserRoutes(router, authenticator);
   registerSettingsRoutes(router);
 
+  sse = new SseManager();
   server = createServer({
     db,
-    sse: new SseManager(),
+    sse,
     logger: () => undefined,
     version: "test",
     router,
@@ -105,6 +105,44 @@ describe("client-auth over HTTP (compat regression)", () => {
   });
 });
 
+describe("client-auth: identity configuration authorization", () => {
+  it("does not let anonymous compat callers or non-operators control agent identity bindings", async () => {
+    const operatorBearer = operatorToken();
+    const agent = createUser(db, { slug: "agent-binding", kind: "agent", display_name: "Agent" });
+    const { token: agentToken } = authenticator.mintApiToken(agent.id);
+    const binding = addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
+
+    const anonymousCreate = await requestJson("POST", "/api/users", {
+      slug: "attacker", kind: "agent", display_name: "Attacker",
+    });
+    expect(anonymousCreate.status).toBe(401);
+
+    const selfBind = await requestJson(
+      "POST",
+      `/api/users/${agent.id}/bindings`,
+      { binding_type: "app_name", value: "codex" },
+      bearer(agentToken),
+    );
+    expect(selfBind.status).toBe(403);
+
+    const selfRemove = await requestJson(
+      "DELETE",
+      `/api/users/bindings/${binding.id}`,
+      undefined,
+      bearer(agentToken),
+    );
+    expect(selfRemove.status).toBe(403);
+
+    const operatorRemove = await requestJson(
+      "DELETE",
+      `/api/users/bindings/${binding.id}`,
+      undefined,
+      bearer(operatorBearer),
+    );
+    expect(operatorRemove.status).toBe(200);
+  });
+});
+
 describe("client-auth: no token material in served HTML (finding 1)", () => {
   it("GET / injects only instance metadata, never a token", async () => {
     const token = operatorToken();
@@ -118,17 +156,16 @@ describe("client-auth: no token material in served HTML (finding 1)", () => {
 });
 
 describe("client-auth: dashboard handshake (finding 1/3)", () => {
-  it("compat: issues an ephemeral operator token anonymously", async () => {
+  it("compat: never issues an operator token anonymously", async () => {
     setupOperator(db, { display_name: "Op", email: "op@example.com" });
     const response = await requestJson("POST", "/api/client-auth/handshake");
-    expect(response.status).toBe(200);
-    expect((response.body as { token?: string }).token).toMatch(/^mandible_pat_/);
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({ code: "authentication_required" });
   });
 
-  it("compat: returns 409 when no operator is configured", async () => {
+  it("returns 401 rather than exposing operator state to an anonymous caller", async () => {
     const response = await requestJson("POST", "/api/client-auth/handshake");
-    expect(response.status).toBe(409);
-    expect(response.body).toMatchObject({ code: "operator_not_configured" });
+    expect(response.status).toBe(401);
   });
 
   it("strict: rejects an anonymous handshake (needs an already-valid token)", async () => {
@@ -136,6 +173,48 @@ describe("client-auth: dashboard handshake (finding 1/3)", () => {
     setClientAuthMode(db, "strict");
     const response = await requestJson("POST", "/api/client-auth/handshake");
     expect(response.status).toBe(401);
+  });
+
+  it("strict: rejects an authenticated non-operator instead of upgrading it", async () => {
+    setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const user = createUser(db, { slug: "agent-a", kind: "agent", display_name: "Agent A" });
+    const { token } = authenticator.mintApiToken(user.id);
+    setClientAuthMode(db, "strict");
+    const response = await requestJson(
+      "POST",
+      "/api/client-auth/handshake",
+      undefined,
+      bearer(token),
+    );
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ code: "operator_required" });
+  });
+
+  it("rotates an authenticated operator session and restores it after restart", async () => {
+    const opToken = operatorToken();
+    const response = await requestJson(
+      "POST",
+      "/api/client-auth/handshake",
+      undefined,
+      bearer(opToken),
+    );
+    expect(response.status).toBe(200);
+    const token = (response.body as { token: string }).token;
+    expect(token).toMatch(/^mandible_pat_/);
+    const persisted = fs.readFileSync(
+      path.join(tempDir, "client-auth", "dashboard-session.json"),
+      "utf8",
+    );
+    expect(persisted).not.toContain(token);
+    expect(persisted).toContain("token_fingerprint");
+
+    const restarted = new ClientAuthenticator(db, {
+      secretsDir: path.join(tempDir, "client-auth"),
+    });
+    expect(restarted.authenticate(token, "http_bearer")).toMatchObject({
+      user_id: setupOperator(db).id,
+      method: "ephemeral",
+    });
   });
 });
 
@@ -198,15 +277,30 @@ describe("client-auth: mode flip requires operator both directions (finding 2)",
 });
 
 describe("client-auth: settings surface is protected (finding 4)", () => {
-  it("403s reads and writes of client_auth.* keys (compat, so the gate does not preempt)", async () => {
+  it("403s generic access to client-auth and operator identity keys", async () => {
     // In compat the anonymous write reaches the handler, proving the denylist —
     // not the strict-mode gate — is what refuses it.
     const getKey = await requestJson("GET", "/api/settings/client_auth.mode");
     expect(getKey.status).toBe(403);
-    expect(getKey.body).toMatchObject({ code: "client_auth_setting_protected" });
+    expect(getKey.body).toMatchObject({ code: "identity_setting_protected" });
     const putKey = await requestJson("PUT", "/api/settings/client_auth.mode", { value: "compat" });
     expect(putKey.status).toBe(403);
-    expect(putKey.body).toMatchObject({ code: "client_auth_setting_protected" });
+    expect(putKey.body).toMatchObject({ code: "identity_setting_protected" });
+
+    const operatorTakeover = await requestJson(
+      "PUT",
+      "/api/settings/user.operator_id",
+      { value: "attacker" },
+    );
+    expect(operatorTakeover.status).toBe(403);
+    expect(operatorTakeover.body).toMatchObject({ code: "identity_setting_protected" });
+
+    const caseVariant = await requestJson(
+      "PUT",
+      "/api/settings/Client_Auth.mode",
+      { value: "strict" },
+    );
+    expect(caseVariant.status).toBe(403);
   });
 
   it("hides client_auth.* keys from the generic settings listing", async () => {
@@ -216,6 +310,100 @@ describe("client-auth: settings surface is protected (finding 4)", () => {
     for (const key of Object.keys(all.body as Record<string, unknown>)) {
       expect(key.startsWith("client_auth.")).toBe(false);
     }
+  });
+});
+
+describe("client-auth: explicit operator and credential administration", () => {
+  it("allows first setup but requires the current operator for later setup", async () => {
+    const first = await requestJson("POST", "/api/users/setup", {
+      display_name: "Operator",
+      email: "op@example.com",
+    });
+    expect(first.status).toBe(200);
+    expect(
+      fs.readFileSync(path.join(tempDir, "client-auth", "bootstrap-token"), "utf8").trim(),
+    ).toMatch(/^mandible_pat_/);
+    const opToken = authenticator.bootstrapToken();
+    expect(opToken).toBeTruthy();
+
+    const anonymousUpdate = await requestJson("POST", "/api/users/setup", {
+      display_name: "Attacker",
+    });
+    expect(anonymousUpdate.status).toBe(401);
+
+    const genericPatch = await requestJson(
+      "PATCH",
+      `/api/users/${(first.body as { user: { id: string } }).user.id}`,
+      { status: "retired" },
+    );
+    expect(genericPatch.status).toBe(401);
+
+    const user = createUser(db, { slug: "agent-a", kind: "agent", display_name: "Agent A" });
+    const { token } = authenticator.mintApiToken(user.id);
+    const nonOperatorUpdate = await requestJson(
+      "POST",
+      "/api/users/setup",
+      { display_name: "Attacker" },
+      bearer(token),
+    );
+    expect(nonOperatorUpdate.status).toBe(403);
+
+    const authorized = await requestJson(
+      "POST",
+      "/api/users/setup",
+      { display_name: "Operator Updated" },
+      bearer(opToken!),
+    );
+    expect(authorized.status).toBe(200);
+  });
+
+  it("fails closed when operator_id is configured but dangling", async () => {
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at) VALUES ('user.operator_id', 'missing-user', ?)",
+    ).run(Date.now());
+    const response = await requestJson("POST", "/api/users/setup", {
+      slug: "attacker",
+      display_name: "Attacker",
+    });
+    expect(response.status).toBe(401);
+    expect(
+      db.prepare("SELECT value FROM settings WHERE key = 'user.operator_id'").pluck().get(),
+    ).toBe("missing-user");
+  });
+
+  it("does not expose credential metadata through alternate user routes", async () => {
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    authenticator.mintApiToken(operator.id);
+    const credentials = await requestJson("GET", `/api/users/${operator.id}/credentials`);
+    const userDetail = await requestJson("GET", `/api/users/${operator.id}`);
+    expect(credentials.status).toBe(401);
+    expect(userDetail.status).toBe(401);
+  });
+});
+
+describe("client-auth: authenticated SSE identity without URL bearer leakage", () => {
+  it("retains the identity from an Authorization header on POST subscribe", async () => {
+    const user = createUser(db, { slug: "agent-sse", kind: "agent", display_name: "Agent SSE" });
+    const { token } = authenticator.mintApiToken(user.id);
+    const connection = await openSse("POST", "/api/events/subscribe", bearer(token));
+    expect(connection.status).toBe(200);
+    expect(sse.countForUser(user.id)).toBe(1);
+    connection.close();
+  });
+
+  it("ignores legacy query bearer tokens instead of treating URLs as credentials", async () => {
+    const user = createUser(db, { slug: "agent-sse", kind: "agent", display_name: "Agent SSE" });
+    const { token } = authenticator.mintApiToken(user.id);
+    const connection = await openSse("GET", `/api/events?token=${encodeURIComponent(token)}`);
+    expect(connection.status).toBe(200);
+    expect(sse.countForUser(user.id)).toBe(0);
+    connection.close();
+  });
+
+  it("strict mode rejects an anonymous POST subscription", async () => {
+    setClientAuthMode(db, "strict");
+    const response = await requestJson("POST", "/api/events/subscribe");
+    expect(response.status).toBe(401);
   });
 });
 
@@ -320,5 +508,26 @@ function requestJson(
     );
     req.on("error", reject);
     req.end(data);
+  });
+}
+
+function openSse(
+  method: "GET" | "POST",
+  reqPath: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; close: () => void }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      { hostname: "127.0.0.1", port, path: reqPath, method, headers },
+      (res) => resolve({
+        status: res.statusCode ?? 500,
+        close: () => {
+          req.destroy();
+          res.destroy();
+        },
+      }),
+    );
+    req.on("error", reject);
+    req.end();
   });
 }

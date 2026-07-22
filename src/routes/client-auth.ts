@@ -7,8 +7,9 @@
 //
 // Token revocation reuses the guarded credential-revoke route in routes/users.ts.
 // All management routes require an authenticated identity regardless of mode —
-// they administer authentication itself (finding 2). Bootstrappability comes from
-// the filesystem bootstrap token and the compat handshake.
+// they administer authentication itself (finding 2). Bootstrappability comes
+// from the filesystem bootstrap token and the CLI's fragment-only dashboard
+// enrollment link; the handshake itself always requires the operator.
 
 import { getDb } from "../db.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
@@ -56,14 +57,15 @@ export function registerClientAuthRoutes(
   router: RouteRegistrar,
   authenticator: ClientAuthenticator,
 ): void {
-  // Dashboard handshake. Allowed anonymously in COMPAT (the browser write
-  // boundary already blocks SSRF/DNS-rebinding on this POST); in STRICT the
-  // generic gate rejects an anonymous call before we get here, so a caller must
-  // present an already-valid token. Returns an ephemeral operator token the
-  // dashboard stores in localStorage. Not counted toward the ratchet.
-  router.post("/api/client-auth/handshake", (_req, res) => {
+  // Dashboard session renewal. This endpoint never upgrades an anonymous or
+  // unrelated identity: an already-authenticated operator is required in both
+  // compat and strict mode. The resulting bounded, expiring session survives a
+  // daemon restart in a protected file and is rotated on every successful boot.
+  router.post("/api/client-auth/handshake", (req, res) => {
     try {
-      const operator = getOperator(getDb());
+      const db = getDb();
+      const identity = requireOperator(db, req);
+      const operator = getOperator(db);
       if (!operator) {
         sendJson(res, 409, {
           error: "operator_not_configured",
@@ -72,10 +74,7 @@ export function registerClientAuthRoutes(
         });
         return;
       }
-      const token = authenticator.issueEphemeralToken(
-        { user_id: operator.id, slug: operator.slug },
-        "dashboard_handshake",
-      );
+      const token = authenticator.issueDashboardToken(identity);
       sendJson(res, 200, {
         token,
         user: { id: operator.id, slug: operator.slug },
