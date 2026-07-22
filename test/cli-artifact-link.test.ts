@@ -131,11 +131,106 @@ describe("artifact link CLI", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("[--pinned|--living]");
-    expect(result.stdout).toContain("artifact:<unique-hash-prefix>  immutable artifact (normal compact ID)");
-    expect(result.stdout).toContain("artifact:<logical-id>          logical artifact");
-    expect(result.stdout).toContain("artifact-version:<id>          specific artifact version");
-    expect(result.stdout).toContain("artifact-blob:<full-hash>      immutable artifact bytes (full typed form)");
+    expect(result.stdout).toContain("artifact:<short-id>            logical artifact");
+    expect(result.stdout).toContain("artifact-version:<short-id>    specific artifact version");
+    expect(result.stdout).toContain("artifact-blob:<short-hash>     immutable artifact bytes only");
+    expect(result.stdout).toContain("artifact format <ref> [--as id|url|markdown|full]");
     expect(result.stdout).not.toContain("artifact:sha256:<hash>");
+  });
+
+  it("formats a resolved typed identity as short id, URL, Markdown, full id, or JSON", async () => {
+    const fullId = `artifact-blob:${"a".repeat(64)}`;
+    const shortRef = "artifact-blob:aaaaaaaaaaaa";
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              target_type: "artifact_blob",
+              target_id: fullId,
+              artifact_blob: { id: fullId, ref: shortRef },
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const env = {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+        MANDIBLE_WEB_BASE: "http://localhost:19420",
+      };
+      const id = await runAsync(["artifact", "format", fullId], env);
+      const url = await runAsync(["artifact", "format", fullId, "--as", "url"], env);
+      const markdown = await runAsync([
+        "artifact", "format", fullId, "--as", "markdown", "--label", "Blob bytes",
+      ], env);
+      const full = await runAsync(["artifact", "format", fullId, "--as", "full"], env);
+      const json = await runAsync(["artifact", "format", fullId, "--json"], env);
+
+      expect(id.stdout.trim()).toBe(shortRef);
+      expect(url.stdout.trim()).toBe(
+        "http://localhost:19420/#/artifacts?ref=artifact-blob%3Aaaaaaaaaaaaa&sidebar=hidden",
+      );
+      expect(markdown.stdout.trim()).toBe(`[Blob bytes](${url.stdout.trim()})`);
+      expect(full.stdout.trim()).toBe(fullId);
+      expect(JSON.parse(json.stdout)).toMatchObject({
+        ref: shortRef,
+        full_id: fullId,
+        target_type: "artifact_blob",
+        url: url.stdout.trim(),
+      });
+    } finally {
+      await recorder.close();
+    }
+  });
+
+  it("keeps living and pinned series links on the series route", async () => {
+    const recorder = await startHttpRecorder((req) => {
+      if (req.method === "GET" && req.url.startsWith("/api/artifacts/resolve?")) {
+        const pinned = req.url.includes(encodeURIComponent("@3"));
+        return {
+          status: 200,
+          body: {
+            resolution: {
+              status: "resolved",
+              ref: pinned ? "artifact-series:series-full@3" : "artifact-series:series-full",
+              scheme: "artifact-series",
+              target_type: "artifact_version",
+              target_id: "artifact-version:version-full",
+              series: { id: "artifact-series:series-full", ref: "artifact-series:series" },
+              version: { id: "artifact-version:version-full", version_no: 3 },
+              warnings: pinned ? [] : ["series_latest_not_pinned"],
+            },
+          },
+        };
+      }
+      return { status: 404, body: { error: "unexpected", url: req.url } };
+    });
+
+    try {
+      const env = {
+        MANDIBLE_BASE: `http://127.0.0.1:${recorder.port}`,
+        MANDIBLE_WEB_BASE: "http://localhost:19420",
+      };
+      const living = await runAsync(["artifact", "format", "artifact-series:series-full", "--as", "url"], env);
+      const pinned = await runAsync(["artifact", "format", "artifact-series:series-full@3", "--json"], env);
+
+      expect(living.stdout.trim()).toBe(
+        "http://localhost:19420/#/artifacts?series=artifact-series%3Aseries&sidebar=hidden",
+      );
+      expect(JSON.parse(pinned.stdout)).toMatchObject({
+        ref: "artifact-series:series@3",
+        full_id: "artifact-series:series-full@3",
+        target_type: "artifact_series",
+        url: "http://localhost:19420/#/artifacts?series=artifact-series%3Aseries&version=3&sidebar=hidden",
+      });
+    } finally {
+      await recorder.close();
+    }
   });
 
   it("omits link_kind when no typed-link flag is supplied and prints a pinned badge", async () => {

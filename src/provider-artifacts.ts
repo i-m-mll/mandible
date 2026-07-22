@@ -4338,6 +4338,36 @@ export function canonicalArtifactShortRef(db: Db, hash: string): string {
   return `artifact-blob:${normalized}`;
 }
 
+export function canonicalArtifactBlobShortRef(db: Db, ref: string): string {
+  const trimmed = ref.trim();
+  const hash = trimmed.replace(/^artifact-blob:/i, "").toLowerCase();
+  if (!isSha256(hash)) throw new Error("artifact blob ref must contain a 64-character SHA-256 hash");
+  const blob = getArtifactBlob(db, artifactBlobIdFromHash(hash));
+  if (!blob) return artifactBlobIdFromHash(hash);
+  for (let length = DEFAULT_ARTIFACT_ID_PREFIX_LENGTH; length <= hash.length; length += 1) {
+    const candidate = `artifact-blob:${hash.slice(0, length)}`;
+    const lookup = getArtifactBlobPrefix(db, candidate);
+    if (lookup.status === "resolved" && lookup.value?.id === blob.id) return candidate;
+  }
+  return blob.id;
+}
+
+export function canonicalLogicalArtifactShortRef(db: Db, ref: string): string {
+  const logical = getLogicalArtifact(db, ref);
+  if (!logical) return ref.trim();
+  const key = logical.id.replace(/^artifact:/i, "");
+  for (let length = Math.min(DEFAULT_ARTIFACT_ID_PREFIX_LENGTH, key.length); length <= key.length; length += 1) {
+    const candidate = `artifact:${key.slice(0, length)}`;
+    const resolution = resolveArtifactIdentityRef(db, candidate);
+    if (resolution?.status === "resolved"
+      && resolution.target_type === "artifact"
+      && resolution.target_id === logical.id) {
+      return candidate;
+    }
+  }
+  return logical.id;
+}
+
 /** Strip internal legacy compatibility refs from current API projections. */
 export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
   if (typeof value === "string") {
@@ -4354,10 +4384,18 @@ export function projectArtifactPublicValue(db: Db, value: unknown): unknown {
         .map(([key, entry]) => [key, projectArtifactPublicValue(db, entry)]),
     );
     const id = asString(projected.id);
-    if (id && /^artifact-series:/i.test(id) && asString(projected.series_key)) {
+    if (id && /^artifact-blob:/i.test(id) && asString(projected.content_hash)) {
+      projected.ref = canonicalArtifactBlobShortRef(db, id);
+    } else if (id && /^artifact-series:/i.test(id) && asString(projected.series_key)) {
       projected.ref = canonicalArtifactSeriesShortRef(db, id);
     } else if (id && /^artifact-version:/i.test(id) && typeof projected.version_no === "number") {
       projected.ref = canonicalArtifactVersionShortRef(db, id);
+    } else if (asString(projected.content_hash)
+      && asString(projected.custody_mode)
+      && !asString(projected.identity_key)) {
+      projected.ref = canonicalArtifactBlobShortRef(db, `artifact-blob:${asString(projected.content_hash)}`);
+    } else if (id && /^artifact:/i.test(id) && asString(projected.identity_key)) {
+      projected.ref = canonicalLogicalArtifactShortRef(db, id);
     }
     return projected;
   }

@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { classifyArtifactRef } from "../src/artifact-identity.js";
 import { openDb, type Db } from "../src/db.js";
 import {
+  canonicalArtifactBlobShortRef,
+  canonicalLogicalArtifactShortRef,
   canonicalArtifactShortRef,
   ingestArtifact,
   projectArtifactPublicValue,
@@ -90,6 +92,39 @@ describe("artifact identity contract", () => {
       artifact: { id: "artifact:1234567890ab0" },
       nested: ["artifact:1234567890ab1"],
     });
+  });
+
+  it("projects typed blob and logical identities to collision-safe short refs", () => {
+    const hash = `89abcdef0123${"4".repeat(52)}`;
+    ingestArtifact(db, { sha256: hash, uri: `artifact-blob:${hash}` }, 1000, tempDir);
+    const recorded = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "test",
+      content: "logical\n",
+      logical_name: "logical",
+    }, 1001, tempDir);
+
+    expect(canonicalArtifactBlobShortRef(db, `artifact-blob:${hash}`)).toBe(
+      "artifact-blob:89abcdef0123",
+    );
+    expect(canonicalLogicalArtifactShortRef(db, recorded.series.id.replace(/^artifact-series:/, "artifact:")))
+      .toMatch(/^artifact:[a-f0-9]{12,}$/);
+
+    const projected = projectArtifactPublicValue(db, {
+      blob: { id: `artifact-blob:${hash}`, content_hash: hash },
+      compatibilityBlob: {
+        id: `artifact:sha256:${hash}`,
+        content_hash: hash,
+        custody_mode: "managed",
+      },
+      logical: {
+        id: recorded.series.id.replace(/^artifact-series:/, "artifact:"),
+        identity_key: recorded.series.series_key,
+      },
+    }) as { blob: { ref: string }; compatibilityBlob: { ref: string }; logical: { ref: string } };
+    expect(projected.blob.ref).toBe("artifact-blob:89abcdef0123");
+    expect(projected.compatibilityBlob.ref).toBe("artifact-blob:89abcdef0123");
+    expect(projected.logical.ref).toMatch(/^artifact:[a-f0-9]{12,}$/);
   });
 
   it("keeps strict reads non-materializing and isolates obsolete read compatibility", () => {

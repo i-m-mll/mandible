@@ -205,6 +205,13 @@ export function ArtifactsView({
 
   const applyResolutionSelection = useCallback((next: ArtifactResolveResult, options?: { forcePinned?: boolean }) => {
     setResolution(next);
+    if (next.target_type === 'artifact_blob') {
+      setSelectedSeriesRef(null);
+      setSelectedVersionNo(null);
+      setSelectedArtifactId(null);
+      setSelectedArtifact(null);
+      return;
+    }
     const nextSeriesRef = next.series ? seriesRecordRef(next.series) : null;
     const latestTracking = next.warnings?.includes('series_latest_not_pinned') && !options?.forcePinned;
     setSelectedSeriesRef(nextSeriesRef);
@@ -670,7 +677,10 @@ export function ArtifactsView({
         {!detailLoading && !detailPending && !coherentSelectedArtifact && !resolution && (
           <div className="artifacts-empty">Select an artifact or open an artifact URI.</div>
         )}
-        {!detailLoading && !detailPending && resolution && !resolution.artifact && (
+        {!detailLoading && !detailPending && resolution?.target_type === 'artifact_blob' && (
+          <UnsupportedArtifactBlob resolution={resolution} />
+        )}
+        {!detailLoading && !detailPending && resolution && resolution.target_type !== 'artifact_blob' && !resolution.artifact && (
           <UnresolvedArtifact resolution={resolution} />
         )}
         {coherentSelectedArtifact && (
@@ -1866,6 +1876,27 @@ function UnresolvedArtifact({ resolution }: { resolution: ArtifactResolveResult 
           ['Status', resolution.status],
           ['Source', resolution.alias?.source ?? ''],
         ]} />
+      </section>
+    </article>
+  );
+}
+
+function UnsupportedArtifactBlob({ resolution }: { resolution: ArtifactResolveResult }): JSX.Element {
+  const issueUrl = 'http://localhost:19420/#/issues?repo=mandible&issue=7da339a&sidebar=hidden';
+  return (
+    <article className="artifact-detail">
+      <header className="artifact-detail__header">
+        <div>
+          <div className="artifact-detail__type">artifact blob</div>
+          <h2>{resolution.normalized_ref}</h2>
+        </div>
+      </header>
+      <section className="artifact-detail__section">
+        <h3>Direct blob view unavailable</h3>
+        <p>
+          Artifact blobs identify bytes, not logical artifacts or versions. Direct viewing is not supported yet;
+          see issue <a href={issueUrl}>7da339a</a>.
+        </p>
       </section>
     </article>
   );
