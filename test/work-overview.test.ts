@@ -176,6 +176,76 @@ describe.sequential("WorkScanner", () => {
     expect(summary.missing_repos).toContain(path.resolve(missingRepo));
   });
 
+  it("yields between branch scans and deduplicates concurrent async scans", async () => {
+    const db = createMigratedDb();
+    const events: string[] = [];
+    const branchEventTurns: number[] = [];
+    let eventLoopTurns = 0;
+    const scanner = new WorkScanner({
+      db,
+      repo_roots: [repoRoot],
+      on_event: (event) => {
+        events.push(event.type);
+        if (event.type === "work:branch:updated") {
+          branchEventTurns.push(eventLoopTurns);
+          setImmediate(() => { eventLoopTurns += 1; });
+        }
+      },
+    });
+
+    const first = scanner.scanAllAsync();
+    const second = scanner.scanAllAsync();
+
+    expect(second).toBe(first);
+    await first;
+    expect(branchEventTurns.length).toBeGreaterThan(1);
+    expect(branchEventTurns.slice(1).every(
+      (turn, index) => turn > branchEventTurns[index],
+    )).toBe(true);
+    expect(events.filter((event) => event === "work:scan:started")).toHaveLength(1);
+    expect(events.filter((event) => event === "work:scan:completed")).toHaveLength(1);
+  });
+
+  it("queues an explicit full scan behind an active freshness-skipping scan", async () => {
+    const db = createMigratedDb();
+    const initialScanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    initialScanner.scanAll();
+    const scanner = new WorkScanner({
+      db,
+      repo_roots: [repoRoot],
+      scan_skip_window_ms: 60_000,
+    });
+
+    const skippedScan = scanner.scanAllAsync({ skip_recent: true });
+    const forcedScan = scanner.scanAllAsync();
+    const [skipped, forced] = await Promise.all([skippedScan, forcedScan]);
+
+    expect(skipped.scanned_repos).toBe(0);
+    expect(forced.scanned_repos).toBe(1);
+  });
+
+  it("reuses persisted scanner rows inside the async scan skip window", async () => {
+    const db = createMigratedDb();
+    const firstScanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    const initial = await firstScanner.scanAllAsync({ skip_recent: true });
+    expect(initial.scanned_repos).toBe(1);
+
+    const restartedScanner = new WorkScanner({
+      db,
+      repo_roots: [repoRoot],
+      scan_skip_window_ms: 60_000,
+    });
+    const cached = await restartedScanner.scanAllAsync({ skip_recent: true });
+
+    expect(cached).toMatchObject({
+      scanned_repos: 0,
+      branches_updated: 0,
+      branches_removed: 0,
+      missing_repos: [],
+    });
+    expect(restartedScanner.getBranches(repoRoot).length).toBeGreaterThan(0);
+  });
+
   it("auto-discovers repos when config is missing", () => {
     const tempHome = fs.mkdtempSync(path.join(os.tmpdir(), "cp-home-"));
     const dotfilesRoot = path.join(tempHome, ".dotfiles");

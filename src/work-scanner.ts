@@ -163,6 +163,7 @@ export interface WorkScannerOptions {
   default_repo_root?: string;
   config_path?: string;
   on_event?: (event: SseEvent) => void;
+  scan_skip_window_ms?: number;
 }
 
 export interface SqliteStatement {
@@ -193,6 +194,11 @@ export interface WorktreeInventory {
 }
 
 const DEFAULT_REPO_ROOT = path.join(os.homedir(), ".dotfiles");
+const DEFAULT_SCAN_SKIP_WINDOW_MS = 30_000;
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
 
 // Issue 70cf59d — ephemeral sandbox/container mount prefixes.
 //
@@ -551,7 +557,9 @@ export class WorkScanner {
   private readonly configPath: string;
   private readonly repoRootsOverride: string[] | null;
   private readonly emit: (event: SseEvent) => void;
+  private readonly scanSkipWindowMs: number;
   private repoInfos: RepoInfo[] = [];
+  private activeScan: { promise: Promise<ScanSummary>; skipsRecent: boolean } | null = null;
 
   constructor(options: WorkScannerOptions = {}) {
     this.db = options.db ?? getDb();
@@ -565,6 +573,7 @@ export class WorkScanner {
       ? normalizeRoots(options.repo_roots)
       : null;
     this.emit = options.on_event ?? ((event) => broadcast(event));
+    this.scanSkipWindowMs = Math.max(0, options.scan_skip_window_ms ?? DEFAULT_SCAN_SKIP_WINDOW_MS);
   }
 
   getRepos(): RepoInfo[] {
@@ -833,10 +842,8 @@ export class WorkScanner {
     };
   }
 
-  // Bug: d6f79a2 — async scanAll yields the event loop between repos so the HTTP
-  // server stays responsive while the branch scan runs. spawnSync calls inside
-  // scanRepo block the thread; without yielding, a full scan (85+ branches) can
-  // hold the event loop for 3-5s, causing issue detail fetches to hang.
+  // Explicit synchronous callers retain the original full-refresh semantics.
+  // Request/startup callers use scanAllAsync(), which yields after every branch.
   scanAll(): ScanSummary {
     const start = Date.now();
     this.refreshRepoInfos();
@@ -905,8 +912,119 @@ export class WorkScanner {
     return summary;
   }
 
-  async scanAllAsync(): Promise<ScanSummary> {
-    return this.scanAll();
+  scanAllAsync(options: { skip_recent?: boolean } = {}): Promise<ScanSummary> {
+    const skipsRecent = options.skip_recent === true;
+    if (this.activeScan) {
+      if (skipsRecent || !this.activeScan.skipsRecent) {
+        return this.activeScan.promise;
+      }
+      const activePromise = this.activeScan.promise;
+      return activePromise.then(
+        () => this.scanAllAsync(),
+        () => this.scanAllAsync(),
+      );
+    }
+
+    const scan = this.runAsyncScan(skipsRecent).catch((error) => {
+      workScannerLog("error", "work_scanner_scan_failed", {
+        subsystem: "work-scanner",
+        error: String(error),
+      });
+      throw error;
+    });
+    this.activeScan = { promise: scan, skipsRecent };
+    const clearActiveScan = () => {
+      if (this.activeScan?.promise === scan) {
+        this.activeScan = null;
+      }
+    };
+    void scan.then(clearActiveScan, clearActiveScan);
+    return scan;
+  }
+
+  private async runAsyncScan(skipRecent: boolean): Promise<ScanSummary> {
+    const start = Date.now();
+    const cachedRepos = this.getRepos();
+    if (skipRecent && !cachedRepos.some((repo) => this.repoNeedsScan(repo, start))) {
+      const summary: ScanSummary = {
+        scanned_repos: 0,
+        branches_updated: 0,
+        branches_removed: 0,
+        missing_repos: [],
+        duration_ms: Date.now() - start,
+      };
+      this.emit({ event: "work:scan:completed", type: "work:scan:completed", data: summary });
+      return summary;
+    }
+
+    this.refreshRepoInfos();
+    this.emit({
+      event: "work:scan:started",
+      type: "work:scan:started",
+      data: { started_at: new Date(start).toISOString() },
+    });
+
+    let branchesUpdated = 0;
+    let branchesRemoved = 0;
+    const missingRepos: string[] = [];
+    let scannedRepos = 0;
+
+    for (const repo of this.repoInfos) {
+      if (!repo.exists || !this.isGitRepo(repo.root)) {
+        missingRepos.push(repo.root);
+        continue;
+      }
+      if (repo.excluded || (skipRecent && !this.repoNeedsScan(repo, start))) {
+        continue;
+      }
+      scannedRepos += 1;
+      try {
+        const steps = this.scanRepoSteps(repo.root, repo.id);
+        let step = steps.next();
+        while (!step.done) {
+          await yieldToEventLoop();
+          step = steps.next();
+        }
+        branchesUpdated += step.value.updated;
+        branchesRemoved += step.value.removed;
+        this.markRepoScanned(repo.root);
+      } catch (_error) {
+        workScannerLog("error", "work_scanner_repo_scan_failed", {
+          subsystem: "work-scanner",
+          repo_id: repo.id,
+          path: repo.root,
+          error: String(_error),
+        });
+      }
+      await yieldToEventLoop();
+    }
+
+    const summary: ScanSummary = {
+      scanned_repos: scannedRepos,
+      branches_updated: branchesUpdated,
+      branches_removed: branchesRemoved,
+      missing_repos: missingRepos,
+      duration_ms: Date.now() - start,
+    };
+    this.emit({ event: "work:scan:completed", type: "work:scan:completed", data: summary });
+    return summary;
+  }
+
+  private repoNeedsScan(repo: RepoInfo, now: number): boolean {
+    if (repo.excluded) return false;
+    const lastScanned = repo.last_scanned_at ? Date.parse(repo.last_scanned_at) : Number.NaN;
+    return !Number.isFinite(lastScanned) || now - lastScanned >= this.scanSkipWindowMs;
+  }
+
+  private markRepoScanned(repoRoot: string): void {
+    const scanNow = new Date().toISOString();
+    this.db.prepare(
+      "UPDATE work_repos SET last_scanned_at = ?, updated_at = ? WHERE root = ?",
+    ).run(scanNow, scanNow, repoRoot);
+    const index = this.repoInfos.findIndex((repo) => repo.root === repoRoot);
+    if (index >= 0) {
+      this.repoInfos[index] = { ...this.repoInfos[index], last_scanned_at: scanNow };
+    }
   }
 
   refreshRepo(idOrPath: string): RepoInfo {
@@ -1242,6 +1360,18 @@ export class WorkScanner {
   }
 
   private scanRepo(repoRoot: string, repoId: string): { updated: number; removed: number } {
+    const steps = this.scanRepoSteps(repoRoot, repoId);
+    let step = steps.next();
+    while (!step.done) {
+      step = steps.next();
+    }
+    return step.value;
+  }
+
+  private *scanRepoSteps(
+    repoRoot: string,
+    repoId: string,
+  ): Generator<void, { updated: number; removed: number }, void> {
     const worktreeInventory = this.listWorktrees(repoRoot);
     const worktrees = worktreeInventory.worktrees;
     const worktreeByBranch = new Map<string, string>();
@@ -1433,6 +1563,7 @@ export class WorkScanner {
           data: { ...branchData, repo_id: repoId },
         });
       }
+      yield;
     }
 
     let removed = 0;

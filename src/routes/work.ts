@@ -85,11 +85,14 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   // event loop for 3-5s (85+ branches × spawnSync) and causing all concurrent
   // HTTP requests (including issue detail fetches) to queue up.
   let hasScannedThisSession = false;
+  let startupScan: Promise<unknown> | null = null;
   const ensureScan = () => {
-    if (!hasScannedThisSession) {
-      hasScannedThisSession = true;
-      void workScanner.scanAll();
-    }
+    if (hasScannedThisSession || startupScan) return;
+    startupScan = workScanner.scanAllAsync({ skip_recent: true });
+    void startupScan.then(
+      () => { hasScannedThisSession = true; },
+      () => { startupScan = null; },
+    );
   };
 
   server.get("/api/work/repos", (req, res) => {
@@ -255,7 +258,7 @@ export function registerWorkRoutes(server: RouteRegistrar, scanner?: WorkScanner
   }, { fileRpc: "deny" });
 
   server.post("/api/work/scan", async (_req, res) => {
-    const summary = await workScanner.scanAll();
+    const summary = await workScanner.scanAllAsync();
     sendJson(res, 200, summary);
   }, { fileRpc: "deny" });
 
