@@ -1,10 +1,10 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v106 migration replay.
+ * Schema snapshot generated from a full v1-v107 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  */
-export const BASELINE_SCHEMA_VERSION = 106;
+export const BASELINE_SCHEMA_VERSION = 107;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -283,6 +283,19 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE INDEX sessions_status_idx ON sessions(status)",
   "CREATE INDEX work_repos_excluded_idx ON work_repos(excluded)",
   "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
+  "CREATE TABLE attribution_evidence (\n        id              TEXT PRIMARY KEY,\n        evidence_method TEXT NOT NULL,\n        credential_id   TEXT REFERENCES user_credentials(id) ON DELETE SET NULL,\n        lease_id        TEXT REFERENCES delegated_signing_leases(id) ON DELETE SET NULL,\n        verified_at     INTEGER NOT NULL,\n        details_json    TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(details_json) AND json_type(details_json)='object')\n      )",
+  "CREATE TABLE delegated_signing_leases (\n        id            TEXT PRIMARY KEY,\n        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,\n        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        minted_at     INTEGER NOT NULL,\n        expires_at    INTEGER NOT NULL,\n        mint_method   TEXT NOT NULL\n                        CHECK(mint_method IN ('fresh_presence','reused_lease'))\n      )",
+  "CREATE TABLE user_bindings (\n        id           TEXT PRIMARY KEY,\n        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        binding_type TEXT NOT NULL\n                       CHECK(binding_type IN ('app_name','provider_session_env','process_pattern','git_author_email','external_author')),\n        value        TEXT NOT NULL,\n        scope        TEXT,\n        status       TEXT NOT NULL DEFAULT 'active'\n                       CHECK(status IN ('active','inactive')),\n        created_at   INTEGER NOT NULL,\n        updated_at   INTEGER NOT NULL\n      )",
+  "CREATE TABLE user_credentials (\n        id              TEXT PRIMARY KEY,\n        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,\n        type            TEXT NOT NULL,\n        fingerprint     TEXT NOT NULL,\n        public_material TEXT,\n        label           TEXT,\n        status          TEXT NOT NULL DEFAULT 'active'\n                          CHECK(status IN ('active','revoked')),\n        created_at      INTEGER NOT NULL,\n        revoked_at      INTEGER,\n        metadata_json   TEXT NOT NULL DEFAULT '{}'\n                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
+  "CREATE TABLE users (\n        id            TEXT PRIMARY KEY,\n        slug          TEXT NOT NULL UNIQUE,\n        kind          TEXT NOT NULL\n                        CHECK(kind IN ('human','agent','system','external')),\n        display_name  TEXT NOT NULL,\n        email         TEXT,\n        status        TEXT NOT NULL DEFAULT 'active'\n                        CHECK(status IN ('active','retired')),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')\n      )",
+  "CREATE INDEX idx_attribution_evidence_credential\n        ON attribution_evidence(credential_id) WHERE credential_id IS NOT NULL",
+  "CREATE INDEX idx_attribution_evidence_lease\n        ON attribution_evidence(lease_id) WHERE lease_id IS NOT NULL",
+  "CREATE INDEX idx_delegated_signing_leases_credential\n        ON delegated_signing_leases(credential_id)",
+  "CREATE INDEX idx_delegated_signing_leases_owner\n        ON delegated_signing_leases(owner_user_id)",
+  "CREATE INDEX idx_user_bindings_lookup\n        ON user_bindings(binding_type, value)",
+  "CREATE INDEX idx_user_bindings_user\n        ON user_bindings(user_id)",
+  "CREATE UNIQUE INDEX idx_user_credentials_active_fingerprint\n        ON user_credentials(fingerprint) WHERE status = 'active'",
+  "CREATE INDEX idx_user_credentials_user\n        ON user_credentials(user_id)",
   "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
   "CREATE TRIGGER trg_work_units_assigned_session_update_normalize\n     AFTER UPDATE OF assigned_session_id ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END"
 ];
@@ -497,6 +510,18 @@ export function createFreshSchemaBaseline(db: Db, schemaVersion: number): void {
     for (const hook of BUILTIN_AUTH_HOOKS) {
       insertAuthHook.run({ ...hook, created_at: now, updated_at: now });
     }
+
+    // Seed the single canonical `system` user, matching migration v107. Fixed
+    // sentinel id and created_at/updated_at=0 so a fresh-baseline DB and a fully
+    // migrated DB carry byte-identical seed rows. The local human operator is
+    // never seeded here — only `mandible user setup` creates it.
+    db.prepare(
+      `INSERT OR IGNORE INTO users (
+        id, slug, kind, display_name, email, status, created_at, updated_at, metadata_json
+      ) VALUES (
+        '00000000000000000000000000', 'system', 'system', 'System', NULL, 'active', 0, 0, '{}'
+      )`,
+    ).run();
   });
 
   create();
