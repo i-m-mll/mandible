@@ -148,11 +148,11 @@ cmd_dashboard_link() {
 }
 
 cmd_list() {
-  local kind="" status="" json=0
+  local kind="" status_filter="" json=0
   while (( $# > 0 )); do
     case "$1" in
       --kind)   kind="$2"; shift 2 ;;
-      --status) status="$2"; shift 2 ;;
+      --status) status_filter="$2"; shift 2 ;;
       --json)   json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) die "Unexpected argument: $1" 2 ;;
@@ -161,8 +161,8 @@ cmd_list() {
   require_tools
   local query="" response
   [[ -n "$kind" ]] && query="?kind=$(urlencode "$kind")"
-  if [[ -n "$status" ]]; then
-    [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status")" || query="?status=$(urlencode "$status")"
+  if [[ -n "$status_filter" ]]; then
+    [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status_filter")" || query="?status=$(urlencode "$status_filter")"
   fi
   response="$(api_get "/api/users${query}")" || die "${RED}Failed to list users.${RESET}" 1
   emit "$response" "$json" '.users[]? | "\(.slug)\t\(.kind)\t\(.status)\t\(.display_name)\t\(.email // "-")"'
@@ -188,12 +188,12 @@ cmd_show() {
 }
 
 cmd_update() {
-  local ref="" name="" email="" status="" json=0 name_set=0 email_set=0
+  local ref="" name="" email="" status_value="" json=0 name_set=0 email_set=0
   while (( $# > 0 )); do
     case "$1" in
       --name)   name="$2"; name_set=1; shift 2 ;;
       --email)  email="$2"; email_set=1; shift 2 ;;
-      --status) status="$2"; shift 2 ;;
+      --status) status_value="$2"; shift 2 ;;
       --json)   json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
@@ -205,7 +205,7 @@ cmd_update() {
   payload="$(jq -n \
     --argjson name_set "$name_set" --arg name "$name" \
     --argjson email_set "$email_set" --arg email "$email" \
-    --arg status "$status" \
+    --arg status "$status_value" \
     '{}
      + (if $name_set == 1 then {display_name:$name} else {} end)
      + (if $email_set == 1 then {email:$email} else {} end)
