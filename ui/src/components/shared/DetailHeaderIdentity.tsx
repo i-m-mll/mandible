@@ -33,6 +33,45 @@ export function DetailHeaderIdentity({
   );
 }
 
+export type EvidenceStrength = 'verified' | 'claimed';
+
+export type EvidenceBadge = {
+  strength: EvidenceStrength;
+  label: string;
+  title: string;
+};
+
+/**
+ * Map a stored attribution evidence_method to the small inline badge shown next
+ * to an attributed author. Verified methods (a bearer token or a credential
+ * signature) read as trustworthy identity; a session_claim is an unverified
+ * ambient claim and reads as such. system_internal (the daemon system user) and
+ * NULL/unattributed rows return null: the system user is already conveyed by its
+ * kind badge, and an unattributed row must never grow a false identity affordance.
+ */
+export function evidenceBadgeFor(
+  method: string | null | undefined,
+): EvidenceBadge | null {
+  switch (method) {
+    case 'api_token':
+      return { strength: 'verified', label: 'verified', title: 'Verified by API token' };
+    case 'credential_signature':
+      return {
+        strength: 'verified',
+        label: 'verified',
+        title: 'Verified by credential signature',
+      };
+    case 'session_claim':
+      return {
+        strength: 'claimed',
+        label: 'claimed',
+        title: 'Claimed from session binding, not verified',
+      };
+    default:
+      return null;
+  }
+}
+
 export function AttributionIdentity({
   display,
   user,
@@ -48,6 +87,7 @@ export function AttributionIdentity({
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const resolvedUser = attribution?.user ?? user ?? null;
+  const evidenceBadge = evidenceBadgeFor(attribution?.evidence_method);
   const hasProvenance = Boolean(
     resolvedUser || attribution?.evidence_method || attribution?.credential || source,
   );
@@ -66,6 +106,15 @@ export function AttributionIdentity({
         {resolvedUser?.kind && (
           <span className={`attribution-identity__kind attribution-identity__kind--${resolvedUser.kind}`}>
             {resolvedUser.kind}
+          </span>
+        )}
+        {evidenceBadge && (
+          <span
+            className={`attribution-identity__evidence attribution-identity__evidence--${evidenceBadge.strength}`}
+            title={evidenceBadge.title}
+            aria-label={evidenceBadge.title}
+          >
+            {evidenceBadge.label}
           </span>
         )}
       </button>
