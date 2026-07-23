@@ -13,7 +13,7 @@ import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addBinding, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 const tempDirs: string[] = [];
 const SYSTEM_ACTOR = { attribution: systemAction() };
@@ -29,6 +29,10 @@ function createMigratedDb(): Db {
   migrate(db);
   setDb(db);
   setupOperator(db, { slug: "auth-action-test", display_name: "Auth Action Test" }, 1);
+  // Issue a64d2de: provider-session bindings resolve to session_claim attribution
+  // only for agent principals. The auth-request requester is an agent session, so
+  // bind the route session env to an agent rather than the human operator.
+  createUser(db, { slug: "auth-action-agent", kind: "agent", display_name: "Auth Action Agent" }, 1);
   return db;
 }
 
@@ -498,7 +502,7 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-      addBinding(db, "auth-action-test", {
+      addBinding(db, "auth-action-agent", {
         binding_type: "provider_session_env",
         value: "auth-action-route-session",
       });
@@ -598,7 +602,7 @@ describe("auth request action routes", () => {
       const router = new Router();
       const queue = new AuthQueue({ db });
       registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
-      addBinding(db, "auth-action-test", {
+      addBinding(db, "auth-action-agent", {
         binding_type: "provider_session_env",
         value: "auth-action-invalid-session",
       });
