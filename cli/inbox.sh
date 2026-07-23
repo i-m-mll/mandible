@@ -189,10 +189,10 @@ cmd_watch() {
       continue
     }
 
-    local status
-    status=$(printf '%s' "$response" | jq -r '.status // "unknown"')
+    local request_status
+    request_status=$(printf '%s' "$response" | jq -r '.status // "unknown"')
 
-    case "$status" in
+    case "$request_status" in
       pending|approved)
         # Still in progress, keep polling
         ;;
@@ -205,11 +205,11 @@ cmd_watch() {
       rejected|expired|dismissed)
         local error
         error=$(printf '%s' "$response" | jq -r '.error // "none"')
-        print "Auth request ${request_id}: ${status} — ${error}"
+        print "Auth request ${request_id}: ${request_status} — ${error}"
         exit 1
         ;;
       *)
-        print -u2 "Auth request ${request_id}: unexpected status '${status}'"
+        print -u2 "Auth request ${request_id}: unexpected status '${request_status}'"
         exit 1
         ;;
     esac
