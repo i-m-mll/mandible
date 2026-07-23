@@ -3174,6 +3174,15 @@ export const MIGRATIONS: readonly Migration[] = [
     // the guarded clearLocalDefaultLedgerAttribution() hook so a partial-schema
     // or schema-rewind replay is safe; the UPDATE is naturally idempotent
     // because a second run finds no 'local_default' rows left.
+    //
+    // Deliberate lossiness: a historical 'local_default' stamp is an
+    // indistinguishable guess — the pre-fix code attributed the operator to
+    // EVERY tokenless write regardless of who actually acted, so these rows are
+    // majority-misattributed and carry no signal worth preserving. Clearing them
+    // to the honest legacy 'Mandible' display is strictly more truthful than
+    // keeping a confident-but-wrong operator id. This is a one-way data change;
+    // an operator DB backup precedes the protected-branch merge, so the original
+    // bytes remain recoverable if ever needed.
     statements: []
   }
 ];
