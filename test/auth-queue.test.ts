@@ -2539,6 +2539,171 @@ describe("auth queue", () => {
     }
   });
 
+  it("classifies a queued request whose head branch was torn down as stale, not a conflict (fbf2a58)", () => {
+    const repo = createAuthCheckRepo();
+    const queue = createQueue();
+    try {
+      commitOnBranch(repo, "feature/gone", { "gone.txt": "gone\n" });
+      commitOnBranch(repo, "feature/live", { "live.txt": "live\n" });
+
+      const queued = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/gone --into main",
+        title: "Merge feature/gone",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/gone",
+        cwd: repo,
+      });
+
+      // Simulate the incident: the merge landed and the head branch was torn
+      // down, but the queue row was never finalized.
+      git(repo, ["branch", "-D", "feature/gone"]);
+
+      const check = queue.checkMergeIndependence({
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/live",
+        cwd: repo,
+      });
+
+      expect(check.status).toBe("stale_request");
+      expect(check.conflicts).toEqual([]);
+      expect(check.stale_requests).toHaveLength(1);
+      expect(check.stale_requests?.[0]?.request_id).toBe(queued.id);
+      expect(check.stale_requests?.[0]?.head_branch).toBe("feature/gone");
+      expect(check.stale_requests?.[0]?.message).toContain(queued.id);
+      expect(check.reason).toContain("no longer exists");
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reconciles a pending merge whose head is already an ancestor of target at startup (fbf2a58)", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/landed", { "landed.txt": "landed\n" });
+      const headSha = git(repo, ["rev-parse", "feature/landed"]);
+
+      const queue = new AuthQueue({ db });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/landed --into main",
+        title: "Merge feature/landed",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/landed",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+      });
+      expect(queue.getRequest(request.id)?.status).toBe("pending");
+
+      // The merge lands out-of-band (terminal auth-merge) but finalization is
+      // lost; the request stays pending until the next daemon startup.
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/landed", "-m", "merge feature/landed"]);
+      queue.dispose();
+
+      const events: SseEvent[] = [];
+      const restarted = new AuthQueue({ db, broadcast: (event) => events.push(event) });
+      try {
+        const reconciled = restarted.getRequest(request.id);
+        expect(reconciled?.status).toBe("completed");
+        expect(reconciled?.exit_code).toBe(0);
+        expect(reconciled?.merge_finalized_at).not.toBeNull();
+        expect(events.some((event) => event.event === "auth:merged")).toBe(true);
+        expect(events.some((event) => event.event === "auth:resolved")).toBe(true);
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("reconciles a pending merge via recorded merge_head_sha when the head branch was deleted (fbf2a58)", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/torn", { "torn.txt": "torn\n" });
+      const headSha = git(repo, ["rev-parse", "feature/torn"]);
+
+      const queue = new AuthQueue({ db });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/torn --into main",
+        title: "Merge feature/torn",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/torn",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+      });
+
+      // Merge lands and the branch is torn down (post-merge cleanup), matching
+      // the reported incident. The head branch ref is gone; only the recorded
+      // merge_head_sha remains checkable.
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/torn", "-m", "merge feature/torn"]);
+      git(repo, ["branch", "-D", "feature/torn"]);
+      queue.dispose();
+
+      const restarted = new AuthQueue({ db });
+      try {
+        const reconciled = restarted.getRequest(request.id);
+        expect(reconciled?.status).toBe("completed");
+        expect(reconciled?.exit_code).toBe(0);
+        expect(reconciled?.merge_finalized_at).not.toBeNull();
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a pending merge whose head is not yet in target untouched (fbf2a58)", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    try {
+      commitOnBranch(repo, "feature/unmerged", { "unmerged.txt": "unmerged\n" });
+      const headSha = git(repo, ["rev-parse", "feature/unmerged"]);
+
+      const queue = new AuthQueue({ db });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/unmerged --into main",
+        title: "Merge feature/unmerged",
+        repo: "repo",
+        base_branch: "main",
+        head_branch: "feature/unmerged",
+        merge_head_sha: headSha,
+        cwd: repo,
+        target_repo_root: repo,
+      });
+      queue.dispose();
+
+      // Nothing landed: the head is genuinely absent from main.
+      const restarted = new AuthQueue({ db });
+      try {
+        const untouched = restarted.getRequest(request.id);
+        expect(untouched?.status).toBe("pending");
+        expect(untouched?.exit_code).toBeNull();
+        expect(untouched?.merge_finalized_at ?? null).toBeNull();
+      } finally {
+        restarted.dispose();
+      }
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
   it("marks pending merge requests needs_rebase after post-merge revalidation", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
