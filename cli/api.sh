@@ -77,9 +77,23 @@ api_client_auth_config_dir() {
 
 # Resolve the client-auth bearer/capability token: MANDIBLE_TOKEN wins, else the
 # same-user operator bootstrap-token file (filesystem trust, like file-RPC).
+#
+# Optional $1 is the request method. Reads are never identity-gated, and the
+# operator bootstrap token is a one-shot enrollment proof, not a read
+# credential — so on GET requests we must NOT fall back to the bootstrap file
+# (issue a9ede3c defect 2). An explicit MANDIBLE_TOKEN is still honored for GET.
+# Callers that need the bootstrap directly for enrollment (e.g. dashboard-link)
+# pass no method and keep the fallback.
 api_client_token() {
+  local method="${1:-}"
   if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
     printf '%s' "$MANDIBLE_TOKEN"
+    return
+  fi
+  # Do not attach the enrollment bootstrap proof to read-only requests: an
+  # unmarked background poller (observed: a ~10-30s GET /api/settings loop)
+  # would otherwise consume the one-shot key on sight and block enrollment.
+  if [[ "$method" == "GET" ]]; then
     return
   fi
   # Managed agents must receive their own explicit token from the spawner.
@@ -231,8 +245,9 @@ api_http_exchange() {
 
   # Issue 708dc4c (finding 6) — present the client-auth bearer token via a 0600
   # curl config file, never on argv (which is visible in `ps`). Resolve it from
-  # MANDIBLE_TOKEN or the same-user operator bootstrap-token file.
-  token="$(api_client_token)"
+  # MANDIBLE_TOKEN or the same-user operator bootstrap-token file. Pass the
+  # method so GET reads never pick up the one-shot bootstrap proof (issue a9ede3c).
+  token="$(api_client_token "$method")"
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
     chmod 600 "$token_cfg" 2>/dev/null || true
@@ -776,7 +791,7 @@ api_file_rpc_exchange() {
   # still lands in the spool request file, which is the file-RPC trust anchor.
   : > "$request_tmp"
   chmod 600 "$request_tmp"
-  MANDIBLE_CLIENT_TOKEN="$(api_client_token)" jq -n \
+  MANDIBLE_CLIENT_TOKEN="$(api_client_token "$method")" jq -n \
     --arg id "$request_id" \
     --arg method "$method" \
     --arg path "$request_path" \

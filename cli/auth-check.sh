@@ -131,6 +131,19 @@ case "$status" in
     ' >&2
     exit 1
     ;;
+  stale_request)
+    # Issue fbf2a58 — a queued request references a head branch that no longer
+    # exists. This is NOT a merge conflict and NOT a dirty worktree: the queue
+    # holds a stale row (its branch was already merged and torn down, or
+    # deleted). Surface the remediation, not a conflict/dirty-state banner.
+    printf 'Auth check: stale queue request(s) — not a conflict\n' >&2
+    printf '%s\n' "$response" | jq -r '
+      .check.stale_requests[]?
+      | "- " + .message
+    ' >&2
+    printf 'Remediation: reconcile the auth queue (already-merged requests self-resolve at daemon startup and periodically) or dismiss the stale request(s) listed above, then recheck.\n' >&2
+    exit 1
+    ;;
   error)
     reason=$(printf '%s' "$response" | jq -r '.check.reason // "unknown"')
     printf 'Auth check: error: %s\n' "$reason" >&2

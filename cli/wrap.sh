@@ -68,6 +68,41 @@ export MANDIBLE_SESSION_ID="$SESSION_ID"
 # session — use software signing key instead of YubiKey.
 export AI_AGENT_SIGNING=1
 
+# ── Per-agent identity token injection ───────────────────────────
+# Give the launched agent its own verified Mandible identity by fetching
+# a per-agent api_token from the macOS keychain and exporting it into the
+# launched process's environment only (it is inherited by the exec'd
+# command below, never written back to the operator's shell).
+#
+# The keychain item is a generic password whose service name derives from
+# the app: `mandible-agent-<app>` (e.g. mandible-agent-claude,
+# mandible-agent-codex). This is the same mechanism for every app that has
+# such an item; apps without one simply get nothing. Absence is normal.
+#
+# The token value is never printed, logged, echoed, or written to disk;
+# fetch success is judged only by security's exit status and a non-empty
+# result. Everything here is non-fatal and quiet by default. Opt out with
+# MANDIBLE_NO_KEYCHAIN_TOKEN=1.
+inject_agent_token() {
+  # Explicit opt-out.
+  [ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" = "1" ] && return 0
+  # Respect an already-provided token (e.g. injected by the launcher).
+  [ -n "${MANDIBLE_TOKEN:-}" ] && return 0
+  # Need a known app to derive the service name; need the keychain tool.
+  [ -n "$APP" ] || return 0
+  command -v security >/dev/null 2>&1 || return 0
+
+  local service token
+  service="mandible-agent-$APP"
+  # -w prints only the password to stdout; 2>/dev/null suppresses the
+  # "item not found" diagnostic. On any failure we leave the token unset.
+  token=$(security find-generic-password -s "$service" -w 2>/dev/null) || return 0
+  [ -n "$token" ] || return 0
+  export MANDIBLE_TOKEN="$token"
+}
+
+inject_agent_token
+
 # Detect if the wrapped command uses --dangerously-* flags (YOLO mode).
 # Agents check this to maintain permission parity when delegating to sub-agents.
 CLAUDE_SKIP_PERMISSIONS=0

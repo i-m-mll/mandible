@@ -14,6 +14,8 @@ import {
   daemonStartupCommit,
   shouldEnterSplashOnBackgroundProbe,
   shouldEnterSplashOnProbe,
+  splashRequiresNewCommit,
+  stallEscapeReady,
 } from "../ui/src/daemon-readiness";
 
 describe("daemonNeedsSplash", () => {
@@ -87,6 +89,53 @@ describe("daemonIsWarm", () => {
     expect(daemonIsWarm({ warm: true })).toBe(true);
     expect(daemonIsWarm({})).toBe(true);
     expect(daemonIsWarm(null)).toBe(true);
+  });
+});
+
+// Bug: afaea18 — a manual/ops daemon restart changes the per-process epoch but
+// not the startup commit. The splash must not require a new commit for such a
+// restart (it would strand the page forever), and even a genuinely stalled
+// splash must always offer an escape once the daemon is proven healthy.
+describe("splashRequiresNewCommit (afaea18: only announced rebuilds bump commit)", () => {
+  const epoch = "a".repeat(40);
+
+  it("requires a new commit only for an announced rebuild", () => {
+    expect(splashRequiresNewCommit(true)).toBe(true);
+    expect(splashRequiresNewCommit(false)).toBe(false);
+  });
+
+  it("does not strand a manual restart: bare epoch drift releases without a new commit", () => {
+    const newEpoch = "b".repeat(40);
+    // Manual restart caught by the mount probe: epoch drifted, but the daemon
+    // is not rebuilding, so no new commit is required. On the same commit the
+    // splash must still release once the new epoch is ready.
+    const requireNewCommit = splashRequiresNewCommit(false);
+    const restarted = { ready: true, startup_epoch: newEpoch, startup_commit: { hash: epoch } };
+    expect(daemonEpochChanged(restarted, epoch)).toBe(true);
+    expect(daemonIsReadyAfterEpoch(restarted, epoch, true)).toBe(true);
+    // Commit is unchanged, but since no new commit is required the reload gate
+    // (!requireNewCommit || commitChanged) is satisfied.
+    expect(requireNewCommit || daemonCommitChanged(restarted, epoch)).toBe(false);
+  });
+});
+
+describe("stallEscapeReady (afaea18: a stall can never be permanent)", () => {
+  const epoch = "a".repeat(40);
+  const healthy = { ready: true, warm: true, startup_epoch: epoch, startup_commit: { hash: epoch } };
+
+  it("arms the escape once a healthy same-commit daemon holds past the window", () => {
+    expect(stallEscapeReady(healthy, 20_000, 15_000)).toBe(true);
+  });
+
+  it("does not arm before the bounded window elapses", () => {
+    expect(stallEscapeReady(healthy, 5_000, 15_000)).toBe(false);
+  });
+
+  it("does not arm while the daemon is still rebuilding, cold, or not ready", () => {
+    expect(stallEscapeReady({ ...healthy, rebuilding: true }, 30_000, 15_000)).toBe(false);
+    expect(stallEscapeReady({ ...healthy, warm: false }, 30_000, 15_000)).toBe(false);
+    expect(stallEscapeReady({ ...healthy, ready: false }, 30_000, 15_000)).toBe(false);
+    expect(stallEscapeReady(null, 30_000, 15_000)).toBe(false);
   });
 });
 

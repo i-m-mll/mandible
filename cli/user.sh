@@ -81,6 +81,40 @@ emit() {
   fi
 }
 
+# GET a read-only path and echo the JSON body on success. On failure, print a
+# status-aware diagnostic to stderr and return nonzero so callers can propagate
+# with `|| exit 1` in the file's existing idiom. Unlike the plain api_get/die
+# pattern, this distinguishes auth failures (401/403) and not-found (404) from
+# other errors and surfaces the server's error/reason/message when present, so a
+# 401 no longer masquerades as "not found". Only GET read paths use this: GET is
+# never an operational-mutation category, so api_capture's status here is the
+# real HTTP status, never the instance-guard 403 that mutation preflight emits.
+# $1 = request path, $2 = short name of the target for messages (e.g. "user").
+api_read() {
+  local request_path="$1" what="${2:-resource}"
+  local body_file http_status detail
+  body_file="$(api_temp_file)"
+  http_status="$(api_capture GET "$request_path" "" "$body_file")"
+  if [[ "$http_status" =~ ^2 ]]; then
+    cat "$body_file"
+    rm -f "$body_file"
+    return 0
+  fi
+  detail="$(jq -r '(.error // .reason // .message // empty)' "$body_file" 2>/dev/null || true)"
+  rm -f "$body_file"
+  case "$http_status" in
+    401|403)
+      err "${RED}Authentication failed querying ${what} (HTTP ${http_status})${detail:+: ${detail}}${RESET} — set MANDIBLE_TOKEN or run 'mandible user dashboard-link' to authenticate." ;;
+    404)
+      err "${RED}${what} not found (HTTP 404)${detail:+: ${detail}}${RESET}" ;;
+    000)
+      err "${RED}Could not reach the Mandible daemon while querying ${what}${RESET}" ;;
+    *)
+      err "${RED}Failed to query ${what} (HTTP ${http_status})${detail:+: ${detail}}${RESET}" ;;
+  esac
+  return 1
+}
+
 git_config_value() {
   git config --get "$1" 2>/dev/null || true
 }
@@ -164,7 +198,7 @@ cmd_list() {
   if [[ -n "$status_filter" ]]; then
     [[ -n "$query" ]] && query="${query}&status=$(urlencode "$status_filter")" || query="?status=$(urlencode "$status_filter")"
   fi
-  response="$(api_get "/api/users${query}")" || die "${RED}Failed to list users.${RESET}" 1
+  response="$(api_read "/api/users${query}" "users")" || exit 1
   emit "$response" "$json" '.users[]? | "\(.slug)\t\(.kind)\t\(.status)\t\(.display_name)\t\(.email // "-")"'
 }
 
@@ -180,7 +214,7 @@ cmd_show() {
   [[ -n "$ref" ]] || die "Usage: mandible user show <ref> [--json]" 2
   require_tools
   local response
-  response="$(api_get "/api/users/$(urlencode "$ref")")" || die "${RED}User not found.${RESET}" 1
+  response="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
   emit "$response" "$json" '.user |
     "id: \(.id)\nslug: \(.slug)\nkind: \(.kind)\nname: \(.display_name)\nemail: \(.email // "-")\nstatus: \(.status)",
     "credentials:", (.credentials[]? | "  \(.id) \(.type) \(.fingerprint) [\(.status)]"),
@@ -188,12 +222,12 @@ cmd_show() {
 }
 
 cmd_update() {
-  local ref="" name="" email="" status="" json=0 name_set=0 email_set=0
+  local ref="" name="" email="" status_value="" json=0 name_set=0 email_set=0
   while (( $# > 0 )); do
     case "$1" in
       --name)   name="$2"; name_set=1; shift 2 ;;
       --email)  email="$2"; email_set=1; shift 2 ;;
-      --status) status="$2"; shift 2 ;;
+      --status) status_value="$2"; shift 2 ;;
       --json)   json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
@@ -205,7 +239,7 @@ cmd_update() {
   payload="$(jq -n \
     --argjson name_set "$name_set" --arg name "$name" \
     --argjson email_set "$email_set" --arg email "$email" \
-    --arg status "$status" \
+    --arg status "$status_value" \
     '{}
      + (if $name_set == 1 then {display_name:$name} else {} end)
      + (if $email_set == 1 then {email:$email} else {} end)
@@ -321,8 +355,7 @@ credential_list() {
   require_tools
   local query="" response
   (( all )) && query="?all=1"
-  response="$(api_get "/api/users/$(urlencode "$ref")/credentials${query}")" \
-    || die "${RED}Failed to list credentials.${RESET}" 1
+  response="$(api_read "/api/users/$(urlencode "$ref")/credentials${query}" "credentials")" || exit 1
   emit "$response" "$json" '.credentials[]? | "\(.id)\t\(.type)\t\(.fingerprint)\t\(.status)\t\(.label // "-")"'
 }
 
@@ -372,8 +405,7 @@ token_list() {
   require_tools
   local query="" response
   (( all )) && query="?all=1"
-  response="$(api_get "/api/users/$(urlencode "$ref")/tokens${query}")" \
-    || die "${RED}Failed to list tokens.${RESET}" 1
+  response="$(api_read "/api/users/$(urlencode "$ref")/tokens${query}" "tokens")" || exit 1
   emit "$response" "$json" '.tokens[]? | "\(.id)\t\(.status)\t\(.label // "-")\t\(.created_at)"'
 }
 
@@ -442,8 +474,7 @@ binding_list() {
   [[ -n "$ref" ]] || die "Usage: mandible user binding list <ref> [--json]" 2
   require_tools
   local response
-  response="$(api_get "/api/users/$(urlencode "$ref")/bindings")" \
-    || die "${RED}Failed to list bindings.${RESET}" 1
+  response="$(api_read "/api/users/$(urlencode "$ref")/bindings" "bindings")" || exit 1
   emit "$response" "$json" '.bindings[]? | "\(.id)\t\(.binding_type)\t\(.value)\t\(.status)\t\(.scope // "-")"'
 }
 
@@ -451,6 +482,15 @@ cmd_group() {
   local sub="${1:-}"; shift || true
   local ref="" name="" user="" operation="" json=0 response payload
   case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage:
+  mandible user group add <slug> [--name <n>] [--json]
+  mandible user group rm <ref> [--json]
+  mandible user group members <ref> [--add <user>|--rm <user>] [--json]
+EOF
+      return 0
+      ;;
     add)
       while (( $# > 0 )); do
         case "$1" in
@@ -498,7 +538,7 @@ cmd_group() {
       elif [[ "$operation" == "rm" ]]; then
         response="$(api_send DELETE "/api/users/groups/$(urlencode "$ref")/members/$(urlencode "$user")" "")" || die "Failed to remove group member." 1
       else
-        response="$(api_get "/api/users/groups/$(urlencode "$ref")/members")" || die "Failed to list group members." 1
+        response="$(api_read "/api/users/groups/$(urlencode "$ref")/members" "group members")" || exit 1
       fi
       emit "$response" "$json" '.members[]? | "\(.slug)\t\(.kind)\t\(.display_name)"'
       ;;
@@ -510,6 +550,15 @@ cmd_grant() {
   local sub="${1:-}"; shift || true
   local id="" subject_type="" subject="" project="" capability="" role="" resource_type="" resource_id="" json=0 response payload query=""
   case "$sub" in
+    -h|--help|help)
+      cat <<'EOF'
+Usage:
+  mandible user grant add --subject-type user|group --subject <ref> (--project <ref> --role read|write|admin | --global <capability>) [--json]
+  mandible user grant rm <id> [--json]
+  mandible user grant list [--resource-type project|global] [--resource-id <id>] [--json]
+EOF
+      return 0
+      ;;
     add)
       while (( $# > 0 )); do
         case "$1" in
@@ -564,7 +613,7 @@ cmd_grant() {
         [[ -n "$query" ]] && query="${query}&resource_id=$(urlencode "$resource_id")" || query="?resource_id=$(urlencode "$resource_id")"
       fi
       require_tools
-      response="$(api_get "/api/users/grants${query}")" || die "Failed to list grants." 1
+      response="$(api_read "/api/users/grants${query}" "grants")" || exit 1
       emit "$response" "$json" '.grants[]? | "\(.id)\t\(.subject_type):\(.subject_id)\t\(.resource_type):\(.resource_id // "-")\t\(.permission)"'
       ;;
     *) die "Unknown grant subcommand: ${sub:-}. Use add|rm|list." 2 ;;
@@ -582,7 +631,7 @@ cmd_access() {
   done
   [[ -n "$user" && -n "$project" ]] || die "Usage: mandible user access <user> <project> [--json]" 2
   require_tools
-  response="$(api_get "/api/users/$(urlencode "$user")/access?project=$(urlencode "$project")")" || die "Failed to query access." 1
+  response="$(api_read "/api/users/$(urlencode "$user")/access?project=$(urlencode "$project")" "access")" || exit 1
   emit "$response" "$json" '.access | "allowed: \(.allowed)\nrole: \(.effective_role // "-")\nreason: \(.reason)"'
 }
 
