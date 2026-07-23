@@ -1513,9 +1513,17 @@ export class AuthQueue {
       }
       if (resolved.status === "resolved") return resolved.attribution.user_id;
     }
-    // Trusted in-process callers retain the local-operator default. Transport
-    // routes resolve and pass an authenticated/session principal explicitly,
-    // so anonymous network input can never reach this compatibility seam.
+    // This fallback is unreachable over HTTP (issue a64d2de execution-context
+    // determination): the transport route resolveAuthRequester REJECTS a request
+    // with 401 when it can neither authenticate a bearer identity nor resolve an
+    // unambiguous session binding, and otherwise passes the resolved principal
+    // (a managed agent included) here as `requestedByUserId`. So a managed-agent
+    // request can never silently become the operator through this seam — it is
+    // resolved to the agent or refused. Only a trusted IN-PROCESS caller (a
+    // daemon-internal submission with no explicit requester and no session) lands
+    // here, which is a genuine local-operator context; the env-marker gate used
+    // for the process-local CLI lanes deliberately does NOT apply, since it would
+    // read the daemon's own env rather than any per-request context.
     return localDefaultAttribution(this.db).user_id;
   }
 

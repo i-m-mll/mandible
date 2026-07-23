@@ -18,6 +18,7 @@ import {
   OperatorNotConfiguredError,
   isEvidenceMethod,
   localDefaultAttribution,
+  localProcessDefaultAttribution,
   mintShadowUser,
   normalizeBindingValue,
   projectActorType,
@@ -240,19 +241,53 @@ describe("fail-closed attribution (F2: no unattributed new writes)", () => {
     ).get()).toEqual({ n: 0 });
   });
 
-  it("records an explicit non-system principal in the parallel columns", () => {
+  it("records the operator for a local write only in a non-managed context", () => {
     const store = new LedgerStore(db);
     const projectId = createProject();
     const operator = setupOperator(db, { display_name: "Operator" });
 
+    // A clean shell (no managed-session env markers) is a genuine local operator
+    // invocation, so the parallel columns record the operator with local_default.
+    const attribution = localProcessDefaultAttribution(db, {});
     const issue = store.createIssue({
       project_id: projectId,
       title: "Attributed",
       author_display: "Mandible",
-      attribution: localDefaultAttribution(db),
+      attribution,
     });
     expect(issue.author_user_id).toBe(operator.id);
     expect(issue.evidence_method).toBe("local_default");
+  });
+
+  it("never attributes the operator for a local write inside a managed agent context", () => {
+    const store = new LedgerStore(db);
+    const projectId = createProject();
+    setupOperator(db, { display_name: "Operator" });
+
+    // Managed session carrying an ambient codex signal that maps to an agent:
+    // the write resolves to that agent with session_claim, never the operator.
+    const codex = createUser(db, { slug: "codex", kind: "agent", display_name: "Codex" });
+    addBinding(db, codex.id, { binding_type: "provider_session_env", value: "CODEX_THREAD_ID" });
+    const agentAttribution = localProcessDefaultAttribution(db, { CODEX_THREAD_ID: "thread-x" });
+    const agentIssue = store.createIssue({
+      project_id: projectId,
+      title: "Managed agent write",
+      attribution: agentAttribution,
+    });
+    expect(agentIssue.author_user_id).toBe(codex.id);
+    expect(agentIssue.evidence_method).toBe("session_claim");
+
+    // Managed marker present but no resolvable ambient agent: unattributed (NULL),
+    // never a silent operator fallback.
+    const unresolved = localProcessDefaultAttribution(db, { MANDIBLE_MANAGED_CLIENT: "1" });
+    expect(unresolved).toBeNull();
+    const nullIssue = store.createIssue({
+      project_id: projectId,
+      title: "Managed unattributed write",
+      attribution: unresolved,
+    });
+    expect(nullIssue.author_user_id).toBeNull();
+    expect(nullIssue.evidence_method).toBeNull();
   });
 
   it("isolates author_display edits from user attribution", () => {
@@ -382,6 +417,18 @@ describe("session binding resolution (F5: fail closed)", () => {
       provider_session_env: "session-c",
       app_name: "app-c",
     })?.user_id).toBe(agent.id);
+  });
+
+  it("refuses to mint session_claim for a non-agent binding owner", () => {
+    // A forgeable ambient signal must never resolve to a human/operator: only
+    // agent-kind owners may back the deliberately-unverified session_claim.
+    const human = createUser(db, { slug: "human-bound", kind: "human", display_name: "Human" });
+    addBinding(db, human.id, { binding_type: "app_name", value: "human-app" });
+    expect(resolveSessionAttribution(db, { app_name: "human-app" })).toBeNull();
+
+    const external = createUser(db, { slug: "ext-bound", kind: "external", display_name: "External" });
+    addBinding(db, external.id, { binding_type: "provider_session_env", value: "ext-session" });
+    expect(resolveSessionAttribution(db, { provider_session_env: "ext-session" })).toBeNull();
   });
 });
 

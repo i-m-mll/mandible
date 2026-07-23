@@ -7,7 +7,7 @@ import {
   normalizeEscapedMarkdownBodies,
   type MarkdownBodyAuditScope,
 } from "../ledger/markdown-body.js";
-import { localDefaultAttribution } from "../identity/resolver.js";
+import { localProcessDefaultAttribution } from "../identity/resolver.js";
 import {
   exportIssueMarkdownFiles,
   type IssueMarkdownExportOptions,
@@ -46,12 +46,14 @@ function main(argv: string[]): number {
             apply: true,
             scope: args.scope,
             normalize_all_matches: args.allMatches,
-            // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI");
-            // real identity is the local operator in parallel columns (issue 92813cc).
+            // Legacy actor tuple frozen to base ('mandible_user' + "Mandible CLI").
+            // Real identity in the parallel columns is the local operator only in
+            // a non-managed shell; run from a managed agent session it resolves to
+            // the ambient agent or stays unattributed (issue a64d2de / 92813cc).
             actor: {
               actor_type: "mandible_user",
               author_display: "Mandible CLI",
-              attribution: localDefaultAttribution(db),
+              attribution: localProcessDefaultAttribution(db),
             },
           })
         : normalizeEscapedMarkdownBodies(db, {
