@@ -467,4 +467,121 @@ describe("auth finalizer queue (Issue 75f52ac)", () => {
       db.close();
     }
   });
+
+  // Integration reconciliation (issue 75f52ac) — per-step outputs are persisted
+  // into merge_finalizer_state and the terminal payload is reconstructed from
+  // them, so a step's output produced on an earlier pass is not lost when a later
+  // pass skips the already-done step.
+  it("carries the ancestry pass's resolved_work_unit_ids through an archive retry", async () => {
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    let archiveCalls = 0;
+    const queue = new AuthQueue({
+      db,
+      broadcast: (event) => events.push(event),
+      codexThreadArchiver: {
+        archive: async () => {
+          archiveCalls += 1;
+          if (archiveCalls < 2) throw new Error("codex archive boom");
+        },
+        unarchive: async () => undefined,
+      },
+    });
+    // Ancestry resolves ids on pass 1; on pass 2 the step is skipped as done, so
+    // a process-local accumulator would be empty — only the persisted output
+    // preserves the ids.
+    vi.spyOn(
+      queue as unknown as { resolveAncestryWorkUnitsOnMerge(r: unknown): Promise<string[]> },
+      "resolveAncestryWorkUnitsOnMerge",
+    ).mockResolvedValue(["wu-a", "wu-b"]);
+    const sweep = () => (queue as unknown as { sweepSuccessfulMergeFinalizers(): void })
+      .sweepSuccessfulMergeFinalizers();
+    try {
+      const id = submitSuccessfulRequest(queue);
+      insertCodexWorkUnit(db, "wu-arch", id, "thread-arch");
+
+      // Pass 1: ancestry succeeds (output persisted), archive fails → not finalized.
+      queue.setResult(id, 0, "ok");
+      await queue.drainFinalizers();
+      expect(eventsFor(events, id, "auth:finalized")).toHaveLength(0);
+      const midState = JSON.parse(queue.getRequest(id)?.merge_finalizer_state ?? "{}");
+      expect(midState.resolve_ancestry_work_units.output.resolved_work_unit_ids).toEqual([
+        "wu-a",
+        "wu-b",
+      ]);
+
+      // Pass 2: ancestry skipped (done), archive succeeds → finalize.
+      sweep();
+      await queue.drainFinalizers();
+
+      const finalized = eventsFor(events, id, "auth:finalized")[0].data as {
+        resolved_work_unit_ids: string[];
+        archived_thread_count: number;
+      };
+      // The earlier ancestry pass's ids survive the archive retry.
+      expect(finalized.resolved_work_unit_ids).toEqual(["wu-a", "wu-b"]);
+      expect(finalized.archived_thread_count).toBe(1);
+    } finally {
+      queue.dispose();
+      db.close();
+    }
+  });
+
+  // Integration reconciliation (issue 75f52ac) — a crash-replayed finalize
+  // reconstructs the payload from persisted per-step outputs rather than emitting
+  // empty ids / zero archives.
+  it("reconstructs the auth:finalized payload from persisted per-step outputs on replay", async () => {
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    const id = "replay-request";
+    // A completed, unfinalized merge whose steps are all recorded done with their
+    // outputs — the state a crash leaves after the last pass wrote step state but
+    // before the finalize broadcast/marker.
+    db.prepare(
+      `INSERT INTO auth_requests (
+        id, session_id, type, command, title, repo, base_branch, head_branch,
+        merge_head_sha, status, created_at, updated_at, resolved_at, expires_at,
+        exit_code, output, execution_mode, files_changed, additions, deletions,
+        approval_source, merge_finalizer_state
+      ) VALUES (
+        ?, NULL, 'merge', 'mandible auth merge feature/x --into main', 'Replay',
+        'finalizer-repo', 'main', 'feature/x', ?, 'completed', 100, 100, 100, 100000,
+        0, 'ok', 'remote', 0, 0, 0, 'manual', ?
+      )`
+    ).run(
+      id,
+      HEAD_SHA,
+      JSON.stringify({
+        revalidate_pending: { state: "done", attempts: 1, at: 0 },
+        auto_dismiss_duplicates: { state: "done", attempts: 1, at: 0 },
+        resolve_ancestry_work_units: {
+          state: "done",
+          attempts: 1,
+          at: 0,
+          output: { resolved_work_unit_ids: ["wu-x", "wu-y"] },
+        },
+        archive_worker_threads: {
+          state: "done",
+          attempts: 2,
+          at: 0,
+          output: { archived_thread_count: 3 },
+        },
+      }),
+    );
+
+    const recovered = new AuthQueue({ db, broadcast: (event) => events.push(event) });
+    try {
+      await recovered.drainFinalizers();
+      const finalized = eventsFor(events, id, "auth:finalized")[0].data as {
+        resolved_work_unit_ids: string[];
+        archived_thread_count: number;
+      };
+      expect(finalized.resolved_work_unit_ids).toEqual(["wu-x", "wu-y"]);
+      expect(finalized.archived_thread_count).toBe(3);
+      expect(recovered.getRequest(id)?.merge_finalized_at).not.toBeNull();
+    } finally {
+      recovered.dispose();
+      db.close();
+    }
+  });
 });

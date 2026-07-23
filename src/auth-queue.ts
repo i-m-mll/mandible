@@ -91,11 +91,21 @@ const FINALIZER_STEP_NAMES = [
   "archive_worker_threads",
 ] as const;
 type FinalizerStepName = (typeof FINALIZER_STEP_NAMES)[number];
+// Issue 75f52ac — per-step output persisted alongside step state. The terminal
+// auth:finalized payload is reconstructed from these persisted outputs rather
+// than process-local accumulators, so a step whose output was produced on an
+// EARLIER pass (or before a crash) is not lost when a later pass skips the
+// already-done step or a fresh queue replays the row.
+type FinalizerStepOutput = {
+  resolved_work_unit_ids?: string[];
+  archived_thread_count?: number;
+};
 type FinalizerStepState = {
   state: "pending" | "done" | "failed";
   attempts: number;
   error?: string;
   at: number;
+  output?: FinalizerStepOutput;
 };
 type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>>;
 
@@ -2383,10 +2393,8 @@ export class AuthQueue {
     const mergeHeadSha = request.merge_head_sha ?? this.resolveMergeHeadShaForRequest(request);
     const finalized: AuthRequest = { ...request, merge_head_sha: mergeHeadSha };
     const state = this.readFinalizerState(requestId);
-    let resolvedWorkUnitIds: string[] = [];
-    let archivedThreadCount = 0;
 
-    const steps: Array<{ name: FinalizerStepName; run: () => Promise<void> }> = [
+    const steps: Array<{ name: FinalizerStepName; run: () => Promise<FinalizerStepOutput | void> }> = [
       {
         name: "revalidate_pending",
         run: async () => {
@@ -2403,15 +2411,16 @@ export class AuthQueue {
         name: "resolve_ancestry_work_units",
         run: async () => {
           if (this.tableExists("work_units")) {
-            resolvedWorkUnitIds = await this.resolveAncestryWorkUnitsOnMerge(finalized);
+            const resolved = await this.resolveAncestryWorkUnitsOnMerge(finalized);
+            return { resolved_work_unit_ids: resolved };
           }
+          return { resolved_work_unit_ids: [] };
         },
       },
       {
         name: "archive_worker_threads",
         run: async () => {
           const archiveResult = await this.archiveCompletedWorkerThreads(finalized);
-          archivedThreadCount = archiveResult.archived;
           // Issue 75f52ac — a candidate with a provider handle whose codex
           // archive CLI attempt failed (error/timeout) must not silently resolve
           // this step: propagate it as a step failure so the FinalizerQueue's
@@ -2423,6 +2432,7 @@ export class AuthQueue {
               `codex thread archive failed for ${archiveResult.attempt_failures} candidate(s)`,
             );
           }
+          return { archived_thread_count: archiveResult.archived };
         },
       },
     ];
@@ -2437,8 +2447,16 @@ export class AuthQueue {
         continue;
       }
       try {
-        await step.run();
-        state[step.name] = { state: "done", attempts: (entry?.attempts ?? 0) + 1, at: this.now() };
+        const output = await step.run();
+        // Persist the step's output into its durable state entry so the terminal
+        // payload survives later passes that skip this (now done) step and
+        // survives a crash/replay of the row.
+        state[step.name] = {
+          state: "done",
+          attempts: (entry?.attempts ?? 0) + 1,
+          at: this.now(),
+          ...(output && Object.keys(output).length > 0 ? { output } : {}),
+        };
       } catch (err) {
         const attempts = (entry?.attempts ?? 0) + 1;
         const message = err instanceof Error ? err.message : String(err);
@@ -2495,7 +2513,7 @@ export class AuthQueue {
     }
     this.broadcast({
       event: "auth:finalized",
-      data: this.buildFinalizedPayload(finalizedRow, state, resolvedWorkUnitIds, archivedThreadCount),
+      data: this.buildFinalizedPayload(finalizedRow, state),
     });
     this.markSuccessfulMergeFinalized(finalized, mergeHeadSha, finalizedAt);
   }
@@ -3802,8 +3820,6 @@ export class AuthQueue {
   private buildFinalizedPayload(
     request: AuthRequest,
     state: FinalizerState,
-    resolvedWorkUnitIds: string[],
-    archivedThreadCount: number,
   ): Record<string, unknown> {
     const steps = FINALIZER_STEP_NAMES.map((name) => {
       const entry = state[name];
@@ -3814,12 +3830,18 @@ export class AuthQueue {
         ...(entry?.error ? { error: entry.error } : {}),
       };
     });
+    // Issue 75f52ac — reconstruct outputs from the persisted per-step state so a
+    // step whose output was produced on an earlier pass (or before a crash) is
+    // reported correctly, rather than reading process-local accumulators that
+    // reset every pass and stay empty when the step is skipped as already-done.
     return {
       request_id: request.id,
       merge_finalized_at: request.merge_finalized_at ?? null,
       steps,
-      resolved_work_unit_ids: resolvedWorkUnitIds,
-      archived_thread_count: archivedThreadCount,
+      resolved_work_unit_ids:
+        state.resolve_ancestry_work_units?.output?.resolved_work_unit_ids ?? [],
+      archived_thread_count:
+        state.archive_worker_threads?.output?.archived_thread_count ?? 0,
     };
   }
 
