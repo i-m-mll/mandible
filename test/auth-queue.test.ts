@@ -988,6 +988,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
       await queue.drainFinalizers();
 
@@ -1046,6 +1047,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
       await queue.drainFinalizers();
 
@@ -1118,6 +1120,7 @@ describe("auth queue", () => {
       process.env.PATH = `${traceDir}${path.delimiter}${prevPath ?? ""}`;
       try {
         now = 1000;
+        queue.approve(request.id);
         queue.setResult(request.id, 0, "ok");
         await queue.drainFinalizers();
       } finally {
@@ -1175,6 +1178,7 @@ describe("auth queue", () => {
         execution_mode: "remote",
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
       await queue.drainFinalizers();
 
@@ -1249,6 +1253,7 @@ describe("auth queue", () => {
         execution_mode: "remote",
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
       await queue.drainFinalizers();
 
@@ -1313,6 +1318,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
       await queue.drainFinalizers();
 
@@ -1364,6 +1370,7 @@ describe("auth queue", () => {
         execution_mode: "remote",
       });
 
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "ok");
       await queue.drainFinalizers();
 
@@ -1419,6 +1426,7 @@ describe("auth queue", () => {
       });
 
       now = 1000;
+      queue.approve(request.id);
       expect(() => queue.setResult(request.id, 0, "ok")).not.toThrow();
       await queue.drainFinalizers();
       expect(db.prepare("SELECT state, resolved_at FROM work_units WHERE id = 'wu-nocol'").get())
@@ -3292,6 +3300,7 @@ describe("auth queue", () => {
         execution_mode: "remote",
         ...overrides,
       });
+      queue.approve(request.id);
       queue.setResult(request.id, 0, "verbose console output ".repeat(50));
       return request.id;
     }
@@ -3328,6 +3337,7 @@ describe("auth queue", () => {
           { kind: "label_add", target_issue_ref: "abc1234", payload: { label: "verified" } },
         ],
       });
+      queue.approve(withActions.id);
       queue.setResult(withActions.id, 0, "ok");
       submitCompleted(queue, { title: "No actions", head_branch: "feature/b" });
 
@@ -3707,6 +3717,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
           merge_head_sha: integrationHead, execution_mode: "remote",
         });
         now = 1000;
+        queue.approve(request.id);
         queue.setResult(request.id, 0, "ok");
         await queue.drainFinalizers();
         const state = (db.prepare("SELECT state FROM work_units WHERE id = 'wu-dot'").get() as { state: string }).state;
@@ -3762,6 +3773,7 @@ describe("AuthQueue per-repo canonical identity (ded17e6)", () => {
         merge_head_sha: dupHead, execution_mode: "remote",
       });
       now = 1000;
+      queue.approve(completed.id);
       queue.setResult(completed.id, 0, "ok");
       await queue.drainFinalizers();
       expect(queue.getRequest(sibling.id)?.status).toBe("dismissed");

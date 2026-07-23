@@ -170,7 +170,7 @@ describe("restricted project route enforcement", () => {
     const workScanner = {
       getRepos: () => [repo],
       getRepoById: (id: string) => id === repo.id ? repo : undefined,
-      refreshRepo: vi.fn(() => repo),
+      refreshRepoAsync: vi.fn(async () => repo),
       getBranches: () => [],
       getWorktreeInventory: () => ({ known: true, worktrees: [] }),
       scanAllAsync: vi.fn(async () => ({ scanned_repos: 0 })),
@@ -189,7 +189,7 @@ describe("restricted project route enforcement", () => {
     expect((await invoke(`/api/ledger/issues/${issue.id}`)).status).toBe(403);
     expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(403);
     expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(403);
-    expect(workScanner.refreshRepo).not.toHaveBeenCalled();
+    expect(workScanner.refreshRepoAsync).not.toHaveBeenCalled();
 
     addGrant(db, {
       subject_type: "user",
@@ -201,7 +201,7 @@ describe("restricted project route enforcement", () => {
     expect((await invoke(`/api/ledger/issues/${issue.id}`)).status).toBe(200);
     expect((await invoke(`/api/artifacts/${encodeURIComponent(artifact.id)}/content`)).status).toBe(200);
     expect((await invoke(`/api/work/repos/${repo.id}/audit`)).status).toBe(200);
-    expect(workScanner.refreshRepo).toHaveBeenCalledOnce();
+    expect(workScanner.refreshRepoAsync).toHaveBeenCalledOnce();
   });
 });
 

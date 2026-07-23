@@ -3116,7 +3116,9 @@ export const MIGRATIONS: readonly Migration[] = [
     ]
   },
   {
-    version: 107,
+    // Integration reconciliation (umbrella c16807e): renumbered to 112 atop
+    // main's user-system migrations 107-111.
+    version: 112,
     name: "branch_upstream_cache",
     // Issue 651e820 — persist per-branch upstream tracking info during scans so
     // GET /api/work/repos/:id/branches serves it from the DB instead of spawning
@@ -3128,7 +3130,7 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     // Integration reconciliation (umbrella c16807e): renumbered to 113 atop
     // main's user-system migrations 107-111 (branch_upstream_cache took 112).
-    version: 108,
+    version: 113,
     name: "work_unit_merge_scan_retirement",
     // Issue 93d978e — reversible tombstone excluding stale abandoned work units
     // from merge-side ancestry scans. Nullable ms-epoch marker; the row, its
@@ -3141,7 +3143,7 @@ export const MIGRATIONS: readonly Migration[] = [
   {
     // Integration reconciliation (umbrella c16807e): renumbered to 114 atop
     // main's user-system migrations 107-111 (work_unit retirement took 113).
-    version: 109,
+    version: 114,
     name: "auth_request_merge_finalizer_state",
     // Issue 75f52ac — per-step durable state for the background finalizer queue.
     // Nullable JSON column recording each Stage 3 finalizer step's state,
