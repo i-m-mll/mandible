@@ -94,4 +94,32 @@ describe("migration convergence: renumbered additive column hooks", () => {
       columnNames("auth_requests").filter((name) => name === "merge_finalizer_state"),
     ).toHaveLength(1);
   });
+
+  it("re-fires convergence at head version when a renumbered column is missing (post-failure recovery)", () => {
+    // Simulate the state a convergence-hook failure leaves behind: the version is
+    // ALREADY recorded at head (109) — applySchemaMigrations committed it — but a
+    // renumbered column is absent because its ALTER rolled back. A version-based
+    // gate ("currentVersion < 109") would never fire again, so the columns would
+    // stay missing forever. The live schema gate must detect and repair them on
+    // this open even though the version does not change.
+    db.exec(`
+      ALTER TABLE work_units DROP COLUMN merge_scan_retired_at;
+      ALTER TABLE branches DROP COLUMN upstream;
+    `);
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+      value: "109",
+    });
+    expect(columnNames("work_units")).not.toContain("merge_scan_retired_at");
+    expect(columnNames("branches")).not.toContain("upstream");
+
+    migrate(db);
+
+    // Version is unchanged (already at head) but the missing columns are repaired.
+    expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
+      value: "109",
+    });
+    expect(columnNames("work_units")).toContain("merge_scan_retired_at");
+    expect(columnNames("branches")).toContain("upstream");
+    expect(db.pragma("foreign_key_check")).toEqual([]);
+  });
 });
