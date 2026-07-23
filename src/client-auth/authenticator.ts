@@ -230,17 +230,20 @@ export class ClientAuthenticator implements ClientAuthGate {
     this.ephemeral.delete(fingerprintForToken(this.pepper, raw));
   }
 
-  /** Ensure no managed agent process can coexist with a readable operator proof. */
+  /**
+   * Ensure no managed agent process can coexist with a readable operator proof.
+   *
+   * This is unconditional (issue a9ede3c round 2): the original anti-theft
+   * guarantee is that constructing any non-operator backend destroys the
+   * bootstrap file, so a same-uid managed agent can never read or race it. The
+   * enrollment-first protection does NOT live here — a per-caller guard would
+   * leave the 0600 proof alive for the whole bootstrap lifetime while agent
+   * backends run alongside it (the round-1 High finding). Instead, startup
+   * retention avoids constructing non-operator backends at all while the
+   * enrollment window is open; see SessionManager.init() and
+   * isOperatorEnrollmentWindowActive() below.
+   */
   revokeOperatorBootstrap(): void {
-    // Enrollment must win before the anti-theft guard applies. The bootstrap is
-    // the operator's only way to enroll a first credential; if it is revoked
-    // whenever a managed agent backend is constructed, an operator with zero
-    // active credentials can NEVER enroll on a machine that already runs agents
-    // (issue a9ede3c). Constraint: while the operator holds no active
-    // credential, keep the bootstrap intact so first enrollment can complete.
-    // Once the operator has at least one active credential the guard is fully
-    // restored and every non-operator backend revokes the proof as before.
-    if (this.operatorHasNoActiveCredential()) return;
     if (this.bootstrapRaw) {
       this.ephemeral.delete(fingerprintForToken(this.pepper, this.bootstrapRaw));
     }
@@ -249,16 +252,29 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   /**
-   * True when an operator is configured but currently holds zero active
-   * credentials, i.e. first enrollment has not yet happened. Returns false when
-   * no operator exists (nothing to protect) or the operator has enrolled.
+   * True during the operator's first-enrollment window: an operator is
+   * configured but holds zero active **api_token** credentials, so no bearer
+   * can yet authenticate as the operator and the bootstrap proof is still the
+   * only way in. Returns false when no operator exists (nothing to protect) or
+   * the operator already holds an api_token.
+   *
+   * The type filter is load-bearing (issue a9ede3c round-2 Medium finding):
+   * only api_token rows can authenticate a presented bearer. An operator whose
+   * only credential is an ssh_key or yubikey_recipient still cannot log in, so
+   * the window must stay open for them — counting any credential type would
+   * re-arm bootstrap destruction while enrollment is still impossible.
+   *
+   * SessionManager.init() consults this to defer construction of retained
+   * non-running non-operator backends (as DormantBackend) while it is true, so
+   * revokeOperatorBootstrap() never runs for them before the human enrolls.
    */
-  private operatorHasNoActiveCredential(): boolean {
+  isOperatorEnrollmentWindowActive(): boolean {
     const operator = getOperator(this.db);
     if (!operator) return false;
     const row = this.db
       .prepare(
-        "SELECT COUNT(*) AS n FROM user_credentials WHERE user_id = ? AND status = 'active'",
+        "SELECT COUNT(*) AS n FROM user_credentials"
+          + " WHERE user_id = ? AND status = 'active' AND type = 'api_token'",
       )
       .get(operator.id) as { n: number } | undefined;
     return (row?.n ?? 0) === 0;
