@@ -54,6 +54,10 @@ describe("api_client_token bootstrap attachment by method", () => {
       env: {
         PATH: process.env.PATH ?? "",
         MANDIBLE_CONFIG_DIR: configDir,
+        // These cases exercise the bootstrap-vs-GET behavior only; disable the
+        // keychain fallback so they never depend on (or read) the developer
+        // machine's real `mandible-operator` keychain item.
+        MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
         ...env,
       },
     });
@@ -80,6 +84,119 @@ describe("api_client_token bootstrap attachment by method", () => {
 
   it("still honors an explicit MANDIBLE_TOKEN on GET requests", () => {
     const { status, stdout } = runToken("GET", { MANDIBLE_TOKEN: "explicit-token" });
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe("explicit-token");
+  });
+});
+
+// Issue 9283a50: the durable `mandible-operator` keychain credential lets a
+// plain operator terminal act as the operator with zero setup. Unlike the
+// one-shot bootstrap proof it behaves like an explicit token — it attaches on
+// every method, GET included — but it is still fenced off managed agents by the
+// same marker guard and honors the MANDIBLE_NO_KEYCHAIN_TOKEN opt-out. These
+// tests stub the macOS `security` binary via PATH and never touch the real
+// keychain.
+describe("api_client_token keychain operator fallback", () => {
+  const KEYCHAIN_TOKEN = "keychain-operator-token";
+  let stubDir = "";
+  let configDir = "";
+
+  beforeEach(() => {
+    // A stub `security` that only answers for service `mandible-operator`,
+    // placed first on PATH so it shadows the real /usr/bin/security. This never
+    // reads the developer machine's real keychain.
+    stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-security-stub-"));
+    const stub = path.join(stubDir, "security");
+    fs.writeFileSync(
+      stub,
+      [
+        "#!/usr/bin/env bash",
+        "for arg in \"$@\"; do",
+        `  if [[ "$arg" == "mandible-operator" ]]; then`,
+        `    printf '%s\\n' ${JSON.stringify(KEYCHAIN_TOKEN)}`,
+        "    exit 0",
+        "  fi",
+        "done",
+        "exit 44",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+
+    // A config dir with a bootstrap-token present, so keychain-before-bootstrap
+    // ordering is genuinely exercised (keychain must win over this file).
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-keychain-cfg-"));
+    fs.mkdirSync(path.join(configDir, "client-auth"), { recursive: true });
+    fs.writeFileSync(path.join(configDir, "client-auth", "bootstrap-token"), "bootstrap-proof\n");
+  });
+
+  afterEach(() => {
+    fs.rmSync(stubDir, { recursive: true, force: true });
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  function runToken(
+    method: string,
+    env: Record<string, string> = {},
+  ): { status: number | null; stdout: string } {
+    const script = [
+      `source ${JSON.stringify(API_HELPER)}`,
+      `api_client_token ${JSON.stringify(method)}`,
+    ].join("\n");
+    const result = spawnSync("bash", ["-c", script], {
+      encoding: "utf8",
+      env: {
+        PATH: `${stubDir}:${process.env.PATH ?? ""}`,
+        MANDIBLE_CONFIG_DIR: configDir,
+        ...env,
+      },
+    });
+    return { status: result.status, stdout: result.stdout };
+  }
+
+  it("uses the keychain token when unmarked and no env token (winning over bootstrap)", () => {
+    const { status, stdout } = runToken("POST");
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe(KEYCHAIN_TOKEN);
+  });
+
+  it("attaches the keychain token to GET requests, unlike the bootstrap proof", () => {
+    const { status, stdout } = runToken("GET");
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe(KEYCHAIN_TOKEN);
+  });
+
+  it("suppresses the keychain token for managed agents (marker guard)", () => {
+    for (const marker of [
+      "MANDIBLE_MANAGED_CLIENT",
+      "CODEX_THREAD_ID",
+      "CLAUDE_CODE_SESSION_ID",
+      "CLAUDE_SESSION_ID",
+      "MANDIBLE_SESSION_ID",
+    ]) {
+      // A marked GET must yield nothing: keychain is suppressed and the
+      // bootstrap proof never attaches on GET.
+      const { status, stdout } = runToken("GET", { [marker]: "x" });
+      expect(status, `marker ${marker}`).toBe(0);
+      expect(stdout, `marker ${marker}`).toBe("");
+    }
+  });
+
+  it("suppresses the keychain token when MANDIBLE_NO_KEYCHAIN_TOKEN=1", () => {
+    // Opted out on GET: keychain suppressed, bootstrap never attaches on GET.
+    const { status, stdout } = runToken("GET", { MANDIBLE_NO_KEYCHAIN_TOKEN: "1" });
+    expect(status).toBe(0);
+    expect(stdout).toBe("");
+  });
+
+  it("falls back to the bootstrap proof on mutations when keychain is opted out", () => {
+    // With keychain disabled, an unmarked mutation still gets the bootstrap file.
+    const { status, stdout } = runToken("POST", { MANDIBLE_NO_KEYCHAIN_TOKEN: "1" });
+    expect(status).toBe(0);
+    expect(stdout.trim()).toBe("bootstrap-proof");
+  });
+
+  it("honors an explicit MANDIBLE_TOKEN over the keychain credential", () => {
+    const { status, stdout } = runToken("POST", { MANDIBLE_TOKEN: "explicit-token" });
     expect(status).toBe(0);
     expect(stdout.trim()).toBe("explicit-token");
   });
