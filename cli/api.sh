@@ -121,8 +121,10 @@ api_file_rpc_dir() {
 
 api_http_retryable_status() {
   local http_status="${1:-000}"
-  [[ -n "$http_status" && "$http_status" != "000" && ! "$http_status" =~ ^5 ]] && return 1
-  return 0
+  case "$http_status" in
+    000|408|425|429|502|503|504) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 api_http_retry_delay_ms() {
@@ -211,6 +213,16 @@ api_report_final_http_failure() {
         "$request_path" "$http_status" "$curl_exit" >&2
       ;;
   esac
+}
+
+api_report_terminal_response() {
+  local method="$1" request_path="$2" http_status="$3" output_file="$4"
+  printf 'Mandible request failed (method=%s, path=%s, status=%s).\n' \
+    "$method" "$request_path" "$http_status" >&2
+  if [[ -s "$output_file" ]]; then
+    cat "$output_file" >&2
+    [[ -z "$(tail -c 1 "$output_file" 2>/dev/null || true)" ]] || printf '\n' >&2
+  fi
 }
 
 # Execute one API request with bounded retry. The response body always lands in
@@ -684,6 +696,7 @@ api_request() {
       rm -f "$tmp_response"
       return 0
     fi
+    api_report_terminal_response "$method" "$request_path" "$response_status" "$tmp_response"
     rm -f "$tmp_response"
     return 22
   fi
@@ -695,6 +708,7 @@ api_request() {
     rm -f "$tmp_response"
     return 0
   fi
+  api_report_terminal_response "$method" "$request_path" "$response_status" "$tmp_response"
   rm -f "$tmp_response"
   return 22
 }

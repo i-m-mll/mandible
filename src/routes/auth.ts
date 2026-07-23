@@ -13,7 +13,10 @@ import { getDb, resolvePrefix } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import type { AuthMergeCheckInput } from "../auth-queue.js";
 import type { AuthRequestInput, AuthRequestType } from "../types.js";
-import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
+import {
+  resolveProviderSessionAttributionResult,
+  resolveSessionIdAttributionResult,
+} from "../identity/resolver.js";
 import {
   AttributionReadResolver,
   authAttributionReadFields,
@@ -511,8 +514,13 @@ function resolveAuthRequester(
   payload: AuthRequestInput,
 ): { ok: true; userId: string } | { ok: false; status: number; code: string; error: string } {
   const authenticatedUserId = req.client_identity?.user_id ?? null;
+  const ambientIdentity = req.ambient_identity ?? null;
   const sessionResolution = payload.session_id
-    ? resolveSessionIdAttributionResult(getDb(), payload.session_id)
+    ? ambientIdentity
+      ? payload.session_id === ambientIdentity.provider_session_id
+        ? resolveProviderSessionAttributionResult(getDb(), ambientIdentity.provider)
+        : { status: "conflict" as const }
+      : resolveSessionIdAttributionResult(getDb(), payload.session_id)
     : { status: "no_match" as const };
   if (sessionResolution.status === "conflict") {
     return {

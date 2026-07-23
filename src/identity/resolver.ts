@@ -16,6 +16,7 @@
 // never an authorization input and is not applied to legacy call sites here.
 
 import type { Db } from "../db.js";
+import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
 import {
   SYSTEM_USER_ID,
   createUser,
@@ -56,6 +57,28 @@ export interface AttributionContext {
   evidence_method: EvidenceMethod;
   evidence_id?: string | null;
   authorizer_user_id?: string | null;
+}
+
+export const OPERATOR_SETUP_HINT =
+  "Run `mandible user setup` to create the local operator first.";
+
+/**
+ * The local HTTP/CLI principal has not been configured yet.
+ *
+ * This is a recoverable configuration state, not an attribution fallback: the
+ * caller must run the explicit setup command before an interactive write can
+ * be attributed. HTTP boundaries use this type to return a non-retryable 409
+ * instead of obscuring the recovery action behind a generic 500.
+ */
+export class OperatorNotConfiguredError extends Error {
+  readonly code = "operator_not_configured";
+  readonly hint = OPERATOR_SETUP_HINT;
+  readonly retryable = false;
+
+  constructor() {
+    super(`Local operator attribution is unavailable. ${OPERATOR_SETUP_HINT}`);
+    this.name = "OperatorNotConfiguredError";
+  }
 }
 
 /**
@@ -99,7 +122,7 @@ export function systemAction(): AttributionContext {
 export function localDefaultAttribution(db: Db): AttributionContext {
   const operator = getOperator(db);
   if (!operator) {
-    throw new Error("Local operator attribution is unavailable");
+    throw new OperatorNotConfiguredError();
   }
   return {
     user_id: operator.id,
@@ -171,6 +194,27 @@ export function resolveSessionAttributionResult(
       .all(binding_type, normalizeBindingValue(value), scope, scope, scope) as Array<{ user_id: string }>;
     if (rows.length > 1) return { status: "conflict" };
     if (rows.length === 1) matchedUserIds.add(rows[0].user_id);
+  }
+  if (matchedUserIds.size === 0) return { status: "no_match" };
+  if (matchedUserIds.size > 1) return { status: "conflict" };
+  return {
+    status: "resolved",
+    attribution: { user_id: [...matchedUserIds][0], evidence_method: "session_claim" },
+  };
+}
+
+/** Resolve an allowlisted provider to the agent owning its session env keys. */
+export function resolveProviderSessionAttributionResult(
+  db: Db,
+  provider: string,
+): SessionAttributionResolution {
+  const matchedUserIds = new Set<string>();
+  for (const providerSessionEnv of providerSessionEnvBindingValues(provider)) {
+    const result = resolveSessionAttributionResult(db, {
+      provider_session_env: providerSessionEnv,
+    });
+    if (result.status === "conflict") return result;
+    if (result.status === "resolved") matchedUserIds.add(result.attribution.user_id);
   }
   if (matchedUserIds.size === 0) return { status: "no_match" };
   if (matchedUserIds.size > 1) return { status: "conflict" };

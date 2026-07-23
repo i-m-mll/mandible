@@ -265,6 +265,36 @@ describe("auth request staged close action sugar", () => {
       await server.close();
     }
   });
+
+  it("keeps requester attribution separate from notification scoping", async () => {
+    const server = await listenForAuthRequest();
+    try {
+      const result = await runAsync([
+        "auth",
+        "request",
+        "feature/demo",
+        "--title",
+        "Merge feature/demo",
+        "--issue",
+        "requester123",
+        "--no-watch",
+      ], tempDir, {
+        MANDIBLE_PORT: String(server.port),
+        MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+        CODEX_THREAD_ID: "codex-requester-session",
+        MANDIBLE_SESSION_ID: "mandible-notification-session",
+      });
+
+      expect(result.status).toBe(0);
+      expect(server.bodies).toHaveLength(1);
+      expect(server.bodies[0]).toMatchObject({
+        session_id: "codex-requester-session",
+        target_session_id: "mandible-notification-session",
+      });
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("auth request Mandible merge preflight", () => {
