@@ -130,7 +130,18 @@ type FinalizerStepState = {
   at: number;
   output?: FinalizerStepOutput;
 };
-type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>>;
+// Issue fbf2a58 round 2 — a reserved (non-step) marker stored alongside the
+// per-step finalizer state. It records that a merge was terminalized from
+// repository evidence ALONE (an attributed merge that landed out-of-band with no
+// daemon approval record). Such a row deliberately keeps merge_finalized_at NULL
+// so finalizer sweeps keep revisiting it and can converge to full finalization
+// once approval attribution appears; this marker keeps the partial merged/
+// resolved broadcast idempotent across those repeated sweeps. It is not a
+// FinalizerStepName, so the step loop and terminal-payload builder ignore it.
+type EvidenceOnlyPartialMarker = { at: number };
+type FinalizerState = Partial<Record<FinalizerStepName, FinalizerStepState>> & {
+  evidence_only_partial?: EvidenceOnlyPartialMarker;
+};
 
 /**
  * Issue 75f52ac — bounded, single-concurrency FIFO queue that runs the heavy
@@ -717,10 +728,14 @@ export class AuthQueue {
    * incident merged out-of-band in a terminal with no daemon approval record, so
    * the attributed evidence path cannot run — Git proves the merge landed, but
    * the daemon never observed who authorized it. In that case terminalize the
-   * row from repository evidence alone (completed + merge_finalized_at +
-   * merged/resolved broadcasts) without fabricating an approver. This deliberately
-   * skips attributed ledger completion, work-unit ancestry resolution, and thread
-   * archiving for the out-of-band case; see the report accompanying this issue.
+   * row from repository evidence alone (completed + merged/resolved broadcasts)
+   * without fabricating an approver.
+   *
+   * This is the shared convergence dispatcher: it is invoked both by startup
+   * reconciliation and by the periodic finalizer sweep, so a row that was
+   * partially terminalized without an approver is re-examined on every sweep and
+   * completes the skipped stages (attributed ledger completion, work-unit
+   * resolution, thread archiving) as soon as approval attribution appears.
    */
   private finalizeReconciledMerge(request: AuthRequest): void {
     const attributedMerge = isAuthMergeCommand(request) && Boolean(request.requested_by_user_id);
@@ -729,17 +744,36 @@ export class AuthQueue {
     if (!attributedMerge || hasApprovalEvidence) {
       // Legacy (system-attributed) merge, or an attributed merge that was
       // approved through the daemon before its finalization write was lost:
-      // the standard finalizer records evidence and runs every stage.
+      // the standard finalizer records evidence and runs every stage. When this
+      // path runs for a row that was previously evidence-only terminalized (its
+      // approval attribution has since appeared), full finalization now completes
+      // and sets merge_finalized_at — the convergence step.
       this.finalizeSuccessfulMerge(request);
       return;
     }
 
     // Attributed merge with no daemon approval record: authorized out-of-band.
-    if (request.merge_finalized_at != null) {
+    //
+    // Issue fbf2a58 round 2 — PARTIAL ("evidence-only") terminalization. The row
+    // is already status='completed'/exit_code=0 (set by the reconcile UPDATE), so
+    // it is terminal for the queue and UI and no longer poisons preflight. We
+    // deliberately DO NOT write merge_finalized_at here: that column is the
+    // finalizer sweep's exclusion key, and setting it would permanently strand
+    // the stages we cannot yet run without an approver identity (attributed
+    // ledger completion incl. issue closures, work-unit resolution, thread
+    // archival). Instead we leave merge_finalized_at NULL so every later sweep
+    // revisits this row, and record a distinct evidence_only_partial marker so
+    // the partial merged/resolved broadcast stays idempotent across sweeps. When
+    // approval attribution later appears (approved_by_user_id / execution_
+    // evidence_id populated), a sweep re-enters this method, takes the full
+    // finalizer branch above, runs the skipped stages, and finally writes
+    // merge_finalized_at — full convergence.
+    if (this.hasEvidenceOnlyPartialMarker(request)) {
+      // Already partially terminalized; nothing new until attribution appears.
       return;
     }
     const now = this.now();
-    this.markSuccessfulMergeFinalized(request, request.merge_head_sha ?? null, now);
+    this.markEvidenceOnlyPartialFinalization(request, now);
     const finalized = this.getRequest(request.id);
     if (finalized) {
       this.broadcast({ event: "auth:merged", data: this.buildMergedPayload(finalized) });
@@ -750,6 +784,36 @@ export class AuthQueue {
       auth_request_id: request.id,
       reason: "merge_landed_out_of_band_no_daemon_approval",
     });
+  }
+
+  /**
+   * Issue fbf2a58 round 2 — whether a row has been evidence-only (partially)
+   * terminalized: a completed merge that lacks approval attribution and so has
+   * not yet run full finalization. Detected from the durable marker in
+   * merge_finalizer_state rather than merge_finalized_at, which stays NULL so the
+   * sweep keeps revisiting for convergence.
+   */
+  private hasEvidenceOnlyPartialMarker(request: AuthRequest): boolean {
+    return this.readFinalizerState(request.id).evidence_only_partial != null;
+  }
+
+  /**
+   * Issue fbf2a58 round 2 — record the evidence-only partial-finalization marker.
+   * Persists merge_head_sha (the head branch may be torn down before convergence)
+   * but deliberately NOT merge_finalized_at, so finalizer sweeps keep visiting the
+   * row until approval attribution allows full finalization.
+   */
+  private markEvidenceOnlyPartialFinalization(request: AuthRequest, at: number): void {
+    if (request.merge_head_sha != null) {
+      this.db
+        .prepare(
+          "UPDATE auth_requests SET merge_head_sha = COALESCE(merge_head_sha, ?), updated_at = ? WHERE id = ?"
+        )
+        .run(request.merge_head_sha, at, request.id);
+    }
+    const state = this.readFinalizerState(request.id);
+    state.evidence_only_partial = { at };
+    this.writeFinalizerState(request.id, state);
   }
 
   /**
@@ -788,14 +852,40 @@ export class AuthQueue {
         }
       };
 
-      // Prefer the live head branch ref; fall back to a recorded merge_head_sha
-      // when the branch was torn down after the merge landed.
+      // Issue fbf2a58 round 2 — a recorded merge_head_sha is AUTHORITATIVE. It
+      // pins the exact commit whose merge this request represents, so the proof
+      // must be taken against it, never against a live head-branch ref that may
+      // have been recreated or force-moved after the merge landed. If a live ref
+      // exists and disagrees with the pinned sha, the branch is no longer the one
+      // that was merged (e.g. a fresh branch recreated at the target tip, for
+      // which "T is an ancestor of T" would falsely prove completion): refuse to
+      // reconcile, log the mismatch, and leave the request pending. The live ref
+      // is used only when no merge_head_sha was ever recorded.
       let headSha: string | null = null;
-      if (request.head_branch) {
+      if (request.merge_head_sha) {
+        const recorded = verify(request.merge_head_sha);
+        if (!recorded) {
+          // The pinned commit is not present in this repo — nothing safely
+          // checkable. Never guess.
+          return null;
+        }
+        if (request.head_branch) {
+          const liveHead = verify(`refs/heads/${request.head_branch}`);
+          if (liveHead && liveHead !== recorded) {
+            authLog("warn", "auth_reconcile_head_sha_mismatch", {
+              subsystem: "auth",
+              auth_request_id: request.id,
+              head_branch: request.head_branch,
+              recorded_merge_head_sha: recorded,
+              live_head_sha: liveHead,
+              reason: "head_ref_disagrees_with_recorded_merge_head_sha",
+            });
+            return null;
+          }
+        }
+        headSha = recorded;
+      } else if (request.head_branch) {
         headSha = verify(`refs/heads/${request.head_branch}`);
-      }
-      if (!headSha && request.merge_head_sha) {
-        headSha = verify(request.merge_head_sha);
       }
       if (!headSha) {
         // Nothing checkable — never guess.
@@ -949,9 +1039,17 @@ export class AuthQueue {
     try {
       this.db
         .prepare(
+          // Issue fbf2a58 round 2 — drop the just-issued approval FULLY, matching
+          // the recoverStaleExecutions requeue path: clearing status/timestamps
+          // but leaving approved_by_user_id (or execution_evidence_id) set would
+          // leave stale approval attribution on a row awaiting reapproval, which
+          // a later evidence-driven finalizer could mistake for a live approval
+          // and use to run full finalization. A parked row must carry no approval
+          // evidence until it is genuinely re-approved against the rebuilt code.
           `UPDATE auth_requests SET status = 'pending', resolved_at = NULL, approved_at = NULL,
            exit_code = NULL, error = NULL, output = '', expires_at = ?, updated_at = ?,
-           approval_source = 'manual', approval_lease_id = NULL
+           approval_source = 'manual', approval_lease_id = NULL,
+           approved_by_user_id = NULL, execution_evidence_id = NULL
            WHERE id = ? AND status = 'executing' AND exit_code IS NULL`
         )
         .run(now + this.ttlMs, now, request.id);
@@ -3190,7 +3288,14 @@ export class AuthQueue {
       )
       .all() as Record<string, unknown>[];
     for (const row of rows) {
-      this.finalizeSuccessfulMerge(mapRow(row));
+      // Issue fbf2a58 round 2 — dispatch through finalizeReconciledMerge (not
+      // finalizeSuccessfulMerge directly) so evidence-only partially-terminalized
+      // rows are handled by the convergence dispatcher: a normal completed merge
+      // routes straight to full finalization exactly as before, but a merge that
+      // landed out-of-band without approval attribution is re-checked and only
+      // converges to full finalization (merge_finalized_at set) once attribution
+      // appears, instead of being permanently excluded from the sweep.
+      this.finalizeReconciledMerge(mapRow(row));
     }
   }
 
