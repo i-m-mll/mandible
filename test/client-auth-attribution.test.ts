@@ -104,6 +104,71 @@ describe("client-auth durable attribution", () => {
     },
   );
 
+  it("stores NULL user attribution for a tokenless ledger write with no ambient signal", async () => {
+    // Issue a64d2de: a tokenless compat-mode write must no longer be stamped
+    // with the operator. It flows through to NULL user attribution while the
+    // legacy provenance columns still populate (generic 'Mandible' display).
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/issues/mandible",
+      body: {
+        title: "Unattributed tokenless write",
+        body: "A compat-mode write with neither a credential nor an ambient session.",
+        project: projectId,
+      },
+      transport: "http",
+    });
+    expect(response.status).toBe(200);
+
+    const row = db.prepare(
+      `SELECT author_user_id, evidence_method, evidence_id,
+              author_actor_type, author_display
+         FROM ledger_issues WHERE title = ?`,
+    ).get("Unattributed tokenless write") as {
+      author_user_id: string | null;
+      evidence_method: string | null;
+      evidence_id: string | null;
+      author_actor_type: string;
+      author_display: string;
+    };
+    expect(row.author_user_id).toBeNull();
+    expect(row.evidence_method).toBeNull();
+    expect(row.evidence_id).toBeNull();
+    // Legacy provenance is untouched — the read projection still shows 'Mandible'.
+    expect(row.author_actor_type).toBe("mandible_user");
+    expect(row.author_display).toBe("Mandible");
+  });
+
+  it("resolves a tokenless ledger write to the ambient provider's agent with session_claim", async () => {
+    // The CLI/MCP channel send X-Mandible-Ambient-Provider* on mutating calls;
+    // the server exposes them as req.ambient_identity. With no bearer token, the
+    // write resolves to the agent that owns the provider's session env keys.
+    const codex = setupAgentUsers(db).find((user) => user.slug === "codex")!;
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/issues/mandible",
+      body: {
+        title: "Ambient-attributed agent write",
+        body: "A tokenless write carrying an ambient codex session signal.",
+        project: projectId,
+      },
+      ambient_identity: {
+        provider: "codex",
+        provider_session_id: "codex-ledger-thread",
+      },
+      transport: "http",
+    });
+    expect(response.status).toBe(200);
+
+    const row = db.prepare(
+      "SELECT author_user_id, evidence_method FROM ledger_issues WHERE title = ?",
+    ).get("Ambient-attributed agent write") as {
+      author_user_id: string;
+      evidence_method: string;
+    };
+    expect(row).toEqual({ author_user_id: codex.id, evidence_method: "session_claim" });
+  });
+
   it("admits only the operator before issue spawn can construct a managed backend", async () => {
     const createIssue = await router.invoke({
       method: "POST",

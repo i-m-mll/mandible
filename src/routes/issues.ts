@@ -542,7 +542,7 @@ function refreshDelegationManifest(
   db: Db,
   umbrellaId: string,
   childIds: string[],
-  attribution: AttributionContext,
+  attribution: AttributionContext | null,
 ): Record<string, unknown> {
   // The first payload entry is the umbrella's own head, marked `self: true`.
   // It is an explicit stored baseline for the umbrella itself, not a child
@@ -1100,7 +1100,7 @@ function linkMissingUmbrellaChildren(
   umbrellaId: string,
   childIds: string[],
   note: string,
-  attribution: AttributionContext,
+  attribution: AttributionContext | null,
 ): {
   beforeIds: string[];
   missingIds: string[];
@@ -1127,7 +1127,7 @@ function buildUmbrellaAdoptionResponse(
   umbrellaId: string,
   childRefs: string[],
   kind: "adopt" | "reconcile",
-  attribution: AttributionContext,
+  attribution: AttributionContext | null,
 ): Record<string, unknown> {
   const resolved = resolveIssueRefs(db, childRefs);
   const linked = linkMissingUmbrellaChildren(
@@ -1162,7 +1162,7 @@ function buildUmbrellaAdoptionResponse(
 function buildUmbrellaManifestRefreshResponse(
   db: Db,
   umbrellaId: string,
-  attribution: AttributionContext,
+  attribution: AttributionContext | null,
 ): Record<string, unknown> {
   const childIds = listUmbrellaChildEdgeIds(db, umbrellaId);
   const checkpoint = refreshDelegationManifest(db, umbrellaId, childIds, attribution);
