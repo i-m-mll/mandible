@@ -122,7 +122,8 @@ describe("session and work-unit ownership", () => {
 
     const response = await router.invoke({ method: "GET", url: "/api/sessions" });
     expect(response.status).toBe(200);
-    expect(response.body).toEqual(expect.arrayContaining([
+    // /api/sessions returns the paginated envelope { sessions, ...meta } (21502ff).
+    expect(response.body.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({
         id: "owned-session",
         owner_user_id: codex.id,

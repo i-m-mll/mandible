@@ -6,6 +6,10 @@ import { openDb, type Db } from "../src/db.js";
 import { listLedgerIssueSummaries } from "../src/ledger/issue-projection.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import { systemAction } from "../src/identity/resolver.js";
+
+// Ledger writes require an explicit attribution context (main/user-system).
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 let tempDir = "";
 let db: Db;
@@ -41,6 +45,7 @@ describe("set-based issue summary projection", () => {
     const store = new LedgerStore(db);
 
     const parent = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Umbrella",
       body: "Parent body",
@@ -49,6 +54,7 @@ describe("set-based issue summary projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "par1234", is_primary: true }],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Child",
       body: "Child body",
@@ -57,6 +63,7 @@ describe("set-based issue summary projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "chi1234", is_primary: true }],
     });
     const merged = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Merged",
       body: "Merged body",
@@ -65,6 +72,7 @@ describe("set-based issue summary projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "mer1234", is_primary: true }],
     });
     const closed = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Closed",
       body: "Closed body",
@@ -75,6 +83,7 @@ describe("set-based issue summary projection", () => {
 
     // Structured parent relationship: child -> parent (derives via alias).
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -82,12 +91,12 @@ describe("set-based issue summary projection", () => {
     });
 
     // Deleted label must not appear in the summary row.
-    store.setLabel(child.id, "deleted-label", true);
-    store.setLabel(child.id, "deleted-label", false);
+    store.setLabel(child.id, "deleted-label", true, "mandible", SYSTEM_ACTOR);
+    store.setLabel(child.id, "deleted-label", false, "mandible", SYSTEM_ACTOR);
 
-    store.setIssueStatus(merged.id, "closed", "merged");
-    store.setLabel(merged.id, "merged", true);
-    store.setIssueStatus(closed.id, "closed", null);
+    store.setIssueStatus(merged.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setLabel(merged.id, "merged", true, "mandible", SYSTEM_ACTOR);
+    store.setIssueStatus(closed.id, "closed", null, SYSTEM_ACTOR);
 
     const summaries = listLedgerIssueSummaries(db, emptyScanner);
     expect(summaries).toHaveLength(1);

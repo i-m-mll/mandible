@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AuthQueue } from "../src/auth-queue.js";
 import { migrate } from "../src/db.js";
 import type { SseEvent } from "../src/types.js";
+import { setupOperator } from "../src/users/store.js";
 
 // Issue 75f52ac — staged auth lifecycle (auth:merged -> auth:resolved ->
 // auth:finalized) and the bounded, idempotent, crash-safe background finalizer
@@ -13,6 +14,9 @@ import type { SseEvent } from "../src/types.js";
 function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   migrate(db);
+  // Attribution (main/user-system): submit()/approve() resolve a local operator;
+  // seed one so the staged-lifecycle tests can attribute and approve requests.
+  setupOperator(db, { slug: "finalizer-test-operator", display_name: "Finalizer Test Operator" }, 1);
   return db;
 }
 
@@ -43,6 +47,9 @@ function submitSuccessfulRequest(
     issue_closures: options.issue_closures,
     execution_mode: "remote",
   });
+  // Attributed merges must be approved (→ executing) before a remote result is
+  // recorded; approve here so setResult on the returned id follows the lifecycle.
+  queue.approve(request.id);
   return request.id;
 }
 
