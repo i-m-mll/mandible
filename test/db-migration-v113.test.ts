@@ -7,9 +7,9 @@ import { migrate, openDb, type Db } from "../src/db.js";
 
 // Integration reconciliation (umbrella c16807e): the work-unit merge-scan
 // retirement migration (issue 93d978e) was renumbered to v113 atop main's
-// user-system migrations v107-v111. Migration head is now v114 (75f52ac's auth
-// finalizer state migration), so a re-migration from a simulated v106 database
-// advances all the way to v114.
+// user-system migrations v107-v111. Migration head is now v115 (issue a64d2de's
+// corrective attribution pass), so a re-migration from a simulated v106 database
+// advances all the way to v115.
 describe("migration v113: work-unit merge-scan retirement", () => {
   let tempDir: string;
   let db: Db;
@@ -39,7 +39,7 @@ describe("migration v113: work-unit merge-scan retirement", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "114",
+      value: "115",
     });
     const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
       name: string;
@@ -63,7 +63,7 @@ describe("migration v113: work-unit merge-scan retirement", () => {
       const columns = fresh.prepare("PRAGMA table_info(work_units)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_scan_retired_at");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "114",
+        value: "115",
       });
     } finally {
       fresh.close();

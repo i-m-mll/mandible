@@ -255,10 +255,29 @@ export class LedgerStore {
    */
   private resolveActor(input: LedgerActorInput): ResolvedActor {
     const candidate = input?.attribution;
-    if (!candidate) {
+    // An omitted attribution key is a programming error: the safety net that
+    // prevents an accidental unattributed write stays in force (umbrella
+    // 8e2e8b2). A DELIBERATE unattributed write passes `attribution: null`
+    // explicitly (issue a64d2de) and is handled below.
+    if (candidate === undefined) {
       throw new Error("Ledger write requires an explicit attribution context");
     }
     const base = normalizeActor(input);
+    if (candidate === null) {
+      // Unattributed write (issue a64d2de): a tokenless compat-mode request
+      // whose ambient session signal did not resolve to any user. This is the
+      // pre-identity legacy behavior — the parallel user-attribution columns are
+      // stored NULL while the frozen legacy actor_id/actor_type/author_display
+      // provenance still populates.
+      return {
+        actor_id: base.actor_id,
+        actor_type: base.actor_type,
+        actor_user_id: null,
+        evidence_method: null,
+        evidence_id: null,
+        attribution: null,
+      };
+    }
     // Snapshot every caller-controlled primitive once. JavaScript callers may
     // supply accessors or proxies; validation and persistence must operate on
     // the same immutable values.
@@ -2849,14 +2868,16 @@ function normalizeActor(input: LedgerActorInput): {
  * A ledger write actor after user-attribution resolution (umbrella 8e2e8b2 /
  * issue 92813cc). `actor_id`/`actor_type` are the legacy provenance columns
  * (hashed into stable ids); `actor_user_id`/`evidence_method`/`evidence_id` are
- * the parallel user-principal columns. New writes always carry a non-null
- * `actor_user_id`; only rows predating the attribution migration may be NULL.
+ * the parallel user-principal columns. Rows predating the attribution migration
+ * may be NULL, and a genuinely unattributable new write (issue a64d2de:
+ * tokenless compat-mode request with no resolvable session binding) is stored
+ * NULL as well, reproducing the pre-identity legacy behavior.
  */
 interface ResolvedActor extends LedgerActorInput {
   actor_id: string | null;
   actor_type: LedgerActorType;
-  actor_user_id: string;
-  evidence_method: string;
+  actor_user_id: string | null;
+  evidence_method: string | null;
   evidence_id: string | null;
 }
 

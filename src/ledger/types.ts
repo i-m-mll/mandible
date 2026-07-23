@@ -130,10 +130,15 @@ export interface LedgerActorInput {
   actor_type?: LedgerActorType;
   author_display?: string;
   /**
-   * Resolved user attribution for every durable ledger write. Historical rows
-   * may retain NULL user ids, but new writes cannot create unresolved rows.
+   * Resolved user attribution for a durable ledger write, or `null` when the
+   * write could not be attributed to any principal (issue a64d2de). Historical
+   * rows may retain NULL user ids; a `null` here reproduces that pre-identity
+   * legacy behavior for a genuinely unattributable write (tokenless compat-mode
+   * request with no resolvable session binding). Callers must pass `null`
+   * explicitly — the key is required so no write path can omit the attribution
+   * decision by accident and silently fall through to NULL.
    */
-  attribution: LedgerAttributionInput;
+  attribution: LedgerAttributionInput | null;
 }
 
 export interface LedgerProject {

@@ -3153,6 +3153,28 @@ export const MIGRATIONS: readonly Migration[] = [
     // so re-migration over a DB that already has the column is idempotent,
     // matching the v106/v107 additive-column pattern.
     statements: []
+  },
+  {
+    version: 115,
+    name: "clear_local_default_ledger_misattribution",
+    // Issue a64d2de — corrective data migration. Tokenless compat-mode ledger
+    // writes were stamped with the operator's user id and
+    // evidence_method='local_default', misattributing agent-performed actions to
+    // the operator in the dashboard. The write-path fix now stores NULL for such
+    // writes; this migration retroactively clears the operator misattribution on
+    // existing rows. It nulls ONLY the parallel user-attribution columns
+    // (author_user_id/actor_user_id, evidence_method, evidence_id) and ONLY on
+    // rows whose evidence_method is exactly 'local_default', across ledger_issues,
+    // ledger_comments, ledger_issue_checkpoints, ledger_events,
+    // ledger_relationship_edges, and ledger_body_revisions. Rows carrying
+    // session_claim, api_token, credential_signature, system_internal, or
+    // external_import evidence are untouched, as are the frozen legacy
+    // actor_id/actor_type/author_display provenance columns (which restore the
+    // generic 'Mandible' display via the read-projection fallback). Applied by
+    // the guarded clearLocalDefaultLedgerAttribution() hook so a partial-schema
+    // or schema-rewind replay is safe; the UPDATE is naturally idempotent
+    // because a second run finds no 'local_default' rows left.
+    statements: []
   }
 ];
 
@@ -3244,6 +3266,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 114) {
         ensureAuthRequestMergeFinalizerStateColumn(db);
+      }
+      if (migration.version === 115) {
+        clearLocalDefaultLedgerAttribution(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5823,6 +5848,41 @@ function ensureAuthRequestUserAttributionColumns(db: Db): void {
     ON auth_requests(execution_evidence_id) WHERE execution_evidence_id IS NOT NULL`);
 }
 
+// Issue a64d2de (migration 115): retroactively clear operator misattribution on
+// ledger rows that a tokenless compat-mode write stamped with
+// evidence_method='local_default'. Only the parallel user-attribution columns
+// are nulled, and only for 'local_default' rows — every other evidence class
+// (session_claim, api_token, credential_signature, system_internal,
+// external_import) and the frozen legacy actor_id/actor_type/author_display
+// provenance are untouched. Guarded on table/column existence so a partial or
+// rewound schema replays cleanly; the UPDATE is idempotent because a re-run
+// finds no remaining 'local_default' rows. ledger_body_revisions is included:
+// its rows inherit the parent issue/comment write's attribution (same
+// resolveActor context), so a tokenless write stamped them local_default too.
+// Only its write-attribution columns (actor_user_id/evidence_method/evidence_id)
+// are cleared; the separate redaction-attribution column is not touched.
+function clearLocalDefaultLedgerAttribution(db: Db): void {
+  const plan: Array<{ table: string; userColumn: string }> = [
+    { table: "ledger_issues", userColumn: "author_user_id" },
+    { table: "ledger_comments", userColumn: "author_user_id" },
+    { table: "ledger_issue_checkpoints", userColumn: "author_user_id" },
+    { table: "ledger_events", userColumn: "actor_user_id" },
+    { table: "ledger_relationship_edges", userColumn: "actor_user_id" },
+    { table: "ledger_body_revisions", userColumn: "actor_user_id" },
+  ];
+  for (const { table, userColumn } of plan) {
+    if (!tableExists(db, table)) continue;
+    const columns = tableColumnNames(db, table);
+    if (!columns.has("evidence_method") || !columns.has(userColumn)) continue;
+    const clearEvidenceId = columns.has("evidence_id") ? ", evidence_id = NULL" : "";
+    db.exec(
+      `UPDATE ${table}
+         SET ${userColumn} = NULL, evidence_method = NULL${clearEvidenceId}
+       WHERE evidence_method = 'local_default'`,
+    );
+  }
+}
+
 // Umbrella 8e2e8b2 / issue e552606 (migration 110): guarded ownership columns.
 // These are write-time identity facts, separate from mutable liveness and
 // provider/session mechanism bookkeeping.
@@ -7265,9 +7325,13 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "conversation_blocks",
     "conversation_ingest_state",
     "conversations",
+    "ledger_body_revisions",
     "ledger_comments",
+    "ledger_events",
+    "ledger_issue_checkpoints",
     "ledger_issues",
     "ledger_projects",
+    "ledger_relationship_edges",
     "message_params",
     "project_artifact_associations",
     "session_instruction_artifacts",

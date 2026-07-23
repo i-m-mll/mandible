@@ -115,8 +115,13 @@ export function systemAction(): AttributionContext {
 }
 
 /**
- * Attribution for a local HTTP/CLI write, resolved to the configured operator.
- * Missing operator configuration fails closed: an HTTP/CLI action is not a
+ * Attribution resolved to the configured local operator. As of issue a64d2de
+ * this is NO LONGER the fallback for tokenless HTTP ledger writes — those flow
+ * through `attributionForRequest`, which resolves an ambient session binding or
+ * stores NULL rather than assuming the operator. It remains the deliberate
+ * principal for trusted in-process callers and operator-run local CLI
+ * maintenance tools that write to the ledger directly (not over the network).
+ * Missing operator configuration fails closed: a local operator action is not a
  * daemon-internal system action and must not be silently reclassified as one.
  */
 export function localDefaultAttribution(db: Db): AttributionContext {
@@ -264,11 +269,6 @@ export function systemActor(authorizerUserId?: string | null): LedgerActorInput 
   const attribution = systemAction();
   if (authorizerUserId) attribution.authorizer_user_id = authorizerUserId;
   return { attribution };
-}
-
-/** The local operator actor for HTTP/CLI writes. */
-export function localDefaultActor(db: Db): LedgerActorInput {
-  return { attribution: localDefaultAttribution(db) };
 }
 
 // --- Shadow users for external git-bug import authors ---
