@@ -46,9 +46,13 @@ import {
   useStatuslineTelemetry,
   type ShelfItem,
 } from '../chat';
-import { applyConversationAppendPayload, type ConversationAppendPayload } from '../chat/conversationAppend';
+import {
+  applyConversationAppendPayload,
+  mergeConversationSummaryIntoList,
+  type ConversationAppendPayload,
+} from '../chat/conversationAppend';
 import { formatAbsoluteTime, formatRelativeTime, truncate } from '../lib/format';
-import { createSSEClient } from '../sse-client';
+import { acquireSharedSse } from '../sse-shared';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import type { WorkRepo } from './work';
@@ -1428,7 +1432,7 @@ function ConversationDetail({
   useEffect(() => {
     if (typeof EventSource === 'undefined') return undefined;
     let refreshTimer: number | null = null;
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const scheduleRefresh = () => {
       if (refreshTimer !== null) {
         window.clearTimeout(refreshTimer);
@@ -1437,19 +1441,26 @@ function ConversationDetail({
         setLoadNonce((prev) => prev + 1);
       }, 150);
     };
-    const offConversationNew = client.on('conversation:new', scheduleRefresh);
-    const offConversationUpdated = client.on('conversation:updated', scheduleRefresh);
+    // conversation:new / conversation:updated are NOT subscribed here: the
+    // id-filtered `conversation:sse` window handler below applies append
+    // payloads in place and falls back to a targeted `loadNonce` refetch only
+    // on a detected sequence gap. This effect keeps just the workflow refresh
+    // and the reconnect resync (which patching can never survive).
     const offWorkflowUpdated = client.on('workflow:updated', () => {
       setWorkflowNonce((prev) => prev + 1);
+    });
+    // Reconnect resync: refetch the open conversation after a dropped stream so
+    // any events missed during the gap are reconciled.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) scheduleRefresh();
     });
     client.connect();
     return () => {
       if (refreshTimer !== null) {
         window.clearTimeout(refreshTimer);
       }
-      offConversationNew();
-      offConversationUpdated();
       offWorkflowUpdated();
+      offState();
       client.close();
     };
   }, [conversationId]);
@@ -2810,16 +2821,55 @@ export function ConversationsView({
     }
   }, [hideEmpty, sourceFilter, starredOnly, sort, search]);
 
-  // When parent's initialConversations changes (e.g., via SSE upsert), re-fetch
-  // with current filters instead of blindly overwriting local state.
-  // Bug: d51fbc8 — SSE updates were overwriting filtered/paginated conversation list
-  const initialConversationsRef = useRef(initialConversations);
+  // Live sidebar updates: the sidebar owns its own shared SSE handle rather than
+  // refetching whenever the parent's `initialConversations` prop changes.
+  // - conversation:updated for a known id merges {title, block_count} in place
+  //   with a monotonic block_count check (rejecting stale/out-of-order summaries);
+  // - conversation:new, an unknown id, or a summary with no block_count anchor
+  //   schedules one trailing 1 s refetch (membership/grouping under the active
+  //   filters is server-determined);
+  // - a reconnect refetches, since patching cannot survive a missed-event gap.
+  // Bug: d51fbc8 — SSE updates must not blindly overwrite the filtered/paginated list.
   useEffect(() => {
-    // Skip the first render (already used as initial state)
-    if (initialConversationsRef.current === initialConversations) return;
-    initialConversationsRef.current = initialConversations;
-    fetchConversations(true);
-  }, [initialConversations, fetchConversations]);
+    if (typeof EventSource === 'undefined') return undefined;
+    let refetchTimer: number | null = null;
+    const client = acquireSharedSse();
+    const scheduleListRefetch = () => {
+      if (refetchTimer !== null) return;
+      refetchTimer = window.setTimeout(() => {
+        refetchTimer = null;
+        void fetchConversations(true);
+      }, 1000);
+    };
+    const offUpdated = client.on('conversation:updated', (payload) => {
+      const data = (
+        typeof payload.data === 'object' && payload.data !== null ? payload.data : payload
+      ) as ConversationAppendPayload;
+      const result = mergeConversationSummaryIntoList(conversationsRef.current, data);
+      if (result.applied) {
+        setConversations(result.conversations);
+      } else if (result.refetch) {
+        scheduleListRefetch();
+      }
+      // stale summary (neither applied nor refetch): keep the list unchanged.
+    });
+    const offNew = client.on('conversation:new', () => {
+      scheduleListRefetch();
+    });
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) void fetchConversations(true);
+    });
+    client.connect();
+    return () => {
+      if (refetchTimer !== null) {
+        window.clearTimeout(refetchTimer);
+      }
+      offUpdated();
+      offNew();
+      offState();
+      client.close();
+    };
+  }, [fetchConversations]);
 
   // Debounced fetch on filter changes
   useEffect(() => {

@@ -9,6 +9,7 @@ import { WebSocketServer } from "ws";
 import { getDbPath, openDb, setDb, type Db } from "./db.js";
 import {
   configureDaemonLogger,
+  flushDaemonLogger,
   getDaemonLogger,
   startDaemonLogRetention,
 } from "./daemon-log.js";
@@ -117,6 +118,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const eventLoopDiagnostics = new EventLoopLagDiagnostics(
     (level, message, details) => logger(level, message, details),
   );
+  // Seed the snapshot so health and ingestion-backoff reads (which no longer
+  // sample directly) have a value before the first periodic tick.
+  eventLoopDiagnostics.sample();
   const instance = resolveInstanceInfo({
     dbPath,
     dbPathSource: options.dbPath
@@ -249,8 +253,12 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     // Bug: 645f8a8 — report lifecycle-owned readiness in health.
     isReady: () => isDaemonReady(),
     isWarm: () => isDaemonWarm(),
-    getMemoryDiagnostics: () => memoryDiagnostics.sample(),
-    getEventLoopDiagnostics: () => eventLoopDiagnostics.sample(),
+    // Health reads the last periodic sample instead of collecting a fresh one.
+    // A per-request eventLoopDiagnostics.sample() reset the underlying interval
+    // histogram on every /api/health poll, discarding the window the 30 s timer
+    // relies on for lag detection. Issue: 0d81726.
+    getMemoryDiagnostics: () => memoryDiagnostics.snapshot(),
+    getEventLoopDiagnostics: () => eventLoopDiagnostics.snapshot(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
     clientAuth,
@@ -355,7 +363,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   try {
     startIngestion(logger, {
       dbPath,
-      getBackgroundBackoffMs: () => eventLoopDiagnostics.sample().backgroundBackoffMs,
+      // Read the last periodic sample so ingestion backoff does not reset the
+      // shared lag histogram between batches. Issue: 0d81726.
+      getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
     });
   } catch (error) {
     logger("warn", "ingestion_start_failed", { error: String(error) });
@@ -365,20 +375,22 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // worktrees. Run it after the daemon is healthy so startup callers are not
   // blocked by machine-size-dependent discovery latency.
   const startupDiscoveryTimer = setTimeout(() => {
-    try {
-      const activeSessions = sessionRegistry.listSessions({ status: "active" });
-      if (activeSessions.length === 0) {
-        const result = sessionDiscovery.discoverSessions();
-        if (result.discovered > 0 || result.dead_reaped > 0) {
-          logger("info", "startup_discovery", { ...result });
+    void (async () => {
+      try {
+        const activeSessions = sessionRegistry.listSessions({ status: "active" });
+        if (activeSessions.length === 0) {
+          const result = await sessionDiscovery.discoverSessions();
+          if (result.discovered > 0 || result.dead_reaped > 0) {
+            logger("info", "startup_discovery", { ...result });
+          }
         }
+      } catch (error) {
+        logger("warn", "startup_discovery_failed", { error: String(error) });
+      } finally {
+        startupSessionDiscoveryComplete = true;
+        updateWarmReadiness();
       }
-    } catch (error) {
-      logger("warn", "startup_discovery_failed", { error: String(error) });
-    } finally {
-      startupSessionDiscoveryComplete = true;
-      updateWarmReadiness();
-    }
+    })();
   }, STARTUP_DISCOVERY_DELAY_MS);
   if (typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
     startupDiscoveryTimer.unref();
@@ -509,6 +521,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     clearInterval(healthCheckTimer);
     eventLoopDiagnostics.close();
     clearTimeout(shutdownTimeout);
+    // Persist the final batch of queued daemon_log rows before the connection
+    // closes so recent activity is not lost on a clean shutdown.
+    flushDaemonLogger();
     db.close();
     removePidFile(options.pidFilePath);
     logger("info", "server_stopped");

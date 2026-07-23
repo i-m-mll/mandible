@@ -216,6 +216,11 @@ export interface AuthRequest {
   merge_preflight_base_sha?: string | null;
   merge_preflight_queue_fingerprint?: string | null;
   merge_finalized_at?: number | null;
+  // Issue 75f52ac — per-step durable state for the background finalizer queue.
+  // JSON object keyed by step name: { [step]: { state, attempts, error?, at } }.
+  // Null until Stage 3 finalizers run; lets crash recovery resume mid-queue and
+  // surfaces failed steps in the auth:finalized payload and detail views.
+  merge_finalizer_state?: string | null;
   files_changed?: number;
   additions?: number;
   deletions?: number;
@@ -251,6 +256,20 @@ export interface AuthRequest {
   approval_source: "manual" | "auto_lease" | string;
   approval_lease_id: string | null;
 }
+
+/**
+ * Projected auth-request shape for list surfaces (history sidebar).
+ *
+ * Omits the unbounded body blobs (`diff_summary`, `spec_content`, `output`)
+ * so a 50–200 row list does not serialize megabytes of diff/spec/console text
+ * on the main thread. The detail route (`GET /api/auth/request/:id`) still
+ * returns the full body, which the UI fetches on selection. `action_count`
+ * is resolved in a single batched query rather than per-row.
+ */
+export type AuthRequestSummary = Omit<
+  AuthRequest,
+  "diff_summary" | "spec_content" | "output"
+> & { action_count: number };
 
 export interface AuthRequestInput {
   session_id?: string | null;
@@ -304,11 +323,16 @@ export interface GitBugIssue {
   author_legacy_display?: string;
   author_attribution?: AttributionReadProjection | null;
   created_at: string;
-  description: string;
+  // Perf (issue e5fc02b): the set-based /api/issues list projection omits
+  // description to keep list payloads small and avoid rehydrating every issue
+  // body. Detail projections (GitBugIssueDetail) still populate it, so the
+  // field is optional on the shared summary type rather than always present.
+  description?: string;
   parent_id?: string;  // derived from parent:<human_id> label
 }
 
 export interface GitBugIssueDetail extends GitBugIssue {
+  description: string;
   comments: GitBugComment[];
 }
 

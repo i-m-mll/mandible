@@ -305,9 +305,10 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
-  app.post("/api/auth/request/:id/replay-codex-archives", (req, res) => {
+  app.post("/api/auth/request/:id/replay-codex-archives", async (req, res) => {
     try {
-      const result = authQueue.replayCodexThreadArchives(req.params.id);
+      // Issue 75f52ac — archiving is now async (off-loop codex CLI spawn).
+      const result = await authQueue.replayCodexThreadArchives(req.params.id);
       res.status(200).json(result);
     } catch (error) {
       handleQueueError(error, res);
@@ -349,15 +350,19 @@ export function registerAuthRoutes(
       limitRaw != null && Number.isFinite(limitRaw) && limitRaw > 0
         ? Math.min(limitRaw, 200)
         : 50;
-    let requests = authQueue.listHistory(limit);
+    // Bug: 0de95bf — list projection omits diff/spec/output body blobs and
+    // resolves action counts in one batched query; the detail route serves the
+    // full body on selection.
+    let requests = authQueue.listHistorySummaries(limit);
     if (typeFilter) {
       requests = requests.filter((r) => r.type === typeFilter);
     }
+    // action_count is already resolved in one batched query by
+    // listHistorySummaries (0de95bf); only fold in main's user-attribution fields.
     const attributionResolver = new AttributionReadResolver(getDb());
     res.json({
       requests: requests.map((r) => ({
         ...r,
-        action_count: authQueue.countActions(r.id),
         ...authAttributionReadFields(attributionResolver, r),
       })),
     });

@@ -31,7 +31,8 @@ import type {
   UpdateSpaceEdgeRequest,
 } from '../../api';
 import { createSpaceEdge, updateSpaceEdge, deleteSpaceEdge } from '../../api';
-import { createSSEClient, type SSEClient, type SSEPayload } from '../../sse-client';
+import { type SSEPayload } from '../../sse-client';
+import { acquireSharedSse, type SseHandle } from '../../sse-shared';
 import {
   LEDGER_LINK_TYPES,
   type LedgerLinkType,
@@ -77,7 +78,7 @@ export type SpaceEdgeLayerProps = {
     deps?: PromoteEdgeDeps,
   ) => ReturnType<typeof promoteEdgeToLedger>;
   /** SSE client factory (injected for tests); defaults to the shared client. */
-  createSse?: () => SSEClient;
+  createSse?: () => SseHandle;
 };
 
 const EDGE_EVENTS = ['space:edge:created', 'space:edge:updated', 'space:edge:removed'] as const;
@@ -95,7 +96,7 @@ export function SpaceEdgeLayer(props: SpaceEdgeLayerProps): JSX.Element {
     updateEdge = updateSpaceEdge,
     removeEdge = deleteSpaceEdge,
     promote = promoteEdgeToLedger,
-    createSse = createSSEClient,
+    createSse = acquireSharedSse,
   } = props;
 
   const [edges, setEdges] = useState<SpaceEdge[]>(() => initialModel?.edges ?? []);

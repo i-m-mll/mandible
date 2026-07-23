@@ -28,7 +28,10 @@ export type IssueSummary = {
   labels: string[];
   author: string;
   created_at: string;
-  description: string;
+  // Perf (issue e5fc02b): the /api/issues list projection omits description.
+  // The body arrives via the two-stage detail fetch on selection; the
+  // synthesized instant-paint detail treats an absent description as empty.
+  description?: string;
   parent_id?: string;  // derived from parent:<human_id> label
 };
 
@@ -836,6 +839,37 @@ export function IssuesView({
       if (detailRequestSeqRef.current === requestSeq) setDetailLoadFailed(true);
     }
   }, [selectedRepoId, selectedIssueId]);
+
+  // Live detail refresh: when a ledger:* event (forwarded from the app-level
+  // SSE handler as a `ledger:sse` window event) targets the open issue, refetch
+  // the detail through a trailing 300 ms debounce. Events for other issues, and
+  // unfiltered events with no issue_id, are ignored here — list freshness is
+  // handled at the app level.
+  useEffect(() => {
+    const detailId = visibleLedgerIssueDetail?.id;
+    const detailDisplayId = visibleLedgerIssueDetail?.display_id;
+    if (!detailId && !detailDisplayId) return undefined;
+    let debounceTimer: number | null = null;
+    const handleLedgerSse = (event: Event) => {
+      const detail = (event as CustomEvent<{ type: string; data?: { issue_id?: unknown } }>).detail;
+      const issueId = detail?.data?.issue_id;
+      if (typeof issueId !== 'string' || !issueId) return;
+      const matches = [detailId, detailDisplayId].some(
+        (ref) => Boolean(ref) && (ref === issueId || ref!.startsWith(issueId) || issueId.startsWith(ref!)),
+      );
+      if (!matches) return;
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      debounceTimer = window.setTimeout(() => {
+        debounceTimer = null;
+        void refreshLedgerIssueDetail();
+      }, 300);
+    };
+    window.addEventListener('ledger:sse', handleLedgerSse);
+    return () => {
+      if (debounceTimer !== null) window.clearTimeout(debounceTimer);
+      window.removeEventListener('ledger:sse', handleLedgerSse);
+    };
+  }, [visibleLedgerIssueDetail?.id, visibleLedgerIssueDetail?.display_id, refreshLedgerIssueDetail]);
 
   const handleCloseIssue = useCallback(async () => {
     if (!visibleLedgerIssueDetail || actionInFlight) return;

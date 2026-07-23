@@ -11,6 +11,17 @@ const DEFAULT_LOG_FILE_PATH = path.join(os.homedir(), ".cache", "mandible", "lau
 const DEFAULT_STDERR_MAX_BYTES = 16 * 1024 * 1024;
 const DEFAULT_STDERR_KEEP_SEGMENTS = 5;
 const PERSIST_MIN_INDEX = LEVELS.indexOf("info");
+// Persisted rows are queued in memory and flushed as one bounded transaction on
+// a short timer instead of running a synchronous INSERT (11 columns, up to 8
+// index updates) on every request turn. This keeps the write off the request
+// path and coalesces WAL fsyncs that otherwise contend with the ingestion
+// worker under the 250 ms busy_timeout. Issue: 0d81726.
+const DEFAULT_FLUSH_INTERVAL_MS = 500;
+const DEFAULT_MAX_QUEUE = 1_000;
+// Rotation of the stderr mirror file used to run a statSync on every log line.
+// It now runs on its own timer so the request path never touches the filesystem
+// for a size check.
+const DEFAULT_ROTATION_CHECK_MS = 5_000;
 const DEFAULT_LOG_RETENTION_DAYS = 7;
 const MAX_LOG_RETENTION_DAYS = 365;
 const DEFAULT_RETENTION_BATCH_SIZE = 1_000;
@@ -20,7 +31,7 @@ const DEFAULT_RETENTION_INITIAL_DELAY_MS = 10_000;
 const DEFAULT_RETENTION_CATCH_UP_DELAY_MS = 250;
 const DEFAULT_RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 
-type InsertStatement = Database.Statement<[
+type LogInsertParams = [
   string,
   number,
   LogLevel,
@@ -32,7 +43,9 @@ type InsertStatement = Database.Statement<[
   string | null,
   string | null,
   string | null,
-]>;
+];
+
+type InsertStatement = Database.Statement<LogInsertParams>;
 
 export interface StderrRotationConfig {
   filePath?: string;
@@ -83,9 +96,16 @@ interface ExtractedRefs {
 class DaemonLogger {
   private db: Db | null = null;
   private insert: InsertStatement | null = null;
+  private insertMany: ((rows: LogInsertParams[]) => void) | null = null;
   private readonly stderrMinIndex: number;
   private stderrRotation: Required<StderrRotationConfig>;
   private reportedDbFailure = false;
+  private queue: LogInsertParams[] = [];
+  private flushTimer: ReturnType<typeof setInterval> | null = null;
+  private rotationTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly flushIntervalMs: number;
+  private readonly maxQueue: number;
+  private readonly rotationCheckMs: number;
 
   constructor(env: NodeJS.ProcessEnv = process.env) {
     const level = normalizeLevel(env.LOG_LEVEL) ?? "info";
@@ -95,9 +115,16 @@ class DaemonLogger {
       maxBytes: parsePositiveInteger(env.MANDIBLE_STDERR_ROTATION_MAX_BYTES, DEFAULT_STDERR_MAX_BYTES),
       keepSegments: parsePositiveInteger(env.MANDIBLE_STDERR_ROTATION_KEEP_SEGMENTS, DEFAULT_STDERR_KEEP_SEGMENTS),
     };
+    this.flushIntervalMs = parsePositiveInteger(env.MANDIBLE_DAEMON_LOG_FLUSH_MS, DEFAULT_FLUSH_INTERVAL_MS);
+    this.maxQueue = parsePositiveInteger(env.MANDIBLE_DAEMON_LOG_MAX_QUEUE, DEFAULT_MAX_QUEUE);
+    this.rotationCheckMs = parsePositiveInteger(env.MANDIBLE_STDERR_ROTATION_CHECK_MS, DEFAULT_ROTATION_CHECK_MS);
   }
 
   configure(db: Db): void {
+    // A re-configure (fresh startup, or a new DB in tests) abandons any rows
+    // still queued against the previous connection and restarts both timers.
+    this.stopTimers();
+    this.queue = [];
     this.db = db;
     this.insert = db.prepare(
       `INSERT INTO daemon_log (
@@ -105,12 +132,19 @@ class DaemonLogger {
         issue_id, auth_request_id, artifact_id, session_id, repo_id
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     ) as InsertStatement;
+    const insert = this.insert;
+    this.insertMany = db.transaction((rows: LogInsertParams[]) => {
+      for (const row of rows) {
+        insert.run(...row);
+      }
+    });
     this.stderrRotation = {
       ...this.stderrRotation,
       filePath: process.env.MANDIBLE_STDERR_LOG_PATH || this.stderrRotation.filePath,
       ...readRotationSettings(db),
     };
     rotateStderrLogSegments(this.stderrRotation);
+    this.startTimers();
   }
 
   log: Logger = (level, event, fields = {}) => {
@@ -120,34 +154,72 @@ class DaemonLogger {
     const refs = extractRefs(fields);
     const fieldsJson = safeJson(fields);
 
-    if (this.insert && LEVELS.indexOf(normalizedLevel) >= PERSIST_MIN_INDEX) {
-      try {
-        this.insert.run(
-          randomUUID(),
-          ts,
-          normalizedLevel,
-          event,
-          subsystem,
-          fieldsJson,
-          refs.issue_id,
-          refs.auth_request_id,
-          refs.artifact_id,
-          refs.session_id,
-          refs.repo_id,
-        );
-      } catch (error) {
-        this.reportDbFailure(error);
+    if (this.insertMany && LEVELS.indexOf(normalizedLevel) >= PERSIST_MIN_INDEX) {
+      this.queue.push([
+        randomUUID(),
+        ts,
+        normalizedLevel,
+        event,
+        subsystem,
+        fieldsJson,
+        refs.issue_id,
+        refs.auth_request_id,
+        refs.artifact_id,
+        refs.session_id,
+        refs.repo_id,
+      ]);
+      // Bound memory under a burst; a full queue is flushed as one transaction
+      // rather than being allowed to grow unbounded between timer turns.
+      if (this.queue.length >= this.maxQueue) {
+        this.flush();
       }
     }
 
     this.writeStderrMirror(normalizedLevel, event, fields, ts);
   };
 
+  /** Persist all queued rows in a single transaction. Safe to call when idle. */
+  flush(): void {
+    if (!this.insertMany || this.queue.length === 0) {
+      return;
+    }
+    const rows = this.queue;
+    this.queue = [];
+    try {
+      this.insertMany(rows);
+    } catch (error) {
+      this.reportDbFailure(error);
+    }
+  }
+
+  private startTimers(): void {
+    this.flushTimer = setInterval(() => this.flush(), this.flushIntervalMs);
+    if (typeof this.flushTimer === "object" && "unref" in this.flushTimer) {
+      this.flushTimer.unref();
+    }
+    this.rotationTimer = setInterval(() => {
+      rotateStderrLogSegments(this.stderrRotation);
+    }, this.rotationCheckMs);
+    if (typeof this.rotationTimer === "object" && "unref" in this.rotationTimer) {
+      this.rotationTimer.unref();
+    }
+  }
+
+  private stopTimers(): void {
+    if (this.flushTimer) {
+      clearInterval(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.rotationTimer) {
+      clearInterval(this.rotationTimer);
+      this.rotationTimer = null;
+    }
+  }
+
   private writeStderrMirror(level: LogLevel, event: string, fields: Record<string, unknown>, ts: number): void {
     if (LEVELS.indexOf(level) < this.stderrMinIndex) {
       return;
     }
-    rotateStderrLogSegments(this.stderrRotation);
     const payload = {
       level,
       message: event,
@@ -183,6 +255,15 @@ export function getDaemonLogger(): Logger {
 export function configureDaemonLogger(db: Db): Logger {
   singleton.configure(db);
   return singleton.log;
+}
+
+/**
+ * Synchronously persist any queued daemon_log rows. Call before shutting the
+ * database so the final batch is not lost, and in tests that read rows back
+ * immediately after logging.
+ */
+export function flushDaemonLogger(): void {
+  singleton.flush();
 }
 
 export function rotateStderrLogSegments(config: StderrRotationConfig = {}): void {

@@ -16,6 +16,7 @@
 
 import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { h } from 'preact';
 import { act } from 'preact/test-utils';
 import { EditorSelection } from '@codemirror/state';
@@ -299,6 +300,7 @@ beforeEach(() => {
   stubLocalStorage();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
+  __resetSharedSseForTests();
   if (!Range.prototype.getClientRects) {
     Object.defineProperty(Range.prototype, 'getClientRects', {
       configurable: true,

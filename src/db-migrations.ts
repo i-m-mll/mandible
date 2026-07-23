@@ -3114,6 +3114,45 @@ export const MIGRATIONS: readonly Migration[] = [
         '00000000000000000000000001', 'agents', 'Agents', 'system', 0, 0
       )`
     ]
+  },
+  {
+    // Integration reconciliation (umbrella c16807e): renumbered to 112 atop
+    // main's user-system migrations 107-111.
+    version: 112,
+    name: "branch_upstream_cache",
+    // Issue 651e820 — persist per-branch upstream tracking info during scans so
+    // GET /api/work/repos/:id/branches serves it from the DB instead of spawning
+    // `git rev-parse @{upstream}` per branch on every request. The columns are
+    // added by the guarded post-migration below so a schema-rewind replay against
+    // a baseline that already carries them is idempotent.
+    statements: []
+  },
+  {
+    // Integration reconciliation (umbrella c16807e): renumbered to 113 atop
+    // main's user-system migrations 107-111 (branch_upstream_cache took 112).
+    version: 113,
+    name: "work_unit_merge_scan_retirement",
+    // Issue 93d978e — reversible tombstone excluding stale abandoned work units
+    // from merge-side ancestry scans. Nullable ms-epoch marker; the row, its
+    // state, and its provenance survive. Clearing it re-admits the row. The
+    // additive column is added by a guarded hook (ensureWorkUnitMergeScanRetirementColumn)
+    // so re-migration over a DB that already has the column is idempotent,
+    // matching the pattern used for the v106 branch-reaping columns.
+    statements: []
+  },
+  {
+    // Integration reconciliation (umbrella c16807e): renumbered to 114 atop
+    // main's user-system migrations 107-111 (work_unit retirement took 113).
+    version: 114,
+    name: "auth_request_merge_finalizer_state",
+    // Issue 75f52ac — per-step durable state for the background finalizer queue.
+    // Nullable JSON column recording each Stage 3 finalizer step's state,
+    // attempts, and last error so a daemon restart mid-finalizer resumes the
+    // remaining steps instead of losing or double-applying work. The additive
+    // column is added by a guarded hook (ensureAuthRequestMergeFinalizerStateColumn)
+    // so re-migration over a DB that already has the column is idempotent,
+    // matching the v106/v107 additive-column pattern.
+    statements: []
   }
 ];
 
@@ -3196,6 +3235,15 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 111) {
         ensureProjectRestrictionColumn(db);
+      }
+      if (migration.version === 112) {
+        ensureBranchUpstreamColumns(db);
+      }
+      if (migration.version === 113) {
+        ensureWorkUnitMergeScanRetirementColumn(db);
+      }
+      if (migration.version === 114) {
+        ensureAuthRequestMergeFinalizerStateColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -3490,6 +3538,32 @@ export function migrate(db: Db): void {
   // newer than v105 may execute until every older post-DDL migration and v105
   // itself have completed successfully.
   applySchemaMigrations(db, afterV105);
+
+  // Integration reconciliation (umbrella c16807e): the additive-column hooks for
+  // v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
+  // and v114 (auth_requests.merge_finalizer_state) were renumbered during
+  // integration atop main's user-system migrations 107-111. A database that
+  // previously ran an intermediate feature-branch daemon may already have
+  // recorded v107-v109 under DIFFERENT meanings, so those
+  // exact migrations are no longer in `pending` and their per-version hooks never
+  // fire — leaving the renumbered columns permanently absent. All three hooks are
+  // guarded and idempotent, so converge the full column set whenever a column is
+  // actually missing.
+  //
+  // Failure-safe gating: keyed on LIVE schema inspection, NOT the recorded
+  // version. applySchemaMigrations above already committed the head version, so a
+  // version gate that missed here (e.g. a hook threw and its ALTER rolled back)
+  // would never re-fire on a later open. The hooks run un-transacted so each
+  // column that is successfully added persists independently; any hook that
+  // throws leaves its column absent, and the next open re-detects it and retries.
+  // This runs AFTER applySchemaMigrations(afterV105) so a normal low-version
+  // replay (whose per-version hooks already added the columns in canonical order)
+  // is a no-op here and only a DB actually missing the columns is repaired.
+  if (needsRenumberedColumnConvergence(db)) {
+    ensureBranchUpstreamColumns(db);
+    ensureWorkUnitMergeScanRetirementColumn(db);
+    ensureAuthRequestMergeFinalizerStateColumn(db);
+  }
 }
 
 /**
@@ -5807,6 +5881,102 @@ function ensureBranchReapingKnowledgeColumns(db: Db): void {
       throw new Error(`migration 106 verification: branches.${name} has divergent definition`);
     }
   }
+}
+
+function ensureBranchUpstreamColumns(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'branches'")
+    .get();
+  if (!table) return;
+
+  const columnInfo = () =>
+    db.prepare("PRAGMA table_info(branches)").all() as Array<{
+      name: string;
+      type: string;
+      notnull: number;
+      dflt_value: string | null;
+    }>;
+
+  const hasUpstream = columnInfo().find((column) => column.name === "has_upstream");
+  if (!hasUpstream) {
+    db.exec("ALTER TABLE branches ADD COLUMN has_upstream INTEGER NOT NULL DEFAULT 0");
+  } else if (
+    hasUpstream.type.toUpperCase() !== "INTEGER" ||
+    hasUpstream.notnull !== 1 ||
+    hasUpstream.dflt_value !== "0"
+  ) {
+    throw new Error("migration 112 verification: branches.has_upstream has divergent definition");
+  }
+
+  const upstream = columnInfo().find((column) => column.name === "upstream");
+  if (!upstream) {
+    db.exec("ALTER TABLE branches ADD COLUMN upstream TEXT");
+  } else if (upstream.type.toUpperCase() !== "TEXT") {
+    throw new Error("migration 112 verification: branches.upstream has divergent definition");
+  }
+}
+
+// Issue 93d978e (migration 113 after integration reconciliation) — additive
+// nullable tombstone column for the merge-scan retirement sweep. Guarded so
+// re-running migrate over a database that already has the column (e.g.
+// version-rewind test fixtures) is a no-op rather than a duplicate-column error.
+function ensureWorkUnitMergeScanRetirementColumn(db: Db): void {
+  const table = db
+    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'work_units'")
+    .get();
+  if (!table) return;
+  const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
+    name: string;
+    type: string;
+  }>;
+  const existing = columns.find((column) => column.name === "merge_scan_retired_at");
+  if (!existing) {
+    db.exec("ALTER TABLE work_units ADD COLUMN merge_scan_retired_at INTEGER");
+    return;
+  }
+  if (existing.type.toUpperCase() !== "INTEGER") {
+    throw new Error(
+      "migration 113 verification: work_units.merge_scan_retired_at has divergent definition",
+    );
+  }
+}
+
+// Issue 75f52ac (migration 114 after integration reconciliation) — additive
+// nullable JSON column recording the background finalizer queue's per-step
+// durable state. Guarded so re-running migrate over a database that already has
+// the column (version-rewind fixtures) is a no-op rather than a
+// duplicate-column error.
+function ensureAuthRequestMergeFinalizerStateColumn(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("merge_finalizer_state")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_finalizer_state TEXT");
+  }
+}
+
+// Integration reconciliation (umbrella c16807e): true when any renumbered
+// additive column (v112 branches.has_upstream/upstream, v113
+// work_units.merge_scan_retired_at, v114 auth_requests.merge_finalizer_state) is
+// still absent from a live, non-fresh database. The convergence pass is gated on
+// this LIVE schema inspection rather than the recorded schema version so that if
+// a convergence hook throws and its repair rolls back, the next open re-detects
+// the missing column and retries — a version-based gate would be permanently
+// skipped once applySchemaMigrations has already recorded the head version.
+function needsRenumberedColumnConvergence(db: Db): boolean {
+  const missing = (table: string, required: readonly string[]): boolean => {
+    if (!tableExists(db, table)) return false;
+    const present = new Set(
+      (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      ),
+    );
+    return required.some((column) => !present.has(column));
+  };
+  return (
+    missing("branches", ["has_upstream", "upstream"]) ||
+    missing("work_units", ["merge_scan_retired_at"]) ||
+    missing("auth_requests", ["merge_finalizer_state"])
+  );
 }
 
 function hasProjectsMissingKeys(db: Db): boolean {

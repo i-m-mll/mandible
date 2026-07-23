@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { __resetSharedSseForTests } from "../ui/src/sse-shared";
 import { h } from "preact";
 
 import { App } from "../ui/src/app";
@@ -41,6 +42,7 @@ describe("visible-first dashboard boot", () => {
   beforeEach(() => {
     MockEventSource.instances = [];
     vi.stubGlobal("EventSource", MockEventSource);
+    __resetSharedSseForTests();
     vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
       matches: false,
       media: query,
@@ -119,15 +121,25 @@ describe("visible-first dashboard boot", () => {
     await Promise.resolve();
     const source = MockEventSource.instances[0];
     expect(source).toBeTruthy();
+    // Freshness is now connection health (open socket + a signal within
+    // SSE_FRESH_FOR = 45s), not bare last-event receipt, so the connection must
+    // actually open before the fallback poll is suppressed. Fire onopen to move
+    // the shared client into the 'open' state, then deliver a live event to bump
+    // the freshness clock.
+    source.onopen?.();
     source.emit("message", { type: "auth:new", data: { request: { id: "a", status: "pending" } } });
     await Promise.resolve();
     const issueRequestsAfterSse = requests.filter((url) => url === "/api/issues").length;
 
+    // Within the 45s freshness window the live stream is authoritative, so the
+    // periodic fallback fetch is skipped.
     await vi.advanceTimersByTimeAsync(20_000);
 
     expect(requests.filter((url) => url === "/api/issues")).toHaveLength(issueRequestsAfterSse);
 
-    await vi.advanceTimersByTimeAsync(20_000);
+    // Once the freshness window lapses (>45s with no further signal) the fallback
+    // poll re-enables and refetches the visible view.
+    await vi.advanceTimersByTimeAsync(40_000);
 
     expect(requests.filter((url) => url === "/api/issues").length).toBeGreaterThan(issueRequestsAfterSse);
   });

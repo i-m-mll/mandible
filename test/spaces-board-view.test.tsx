@@ -8,6 +8,7 @@
 // reconciliation that does not reset selection.
 import { render, screen, cleanup, fireEvent, waitFor, within } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { __resetSharedSseForTests } from '../ui/src/sse-shared';
 import { h } from 'preact';
 
 import { SpaceBoardRenderer } from '../ui/src/views/spaces/SpaceBoard';
@@ -271,6 +272,7 @@ beforeEach(() => {
   stubLocalStorage();
   MockEventSource.instances = [];
   vi.stubGlobal('EventSource', MockEventSource);
+  __resetSharedSseForTests();
 });
 
 afterEach(() => {

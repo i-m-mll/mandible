@@ -206,7 +206,7 @@ describe("GET /api/work/repos/:id/audit", () => {
       scanAll,
       getRepoById: vi.fn().mockReturnValue(repo),
       getRepos: vi.fn().mockReturnValue([repo]),
-      refreshRepo: vi.fn().mockImplementation(() => {
+      refreshRepoAsync: vi.fn().mockImplementation(async () => {
         refreshed = true;
         return repo;
       }),
@@ -235,7 +235,7 @@ describe("GET /api/work/repos/:id/audit", () => {
     const scanner = {
       getRepoById: vi.fn().mockReturnValue(repo),
       getRepos: vi.fn().mockReturnValue([repo]),
-      refreshRepo: vi.fn().mockImplementation(() => {
+      refreshRepoAsync: vi.fn().mockImplementation(async () => {
         throw new Error("git status failed");
       }),
       getBranches,

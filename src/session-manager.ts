@@ -1135,7 +1135,10 @@ export class SessionManager {
     if (command !== "codex" || !providerSessionId) {
       return;
     }
-    safeUnarchiveCodexThread(this.codexThreadArchiver, providerSessionId, (message) => {
+    // Issue 75f52ac — safeUnarchiveCodexThread is now async (promisified codex
+    // CLI spawn). Fire-and-forget here preserves the previous non-blocking
+    // behaviour; failures are logged via the callback.
+    void safeUnarchiveCodexThread(this.codexThreadArchiver, providerSessionId, (message) => {
       this.logger("warn", "codex_thread_unarchive_failed", { message, provider_session_id: providerSessionId });
     });
   }

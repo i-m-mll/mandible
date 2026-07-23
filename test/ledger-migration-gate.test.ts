@@ -191,9 +191,12 @@ describe("ledger issue projection", () => {
       repo_id: "repo-1",
       repo_name: "mandible",
       title: "Projected issue",
-      description: "Projected body",
       parent_id: "par123",
     });
+    // Perf (issue e5fc02b): the set-based list projection omits description from
+    // list rows; the detail projection still carries the full body.
+    expect(summaries[0].issues[0].description).toBeUndefined();
+    expect(detail.ok && detail.detail.description).toBe("Projected body");
     expect(detail.ok && detail.detail.comments).toHaveLength(1);
   });
 

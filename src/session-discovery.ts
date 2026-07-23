@@ -1,11 +1,14 @@
-import { execSync, spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import { promisify } from "node:util";
 import { SessionRegistry, readPidStartTime } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { WorkScanner } from "./work-scanner.js";
 import type { Db } from "./db.js";
 import type { Logger } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface DiscoveryResult {
   discovered: number;
@@ -57,16 +60,16 @@ export class SessionDiscovery {
   }
 
   /** Run a full discovery pass: find new sessions and reap dead ones. */
-  discoverSessions(): DiscoveryResult {
+  async discoverSessions(): Promise<DiscoveryResult> {
     const start = Date.now();
     let discovered = 0;
     let alreadyTracked = 0;
 
     // 1. Gather all known worktree paths from the work scanner's repos
-    const worktrees = this.getWorktreePaths();
+    const worktrees = await this.getWorktreePaths();
 
     // 2. Find running agent processes
-    const processes = this.findAgentProcesses();
+    const processes = await this.findAgentProcesses();
 
     // 3. Match processes to worktrees and register unknown sessions
     for (const proc of processes) {
@@ -159,7 +162,7 @@ export class SessionDiscovery {
    * Collect all worktree paths from every repo the work scanner knows about.
    * Uses `git worktree list --porcelain` the same way WorkScanner does.
    */
-  private getWorktreePaths(): WorktreeInfo[] {
+  private async getWorktreePaths(): Promise<WorktreeInfo[]> {
     const repos = this.workScanner.getRepos();
     const result: WorktreeInfo[] = [];
 
@@ -168,16 +171,24 @@ export class SessionDiscovery {
         continue;
       }
 
-      const output = spawnSync("git", ["worktree", "list", "--porcelain"], {
-        cwd: repo.root,
-        encoding: "utf8",
-      });
-
-      if (output.status !== 0 || !output.stdout) {
+      let stdout: string;
+      try {
+        const output = await execFileAsync("git", ["worktree", "list", "--porcelain"], {
+          cwd: repo.root,
+          encoding: "utf8",
+          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+          maxBuffer: 16 * 1024 * 1024,
+        });
+        stdout = output.stdout;
+      } catch {
         continue;
       }
 
-      const worktrees = parseWorktreeList(output.stdout);
+      if (!stdout) {
+        continue;
+      }
+
+      const worktrees = parseWorktreeList(stdout);
       result.push(...worktrees);
     }
 
@@ -188,16 +199,17 @@ export class SessionDiscovery {
    * Find running agent processes (claude, codex) and resolve their cwds.
    * Uses `ps` + `lsof` on macOS.
    */
-  private findAgentProcesses(): AgentProcess[] {
+  private async findAgentProcesses(): Promise<AgentProcess[]> {
     const results: AgentProcess[] = [];
 
     // Get process list — use `ps axo pid,comm` for concise output
     let psOutput: string;
     try {
-      psOutput = execSync("ps axo pid,comm", {
+      const output = await execFileAsync("ps", ["axo", "pid,comm"], {
         encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
+        maxBuffer: 16 * 1024 * 1024,
       });
+      psOutput = output.stdout;
     } catch {
       this.log("warn", "session_discovery_ps_failed");
       return results;
@@ -238,9 +250,10 @@ export class SessionDiscovery {
       }
     }
 
-    // For each candidate, try to resolve its cwd via lsof
+    // Resolve every candidate cwd in a single batched lsof invocation.
+    const cwdByPid = await this.resolveProcessCwds(candidates.map((c) => c.pid));
     for (const candidate of candidates) {
-      const cwd = this.getProcessCwd(candidate.pid);
+      const cwd = cwdByPid.get(candidate.pid);
       if (cwd) {
         results.push({ pid: candidate.pid, app: candidate.app, cwd });
       }
@@ -250,35 +263,53 @@ export class SessionDiscovery {
   }
 
   /**
-   * Get the current working directory of a process.
-   * On macOS, `lsof -a -p PID -d cwd -Fn` is the reliable approach.
+   * Resolve the current working directory of many processes in one call.
+   * On macOS, `lsof -a -p pid1,pid2,... -d cwd -Fpn` reports each process id on
+   * a `p` line followed by its cwd on an `n` line. lsof exits non-zero when any
+   * requested pid has exited, but still prints the surviving processes on
+   * stdout, so partial output is parsed regardless of exit status.
    */
-  private getProcessCwd(pid: number): string | null {
-    try {
-      const output = execSync(`/usr/sbin/lsof -a -p ${pid} -d cwd -Fn`, {
-        encoding: "utf8",
-        stdio: ["ignore", "pipe", "ignore"],
-        timeout: 5000,
-      });
+  private async resolveProcessCwds(pids: number[]): Promise<Map<number, string>> {
+    const cwdByPid = new Map<number, string>();
+    if (pids.length === 0) {
+      return cwdByPid;
+    }
 
-      // lsof output format: lines starting with 'n' contain the name (path)
-      for (const line of output.split("\n")) {
-        if (line.startsWith("n") && line.length > 1) {
-          const cwdPath = line.slice(1);
-          // Validate it's a real directory
-          if (fs.existsSync(cwdPath)) {
-            return cwdPath;
-          }
+    let output = "";
+    try {
+      const result = await execFileAsync(
+        "/usr/sbin/lsof",
+        ["-a", "-p", pids.join(","), "-d", "cwd", "-Fpn"],
+        { encoding: "utf8", timeout: 10000, maxBuffer: 16 * 1024 * 1024 },
+      );
+      output = result.stdout;
+    } catch (error) {
+      const partial = (error as { stdout?: string }).stdout;
+      if (typeof partial === "string" && partial.length > 0) {
+        output = partial;
+      } else {
+        // lsof may fail for permission reasons or if every process exited.
+        this.log("debug", "session_discovery_lsof_failed", {
+          pid_count: pids.length,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return cwdByPid;
+      }
+    }
+
+    let currentPid: number | null = null;
+    for (const line of output.split("\n")) {
+      if (line.startsWith("p")) {
+        const pid = Number.parseInt(line.slice(1), 10);
+        currentPid = Number.isInteger(pid) ? pid : null;
+      } else if (line.startsWith("n") && line.length > 1 && currentPid !== null) {
+        const cwdPath = line.slice(1);
+        if (!cwdByPid.has(currentPid) && fs.existsSync(cwdPath)) {
+          cwdByPid.set(currentPid, cwdPath);
         }
       }
-    } catch (error) {
-      // lsof may fail for permission reasons or if the process exited
-      this.log("debug", "session_discovery_lsof_failed", {
-        pid,
-        error: error instanceof Error ? error.message : String(error),
-      });
     }
-    return null;
+    return cwdByPid;
   }
 
   private isProcessAlive(pid: number): boolean {
@@ -418,20 +449,23 @@ export class ReaperTimer {
       return;
     }
     this.discovering = true;
-    try {
-      const result = this.discovery.discoverSessions();
-      if (result.discovered > 0 || result.dead_reaped > 0) {
-        this.log("info", "discovery_tick", {
-          discovered: result.discovered,
-          dead_reaped: result.dead_reaped,
-          duration_ms: result.duration_ms,
-        });
-      }
-    } catch (error) {
-      this.log("warn", "discovery_tick_error", { error: String(error) });
-    } finally {
-      this.discovering = false;
-    }
+    void this.discovery
+      .discoverSessions()
+      .then((result) => {
+        if (result.discovered > 0 || result.dead_reaped > 0) {
+          this.log("info", "discovery_tick", {
+            discovered: result.discovered,
+            dead_reaped: result.dead_reaped,
+            duration_ms: result.duration_ms,
+          });
+        }
+      })
+      .catch((error) => {
+        this.log("warn", "discovery_tick_error", { error: String(error) });
+      })
+      .finally(() => {
+        this.discovering = false;
+      });
   }
 }
 

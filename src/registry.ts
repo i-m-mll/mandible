@@ -19,6 +19,82 @@ const CURRENT_PROCESS_PID_START = normalizePidStart(
   new Date(Date.now() - process.uptime() * 1000).toISOString(),
 );
 
+// Batched liveness (issue 21502ff): a short-lived cache of pid → start time so a
+// sessions-list request runs at most one `ps` spawn for all active pids instead
+// of one per session. The reaper independently rechecks liveness every 60 s, so
+// a modest TTL here is safe; `isPidAlive` (process.kill(pid, 0)) is still checked
+// per session in real time, so a stale cache cannot resurrect a truly dead pid.
+interface PidStartCacheEntry {
+  value: string | null;
+  at: number;
+}
+const pidStartCache = new Map<number, PidStartCacheEntry>();
+const PID_START_CACHE_TTL_MS = 30_000;
+
+function getCachedPidStart(pid: number): string | null | undefined {
+  const entry = pidStartCache.get(pid);
+  if (!entry) {
+    return undefined;
+  }
+  if (Date.now() - entry.at > PID_START_CACHE_TTL_MS) {
+    pidStartCache.delete(pid);
+    return undefined;
+  }
+  return entry.value;
+}
+
+function setCachedPidStart(pid: number, value: string | null): void {
+  pidStartCache.set(pid, { value, at: Date.now() });
+}
+
+/**
+ * Warm the pid-start cache for many pids using a single `ps` invocation.
+ * Pids not reported by `ps` are treated as gone and cached as null. Best-effort:
+ * on failure the cache is left untouched and callers fall back to per-pid reads.
+ */
+export function primePidStartTimes(pids: number[]): void {
+  if (!canUsePs()) {
+    return;
+  }
+  const unique = Array.from(new Set(pids)).filter(
+    (pid) =>
+      Number.isInteger(pid) &&
+      pid > 0 &&
+      pid !== process.pid &&
+      getCachedPidStart(pid) === undefined,
+  );
+  if (unique.length === 0) {
+    return;
+  }
+  try {
+    const output = execSync(`ps -p ${unique.join(",")} -o pid=,lstart=`, {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const seen = new Set<number>();
+    for (const line of output.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        continue;
+      }
+      const match = trimmed.match(/^(\d+)\s+(.+)$/);
+      if (!match) {
+        continue;
+      }
+      const pid = Number(match[1]);
+      setCachedPidStart(pid, normalizePidStart(match[2].trim()));
+      seen.add(pid);
+    }
+    for (const pid of unique) {
+      if (!seen.has(pid)) {
+        setCachedPidStart(pid, null);
+      }
+    }
+  } catch {
+    // Best-effort: leave the cache untouched; per-session reads still work.
+  }
+}
+
 export interface SessionInput {
   id: string;
   app: string;
@@ -70,6 +146,44 @@ export interface SessionListOptions {
   status?: SessionStatus;
   app?: string;
   parent_id?: string | null;
+  // Pagination + scoping (issue 21502ff). `scope: "all"` returns full history
+  // (no default limit) and is the explicit opt-in that keeps deep history and
+  // direct lookups reachable. Otherwise the result is bounded to `limit` newest
+  // sessions with a stable keyset `cursor`.
+  scope?: "all";
+  limit?: number;
+  cursor?: string | null;
+}
+
+export interface SessionPage {
+  sessions: Session[];
+  total: number;
+  returned: number;
+  nextCursor: string | null;
+  scope: "all" | "default";
+  limit: number | null;
+}
+
+export const DEFAULT_SESSIONS_PAGE_LIMIT = 100;
+export const MAX_SESSIONS_PAGE_LIMIT = 500;
+
+function encodeSessionCursor(createdAt: string, id: string): string {
+  return Buffer.from(`${createdAt}\u0000${id}`, "utf8").toString("base64url");
+}
+
+function decodeSessionCursor(
+  cursor: string,
+): { created_at: string; id: string } | null {
+  try {
+    const raw = Buffer.from(cursor, "base64url").toString("utf8");
+    const idx = raw.indexOf("\u0000");
+    if (idx < 0) {
+      return null;
+    }
+    return { created_at: raw.slice(0, idx), id: raw.slice(idx + 1) };
+  } catch {
+    return null;
+  }
 }
 
 interface SessionRow {
@@ -244,6 +358,10 @@ export function readPidStartTime(pid: number): string | null {
   if (pid === process.pid) {
     return CURRENT_PROCESS_PID_START;
   }
+  const cached = getCachedPidStart(pid);
+  if (cached !== undefined) {
+    return cached;
+  }
   if (!canUsePs()) {
     return null;
   }
@@ -253,13 +371,17 @@ export function readPidStartTime(pid: number): string | null {
       stdio: ["ignore", "pipe", "ignore"]
     }).trim();
     if (output) {
-      return normalizePidStart(output);
+      const value = normalizePidStart(output);
+      setCachedPidStart(pid, value);
+      return value;
     }
     const fallback = execSync(`ps -o lstart= -p ${pid}`, {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"]
     }).trim();
-    return normalizePidStart(fallback);
+    const value = normalizePidStart(fallback);
+    setCachedPidStart(pid, value);
+    return value;
   } catch {
     return null;
   }
@@ -763,7 +885,10 @@ export class SessionRegistry {
     return updated;
   }
 
-  listSessions(options: SessionListOptions = {}): Session[] {
+  private buildSessionFilter(options: SessionListOptions): {
+    clauses: string[];
+    params: Array<string | null>;
+  } {
     const clauses: string[] = [];
     const params: Array<string | null> = [];
 
@@ -783,14 +908,100 @@ export class SessionRegistry {
         params.push(options.parent_id);
       }
     }
+    return { clauses, params };
+  }
 
+  // Map rows to sessions with liveness derived from a single batched `ps` spawn
+  // for all active pids, rather than one spawn per session (issue 21502ff).
+  private mapWithLiveness(rows: SessionRow[]): Session[] {
+    // One attribution resolver per batch (main's user-attribution read path),
+    // consistent with the single batched liveness spawn (issue 21502ff).
+    const attributionResolver = new AttributionReadResolver(this.db);
+    const sessions = rows.map((row) => toSession(row, attributionResolver));
+    const pids = sessions
+      .filter((s) => s.status === "active" && s.pid && s.pid_start)
+      .map((s) => s.pid as number);
+    if (pids.length > 1) {
+      primePidStartTimes(pids);
+    }
+    return sessions.map((session) => this.ensureLiveness(session));
+  }
+
+  listSessions(options: SessionListOptions = {}): Session[] {
+    const { clauses, params } = this.buildSessionFilter(options);
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     const rows = this.db
       .prepare(`SELECT * FROM sessions ${where} ORDER BY created_at DESC`)
       .all(...params) as SessionRow[];
 
-    const attributionResolver = new AttributionReadResolver(this.db);
-    return rows.map((row) => this.ensureLiveness(toSession(row, attributionResolver)));
+    return this.mapWithLiveness(rows);
+  }
+
+  /**
+   * Paginated, bounded-by-default sessions listing (issue 21502ff).
+   *
+   * The default scope returns the newest `limit` sessions with a stable keyset
+   * cursor and an unfiltered `total`, so the common poll returns a small payload
+   * while `total` keeps historical sessions visibly present (not deleted).
+   * `scope: "all"` returns the full filtered history for explicit history access;
+   * direct-id lookups (getSession) are unaffected, so deep links keep working.
+   */
+  listSessionsPage(options: SessionListOptions = {}): SessionPage {
+    const { clauses: filterClauses, params: filterParams } =
+      this.buildSessionFilter(options);
+    const filterWhere = filterClauses.length
+      ? `WHERE ${filterClauses.join(" AND ")}`
+      : "";
+
+    const total = (
+      this.db
+        .prepare(`SELECT COUNT(*) AS n FROM sessions ${filterWhere}`)
+        .get(...filterParams) as { n: number }
+    ).n;
+
+    const full = options.scope === "all";
+    const limit = full
+      ? null
+      : Math.min(
+          Math.max(1, Math.floor(options.limit ?? DEFAULT_SESSIONS_PAGE_LIMIT)),
+          MAX_SESSIONS_PAGE_LIMIT,
+        );
+
+    const clauses = [...filterClauses];
+    const params = [...filterParams];
+    if (limit !== null && options.cursor) {
+      const cursor = decodeSessionCursor(options.cursor);
+      if (cursor) {
+        clauses.push("(created_at < ? OR (created_at = ? AND id < ?))");
+        params.push(cursor.created_at, cursor.created_at, cursor.id);
+      }
+    }
+
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const limitSql = limit !== null ? `LIMIT ${limit + 1}` : "";
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM sessions ${where} ORDER BY created_at DESC, id DESC ${limitSql}`,
+      )
+      .all(...params) as SessionRow[];
+
+    let pageRows = rows;
+    let nextCursor: string | null = null;
+    if (limit !== null && rows.length > limit) {
+      pageRows = rows.slice(0, limit);
+      const last = pageRows[pageRows.length - 1];
+      nextCursor = encodeSessionCursor(last.created_at, last.id);
+    }
+
+    const sessions = this.mapWithLiveness(pageRows);
+    return {
+      sessions,
+      total,
+      returned: sessions.length,
+      nextCursor,
+      scope: full ? "all" : "default",
+      limit,
+    };
   }
 
   getSession(id: string): Session | null {

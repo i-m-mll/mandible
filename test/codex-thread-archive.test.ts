@@ -58,31 +58,33 @@ function createMockExec(response: string | Buffer = "") {
   const exec = ((file: string, args: string[], options: ExecCall["options"]) => {
     calls.push({ file, args: [...args], options });
     return response;
-  }) as unknown as typeof import("node:child_process").execFileSync;
+  }) as unknown as typeof import("node:child_process").execFile;
   return { exec, calls };
 }
 
 describe("Codex CLI thread archiver", () => {
-  it("archives through the top-level Codex CLI command", () => {
+  it("archives through the top-level Codex CLI command", async () => {
     const { exec, calls } = createMockExec();
     const archiver = new CodexCliThreadArchiver(exec);
 
-    archiver.archive("thread-123");
+    await archiver.archive("thread-123");
 
     expect(calls).toHaveLength(1);
     expect(calls[0].file).toBe("codex");
     expect(calls[0].args).toEqual(["archive", "thread-123"]);
     expect(calls[0].args).not.toEqual(["app-server", "proxy"]);
     expect(calls[0].options.input).toBeUndefined();
-    expect(calls[0].options.stdio).toBe("pipe");
+    // Issue 75f52ac moved archiving to promisified execFile; it passes only a
+    // timeout and no longer sets stdio: "pipe" (that was an execFileSync option).
+    expect(calls[0].options.stdio).toBeUndefined();
     expect(calls[0].options.timeout).toBe(15_000);
   });
 
-  it("unarchives through the top-level Codex CLI command", () => {
+  it("unarchives through the top-level Codex CLI command", async () => {
     const { exec, calls } = createMockExec();
     const archiver = new CodexCliThreadArchiver(exec);
 
-    archiver.unarchive("thread-456");
+    await archiver.unarchive("thread-456");
 
     expect(calls).toHaveLength(1);
     expect(calls[0].file).toBe("codex");
@@ -91,13 +93,13 @@ describe("Codex CLI thread archiver", () => {
     expect(calls[0].options.input).toBeUndefined();
   });
 
-  it("keeps archive failures behind the safe wrapper", () => {
+  it("keeps archive failures behind the safe wrapper", async () => {
     const exec = (() => {
       throw new Error("codex archive failed");
-    }) as unknown as typeof import("node:child_process").execFileSync;
+    }) as unknown as typeof import("node:child_process").execFile;
     const logs: string[] = [];
 
-    expect(safeArchiveCodexThread(
+    expect(await safeArchiveCodexThread(
       new CodexCliThreadArchiver(exec),
       "thread-789",
       (message) => logs.push(message),

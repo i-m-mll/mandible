@@ -462,6 +462,12 @@ export function invalidateApiGetCache(
 }
 
 export function invalidateDashboardApiCacheForEvent(type: string): void {
+  // Streamed auth output does not change any dashboard count, so the badge
+  // cache is left intact for that event; every other family below can move a
+  // count and refreshes the badges key.
+  if (type !== 'auth:output') {
+    invalidateApiGetCache('/api/dashboard/badges');
+  }
   if (type.startsWith('session:') || type.startsWith('console:session:')) {
     invalidateApiGetCache('/api/sessions');
     invalidateApiGetCache('/api/console/sessions');
@@ -471,7 +477,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/inbox');
   } else if (type.startsWith('work:') || type.startsWith('push:')) {
     invalidateApiGetCache('/api/work/');
-  } else if (type.startsWith('ledger:issue:')) {
+  } else if (type.startsWith('ledger:')) {
+    // Covers ledger:issue:*, ledger:comment:*, ledger:label:*, and other
+    // ledger:* events; all can change an issue list row or detail projection.
     invalidateApiGetCache('/api/issues');
     invalidateApiGetCache('/api/ledger');
   } else if (type.startsWith('space:')) {
@@ -484,6 +492,49 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
 export async function getSessions<T>(query?: string): Promise<T[]> {
   const payload = await cachedApiGetJson<ApiList<T>>(`/api/sessions${query || ''}`);
   return normalizeList(payload);
+}
+
+// Paginated sessions listing (issue 21502ff). The list endpoint now returns a
+// bounded page by default with a stable cursor and an unfiltered total; pass
+// { scope: 'all' } for full history, or a cursor to page. History is never
+// hidden — total reflects every matching session and direct-id lookups plus
+// deep links continue to resolve unchanged.
+export interface SessionsPage<T> {
+  sessions: T[];
+  total: number;
+  returned: number;
+  nextCursor: string | null;
+  scope: 'all' | 'default';
+  limit: number | null;
+}
+
+export async function getSessionsPage<T>(params?: {
+  status?: string;
+  app?: string;
+  parentId?: string | null;
+  scope?: 'all';
+  limit?: number;
+  cursor?: string | null;
+}): Promise<SessionsPage<T>> {
+  const query = buildQuery({
+    status: params?.status,
+    app: params?.app,
+    parent_id: params?.parentId === null ? 'null' : params?.parentId,
+    scope: params?.scope,
+    limit: params?.limit,
+    cursor: params?.cursor ?? undefined,
+  });
+  const payload = await cachedApiGetJson<ApiList<T> & Partial<SessionsPage<T>>>(
+    `/api/sessions${query}`,
+  );
+  return {
+    sessions: normalizeList(payload),
+    total: payload.total ?? 0,
+    returned: payload.returned ?? 0,
+    nextCursor: payload.nextCursor ?? null,
+    scope: payload.scope ?? 'default',
+    limit: payload.limit ?? null,
+  };
 }
 
 export async function navigateSession(sessionId: string): Promise<void> {
@@ -532,8 +583,18 @@ export type DashboardBadgeCounts = {
 };
 
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
-  const response = await apiGet('/api/dashboard/badges');
-  return (await response.json()) as DashboardBadgeCounts;
+  // Served through the shared SWR cache so a burst of SSE events collapses to a
+  // single in-flight fetch. Count-changing events invalidate this key via
+  // invalidateDashboardApiCacheForEvent; the short TTL is burst protection only.
+  return cachedApiGetJson<DashboardBadgeCounts>('/api/dashboard/badges');
+}
+
+// Bug: 0de95bf — history list rows omit diff/spec/output body blobs; the
+// detail route serves the full body, fetched when a request is selected.
+export async function getAuthRequestDetail(requestId: string): Promise<Record<string, unknown> | null> {
+  const response = await apiGet(`/api/auth/request/${encodeURIComponent(requestId)}`);
+  const payload = await parseMaybeJson(response);
+  return payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : null;
 }
 
 export async function getAuthRequestActions(requestId: string): Promise<AuthRequestAction[]> {

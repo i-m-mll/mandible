@@ -30,6 +30,7 @@ import {
 // top level. Used by recordArtifactVersion's managed-`ref` path to read the
 // full bytes of an existing artifact before snapshotting it into CAS.
 import { readArtifactBytesFull } from "./artifact-content.js";
+import { materializeArtifactFileIntoCas, readAndHashArtifactFile } from "./artifact-ingest-pool.js";
 import type {
   ArtifactAliasRecord,
   ArtifactBlobRecord,
@@ -153,6 +154,13 @@ interface ArtifactInput {
   // JSON-serializable; only used within the same process.
   content_buffer?: Buffer;
   json?: unknown;
+  // Internal in-process handoff from the off-thread ingest pool (issue aadf45e).
+  // `precomputed_sha256` skips the main-thread hashBuffer when the worker already
+  // hashed the bytes. `cas_materialized` means the worker already wrote the
+  // content-addressed copy for `precomputed_sha256`, so ingestArtifact should
+  // treat the artifact as managed/present without reading or writing any bytes.
+  precomputed_sha256?: string;
+  cas_materialized?: boolean;
 }
 
 export interface LocalArtifactPathInput {
@@ -2147,17 +2155,14 @@ function computeLocalArtifactPlanCore(
 // Read-only classifier: report exactly what registration would store for a path
 // without mutating the ledger. Backs POST /api/artifacts/plan so CLI dry runs
 // and SDK callers can defer to the authoritative backend planner.
-export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): LocalArtifactPlan {
-  if (!input.path || typeof input.path !== "string") {
-    throw new Error("path is required");
-  }
-  const lexicalForStat = path.resolve(expandHomePath(input.path));
-  const stat = fs.statSync(lexicalForStat);
-  if (!stat.isFile()) {
-    throw new Error("artifact path must point to a regular file");
-  }
-  const core = computeLocalArtifactPlanCore(db, input);
-  const hash = hashBuffer(fs.readFileSync(core.resolvedPath));
+type LocalArtifactPlanCore = ReturnType<typeof computeLocalArtifactPlanCore>;
+
+function buildLocalArtifactPlan(
+  input: LocalArtifactPathInput,
+  core: LocalArtifactPlanCore,
+  hash: string,
+  sizeBytes: number,
+): LocalArtifactPlan {
   const canonicalRef = core.recoverability === "repo_commit" && core.uri.startsWith("repo://")
     ? core.uri
     : `artifact-blob:${hash}`;
@@ -2166,7 +2171,7 @@ export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): Lo
     input_path: core.lexicalPath,
     resolved_path: core.resolvedPath,
     sha256: hash,
-    size_bytes: stat.size,
+    size_bytes: sizeBytes,
     media_type: input.media_type ?? mediaTypeForPath(core.resolvedPath),
     filename: input.filename ?? path.basename(core.resolvedPath),
     logical_name: input.logical_name ?? core.gitState.relative_path ?? path.basename(core.resolvedPath),
@@ -2181,36 +2186,57 @@ export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): Lo
   };
 }
 
-export function registerLocalArtifactPath(
-  db: Db,
-  input: LocalArtifactPathInput,
-  now = Date.now(),
-  artifactRoot = getArtifactRoot(db),
-): LocalArtifactPathRegistration {
+export function planLocalArtifactPath(db: Db, input: LocalArtifactPathInput): LocalArtifactPlan {
   if (!input.path || typeof input.path !== "string") {
     throw new Error("path is required");
   }
-  const absolutePath = path.resolve(expandHomePath(input.path));
-  const stat = fs.statSync(absolutePath);
+  const lexicalForStat = path.resolve(expandHomePath(input.path));
+  const stat = fs.statSync(lexicalForStat);
   if (!stat.isFile()) {
     throw new Error("artifact path must point to a regular file");
   }
-  const {
-    resolvedPath,
-    gitState,
-    recoverability,
-    warnings,
-    repoLocator,
-    uri,
-    decision,
-    requestedCustody,
-  } = computeLocalArtifactPlanCore(db, input);
+  const core = computeLocalArtifactPlanCore(db, input);
+  const hash = hashBuffer(fs.readFileSync(core.resolvedPath));
+  return buildLocalArtifactPlan(input, core, hash, stat.size);
+}
 
-  const needsBytes = requestedCustody === "copy" || requestedCustody === "managed";
-  // Read bytes through the realpath so a deleted worktree symlink can never make
-  // the read race the URI we store.
-  const fileBuffer = fs.readFileSync(resolvedPath);
-  const hash = hashBuffer(fileBuffer);
+// Off-thread twin of planLocalArtifactPath: the read+hash of the (potentially
+// multi-MiB) source file runs in the bounded ingest pool instead of blocking the
+// event loop (issue aadf45e). No bytes are written — this is a dry-run planner.
+export async function planLocalArtifactPathAsync(db: Db, input: LocalArtifactPathInput): Promise<LocalArtifactPlan> {
+  if (!input.path || typeof input.path !== "string") {
+    throw new Error("path is required");
+  }
+  const lexicalForStat = path.resolve(expandHomePath(input.path));
+  const stat = fs.statSync(lexicalForStat);
+  if (!stat.isFile()) {
+    throw new Error("artifact path must point to a regular file");
+  }
+  const core = computeLocalArtifactPlanCore(db, input);
+  const materialized = await readAndHashArtifactFile(core.resolvedPath);
+  return buildLocalArtifactPlan(input, core, materialized.hash, stat.size);
+}
+
+// Shared tail for the sync/async local-path registration paths. `delivery`
+// selects how the bytes reach ingestArtifact: an in-memory buffer (sync path,
+// managed/copy custody), a CAS blob the ingest pool already wrote (async path,
+// managed/copy custody), or nothing at all (link custody keeps only the hash).
+type LocalArtifactBytesDelivery =
+  | { kind: "buffer"; buffer: Buffer }
+  | { kind: "cas" }
+  | { kind: "none" };
+
+function ingestFromLocalPlan(
+  db: Db,
+  input: LocalArtifactPathInput,
+  core: LocalArtifactPlanCore,
+  hash: string,
+  sizeBytes: number,
+  now: number,
+  artifactRoot: string,
+  delivery: LocalArtifactBytesDelivery,
+): LocalArtifactPathRegistration {
+  const { resolvedPath, gitState, recoverability, warnings, repoLocator, uri, decision, requestedCustody } = core;
   const metadata = mergeJsonRecords(input.metadata, {
     filename: input.filename ?? path.basename(resolvedPath),
     logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(resolvedPath),
@@ -2231,12 +2257,13 @@ export function registerLocalArtifactPath(
   });
   const artifact = ingestArtifact(db, {
     sha256: hash,
+    precomputed_sha256: hash,
     uri,
     role: input.role,
     media_type: input.media_type ?? mediaTypeForPath(resolvedPath),
     filename: input.filename ?? path.basename(resolvedPath),
     logical_name: input.logical_name ?? gitState.relative_path ?? path.basename(resolvedPath),
-    size_bytes: stat.size,
+    size_bytes: sizeBytes,
     custody_mode: requestedCustody,
     home_repo_id: gitState.repo_id ?? undefined,
     repo_locator: repoLocator,
@@ -2245,7 +2272,8 @@ export function registerLocalArtifactPath(
     reference,
     metadata,
     pinned: input.pinned,
-    ...(needsBytes ? { content_buffer: fileBuffer } : {}),
+    ...(delivery.kind === "buffer" ? { content_buffer: delivery.buffer } : {}),
+    ...(delivery.kind === "cas" ? { cas_materialized: true } : {}),
   }, now, artifactRoot);
 
   if (input.issue) {
@@ -2263,6 +2291,57 @@ export function registerLocalArtifactPath(
   }
 
   return { artifact: getArtifact(db, artifact.id) as ArtifactRecord, git_state: gitState, recoverability, warnings };
+}
+
+export function registerLocalArtifactPath(
+  db: Db,
+  input: LocalArtifactPathInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): LocalArtifactPathRegistration {
+  if (!input.path || typeof input.path !== "string") {
+    throw new Error("path is required");
+  }
+  const absolutePath = path.resolve(expandHomePath(input.path));
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile()) {
+    throw new Error("artifact path must point to a regular file");
+  }
+  const core = computeLocalArtifactPlanCore(db, input);
+  const needsBytes = core.requestedCustody === "copy" || core.requestedCustody === "managed";
+  // Read bytes through the realpath so a deleted worktree symlink can never make
+  // the read race the URI we store.
+  const fileBuffer = fs.readFileSync(core.resolvedPath);
+  const hash = hashBuffer(fileBuffer);
+  const delivery: LocalArtifactBytesDelivery = needsBytes ? { kind: "buffer", buffer: fileBuffer } : { kind: "none" };
+  return ingestFromLocalPlan(db, input, core, hash, stat.size, now, artifactRoot, delivery);
+}
+
+// Off-thread twin of registerLocalArtifactPath (issue aadf45e). The read, hash,
+// and (for managed/copy custody) content-addressed write all happen in the
+// bounded ingest pool, which also re-stats the source to guard against a
+// mid-read mutation, so this route never blocks the daemon event loop.
+export async function registerLocalArtifactPathAsync(
+  db: Db,
+  input: LocalArtifactPathInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): Promise<LocalArtifactPathRegistration> {
+  if (!input.path || typeof input.path !== "string") {
+    throw new Error("path is required");
+  }
+  const absolutePath = path.resolve(expandHomePath(input.path));
+  const stat = fs.statSync(absolutePath);
+  if (!stat.isFile()) {
+    throw new Error("artifact path must point to a regular file");
+  }
+  const core = computeLocalArtifactPlanCore(db, input);
+  const needsBytes = core.requestedCustody === "copy" || core.requestedCustody === "managed";
+  const materialized = needsBytes
+    ? await materializeArtifactFileIntoCas(core.resolvedPath, artifactRoot)
+    : await readAndHashArtifactFile(core.resolvedPath);
+  const delivery: LocalArtifactBytesDelivery = needsBytes ? { kind: "cas" } : { kind: "none" };
+  return ingestFromLocalPlan(db, input, core, materialized.hash, materialized.size, now, artifactRoot, delivery);
 }
 
 function resolveIssueEntity(
@@ -2474,6 +2553,66 @@ export function snapshotArtifactBytes(
   return artifact;
 }
 
+// Off-thread twin of snapshotArtifactBytes (issue aadf45e). When the snapshot
+// source is a filesystem path, the read + hash + content-addressed write run in
+// the bounded ingest pool instead of on the event loop. Inline byte inputs
+// (content/base64/json/buffer) are already in memory and stay synchronous.
+export async function snapshotArtifactBytesAsync(
+  db: Db,
+  input: ArtifactSnapshotInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): Promise<ArtifactRecord> {
+  const pathInput = !Buffer.isBuffer(input.content_buffer)
+    && typeof input.content !== "string"
+    && typeof input.content_base64 !== "string"
+    && !("json" in input)
+    ? (typeof input.path === "string" && input.path.trim() ? input.path
+      : typeof input.content_path === "string" && input.content_path.trim() ? input.content_path
+      : null)
+    : null;
+  if (!pathInput) {
+    return snapshotArtifactBytes(db, input, now, artifactRoot);
+  }
+  const custodyMode = asCustodyMode(input.custody_mode, "copy");
+  if (custodyMode !== "copy" && custodyMode !== "managed") {
+    throw new Error("snapshot custody_mode must be copy or managed");
+  }
+  const resolved = path.resolve(expandHomePath(pathInput));
+  const materialized = await materializeArtifactFileIntoCas(resolved, artifactRoot);
+  const hash = materialized.hash;
+  const ref = asString(input.ref) ?? asString(input.artifact_ref);
+  if (ref) {
+    const existing = resolveArtifactRef(db, ref, now).artifact;
+    if (existing?.algorithm === "sha256" && existing.content_hash.toLowerCase() !== hash) {
+      throw new Error("snapshot bytes do not match registered sha256");
+    }
+  }
+  const filePath = artifactPathForHash(hash, artifactRoot);
+  return ingestArtifact(db, {
+    sha256: hash,
+    precomputed_sha256: hash,
+    cas_materialized: true,
+    size_bytes: materialized.size,
+    custody_mode: custodyMode,
+    availability: "present",
+    media_type: input.media_type,
+    role: input.role,
+    filename: input.filename ?? path.basename(resolved),
+    logical_name: input.logical_name,
+    metadata: mergeJsonRecords(input.metadata, {
+      recoverability: "mandible_cas",
+      snapshot_source_ref: ref ?? null,
+      snapshot_source_path: resolved,
+    }),
+    reference: mergeJsonRecords(input.reference, {
+      recoverability: "mandible_cas",
+      snapshot_source_ref: ref ?? null,
+      uri: `file://${filePath}`,
+    }),
+  }, now, artifactRoot);
+}
+
 function linkBundleMember(
   db: Db,
   bundleId: string,
@@ -2533,6 +2672,15 @@ function resolveBundleMemberArtifact(
       metadata: member.metadata,
     }, now).artifact;
   }
+  return resolveBundleMemberRef(db, member, now);
+}
+
+// Shared ref-resolution tail for a non-path bundle member (pure in-memory work).
+function resolveBundleMemberRef(
+  db: Db,
+  member: ArtifactBundleMemberInput,
+  now: number,
+): ArtifactRecord {
   const ref = asString(member.ref) ?? asString(member.artifact_ref);
   if (!ref) throw new Error("bundle member ref or path is required");
   const resolution = resolveArtifactRef(db, ref, now);
@@ -2541,15 +2689,34 @@ function resolveBundleMemberArtifact(
   return resolution.artifact;
 }
 
-export function createArtifactBundle(
+// Off-thread twin of resolveBundleMemberArtifact: a path member is read+hashed
+// through the bounded ingest pool via registerLocalArtifactPathAsync.
+async function resolveBundleMemberArtifactAsync(
+  db: Db,
+  member: ArtifactBundleMemberInput,
+  now: number,
+): Promise<ArtifactRecord> {
+  if (asString(member.path)) {
+    return (await registerLocalArtifactPathAsync(db, {
+      path: member.path as string,
+      role: member.role,
+      custody_mode: member.custody_mode,
+      allow_local_only: member.allow_local_only,
+      allow_dirty_link: member.allow_dirty_link,
+      metadata: member.metadata,
+    }, now)).artifact;
+  }
+  return resolveBundleMemberRef(db, member, now);
+}
+
+function finalizeArtifactBundle(
   db: Db,
   input: ArtifactBundleInput,
-  now = Date.now(),
-  artifactRoot = getArtifactRoot(db),
+  memberArtifacts: ArtifactRecord[],
+  now: number,
+  artifactRoot: string,
 ): ArtifactBundleRecord {
-  const name = asString(input.name);
-  if (!name) throw new Error("bundle name is required");
-  const memberArtifacts = input.members.map((member) => resolveBundleMemberArtifact(db, member, now));
+  const name = asString(input.name) as string;
   const manifest = {
     schema_version: "mandible.artifact_bundle.v1",
     name,
@@ -2622,6 +2789,37 @@ export function createArtifactBundle(
   return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members };
 }
 
+export function createArtifactBundle(
+  db: Db,
+  input: ArtifactBundleInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): ArtifactBundleRecord {
+  const name = asString(input.name);
+  if (!name) throw new Error("bundle name is required");
+  const memberArtifacts = input.members.map((member) => resolveBundleMemberArtifact(db, member, now));
+  return finalizeArtifactBundle(db, input, memberArtifacts, now, artifactRoot);
+}
+
+// Off-thread twin of createArtifactBundle (issue aadf45e). Path members are the
+// source of the POST /api/artifacts/bundles freezes: each was read+hashed
+// synchronously on the event loop. Here they materialize through the bounded
+// ingest pool before the (small, in-memory) manifest is written synchronously.
+export async function createArtifactBundleAsync(
+  db: Db,
+  input: ArtifactBundleInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): Promise<ArtifactBundleRecord> {
+  const name = asString(input.name);
+  if (!name) throw new Error("bundle name is required");
+  const memberArtifacts: ArtifactRecord[] = [];
+  for (const member of input.members) {
+    memberArtifacts.push(await resolveBundleMemberArtifactAsync(db, member, now));
+  }
+  return finalizeArtifactBundle(db, input, memberArtifacts, now, artifactRoot);
+}
+
 export function addArtifactBundleMembers(
   db: Db,
   bundleRef: string,
@@ -2634,6 +2832,28 @@ export function addArtifactBundleMembers(
   const start = existingMembers.length;
   const added = members.map((member, index) =>
     linkBundleMember(db, bundle.id, resolveBundleMemberArtifact(db, member, now), member, start + index, now)
+  );
+  return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members: [...existingMembers, ...added] };
+}
+
+// Off-thread twin of addArtifactBundleMembers (issue aadf45e): path members are
+// read+hashed through the bounded ingest pool before their links are written.
+export async function addArtifactBundleMembersAsync(
+  db: Db,
+  bundleRef: string,
+  members: ArtifactBundleMemberInput[],
+  now = Date.now(),
+): Promise<ArtifactBundleRecord> {
+  const bundle = getArtifact(db, bundleRef) ?? resolveArtifactRef(db, bundleRef, now).artifact;
+  if (!bundle) throw new Error(`bundle ref did not resolve: ${bundleRef}`);
+  const existingMembers = listArtifactBundleMembers(db, bundle.id);
+  const start = existingMembers.length;
+  const resolved: ArtifactRecord[] = [];
+  for (const member of members) {
+    resolved.push(await resolveBundleMemberArtifactAsync(db, member, now));
+  }
+  const added = resolved.map((artifact, index) =>
+    linkBundleMember(db, bundle.id, artifact, members[index], start + index, now)
   );
   return { bundle: getArtifact(db, bundle.id) as ArtifactRecord, members: [...existingMembers, ...added] };
 }
@@ -2887,30 +3107,43 @@ export function ingestArtifact(
   now = Date.now(),
   artifactRoot = getArtifactRoot(db),
 ): ArtifactRecord {
-  const bytes = hasInlineArtifactContent(input) ? contentBuffer(input) : null;
+  // When the off-thread ingest pool already read+hashed (and, for cas_materialized,
+  // wrote) the bytes, skip touching them again on the event loop.
+  const preHash = typeof input.precomputed_sha256 === "string" ? input.precomputed_sha256.toLowerCase() : undefined;
+  const casMaterialized = input.cas_materialized === true && Boolean(preHash);
+  const bytes = (!casMaterialized && hasInlineArtifactContent(input)) ? contentBuffer(input) : null;
   const declaredHash = hashFromArtifactRef(input);
-  const hash = bytes ? hashBuffer(bytes) : declaredHash;
+  const hash = preHash ?? (bytes ? hashBuffer(bytes) : declaredHash);
   if (!hash) {
     throw new Error("artifact content, content_base64, json, sha256, or artifact_id is required");
   }
   if (declaredHash && bytes && declaredHash !== hash) {
     throw new Error("artifact sha256 does not match supplied content");
   }
+  if (declaredHash && preHash && declaredHash !== hash) {
+    throw new Error("artifact sha256 does not match supplied content");
+  }
+  const hasBytes = bytes != null || casMaterialized;
   const id = `artifact:sha256:${hash}`;
   const filePath = artifactPathForHash(hash, artifactRoot);
   let uri = input.uri ?? input.artifact_id ?? `artifact-blob:${hash}`;
   let sizeBytes = input.size_bytes ?? uriSizeBytes(uri) ?? 0;
-  if (bytes) {
-    ensureDir(path.dirname(filePath));
-    if (!fs.existsSync(filePath)) {
-      fs.writeFileSync(filePath, bytes);
+  if (hasBytes) {
+    if (bytes) {
+      ensureDir(path.dirname(filePath));
+      if (!fs.existsSync(filePath)) {
+        fs.writeFileSync(filePath, bytes);
+      }
+      sizeBytes = bytes.byteLength;
+    } else {
+      // Bytes already live in the CAS at filePath (written by the ingest pool).
+      sizeBytes = input.size_bytes ?? sizeBytes;
     }
     uri = `file://${filePath}`;
-    sizeBytes = bytes.byteLength;
   }
-  const defaultCustody: ArtifactCustodyMode = bytes ? "managed" : (input.storage_backend === "external" ? "external" : "link");
+  const defaultCustody: ArtifactCustodyMode = hasBytes ? "managed" : (input.storage_backend === "external" ? "external" : "link");
   const custodyMode = asCustodyMode(input.custody_mode, defaultCustody);
-  const availability = asAvailability(input.availability, bytes ? "present" : "unchecked");
+  const availability = asAvailability(input.availability, hasBytes ? "present" : "unchecked");
   const repoLocator = input.repo_locator ?? asRecord(input.metadata?.repo_locator);
   const homeRepoId = input.home_repo_id ?? asString(input.metadata?.home_repo_id) ?? asString(input.metadata?.repo_id) ?? null;
   const retention = {
@@ -3057,6 +3290,37 @@ export function ingestArtifact(
   }
 
   return getArtifact(db, id) ?? projectCanonicalArtifactRecord(db, blob);
+}
+
+// Off-thread twin of ingestArtifact for the HTTP ingest route (issue aadf45e).
+// A `content_path` input (a daemon-visible file, e.g. a validated file-RPC spool
+// attachment) is read, hashed, and written into the CAS by the bounded ingest
+// pool; every other input variant already carries its bytes in memory and stays
+// on the synchronous path.
+export async function ingestArtifactAsync(
+  db: Db,
+  input: ArtifactInput,
+  now = Date.now(),
+  artifactRoot = getArtifactRoot(db),
+): Promise<ArtifactRecord> {
+  const pathOnly = typeof input.content_path === "string"
+    && input.content_path.trim().length > 0
+    && !Buffer.isBuffer(input.content_buffer)
+    && typeof input.content !== "string"
+    && typeof input.content_base64 !== "string"
+    && !("json" in input);
+  if (!pathOnly) {
+    return ingestArtifact(db, input, now, artifactRoot);
+  }
+  const resolved = path.resolve(expandHomePath(input.content_path as string));
+  const materialized = await materializeArtifactFileIntoCas(resolved, artifactRoot);
+  const { content_path: _contentPath, ...rest } = input;
+  return ingestArtifact(db, {
+    ...rest,
+    precomputed_sha256: materialized.hash,
+    cas_materialized: true,
+    size_bytes: input.size_bytes ?? materialized.size,
+  }, now, artifactRoot);
 }
 
 export function ingestProviderManifest(

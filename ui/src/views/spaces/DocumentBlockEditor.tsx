@@ -33,7 +33,7 @@ import type { EditorView } from '@codemirror/view';
 import type { SpaceBlock, SpaceExport, SpaceItem } from '../../api';
 import type { SpaceBlockType } from '../../../../src/contracts';
 import { getSpaceExports } from '../../api';
-import { createSSEClient } from '../../sse-client';
+import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { DocumentBody, renderSpaceBlocks } from './DocumentRenderer';
@@ -395,15 +395,21 @@ export function DocumentBlockEditor({
   // Edit drafts are preserved across the refetch.
   useEffect(() => {
     if (!spaceId) return;
-    const client = createSSEClient();
+    const client = acquireSharedSse();
     const unsubscribe = client.on('*', (payload) => {
       if (typeof payload.type === 'string' && payload.type.startsWith(SPACE_EVENT_PREFIX)) {
         void loadAll(true);
       }
     });
+    // Reconnect resync: refetch after a dropped stream so events missed during
+    // the gap are reconciled. Edit drafts are preserved across the refetch.
+    const offState = client.onState((_state, { reconnected }) => {
+      if (reconnected) void loadAll(true);
+    });
     client.connect();
     return () => {
       unsubscribe();
+      offState();
       client.close();
     };
   }, [spaceId, loadAll]);

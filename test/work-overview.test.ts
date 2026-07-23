@@ -168,6 +168,58 @@ describe.sequential("WorkScanner", () => {
     expect(branch?.has_upstream).toBe(false);
   });
 
+  it("persists upstream tracking info during scans and serves it from the DB", () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+
+    // Persisted onto the branches row by the scan, not recomputed per GET.
+    const row = db
+      .prepare("SELECT has_upstream, upstream FROM branches WHERE repo_root = ? AND branch = ?")
+      .get(repoRoot, "feature") as { has_upstream: number; upstream: string | null };
+    expect(row.has_upstream).toBe(1);
+    expect(row.upstream).toBe("origin/feature");
+
+    const noUpstreamRow = db
+      .prepare("SELECT has_upstream, upstream FROM branches WHERE repo_root = ? AND branch = ?")
+      .get(repoRoot, "no-upstream") as { has_upstream: number; upstream: string | null };
+    expect(noUpstreamRow.has_upstream).toBe(0);
+    expect(noUpstreamRow.upstream).toBeNull();
+
+    // getBranches reads the persisted columns rather than spawning git.
+    const feature = scanner.getBranch(repoRoot, "feature");
+    expect(feature?.has_upstream).toBe(true);
+    expect(feature?.upstream).toBe("origin/feature");
+  });
+
+  it("serves upstream info from the DB even when the repo is gone", () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+
+    // Read via a scanner that never probes the on-disk repo (empty roots): the
+    // upstream fields must come purely from the persisted branch rows.
+    const dbOnlyScanner = new WorkScanner({ db, repo_roots: [] });
+    const feature = dbOnlyScanner.getBranch(repoRoot, "feature");
+    expect(feature?.has_upstream).toBe(true);
+    expect(feature?.upstream).toBe("origin/feature");
+  });
+
+  it("refreshRepoAsync yields between branches and repopulates branch state", async () => {
+    const db = createMigratedDb();
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    // Prime repoInfos so refreshRepoAsync can resolve the repo id.
+    scanner.getRepos();
+
+    const refreshed = await scanner.refreshRepoAsync(repoRoot);
+    expect(refreshed.exists).toBe(true);
+    expect(refreshed.last_scanned_at).not.toBeNull();
+
+    const branches = scanner.getBranches(repoRoot).map((branch) => branch.branch);
+    expect(branches).toContain("main");
+    expect(branches).toContain("feature");
+  });
+
   it("handles missing repos gracefully", () => {
     const db = createMigratedDb();
     const scanner = new WorkScanner({ db, repo_roots: [repoRoot, missingRepo] });

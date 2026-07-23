@@ -5,6 +5,17 @@ export type SSEPayload = MandibleEvent;
 
 export type SSEHandler = (payload: SSEPayload) => void;
 
+/** Connection lifecycle state exposed via {@link SSEClient.onState}. */
+export type SseConnectionState = 'idle' | 'connecting' | 'open' | 'down';
+
+/**
+ * Connection-state observer. `meta.reconnected` is true only when this `open`
+ * follows a prior `open` in the client's current lifetime (i.e. a real
+ * reconnect after a drop), never on the first open or on the first open after a
+ * full {@link SSEClient.disconnect}.
+ */
+export type SseStateHandler = (state: SseConnectionState, meta: { reconnected: boolean }) => void;
+
 export type SSEClientOptions = {
   url?: string;
   fetchImpl?: typeof fetch;
@@ -20,6 +31,7 @@ export class SSEClient {
   private backoffMs: number;
   private maxBackoffMs: number;
   private listeners: Map<string, Set<SSEHandler>> = new Map();
+  private stateListeners: Set<SseStateHandler> = new Set();
   private abortController: AbortController | null = null;
   private eventSource: EventSource | null = null;
   private connecting = false;
@@ -27,6 +39,11 @@ export class SSEClient {
   private currentBackoff: number;
   private closed = false;
   private pendingEvents: SSEPayload[] = [];
+  private state: SseConnectionState = 'idle';
+  // Whether this client has ever reached `open` in its current lifetime. Reset
+  // by disconnect() so a fresh acquire's first open is not treated as a
+  // reconnect, but preserved across the backoff reconnect path.
+  private hasOpened = false;
 
   constructor(options: SSEClientOptions = {}) {
     this.url = options.url || '/api/events/subscribe';
@@ -42,6 +59,10 @@ export class SSEClient {
     if (this.abortController || this.eventSource || this.connecting || this.closed) {
       return;
     }
+    this.setState('connecting');
+    // Client-auth (user-system): with a stored token, subscribe over a POST
+    // fetch stream so the token rides the global Authorization wrapper instead
+    // of a URL query param; without one, fall back to an anonymous EventSource.
     if (!getStoredToken()) {
       this.openAnonymousEventSource();
       return;
@@ -58,9 +79,48 @@ export class SSEClient {
     }
     this.abortController?.abort();
     this.abortController = null;
-    this.eventSource?.close();
-    this.eventSource = null;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
     this.connecting = false;
+    this.setState('idle');
+  }
+
+  /**
+   * Tear down the live stream/EventSource and cancel any pending retry, but KEEP
+   * the registered listeners and clear the terminal `closed` flag so a
+   * subsequent connect() reconnects with a fresh backoff. This is the
+   * shared-singleton teardown path: the class instance is reused, only its
+   * socket is dropped.
+   */
+  disconnect(): void {
+    if (this.retryTimer) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.abortController?.abort();
+    this.abortController = null;
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.connecting = false;
+    this.closed = false;
+    this.currentBackoff = this.backoffMs;
+    this.hasOpened = false;
+    this.setState('idle');
+  }
+
+  getState(): SseConnectionState {
+    return this.state;
+  }
+
+  onState(handler: SseStateHandler): () => void {
+    this.stateListeners.add(handler);
+    return () => {
+      this.stateListeners.delete(handler);
+    };
   }
 
   on(type: string, handler: SSEHandler): () => void {
@@ -73,7 +133,7 @@ export class SSEClient {
       const remaining: SSEPayload[] = [];
       for (const event of this.pendingEvents) {
         if (event.type === type || type === '*') {
-          handler(event);
+          this.invokeHandler(handler, event);
         } else {
           remaining.push(event);
         }
@@ -95,47 +155,64 @@ export class SSEClient {
     }
   }
 
-  private handleMessage(data: string): void {
-    const payload = this.parsePayload(data);
-    if (!this.dispatch(payload.type, payload)) {
-      // No handler matched -- queue for late-registered handlers
-      this.pendingEvents.push(payload);
-      // Cap the pending queue to avoid leaking memory
-      if (this.pendingEvents.length > 100) {
-        this.pendingEvents = this.pendingEvents.slice(-50);
+  private setState(next: SseConnectionState, reconnected = false): void {
+    this.state = next;
+    this.stateListeners.forEach((handler) => {
+      try {
+        handler(next, { reconnected });
+      } catch (err) {
+        console.error('SSE state handler threw', err);
       }
+    });
+  }
+
+  private invokeHandler(handler: SSEHandler, payload: SSEPayload): void {
+    // Shared client: one consumer throwing must not starve the others.
+    try {
+      handler(payload);
+    } catch (err) {
+      console.error('SSE handler threw', err);
     }
   }
 
-  private scheduleReconnect(): void {
-    if (this.retryTimer || this.closed) {
-      return;
-    }
-    this.eventSource?.close();
-    this.eventSource = null;
-    this.retryTimer = window.setTimeout(() => {
-      this.retryTimer = null;
-      this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
-      this.connect();
-    }, this.currentBackoff);
+  private markOpened(): void {
+    this.currentBackoff = this.backoffMs;
+    const reconnected = this.hasOpened;
+    this.hasOpened = true;
+    this.setState('open', reconnected);
   }
 
   private openAnonymousEventSource(): void {
     if (!this.EventSourceImpl) {
+      this.setState('down');
       this.scheduleReconnect();
       return;
     }
     const legacyUrl = this.url === '/api/events/subscribe' ? '/api/events' : this.url;
     const source = new this.EventSourceImpl(legacyUrl);
+
+    // Use addEventListener for the message handler -- more reliable across
+    // browsers than assigning to onmessage, and works identically for
+    // unnamed SSE events (server sends "data:" without an "event:" line).
     source.addEventListener('message', (event: MessageEvent) => {
       this.handleMessage(event.data);
     });
+
     source.onerror = () => {
-      if (source.readyState === 2) this.scheduleReconnect();
+      // Only manually reconnect when EventSource has given up (readyState
+      // CLOSED = 2).  When readyState is CONNECTING (0), the browser is
+      // already retrying on its own -- closing the source here would destroy
+      // that automatic reconnection and create a gap where events are lost.
+      if (source.readyState === 2) {
+        this.setState('down');
+        this.scheduleReconnect();
+      }
     };
+
     source.onopen = () => {
-      this.currentBackoff = this.backoffMs;
+      this.markOpened();
     };
+
     this.eventSource = source;
   }
 
@@ -154,7 +231,7 @@ export class SSEClient {
       if (!response.ok || !response.body) {
         throw new Error(`SSE subscribe failed (${response.status})`);
       }
-      this.currentBackoff = this.backoffMs;
+      this.markOpened();
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -178,13 +255,43 @@ export class SSEClient {
           boundary = buffer.indexOf('\n\n');
         }
       }
-    } catch (error) {
+    } catch {
       if (!controller.signal.aborted && !this.closed) shouldReconnect = true;
     } finally {
       if (this.abortController === controller) this.abortController = null;
       this.connecting = false;
     }
-    if (shouldReconnect) this.scheduleReconnect();
+    if (shouldReconnect) {
+      this.setState('down');
+      this.scheduleReconnect();
+    }
+  }
+
+  private handleMessage(data: string): void {
+    const payload = this.parsePayload(data);
+    if (!this.dispatch(payload.type, payload)) {
+      // No handler matched -- queue for late-registered handlers
+      this.pendingEvents.push(payload);
+      // Cap the pending queue to avoid leaking memory
+      if (this.pendingEvents.length > 100) {
+        this.pendingEvents = this.pendingEvents.slice(-50);
+      }
+    }
+  }
+
+  private scheduleReconnect(): void {
+    if (this.retryTimer || this.closed) {
+      return;
+    }
+    if (this.eventSource) {
+      this.eventSource.close();
+      this.eventSource = null;
+    }
+    this.retryTimer = window.setTimeout(() => {
+      this.retryTimer = null;
+      this.currentBackoff = Math.min(this.currentBackoff * 2, this.maxBackoffMs);
+      this.connect();
+    }, this.currentBackoff);
   }
 
   private parsePayload(data: string): SSEPayload {
@@ -197,21 +304,26 @@ export class SSEClient {
     }
   }
 
-  /** Dispatch to registered handlers. Returns true if at least one handler ran. */
+  /**
+   * Dispatch to registered handlers. Returns true if at least one handler ran.
+   * Ordering guarantee: exact-type handlers in registration order, then '*'
+   * handlers in registration order. Each invocation is isolated so one
+   * consumer's throw cannot starve the others.
+   */
   private dispatch(type: string, payload: SSEPayload): boolean {
     let handled = false;
 
     // Exact-match handlers
     const handlers = this.listeners.get(type);
     if (handlers && handlers.size > 0) {
-      handlers.forEach((handler) => handler(payload));
+      handlers.forEach((handler) => this.invokeHandler(handler, payload));
       handled = true;
     }
 
     // Wildcard handlers (registered with '*')
     const wildcards = this.listeners.get('*');
     if (wildcards && wildcards.size > 0) {
-      wildcards.forEach((handler) => handler(payload));
+      wildcards.forEach((handler) => this.invokeHandler(handler, payload));
       handled = true;
     }
 
