@@ -264,13 +264,25 @@ export interface AuthMergeConflict {
   message: string;
 }
 
+// Issue fbf2a58 — a queued auth request whose head branch ref no longer exists
+// (already merged and torn down, or manually deleted). Distinct from a merge
+// conflict: it contributes no bytes and cannot be simulated, so it is reported
+// as a stale-request condition with remediation rather than a conflict.
+export interface AuthMergeStaleRequest {
+  request_id: string;
+  head_branch: string;
+  message: string;
+}
+
 export interface AuthMergeCheckReport {
-  status: "clean" | "conflict" | "error" | "unknown";
+  status: "clean" | "conflict" | "error" | "unknown" | "stale_request";
   repo: string | null;
   base_branch: string | null;
   head_branch: string | null;
   checked_requests: number;
   conflicts: AuthMergeConflict[];
+  // Issue fbf2a58 — populated only when status is "stale_request".
+  stale_requests?: AuthMergeStaleRequest[];
   target_head_sha?: string | null;
   queue_fingerprint?: string | null;
   reason?: string;
@@ -500,6 +512,12 @@ export class AuthQueue {
     // before the generic (threshold-based) stuck-request recovery runs.
     this.recoverSelfMergeShutdown();
     this.recoverStuckRequests();
+    // Issue fbf2a58 — reconcile merge requests whose merge already landed but
+    // whose finalization write was lost (e.g. a terminal-executed auth-merge
+    // whose post-merge dist rebuild restarted the daemon before the finalize
+    // committed). Runs after the stuck-request recovery so it only inspects
+    // rows the other recovery paths left pending/approved.
+    this.reconcileAlreadyMergedRequests();
     this.startExpiryTimer();
   }
 
@@ -521,6 +539,9 @@ export class AuthQueue {
         // the 30 s tick never piles work onto an already-busy queue.
         if (this.finalizerQueue.idle) {
           this.sweepSuccessfulMergeFinalizers();
+          // Issue fbf2a58 — periodic backstop for merges whose finalization was
+          // lost while the queue was idle (mirrors the startup reconciliation).
+          this.reconcileAlreadyMergedRequests();
         }
       } catch (error) {
         if (this.disposed || !this.isDbOpen()) {
@@ -612,6 +633,207 @@ export class AuthQueue {
     }
 
     this.sweepSuccessfulMergeFinalizers();
+  }
+
+  /**
+   * Issue fbf2a58 — reconcile merge requests whose merge already landed but
+   * whose status finalization was lost.
+   *
+   * A terminal-executed `mandible auth merge` in the Mandible repo triggers a
+   * post-merge dist rebuild that restarts the daemon. If the finalize write
+   * races that restart it can be lost, leaving the request 'pending'/'approved'
+   * even though its head is already merged. The stale row then poisons queue
+   * preflight (its torn-down branch reads as a conflict) until it is deleted by
+   * hand.
+   *
+   * This pass finalizes any pending/approved merge request whose head branch is
+   * already an ancestor of — or tree-equivalent to — its target branch,
+   * mirroring the branch_reap_proof logic in cli/auth-merge.sh. Requests whose
+   * merge cannot be proven from Git are left untouched: reconciliation never
+   * guesses.
+   */
+  private reconcileAlreadyMergedRequests(): void {
+    let rows: Record<string, unknown>[];
+    try {
+      rows = this.db
+        .prepare(
+          "SELECT * FROM auth_requests WHERE type = 'merge' AND status IN ('pending', 'approved') " +
+            "AND exit_code IS NULL AND merge_finalized_at IS NULL"
+        )
+        .all() as Record<string, unknown>[];
+    } catch {
+      // Fresh/partial DBs mid-migration: nothing to reconcile.
+      return;
+    }
+    if (rows.length === 0) {
+      return;
+    }
+
+    const now = this.now();
+    const complete = this.db.prepare(
+      "UPDATE auth_requests SET status = 'completed', exit_code = 0, resolved_at = ?, " +
+        "updated_at = ?, error = NULL, merge_head_sha = COALESCE(merge_head_sha, ?) " +
+        "WHERE id = ? AND status IN ('pending', 'approved') AND exit_code IS NULL"
+    );
+
+    for (const row of rows) {
+      const request = mapRow(row);
+      if (!isAuthMergeCommand(request)) {
+        continue;
+      }
+      const proof = this.reapProofForRequest(request);
+      if (!proof) {
+        continue;
+      }
+      const updated = complete.run(now, now, proof.headSha, request.id);
+      if (updated.changes !== 1) {
+        continue;
+      }
+      const recovered = this.getRequest(request.id);
+      if (recovered) {
+        this.finalizeReconciledMerge(recovered);
+      }
+      authLog("warn", "auth_request_reconciled_already_merged", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        reason:
+          proof.proof === "merged"
+            ? "head_is_ancestor_of_target"
+            : "head_tree_equivalent_to_target",
+        head_sha: proof.headSha,
+      });
+    }
+  }
+
+  /**
+   * Issue fbf2a58 — finalize a merge request that startup reconciliation proved
+   * already landed. The row is already status='completed'/exit_code=0 (so it has
+   * dropped out of the pending set and no longer poisons preflight); this drives
+   * the broadcasts, ledger completion, and Stage 3 finalizers.
+   *
+   * Attribution note: the normal finalizer demands an approving user for
+   * post-v109 attributed merges. That holds when the merge was approved through
+   * the daemon and only its final status write was lost. But the reported
+   * incident merged out-of-band in a terminal with no daemon approval record, so
+   * the attributed evidence path cannot run — Git proves the merge landed, but
+   * the daemon never observed who authorized it. In that case terminalize the
+   * row from repository evidence alone (completed + merge_finalized_at +
+   * merged/resolved broadcasts) without fabricating an approver. This deliberately
+   * skips attributed ledger completion, work-unit ancestry resolution, and thread
+   * archiving for the out-of-band case; see the report accompanying this issue.
+   */
+  private finalizeReconciledMerge(request: AuthRequest): void {
+    const attributedMerge = isAuthMergeCommand(request) && Boolean(request.requested_by_user_id);
+    const hasApprovalEvidence =
+      request.execution_evidence_id != null || request.approved_by_user_id != null;
+    if (!attributedMerge || hasApprovalEvidence) {
+      // Legacy (system-attributed) merge, or an attributed merge that was
+      // approved through the daemon before its finalization write was lost:
+      // the standard finalizer records evidence and runs every stage.
+      this.finalizeSuccessfulMerge(request);
+      return;
+    }
+
+    // Attributed merge with no daemon approval record: authorized out-of-band.
+    if (request.merge_finalized_at != null) {
+      return;
+    }
+    const now = this.now();
+    this.markSuccessfulMergeFinalized(request, request.merge_head_sha ?? null, now);
+    const finalized = this.getRequest(request.id);
+    if (finalized) {
+      this.broadcast({ event: "auth:merged", data: this.buildMergedPayload(finalized) });
+      this.broadcast({ event: "auth:resolved", data: this.buildResolvedPayload(finalized) });
+    }
+    authLog("warn", "auth_request_reconciled_without_approval_attribution", {
+      subsystem: "auth",
+      auth_request_id: request.id,
+      reason: "merge_landed_out_of_band_no_daemon_approval",
+    });
+  }
+
+  /**
+   * Issue fbf2a58 — prove that a merge request's head is already contained in
+   * its target branch, mirroring branch_reap_proof in cli/auth-merge.sh.
+   *
+   * Ancestry (`git merge-base --is-ancestor`) is the primary proof; a synthetic
+   * merge that reproduces the target's exact tree (`git merge-tree --write-tree`
+   * tree-equivalence) is the merge-aware fallback for squash/rebase landings.
+   * The head commit comes from the live branch ref, falling back to a recorded
+   * merge_head_sha when the branch was already torn down. Returns null when
+   * nothing is checkable so the caller leaves the request alone.
+   */
+  private reapProofForRequest(
+    request: AuthRequest,
+  ): { proof: "merged" | "tree-equivalent"; headSha: string } | null {
+    const cwd = request.target_repo_root ?? request.cwd;
+    if (!cwd || !request.base_branch) {
+      return null;
+    }
+    try {
+      const git = (args: string[]): string =>
+        execFileSync("git", args, {
+          cwd,
+          encoding: "utf8",
+          timeout: 5000,
+          maxBuffer: 10 * 1024 * 1024,
+          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+        }).trim();
+      const verify = (rev: string): string | null => {
+        try {
+          const sha = git(["rev-parse", "--verify", `${rev}^{commit}`]);
+          return sha || null;
+        } catch {
+          return null;
+        }
+      };
+
+      // Prefer the live head branch ref; fall back to a recorded merge_head_sha
+      // when the branch was torn down after the merge landed.
+      let headSha: string | null = null;
+      if (request.head_branch) {
+        headSha = verify(`refs/heads/${request.head_branch}`);
+      }
+      if (!headSha && request.merge_head_sha) {
+        headSha = verify(request.merge_head_sha);
+      }
+      if (!headSha) {
+        // Nothing checkable — never guess.
+        return null;
+      }
+
+      const targetOid = verify(`refs/heads/${request.base_branch}`);
+      if (!targetOid) {
+        return null;
+      }
+
+      // Ancestry proof.
+      try {
+        git(["merge-base", "--is-ancestor", headSha, targetOid]);
+        return { proof: "merged", headSha };
+      } catch {
+        // Not an ancestor — fall through to tree-equivalence.
+      }
+
+      // Tree-equivalence proof: a synthetic merge that yields the target's exact
+      // tree contributes no bytes (covers squash/rebase-style landings).
+      let targetTree: string | null;
+      try {
+        targetTree = git(["rev-parse", "--verify", `${targetOid}^{tree}`]) || null;
+      } catch {
+        targetTree = null;
+      }
+      if (!targetTree) {
+        return null;
+      }
+      const merged = this.mergeTree(cwd, targetOid, headSha);
+      if (merged.status === "clean" && merged.tree === targetTree) {
+        return { proof: "tree-equivalent", headSha };
+      }
+      return null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -1335,9 +1557,28 @@ export class AuthQueue {
 
     let simulatedBase = baseBranch;
     let checked = 0;
+    const staleRequests: AuthMergeStaleRequest[] = [];
 
     for (const request of pending) {
       if (!request.head_branch) {
+        continue;
+      }
+      // Issue fbf2a58 — a queued request whose head branch ref no longer exists
+      // (already merged and torn down, or manually deleted) contributes no bytes
+      // and cannot be simulated. `git merge-tree` against a missing ref fails and
+      // would otherwise read as a conflict/dirty-tree error, poisoning preflight
+      // for every other request. Classify it as a stale-request condition with a
+      // clear remediation hint instead, skip it, and keep checking the rest.
+      if (this.resolveBranchHeadForCheck(cwd, request.head_branch) === null) {
+        staleRequests.push({
+          request_id: request.id,
+          head_branch: request.head_branch,
+          message:
+            `Queued auth request ${request.id} references head branch ` +
+            `'${request.head_branch}', which no longer exists in ${cwd} ` +
+            `(already merged and torn down, or deleted). Reconcile the auth ` +
+            `queue or dismiss the stale request before rechecking.`,
+        });
         continue;
       }
       checked += 1;
@@ -1411,6 +1652,27 @@ export class AuthQueue {
           queue_fingerprint: queueFingerprint
         };
       }
+    }
+
+    // Issue fbf2a58 — a genuine conflict among live queued requests already
+    // returned above and takes precedence. If the only anomaly is queued
+    // requests whose head branch was torn down, surface that as a stale-request
+    // condition (with remediation) rather than falsely reporting "clean".
+    if (staleRequests.length > 0) {
+      return {
+        status: "stale_request",
+        repo,
+        base_branch: baseBranch,
+        head_branch: headBranch,
+        checked_requests: checked,
+        conflicts: [],
+        stale_requests: staleRequests,
+        target_head_sha: targetHeadSha,
+        queue_fingerprint: queueFingerprint,
+        reason:
+          `${staleRequests.length} queued request(s) reference a head branch ` +
+          `that no longer exists; reconcile the auth queue or dismiss them.`,
+      };
     }
 
     return {
