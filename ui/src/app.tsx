@@ -41,6 +41,8 @@ import {
   daemonStartupEpoch,
   daemonStartupCommit,
   shouldEnterSplashOnBackgroundProbe,
+  splashRequiresNewCommit,
+  stallEscapeReady,
   type DaemonHealthSnapshot,
 } from './daemon-readiness';
 import { installTauriDeepLinkHandler } from './deep-links';
@@ -458,9 +460,16 @@ function TabChunkFallback(): JSX.Element {
 function RebuildingSplash({
   reason = 'rebuilding',
   epochStalled = false,
+  stallEscape = false,
+  onContinue,
 }: {
   reason?: 'rebuilding' | 'starting';
   epochStalled?: boolean;
+  // Bug: afaea18 — once a stall is judged non-transient (daemon healthy on the
+  // same commit past the bounded window) the splash must offer an explicit exit
+  // so a healthy daemon can never be permanently stranded behind it.
+  stallEscape?: boolean;
+  onContinue?: () => void;
 }): JSX.Element {
   const isRebuilding = reason === 'rebuilding';
   return (
@@ -471,12 +480,23 @@ function RebuildingSplash({
           {isRebuilding ? 'Rebuilding & restarting…' : 'Starting Mandible…'}
         </div>
         <div className="rebuilding-splash__subtitle">
-          {epochStalled
+          {stallEscape
+            ? 'The daemon is healthy on the current commit — this looks like a manual restart, not a rebuild. You can continue.'
+            : epochStalled
             ? 'The daemon is ready, but its startup commit has not changed. The rebuild may not have completed.'
             : isRebuilding
             ? 'Mandible is restarting after a self-merge. This page will reload automatically.'
             : 'Mandible is finishing startup. This page will reload automatically when it is ready.'}
         </div>
+        {stallEscape && onContinue ? (
+          <button
+            type="button"
+            className="rebuilding-splash__continue"
+            onClick={onContinue}
+          >
+            Continue anyway
+          </button>
+        ) : null}
       </div>
     </div>
   );
@@ -518,10 +538,23 @@ function App(): JSX.Element {
   const [daemonStarting, setDaemonStarting] = useState(false);
   const [daemonWarm, setDaemonWarm] = useState(true);
   const [epochStalled, setEpochStalled] = useState(false);
+  // Bug: afaea18 — bounded-stall escape: once the splash has been stalled on a
+  // healthy same-commit daemon past STALL_ESCAPE_MS, offer an explicit exit.
+  const [stallEscape, setStallEscape] = useState(false);
   const splashEpochRef = useRef<string | null>(null);
   const splashCommitRef = useRef<string | null>(null);
   const requireNewEpochRef = useRef(false);
   const requireNewCommitRef = useRef(false);
+  // Bug: afaea18 — when the stall was first observed and the epoch/commit to
+  // record if the user (or the bounded auto-escape) continues past it.
+  const stallSinceRef = useRef<number | null>(null);
+  const stalledEpochRef = useRef<string | null>(null);
+  const stalledCommitRef = useRef<string | null>(null);
+  const continuePastStall = useCallback(() => {
+    if (stalledEpochRef.current) setLastSeenStartupEpoch(stalledEpochRef.current);
+    if (stalledCommitRef.current) setLastSeenCommit(stalledCommitRef.current);
+    window.location.reload();
+  }, []);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
@@ -971,7 +1004,11 @@ function App(): JSX.Element {
       splashEpochRef.current = getLastSeenStartupEpoch();
       splashCommitRef.current = getLastSeenCommit();
       requireNewEpochRef.current = true;
-      requireNewCommitRef.current = true;
+      // An SSE rebuild announcement is the one signal that legitimately advances
+      // the startup commit, so a new commit is required to release this splash.
+      requireNewCommitRef.current = splashRequiresNewCommit(true);
+      stallSinceRef.current = null;
+      setStallEscape(false);
       setEpochStalled(false);
       setRebuilding(true);
     };
@@ -1165,7 +1202,13 @@ function App(): JSX.Element {
       splashCommitRef.current = previousCommit ?? currentCommit;
       requireNewEpochRef.current = health?.rebuilding === true
         || daemonEpochChanged(health, previousEpoch);
-      requireNewCommitRef.current = requireNewEpochRef.current;
+      // Bug: afaea18 — a bare epoch change (manual/ops daemon restart) must NOT
+      // require a new commit, or the page stalls on the epoch-stalled splash
+      // forever. Only an announced rebuild (health still reports rebuilding)
+      // advances the commit and may require it.
+      requireNewCommitRef.current = splashRequiresNewCommit(health?.rebuilding === true);
+      stallSinceRef.current = null;
+      setStallEscape(false);
       setEpochStalled(false);
       if (health?.rebuilding) {
         setRebuilding(true);
@@ -1192,6 +1235,10 @@ function App(): JSX.Element {
   useEffect(() => {
     if (!splashActive) return;
     const POLL_MS = 2_000;
+    // Bug: afaea18 — how long the daemon must stay healthy on the same commit
+    // (ready+warm, not rebuilding) before the stall is judged non-transient and
+    // the "continue anyway" escape is surfaced.
+    const STALL_ESCAPE_MS = 15_000;
     let intervalId: ReturnType<typeof window.setInterval> | null = null;
     // Give the daemon a moment to shut down before starting to poll
     const startTimer = window.setTimeout(() => {
@@ -1228,6 +1275,23 @@ function App(): JSX.Element {
             && data.rebuilding !== true
           ) {
             setEpochStalled(true);
+            // Bug: afaea18 — the stall must never be permanent. Track when it
+            // began and, once the daemon has stayed healthy on the same commit
+            // past the bounded window, surface the "continue anyway" escape
+            // (which records the current epoch/commit as last-seen and reloads).
+            stalledEpochRef.current = currentEpoch ?? splashEpochRef.current;
+            stalledCommitRef.current = currentCommit ?? splashCommitRef.current;
+            const now = Date.now();
+            if (stallSinceRef.current === null) {
+              stallSinceRef.current = now;
+            }
+            if (stallEscapeReady(data, now - stallSinceRef.current, STALL_ESCAPE_MS)) {
+              setStallEscape(true);
+            }
+          } else {
+            // Left the stalled condition before the escape armed; reset so a
+            // later stall measures its own bounded window from scratch.
+            stallSinceRef.current = null;
           }
         } catch {
           // Server not yet up — keep polling
@@ -1738,6 +1802,8 @@ function App(): JSX.Element {
     return <RebuildingSplash
       reason={rebuilding ? 'rebuilding' : 'starting'}
       epochStalled={epochStalled}
+      stallEscape={stallEscape}
+      onContinue={continuePastStall}
     />;
   }
 
