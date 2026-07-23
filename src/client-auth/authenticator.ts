@@ -232,11 +232,36 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   /** Ensure no managed agent process can coexist with a readable operator proof. */
   revokeOperatorBootstrap(): void {
+    // Enrollment must win before the anti-theft guard applies. The bootstrap is
+    // the operator's only way to enroll a first credential; if it is revoked
+    // whenever a managed agent backend is constructed, an operator with zero
+    // active credentials can NEVER enroll on a machine that already runs agents
+    // (issue a9ede3c). Constraint: while the operator holds no active
+    // credential, keep the bootstrap intact so first enrollment can complete.
+    // Once the operator has at least one active credential the guard is fully
+    // restored and every non-operator backend revokes the proof as before.
+    if (this.operatorHasNoActiveCredential()) return;
     if (this.bootstrapRaw) {
       this.ephemeral.delete(fingerprintForToken(this.pepper, this.bootstrapRaw));
     }
     this.bootstrapRaw = null;
     writeBootstrapTokenFile(null, this.secretsDir);
+  }
+
+  /**
+   * True when an operator is configured but currently holds zero active
+   * credentials, i.e. first enrollment has not yet happened. Returns false when
+   * no operator exists (nothing to protect) or the operator has enrolled.
+   */
+  private operatorHasNoActiveCredential(): boolean {
+    const operator = getOperator(this.db);
+    if (!operator) return false;
+    const row = this.db
+      .prepare(
+        "SELECT COUNT(*) AS n FROM user_credentials WHERE user_id = ? AND status = 'active'",
+      )
+      .get(operator.id) as { n: number } | undefined;
+    return (row?.n ?? 0) === 0;
   }
 
   /**
