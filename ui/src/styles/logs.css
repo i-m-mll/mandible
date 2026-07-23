@@ -434,3 +434,25 @@
   color: var(--text-muted);
   line-height: 1.6;
 }
+
+/* Bug: afaea18 — bounded-stall escape so a healthy daemon is never stranded. */
+.rebuilding-splash__continue {
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--bg-primary);
+  background: var(--accent-green);
+  border: none;
+  border-radius: 6px;
+  padding: 8px 18px;
+  cursor: pointer;
+}
+
+.rebuilding-splash__continue:hover {
+  opacity: 0.9;
+}
+
+.rebuilding-splash__continue:focus-visible {
+  outline: 2px solid var(--accent-green);
+  outline-offset: 2px;
+}

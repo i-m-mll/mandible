@@ -150,3 +150,45 @@ export function shouldEnterSplashOnBackgroundProbe(
 ): boolean {
   return shouldEnterSplashOnProbe(health) || daemonEpochChanged(health, previousEpoch);
 }
+
+/**
+ * Whether releasing the rebuild/start splash should require the daemon's startup
+ * *commit* to advance (not merely its per-process epoch).
+ *
+ * Bug: afaea18 — a *manual* daemon restart (launchctl kickstart/bootout, ops
+ * recovery, config reload) changes the per-process epoch but keeps the same
+ * commit. Only an *announced rebuild* — the `mandible:rebuilding` SSE event, or
+ * a health response that still reports `rebuilding` — legitimately advances the
+ * commit. Requiring a new commit for a bare epoch change (as the earlier logic
+ * did) strands the page on the epoch-stalled splash forever, because the commit
+ * will never change. So the commit requirement is tied to the announced-rebuild
+ * signal, never to epoch drift on its own.
+ */
+export function splashRequiresNewCommit(announcedRebuild: boolean): boolean {
+  return announcedRebuild === true;
+}
+
+/**
+ * Whether a bounded rebuild-splash stall should surface its escape affordance.
+ *
+ * Bug: afaea18 — a stall must never be permanent (dataful-UX policy: a healthy
+ * daemon behind a full-page splash the user cannot exit is a bug). Once the
+ * (restarted) daemon is ready and warm and is NOT rebuilding — i.e. it is
+ * healthy on the current commit — and has stayed that way for at least
+ * `minStallMs`, the splash must offer a "continue anyway" escape that records
+ * the current epoch/commit as last-seen and reloads. This covers an announced
+ * rebuild that completed without advancing the commit; ordinary ops restarts no
+ * longer reach the stall at all (see {@link splashRequiresNewCommit}).
+ */
+export function stallEscapeReady(
+  health: DaemonHealthSnapshot | null | undefined,
+  stalledForMs: number,
+  minStallMs: number,
+): boolean {
+  return (
+    daemonIsReady(health)
+    && daemonIsWarm(health)
+    && health?.rebuilding !== true
+    && stalledForMs >= minStallMs
+  );
+}
