@@ -2918,6 +2918,205 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 107,
+    name: "user_registry_core",
+    // Umbrella 8e2e8b2 / issue e89c2b0 — foundation tables for the user system:
+    // identities, immutable credentials, claimed bindings, verified attribution
+    // evidence, and delegated-signing leases. Only the `system` user is seeded
+    // (fixed sentinel id, created_at=0 so fresh-baseline and migrated DBs agree
+    // byte-for-byte). The local human operator is created only by
+    // `mandible user setup`; migrations never prompt. Credentials are immutable:
+    // revoke + add, never mutate a fingerprint. Credential `type` is an
+    // app-validated vocabulary, not a DB CHECK enum, so new types need no table
+    // rebuild. No private key material is ever stored here.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS users (
+        id            TEXT PRIMARY KEY,
+        slug          TEXT NOT NULL UNIQUE,
+        kind          TEXT NOT NULL
+                        CHECK(kind IN ('human','agent','system','external')),
+        display_name  TEXT NOT NULL,
+        email         TEXT,
+        status        TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active','retired')),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')
+      )`,
+      `CREATE TABLE IF NOT EXISTS user_credentials (
+        id              TEXT PRIMARY KEY,
+        user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        type            TEXT NOT NULL,
+        fingerprint     TEXT NOT NULL,
+        public_material TEXT,
+        label           TEXT,
+        status          TEXT NOT NULL DEFAULT 'active'
+                          CHECK(status IN ('active','revoked')),
+        created_at      INTEGER NOT NULL,
+        revoked_at      INTEGER,
+        metadata_json   TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object')
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS idx_user_credentials_active_fingerprint
+        ON user_credentials(fingerprint) WHERE status = 'active'`,
+      `CREATE INDEX IF NOT EXISTS idx_user_credentials_user
+        ON user_credentials(user_id)`,
+      `CREATE TABLE IF NOT EXISTS delegated_signing_leases (
+        id            TEXT PRIMARY KEY,
+        credential_id TEXT NOT NULL REFERENCES user_credentials(id) ON DELETE RESTRICT,
+        owner_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        minted_at     INTEGER NOT NULL,
+        expires_at    INTEGER NOT NULL,
+        mint_method   TEXT NOT NULL
+                        CHECK(mint_method IN ('fresh_presence','reused_lease'))
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_delegated_signing_leases_credential
+        ON delegated_signing_leases(credential_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_delegated_signing_leases_owner
+        ON delegated_signing_leases(owner_user_id)`,
+      `CREATE TABLE IF NOT EXISTS attribution_evidence (
+        id              TEXT PRIMARY KEY,
+        evidence_method TEXT NOT NULL,
+        credential_id   TEXT REFERENCES user_credentials(id) ON DELETE SET NULL,
+        lease_id        TEXT REFERENCES delegated_signing_leases(id) ON DELETE SET NULL,
+        verified_at     INTEGER NOT NULL,
+        details_json    TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(details_json) AND json_type(details_json)='object')
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_attribution_evidence_credential
+        ON attribution_evidence(credential_id) WHERE credential_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_attribution_evidence_lease
+        ON attribution_evidence(lease_id) WHERE lease_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS user_bindings (
+        id           TEXT PRIMARY KEY,
+        user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        binding_type TEXT NOT NULL
+                       CHECK(binding_type IN ('app_name','provider_session_env','process_pattern','git_author_email','external_author')),
+        value        TEXT NOT NULL,
+        scope        TEXT,
+        status       TEXT NOT NULL DEFAULT 'active'
+                       CHECK(status IN ('active','inactive')),
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_user_bindings_user
+        ON user_bindings(user_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_user_bindings_lookup
+        ON user_bindings(binding_type, value)`,
+      `INSERT OR IGNORE INTO users (
+        id, slug, kind, display_name, email, status, created_at, updated_at, metadata_json
+      ) VALUES (
+        '00000000000000000000000000', 'system', 'system', 'System', NULL, 'active', 0, 0, '{}'
+      )`
+    ]
+  },
+  {
+    version: 108,
+    name: "ledger_user_attribution_columns",
+    // Umbrella 8e2e8b2 / issue 92813cc — parallel, nullable user-attribution
+    // columns on ledger write tables. The legacy actor_id/actor_type/
+    // author_display columns are immutable provenance (hashed into stable
+    // event/issue/comment ids) and are untouched here; these columns carry the
+    // resolved user principal alongside them. NULL means legacy/unresolved.
+    // FK to users(id) makes the parallel identity fail-closed: a non-null value
+    // must name a real user. evidence_id optionally points at a verified
+    // attribution_evidence row. The ALTER ADD COLUMN work is applied by the
+    // guarded ensureLedgerUserAttributionColumns() hook, which also creates the
+    // partial indexes (IF NOT EXISTS) only for tables that exist. Keeping the
+    // index creation inside the hook lets a synthetic partial-schema upgrade
+    // (e.g. an auth-only fixture DB with no ledger_* tables) migrate cleanly.
+    //
+    // Also enforce at most one ACTIVE user_bindings row per (binding_type,
+    // value, scope) so a binding value resolves to a single user (used by shadow
+    // import minting and session-binding resolution). SQLite treats NULLs as
+    // distinct in unique indexes, so scope IS NULL needs its own partial index.
+    statements: [
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_user_bindings_active_scoped
+        ON user_bindings(binding_type, value, scope)
+        WHERE status = 'active' AND scope IS NOT NULL`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_user_bindings_active_unscoped
+        ON user_bindings(binding_type, value)
+        WHERE status = 'active' AND scope IS NULL`
+    ]
+  },
+  {
+    version: 109,
+    name: "auth_request_user_attribution",
+    // Umbrella 8e2e8b2 / issue 6349203 — durable requester, approver, and
+    // execution-evidence attribution for auth requests. Columns remain nullable
+    // so legacy rows are preserved byte-for-byte; every new transport write is
+    // populated and validated by AuthQueue/route boundaries.
+    // Guarded by ensureAuthRequestUserAttributionColumns() so schema-rewind
+    // tests and interrupted upgrades can safely re-enter v109.
+    statements: []
+  },
+  {
+    version: 110,
+    name: "session_work_unit_ownership",
+    // Umbrella 8e2e8b2 / issue e552606 — immutable, nullable user ownership
+    // captured when sessions, console sessions, and work units are registered.
+    // Legacy rows stay NULL; migrations never infer or create a user.
+    statements: []
+  },
+  {
+    version: 111,
+    name: "user_groups_project_permissions",
+    // Umbrella 8e2e8b2 / issue a0379a3 — opt-in project restrictions and
+    // explicit user/group grants. Existing projects remain unrestricted and
+    // the only migration seed is the system-owned agents group; users are
+    // enrolled deliberately by the user provisioning path.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS user_groups (
+        id           TEXT PRIMARY KEY,
+        slug         TEXT NOT NULL UNIQUE,
+        display_name TEXT NOT NULL,
+        kind         TEXT NOT NULL DEFAULT 'custom'
+                       CHECK(kind IN ('system','custom')),
+        created_at   INTEGER NOT NULL,
+        updated_at   INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS user_group_members (
+        group_id  TEXT NOT NULL REFERENCES user_groups(id) ON DELETE CASCADE,
+        user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (group_id, user_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_user_group_members_user
+        ON user_group_members(user_id, group_id)`,
+      `CREATE TABLE IF NOT EXISTS permission_grants (
+        id            TEXT PRIMARY KEY,
+        subject_type  TEXT NOT NULL CHECK(subject_type IN ('user','group')),
+        subject_id    TEXT NOT NULL,
+        resource_type TEXT NOT NULL CHECK(resource_type IN ('project','global')),
+        resource_id   TEXT REFERENCES ledger_projects(id) ON DELETE CASCADE,
+        permission    TEXT NOT NULL,
+        created_at    INTEGER NOT NULL,
+        CHECK (
+          (resource_type = 'project' AND resource_id IS NOT NULL
+            AND permission IN ('read','write','admin')) OR
+          (resource_type = 'global' AND resource_id IS NULL
+            AND permission IN ('approve_auth','spawn_console','change_settings','backup','open_path'))
+        )
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_permission_grants_project
+        ON permission_grants(subject_type, subject_id, resource_id, permission)
+        WHERE resource_type = 'project'`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_permission_grants_global
+        ON permission_grants(subject_type, subject_id, permission)
+        WHERE resource_type = 'global'`,
+      `CREATE INDEX IF NOT EXISTS idx_permission_grants_subject
+        ON permission_grants(subject_type, subject_id)`,
+      `CREATE INDEX IF NOT EXISTS idx_permission_grants_resource
+        ON permission_grants(resource_type, resource_id)`,
+      `INSERT OR IGNORE INTO user_groups (
+        id, slug, display_name, kind, created_at, updated_at
+      ) VALUES (
+        '00000000000000000000000001', 'agents', 'Agents', 'system', 0, 0
+      )`
+    ]
+  },
+  {
+    version: 107,
     name: "branch_upstream_cache",
     // Issue 651e820 — persist per-branch upstream tracking info during scans so
     // GET /api/work/repos/:id/branches serves it from the DB instead of spawning
@@ -2927,9 +3126,8 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: []
   },
   {
-    // Integration reconciliation (umbrella c16807e): originally version 107 on
-    // the auth chain (issue 93d978e); renumbered to 108 because 651e820's
-    // branch_upstream_cache took 107 (it merged first).
+    // Integration reconciliation (umbrella c16807e): renumbered to 113 atop
+    // main's user-system migrations 107-111 (branch_upstream_cache took 112).
     version: 108,
     name: "work_unit_merge_scan_retirement",
     // Issue 93d978e — reversible tombstone excluding stale abandoned work units
@@ -2941,9 +3139,8 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: []
   },
   {
-    // Integration reconciliation (umbrella c16807e): originally version 108 on
-    // the auth chain (issue 75f52ac); renumbered to 109 after 93d978e's
-    // migration shifted to 108.
+    // Integration reconciliation (umbrella c16807e): renumbered to 114 atop
+    // main's user-system migrations 107-111 (work_unit retirement took 113).
     version: 109,
     name: "auth_request_merge_finalizer_state",
     // Issue 75f52ac — per-step durable state for the background finalizer queue.
@@ -3025,13 +3222,25 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       if (migration.version === 106) {
         ensureBranchReapingKnowledgeColumns(db);
       }
-      if (migration.version === 107) {
-        ensureBranchUpstreamColumns(db);
-      }
       if (migration.version === 108) {
-        ensureWorkUnitMergeScanRetirementColumn(db);
+        ensureLedgerUserAttributionColumns(db);
       }
       if (migration.version === 109) {
+        ensureAuthRequestUserAttributionColumns(db);
+      }
+      if (migration.version === 110) {
+        ensureSessionOwnershipColumns(db);
+      }
+      if (migration.version === 111) {
+        ensureProjectRestrictionColumn(db);
+      }
+      if (migration.version === 112) {
+        ensureBranchUpstreamColumns(db);
+      }
+      if (migration.version === 113) {
+        ensureWorkUnitMergeScanRetirementColumn(db);
+      }
+      if (migration.version === 114) {
         ensureAuthRequestMergeFinalizerStateColumn(db);
       }
       for (const statement of migration.statements) {
@@ -3329,10 +3538,11 @@ export function migrate(db: Db): void {
   applySchemaMigrations(db, afterV105);
 
   // Integration reconciliation (umbrella c16807e): the additive-column hooks for
-  // v107 (branches.has_upstream/upstream), v108 (work_units.merge_scan_retired_at),
-  // and v109 (auth_requests.merge_finalizer_state) were renumbered during
-  // integration. A database that previously ran an intermediate feature-branch
-  // daemon may already have recorded v107/v108 under DIFFERENT meanings, so those
+  // v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
+  // and v114 (auth_requests.merge_finalizer_state) were renumbered during
+  // integration atop main's user-system migrations 107-111. A database that
+  // previously ran an intermediate feature-branch daemon may already have
+  // recorded v107-v109 under DIFFERENT meanings, so those
   // exact migrations are no longer in `pending` and their per-version hooks never
   // fire — leaving the renumbered columns permanently absent. All three hooks are
   // guarded and idempotent, so converge the full column set whenever a column is
@@ -5500,6 +5710,144 @@ function ensureLedgerProjectKeyColumn(db: Db): void {
   );
 }
 
+// Umbrella 8e2e8b2 / issue 92813cc (migration 108): guarded ALTER ADD COLUMN
+// for the parallel user-attribution columns. Each column is added only when
+// absent so a fresh baseline (which already has them) and a schema-rewind
+// re-run are both idempotent. The definitions here MUST match the fresh-schema
+// baseline byte-for-byte after normalization.
+function ensureLedgerUserAttributionColumns(db: Db): void {
+  const userFk = "TEXT REFERENCES users(id) ON DELETE RESTRICT";
+  const evidenceFk = "TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL";
+  const plan: Array<{ table: string; columns: Array<[string, string]> }> = [
+    {
+      table: "ledger_issues",
+      columns: [
+        ["author_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_comments",
+      columns: [
+        ["author_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_issue_checkpoints",
+      columns: [
+        ["author_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_events",
+      columns: [
+        ["actor_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+    {
+      table: "ledger_body_revisions",
+      columns: [
+        ["actor_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+        ["redacted_by_user_id", userFk],
+      ],
+    },
+    {
+      table: "ledger_relationship_edges",
+      columns: [
+        ["actor_user_id", userFk],
+        ["evidence_method", "TEXT"],
+        ["evidence_id", evidenceFk],
+      ],
+    },
+  ];
+  const indexes: Record<string, string> = {
+    ledger_issues:
+      `CREATE INDEX IF NOT EXISTS idx_ledger_issues_author_user
+        ON ledger_issues(author_user_id) WHERE author_user_id IS NOT NULL`,
+    ledger_comments:
+      `CREATE INDEX IF NOT EXISTS idx_ledger_comments_author_user
+        ON ledger_comments(author_user_id) WHERE author_user_id IS NOT NULL`,
+    ledger_events:
+      `CREATE INDEX IF NOT EXISTS idx_ledger_events_actor_user
+        ON ledger_events(actor_user_id) WHERE actor_user_id IS NOT NULL`,
+  };
+  for (const { table, columns } of plan) {
+    const tableExistsRow = db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get(table);
+    if (!tableExistsRow) continue;
+    for (const [name, definition] of columns) {
+      const existing = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>)
+        .some((column) => column.name === name);
+      if (!existing) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${name} ${definition}`);
+      }
+    }
+    const index = indexes[table];
+    if (index) db.exec(index);
+  }
+}
+
+// Umbrella 8e2e8b2 / issue 6349203 (migration 109): guarded auth-request
+// requester, approver, and execution-evidence columns. Like migration 108,
+// this must tolerate a baseline-shaped table whose schema version was rewound
+// for recovery or migration verification.
+function ensureAuthRequestUserAttributionColumns(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns: Array<[string, string]> = [
+    ["requested_by_user_id", "TEXT REFERENCES users(id) ON DELETE RESTRICT"],
+    ["approved_by_user_id", "TEXT REFERENCES users(id) ON DELETE RESTRICT"],
+    ["execution_evidence_id", "TEXT REFERENCES attribution_evidence(id) ON DELETE SET NULL"],
+  ];
+  for (const [name, definition] of columns) {
+    if (!tableColumnNames(db, "auth_requests").has(name)) {
+      db.exec(`ALTER TABLE auth_requests ADD COLUMN ${name} ${definition}`);
+    }
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_requested_by_user
+    ON auth_requests(requested_by_user_id) WHERE requested_by_user_id IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_approved_by_user
+    ON auth_requests(approved_by_user_id) WHERE approved_by_user_id IS NOT NULL`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_auth_requests_execution_evidence
+    ON auth_requests(execution_evidence_id) WHERE execution_evidence_id IS NOT NULL`);
+}
+
+// Umbrella 8e2e8b2 / issue e552606 (migration 110): guarded ownership columns.
+// These are write-time identity facts, separate from mutable liveness and
+// provider/session mechanism bookkeeping.
+function ensureSessionOwnershipColumns(db: Db): void {
+  for (const table of ["sessions", "console_sessions", "work_units"]) {
+    if (!tableExists(db, table)) continue;
+    if (!tableColumnNames(db, table).has("owner_user_id")) {
+      db.exec(
+        `ALTER TABLE ${table} ADD COLUMN owner_user_id
+          TEXT REFERENCES users(id) ON DELETE SET NULL`,
+      );
+    }
+  }
+}
+
+// Umbrella 8e2e8b2 / issue a0379a3 (migration 111): restriction is opt-in so
+// adding this column preserves every existing project's effective access.
+function ensureProjectRestrictionColumn(db: Db): void {
+  if (!tableExists(db, "ledger_projects")) return;
+  if (!tableColumnNames(db, "ledger_projects").has("restricted")) {
+    db.exec(
+      `ALTER TABLE ledger_projects ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0
+        CHECK(restricted IN (0, 1))`,
+    );
+  }
+}
+
 function ensureBranchReapingKnowledgeColumns(db: Db): void {
   const expected = [
     "worktree_inventory_known",
@@ -5555,18 +5903,18 @@ function ensureBranchUpstreamColumns(db: Db): void {
     hasUpstream.notnull !== 1 ||
     hasUpstream.dflt_value !== "0"
   ) {
-    throw new Error("migration 107 verification: branches.has_upstream has divergent definition");
+    throw new Error("migration 112 verification: branches.has_upstream has divergent definition");
   }
 
   const upstream = columnInfo().find((column) => column.name === "upstream");
   if (!upstream) {
     db.exec("ALTER TABLE branches ADD COLUMN upstream TEXT");
   } else if (upstream.type.toUpperCase() !== "TEXT") {
-    throw new Error("migration 107 verification: branches.upstream has divergent definition");
+    throw new Error("migration 112 verification: branches.upstream has divergent definition");
   }
 }
 
-// Issue 93d978e (migration 108 after integration reconciliation) — additive
+// Issue 93d978e (migration 113 after integration reconciliation) — additive
 // nullable tombstone column for the merge-scan retirement sweep. Guarded so
 // re-running migrate over a database that already has the column (e.g.
 // version-rewind test fixtures) is a no-op rather than a duplicate-column error.
@@ -5586,12 +5934,12 @@ function ensureWorkUnitMergeScanRetirementColumn(db: Db): void {
   }
   if (existing.type.toUpperCase() !== "INTEGER") {
     throw new Error(
-      "migration 108 verification: work_units.merge_scan_retired_at has divergent definition",
+      "migration 113 verification: work_units.merge_scan_retired_at has divergent definition",
     );
   }
 }
 
-// Issue 75f52ac (migration 109 after integration reconciliation) — additive
+// Issue 75f52ac (migration 114 after integration reconciliation) — additive
 // nullable JSON column recording the background finalizer queue's per-step
 // durable state. Guarded so re-running migrate over a database that already has
 // the column (version-rewind fixtures) is a no-op rather than a
@@ -5605,8 +5953,8 @@ function ensureAuthRequestMergeFinalizerStateColumn(db: Db): void {
 }
 
 // Integration reconciliation (umbrella c16807e): true when any renumbered
-// additive column (v107 branches.has_upstream/upstream, v108
-// work_units.merge_scan_retired_at, v109 auth_requests.merge_finalizer_state) is
+// additive column (v112 branches.has_upstream/upstream, v113
+// work_units.merge_scan_retired_at, v114 auth_requests.merge_finalizer_state) is
 // still absent from a live, non-fresh database. The convergence pass is gated on
 // this LIVE schema inspection rather than the recorded schema version so that if
 // a convergence hook throws and its repair rolls back, the next open re-detects
@@ -6917,6 +7265,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "conversations",
     "ledger_comments",
     "ledger_issues",
+    "ledger_projects",
     "message_params",
     "project_artifact_associations",
     "session_instruction_artifacts",

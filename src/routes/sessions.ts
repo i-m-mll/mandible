@@ -17,6 +17,7 @@ import type { IssueScanner } from "../issue-scanner.js";
 import type { SessionDiscovery } from "../session-discovery.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
+import { AttributionReadResolver } from "../identity/read-projection.js";
 import { readBody, sendJson } from "./http.js";
 
 function linkSessionLedgerIssue(
@@ -249,6 +250,9 @@ export function registerSessionRoutes(
       }
     }
 
+    // Bounded/paginated listing (issue 21502ff). listSessionsPage → mapWithLiveness
+    // → toSession already populates each session's user-attribution `owner`
+    // (main), so no separate owner remap is needed here.
     const page = registry.listSessionsPage(options);
     const sessions = page.sessions;
     const meta = {

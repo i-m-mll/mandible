@@ -8,7 +8,7 @@ import {
 } from '../components/DiffView';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { EntityPill } from '../components/shared/EntityPill';
-import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
+import { AttributionIdentity, DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity';
 import { DetailPaneModal } from '../components/shared/DetailPaneModal';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { PreviewDisabledNotice } from '../components/shared/PreviewDisabledNotice';
@@ -32,7 +32,9 @@ import {
   type AuthRequestAction,
   type AuthAutoApproveStatus,
   type AuthHook,
+  type AttributionReadProjection,
   type InstanceInfo,
+  type ReadUserIdentity,
 } from '../api';
 
 export type AuthRequestType =
@@ -85,6 +87,13 @@ export type AuthRequest = {
   depends_on_status?: string | null;
   approval_source?: string;
   approval_lease_id?: string | null;
+  requested_by_user_id?: string | null;
+  approved_by_user_id?: string | null;
+  execution_evidence_id?: string | null;
+  requester?: ReadUserIdentity | null;
+  approver?: ReadUserIdentity | null;
+  execution_evidence?: AttributionReadProjection | null;
+  verified_signature?: boolean;
   action_count?: number;
   actions?: AuthRequestAction[];
   [key: string]: unknown;
@@ -1293,6 +1302,8 @@ function AuthRequestDetail({
   const typeSubtitle = flowText ? `${typeMeta.label.toLowerCase()} · ${flowText}` : typeMeta.label.toLowerCase();
   const shortRef = requestHash || 'unknown';
   const copyRef = requestHash ? `auth:${requestHash}` : '';
+  const requester = request.requester ?? null;
+  const approver = request.approver ?? null;
   const hasActionBundle = Boolean(actionBundle);
   const panelsClass = hasActionBundle
     ? 'auth-detail__panels auth-detail__panels--with-actions'
@@ -1369,6 +1380,9 @@ function AuthRequestDetail({
         <MetadataRow label="Resolved" value={resolvedAt} />
         <MetadataRow label="Approval source" value={request.approval_source ?? null} />
         <MetadataRow label="Approval lease" value={request.approval_lease_id ?? null} />
+        <MetadataRow label="Requester" value={requester?.display_name ?? request.requested_by_user_id ?? null} />
+        <MetadataRow label="Approver" value={approver?.display_name ?? request.approved_by_user_id ?? null} />
+        <MetadataRow label="Execution evidence" value={request.execution_evidence?.evidence_method ?? null} />
         <MetadataRow label="Dependency id" value={request.depends_on_id ?? null} />
         <MetadataRow label="Dependency status" value={request.depends_on_status ?? null} />
         <MetadataRow label="Merge SHA" value={mergeSha} />
@@ -1423,6 +1437,34 @@ function AuthRequestDetail({
                 {typeSubtitle}
               </span>
             </div>
+            {(requester || approver || request.verified_signature) && (
+              <div className="auth-detail__attribution" aria-label="Auth attribution">
+                {requester && (
+                  <div>
+                    Requested by{' '}
+                    <AttributionIdentity
+                      display={requester.display_name}
+                      user={requester}
+                      source="auth_queue"
+                    />
+                  </div>
+                )}
+                {approver && (
+                  <div>
+                    Approved by{' '}
+                    <AttributionIdentity
+                      display={approver.display_name}
+                      user={approver}
+                      attribution={request.execution_evidence}
+                      source="auth_queue"
+                    />
+                  </div>
+                )}
+                {request.verified_signature && (
+                  <span className="auth-detail__verified-signature">Verified signature</span>
+                )}
+              </div>
+            )}
             {hasLinks && (
               <div className="auth-detail__links">
                 {sessionId && (

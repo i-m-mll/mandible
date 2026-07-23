@@ -9,7 +9,8 @@ import os from "node:os";
 import path from "node:path";
 import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
-import type { RouteRegistrar } from "../server.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { ClientAuthzError, requireOperator } from "../client-auth/authz.js";
 import {
   parseMarkdownToNodes,
   serializeNodesToMarkdown,
@@ -36,8 +37,38 @@ import {
   type SessionPreset,
 } from "../presets.js";
 import { sendJson } from "./http.js";
+import type { SessionManager } from "../session-manager.js";
 
-export function registerPresetRoutes(server: RouteRegistrar): void {
+function requireOperatorForCredentialBearingSession(
+  db: ReturnType<typeof getDb>,
+  req: RequestLike,
+  res: ResponseLike,
+  sessionId: string,
+  sessionManager?: Pick<SessionManager, "isCredentialBearing">,
+): boolean {
+  const canonical = db.prepare(
+    "SELECT value FROM settings WHERE key = 'console_operator_session_id'",
+  ).get() as { value: string } | undefined;
+  const credentialBearing = sessionManager
+    ? sessionManager.isCredentialBearing(sessionId)
+    : canonical?.value === sessionId;
+  if (!credentialBearing) return true;
+  try {
+    requireOperator(db, req);
+    return true;
+  } catch (error) {
+    if (error instanceof ClientAuthzError) {
+      sendJson(res, error.status, { error: error.message, code: error.code });
+      return false;
+    }
+    throw error;
+  }
+}
+
+export function registerPresetRoutes(
+  server: RouteRegistrar,
+  sessionManager?: Pick<SessionManager, "isCredentialBearing">,
+): void {
   // IMPORTANT: Register non-parameterized /api/presets/* routes BEFORE
   // /api/presets/:id — the router matches in registration order, so
   // "union", "library", "diffs", "import", "violations" would be
@@ -56,6 +87,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     const db = getDb();
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, sessionId, sessionManager,
+    )) return;
     const attachedArtifacts = listSessionInstructionArtifacts(db, sessionId);
     const presetIds = attachedArtifacts.length > 0
       ? attachedArtifacts.map((r) => r.artifact_version_id)
@@ -155,6 +189,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     const db = getDb();
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, sessionId, sessionManager,
+    )) return;
     const diffs = db
       .prepare(
         "SELECT * FROM preset_diffs WHERE session_id = ? ORDER BY created_at DESC",
@@ -190,6 +227,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     const db = getDb();
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, body.session_id, sessionManager,
+    )) return;
     const now = Date.now();
     const id = randomUUID();
 
@@ -433,6 +473,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     const db = getDb();
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, body.sessionId, sessionManager,
+    )) return;
     const now = Date.now();
     const diffId = randomUUID();
     const conventionText = body.context.conventionText ?? "";
@@ -544,6 +587,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     }
 
     const db = getDb();
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, sessionId, sessionManager,
+    )) return;
 
     const artifactRows = listSessionInstructionArtifacts(db, sessionId);
     const sessionPresetRows = artifactRows.length > 0
@@ -1278,6 +1324,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
   // GET /api/console/sessions/:id/presets — get session's active presets
   server.get("/api/console/sessions/:id/presets", (req, res) => {
     const db = getDb();
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, req.params.id, sessionManager,
+    )) return;
     const artifactRows = listSessionInstructionArtifacts(db, req.params.id);
     const rows = artifactRows.length > 0
       ? artifactRows
@@ -1300,6 +1349,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
   server.post("/api/console/sessions/:id/presets", (req, res) => {
     const db = getDb();
     const sessionId = req.params.id;
+    if (!requireOperatorForCredentialBearingSession(
+      db, req, res, sessionId, sessionManager,
+    )) return;
     const body = (req.body ?? {}) as { presetIds?: string[] };
 
     if (!Array.isArray(body.presetIds) || body.presetIds.length === 0) {
@@ -1317,6 +1369,9 @@ export function registerPresetRoutes(server: RouteRegistrar): void {
     "/api/console/sessions/:id/presets/:presetId",
     (req, res) => {
       const db = getDb();
+      if (!requireOperatorForCredentialBearingSession(
+        db, req, res, req.params.id, sessionManager,
+      )) return;
       removeSessionInstructionArtifact(db, req.params.id, req.params.presetId);
       db.prepare(
         "DELETE FROM session_presets WHERE session_id = ? AND preset_id = ?",

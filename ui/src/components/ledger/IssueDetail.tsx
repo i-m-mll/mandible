@@ -22,7 +22,7 @@ import type {
 } from '../../api';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
-import { DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
+import { AttributionIdentity, DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
 import { DetailPaneShell } from '../shared/DetailPaneShell';
 
 const LEDGER_TIME_OPTIONS = { zeroIsEmpty: true } as const;
@@ -238,7 +238,12 @@ export function LedgerIssueDetail({
             )}
           </div>
           <div className="ledger-issue-detail__meta">
-            <span className="ledger-issue-detail__byline-author">{detail.author.display}</span>
+            <AttributionIdentity
+              className="ledger-issue-detail__byline-author"
+              display={detail.author.display}
+              attribution={detail.author.attribution}
+              source={detail.source}
+            />
             <time>{formatRelativeTime(detail.created_at, LEDGER_TIME_OPTIONS)}</time>
             {displayLabels.length > 0 && (
               <>
@@ -736,6 +741,11 @@ function TimelineEntryCard({
         <span className="ledger-timeline-event__dot" aria-hidden="true" />
         <span className="ledger-timeline-event__text">
           <strong>{stateEntryLabel(entry)}</strong>
+          <AttributionIdentity
+            display={entry.author.display}
+            attribution={entry.author.attribution}
+            source={entry.source}
+          />
         </span>
         <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label="Timeline metadata">
@@ -750,7 +760,11 @@ function TimelineEntryCard({
         <span className="ledger-timeline-event__dot" aria-hidden="true" />
         <span className="ledger-timeline-event__text">
           <strong>{checkpointEntryLabel(entry.checkpoint_kind)}</strong>
-          <span>{entry.author.display}</span>
+          <AttributionIdentity
+            display={entry.author.display}
+            attribution={entry.author.attribution}
+            source={entry.source}
+          />
         </span>
         <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label="Checkpoint payload">
@@ -765,6 +779,11 @@ function TimelineEntryCard({
         <span className="ledger-timeline-event__dot" aria-hidden="true" />
         <span className="ledger-timeline-event__text">
           <strong>{timelineEventLabel(entry)}</strong>
+          <AttributionIdentity
+            display={entry.author.display}
+            attribution={entry.author.attribution}
+            source={entry.source}
+          />
         </span>
         <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label="Timeline metadata">
@@ -781,7 +800,11 @@ function TimelineEntryCard({
       data-comment-ordinal={String(entry.ordinal)}
     >
       <div className="ledger-comment-card__header">
-        <span>{entry.author.display}</span>
+        <AttributionIdentity
+          display={entry.author.display}
+          attribution={entry.author.attribution}
+          source={entry.source}
+        />
         <time>{formatRelativeTime(entry.created_at, LEDGER_TIME_OPTIONS)}</time>
         <MetadataDisclosure label={isBody ? 'Opening metadata' : 'Comment metadata'}>
           <MetadataRows rows={isBody ? bodyMetadataRows(entry) : commentMetadataRows(entry)} />
@@ -1051,6 +1074,12 @@ function SessionRow({
       <span className={`ledger-session-row__dot ledger-session-row__dot--${session.status}`} />
       <strong>{session.app || session.agent_type || 'session'}</strong>
       <code>{session.branch ?? session.id}</code>
+      {session.owner && (
+        <span className="ledger-session-row__owner">
+          {session.owner.display_name}
+          <small>{session.owner.kind}</small>
+        </span>
+      )}
       <em>{session.status}</em>
     </button>
   );

@@ -32,6 +32,7 @@ import {
 } from './api';
 import type { SSEPayload, SseConnectionState } from './sse-client';
 import { acquireSharedSse, shouldSkipFallbackPoll } from './sse-shared';
+import { ensureClientAuthToken, installClientAuthFetch } from './client-auth-token';
 import {
   daemonEpochChanged,
   daemonCommitChanged,
@@ -2029,11 +2030,17 @@ function App(): JSX.Element {
 
 const mountNode = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (mountNode) {
+  // Issue 708dc4c — attach the client-auth token to every /api request, then
+  // acquire one via the handshake before first render so operator mutations
+  // authenticate (in strict mode too, using a token persisted during compat).
+  installClientAuthFetch();
   const initialRoute = parseHashRoute();
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();
   }
-  render(<App />, mountNode);
+  void ensureClientAuthToken().finally(() => {
+    render(<App />, mountNode);
+  });
 }
 
 export { App };

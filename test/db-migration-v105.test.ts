@@ -210,14 +210,14 @@ function restoreArtifactTargetTablesToV90(): void {
 describe("migration v105: canonical Spaces export artifacts", () => {
   it("completes v105 before applying a synthetic later migration", () => {
     const migrations = MIGRATIONS as Migration[];
-    expect(migrations.at(-1)?.version).toBe(109);
+    expect(migrations.at(-1)?.version).toBe(114);
     migrations.push({
-      version: 110,
+      version: 115,
       name: "test_v105_ordering_boundary",
       statements: [
         `INSERT INTO meta (key, value)
          VALUES (
-           'test.v110.observed_v105',
+           'test.v115.observed_v105',
            COALESCE((SELECT value FROM meta WHERE key = '${COMPLETION_KEY}'), 'missing')
          )`,
       ],
@@ -225,13 +225,13 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     try {
       expect(() => migrate(db)).not.toThrow();
       expect(db.prepare(
-        "SELECT value FROM meta WHERE key = 'test.v110.observed_v105'",
+        "SELECT value FROM meta WHERE key = 'test.v115.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "110",
+        value: "115",
       });
     } finally {
-      expect(migrations.pop()?.version).toBe(110);
+      expect(migrations.pop()?.version).toBe(115);
     }
   });
 
@@ -245,10 +245,11 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     expect(() => migrate(db)).not.toThrow();
 
     expect(marker()).toEqual({ value: "done" });
-    // Re-migration from the rewound v106 fixture now also applies the additive
-    // v107, v108, and v109 columns, advancing (never lowering) the schema version.
+    // Re-migration from the rewound fixture now also applies main's user-system
+    // migrations (v107-v111) and our additive v112, v113, and v114 columns,
+    // advancing (never lowering) the schema version.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "109",
+      value: "114",
     });
   });
 
@@ -315,13 +316,13 @@ describe("migration v105: canonical Spaces export artifacts", () => {
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "109",
+      value: "114",
     });
     expect(marker()).toEqual({ value: "done" });
 
     const expectedProjection = {
-      last_export_artifact_id: `artifact:sha256:${exportHash}`,
-      pre_export_snapshot_artifact_id: `artifact:sha256:${snapshotHash}`,
+      last_export_artifact_id: `artifact:${exportHash.slice(0, 12)}`,
+      pre_export_snapshot_artifact_id: `artifact:${snapshotHash.slice(0, 12)}`,
     };
     expect(getSpaceExport(db, "export-one")).toMatchObject(expectedProjection);
     expect(findSpaceExport(db, "checkout-one", "docs", "space.md")).toMatchObject(

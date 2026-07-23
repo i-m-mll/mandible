@@ -42,6 +42,13 @@ import {
 } from "../provider-artifacts.js";
 import type { ArtifactVersionSourceKind } from "../types.js";
 import { sendJson } from "./http.js";
+import { resolveProjectRef } from "../ledger/project-registry.js";
+import { resolveArtifactProject, resolveIssueProject } from "../permissions/resources.js";
+import {
+  PermissionError,
+  requireProjectAccess,
+  sendPermissionError,
+} from "../permissions/store.js";
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
   return req.body && typeof req.body === "object" && !Array.isArray(req.body)
@@ -77,6 +84,119 @@ function queryBoolean(req: RequestLike, key: string): boolean | undefined {
 function resolveArtifactRouteRecord(id: string) {
   const db = getDb();
   return getArtifact(db, id) ?? resolveArtifactSurfaceRefReadonlyFull(db, id).artifact;
+}
+
+function enforceProjectRefWrite(req: RequestLike, res: ResponseLike, projectRef: string): boolean {
+  const db = getDb();
+  const resolved = resolveProjectRef(db, projectRef);
+  if (resolved.ambiguous) {
+    sendJson(res, 403, { error: "ambiguous project", code: "ambiguous_project" });
+    return false;
+  }
+  if (!resolved.ok || !resolved.project) return true;
+  try {
+    requireProjectAccess(db, req, resolved.project.id, "write");
+    return true;
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      sendPermissionError(res, error);
+      return false;
+    }
+    throw error;
+  }
+}
+
+function enforceArtifactAccess(
+  req: RequestLike,
+  res: ResponseLike,
+  artifactId: string,
+  role: "read" | "write",
+): boolean {
+  const db = getDb();
+  const resolved = resolveArtifactProject(db, artifactId);
+  if (!resolved.ok && resolved.reason === "unassociated") return true;
+  if (!resolved.ok) {
+    sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
+    return false;
+  }
+  try {
+    requireProjectAccess(db, req, resolved.project_id, role);
+    return true;
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      sendPermissionError(res, error);
+      return false;
+    }
+    throw error;
+  }
+}
+
+function enforceArtifactRefAccess(
+  req: RequestLike,
+  res: ResponseLike,
+  ref: string,
+  role: "read" | "write",
+): boolean {
+  try {
+    const resolved = resolveArtifactSurfaceRefReadonlyFull(getDb(), ref);
+    const id = resolved.artifact?.id ?? resolved.version?.artifact_id ?? null;
+    if (!id && resolved.status === "ambiguous") {
+      sendJson(res, 403, { error: "ambiguous artifact project", code: "ambiguous_project" });
+      return false;
+    }
+    return id ? enforceArtifactAccess(req, res, id, role) : true;
+  } catch {
+    return true;
+  }
+}
+
+function enforceBodyArtifactRefs(
+  req: RequestLike,
+  res: ResponseLike,
+  body: Record<string, unknown>,
+  role: "read" | "write",
+): boolean {
+  const keys = [
+    "ref", "artifact", "artifact_ref", "artifact_id", "source_ref",
+    "series", "series_id", "version", "version_id", "base_version_id",
+  ];
+  const refs = new Set(keys
+    .map((key) => body[key])
+    .filter((value): value is string => typeof value === "string" && Boolean(value.trim())));
+  return [...refs].every((ref) => enforceArtifactRefAccess(req, res, ref, role));
+}
+
+function enforceArtifactMembers(
+  req: RequestLike,
+  res: ResponseLike,
+  value: unknown,
+  role: "read" | "write",
+): boolean {
+  if (!Array.isArray(value)) return true;
+  return value.every((member) => {
+    if (!member || typeof member !== "object" || Array.isArray(member)) return true;
+    return enforceBodyArtifactRefs(req, res, member as Record<string, unknown>, role);
+  });
+}
+
+function enforceIssueRefWrite(req: RequestLike, res: ResponseLike, issueRef: string): boolean {
+  const db = getDb();
+  const resolved = resolveIssueProject(db, issueRef);
+  if (!resolved.ok) {
+    if (resolved.reason === "not_found") return true;
+    sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
+    return false;
+  }
+  try {
+    requireProjectAccess(db, req, resolved.project_id, "write");
+    return true;
+  } catch (error) {
+    if (error instanceof PermissionError) {
+      sendPermissionError(res, error);
+      return false;
+    }
+    throw error;
+  }
 }
 
 function bodyStringArray(value: unknown): string[] | undefined {
@@ -171,6 +291,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/ingest", async (req, res) => {
     try {
       const body = bodyRecord(req);
+      const projectRef = [body.source_project_id, body.project_id, body.project]
+        .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+      if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
       const localPath = typeof body.path === "string" && body.path.trim()
         ? body.path
         : typeof body.local_path === "string" && body.local_path.trim()
@@ -249,6 +372,15 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
       summary: queryBoolean(req, "summary"),
+    }).filter((artifact) => {
+      const project = resolveArtifactProject(getDb(), artifact.id);
+      if (!project.ok) return project.reason === "unassociated";
+      try {
+        requireProjectAccess(getDb(), req, project.project_id, "read");
+        return true;
+      } catch {
+        return false;
+      }
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
   }, { fileRpc: "allow" });
@@ -260,6 +392,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
       sendJson(res, 200, projectArtifactPublicValue(getDb(), {
         resolution: resolveArtifactSurfaceRefReadonlyFull(getDb(), ref),
       }));
@@ -276,6 +409,15 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sourceKind: queryString(req, "source_kind"),
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
+    }).filter((artifact) => {
+      const project = resolveArtifactProject(getDb(), artifact.id);
+      if (!project.ok) return project.reason === "unassociated";
+      try {
+        requireProjectAccess(getDb(), req, project.project_id, "read");
+        return true;
+      } catch {
+        return false;
+      }
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifacts }));
   }, { fileRpc: "allow" });
@@ -304,15 +446,26 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       status: status === "active" || status === "superseded" || status === "archived" ? status : undefined,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
+    }).filter((association) => {
+      try {
+        requireProjectAccess(getDb(), req, association.project_id, "read");
+        return true;
+      } catch {
+        return false;
+      }
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { associations }));
   }, { fileRpc: "allow" });
 
   app.post("/api/artifacts/associations", (req, res) => {
     try {
+      const body = bodyRecord(req);
+      const projectRef = [body.project_ref, body.project, body.project_id]
+        .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+      if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
       const result = associateProjectArtifact(
         getDb(),
-        bodyRecord(req) as unknown as Parameters<typeof associateProjectArtifact>[1],
+        body as unknown as Parameters<typeof associateProjectArtifact>[1],
       );
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
@@ -336,6 +489,16 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       linkedEntityId: linked.id,
       limit: queryNumber(req, "limit"),
       offset: queryNumber(req, "offset"),
+    }).filter((entry) => {
+      if (!entry.latest_artifact) return true;
+      const project = resolveArtifactProject(getDb(), entry.latest_artifact.id);
+      if (!project.ok) return project.reason === "unassociated";
+      try {
+        requireProjectAccess(getDb(), req, project.project_id, "read");
+        return true;
+      } catch {
+        return false;
+      }
     });
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { series }));
   }, { fileRpc: "deny" });
@@ -343,6 +506,13 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/link", (req, res) => {
     try {
       const body = bodyRecord(req);
+      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
+      const issueRef = typeof body.issue === "string"
+        ? body.issue
+        : body.entity_type === "issue" && typeof body.entity_id === "string"
+          ? body.entity_id
+          : null;
+      if (issueRef && !enforceIssueRefWrite(req, res, issueRef)) return;
       // Evidence links on issues must pin a concrete artifact version. Reject a
       // living evidence link at the route boundary (issue 10960ea) so the
       // contract is enforced at the HTTP edge, not only later in the CLI; the
@@ -376,6 +546,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref or refs is required" });
         return;
       }
+      for (const ref of refs) {
+        if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
+      }
       const checks = refs.map((ref) => {
         const resolution = resolveArtifactRef(getDb(), ref);
         const check = resolution.artifact
@@ -395,7 +568,9 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.post("/api/artifacts/snapshot", async (req, res) => {
     try {
-      const artifact = await snapshotArtifactBytesAsync(getDb(), bodyRecord(req));
+      const body = bodyRecord(req);
+      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
+      const artifact = await snapshotArtifactBytesAsync(getDb(), body);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
     } catch (error) {
       handleError(res, error);
@@ -412,6 +587,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
       const history = resolveArtifactVersionHistory(getDb(), ref);
       if (!history) {
         sendJson(res, 404, { error: "no artifact version series found for ref" });
@@ -433,6 +609,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "a and b query parameters required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, refA, "read")) return;
+      if (!enforceArtifactRefAccess(req, res, refB, "read")) return;
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { diff: diffArtifacts(getDb(), refA, refB) }));
     } catch (error) {
       handleError(res, error);
@@ -446,6 +624,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, ref, "read")) return;
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: getArtifactDraft(getDb(), ref) }));
     } catch (error) {
       handleError(res, error);
@@ -455,6 +634,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/drafts", (req, res) => {
     try {
       const body = bodyRecord(req);
+      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
       const content = typeof body.content === "string" ? body.content : undefined;
       if (content === undefined) {
         sendJson(res, 400, { error: "content is required" });
@@ -486,6 +666,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref is required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
       sendJson(res, 200, projectArtifactPublicValue(getDb(), { draft: rebaseArtifactDraft(getDb(), ref) }));
     } catch (error) {
       handleError(res, error);
@@ -500,6 +681,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref is required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
       sendJson(res, 200, projectArtifactPublicValue(getDb(), publishArtifactDraft(getDb(), {
         ref,
         label: typeof body.label === "string" ? body.label : null,
@@ -518,6 +700,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
         sendJson(res, 400, { error: "ref query parameter required" });
         return;
       }
+      if (!enforceArtifactRefAccess(req, res, ref, "write")) return;
       sendJson(res, 200, projectArtifactPublicValue(getDb(), deleteArtifactDraft(getDb(), ref)));
     } catch (error) {
       handleError(res, error);
@@ -528,6 +711,10 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   app.post("/api/artifacts/versions", (req, res) => {
     try {
       const body = bodyRecord(req);
+      if (!enforceBodyArtifactRefs(req, res, body, "write")) return;
+      const projectRef = [body.source_project_id, body.project_id, body.project]
+        .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
+      if (projectRef && !enforceProjectRefWrite(req, res, projectRef)) return;
       const sourceKind = typeof body.source_kind === "string" ? body.source_kind : undefined;
       if (!sourceKind) {
         sendJson(res, 400, { error: "source_kind is required (tracked_repo, local_only, or managed)" });
@@ -545,7 +732,10 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.post("/api/artifacts/bundles", async (req, res) => {
     try {
-      const result = await createArtifactBundleAsync(getDb(), bodyRecord(req) as unknown as Parameters<typeof createArtifactBundleAsync>[1]);
+      const body = bodyRecord(req);
+      if (!enforceArtifactMembers(req, res, body.members, "write")) return;
+      if (typeof body.issue === "string" && !enforceIssueRefWrite(req, res, body.issue)) return;
+      const result = await createArtifactBundleAsync(getDb(), body as unknown as Parameters<typeof createArtifactBundleAsync>[1]);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
       handleError(res, error);
@@ -556,6 +746,8 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     try {
       const body = bodyRecord(req);
       const members = Array.isArray(body.members) ? body.members : [];
+      if (!enforceArtifactRefAccess(req, res, req.params.id, "write")) return;
+      if (!enforceArtifactMembers(req, res, members, "write")) return;
       const result = await addArtifactBundleMembersAsync(getDb(), req.params.id, members as Parameters<typeof addArtifactBundleMembersAsync>[2]);
       sendJson(res, 200, projectArtifactPublicValue(getDb(), result));
     } catch (error) {
@@ -564,6 +756,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
   }, { fileRpc: "allow" });
 
   app.get("/api/artifacts/bundles/:id", (req, res) => {
+    if (!enforceArtifactRefAccess(req, res, req.params.id, "read")) return;
     const bundle = getArtifactBundle(getDb(), req.params.id);
     if (!bundle) {
       sendJson(res, 404, { error: "bundle not found" });
@@ -596,6 +789,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.get("/api/artifacts/:id/content", async (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
+    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
     const content = artifact ? await getArtifactContentAsync(getDb(), artifact.id) : null;
     if (!content) {
       sendJson(res, 404, { error: "artifact not found" });
@@ -606,6 +800,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.get("/api/artifacts/:id/check", (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
+    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
     const check = artifact ? checkArtifactMaterialization(getDb(), artifact.id) : null;
     if (!check) {
       sendJson(res, 404, { error: "artifact not found" });
@@ -616,6 +811,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.get("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);
+    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
     const backrefs = listKnowledgeBackrefs(getDb(), {
       sourceType: "artifact",
       sourceId: artifact?.id ?? req.params.id,
@@ -629,6 +825,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
 
   app.post("/api/artifacts/:id/knowledge-backrefs", (req, res) => {
     try {
+      if (!enforceArtifactAccess(req, res, req.params.id, "write")) return;
       const artifact = resolveArtifactRouteRecord(req.params.id);
       const backref = createKnowledgeBackref(getDb(), {
         ...bodyRecord(req),
@@ -647,6 +844,7 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
       sendJson(res, 404, { error: "artifact not found" });
       return;
     }
+    if (!enforceArtifactAccess(req, res, artifact.id, "read")) return;
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { artifact }));
   }, { fileRpc: "allow" });
 

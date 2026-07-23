@@ -32,6 +32,12 @@ type ConsoleSession = {
   status: 'running' | 'stopped' | 'crashed';
   is_operator: boolean;
   provider_session_id: string | null;
+  owner_user_id?: string | null;
+  owner?: {
+    id: string;
+    display_name: string;
+    kind: 'human' | 'agent' | 'system' | 'external';
+  } | null;
   command?: string;
   args?: string[];
   unread_count: number;

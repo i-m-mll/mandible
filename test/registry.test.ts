@@ -4,12 +4,14 @@ import Database from "better-sqlite3";
 import {
   SessionRegistry,
   checkLiveness,
+  ensureSessionSchema,
   readPidStartTime,
 } from "../src/registry.js";
 import type { Session } from "../src/types.js";
 
 function createRegistry(): SessionRegistry {
   const db = new Database(":memory:");
+  db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
   return new SessionRegistry(db);
 }
 
@@ -25,6 +27,26 @@ async function waitForPidStart(pid: number): Promise<string | null> {
 }
 
 describe("session registry", () => {
+  it("creates the standalone session schema with the ownership foreign key", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
+      ensureSessionSchema(db);
+      const foreignKeys = db.prepare("PRAGMA foreign_key_list(sessions)").all() as Array<{
+        from: string;
+        table: string;
+        on_delete: string;
+      }>;
+      expect(foreignKeys).toContainEqual(expect.objectContaining({
+        from: "owner_user_id",
+        table: "users",
+        on_delete: "SET NULL",
+      }));
+    } finally {
+      db.close();
+    }
+  });
+
   it("registers and fetches a session", () => {
     const registry = createRegistry();
     const session = registry.registerSession({

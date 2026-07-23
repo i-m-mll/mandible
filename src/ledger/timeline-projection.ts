@@ -39,6 +39,7 @@ import {
   type LabelHistoryIndex,
   type PredicateEvalContext,
 } from "./issue-predicate.js";
+import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 type ProjectRow = {
   id: string;
   display_name: string;
@@ -54,6 +55,12 @@ type CommentRow = {
   created_at: number;
   updated_at: number | null;
   deleted_at: number | null;
+  source: string;
+  author_actor_type: string;
+  author_display: string;
+  author_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
 };
 type StateEventRow = {
   id: string;
@@ -64,6 +71,10 @@ type StateEventRow = {
   payload_json: string;
   occurred_at: number;
   observed_at: number;
+  actor_type: string;
+  actor_user_id: string | null;
+  evidence_method: string | null;
+  evidence_id: string | null;
 };
 type LabelRow = {
   issue_id: string;
@@ -131,6 +142,7 @@ export function buildProjectTimelineProjection(
   const issueRefs = new Map(issues.map((issue) => [issue.id, issueRef(issue)]));
   const normalized = normalizeInput(input, project.id, issueById);
   const eventIndexes = loadTimelineEventIndexes(db, project.id, issues, normalized);
+  const attributionResolver = new AttributionReadResolver(db);
   const relationshipSources = loadRelationshipSources(db, project.id);
   const labelHistory = loadLabelHistory(db, project.id, issues);
   const relationshipSourcesByEventSource = groupRelationshipSources(relationshipSources);
@@ -248,7 +260,14 @@ export function buildProjectTimelineProjection(
 
   for (let cursor = 0; cursor < rows.length; cursor += 1) {
     const row = rows[cursor];
-    const rowEvents = buildEventsForRow(row, issueById, issueRefs, normalized, eventIndexes);
+    const rowEvents = buildEventsForRow(
+      row,
+      issueById,
+      issueRefs,
+      normalized,
+      eventIndexes,
+      attributionResolver,
+    );
     for (const event of rowEvents) {
       const eventSourceKey = sourceKey(event.source_entity.type, event.source_entity.id);
       const sourceRows = relationshipSourcesByEventSource.get(eventSourceKey) ?? [];
@@ -623,7 +642,9 @@ function loadTimelineEventIndexes(
 
 function loadCommentsByIssue(db: Db, projectId: string): Map<string, CommentRow[]> {
   const rows = db.prepare(
-    `SELECT c.id, c.issue_id, c.ordinal, c.body, c.created_at, c.updated_at, c.deleted_at
+    `SELECT c.id, c.issue_id, c.ordinal, c.body, c.created_at, c.updated_at, c.deleted_at,
+            c.source, c.author_actor_type, c.author_display, c.author_user_id,
+            c.evidence_method, c.evidence_id
        FROM ledger_comments c
        JOIN ledger_issues i ON i.id = c.issue_id
       WHERE i.project_id = ?
@@ -650,7 +671,8 @@ function loadStateEventsByIssue(
   const placeholders = stateEventTypes.map(() => "?").join(", ");
   const issueEvents = db.prepare(
     `SELECT e.id, e.entity_type, e.entity_id, e.event_type, e.source, e.payload_json,
-            e.occurred_at, e.observed_at
+            e.occurred_at, e.observed_at, e.actor_type, e.actor_user_id,
+            e.evidence_method, e.evidence_id
        FROM ledger_events e
        JOIN ledger_issues i ON i.id = e.entity_id
       WHERE i.project_id = ?
@@ -659,7 +681,8 @@ function loadStateEventsByIssue(
       ORDER BY e.entity_id ASC, e.occurred_at ASC, e.observed_at ASC, e.id ASC`,
   ).all(projectId, ...stateEventTypes) as StateEventRow[];
   const operationalEvents = db.prepare(
-    `SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at
+    `SELECT id, entity_type, entity_id, event_type, source, payload_json, occurred_at, observed_at,
+            actor_type, actor_user_id, evidence_method, evidence_id
        FROM ledger_events
       WHERE entity_type != 'issue'
         AND event_type IN (${placeholders})
@@ -993,6 +1016,7 @@ function buildEventsForRow(
   issueRefs: Map<string, TimelineIssueRef>,
   input: ProjectTimelineNormalizedInput,
   indexes: TimelineEventIndexes,
+  attributionResolver: AttributionReadResolver,
 ): TimelineEvent[] {
   if (!row.issue) return [];
   const issue = issueById.get(row.issue.id);
@@ -1008,6 +1032,14 @@ function buildEventsForRow(
       timestamp: issue.created_at,
       ordinal: 0,
       ...headlineForText(issue.title, issue.body),
+      author: timelineAuthor(attributionResolver, {
+        legacy_display: issue.author_display,
+        actor_type: issue.author_actor_type,
+        user_id: issue.author_user_id,
+        evidence_method: issue.evidence_method,
+        evidence_id: issue.evidence_id,
+        source: issue.source,
+      }),
       body: issue.body,
       state: null,
       backlink: null,
@@ -1029,6 +1061,14 @@ function buildEventsForRow(
         timestamp: comment.created_at,
         ordinal: comment.ordinal,
         ...headlineForText(issue.title, comment.body),
+        author: timelineAuthor(attributionResolver, {
+          legacy_display: comment.author_display,
+          actor_type: comment.author_actor_type,
+          user_id: comment.author_user_id,
+          evidence_method: comment.evidence_method,
+          evidence_id: comment.evidence_id,
+          source: comment.source,
+        }),
         body: comment.body,
         state: null,
         backlink: null,
@@ -1058,6 +1098,14 @@ function buildEventsForRow(
       ordinal: stateOrdinal,
       display_headline: parsed.headline,
       headline_source: "state",
+      author: timelineAuthor(attributionResolver, {
+        legacy_display: event.actor_type.replace(/_/g, " "),
+        actor_type: event.actor_type,
+        user_id: event.actor_user_id,
+        evidence_method: event.evidence_method,
+        evidence_id: event.evidence_id,
+        source: event.source,
+      }),
       body: null,
       state: {
         event_type: event.event_type,
@@ -1072,6 +1120,26 @@ function buildEventsForRow(
   }
 
   return result.sort(compareTimelineEvents);
+}
+
+function timelineAuthor(
+  resolver: AttributionReadResolver,
+  input: {
+    legacy_display: string;
+    actor_type: string;
+    user_id: string | null;
+    evidence_method: string | null;
+    evidence_id: string | null;
+    source: string | null;
+  },
+): NonNullable<TimelineEvent["author"]> {
+  const attribution = resolver.attribution(input);
+  return {
+    display: resolvedActorDisplay(input.legacy_display, input.actor_type, attribution),
+    legacy_display: input.legacy_display,
+    attribution,
+    source: input.source,
+  };
 }
 
 function eventKindEnabled(input: ProjectTimelineNormalizedInput, kind: TimelineEventKind): boolean {

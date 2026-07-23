@@ -3,12 +3,97 @@
 : "${MANDIBLE_PORT:=19420}"
 : "${MANDIBLE_BASE:=http://127.0.0.1:${MANDIBLE_PORT}}"
 
+# Command-scoped custody for every CLI temporary file. The manifest also tracks
+# spool-local staging paths, so EXIT/INT/TERM cleanup removes bearer/config or
+# capability-token material even when a command is interrupted mid-exchange.
+MANDIBLE_API_TEMP_ROOT=""
+
+api_ensure_temp_root() {
+  if [[ -z "$MANDIBLE_API_TEMP_ROOT" ]]; then
+    MANDIBLE_API_TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mandible-api.XXXXXX")"
+    : > "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
+  fi
+}
+
+api_track_temp() {
+  api_ensure_temp_root
+  printf '%s\n' "$1" >> "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
+}
+
+api_untrack_temp() {
+  local cleanup_path="$1" manifest next_manifest
+  [[ -n "$MANDIBLE_API_TEMP_ROOT" ]] || return 0
+  manifest="$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
+  [[ -f "$manifest" ]] || return 0
+  next_manifest="$MANDIBLE_API_TEMP_ROOT/cleanup-manifest.next"
+  grep -Fvx -- "$cleanup_path" "$manifest" > "$next_manifest" || true
+  mv "$next_manifest" "$manifest"
+}
+
+api_temp_file() {
+  api_ensure_temp_root
+  mktemp "$MANDIBLE_API_TEMP_ROOT/file.XXXXXX"
+}
+
+api_cleanup_temp_files() {
+  local cleanup_path
+  if [[ -n "$MANDIBLE_API_TEMP_ROOT" && -f "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest" ]]; then
+    while IFS= read -r cleanup_path; do
+      [[ -z "$cleanup_path" ]] || rm -f -- "$cleanup_path" 2>/dev/null || true
+    done < "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
+  fi
+  if [[ -n "$MANDIBLE_API_TEMP_ROOT" && -d "$MANDIBLE_API_TEMP_ROOT" ]]; then
+    rm -rf -- "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || true
+  fi
+  MANDIBLE_API_TEMP_ROOT=""
+}
+
+api_ensure_temp_root
+trap 'api_cleanup_temp_files' EXIT
+trap 'api_cleanup_temp_files; exit 130' INT
+trap 'api_cleanup_temp_files; exit 143' TERM
+
 api_base() {
   printf '%s' "$MANDIBLE_BASE"
 }
 
 api_is_file_rpc() {
   [[ "${MANDIBLE_BASE}" == file://* ]]
+}
+
+# Issue 708dc4c — resolve the client-auth config dir, mirroring the daemon's
+# getMandibleConfigDir (src/platform-paths.ts). Used only to locate the operator
+# bootstrap-token file; the MANDIBLE_CONFIG_DIR override is honored first.
+api_client_auth_config_dir() {
+  if [[ -n "${MANDIBLE_CONFIG_DIR:-}" ]]; then
+    printf '%s' "$MANDIBLE_CONFIG_DIR"
+    return
+  fi
+  case "$(uname -s)" in
+    Darwin) printf '%s/Library/Application Support/Mandible/config' "$HOME" ;;
+    *) printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/mandible" ;;
+  esac
+}
+
+# Resolve the client-auth bearer/capability token: MANDIBLE_TOKEN wins, else the
+# same-user operator bootstrap-token file (filesystem trust, like file-RPC).
+api_client_token() {
+  if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
+    printf '%s' "$MANDIBLE_TOKEN"
+    return
+  fi
+  # Managed agents must receive their own explicit token from the spawner.
+  # Falling back to the operator bootstrap credential would silently collapse
+  # agent attribution into the human operator.
+  if [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]; then
+    return
+  fi
+  local token_file line
+  token_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
+  if [[ -r "$token_file" ]]; then
+    IFS= read -r line < "$token_file" || true
+    printf '%s' "$line"
+  fi
 }
 
 api_file_rpc_dir() {
@@ -56,7 +141,7 @@ api_http_sleep_before_retry() {
 api_http_probe_health() {
   local health_base="${1:-$(api_base)}"
   local health_tmp http_status curl_exit=0 ready rebuilding
-  health_tmp=$(mktemp)
+  health_tmp=$(api_temp_file)
   if http_status=$(curl -s --max-time "${MANDIBLE_HEALTH_TIMEOUT:-2}" -o "$health_tmp" \
       -w "%{http_code}" "${health_base}/api/health" 2>/dev/null); then
     :
@@ -119,7 +204,7 @@ api_report_final_http_failure() {
 api_http_exchange() {
   local method="$1" request_path="$2" data="$3" output_file="$4"
   local retry_limit="${MANDIBLE_HTTP_RETRIES:-2}" attempt=0 http_status curl_exit
-  local body_tmp="" stderr_tmp retryable empty_response
+  local body_tmp="" stderr_tmp retryable empty_response token token_cfg=""
   local ambient_headers=() curl_args=()
 
   [[ "$retry_limit" =~ ^[0-9]+$ ]] || retry_limit=2
@@ -127,15 +212,26 @@ api_http_exchange() {
     while IFS= read -r -d '' header_arg; do
       ambient_headers+=("$header_arg")
     done < <(api_curl_ambient_headers "$method")
-    body_tmp=$(mktemp)
+    body_tmp=$(api_temp_file)
     printf '%s' "$data" > "$body_tmp"
   fi
-  stderr_tmp=$(mktemp)
+  stderr_tmp=$(api_temp_file)
+
+  # Issue 708dc4c (finding 6) — present the client-auth bearer token via a 0600
+  # curl config file, never on argv (which is visible in `ps`). Resolve it from
+  # MANDIBLE_TOKEN or the same-user operator bootstrap-token file.
+  token="$(api_client_token)"
+  if [[ -n "$token" ]]; then
+    token_cfg=$(api_temp_file)
+    chmod 600 "$token_cfg" 2>/dev/null || true
+    printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
+  fi
 
   while true; do
     : > "$output_file"
     : > "$stderr_tmp"
     curl_args=(-s --max-time "${MANDIBLE_HTTP_TIMEOUT:-15}" -o "$output_file" -w "%{http_code}")
+    [[ -n "$token_cfg" ]] && curl_args+=(--config "$token_cfg")
     if [[ "$method" != "GET" ]]; then
       curl_args+=(-X "$method" -H 'Content-Type: application/json')
       (( ${#ambient_headers[@]} )) && curl_args+=("${ambient_headers[@]}")
@@ -171,18 +267,29 @@ api_http_exchange() {
 
   rm -f "$stderr_tmp"
   [[ -z "$body_tmp" ]] || rm -f "$body_tmp"
+  [[ -z "$token_cfg" ]] || rm -f "$token_cfg"
   printf '%s' "$http_status"
 }
 
 api_ambient_provider() {
   if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
     printf 'codex'
+  elif [[ -n "${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}" ]]; then
+    printf 'claude'
+  elif [[ -n "${GEMINI_SESSION_ID:-}" ]]; then
+    printf 'gemini'
   fi
 }
 
 api_ambient_session_id() {
   if [[ -n "${CODEX_THREAD_ID:-}" ]]; then
     printf '%s' "$CODEX_THREAD_ID"
+  elif [[ -n "${CLAUDE_CODE_SESSION_ID:-}" ]]; then
+    printf '%s' "$CLAUDE_CODE_SESSION_ID"
+  elif [[ -n "${CLAUDE_SESSION_ID:-}" ]]; then
+    printf '%s' "$CLAUDE_SESSION_ID"
+  elif [[ -n "${GEMINI_SESSION_ID:-}" ]]; then
+    printf '%s' "$GEMINI_SESSION_ID"
   fi
 }
 
@@ -415,7 +522,7 @@ api_preflight_operational_mutation() {
   api_is_file_rpc && return 0
   api_non_main_operational_mutation_override_enabled && return 0
 
-  tmp_response="$(mktemp)"
+  tmp_response="$(api_temp_file)"
   if api_fetch_instance_payload "$tmp_response"; then
     fetch_status=0
   else
@@ -555,7 +662,7 @@ api_request() {
   [[ "$preflight_status" -eq 0 ]] || return "$preflight_status"
 
   if api_is_file_rpc; then
-    tmp_response=$(mktemp)
+    tmp_response=$(api_temp_file)
     response_status=$(api_file_rpc_exchange "$method" "$request_path" "$data" "$tmp_response")
     if [[ "$response_status" =~ ^2 ]]; then
       cat "$tmp_response"
@@ -566,7 +673,7 @@ api_request() {
     return 22
   fi
 
-  tmp_response=$(mktemp)
+  tmp_response=$(api_temp_file)
   response_status=$(api_http_exchange "$method" "$request_path" "$data" "$tmp_response")
   if [[ "$response_status" =~ ^2 ]]; then
     cat "$tmp_response"
@@ -616,14 +723,18 @@ api_file_rpc_exchange() {
   local attach_field="${5:-}"
   local attach_src="${6:-}"
   local dir request_id request_tmp request_file response_file deadline late_deadline health_state outcome
-  local provider session_id body_tmp attach_name=""
+  local provider session_id body_tmp attach_name="" attach_tmp="" attach_file=""
 
   dir=$(api_file_rpc_dir)
   mkdir -p "$dir"
+  chmod 700 "$dir"
   request_id="cli-$RANDOM-$$-$(date +%s)"
   request_tmp="${dir}/${request_id}.request.json.tmp"
+  api_track_temp "$request_tmp"
   request_file="${dir}/${request_id}.request.json"
   response_file="${dir}/${request_id}.response.json"
+  api_track_temp "$request_file"
+  api_track_temp "$response_file"
   provider=$(api_ambient_provider)
   session_id=$(api_ambient_session_id)
 
@@ -632,15 +743,26 @@ api_file_rpc_exchange() {
   # daemon-visible absolute path and injects it into the request body field.
   if [[ -n "$attach_field" && -n "$attach_src" ]]; then
     attach_name="${request_id}.attach-${attach_field}"
-    cp "$attach_src" "${dir}/${attach_name}.tmp"
-    mv "${dir}/${attach_name}.tmp" "${dir}/${attach_name}"
+    attach_tmp="${dir}/${attach_name}.tmp"
+    attach_file="${dir}/${attach_name}"
+    api_track_temp "$attach_tmp"
+    api_track_temp "$attach_file"
+    cp "$attach_src" "$attach_tmp"
+    chmod 600 "$attach_tmp"
+    mv "$attach_tmp" "$attach_file"
+    chmod 600 "$attach_file"
   fi
 
   # Assemble the request body via a temp file (jq --slurpfile) so even a large
   # metadata payload is read from disk, not passed as a jq argument.
-  body_tmp="$(mktemp)"
+  body_tmp="$(api_temp_file)"
   if [[ -n "$data" ]]; then printf '%s' "$data" > "$body_tmp"; else printf 'null' > "$body_tmp"; fi
-  jq -n \
+  # Issue 708dc4c (finding 6) — the capability token is read from the environment
+  # inside jq ($ENV) so it is never placed on jq's argv (visible in `ps`). It
+  # still lands in the spool request file, which is the file-RPC trust anchor.
+  : > "$request_tmp"
+  chmod 600 "$request_tmp"
+  MANDIBLE_CLIENT_TOKEN="$(api_client_token)" jq -n \
     --arg id "$request_id" \
     --arg method "$method" \
     --arg path "$request_path" \
@@ -652,11 +774,13 @@ api_file_rpc_exchange() {
     '{id:$id, method:$method, path:$path}
      + (if ($body[0] != null) then {body:$body[0]} else {} end)
      + (if $attach_field != "" and $attach_name != "" then {attachments:{($attach_field):$attach_name}} else {} end)
+     + (if ($ENV.MANDIBLE_CLIENT_TOKEN // "") != "" then {capability_token:$ENV.MANDIBLE_CLIENT_TOKEN} else {} end)
      + (if $method != "GET" and $provider != "" and $provider_session_id != ""
         then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
         else {} end)' > "$request_tmp"
   rm -f "$body_tmp"
   mv "$request_tmp" "$request_file"
+  chmod 600 "$request_file"
 
   deadline=$(( $(date +%s) + ${MANDIBLE_FILE_RPC_TIMEOUT:-15} ))
   while [[ $(date +%s) -le "$deadline" ]]; do
@@ -670,7 +794,9 @@ api_file_rpc_exchange() {
   # A timeout does not mean the daemon did not execute a mutation: the daemon
   # keeps the request file until after dispatch and response publication. Keep
   # the stable request id alive for a short late-response window and never
-  # blindly replay or delete an ambiguous mutation request.
+  # blindly replay an ambiguous mutation request. Signal cleanup removes an
+  # interrupted publication, but an ordinary timeout must relinquish cleanup
+  # custody so the daemon can still finish the stable-id request.
   late_deadline=$(( $(date +%s) + ${MANDIBLE_FILE_RPC_LATE_RESPONSE_GRACE:-2} ))
   while [[ $(date +%s) -le "$late_deadline" ]]; do
     if [[ -f "$response_file" ]]; then
@@ -704,5 +830,8 @@ api_file_rpc_exchange() {
         "$request_id" "$outcome" >&2
       ;;
   esac
+  api_untrack_temp "$request_file"
+  api_untrack_temp "$response_file"
+  [[ -z "$attach_file" ]] || api_untrack_temp "$attach_file"
   printf '000'
 }

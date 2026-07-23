@@ -10,9 +10,20 @@ interface AmbientProviderDescriptor {
 
 const PROVIDER_DESCRIPTORS: readonly AmbientProviderDescriptor[] = [
   { provider: "codex", envVar: "CODEX_THREAD_ID" },
+  { provider: "claude", envVar: "CLAUDE_CODE_SESSION_ID" },
+  { provider: "claude", envVar: "CLAUDE_SESSION_ID" },
+  { provider: "gemini", envVar: "GEMINI_SESSION_ID" },
 ];
 
 const ALLOWED_PROVIDERS = new Set(PROVIDER_DESCRIPTORS.map((descriptor) => descriptor.provider));
+
+/** Stable binding keys for an allowlisted provider's ambient session env. */
+export function providerSessionEnvBindingValues(provider: string): string[] {
+  const normalized = provider.trim().toLowerCase();
+  return PROVIDER_DESCRIPTORS
+    .filter((descriptor) => descriptor.provider === normalized)
+    .map((descriptor) => descriptor.envVar);
+}
 
 export function resolveAmbientProviderIdentity(
   env: NodeJS.ProcessEnv = process.env,

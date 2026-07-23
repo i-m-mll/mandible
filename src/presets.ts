@@ -613,8 +613,8 @@ export function replaceSessionInstructionArtifacts(
   db: Db,
   sessionId: string,
   refs: string[],
-): void {
-  if (!sessionInstructionAttachmentsAvailable(db)) return;
+): string[] {
+  if (!sessionInstructionAttachmentsAvailable(db)) return [];
   for (const ref of refs) {
     if (!ref.startsWith("artifact-blob:")) continue;
     const owners = db.prepare(
@@ -657,6 +657,7 @@ export function replaceSessionInstructionArtifacts(
     });
   });
   replace();
+  return resolved.map((item) => item.version_id);
 }
 
 export function appendSessionInstructionArtifacts(

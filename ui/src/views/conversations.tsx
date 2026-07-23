@@ -2566,6 +2566,14 @@ function ChatEntryItem({
           {isSubAgent && <span className="conv-subagent-indicator" title="Sub-agent">&#x2937; </span>}
           <span>{truncate(title, 70)}</span>
         </span>
+        {session?.owner && (
+          <span
+            className="chat-history-item__owner"
+            title={`${session.owner.display_name} (${session.owner.kind})`}
+          >
+            {session.owner.display_name}
+          </span>
+        )}
         {canShowActions && (
           <div className="chat-history-item__actions">
             <button
@@ -2622,6 +2630,9 @@ function LiveSessionDetail({
           <div className="chat-live-detail__meta">
             <span className={`chat-live-session__status chat-live-session__status--${session.status}`} />
             <span>{getAgentLabel(session.agent_type)}</span>
+            {session.owner && (
+              <span>{session.owner.display_name} · {session.owner.kind}</span>
+            )}
             <span>{session.status}</span>
             <span title={session.transport_badge?.title}>
               {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}

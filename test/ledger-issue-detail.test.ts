@@ -3,12 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   buildLedgerIssueDetailInitialProjection,
   buildLedgerIssueDetailProjection,
   buildLedgerIssueDetailProjectionWithProfile,
 } from "../src/ledger/issue-detail.js";
-import { resolveLedgerIssueIdForRoute } from "../src/ledger/issue-projection.js";
+import {
+  getLedgerIssueDetailForRoute,
+  resolveLedgerIssueIdForRoute,
+} from "../src/ledger/issue-projection.js";
 import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
@@ -16,9 +20,11 @@ import {
 } from "../src/ledger/operational-links.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
+import { addAttributionEvidence, addCredential, createUser } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-detail-"));
@@ -85,10 +91,100 @@ function insertArtifact(id: string, hash: string, uri: string): void {
 }
 
 describe("ledger issue detail projection", () => {
+  it("resolves attributed authors and preserves legacy display text verbatim", () => {
+    const checkout = createProject("attribution-repo");
+    const user = createUser(db, {
+      slug: "read-agent",
+      kind: "agent",
+      display_name: "Read Surface Agent",
+    });
+    const credential = addCredential(db, user.id, {
+      type: "ssh_key",
+      fingerprint: `SHA256:${"R".repeat(43)}`,
+      label: "Review signing key",
+    });
+    const evidence = addAttributionEvidence(db, {
+      evidence_method: "credential_signature",
+      credential_id: credential.id,
+    });
+    const store = new LedgerStore(db);
+    const issue = store.createIssue({
+      project_id: checkout.project.id,
+      title: "Attributed issue",
+      body: "Attributed body",
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      attribution: {
+        user_id: user.id,
+        evidence_method: "credential_signature",
+        evidence_id: evidence.id,
+      },
+    });
+    const attributedComment = store.addComment(issue.id, {
+      body: "Attributed comment",
+      actor_type: "mandible_user",
+      author_display: "Mandible",
+      source: "session",
+      attribution: {
+        user_id: user.id,
+        evidence_method: "credential_signature",
+        evidence_id: evidence.id,
+      },
+    });
+    const legacyComment = store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
+      body: "Legacy comment",
+      actor_type: "external_adapter",
+      author_display: "Imported Author",
+      source: "git_bug",
+    });
+    const legacyDisplay = "  Imported Author (historical)  ";
+    db.prepare(
+      `UPDATE ledger_comments
+          SET author_user_id = NULL, evidence_method = NULL, evidence_id = NULL,
+              author_display = ?
+        WHERE id = ?`,
+    ).run(legacyDisplay, legacyComment.id);
+
+    const projection = buildLedgerIssueDetailProjection(db, issue.id);
+    expect(projection.author).toMatchObject({
+      display: "Read Surface Agent",
+      legacy_display: "Mandible",
+      attribution: {
+        user: { id: user.id, display_name: "Read Surface Agent", kind: "agent" },
+        evidence_method: "credential_signature",
+        credential: { id: credential.id, label: "Review signing key", type: "ssh_key" },
+      },
+    });
+    expect(projection.comments.find((comment) => comment.id === attributedComment.id)?.author)
+      .toMatchObject({ display: "Read Surface Agent", legacy_display: "Mandible" });
+    expect(projection.comments.find((comment) => comment.id === legacyComment.id)?.author)
+      .toEqual({
+        id: null,
+        type: "external_adapter",
+        display: legacyDisplay,
+        legacy_display: legacyDisplay,
+        attribution: null,
+      });
+
+    const route = getLedgerIssueDetailForRoute(db, {
+      getRepos: () => [],
+      getRepoById: () => undefined,
+    }, checkout.project.project_key, issue.short_id);
+    expect(route.ok).toBe(true);
+    if (route.ok) {
+      expect(route.detail.author).toBe("Read Surface Agent");
+      expect(route.detail.author_legacy_display).toBe("Mandible");
+      expect(route.detail.comments.find((comment) => comment.id === legacyComment.id)?.author)
+        .toBe(legacyDisplay);
+    }
+  });
+
   it("projects comments, relationships, operational evidence, sync, and conflicts", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
     const parent = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Umbrella",
       body: "Parent body",
@@ -97,6 +193,7 @@ describe("ledger issue detail projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "par1234", is_primary: true }],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Child",
       body: "Child body",
@@ -105,23 +202,26 @@ describe("ledger issue detail projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "chi1234", is_primary: true }],
     });
     store.addComment(child.id, {
+      ...SYSTEM_ACTOR,
       body: "Implementation note",
       actor_type: "agent",
       author_display: "Codex",
       source: "session",
     });
     store.addIssueCheckpoint(child.id, {
+      ...SYSTEM_ACTOR,
       kind: "delegation-manifest",
       payload: [{ issue: child.short_id, digest: "before", branch: "feature/detail", scope: "detail" }],
       actor_type: "agent",
       author_display: "Codex",
       source: "mandible",
     });
-    store.setWorkerStatus(child.id, "in_progress");
-    store.addIssueBranch(child.id, "feature/detail");
-    store.setIssueStatus(child.id, "closed", "merged");
-    store.setIssueStatus(child.id, "open", null);
+    store.setWorkerStatus(child.id, "in_progress", SYSTEM_ACTOR);
+    store.addIssueBranch(child.id, "feature/detail", "primary", SYSTEM_ACTOR);
+    store.setIssueStatus(child.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(child.id, "open", null, SYSTEM_ACTOR);
     const relationship = store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -163,6 +263,7 @@ describe("ledger issue detail projection", () => {
       link_type: "resolves",
     });
     store.recordConflict({
+      ...SYSTEM_ACTOR,
       adapter: "git_bug",
       project_id: checkout.project.id,
       entity_type: "issue",
@@ -196,13 +297,18 @@ describe("ledger issue detail projection", () => {
       { branch: "feature/detail", role: "primary" },
     ]);
     expect(projection.comments).toMatchObject([
-      { ordinal: 1, body: "Implementation note", author: { type: "agent", display: "Codex" }, source: "session" },
+      {
+        ordinal: 1,
+        body: "Implementation note",
+        author: { type: "agent", display: "System", legacy_display: "Codex" },
+        source: "session",
+      },
     ]);
     expect(projection.checkpoints).toMatchObject([
       {
         kind: "delegation-manifest",
         payload: [{ issue: child.short_id, digest: "before", branch: "feature/detail", scope: "detail" }],
-        author: { type: "agent", display: "Codex" },
+        author: { type: "agent", display: "System", legacy_display: "Codex" },
       },
     ]);
     expect(projection.timeline.slice(0, 2)).toMatchObject([
@@ -253,6 +359,7 @@ describe("ledger issue detail projection", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
     const parent = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Parent",
       body: "Parent body",
@@ -260,6 +367,7 @@ describe("ledger issue detail projection", () => {
       labels: ["umbrella"],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Child",
       body: "Child body",
@@ -267,12 +375,14 @@ describe("ledger issue detail projection", () => {
       labels: ["feature"],
     });
     store.addComment(child.id, {
+      ...SYSTEM_ACTOR,
       body: "Early comment",
       actor_type: "agent",
       author_display: "Codex",
       source: "session",
     });
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: parent.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -319,6 +429,7 @@ describe("ledger issue detail projection", () => {
     const targetCheckout = createProject("target-repo");
     const store = new LedgerStore(db);
     const source = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: sourceCheckout.project.id,
       title: "Source",
       body: "Source body",
@@ -326,6 +437,7 @@ describe("ledger issue detail projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "src1234", is_primary: true }],
     });
     const target = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: targetCheckout.project.id,
       title: "Target",
       body: "Target body",
@@ -333,12 +445,14 @@ describe("ledger issue detail projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "tgt1234", is_primary: true }],
     });
     const derived = store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: source.id,
       target_issue_id: target.id,
       relationship_type: "related",
       provenance: "derived",
     });
     const linked = store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
       link_type: "related",
@@ -395,6 +509,7 @@ describe("ledger issue detail projection", () => {
     ]));
 
     store.unlinkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
       link_type: "related",
@@ -412,18 +527,21 @@ describe("ledger issue detail projection", () => {
     const targetCheckout = createProject("target-repo");
     const store = new LedgerStore(db);
     const source = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: sourceCheckout.project.id,
       title: "Source",
       body: "Source body",
       kind: "feature",
     });
     const target = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: targetCheckout.project.id,
       title: "Target",
       body: "Target body",
       kind: "feature",
     });
     store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
       link_type: "related",
@@ -431,6 +549,7 @@ describe("ledger issue detail projection", () => {
       occurred_at: 1000,
     });
     store.unlinkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: source.id },
       target_entities: [{ entity_type: "issue", entity_id: target.id }],
       link_type: "related",
@@ -458,6 +577,7 @@ describe("ledger issue detail projection", () => {
     const linkedId = `artifact:sha256:${linkedHash}`;
     insertArtifact(linkedId, linkedHash, `artifact:${linkedHash}`);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Artifacts",
       body: `See [artifact:repo://repo@main/results/summary.md] and [artifact:${linkedHash.slice(0, 12)}] for the generated report.`,
@@ -465,6 +585,7 @@ describe("ledger issue detail projection", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "art1234", is_primary: true }],
     });
     store.addComment(issue.id, {
+      ...SYSTEM_ACTOR,
       body: "Follow-up [artifact:feedbax://runs/demo] is also relevant.",
       actor_type: "agent",
       author_display: "Codex",
@@ -500,11 +621,13 @@ describe("ledger issue detail projection", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Conflicted",
       aliases: [{ alias_kind: "git_bug_human", alias: "abc123", is_primary: true }],
     });
     const conflict = store.recordConflict({
+      ...SYSTEM_ACTOR,
       adapter: "git_bug",
       project_id: checkout.project.id,
       entity_type: "issue",
@@ -516,6 +639,7 @@ describe("ledger issue detail projection", () => {
     });
 
     const resolved = store.resolveConflict(conflict.id, {
+      ...SYSTEM_ACTOR,
       resolution: "keep_mandible",
       actor_type: "mandible_user",
       author_display: "Mandible",
@@ -530,13 +654,14 @@ describe("ledger issue detail projection", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);
     const issue = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Closed twice",
       aliases: [{ alias_kind: "git_bug_human", alias: "dup123", is_primary: true }],
     });
 
-    store.setIssueStatus(issue.id, "closed", "merged");
-    store.setIssueStatus(issue.id, "closed", "merged");
+    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
+    store.setIssueStatus(issue.id, "closed", "merged", SYSTEM_ACTOR);
 
     const states = buildLedgerIssueDetailProjection(db, issue.id).timeline.filter(
       (entry) => entry.kind === "state",
@@ -550,6 +675,7 @@ describe("ledger issue detail projection", () => {
   it("resolves route issue ids without enumerating all scanner repos", () => {
     const checkout = createProject("repo");
     const issue = new LedgerStore(db).createIssue({
+      ...SYSTEM_ACTOR,
       project_id: checkout.project.id,
       title: "Route detail",
       body: "Route detail body",

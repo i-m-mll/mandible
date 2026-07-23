@@ -52,6 +52,12 @@ import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
 import { registerProjectRoutes } from "./routes/projects.js";
+import { registerUserRoutes } from "./routes/users.js";
+import { registerClientAuthRoutes } from "./routes/client-auth.js";
+import { ClientAuthenticator } from "./client-auth/index.js";
+import {
+  authorizeManagedSessionWebSocket,
+} from "./client-auth/authz.js";
 import { registerRedirectRoutes } from "./routes/redirects.js";
 import { registerTrashRoutes } from "./routes/trash.js";
 import { startTrashGcScheduler, stopTrashGcScheduler } from "./trash-service.js";
@@ -138,9 +144,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   setSseManager(sse);
   sse.startHeartbeat();
 
+  // Issue 708dc4c — client-authentication gate. Wired into the router boundary
+  // so token-bearing requests resolve to a user identity (compat mode by
+  // default: unauthenticated loopback still works and unattributed writes are
+  // counted; strict mode rejects anonymous mutations).
+  const clientAuth = new ClientAuthenticator(db);
   // Create router and register all partition routes
-  const router = new Router({ logger, instance });
-  const sessionRegistry = new SessionRegistry(db);
+  const router = new Router({ logger, instance, clientAuth });
+  const sessionRegistry = new SessionRegistry(db, logger);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
   const authQueue = registerAuthRoutes(router);
@@ -172,16 +183,22 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // Bug: 8a281b3 — work-unit routes need sessionRegistry + sessionManager for liveness overlay
   // sessionManager is declared below; registerWorkUnitRoutes is called after it's created.
 
-  const sessionManager = new SessionManager(db, logger, sessionRegistry);
+  const sessionManager = new SessionManager(
+    db,
+    logger,
+    sessionRegistry,
+    undefined,
+    clientAuth,
+  );
   // Bug: f3dbb3e — late-bind sessionManager into issue route deps for canonical liveness
   issueDeps.sessionManager = sessionManager;
-  registerWorkUnitRoutes(router, sessionRegistry, sessionManager);
+  registerWorkUnitRoutes(router, sessionRegistry, sessionManager, logger);
   registerInboxRoutes(router, sessionRegistry, issueScanner, sessionManager, authQueue, workScanner);
   registerDashboardRoutes(router, authQueue, db);
   registerConsoleRoutes(router, sessionManager);
   registerHookRoutes(router);
   // Bug: 61bee4e — preset routes for convention management
-  registerPresetRoutes(router);
+  registerPresetRoutes(router, sessionManager);
   // Bug: 4afab83 — auth hooks CRUD routes
   registerAuthHookRoutes(router);
   // Bug: 9f66ad9 — webhook ingestion endpoint with session routing
@@ -192,6 +209,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerSpacesRoutes(router);
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
+  // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
+  registerUserRoutes(router, clientAuth);
+  // Issue: 708dc4c — client-auth token mint/list, mode toggle, and telemetry.
+  registerClientAuthRoutes(router, clientAuth);
   registerWorkflowRoutes(router);
   registerRedirectRoutes(router);
   // Bug: 40f0298 — conversation routes need sessionManager for resume endpoint
@@ -240,6 +261,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     getEventLoopDiagnostics: () => eventLoopDiagnostics.snapshot(),
     instance,
     fileRpcDir: fileRpcTransport.dir,
+    clientAuth,
   });
   fileRpcTransport.start();
 
@@ -249,8 +271,25 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     const url = new URL(req.url ?? "/", "http://localhost");
     const match = url.pathname.match(/^\/terminal\/([^/]+)$/);
     if (match) {
+      const sessionId = decodeURIComponent(match[1]);
+      const session = sessionManager.get(sessionId);
+      if (!session) {
+        socket.write("HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      if (!authorizeManagedSessionWebSocket(
+        db,
+        clientAuth,
+        req.headers["sec-websocket-protocol"],
+        url.pathname,
+        sessionManager.isCredentialBearing(sessionId),
+      )) {
+          socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+          socket.destroy();
+          return;
+      }
       wss.handleUpgrade(req, socket, head, (ws) => {
-        const sessionId = decodeURIComponent(match[1]);
         const added = sessionManager.addWsClient(sessionId, ws);
         if (!added) {
           ws.close(1008, "session not found");
@@ -264,6 +303,11 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const actualPort = await startServer(server, port, { logger });
   writePidFile(process.pid, options.pidFilePath);
   logger("info", "server_started", { port: actualPort });
+
+  // Publish the same-user bootstrap credential only after this daemon owns the
+  // listen endpoint. A losing concurrent startup must never overwrite the
+  // credential used by the live daemon.
+  clientAuth.refreshBootstrapTokenFile();
 
   // Initialize console session manager: reconcile DB state, restart operator if configured.
   try {

@@ -47,12 +47,15 @@ export interface MarkdownBodyAuditResult {
   };
 }
 
-export interface NormalizeMarkdownBodyOptions {
-  apply?: boolean;
+interface NormalizeMarkdownBodyBaseOptions {
   scope?: MarkdownBodyAuditScope;
   normalize_all_matches?: boolean;
-  actor?: LedgerActorInput;
 }
+
+export type NormalizeMarkdownBodyOptions = NormalizeMarkdownBodyBaseOptions & (
+  | { apply?: false; actor?: never }
+  | { apply: true; actor: LedgerActorInput }
+);
 
 export interface NormalizeMarkdownBodyResult extends MarkdownBodyAuditResult {
   applied: boolean;
@@ -195,10 +198,7 @@ export function normalizeEscapedMarkdownBodies(
   }
 
   const store = new LedgerStore(db);
-  const actor: LedgerActorInput = options.actor ?? {
-    actor_type: "system",
-    author_display: "Mandible",
-  };
+  const actor = options.actor;
   const eventIds: string[] = [];
   let normalized = 0;
 

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
@@ -11,15 +12,18 @@ import {
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../src/routes/issues.js";
+import { setupOperator } from "../src/users/store.js";
 import type { RepoInfo } from "../src/work-scanner.js";
 
 let tempDir = "";
 let db: Db;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-migration-"));
   db = openDb(path.join(tempDir, "mandible.db"));
   setDb(db);
+  setupOperator(db, { display_name: "Route test operator" });
 });
 
 afterEach(() => {
@@ -145,6 +149,7 @@ function createLedgerIssue(input: {
   });
   const store = new LedgerStore(db);
   const issue = store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: project.id,
     title: input.title ?? "Ledger issue",
     body: input.body ?? "Body",
@@ -174,7 +179,7 @@ describe("ledger issue projection", () => {
       body: "Projected body",
       labels: ["feature", "parent:par123"],
     });
-    store.addComment(issue.id, { body: "Comment", author_display: "Codex", actor_type: "agent" });
+    store.addComment(issue.id, { ...SYSTEM_ACTOR, body: "Comment", author_display: "Codex", actor_type: "agent" });
     const workScanner = fakeWorkScanner([repoInfo]);
 
     const summaries = listLedgerIssueSummaries(db, workScanner);
@@ -285,7 +290,7 @@ describe("ledger issue routes", () => {
   it("atomically reopens and comments through the ledger comment route", async () => {
     const repoInfo = repo("repo-1", "mandible");
     const { issue, store } = createLedgerIssue({ repo: repoInfo, alias: "abc123", title: "Closed writable" });
-    store.setIssueStatus(issue.id, "closed", "fixed");
+    store.setIssueStatus(issue.id, "closed", "fixed", SYSTEM_ACTOR);
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 
@@ -318,6 +323,7 @@ describe("ledger issue routes", () => {
       "2026-06-12T12:05:00.000Z",
     );
     store.addIssueCheckpoint(issue.id, {
+      ...SYSTEM_ACTOR,
       kind: "parent-role",
       payload: { session_id: "sess-live", mechanism: "codex", assumed_at: 1 },
       actor_type: "agent",
@@ -358,6 +364,7 @@ describe("ledger issue routes", () => {
       labels: ["umbrella"],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Child",
       body: "Child body",
@@ -366,24 +373,27 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "chi123", external_id: "chi123", is_primary: true }],
     });
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: umbrella.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
       provenance: "manual",
     });
     store.addIssueCheckpoint(umbrella.id, {
+      ...SYSTEM_ACTOR,
       kind: "delegation-manifest",
       payload: [{ issue: child.short_id, digest: "before", branch: "feature/child" }],
       actor_type: "agent",
     });
     store.addIssueCheckpoint(child.id, {
+      ...SYSTEM_ACTOR,
       kind: "closeout",
       payload: { worker_status: "done", branch: "feature/child", auth_request: null },
       actor_type: "agent",
     });
-    store.addComment(child.id, { body: "Finished child", actor_type: "agent" });
-    store.setWorkerStatus(child.id, "done");
-    store.addIssueBranch(child.id, "feature/child");
+    store.addComment(child.id, { ...SYSTEM_ACTOR, body: "Finished child", actor_type: "agent" });
+    store.setWorkerStatus(child.id, "done", SYSTEM_ACTOR);
+    store.addIssueBranch(child.id, "feature/child", "primary", SYSTEM_ACTOR);
     const now = Date.now();
     db.prepare(
       `INSERT INTO auth_requests (
@@ -435,6 +445,7 @@ describe("ledger issue routes", () => {
       labels: ["umbrella"],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Deep child",
       body: "Deep child body",
@@ -443,12 +454,14 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "deepch", external_id: "deepch", is_primary: true }],
     });
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: umbrella.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
       provenance: "manual",
     });
     const linked = store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: child.id },
       target_entities: [{ entity_type: "issue", entity_id: umbrella.id }],
       link_type: "related",
@@ -456,12 +469,13 @@ describe("ledger issue routes", () => {
       note: "Deep umbrella manual relationship",
     });
     store.addIssueCheckpoint(child.id, {
+      ...SYSTEM_ACTOR,
       kind: "closeout",
       payload: { worker_status: "done", branch: "feature/deep", auth_request: null },
       actor_type: "agent",
     });
-    store.addComment(child.id, { body: "Deep child latest comment", actor_type: "agent" });
-    store.addIssueBranch(child.id, "feature/deep");
+    store.addComment(child.id, { ...SYSTEM_ACTOR, body: "Deep child latest comment", actor_type: "agent" });
+    store.addIssueBranch(child.id, "feature/deep", "primary", SYSTEM_ACTOR);
 
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
@@ -513,6 +527,7 @@ describe("ledger issue routes", () => {
       labels: ["umbrella"],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Edge child",
       body: "Child body",
@@ -521,6 +536,7 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "edgchi", external_id: "edgchi", is_primary: true }],
     });
     store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: umbrella.id },
       target_entities: [{ entity_type: "issue", entity_id: child.id }],
       link_type: "parent_child",
@@ -549,6 +565,7 @@ describe("ledger issue routes", () => {
       labels: ["umbrella"],
     });
     const first = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "First child",
       body: "Child body",
@@ -557,6 +574,7 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "adopta", external_id: "adopta", is_primary: true }],
     });
     const second = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Second child",
       body: "Child body",
@@ -631,6 +649,7 @@ describe("ledger issue routes", () => {
       ].join("\n"),
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Table child",
       body: "Child body",
@@ -639,6 +658,7 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "kid123", external_id: "kid123", is_primary: true }],
     });
     const nonChild = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Referenced only",
       body: "Referenced body",
@@ -683,6 +703,7 @@ describe("ledger issue routes", () => {
       labels: ["umbrella"],
     });
     const child = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Manifest child",
       body: "Child body",
@@ -691,6 +712,7 @@ describe("ledger issue routes", () => {
       aliases: [{ alias_kind: "git_bug_human", alias: "manich", external_id: "manich", is_primary: true }],
     });
     store.linkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: umbrella.id },
       target_entities: [{ entity_type: "issue", entity_id: child.id }],
       link_type: "parent_child",
@@ -769,6 +791,7 @@ describe("ledger issue routes", () => {
       ].join("\n"),
     });
     store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: umbrella.project_id,
       title: "Role child",
       body: "Child body",

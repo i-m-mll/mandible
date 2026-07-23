@@ -107,6 +107,19 @@ export const METADATA_BACKUP_TABLES = [
   // LEDGER_BACKUP_TABLES first; refs remain in Git while this preserves the
   // authoritative lifecycle and retention record.
   "trash_entries",
+  // User registry core (issue e89c2b0 / umbrella 8e2e8b2). Canonical identity,
+  // immutable credentials, claimed bindings, verified attribution evidence, and
+  // delegated-signing leases — durable metadata, not reproducible runtime, so it
+  // is backed up. Parent-before-child order: `users` first, then its credentials
+  // and bindings, then leases (FK credential + user), then evidence (FK
+  // credential + lease). The metadata backup emits each table's inline
+  // UNIQUE/FK/CHECK as part of its own DDL, so slug uniqueness and the credential
+  // status/kind CHECK constraints survive a backup round-trip.
+  "users",
+  "user_credentials",
+  "user_bindings",
+  "delegated_signing_leases",
+  "attribution_evidence",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

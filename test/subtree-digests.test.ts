@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
@@ -13,6 +14,7 @@ let db: Db;
 let store: LedgerStore;
 let projectId = "";
 let aliasCounter = 0;
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-subtree-"));
@@ -38,6 +40,7 @@ afterEach(() => {
 
 function makeIssue(title: string, kind: "umbrella" | "feature", labels: string[]) {
   return store.createIssue({
+    ...SYSTEM_ACTOR,
     project_id: projectId,
     title,
     body: `${title} body`,
@@ -56,6 +59,7 @@ function linkParentChild(parentId: string, childId: string, at: number): void {
     target_entities: [{ entity_type: "issue", entity_id: childId }],
     link_type: "parent_child",
     created_at: at,
+    actor: SYSTEM_ACTOR,
   });
 }
 
@@ -74,6 +78,7 @@ describe("subtree digests", () => {
     const grandchildBefore = getLedgerIssueHead(db, grandchild.id);
 
     store.addComment(grandchild.id, {
+      ...SYSTEM_ACTOR,
       body: "Work two levels down",
       actor_type: "agent",
       author_display: "Codex",
@@ -117,6 +122,7 @@ describe("subtree digests", () => {
 
     // A change on B still reaches A's subtree despite the cycle.
     store.addComment(b.id, {
+      ...SYSTEM_ACTOR,
       body: "Cycle comment",
       actor_type: "agent",
       author_display: "Codex",
@@ -132,6 +138,7 @@ describe("subtree digests", () => {
     const child = makeIssue("Legacy child", "feature", ["feature"]);
     let clock = Date.now();
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: umbrella.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -141,6 +148,7 @@ describe("subtree digests", () => {
 
     const before = getLedgerIssueHead(db, umbrella.id);
     store.addComment(child.id, {
+      ...SYSTEM_ACTOR,
       body: "Legacy descendant activity",
       actor_type: "agent",
       author_display: "Codex",
@@ -161,6 +169,7 @@ describe("subtree digests", () => {
     linkParentChild(umbrella.id, sub.id, (clock += 1));
     linkParentChild(sub.id, grandchild.id, (clock += 1));
     store.addComment(grandchild.id, {
+      ...SYSTEM_ACTOR,
       body: "Batch path activity",
       actor_type: "agent",
       author_display: "Codex",
@@ -187,6 +196,7 @@ describe("subtree digests", () => {
     linkParentChild(u1.id, shared.id, (clock += 1));
     linkParentChild(u2.id, shared.id, (clock += 1));
     store.addComment(shared.id, {
+      ...SYSTEM_ACTOR,
       body: "Activity under a shared descendant",
       actor_type: "agent",
       author_display: "Codex",
@@ -214,6 +224,7 @@ describe("subtree digests", () => {
     linkParentChild(outer.id, inner.id, (clock += 1));
     linkParentChild(inner.id, leaf.id, (clock += 1));
     store.addComment(leaf.id, {
+      ...SYSTEM_ACTOR,
       body: "Activity two levels below the outer root",
       actor_type: "agent",
       author_display: "Codex",
@@ -241,6 +252,7 @@ describe("subtree digests", () => {
     let clock = Date.now();
     linkParentChild(x.id, x.id, (clock += 1));
     store.addComment(x.id, {
+      ...SYSTEM_ACTOR,
       body: "Comment alongside a self-link",
       actor_type: "agent",
       author_display: "Codex",
@@ -336,6 +348,7 @@ describe("umbrella child flags", () => {
     let clock = Date.now();
     linkParentChild(umbrella.id, child.id, (clock += 1));
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: umbrella.id,
       target_issue_id: child.id,
       relationship_type: "parent_child",
@@ -364,6 +377,7 @@ describe("umbrella child flags", () => {
     // legacy relationship table; it must be counted once.
     linkParentChild(child.id, dual.id, (clock += 1));
     store.upsertIssueRelationship({
+      actor: SYSTEM_ACTOR,
       source_issue_id: child.id,
       target_issue_id: dual.id,
       relationship_type: "parent_child",
@@ -373,6 +387,7 @@ describe("umbrella child flags", () => {
     // `removed` is linked then soft-deleted; it must NOT be counted.
     linkParentChild(child.id, removed.id, (clock += 1));
     store.unlinkRelationshipEdges({
+      actor: SYSTEM_ACTOR,
       source_entity: { entity_type: "issue", entity_id: child.id },
       target_entities: [{ entity_type: "issue", entity_id: removed.id }],
       link_type: "parent_child",

@@ -6,6 +6,7 @@ import type {
   IssueRepoSummary,
 } from "../types.js";
 import type { RepoInfo, WorkScanner } from "../work-scanner.js";
+import { AttributionReadResolver, resolvedActorDisplay } from "../identity/read-projection.js";
 import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import type { LedgerIssue, LedgerIssueDetail } from "./types.js";
 
@@ -367,6 +368,11 @@ function ledgerIssueToRouteIssue(
   checkout: CheckoutProjection,
   detail: LedgerIssueDetail,
 ): GitBugIssue {
+  const attribution = new AttributionReadResolver(db).attribution({
+    user_id: detail.author_user_id,
+    evidence_method: detail.evidence_method,
+    evidence_id: detail.evidence_id,
+  });
   const labels = detail.labels
     .filter((label) => label.deleted_at === null)
     .map((label) => label.label)
@@ -378,7 +384,9 @@ function ledgerIssueToRouteIssue(
     title: detail.title,
     status: detail.status,
     labels,
-    author: detail.author_display,
+    author: resolvedActorDisplay(detail.author_display, detail.author_actor_type, attribution),
+    author_legacy_display: detail.author_display,
+    author_attribution: attribution,
     created_at: new Date(detail.created_at).toISOString(),
     description: detail.body,
     parent_id: parentRef(db, detail, labels),
@@ -390,17 +398,27 @@ function ledgerIssueToRouteDetail(
   checkout: CheckoutProjection,
   detail: LedgerIssueDetail,
 ): GitBugIssueDetail {
+  const attributionResolver = new AttributionReadResolver(db);
   return {
     ...ledgerIssueToRouteIssue(db, checkout, detail),
     description: detail.body,
     comments: detail.comments
       .filter((comment) => comment.deleted_at === null)
-      .map((comment): GitBugComment => ({
-        id: comment.id,
-        author: comment.author_display,
-        date: new Date(comment.created_at).toISOString(),
-        body: comment.body,
-      })),
+      .map((comment): GitBugComment => {
+        const attribution = attributionResolver.attribution({
+          user_id: comment.author_user_id,
+          evidence_method: comment.evidence_method,
+          evidence_id: comment.evidence_id,
+        });
+        return {
+          id: comment.id,
+          author: resolvedActorDisplay(comment.author_display, comment.author_actor_type, attribution),
+          author_legacy_display: comment.author_display,
+          author_attribution: attribution,
+          date: new Date(comment.created_at).toISOString(),
+          body: comment.body,
+        };
+      }),
   };
 }
 

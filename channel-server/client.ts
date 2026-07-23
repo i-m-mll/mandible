@@ -41,7 +41,12 @@ async function request<T>(
     const opts: RequestInit = {
       method,
       signal: controller.signal,
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        ...(process.env.MANDIBLE_TOKEN?.trim()
+          ? { Authorization: `Bearer ${process.env.MANDIBLE_TOKEN.trim()}` }
+          : {}),
+      },
     };
     if (body !== undefined) {
       opts.body = JSON.stringify(body);

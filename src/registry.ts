@@ -5,7 +5,9 @@ import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { broadcast } from "./sse.js";
-import type { NavMetadataStatus, Session, SessionStatus } from "./types.js";
+import { AttributionReadResolver } from "./identity/read-projection.js";
+import { resolveSessionOwnerUserId } from "./session-ownership.js";
+import type { Logger, NavMetadataStatus, Session, SessionStatus } from "./types.js";
 
 // Bug: 568eca7 — pinned-panes.tsv location for reaper backward compat
 const PINNED_PANES_TSV = path.join(os.homedir(), ".cache", "claude-reaper", "pinned-panes.tsv");
@@ -220,6 +222,7 @@ interface SessionRow {
   // Bug: 0b454df — channel-connected session tracking
   channel_connected_at: number | null;
   channel_last_tool_call: number | null;
+  owner_user_id: string | null;
 }
 
 const SESSION_SCHEMA = `
@@ -254,6 +257,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   last_active TEXT,
   channel_connected_at INTEGER,
   channel_last_tool_call INTEGER,
+  owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
@@ -316,6 +320,11 @@ function ensureSessionColumns(db: SqliteDatabase): void {
   }
   if (!names.has("conversation_id")) {
     db.exec("ALTER TABLE sessions ADD COLUMN conversation_id TEXT");
+  }
+  if (!names.has("owner_user_id")) {
+    db.exec(
+      "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL",
+    );
   }
 }
 
@@ -524,7 +533,7 @@ function computeNavMetadataState(
   };
 }
 
-function toSession(row: SessionRow): Session {
+function toSession(row: SessionRow, attributionResolver: AttributionReadResolver): Session {
   return {
     id: row.id,
     app: row.app,
@@ -561,6 +570,8 @@ function toSession(row: SessionRow): Session {
     // Bug: 0b454df — channel-connected session tracking
     channel_connected_at: row.channel_connected_at ?? null,
     channel_last_tool_call: row.channel_last_tool_call ?? null,
+    owner_user_id: row.owner_user_id ?? null,
+    owner: attributionResolver.user(row.owner_user_id),
   };
 }
 
@@ -625,9 +636,11 @@ export function syncPinnedPanesTsv(paneId: string, pinned: boolean): void {
 
 export class SessionRegistry {
   private db: SqliteDatabase;
+  private logger: Logger;
 
-  constructor(db: SqliteDatabase) {
+  constructor(db: SqliteDatabase, logger: Logger = () => undefined) {
     this.db = db;
+    this.logger = logger;
     ensureSessionSchema(db);
   }
 
@@ -638,7 +651,9 @@ export class SessionRegistry {
     const existingRow = this.db
       .prepare("SELECT * FROM sessions WHERE id = ?")
       .get(input.id) as SessionRow | undefined;
-    const existing = existingRow ? toSession(existingRow) : null;
+    const existing = existingRow
+      ? toSession(existingRow, new AttributionReadResolver(this.db))
+      : null;
     const pick = (incoming: string | null | undefined, previous: string | null): string | null => {
       if (incoming === undefined) {
         return previous;
@@ -727,6 +742,13 @@ export class SessionRegistry {
       }
     }
 
+    const ownerUserId = resolveSessionOwnerUserId(
+      this.db,
+      { app_names: [input.app, input.agent_type] },
+      this.logger,
+      { source: "session_registry", entity_id: input.id },
+    );
+
     this.db
       .prepare(
         `INSERT INTO sessions (
@@ -734,9 +756,10 @@ export class SessionRegistry {
           nav_session, nav_tab, nav_pane_id, nav_extra, nav_metadata_status,
           nav_metadata_attempts, nav_metadata_last_error, nav_metadata_last_attempt_at,
           nav_metadata_next_retry_at, task, status, parent_id,
-          agent_type, description, conversation_id, created_at, updated_at, ended_at
+          agent_type, description, conversation_id, created_at, updated_at, ended_at,
+          owner_user_id
         ) VALUES (
-          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+          ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )`,
       )
       .run(
@@ -767,6 +790,7 @@ export class SessionRegistry {
         now,
         now,
         status === "active" ? null : now,
+        ownerUserId,
       );
 
     const session = this.getSession(input.id);
@@ -890,7 +914,10 @@ export class SessionRegistry {
   // Map rows to sessions with liveness derived from a single batched `ps` spawn
   // for all active pids, rather than one spawn per session (issue 21502ff).
   private mapWithLiveness(rows: SessionRow[]): Session[] {
-    const sessions = rows.map(toSession);
+    // One attribution resolver per batch (main's user-attribution read path),
+    // consistent with the single batched liveness spawn (issue 21502ff).
+    const attributionResolver = new AttributionReadResolver(this.db);
+    const sessions = rows.map((row) => toSession(row, attributionResolver));
     const pids = sessions
       .filter((s) => s.status === "active" && s.pid && s.pid_start)
       .map((s) => s.pid as number);
@@ -984,7 +1011,7 @@ export class SessionRegistry {
     if (!row) {
       return null;
     }
-    return this.ensureLiveness(toSession(row));
+    return this.ensureLiveness(toSession(row, new AttributionReadResolver(this.db)));
   }
 
   getSessionByPid(pid: number): Session | null {
@@ -994,7 +1021,7 @@ export class SessionRegistry {
     if (!row) {
       return null;
     }
-    return this.ensureLiveness(toSession(row));
+    return this.ensureLiveness(toSession(row, new AttributionReadResolver(this.db)));
   }
 
   listSessionsNeedingNavMetadata(limit = 50): Session[] {
@@ -1013,7 +1040,8 @@ export class SessionRegistry {
          LIMIT ?`,
       )
       .all(now, Math.max(1, limit)) as SessionRow[];
-    return rows.map((row) => this.ensureLiveness(toSession(row)));
+    const attributionResolver = new AttributionReadResolver(this.db);
+    return rows.map((row) => this.ensureLiveness(toSession(row, attributionResolver)));
   }
 
   updateSessionNavMetadata(id: string, update: NavMetadataUpdate): Session | null {
@@ -1069,7 +1097,8 @@ export class SessionRegistry {
     const rows = this.db
       .prepare("SELECT * FROM sessions")
       .all() as SessionRow[];
-    const sessions = rows.map((row) => this.ensureLiveness(toSession(row)));
+    const attributionResolver = new AttributionReadResolver(this.db);
+    const sessions = rows.map((row) => this.ensureLiveness(toSession(row, attributionResolver)));
     const byId = new Map<string, Session>();
     const children = new Map<string | null, Session[]>();
 

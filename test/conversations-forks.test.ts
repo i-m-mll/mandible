@@ -6,15 +6,31 @@ import { compressContent } from "../src/compression.js";
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import { registerConversationRoutes } from "../src/routes/conversations.js";
 import { Router } from "../src/server.js";
+import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
+import { createUser, setupOperator } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;
+let authenticator: ClientAuthenticator;
+let operatorToken = "";
+let agentToken = "";
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-forks-"));
   db = openDb(path.join(tempDir, "mandible.db"));
   migrate(db);
   setDb(db);
+  const operator = setupOperator(db, { display_name: "Operator" });
+  const agent = createUser(db, {
+    slug: "conversation-agent",
+    kind: "agent",
+    display_name: "Conversation Agent",
+  });
+  authenticator = new ClientAuthenticator(db, {
+    secretsDir: path.join(tempDir, "client-auth"),
+  });
+  operatorToken = authenticator.mintApiToken(operator.id).token;
+  agentToken = authenticator.mintApiToken(agent.id).token;
 });
 
 afterEach(() => {
@@ -71,7 +87,7 @@ describe("conversation fork routes", () => {
     insertBlock("block-c1", "child-c", 4, compressContent("Gamma compressed branch preview text"), 1);
 
     const prepareSpy = vi.spyOn(db, "prepare");
-    const router = new Router();
+    const router = new Router({ clientAuth: authenticator });
     registerConversationRoutes(router);
 
     const response = await router.invoke({ method: "GET", url: "/api/conversations/conv-fork/forks" });
@@ -96,7 +112,7 @@ describe("conversation fork routes", () => {
 
   it("does not spawn while browsing conversation details", async () => {
     insertConversationWithSource("conv-browse", "/tmp/missing-mandible-transcript.jsonl", 0);
-    const router = new Router();
+    const router = new Router({ clientAuth: authenticator });
     const manager = { create: vi.fn(), getAll: vi.fn(() => []) };
     registerConversationRoutes(router, manager as never);
 
@@ -119,7 +135,7 @@ describe("conversation fork routes", () => {
     fs.utimesSync(transcriptPath, new Date(now), new Date(now));
     insertConversationWithSource("conv-live", transcriptPath, now);
 
-    const router = new Router();
+    const router = new Router({ clientAuth: authenticator });
     const manager = { create: vi.fn(), getAll: vi.fn(() => []) };
     registerConversationRoutes(router, manager as never);
 
@@ -127,6 +143,7 @@ describe("conversation fork routes", () => {
       method: "POST",
       url: "/api/conversations/conv-live/resume",
       body: { message_dag_uuid: "dag-1" },
+      credential: operatorToken,
     });
 
     expect(response.status).toBe(409);
@@ -140,7 +157,7 @@ describe("conversation fork routes", () => {
 
   it("reuses an owned live session instead of spawning another resume", async () => {
     insertConversationWithSource("conv-owned", "/tmp/missing-mandible-transcript.jsonl", 0);
-    const router = new Router();
+    const router = new Router({ clientAuth: authenticator });
     const manager = {
       create: vi.fn(),
       getAll: vi.fn(() => [{
@@ -157,6 +174,7 @@ describe("conversation fork routes", () => {
       method: "POST",
       url: "/api/conversations/conv-owned/resume",
       body: { message_dag_uuid: "dag-1" },
+      credential: operatorToken,
     });
 
     expect(response.status).toBe(200);
@@ -165,5 +183,34 @@ describe("conversation fork routes", () => {
       console_session_id: "console-owned",
       attach_state: { kind: "live-owned" },
     });
+  });
+
+  it("admits only the operator before a resume can construct a managed backend", async () => {
+    insertConversationWithSource("conv-authz", "/tmp/missing-mandible-transcript.jsonl", 0);
+    const manager = {
+      create: vi.fn(() => ({ id: "console-created" })),
+      getAll: vi.fn(() => []),
+    };
+    const router = new Router({ clientAuth: authenticator });
+    registerConversationRoutes(router, manager as never);
+    const request = (credential?: string) => router.invoke({
+      method: "POST",
+      url: "/api/conversations/conv-authz/resume",
+      body: { message_dag_uuid: "dag-1" },
+      credential,
+    });
+
+    const anonymous = await request();
+    expect(anonymous.status).toBe(401);
+    expect(anonymous.body).not.toHaveProperty("console_session_id");
+    const ordinary = await request(agentToken);
+    expect(ordinary.status).toBe(403);
+    expect(ordinary.body).not.toHaveProperty("console_session_id");
+    expect(manager.create).not.toHaveBeenCalled();
+
+    const allowed = await request(operatorToken);
+    expect(allowed.status).toBe(200);
+    expect(allowed.body).toMatchObject({ console_session_id: "console-created" });
+    expect(manager.create).toHaveBeenCalledTimes(1);
   });
 });

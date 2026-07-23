@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
+import { systemAction } from "../src/identity/resolver.js";
 import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 import {
   createSpace,
@@ -24,6 +25,7 @@ import { Router } from "../src/server.js";
 // NULLABLE project_id (a top-level Space has no owning project).
 
 let tempDir = "";
+const SYSTEM_ACTOR = { attribution: systemAction() };
 
 function now(): number {
   return Date.now();
@@ -288,6 +290,7 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     seedProject(db, "proj-b", "Beta");
     const store = new LedgerStore(db);
     const issueA = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: "proj-a",
       title: "Issue in A",
       body: "",
@@ -350,6 +353,7 @@ describe("cross-project item resolution on a top-level Space (issue 812df41)", (
     seedProject(db, "proj-b", "Beta");
     const store = new LedgerStore(db);
     const issueA = store.createIssue({
+      ...SYSTEM_ACTOR,
       project_id: "proj-a",
       title: "Issue in A",
       body: "",

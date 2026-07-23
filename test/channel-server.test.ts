@@ -35,6 +35,19 @@ describe("channel-server client", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
+    delete process.env.MANDIBLE_TOKEN;
+  });
+
+  it("authenticates every daemon request with its injected agent token", async () => {
+    process.env.MANDIBLE_TOKEN = "agent-token";
+    mockFetch(200, {
+      continuations: [], auth_results: [], open_issues: [], work_units: [],
+      work_unit_continuations: [], total: 0,
+    });
+    const { checkInboxGlobal } = await import("../channel-server/client.js");
+    await checkInboxGlobal();
+    const options = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][1] as RequestInit;
+    expect(options.headers).toMatchObject({ Authorization: "Bearer agent-token" });
   });
 
   it("checkInbox returns parsed inbox data", async () => {

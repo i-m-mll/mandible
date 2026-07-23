@@ -16,6 +16,8 @@ import {
   type WorkUnitWithLiveness,
 } from "../work-unit-utils.js";
 import { sendJson } from "./http.js";
+import { resolveSessionIdAttributionResult } from "../identity/resolver.js";
+import type { ResolvedClientIdentity } from "../server.js";
 
 // Bug: 8a281b3 — inbox rewrite: work units replace raw open issues as the
 // primary "needs attention" signal. Auth results and continuations remain.
@@ -58,6 +60,33 @@ function getBody(req: unknown): Record<string, unknown> | null {
     return record.body as Record<string, unknown>;
   }
   return null;
+}
+
+function acknowledgementValue(
+  db: ReturnType<typeof getDb>,
+  req: unknown,
+  sessionId: string | null,
+  legacy: string,
+): { ok: true; value: string } | { ok: false; error: string } {
+  const identity = req && typeof req === "object"
+    ? (req as { client_identity?: ResolvedClientIdentity | null }).client_identity ?? null
+    : null;
+  const sessionResolution = sessionId
+    ? resolveSessionIdAttributionResult(db, sessionId)
+    : { status: "no_match" as const };
+  if (sessionResolution.status === "conflict") {
+    return { ok: false, error: "Acknowledgement session claims resolve to conflicting users." };
+  }
+  const sessionAttribution = sessionResolution.status === "resolved"
+    ? sessionResolution.attribution
+    : null;
+  if (identity && sessionAttribution && identity.user_id !== sessionAttribution.user_id) {
+    return { ok: false, error: "Authenticated client and acknowledgement session resolve to different users." };
+  }
+  return {
+    ok: true,
+    value: identity?.user_id ?? sessionAttribution?.user_id ?? (sessionId || legacy),
+  };
 }
 
 interface ContinuationRow {
@@ -668,13 +697,18 @@ export function registerInboxRoutes(
   }, { fileRpc: "allow" });
 
   // POST /api/inbox/ack-all — acknowledge all unacknowledged continuations and auth results
-  server.post("/api/inbox/ack-all", (_req, res) => {
+  server.post("/api/inbox/ack-all", (req, res) => {
+    const ack = acknowledgementValue(db, req, null, "bulk");
+    if (!ack.ok) {
+      sendJson(res, 403, { error: ack.error });
+      return;
+    }
     db.prepare(
-      "UPDATE sessions SET continuation_acked_by = 'bulk' WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
-    ).run();
+      "UPDATE sessions SET continuation_acked_by = ? WHERE continuation IS NOT NULL AND continuation_acked_by IS NULL AND status IN ('ended', 'dead')"
+    ).run(ack.value);
     db.prepare(
-      "UPDATE auth_requests SET acknowledged_by = 'bulk' WHERE status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
-    ).run();
+      "UPDATE auth_requests SET acknowledged_by = ? WHERE status IN ('completed', 'rejected', 'expired', 'dismissed', 'needs_rebase') AND acknowledged_by IS NULL"
+    ).run(ack.value);
     sendJson(res, 200, { ok: true });
   }, { fileRpc: "deny" });
 
@@ -689,6 +723,11 @@ export function registerInboxRoutes(
 
     const body = getBody(req);
     const sessionId = typeof body?.session_id === "string" ? body.session_id : null;
+    const ack = acknowledgementValue(db, req, sessionId, "manual");
+    if (!ack.ok) {
+      sendJson(res, 403, { error: ack.error });
+      return;
+    }
 
     if (type === "continuation") {
       // Bug: caa157e — resolve UUID prefix for session IDs
@@ -707,7 +746,7 @@ export function registerInboxRoutes(
         .prepare(
           "UPDATE sessions SET continuation_acked_by = ? WHERE id = ? AND continuation_acked_by IS NULL"
         )
-        .run(sessionId ?? "manual", resolved.id);
+        .run(ack.value, resolved.id);
       if (result.changes === 0) {
         sendJson(res, 404, { error: "continuation not found or already acknowledged" });
         return;
@@ -730,7 +769,7 @@ export function registerInboxRoutes(
         .prepare(
           "UPDATE auth_requests SET acknowledged_by = ? WHERE id = ? AND acknowledged_by IS NULL"
         )
-        .run(sessionId ?? "manual", resolved.id);
+        .run(ack.value, resolved.id);
       if (result.changes === 0) {
         sendJson(res, 404, { error: "auth request not found or already acknowledged" });
         return;

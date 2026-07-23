@@ -1,5 +1,7 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
+import { spawn, spawnSync } from "node:child_process";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
 
@@ -23,7 +25,7 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   // Existing helper wrappers and command-specific request builders that derive
   // API paths in variables. New entries here should be reviewed instead of
   // silently escaping the route-policy coverage lint.
-  "cli/artifact.sh:95 api_send POST \"$endpoint\" \"$payload\"",
+  "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
   "cli/conversations.sh:65 api_get \"$request\")",
   "cli/conversations.sh:130 api_get \"$request\")",
@@ -62,7 +64,156 @@ describe("CLI API route coverage", () => {
     expect(formatRefs(missing)).toEqual([]);
     expect(formatRefs(denied)).toEqual([]);
   });
+
+  it("removes tracked token-bearing temporary files on TERM", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-cli-cleanup-"));
+    const trackedPath = path.join(tempDir, "spool-token.request.json.tmp");
+    const helperPath = path.join(process.cwd(), "cli", "api.sh");
+    try {
+      const result = spawnSync(
+        "zsh",
+        [
+          "-c",
+          'source "$API_HELPER_PATH"; printf secret > "$TRACKED_PATH"; '
+            + 'api_track_temp "$TRACKED_PATH"; kill -TERM $$',
+        ],
+        {
+          env: {
+            ...process.env,
+            API_HELPER_PATH: helperPath,
+            TRACKED_PATH: trackedPath,
+            TMPDIR: tempDir,
+          },
+          encoding: "utf8",
+        },
+      );
+      expect(result.status).toBe(143);
+      expect(fs.existsSync(trackedPath)).toBe(false);
+      expect(
+        fs.readdirSync(tempDir).filter((entry) => entry.startsWith("mandible-api.")),
+      ).toEqual([]);
+      const helper = fs.readFileSync(helperPath, "utf8");
+      expect(helper).toContain('api_track_temp "$request_tmp"');
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("emits a fragment-only dashboard enrollment link from the protected bootstrap file", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-dashboard-link-"));
+    const authDir = path.join(tempDir, "client-auth");
+    fs.mkdirSync(authDir, { recursive: true });
+    fs.writeFileSync(path.join(authDir, "bootstrap-token"), "secret with spaces", { mode: 0o600 });
+    try {
+      const result = spawnSync(
+        "zsh",
+        [path.join(process.cwd(), "cli", "user.sh"), "dashboard-link"],
+        {
+          env: {
+            ...process.env,
+            MANDIBLE_CLI_DIR: path.join(process.cwd(), "cli"),
+            MANDIBLE_CONFIG_DIR: tempDir,
+            MANDIBLE_BASE: "http://127.0.0.1:19420",
+            CODEX_THREAD_ID: "",
+            CLAUDE_SESSION_ID: "",
+            MANDIBLE_SESSION_ID: "",
+          },
+          encoding: "utf8",
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout.trim()).toBe(
+        "http://127.0.0.1:19420/#/?mandible_auth=secret%20with%20spaces",
+      );
+      expect(fs.existsSync(path.join(authDir, "bootstrap-token"))).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("never gives an unbound Mandible-managed process the operator bootstrap token", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-managed-client-"));
+    const authDir = path.join(tempDir, "client-auth");
+    fs.mkdirSync(authDir, { recursive: true });
+    fs.writeFileSync(path.join(authDir, "bootstrap-token"), "operator-secret", { mode: 0o600 });
+    try {
+      const result = spawnSync(
+        "zsh",
+        ["-c", 'source "$API_HELPER_PATH"; api_client_token'],
+        {
+          env: {
+            ...process.env,
+            API_HELPER_PATH: path.join(process.cwd(), "cli", "api.sh"),
+            MANDIBLE_CONFIG_DIR: tempDir,
+            MANDIBLE_MANAGED_CLIENT: "1",
+            MANDIBLE_TOKEN: "",
+            CODEX_THREAD_ID: "",
+            CLAUDE_SESSION_ID: "",
+            MANDIBLE_SESSION_ID: "",
+            TMPDIR: tempDir,
+          },
+          encoding: "utf8",
+        },
+      );
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe("");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("privatizes and removes the real published file-RPC request on interrupt", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-rpc-signal-"));
+    const spoolDir = path.join(tempDir, "spool");
+    const child = spawn(
+      "zsh",
+      [
+        "-c",
+        'source "$API_HELPER_PATH"; output=$(api_temp_file); '
+          + 'api_file_rpc_exchange POST /api/test "{}" "$output" >/dev/null',
+      ],
+      {
+        env: {
+          ...process.env,
+          API_HELPER_PATH: path.join(process.cwd(), "cli", "api.sh"),
+          MANDIBLE_BASE: `file://${spoolDir}`,
+          MANDIBLE_TOKEN: "file-rpc-secret",
+          MANDIBLE_FILE_RPC_TIMEOUT: "30",
+          TMPDIR: tempDir,
+        },
+        stdio: "ignore",
+      },
+    );
+    try {
+      const requestPath = await waitForFile(spoolDir, ".request.json");
+      expect(fs.statSync(spoolDir).mode & 0o777).toBe(0o700);
+      expect(fs.statSync(requestPath).mode & 0o777).toBe(0o600);
+      expect(fs.readFileSync(requestPath, "utf8")).toContain("file-rpc-secret");
+
+      child.kill("SIGTERM");
+      const exitCode = await new Promise<number | null>((resolve) => {
+        child.once("exit", (code) => resolve(code));
+      });
+      expect(exitCode).toBe(143);
+      expect(fs.existsSync(requestPath)).toBe(false);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
+
+async function waitForFile(dir: string, suffix: string): Promise<string> {
+  const deadline = Date.now() + 3_000;
+  while (Date.now() < deadline) {
+    if (fs.existsSync(dir)) {
+      const match = fs.readdirSync(dir).find((entry) => entry.endsWith(suffix));
+      if (match) return path.join(dir, match);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${suffix} in ${dir}`);
+}
 
 function collectRoutePolicies(): Map<string, RoutePolicy> {
   const routeFiles = [
