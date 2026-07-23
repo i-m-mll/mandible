@@ -131,12 +131,12 @@ describe("client-auth gate: middleware resolution matrix", () => {
     expect(authenticator.bootstrapToken()).toBeNull();
   });
 
-  it("keeps the operator bootstrap when the operator has zero active credentials", () => {
-    // Enrollment must win before the anti-theft guard applies. Backend
-    // construction calls revokeOperatorBootstrap on every non-operator session;
-    // if that revoked the bootstrap while the operator has no credential, first
-    // enrollment would be impossible on a machine that already runs agents
-    // (issue a9ede3c). The proof must survive until enrollment completes.
+  it("revokeOperatorBootstrap unconditionally removes the proof even before enrollment", () => {
+    // Round 2 (issue a9ede3c): the revoke is unconditional again — the original
+    // anti-theft guarantee that no readable proof coexists with a constructed
+    // non-operator backend. Enrollment-first protection lives in init()
+    // construction deferral, NOT in a per-caller guard here, so calling revoke
+    // directly always destroys the proof regardless of operator credential state.
     setupOperator(db, { slug: "operator", display_name: "Operator" });
     const token = authenticator.bootstrapToken();
     expect(token).toBeTruthy();
@@ -146,47 +146,76 @@ describe("client-auth gate: middleware resolution matrix", () => {
 
     authenticator.revokeOperatorBootstrap();
 
-    // The on-disk proof must survive the revoke so the operator can still read
-    // it. (Check the file first: authenticating a bootstrap token is one-shot
-    // and legitimately clears the file — that is enrollment succeeding.)
-    expect(fs.existsSync(bootstrapPath)).toBe(true);
-    // The in-memory ephemeral token also survives the revoke and authenticates.
-    expect(authenticator.authenticate(token)).toMatchObject({ method: "ephemeral" });
-  });
-
-  it("revokes the operator bootstrap once the operator has an active credential", () => {
-    // With the guard fully restored after enrollment, revokeOperatorBootstrap
-    // must delete the proof exactly as before so no managed agent can read it.
-    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
-    addCredential(db, operator.id, { type: "api_token", fingerprint: "tokfp-enrolled-abc" });
-    const token = authenticator.bootstrapToken();
-    expect(token).toBeTruthy();
-    authenticator.refreshBootstrapTokenFile();
-    const bootstrapPath = path.join(tempDir, "client-auth", "bootstrap-token");
-    expect(fs.existsSync(bootstrapPath)).toBe(true);
-
-    authenticator.revokeOperatorBootstrap();
-
-    expect(authenticator.authenticate(token)).toBeNull();
+    // Both the on-disk proof and the in-memory ephemeral token are gone.
     expect(fs.existsSync(bootstrapPath)).toBe(false);
+    expect(authenticator.authenticate(token)).toBeNull();
   });
 
-  it("bootstrap survives agent backend construction until the operator enrolls", () => {
-    // End-to-end reproduction of issue a9ede3c defect 1: sessionManager builds
-    // backends for retained/non-operator console sessions and each construction
-    // calls revokeOperatorBootstrap. With no operator credential yet, the proof
-    // must survive so the human can still enroll.
-    setupOperator(db, { slug: "operator", display_name: "Operator" });
-    authenticator.refreshBootstrapTokenFile();
-    const bootstrapPath = path.join(tempDir, "client-auth", "bootstrap-token");
-    expect(fs.existsSync(bootstrapPath)).toBe(true);
+  it("counts an operator whose only credential is an ssh_key as still un-enrolled", () => {
+    // Round-2 Medium finding (issue a9ede3c): only api_token credentials can
+    // authenticate a presented bearer. An operator holding only an ssh_key still
+    // cannot log in, so the enrollment window must stay open (deferral active)
+    // until they actually enroll an api_token.
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    expect(authenticator.isOperatorEnrollmentWindowActive()).toBe(true);
+    addCredential(db, operator.id, {
+      type: "ssh_key",
+      fingerprint: "SHA256:abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+    });
+    expect(authenticator.isOperatorEnrollmentWindowActive()).toBe(true);
+    addCredential(db, operator.id, { type: "api_token", fingerprint: "tokfp-real-enroll" });
+    expect(authenticator.isOperatorEnrollmentWindowActive()).toBe(false);
+  });
 
+  it("init() defers retained non-operator backends during the enrollment window, leaving the bootstrap intact", () => {
+    // Round-2 fix for issue a9ede3c defect 1. At startup sessionManager retains
+    // up to N non-running console sessions; normally each is built as a real
+    // backend and every non-operator construction revokes the bootstrap. While
+    // the operator holds no active api_token, that construction is deferred
+    // (DormantBackend), so the 0600 enrollment proof survives daemon startup.
+    setupOperator(db, { slug: "operator", display_name: "Operator" });
     const agent = createUser(db, { slug: "bg-agent", kind: "agent", display_name: "BG Agent" });
     addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
+
+    // Seed one stopped non-operator console session in the DB. Its creation is a
+    // deliberate spawn that legitimately revokes the proof, so re-mint the file
+    // afterward to model a fresh daemon boot that finds the row already stopped.
+    const seedManager = new SessionManager(db, () => undefined, undefined, undefined, authenticator);
+    seedManager.create({ label: "Claude", command: "claude", backend_type: "sdk" });
+    seedManager.close();
+    authenticator.refreshBootstrapTokenFile();
+    const bootstrapPath = path.join(tempDir, "client-auth", "bootstrap-token");
+    expect(fs.existsSync(bootstrapPath)).toBe(true);
+
     const manager = new SessionManager(db, () => undefined, undefined, undefined, authenticator);
-    manager.create({ label: "Claude", command: "claude", backend_type: "sdk" });
+    manager.init();
 
     expect(fs.existsSync(bootstrapPath)).toBe(true);
+    expect(manager.getRetentionStats().dormant).toBeGreaterThan(0);
+    manager.close();
+  });
+
+  it("init() constructs retained backends once the operator has enrolled, revoking the bootstrap", () => {
+    // Enrollment (an active api_token) closes the window, so init() no longer
+    // defers: retained non-operator construction runs and the unconditional
+    // revoke destroys the proof, exactly as the anti-theft guarantee requires.
+    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
+    const agent = createUser(db, { slug: "bg-agent", kind: "agent", display_name: "BG Agent" });
+    addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
+
+    const seedManager = new SessionManager(db, () => undefined, undefined, undefined, authenticator);
+    seedManager.create({ label: "Claude", command: "claude", backend_type: "sdk" });
+    seedManager.close();
+    addCredential(db, operator.id, { type: "api_token", fingerprint: "tokfp-enrolled-abc" });
+    authenticator.refreshBootstrapTokenFile();
+    const bootstrapPath = path.join(tempDir, "client-auth", "bootstrap-token");
+    expect(fs.existsSync(bootstrapPath)).toBe(true);
+
+    const manager = new SessionManager(db, () => undefined, undefined, undefined, authenticator);
+    manager.init();
+
+    expect(fs.existsSync(bootstrapPath)).toBe(false);
+    expect(manager.getRetentionStats().dormant).toBe(0);
     manager.close();
   });
 
@@ -214,11 +243,11 @@ describe("client-auth gate: middleware resolution matrix", () => {
   });
 
   it("invalidates a spawned-agent capability when its identity binding is removed", () => {
-    const operator = setupOperator(db, { slug: "operator", display_name: "Operator" });
-    // The anti-theft revoke-on-backend-construction guard only applies once the
-    // operator has enrolled at least one active credential (issue a9ede3c);
-    // give it one so this test exercises the guarded path, not enrollment.
-    addCredential(db, operator.id, { type: "api_token", fingerprint: "tokfp-operator-enrolled" });
+    setupOperator(db, { slug: "operator", display_name: "Operator" });
+    // create() is a deliberate user-initiated spawn, not startup retention, so
+    // it constructs a real backend and the unconditional revoke destroys the
+    // bootstrap proof (a deliberate spawn forfeits the enrollment window). No
+    // operator credential is needed to observe that (issue a9ede3c round 2).
     authenticator.refreshBootstrapTokenFile();
     const bootstrapPath = path.join(tempDir, "client-auth", "bootstrap-token");
     expect(fs.existsSync(bootstrapPath)).toBe(true);
