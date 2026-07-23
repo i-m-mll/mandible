@@ -75,20 +75,77 @@ api_client_auth_config_dir() {
   esac
 }
 
-# Resolve the client-auth bearer/capability token: MANDIBLE_TOKEN wins, else the
-# same-user operator bootstrap-token file (filesystem trust, like file-RPC).
+# Managed-session marker guard for the durable operator keychain credential: any
+# of these markers means the caller is a managed/agent process that must receive
+# its own explicit token from its spawner, never the operator's ambient
+# credential (which would silently collapse agent attribution into the human
+# operator). Returns success (0) when a marker is present.
 #
-# Optional $1 is the request method. Reads are never identity-gated, and the
-# operator bootstrap token is a one-shot enrollment proof, not a read
-# credential — so on GET requests we must NOT fall back to the bootstrap file
-# (issue a9ede3c defect 2). An explicit MANDIBLE_TOKEN is still honored for GET.
-# Callers that need the bootstrap directly for enrollment (e.g. dashboard-link)
-# pass no method and keep the fallback.
+# This is the same family of markers that fences agents off the bootstrap file
+# below, plus CLAUDE_CODE_SESSION_ID: a durable operator credential is far more
+# sensitive than the one-shot enrollment proof, so it is also withheld from
+# native Claude Code sessions. The bootstrap-file guard is deliberately left as
+# a9ede3c defined it (without CLAUDE_CODE_SESSION_ID) to avoid regressing the
+# operator enrollment flow (e.g. `mandible dashboard-link`).
+api_managed_client_markers_present() {
+  [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
+}
+
+# Read the durable operator bearer token from the OS keychain: a macOS Security
+# generic-password item with service name `mandible-operator` (git-credential-
+# helper pattern; naming contract on dotfiles/dfa69d1). Mirrors cli/wrap.sh's
+# inject_agent_token conventions: `-w` prints only the password, security's exit
+# status and a non-empty result are the only success signals, and the value is
+# never printed, logged, or written to disk — it is emitted on stdout solely for
+# command-substitution capture by api_client_token. Missing tool or absent item
+# is normal and non-fatal (empty output). Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
+api_keychain_operator_token() {
+  [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]] && return 0
+  command -v security >/dev/null 2>&1 || return 0
+  local token
+  token=$(security find-generic-password -s mandible-operator -w 2>/dev/null) || return 0
+  [[ -n "$token" ]] || return 0
+  printf '%s' "$token"
+}
+
+# Resolve the client-auth bearer/capability token, in priority order:
+#   1. MANDIBLE_TOKEN (explicit; honored on every method, including GET).
+#   2. The durable `mandible-operator` keychain credential (git-credential-helper
+#      pattern), for unmarked operator terminals only.
+#   3. The same-user operator bootstrap-token file (filesystem trust, like
+#      file-RPC), an enrollment proof used pre-keychain.
+#
+# Optional $1 is the request method. The two ambient fallbacks are gated
+# differently on reads:
+#   - The keychain token is a durable operator credential and behaves exactly
+#     like an explicit MANDIBLE_TOKEN: it attaches on ALL methods, GET included.
+#     A durable token on reads is fine and matches explicit-token behavior.
+#   - The bootstrap token is a one-shot enrollment proof, not a read credential,
+#     so it must NOT attach on GET (issue a9ede3c defect 2): an unmarked
+#     background poller (observed: a ~10-30s GET /api/settings loop) would
+#     otherwise consume the one-shot key on sight and block enrollment. Callers
+#     that need the bootstrap directly for enrollment (e.g. dashboard-link) pass
+#     no method and keep the fallback.
+#
+# Keychain is tried before bootstrap: a durable credential beats a one-shot
+# enrollment proof, so once the operator is enrolled the bootstrap fallback only
+# ever fires pre-enrollment. Both ambient fallbacks are fenced off managed
+# agents by api_managed_client_markers_present.
 api_client_token() {
   local method="${1:-}"
   if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
     printf '%s' "$MANDIBLE_TOKEN"
     return
+  fi
+  # Durable operator keychain credential: like an explicit token, it applies to
+  # every method (including GET), unlike the enrollment-only bootstrap below.
+  if ! api_managed_client_markers_present; then
+    local keychain_token
+    keychain_token="$(api_keychain_operator_token)"
+    if [[ -n "$keychain_token" ]]; then
+      printf '%s' "$keychain_token"
+      return
+    fi
   fi
   # Do not attach the enrollment bootstrap proof to read-only requests: an
   # unmarked background poller (observed: a ~10-30s GET /api/settings loop)
@@ -98,7 +155,9 @@ api_client_token() {
   fi
   # Managed agents must receive their own explicit token from the spawner.
   # Falling back to the operator bootstrap credential would silently collapse
-  # agent attribution into the human operator.
+  # agent attribution into the human operator. This guard is intentionally the
+  # a9ede3c bootstrap marker set (no CLAUDE_CODE_SESSION_ID); do not swap it for
+  # api_managed_client_markers_present, which fences the keychain more strictly.
   if [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]; then
     return
   fi
