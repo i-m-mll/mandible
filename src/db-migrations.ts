@@ -3164,7 +3164,9 @@ export const MIGRATIONS: readonly Migration[] = [
     // writes; this migration retroactively clears the operator misattribution on
     // existing rows. It nulls ONLY the parallel user-attribution columns
     // (author_user_id/actor_user_id, evidence_method, evidence_id) and ONLY on
-    // rows whose evidence_method is exactly 'local_default'. Rows carrying
+    // rows whose evidence_method is exactly 'local_default', across ledger_issues,
+    // ledger_comments, ledger_issue_checkpoints, ledger_events,
+    // ledger_relationship_edges, and ledger_body_revisions. Rows carrying
     // session_claim, api_token, credential_signature, system_internal, or
     // external_import evidence are untouched, as are the frozen legacy
     // actor_id/actor_type/author_display provenance columns (which restore the
@@ -5854,7 +5856,11 @@ function ensureAuthRequestUserAttributionColumns(db: Db): void {
 // external_import) and the frozen legacy actor_id/actor_type/author_display
 // provenance are untouched. Guarded on table/column existence so a partial or
 // rewound schema replays cleanly; the UPDATE is idempotent because a re-run
-// finds no remaining 'local_default' rows.
+// finds no remaining 'local_default' rows. ledger_body_revisions is included:
+// its rows inherit the parent issue/comment write's attribution (same
+// resolveActor context), so a tokenless write stamped them local_default too.
+// Only its write-attribution columns (actor_user_id/evidence_method/evidence_id)
+// are cleared; the separate redaction-attribution column is not touched.
 function clearLocalDefaultLedgerAttribution(db: Db): void {
   const plan: Array<{ table: string; userColumn: string }> = [
     { table: "ledger_issues", userColumn: "author_user_id" },
@@ -5862,6 +5868,7 @@ function clearLocalDefaultLedgerAttribution(db: Db): void {
     { table: "ledger_issue_checkpoints", userColumn: "author_user_id" },
     { table: "ledger_events", userColumn: "actor_user_id" },
     { table: "ledger_relationship_edges", userColumn: "actor_user_id" },
+    { table: "ledger_body_revisions", userColumn: "actor_user_id" },
   ];
   for (const { table, userColumn } of plan) {
     if (!tableExists(db, table)) continue;
@@ -7318,6 +7325,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "conversation_blocks",
     "conversation_ingest_state",
     "conversations",
+    "ledger_body_revisions",
     "ledger_comments",
     "ledger_events",
     "ledger_issue_checkpoints",

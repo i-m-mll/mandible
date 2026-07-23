@@ -80,12 +80,23 @@ describe("migration v115: clear local_default ledger misattribution", () => {
          evidence_method, source, occurred_at, observed_at)
        VALUES (?, 'issue', ?, 'created', 'mandible_user', ?, ?, 'mandible', 0, 0)`,
     );
+    const revision = db.prepare(
+      `INSERT INTO ledger_body_revisions
+        (id, entity_type, entity_id, issue_id, project_id, revision_no,
+         actor_type, actor_user_id, evidence_method, source, reason,
+         occurred_at, observed_at, new_hash, snapshot_body)
+       VALUES (?, 'issue_body', ?, ?, ?, 1, 'mandible_user', ?, ?, 'mandible',
+               'create', 0, 0, 'h', 'body')`,
+    );
     for (const method of EVIDENCE_CLASSES) {
       const user = userFor(method);
       issue.run(`issue-${method}`, `i-${method}`, PROJECT, `Issue ${method}`, user, method);
       comment.run(`comment-${method}`, `issue-${method}`, user, method);
       checkpoint.run(`checkpoint-${method}`, `issue-${method}`, user, method);
       event.run(`event-${method}`, `issue-${method}`, user, method);
+      // revision_no is UNIQUE per (entity_type, entity_id); give each row its
+      // own entity_id so the seed does not collide on that index.
+      revision.run(`revision-${method}`, `issue-${method}-rev`, `issue-${method}`, PROJECT, user, method);
     }
   }
 
@@ -94,6 +105,7 @@ describe("migration v115: clear local_default ledger misattribution", () => {
     { table: "ledger_comments", idPrefix: "comment", userColumn: "author_user_id", legacyType: "author_actor_type" },
     { table: "ledger_issue_checkpoints", idPrefix: "checkpoint", userColumn: "author_user_id", legacyType: "author_actor_type" },
     { table: "ledger_events", idPrefix: "event", userColumn: "actor_user_id", legacyType: "actor_type" },
+    { table: "ledger_body_revisions", idPrefix: "revision", userColumn: "actor_user_id", legacyType: "actor_type" },
   ] as const;
 
   it("nulls exactly the local_default rows and preserves other evidence classes and legacy columns", () => {
