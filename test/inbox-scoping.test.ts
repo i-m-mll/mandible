@@ -1716,7 +1716,15 @@ describe("inbox acknowledgement attribution", () => {
     try {
       seedAuthRow(db, { id: "bound-ack", target_session_id: null, target_repo_root: null, resolved_at: 1 });
       seedAuthRow(db, { id: "legacy-ack", target_session_id: null, target_repo_root: null, resolved_at: 2 });
-      addBinding(db, "inbox-auth-test", {
+      // A session-bound inbox ack is an agent-session activity: session_claim is
+      // deliberately agent-only (issue a64d2de), so the bound owner is an agent,
+      // not the human operator.
+      const boundAgent = createUser(db, {
+        slug: "inbox-bound-agent",
+        kind: "agent",
+        display_name: "Inbox Bound Agent",
+      });
+      addBinding(db, boundAgent.slug, {
         binding_type: "provider_session_env",
         value: "bound-ack-session",
       });
@@ -1731,7 +1739,7 @@ describe("inbox acknowledgement attribution", () => {
       });
       expect(bound.statusCode).toBe(200);
       expect(db.prepare("SELECT acknowledged_by FROM auth_requests WHERE id = ?").get("bound-ack"))
-        .toEqual({ acknowledged_by: testRequesterUserId });
+        .toEqual({ acknowledged_by: boundAgent.id });
 
       const legacy = await app.invoke("POST", "/api/inbox/:type/:id/ack", {
         params: { type: "auth_result", id: "legacy-ack" },

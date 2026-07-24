@@ -890,6 +890,27 @@
   color: var(--accent-green);
 }
 
+.attribution-identity__evidence {
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 1px 5px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.attribution-identity__evidence--verified {
+  border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
+  color: var(--accent-green);
+}
+
+.attribution-identity__evidence--claimed {
+  border-color: color-mix(in srgb, var(--accent-yellow) 40%, transparent);
+  color: var(--accent-yellow);
+}
+
 .attribution-identity__popover {
   position: absolute;
   z-index: 30;

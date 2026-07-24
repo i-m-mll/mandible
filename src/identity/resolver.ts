@@ -16,7 +16,11 @@
 // never an authorization input and is not applied to legacy call sites here.
 
 import type { Db } from "../db.js";
-import { providerSessionEnvBindingValues } from "../ambient-provider-identity.js";
+import {
+  inManagedSessionContext,
+  providerSessionEnvBindingValues,
+  resolveAmbientProviderIdentity,
+} from "../ambient-provider-identity.js";
 import {
   SYSTEM_USER_ID,
   createUser,
@@ -115,8 +119,13 @@ export function systemAction(): AttributionContext {
 }
 
 /**
- * Attribution for a local HTTP/CLI write, resolved to the configured operator.
- * Missing operator configuration fails closed: an HTTP/CLI action is not a
+ * Attribution resolved to the configured local operator. As of issue a64d2de
+ * this is NO LONGER the fallback for tokenless HTTP ledger writes — those flow
+ * through `attributionForRequest`, which resolves an ambient session binding or
+ * stores NULL rather than assuming the operator. It remains the deliberate
+ * principal for trusted in-process callers and operator-run local CLI
+ * maintenance tools that write to the ledger directly (not over the network).
+ * Missing operator configuration fails closed: a local operator action is not a
  * daemon-internal system action and must not be silently reclassified as one.
  */
 export function localDefaultAttribution(db: Db): AttributionContext {
@@ -128,6 +137,37 @@ export function localDefaultAttribution(db: Db): AttributionContext {
     user_id: operator.id,
     evidence_method: "local_default",
   };
+}
+
+/**
+ * Attribution for a local, process-resident write lane — a CLI maintenance tool
+ * or a trusted in-process daemon submission — that carries no explicit principal
+ * (issue a64d2de). It applies the same fail-closed order as the HTTP write path
+ * and NEVER assumes the operator inside a managed-agent context:
+ *
+ *   - a genuinely non-managed local invocation (the human at a clean shell, no
+ *     managed-session env markers) records the local operator (`local_default`);
+ *   - a managed-agent context resolves the ambient provider to its owning agent
+ *     (`session_claim`, agent-only) when a signal is present;
+ *   - otherwise the write is left unattributed (`null` -> NULL columns).
+ *
+ * This closes the gap where a CLI tool or in-process lane run from an agent
+ * session would otherwise silently stamp the operator, exactly the HTTP-path
+ * defect. The operator-missing case still fails closed via `localDefaultAttribution`.
+ */
+export function localProcessDefaultAttribution(
+  db: Db,
+  env: NodeJS.ProcessEnv = process.env,
+): AttributionContext | null {
+  if (!inManagedSessionContext(env)) {
+    return localDefaultAttribution(db);
+  }
+  const ambient = resolveAmbientProviderIdentity(env);
+  if (ambient) {
+    const resolution = resolveProviderSessionAttributionResult(db, ambient.provider);
+    if (resolution.status === "resolved") return resolution.attribution;
+  }
+  return null;
 }
 
 /** Ambient signals a session write can present for binding-based resolution. */
@@ -197,9 +237,18 @@ export function resolveSessionAttributionResult(
   }
   if (matchedUserIds.size === 0) return { status: "no_match" };
   if (matchedUserIds.size > 1) return { status: "conflict" };
+  const userId = [...matchedUserIds][0];
+  // session_claim is deliberately UNVERIFIED evidence derived from a forgeable
+  // ambient signal (issue a64d2de). Constrain it to agent principals: a binding
+  // that resolves to a human, system, or external user must never mint a
+  // session_claim, so a forged or misconfigured claim cannot impersonate the
+  // operator. Non-agent matches fail closed to no_match, leaving the write
+  // unattributed rather than misattributed.
+  const user = getUserById(db, userId);
+  if (!user || user.kind !== "agent") return { status: "no_match" };
   return {
     status: "resolved",
-    attribution: { user_id: [...matchedUserIds][0], evidence_method: "session_claim" },
+    attribution: { user_id: userId, evidence_method: "session_claim" },
   };
 }
 
@@ -264,11 +313,6 @@ export function systemActor(authorizerUserId?: string | null): LedgerActorInput 
   const attribution = systemAction();
   if (authorizerUserId) attribution.authorizer_user_id = authorizerUserId;
   return { attribution };
-}
-
-/** The local operator actor for HTTP/CLI writes. */
-export function localDefaultActor(db: Db): LedgerActorInput {
-  return { attribution: localDefaultAttribution(db) };
 }
 
 // --- Shadow users for external git-bug import authors ---

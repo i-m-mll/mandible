@@ -16,10 +16,11 @@
 
 import { getDb, type Db } from "../db.js";
 import {
-  localDefaultAttribution,
+  resolveProviderSessionAttributionResult,
   type AttributionContext,
 } from "../identity/resolver.js";
 import { getOperatorId } from "../users/store.js";
+import type { AmbientProviderIdentity } from "../ambient-provider-identity.js";
 import type {
   ClientAuthGate,
   RequestLike,
@@ -57,20 +58,51 @@ export function isOperator(db: Db, identity: ResolvedClientIdentity): boolean {
 }
 
 /**
- * Resolve the durable write principal attached by the client-auth boundary.
- * Every authenticated credential is token evidence, including bounded
- * dashboard and file-RPC capabilities. Compat callers without a credential
- * retain the existing local-operator attribution path.
+ * Resolve the durable write principal for a ledger mutation (issue a64d2de).
+ * The attribution order is deliberate and fail-closed — it never falls back to
+ * the local operator:
+ *
+ *   (a) A verified bearer credential resolved by the client-auth gate is token
+ *       evidence (`api_token`), including bounded dashboard and file-RPC
+ *       capabilities.
+ *   (b) Otherwise, if the request carries an ambient provider signal (the
+ *       `X-Mandible-Ambient-Provider*` headers the CLI and MCP channel send on
+ *       mutating calls), resolve that provider to the agent user that owns its
+ *       session env keys via the same fail-closed binding machinery the
+ *       auth-request lane uses. A single owning agent yields `session_claim`
+ *       evidence; a no-match or conflicting binding yields no attribution.
+ *   (c) Otherwise return `null` — an unattributed write. The store records NULL
+ *       user-attribution columns, reproducing the pre-identity legacy behavior
+ *       (generic 'Mandible' display via the legacy-column read fallback).
+ *
+ * The previous unconditional operator fallback misattributed every tokenless
+ * compat-mode write to the local operator; that fallback is removed here.
+ * Unattributed-write telemetry is unchanged and still counted at the server
+ * gate.
  */
-export function attributionForRequest(db: Db, req: unknown): AttributionContext {
-  const identity = req && typeof req === "object"
-    ? (req as { client_identity?: ResolvedClientIdentity | null }).client_identity
-    : null;
-  if (!identity) return localDefaultAttribution(db);
-  return {
-    user_id: identity.user_id,
-    evidence_method: "api_token",
-  };
+export function attributionForRequest(db: Db, req: unknown): AttributionContext | null {
+  const record = req && typeof req === "object" ? (req as RequestLike) : null;
+  const identity = record?.client_identity ?? null;
+  if (identity) {
+    return {
+      user_id: identity.user_id,
+      evidence_method: "api_token",
+    };
+  }
+  const ambient: AmbientProviderIdentity | null = record?.ambient_identity ?? null;
+  if (ambient?.provider) {
+    // resolveProviderSessionAttributionResult only resolves to an agent-kind
+    // owner (enforced in the resolver), so a forged provider header cannot
+    // impersonate a human. ambient.provider_session_id is intentionally NOT
+    // persisted here: the ledger attribution columns have no session-id field,
+    // and adding one is a schema change out of scope for this fix. Deferred —
+    // storing the raw session id for audit value would need a new column.
+    const resolution = resolveProviderSessionAttributionResult(db, ambient.provider);
+    if (resolution.status === "resolved") {
+      return resolution.attribution;
+    }
+  }
+  return null;
 }
 
 const WEBSOCKET_AUTH_PROTOCOL_PREFIX = "mandible-auth.";

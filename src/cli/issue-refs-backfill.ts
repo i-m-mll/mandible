@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getDbPath, openDb, type Db } from "../db.js";
-import { localDefaultAttribution } from "../identity/resolver.js";
+import { localProcessDefaultAttribution } from "../identity/resolver.js";
 import {
   runIssueReferenceBackfill,
   type IssueReferenceBackfillOptions,
@@ -31,9 +31,10 @@ function runApply(options: CliOptions): IssueReferenceBackfillResult {
       dryRun: false,
       actor: {
         // Preserve the historical stable-ID tuple; the parallel attribution
-        // records the real operator principal.
+        // records the operator only in a non-managed shell, else the ambient
+        // agent or unattributed (issue a64d2de).
         actor_type: "system",
-        attribution: localDefaultAttribution(db),
+        attribution: localProcessDefaultAttribution(db),
       },
     });
   } finally {
@@ -58,7 +59,7 @@ async function runDryRun(options: CliOptions): Promise<IssueReferenceBackfillRes
       dryRun: true,
       actor: {
         actor_type: "system",
-        attribution: localDefaultAttribution(db),
+        attribution: localProcessDefaultAttribution(db),
       },
     });
   } finally {

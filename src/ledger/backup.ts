@@ -120,6 +120,20 @@ export const METADATA_BACKUP_TABLES = [
   "user_bindings",
   "delegated_signing_leases",
   "attribution_evidence",
+  // User groups, group membership, and permission grants (issue a0379a3 /
+  // umbrella 8e2e8b2, migration 111). Canonical registry data describing who
+  // belongs to which group and what each subject may do — deliberately enrolled,
+  // not reproducible runtime state — so it is backed up, matching the `users`
+  // block above. Parent-before-child order: `user_groups` first, then
+  // `user_group_members` (FK to both `user_groups` and the `users` above), then
+  // `permission_grants` (FK to `ledger_projects`, already emitted via
+  // LEDGER_BACKUP_TABLES). The metadata backup emits each table's inline
+  // UNIQUE/FK/CHECK as part of its own DDL, so slug uniqueness, the group-member
+  // primary key, and the grant subject/resource/permission CHECK constraints
+  // survive a backup round-trip.
+  "user_groups",
+  "user_group_members",
+  "permission_grants",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

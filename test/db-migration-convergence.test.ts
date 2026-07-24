@@ -11,7 +11,7 @@ import { migrate, openDb, type Db } from "../src/db.js";
 // user-system migrations v107-v111. A database that previously ran an
 // intermediate feature-branch daemon may have recorded v107/v108 under DIFFERENT
 // meanings, so if a renumbered column is missing while the recorded version is
-// already at head (114), the per-version hooks never fire — the live-schema
+// already at head (115), the per-version hooks never fire — the live-schema
 // convergence gate must repair the full column set regardless of recorded
 // version.
 describe("migration convergence: renumbered additive column hooks", () => {
@@ -56,7 +56,7 @@ describe("migration convergence: renumbered additive column hooks", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "114",
+      value: "115",
     });
     expect(columnNames("branches")).toContain("has_upstream");
     expect(columnNames("branches")).toContain("upstream");
@@ -83,7 +83,7 @@ describe("migration convergence: renumbered additive column hooks", () => {
     db.exec("UPDATE meta SET value = '108' WHERE key = 'schema_version';");
     expect(() => migrate(db)).not.toThrow();
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "114",
+      value: "115",
     });
     expect(
       columnNames("branches").filter((name) => name === "has_upstream"),
@@ -98,9 +98,9 @@ describe("migration convergence: renumbered additive column hooks", () => {
 
   it("re-fires convergence at head version when a renumbered column is missing (post-failure recovery)", () => {
     // Simulate the state a convergence-hook failure leaves behind: the version is
-    // ALREADY recorded at head (114) — applySchemaMigrations committed it — but a
+    // ALREADY recorded at head (115) — applySchemaMigrations committed it — but a
     // renumbered column is absent because its ALTER rolled back. A version-based
-    // gate ("currentVersion < 114") would never fire again, so the columns would
+    // gate ("currentVersion < 115") would never fire again, so the columns would
     // stay missing forever. The live schema gate must detect and repair them on
     // this open even though the version does not change.
     db.exec(`
@@ -108,7 +108,7 @@ describe("migration convergence: renumbered additive column hooks", () => {
       ALTER TABLE branches DROP COLUMN upstream;
     `);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "114",
+      value: "115",
     });
     expect(columnNames("work_units")).not.toContain("merge_scan_retired_at");
     expect(columnNames("branches")).not.toContain("upstream");
@@ -117,7 +117,7 @@ describe("migration convergence: renumbered additive column hooks", () => {
 
     // Version is unchanged (already at head) but the missing columns are repaired.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "114",
+      value: "115",
     });
     expect(columnNames("work_units")).toContain("merge_scan_retired_at");
     expect(columnNames("branches")).toContain("upstream");
