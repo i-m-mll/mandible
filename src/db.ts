@@ -31,7 +31,40 @@ export function getDbPath(): string {
   return process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH;
 }
 
+// Issue 07edc0d — structural isolation guard. On 2026-07-23 an unmerged
+// feature branch's schema migration executed against the live production
+// database because a test-invoked code path opened the default DB path
+// (inheriting the real HOME) instead of a fixture/temp path. This guard sits
+// at the single DB-open chokepoint so no future test can repeat the leak
+// regardless of which helper resolves the path: under the vitest test runner,
+// opening the real production database path is refused. The daemon and normal
+// CLI never run under vitest, so they are unaffected. The MANDIBLE_ALLOW_REAL_DB
+// opt-out exists only as a deliberate escape hatch; no test sets it.
+function isUnderTestRunner(): boolean {
+  return (
+    process.env.VITEST === "true" ||
+    process.env.VITEST_WORKER_ID !== undefined ||
+    process.env.NODE_ENV === "test"
+  );
+}
+
+export function assertNotProductionDbUnderTest(dbPath: string): void {
+  if (process.env.MANDIBLE_ALLOW_REAL_DB === "1") return;
+  if (!isUnderTestRunner()) return;
+  const target = path.resolve(dbPath);
+  const production = path.resolve(DEFAULT_DB_PATH);
+  if (target === production) {
+    throw new Error(
+      `Refusing to open the production Mandible database under the test runner: ${production}. ` +
+        `Tests must open an explicit temp/fixture path or an in-memory database, never the real DB. ` +
+        `This guard prevents a test or test-invoked tool from executing schema migrations or writes ` +
+        `against live data (issue 07edc0d). To deliberately override, set MANDIBLE_ALLOW_REAL_DB=1.`,
+    );
+  }
+}
+
 export function openDb(dbPath: string = getDbPath(), options: OpenDbOptions = {}): Db {
+  assertNotProductionDbUnderTest(dbPath);
   // Bug: 727a44b — one-time migration from control-plane to mandible cache dir.
   // If the mandible DB doesn't exist yet but the old control-plane DB does, copy it.
   const shouldAttemptLegacyCopy = !process.env.MANDIBLE_DB && dbPath === DEFAULT_DB_PATH;
