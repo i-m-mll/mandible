@@ -3184,6 +3184,37 @@ export const MIGRATIONS: readonly Migration[] = [
     // an operator DB backup precedes the protected-branch merge, so the original
     // bytes remain recoverable if ever needed.
     statements: []
+  },
+  {
+    version: 116,
+    name: "clear_residual_local_default_ledger_misattribution",
+    // Issue be2ab49 — one-shot corrective follow-up to migration 115.
+    //
+    // Deployment-history rationale: migration 115 (evidence class 'local_default'
+    // clearing) was executed prematurely against the live production database by
+    // a test-invoked code path on an unmerged feature branch (issue 07edc0d),
+    // consuming schema_version 115. The still-running old daemon then kept writing
+    // NEW rows stamped evidence_method='local_default' from 17:53Z until the
+    // post-merge restart at 00:29:16Z. Because the version was already at 115, the
+    // post-merge restart skipped migration 115 and never cleared those residual
+    // rows, leaving them misattributed to the operator. This migration clears the
+    // residual window.
+    //
+    // Scope: it nulls the SAME parallel user-attribution columns as v115
+    // (author_user_id/actor_user_id, evidence_method, evidence_id) on
+    // evidence_method='local_default' rows, but ONLY on rows whose own
+    // creation/occurrence timestamp is strictly before the cutoff below. The
+    // cutoff is the commit timestamp of the v115 merge (08bcc7c) on main,
+    // "2026-07-23 20:29:16 -0400", so any legitimate in-process operator
+    // attribution written AFTER the corrected daemon restarted is preserved.
+    // Frozen legacy actor_id/actor_type/author_display provenance columns are
+    // untouched (the read-projection restores the generic 'Mandible' display).
+    //
+    // One-shot: this targets a specific historical residue on the live DB. On a
+    // fresh database the fresh-baseline path applies and this migration never
+    // runs; on any DB with no pre-cutoff 'local_default' rows the UPDATE is a
+    // no-op. It is naturally idempotent (a second run finds nothing to clear).
+    statements: []
   }
 ];
 
@@ -3278,6 +3309,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 115) {
         clearLocalDefaultLedgerAttribution(db);
+      }
+      if (migration.version === 116) {
+        clearResidualLocalDefaultLedgerAttribution(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5889,6 +5923,49 @@ function clearLocalDefaultLedgerAttribution(db: Db): void {
          SET ${userColumn} = NULL, evidence_method = NULL${clearEvidenceId}
        WHERE evidence_method = 'local_default'`,
     );
+  }
+}
+
+// Issue be2ab49 (migration 116) — cutoff for the residual local_default sweep.
+// This is the exact commit timestamp of the v115 merge commit 08bcc7c on main
+// ("2026-07-23 20:29:16 -0400" = epoch seconds 1784852956) in milliseconds. It
+// is deliberately hard-coded rather than derived at runtime: this is a one-shot
+// correction tied to a specific point in this database's deployment history, so
+// the boundary must be immutable regardless of when the migration is applied.
+// Rows written strictly before this instant belong to the misattributed window
+// (the premature v115 run at 17:53Z through the corrected restart at 20:29:16Z);
+// any legitimate operator attribution written after the restart is preserved.
+const RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS = 1784852956000;
+
+// Issue be2ab49 (migration 116): clear the residual operator misattribution that
+// migration 115 could not reach because it was consumed prematurely (see the
+// migration 116 entry and issue 07edc0d for the deployment-history rationale).
+// Mirrors clearLocalDefaultLedgerAttribution but adds a per-table timestamp
+// boundary so only the historical residual window is cleared and any legitimate
+// post-restart in-process operator attribution survives. Guarded and naturally
+// idempotent: a no-op on fresh databases and on any DB with no pre-cutoff
+// 'local_default' rows.
+function clearResidualLocalDefaultLedgerAttribution(db: Db): void {
+  const plan: Array<{ table: string; userColumn: string; tsColumn: string }> = [
+    { table: "ledger_issues", userColumn: "author_user_id", tsColumn: "created_at" },
+    { table: "ledger_comments", userColumn: "author_user_id", tsColumn: "created_at" },
+    { table: "ledger_issue_checkpoints", userColumn: "author_user_id", tsColumn: "created_at" },
+    { table: "ledger_events", userColumn: "actor_user_id", tsColumn: "occurred_at" },
+    { table: "ledger_relationship_edges", userColumn: "actor_user_id", tsColumn: "created_at" },
+    { table: "ledger_body_revisions", userColumn: "actor_user_id", tsColumn: "occurred_at" },
+  ];
+  for (const { table, userColumn, tsColumn } of plan) {
+    if (!tableExists(db, table)) continue;
+    const columns = tableColumnNames(db, table);
+    if (!columns.has("evidence_method") || !columns.has(userColumn) || !columns.has(tsColumn)) {
+      continue;
+    }
+    const clearEvidenceId = columns.has("evidence_id") ? ", evidence_id = NULL" : "";
+    db.prepare(
+      `UPDATE ${table}
+         SET ${userColumn} = NULL, evidence_method = NULL${clearEvidenceId}
+       WHERE evidence_method = 'local_default' AND ${tsColumn} < ?`,
+    ).run(RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS);
   }
 }
 
