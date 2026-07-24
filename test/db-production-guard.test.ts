@@ -3,7 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { assertNotProductionDbUnderTest, openDb, type Db } from "../src/db.js";
+import {
+  PRODUCTION_DB_PATH,
+  assertNotProductionDbUnderTest,
+  openDb,
+  resolvesToProductionDbPath,
+  type Db,
+} from "../src/db.js";
 
 // Issue 07edc0d — structural isolation guard. A test-invoked code path once
 // opened the real production database (~/.cache/mandible/mandible.db) under the
@@ -12,8 +18,6 @@ import { assertNotProductionDbUnderTest, openDb, type Db } from "../src/db.js";
 // runner regardless of which helper resolves it, so no future test can repeat
 // the leak. These tests run under vitest, so the guard is active here.
 describe("production database isolation guard (issue 07edc0d)", () => {
-  const PRODUCTION_DB_PATH = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
-
   let tempDir: string;
 
   beforeEach(() => {
@@ -64,5 +68,55 @@ describe("production database isolation guard (issue 07edc0d)", () => {
   it("honors the MANDIBLE_ALLOW_REAL_DB explicit opt-out", () => {
     process.env.MANDIBLE_ALLOW_REAL_DB = "1";
     expect(() => assertNotProductionDbUnderTest(PRODUCTION_DB_PATH)).not.toThrow();
+  });
+
+  // F2 regression: a string compare (path.resolve only) is defeated by a
+  // symlink, a hard link, or a relative segment that resolves to the same
+  // file. resolvesToProductionDbPath must canonicalize and inode-compare so
+  // none of those smuggle the production bytes past the guard. Tested against a
+  // synthetic "production" file so the assertions hold with no real DB present.
+  describe("path canonicalization (symlink / hard link / alias bypass)", () => {
+    it("detects a symlink pointing at the production file", () => {
+      const prod = path.join(tempDir, "prod.db");
+      const link = path.join(tempDir, "link-to-prod.db");
+      fs.writeFileSync(prod, "x");
+      fs.symlinkSync(prod, link);
+      expect(resolvesToProductionDbPath(link, prod)).toBe(true);
+    });
+
+    it("detects a hard link to the production file (shared inode)", () => {
+      const prod = path.join(tempDir, "prod.db");
+      const hard = path.join(tempDir, "hardlink.db");
+      fs.writeFileSync(prod, "x");
+      fs.linkSync(prod, hard);
+      expect(resolvesToProductionDbPath(hard, prod)).toBe(true);
+    });
+
+    it("detects a relative-segment path to the production file", () => {
+      const prod = path.join(tempDir, "prod.db");
+      fs.writeFileSync(prod, "x");
+      const viaDot = path.join(tempDir, ".", "prod.db");
+      expect(resolvesToProductionDbPath(viaDot, prod)).toBe(true);
+    });
+
+    it("does not flag an unrelated temp path", () => {
+      const prod = path.join(tempDir, "prod.db");
+      const other = path.join(tempDir, "other.db");
+      fs.writeFileSync(prod, "x");
+      fs.writeFileSync(other, "y");
+      expect(resolvesToProductionDbPath(other, prod)).toBe(false);
+    });
+
+    it("refuses a symlink that resolves to the real production DB (MANDIBLE_DB=/tmp/link scenario)", () => {
+      // Exercises the full guard against the real production path, but only when
+      // that file exists on this machine. The guard resolves the symlink and
+      // refuses without ever opening or writing the database.
+      if (!fs.existsSync(PRODUCTION_DB_PATH)) return;
+      const link = path.join(tempDir, "link-to-live.db");
+      fs.symlinkSync(PRODUCTION_DB_PATH, link);
+      expect(() => assertNotProductionDbUnderTest(link)).toThrow(
+        /production Mandible database/i,
+      );
+    });
   });
 });

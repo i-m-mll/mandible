@@ -6,7 +6,15 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import Database from "better-sqlite3";
+
+// Issue 07edc0d — this script opens the production DB directly and rewrites
+// rows with --apply, bypassing openDb()'s guard. Share the same refusal so it
+// cannot touch live data under the vitest test runner.
+const { assertNotProductionDbUnderTest } = createRequire(import.meta.url)(
+  "../cli/production-db-guard.cjs",
+);
 
 const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 const DEFAULT_REPORT_NAME = "artifact-ref-repair-report.json";
@@ -158,6 +166,7 @@ const CURRENT_LEDGER_TARGETS = [
 
 export async function runArtifactRefRepair(options = {}) {
   const dbPath = path.resolve(expandHome(options.dbPath ?? process.env.MANDIBLE_DB ?? DEFAULT_DB));
+  assertNotProductionDbUnderTest(dbPath);
   const apply = Boolean(options.apply);
   const check = Boolean(options.check ?? options.failOnFindings);
   const reportPath = options.reportPath

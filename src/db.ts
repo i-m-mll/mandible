@@ -31,6 +31,32 @@ export function getDbPath(): string {
   return process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH;
 }
 
+// The guard anchors the production path on the REAL system home
+// (os.userInfo().homedir, read from the password database) rather than
+// os.homedir(), which honors a $HOME override. Tests routinely isolate by
+// pointing HOME (and MANDIBLE_DB) at a throwaway temp home; that temp DB is not
+// production and must be allowed, while the real user's ~/.cache database stays
+// guarded regardless of $HOME. Falls back to os.homedir() only if userInfo is
+// unavailable.
+function realSystemHomeDir(): string {
+  try {
+    const info = os.userInfo();
+    if (info && typeof info.homedir === "string" && info.homedir.length > 0) {
+      return info.homedir;
+    }
+  } catch {
+    // userInfo can throw on exotic platforms; fall back below.
+  }
+  return os.homedir();
+}
+
+export const PRODUCTION_DB_PATH = path.join(
+  realSystemHomeDir(),
+  ".cache",
+  "mandible",
+  "mandible.db",
+);
+
 // Issue 07edc0d — structural isolation guard. On 2026-07-23 an unmerged
 // feature branch's schema migration executed against the live production
 // database because a test-invoked code path opened the default DB path
@@ -40,6 +66,11 @@ export function getDbPath(): string {
 // opening the real production database path is refused. The daemon and normal
 // CLI never run under vitest, so they are unaffected. The MANDIBLE_ALLOW_REAL_DB
 // opt-out exists only as a deliberate escape hatch; no test sets it.
+// This TypeScript guard is mirrored by a dependency-free CommonJS twin at
+// cli/production-db-guard.cjs, which the bash-embedded node helper in
+// cli/instructions.sh and the standalone .mjs maintenance scripts share so
+// that every direct production-DB open bypassing openDb() applies the same
+// refusal. Keep the two implementations in sync.
 function isUnderTestRunner(): boolean {
   return (
     process.env.VITEST === "true" ||
@@ -48,14 +79,50 @@ function isUnderTestRunner(): boolean {
   );
 }
 
+// Canonicalize to the real on-disk path so a symlink, relative segment, or
+// case-insensitive alias cannot smuggle the production path past a string
+// compare. Falls back to a resolved (non-real) path when the file does not
+// exist yet.
+function canonicalizePath(target: string): string {
+  try {
+    return fs.realpathSync.native(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+// Same-file check by device+inode, which catches hard links and case-alias
+// entries that resolve to the production bytes even when their canonical path
+// strings differ. Returns false when either side is absent.
+function sameFile(a: string, b: string): boolean {
+  try {
+    const sa = fs.statSync(a);
+    const sb = fs.statSync(b);
+    return sa.dev === sb.dev && sa.ino === sb.ino;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when `dbPath` refers to the production database file, whether by
+ * canonical path equality or by pointing at the same on-disk bytes (symlink,
+ * hard link, or case-insensitive alias). Exported for regression testing.
+ */
+export function resolvesToProductionDbPath(
+  dbPath: string,
+  productionPath: string = PRODUCTION_DB_PATH,
+): boolean {
+  if (canonicalizePath(dbPath) === canonicalizePath(productionPath)) return true;
+  return sameFile(dbPath, productionPath);
+}
+
 export function assertNotProductionDbUnderTest(dbPath: string): void {
   if (process.env.MANDIBLE_ALLOW_REAL_DB === "1") return;
   if (!isUnderTestRunner()) return;
-  const target = path.resolve(dbPath);
-  const production = path.resolve(DEFAULT_DB_PATH);
-  if (target === production) {
+  if (resolvesToProductionDbPath(dbPath)) {
     throw new Error(
-      `Refusing to open the production Mandible database under the test runner: ${production}. ` +
+      `Refusing to open the production Mandible database under the test runner: ${canonicalizePath(PRODUCTION_DB_PATH)}. ` +
         `Tests must open an explicit temp/fixture path or an in-memory database, never the real DB. ` +
         `This guard prevents a test or test-invoked tool from executing schema migrations or writes ` +
         `against live data (issue 07edc0d). To deliberately override, set MANDIBLE_ALLOW_REAL_DB=1.`,
