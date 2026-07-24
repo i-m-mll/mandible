@@ -3202,18 +3202,27 @@ export const MIGRATIONS: readonly Migration[] = [
     //
     // Scope: it nulls the SAME parallel user-attribution columns as v115
     // (author_user_id/actor_user_id, evidence_method, evidence_id) on
-    // evidence_method='local_default' rows, but ONLY on rows whose own
-    // creation/occurrence timestamp is strictly before the cutoff below. The
-    // cutoff is the commit timestamp of the v115 merge (08bcc7c) on main,
-    // "2026-07-23 20:29:16 -0400", so any legitimate in-process operator
-    // attribution written AFTER the corrected daemon restarted is preserved.
-    // Frozen legacy actor_id/actor_type/author_display provenance columns are
-    // untouched (the read-projection restores the generic 'Mandible' display).
+    // evidence_method='local_default' rows, but adds two guards so it touches
+    // only THIS deployment's residue (see clearResidualLocalDefaultLedgerAttribution
+    // for the full detail):
+    //   - the attribution user column must equal this deployment's operator id
+    //     (verified: all 424 residual rows carry it, no other id appears
+    //     pre-cutoff), so a restored backup or a different install at v115 is a
+    //     no-op even if it has its own local_default rows; and
+    //   - the row's attribution-write timestamp must be strictly before the
+    //     v115-merge cutoff (08bcc7c, "2026-07-23 20:29:16 -0400"). Edges use
+    //     COALESCE(updated_at, created_at) because relinks overwrite attribution
+    //     in place while preserving created_at; the other five tables set
+    //     attribution once at creation.
+    // Empirically zero local_default rows exist at or after the cutoff, so the
+    // boundary strands nothing legitimate. Frozen legacy actor_id/actor_type/
+    // author_display provenance columns are untouched (the read-projection
+    // restores the generic 'Mandible' display).
     //
     // One-shot: this targets a specific historical residue on the live DB. On a
     // fresh database the fresh-baseline path applies and this migration never
-    // runs; on any DB with no pre-cutoff 'local_default' rows the UPDATE is a
-    // no-op. It is naturally idempotent (a second run finds nothing to clear).
+    // runs; on any DB with no matching residual rows the UPDATE is a no-op. It is
+    // naturally idempotent (a second run finds nothing to clear).
     statements: []
   }
 ];
@@ -5935,37 +5944,77 @@ function clearLocalDefaultLedgerAttribution(db: Db): void {
 // Rows written strictly before this instant belong to the misattributed window
 // (the premature v115 run at 17:53Z through the corrected restart at 20:29:16Z);
 // any legitimate operator attribution written after the restart is preserved.
-const RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS = 1784852956000;
+//
+// Empirical safety evidence (verified read-only against the affected live DB at
+// implementation time): ZERO 'local_default' rows exist at or after this cutoff
+// in any of the six tables — the boundary cleanly separates the misattributed
+// window from all later writes, so no legitimate post-restart row is at risk
+// from the timestamp predicate.
+export const RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS = 1784852956000;
+
+// Deployment-history scoping (issue be2ab49): the misattributed rows on THIS
+// database all carry the operator's user id (settings key user.operator_id,
+// human user "mll") in their attribution column — verified read-only: all 424
+// residual rows have this id, and no pre-cutoff 'local_default' row carries any
+// other id. Requiring the id in addition to the timestamp confines the clearing
+// to this deployment's residue: on a restored backup, a different install, or
+// any other database at v115, legitimate 'local_default' attribution belonging
+// to a different operator id (or a different deployment timeline) is left
+// untouched, and the migration is a no-op there.
+export const RESIDUAL_MISATTRIBUTION_OPERATOR_ID = "01KY5J56GRJDK8ZEQS79DPPJFN";
 
 // Issue be2ab49 (migration 116): clear the residual operator misattribution that
 // migration 115 could not reach because it was consumed prematurely (see the
 // migration 116 entry and issue 07edc0d for the deployment-history rationale).
-// Mirrors clearLocalDefaultLedgerAttribution but adds a per-table timestamp
-// boundary so only the historical residual window is cleared and any legitimate
-// post-restart in-process operator attribution survives. Guarded and naturally
-// idempotent: a no-op on fresh databases and on any DB with no pre-cutoff
-// 'local_default' rows.
+// Mirrors clearLocalDefaultLedgerAttribution but narrows the WHERE clause three
+// ways so only this deployment's historical residue is cleared:
+//   1. evidence_method = 'local_default' (as v115);
+//   2. the attribution user column equals this deployment's operator id, so the
+//      migration is a no-op on any other database (restored backups, other
+//      installs) even if it is also at v115 with its own local_default rows;
+//   3. the row's attribution-write timestamp is strictly before the cutoff.
+// For the timestamp, ledger_relationship_edges is upserted in place on relink
+// (src/ledger/store.ts): a relink overwrites actor_user_id/evidence_method but
+// preserves created_at and stamps updated_at, so created_at can predate a later
+// legitimate attribution write. Edges therefore use COALESCE(updated_at,
+// created_at) — the column that reflects the LAST attribution write. The other
+// five tables set attribution once at row creation (edits append new
+// events/body-revisions rather than overwriting the row), so their creation
+// timestamp is the correct and only attribution-write time. Guarded and
+// naturally idempotent: a no-op on fresh databases and on any DB with no
+// matching residual rows.
 function clearResidualLocalDefaultLedgerAttribution(db: Db): void {
-  const plan: Array<{ table: string; userColumn: string; tsColumn: string }> = [
-    { table: "ledger_issues", userColumn: "author_user_id", tsColumn: "created_at" },
-    { table: "ledger_comments", userColumn: "author_user_id", tsColumn: "created_at" },
-    { table: "ledger_issue_checkpoints", userColumn: "author_user_id", tsColumn: "created_at" },
-    { table: "ledger_events", userColumn: "actor_user_id", tsColumn: "occurred_at" },
-    { table: "ledger_relationship_edges", userColumn: "actor_user_id", tsColumn: "created_at" },
-    { table: "ledger_body_revisions", userColumn: "actor_user_id", tsColumn: "occurred_at" },
+  const plan: Array<{
+    table: string;
+    userColumn: string;
+    timeExpr: string;
+    timeColumns: string[];
+  }> = [
+    { table: "ledger_issues", userColumn: "author_user_id", timeExpr: "created_at", timeColumns: ["created_at"] },
+    { table: "ledger_comments", userColumn: "author_user_id", timeExpr: "created_at", timeColumns: ["created_at"] },
+    { table: "ledger_issue_checkpoints", userColumn: "author_user_id", timeExpr: "created_at", timeColumns: ["created_at"] },
+    { table: "ledger_events", userColumn: "actor_user_id", timeExpr: "occurred_at", timeColumns: ["occurred_at"] },
+    {
+      table: "ledger_relationship_edges",
+      userColumn: "actor_user_id",
+      timeExpr: "COALESCE(updated_at, created_at)",
+      timeColumns: ["updated_at", "created_at"],
+    },
+    { table: "ledger_body_revisions", userColumn: "actor_user_id", timeExpr: "occurred_at", timeColumns: ["occurred_at"] },
   ];
-  for (const { table, userColumn, tsColumn } of plan) {
+  for (const { table, userColumn, timeExpr, timeColumns } of plan) {
     if (!tableExists(db, table)) continue;
     const columns = tableColumnNames(db, table);
-    if (!columns.has("evidence_method") || !columns.has(userColumn) || !columns.has(tsColumn)) {
-      continue;
-    }
+    if (!columns.has("evidence_method") || !columns.has(userColumn)) continue;
+    if (!timeColumns.every((column) => columns.has(column))) continue;
     const clearEvidenceId = columns.has("evidence_id") ? ", evidence_id = NULL" : "";
     db.prepare(
       `UPDATE ${table}
          SET ${userColumn} = NULL, evidence_method = NULL${clearEvidenceId}
-       WHERE evidence_method = 'local_default' AND ${tsColumn} < ?`,
-    ).run(RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS);
+       WHERE evidence_method = 'local_default'
+         AND ${userColumn} = ?
+         AND ${timeExpr} < ?`,
+    ).run(RESIDUAL_MISATTRIBUTION_OPERATOR_ID, RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS);
   }
 }
 
