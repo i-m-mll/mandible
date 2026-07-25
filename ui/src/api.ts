@@ -2127,12 +2127,48 @@ export type DesktopDaemonStatus = {
   healthy: boolean;
 };
 
-function hasTauriRuntime(): boolean {
+/**
+ * The dashboard is served over HTTP from the daemon into the desktop webview,
+ * so it cannot import `@tauri-apps/api` modules at runtime: a bare specifier
+ * has no URL the webview can resolve. The Tauri runtime instead publishes its
+ * API on the window — `withGlobalTauri` exposes the namespaced `__TAURI__`
+ * bundle, and every Tauri v2 webview carries the lower-level
+ * `__TAURI_INTERNALS__.invoke` that `@tauri-apps/api/core` wraps.
+ */
+type TauriInvoke = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
+
+type TauriWebview = { navigate: (url: string) => Promise<void> };
+
+type TauriGlobalWindow = Window & {
+  __TAURI__?: {
+    core?: { invoke?: TauriInvoke };
+    webview?: { getCurrentWebview?: () => TauriWebview };
+  };
+  __TAURI_INTERNALS__?: { invoke?: TauriInvoke };
+};
+
+function tauriGlobalWindow(): TauriGlobalWindow | null {
   if (typeof window === 'undefined') {
-    return false;
+    return null;
   }
-  const tauriWindow = window as Window & { __TAURI__?: unknown; __TAURI_INTERNALS__?: unknown };
-  return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
+  return window as TauriGlobalWindow;
+}
+
+function hasTauriRuntime(): boolean {
+  const tauriWindow = tauriGlobalWindow();
+  return Boolean(tauriWindow && (tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__));
+}
+
+/**
+ * Resolve the command bridge for whichever global the runtime check accepted:
+ * the namespaced bundle when `withGlobalTauri` is on, the internals bridge
+ * otherwise. Both are plain functions, so reading them off the namespace is
+ * safe.
+ */
+function tauriInvoke(): TauriInvoke | null {
+  const tauriWindow = tauriGlobalWindow();
+  const invoke = tauriWindow?.__TAURI__?.core?.invoke ?? tauriWindow?.__TAURI_INTERNALS__?.invoke;
+  return typeof invoke === 'function' ? invoke : null;
 }
 
 export function isDesktopShell(): boolean {
@@ -2140,11 +2176,10 @@ export function isDesktopShell(): boolean {
 }
 
 async function invokeDesktop<T>(command: string, args?: Record<string, unknown>): Promise<T> {
-  if (!hasTauriRuntime()) {
+  const invoke = tauriInvoke();
+  if (!invoke) {
     throw new Error('Desktop daemon controls are only available in the Tauri app.');
   }
-  const tauriCoreModule = '@tauri-apps/api/core';
-  const { invoke } = await import(/* @vite-ignore */ tauriCoreModule);
   return invoke<T>(command, args);
 }
 
@@ -2210,8 +2245,10 @@ export async function navigateToDesktopBootstrap(): Promise<void> {
   if (!hasTauriRuntime()) {
     return;
   }
-  const tauriWebviewModule = '@tauri-apps/api/webview';
-  const { getCurrentWebview } = await import(/* @vite-ignore */ tauriWebviewModule);
+  const getCurrentWebview = tauriGlobalWindow()?.__TAURI__?.webview?.getCurrentWebview;
+  if (typeof getCurrentWebview !== 'function') {
+    throw new Error('Desktop webview navigation is only available in the Tauri app.');
+  }
   await getCurrentWebview().navigate('/index.html');
 }
 
