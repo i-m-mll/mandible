@@ -4,6 +4,14 @@ import Database from "better-sqlite3";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+
+// Issue 07edc0d — this maintenance script opens the production DB directly and
+// writes with --apply, bypassing openDb()'s guard. Share the same refusal so it
+// cannot touch live data when invoked under the vitest test runner.
+const { assertNotProductionDbUnderTest } = createRequire(import.meta.url)(
+  "../cli/production-db-guard.cjs",
+);
 
 const KINDS = new Set(["bug", "feature", "umbrella", "task", "question", "maintenance", "deferred", "unknown"]);
 const PRIORITIES = new Set(["low", "normal", "high", "urgent", "unknown"]);
@@ -14,6 +22,7 @@ const NON_ISSUE_CONTEXT_PATTERN = /\b(commit|commits|sha|branch|branches|tag|ver
 
 const args = parseArgs(process.argv.slice(2));
 const dbPath = args.db ?? process.env.MANDIBLE_DB ?? path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+assertNotProductionDbUnderTest(dbPath);
 const apply = Boolean(args.apply);
 const reportPath = args.report ?? path.join(
   os.homedir(),

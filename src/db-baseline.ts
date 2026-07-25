@@ -1,10 +1,15 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v116 migration replay.
+ * Schema snapshot generated from a full v1-v117 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
+ *
+ * Migrations 115 and 116 are data-only corrective passes (no DDL), so they leave
+ * the statements below unchanged from the v114 schema and only advance the head
+ * version. Migration 117 is additive DDL: it contributes the two nullable
+ * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 116;
+export const BASELINE_SCHEMA_VERSION = 117;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",

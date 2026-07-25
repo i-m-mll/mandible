@@ -31,6 +31,9 @@ describe("post-merge build hook", () => {
     copyCliFile("post-merge-build-dist.sh", cliDir);
     copyCliFile("instructions.sh", cliDir);
     copyCliFile("instructions-contract.json", cliDir);
+    // instructions.sh's settings helper requires the shared production-DB guard
+    // from the same cli/ directory (issue 07edc0d); ship it into the temp repo.
+    copyCliFile("production-db-guard.cjs", cliDir);
 
     expect(spawnSync("git", ["init", "-b", "main"], { cwd: repo }).status).toBe(0);
 
