@@ -379,6 +379,54 @@ describe("secret backend seam", () => {
       expect(storedItem("svc-multiline")?.secret).toBe("only");
     });
 
+    // Byte-exact fixtures, written by the test rather than through shell
+    // printf, whose NUL handling differs per shell. Piped in with `cat` so the
+    // stream is non-seekable, which is the seam's calling convention.
+    const nulCases: Array<{ name: string; bytes: number[] }> = [
+      { name: "NUL bytes after the line", bytes: [0x74, 0x6f, 0x6b, 0x0a, 0x00, 0x00] },
+      { name: "NUL bytes with no trailing newline", bytes: [0x74, 0x6f, 0x6b, 0x00, 0x00] },
+      { name: "a NUL inside the line", bytes: [0x74, 0x00, 0x6f, 0x6b, 0x0a] },
+    ];
+    for (const { name, bytes } of nulCases) {
+      it(`refuses ${name} under ${shell}`, () => {
+        // NULs are invisible to any capture-and-compare check — command
+        // substitution strips them, so `tok\n\0\0` looks like a clean single
+        // line — and a newline-delimited read drops them before the check even
+        // runs. NUL-delimited reading plus a byte count catches all three.
+        const fixture = path.join(stubDir, `nul-${bytes.join("-")}`);
+        fs.writeFileSync(fixture, Buffer.from(bytes));
+
+        const result = runSeam(
+          shell,
+          `cat ${JSON.stringify(fixture)} | secret_set svc-nul acct-1; printf "rc=%s" "$?"`,
+        );
+        expect(result.stdout).toBe("rc=2");
+        expect(storedItem("svc-nul")).toBeNull();
+      });
+    }
+
+    it(`fails closed when the leftover-byte count cannot be taken under ${shell}`, () => {
+      // A broken or missing counter must never be read as "nothing left". The
+      // stub shadows `wc` on PATH for this call only.
+      const brokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-broken-wc-"));
+      try {
+        fs.writeFileSync(
+          path.join(brokenDir, "wc"),
+          "#!/usr/bin/env bash\nprintf 'wc: simulated failure\\n' >&2\nexit 1\n",
+          { mode: 0o755 },
+        );
+        const result = runSeam(
+          shell,
+          'printf %s "tok" | secret_set svc-nowc acct-1; printf "rc=%s" "$?"',
+          { PATH: `${brokenDir}:${stubDir}:${process.env.PATH ?? ""}` },
+        );
+        expect(result.stdout).toBe("rc=2");
+        expect(storedItem("svc-nowc")).toBeNull();
+      } finally {
+        fs.rmSync(brokenDir, { recursive: true, force: true });
+      }
+    });
+
     it(`round-trips values that need batch-line quoting under ${shell}`, () => {
       const awkward = 'has"quote\\slash and space';
       const written = runSeam(
@@ -445,7 +493,7 @@ describe("secret backend seam", () => {
     });
 
     it(`suppresses and restores xtrace around secret handling under ${shell}`, () => {
-      // The value is fed by redirection from a file, so the traced caller line
+      // The value is piped in from a file with `cat`, so the traced caller line
       // itself carries no secret and anything that shows up in the trace came
       // from inside the seam.
       const valueFile = path.join(stubDir, "trace-input");
@@ -453,7 +501,7 @@ describe("secret backend seam", () => {
       const result = runSeam(
         shell,
         [
-          `secret_set svc-trace acct-1 < ${JSON.stringify(valueFile)}`,
+          `cat ${JSON.stringify(valueFile)} | secret_set svc-trace acct-1`,
           "secret_get svc-trace acct-1 >/dev/null",
           "echo marker-after-restore >/dev/null",
         ].join("\n"),

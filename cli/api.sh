@@ -307,6 +307,11 @@ secret_account_for_service() {
 # Create or rotate the item keyed by (service, account), then read it back and
 # verify it matches. Returns nonzero on any failure and never echoes the value.
 #
+# The value is one line on a pipe, with an optional trailing newline:
+#   printf '%s' "$token" | secret_set mandible-operator mll
+# Anything more on that stream — a second line, stray NULs — is refused with
+# exit 2 rather than silently truncated to the first line.
+#
 # The write goes through `security -i` batch mode: the full
 # `add-generic-password ...` command line is fed on stdin, so the password is
 # neither an argv element nor a getpass() prompt. The obvious alternatives are
@@ -328,17 +333,43 @@ secret_set() {
 }
 
 secret_set_impl() {
-  local service="${1:-}" account="${2:-}" value="" stored="" remainder=""
+  local service="${1:-}" account="${2:-}" value="" stored="" extra_bytes=""
   secret_material_valid "$service" || return 2
   secret_material_valid "$account" || return 2
   secret_backend_available || return 1
-  IFS= read -r value || true
-  # A single line, and nothing after it. Storing only the first line of a
-  # multi-line input would silently truncate a caller's secret and report
-  # success. The sentinel keeps command substitution from stripping a lone
-  # trailing newline, so "value\n\n" is caught as surplus too.
-  remainder="$(cat; printf 'X')"
-  [[ "$remainder" == "X" ]] || return 2
+  # Read with NUL as the delimiter, not newline. `read -r -d ''` is byte-exact
+  # up to the first NUL, so a NUL can no longer be dropped on the way into the
+  # value: it either terminates the read — leaving surplus bytes for the count
+  # below to catch — or it lands inside the value, where the material check
+  # rejects it. A newline-delimited read discards NULs silently in bash, which
+  # is precisely the material an "is anything left?" check cannot see.
+  # Identical behavior verified on bash 3.2 and zsh 5.9.
+  IFS= read -r -d '' value || true
+  # A single trailing newline is part of the calling convention; a second one is
+  # surplus and is caught by the material check below as a control character.
+  value="${value%$'\n'}"
+
+  # Nothing may follow. `wc` reads this function's stdin directly, and both
+  # properties of that matter:
+  #   - the leftover bytes never pass through a shell variable, so NUL bytes are
+  #     counted rather than stripped. A capture-and-compare scheme cannot see
+  #     them at all: command substitution drops NULs, so a NUL-only remainder is
+  #     indistinguishable from an empty one.
+  #   - there is no pipeline, so the status is `wc`'s own. A broken or missing
+  #     counter fails closed instead of reading as "nothing left", with no need
+  #     to reconcile bash's PIPESTATUS against zsh's pipestatus (different name,
+  #     different base index).
+  #
+  # The value must arrive on a pipe or another non-seekable stream. Both shells
+  # rewind a seekable fd after `read`, so a file redirection would make this
+  # count re-see bytes that were already consumed — that fails closed (exit 2),
+  # never a wrong store.
+  extra_bytes="$(wc -c)" || return 2
+  # BSD wc pads its count with spaces; GNU wc does not.
+  extra_bytes="${extra_bytes//[[:space:]]/}"
+  # Equality with "0" is the entire validation: empty output, a non-numeric
+  # count, and any positive count all refuse.
+  [[ "$extra_bytes" == "0" ]] || return 2
   secret_material_valid "$value" || return 2
   # printf is a shell builtin, so the assembled command line never becomes the
   # argv of a new process; only `security -i` is exec'd.
