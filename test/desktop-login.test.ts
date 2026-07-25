@@ -269,9 +269,27 @@ describe("desktop shell keychain command", () => {
       rust.indexOf("/// Log the desktop shell in"),
     );
     expect(bootstrap).toContain("|| read_client_auth_bootstrap(&path)");
-    expect(bootstrap.match(/fs::remove_file\(&path\)/g)).toHaveLength(2);
+    expect(bootstrap.match(/discard_spent_proof\(&path\)/g)).toHaveLength(2);
     expect(bootstrap).toContain("CLIENT_AUTH_BOOTSTRAP_CONSUMED.store(false, Ordering::Release)");
     // A transient failure must not require an app restart to retry.
     expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_ATTEMPTED.store(false, Ordering::Release)");
+    // An undeletable proof would fail every later launch, so say so rather
+    // than swallowing the error — without ever naming the file's contents.
+    expect(rust).toContain("fn discard_spent_proof(path: &Path)");
+    expect(rust).toContain("eprintln!(");
+    expect(rust).toContain("until it can be deleted");
+  });
+
+  it("requires a successful handshake response to declare its own framing", () => {
+    const rust = fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "src", "lib.rs"),
+      "utf8",
+    );
+    // An absent or unparseable Content-Length on a 2xx is untrusted framing,
+    // not "no header to check against".
+    expect(rust).toContain("enum ContentLength {");
+    expect(rust).toContain("ContentLength::Invalid");
+    expect(rust).toContain("if !matches!(framing, ContentLength::Declared(_))");
+    expect(rust).toContain("unframed enrollment response");
   });
 });

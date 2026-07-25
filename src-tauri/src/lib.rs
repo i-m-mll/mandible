@@ -170,6 +170,25 @@ where
     })
 }
 
+/// Remove a bootstrap proof the daemon has already seen.
+///
+/// The removal is best-effort by design — the session, if one was issued, is
+/// already valid — but a proof that can never be deleted makes every subsequent
+/// launch read a dead file and fail its exchange, so the failure is reported
+/// rather than swallowed. Only the path is named; the file's contents are not
+/// read here and never appear in the warning.
+fn discard_spent_proof(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => eprintln!(
+            "mandible: failed to remove the spent client-auth bootstrap proof at {} ({error}); \
+             desktop enrollment will keep failing on this stale file until it can be deleted",
+            path.display(),
+        ),
+    }
+}
+
 /// Local prechecks shared by both enrollment commands. The window lookup runs
 /// up front so a missing webview fails before any credential is read, rather
 /// than after a proof has already been redeemed.
@@ -207,14 +226,21 @@ fn client_auth_enroll(app: AppHandle) -> Result<bool, String> {
     );
     match enrollment {
         Ok(Enrollment::Session { route, token }) => {
-            // The daemon consumed the proof; the file is stale either way.
-            let _ = fs::remove_file(&path);
+            // The daemon consumed the proof, so the file is stale either way and
+            // its removal is never worth failing an issued session over. A
+            // removal that fails here self-heals: the next launch reads the
+            // stale proof, the daemon refuses it, and the Refused arm retries
+            // the deletion.
+            discard_spent_proof(&path);
             navigate_to_enrolled_dashboard(&app, &token, &route)?;
             Ok(true)
         }
         Ok(Enrollment::Missing) => Ok(false),
         Ok(Enrollment::Refused(message)) => {
-            let _ = fs::remove_file(&path);
+            // A racing surface already spent the proof: the file is dead, and
+            // deleting it is what stops this failure from repeating on every
+            // launch. Same self-healing retry if the removal itself fails.
+            discard_spent_proof(&path);
             Err(message)
         }
         Ok(Enrollment::Unreachable(message)) => {
@@ -463,7 +489,8 @@ fn interpret_handshake_response(response: &[u8]) -> Enrollment {
     let Some(status) = parse_status_line(head.lines().next().unwrap_or_default()) else {
         return malformed();
     };
-    if let Some(expected) = declared_content_length(head) {
+    let framing = declared_content_length(head);
+    if let ContentLength::Declared(expected) = framing {
         if body.len() != expected {
             return Enrollment::Unreachable(
                 "the daemon returned a truncated enrollment response".to_string(),
@@ -476,6 +503,15 @@ fn interpret_handshake_response(response: &[u8]) -> Enrollment {
             409 => "no operator is configured; run `mandible user setup` first".to_string(),
             other => format!("the daemon refused the enrollment handshake (HTTP {other})"),
         });
+    }
+    // A success must be fully framed. The daemon always writes Content-Length
+    // alongside Connection: close, so a 2xx without a parseable one is either
+    // not the daemon or a body we cannot prove is complete — and an incomplete
+    // body could still parse as JSON with a partial token.
+    if !matches!(framing, ContentLength::Declared(_)) {
+        return Enrollment::Unreachable(
+            "the daemon returned an unframed enrollment response".to_string(),
+        );
     }
     let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
         return Enrollment::Refused(
@@ -508,14 +544,36 @@ fn parse_status_line(line: &str) -> Option<u16> {
     }
 }
 
-fn declared_content_length(head: &str) -> Option<usize> {
-    head.lines().skip(1).find_map(|line| {
-        let (name, value) = line.split_once(':')?;
-        name.trim()
-            .eq_ignore_ascii_case("content-length")
-            .then(|| value.trim().parse().ok())
-            .flatten()
-    })
+/// How a response framed its body. `Absent` and `Invalid` are kept distinct
+/// from `Declared` because a successful handshake must be positively framed;
+/// silently treating an unparseable header as "no header" would reopen the
+/// gap it is there to close.
+enum ContentLength {
+    Absent,
+    Invalid,
+    Declared(usize),
+}
+
+fn declared_content_length(head: &str) -> ContentLength {
+    let mut declared: Option<usize> = None;
+    for line in head.lines().skip(1) {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if !name.trim().eq_ignore_ascii_case("content-length") {
+            continue;
+        }
+        let Ok(length) = value.trim().parse::<usize>() else {
+            return ContentLength::Invalid;
+        };
+        // Conflicting repeats are a framing-confusion signature, never the
+        // daemon's own single-header response.
+        if declared.is_some_and(|previous| previous != length) {
+            return ContentLength::Invalid;
+        }
+        declared = Some(length);
+    }
+    declared.map_or(ContentLength::Absent, ContentLength::Declared)
 }
 
 /// Both enrollment paths carry the bounded session token in a URL fragment, so
@@ -1372,9 +1430,63 @@ mod tests {
         ));
         // A 200 without a usable token is a failure, never an empty enrollment.
         assert!(matches!(
-            interpret_handshake_response(b"HTTP/1.1 200 OK\r\n\r\n{\"token\":\"\"}"),
+            interpret_handshake_response(
+                b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n{\"token\":\"\"}"
+            ),
             Enrollment::Refused(_)
         ));
+    }
+
+    #[test]
+    fn requires_a_success_to_declare_its_own_framing() {
+        let body = "{\"token\":\"dashboard-session\"}";
+        // Without a length there is nothing proving the body is complete, and a
+        // truncated body can still parse as JSON with a partial token.
+        let unframed = interpret_handshake_response(
+            format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{body}").as_bytes(),
+        );
+        assert!(matches!(unframed, Enrollment::Unreachable(_)));
+        assert!(failure_message(&unframed).contains("unframed"));
+
+        for header in [
+            "Content-Length: abc",
+            "Content-Length:",
+            "Content-Length: -1",
+        ] {
+            assert!(
+                matches!(
+                    interpret_handshake_response(
+                        format!("HTTP/1.1 200 OK\r\n{header}\r\n\r\n{body}").as_bytes()
+                    ),
+                    Enrollment::Unreachable(_)
+                ),
+                "expected {header} to be untrusted framing",
+            );
+        }
+
+        // Conflicting repeats are framing confusion, not a usable length.
+        assert!(matches!(
+            interpret_handshake_response(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Length: 4\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes()
+            ),
+            Enrollment::Unreachable(_)
+        ));
+
+        // The matching declaration still succeeds, repeated or not.
+        assert_eq!(
+            session_token(interpret_handshake_response(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .as_bytes()
+            )),
+            Some("dashboard-session".to_string()),
+        );
     }
 
     #[test]
