@@ -7,7 +7,15 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import Database from "better-sqlite3";
+
+// Issue 07edc0d — this script opens the production DB directly (writably under
+// --apply), bypassing openDb()'s guard. Share the same refusal so it cannot
+// touch live data under the vitest test runner.
+const { assertNotProductionDbUnderTest } = createRequire(import.meta.url)(
+  "../cli/production-db-guard.cjs",
+);
 
 const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), ".cache", "mandible", "artifact-repo-identity-audit");
@@ -50,6 +58,7 @@ const JSON_SCAN_TABLES = [
 export async function runArtifactRepoIdentityAudit(options = {}) {
   const createdAt = new Date();
   const dbPath = path.resolve(expandHome(options.dbPath ?? process.env.MANDIBLE_DB ?? DEFAULT_DB));
+  assertNotProductionDbUnderTest(dbPath);
   const outputDir = path.resolve(
     expandHome(options.outputDir ?? path.join(DEFAULT_OUTPUT_ROOT, formatTimestamp(createdAt))),
   );

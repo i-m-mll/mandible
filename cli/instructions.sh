@@ -104,6 +104,10 @@ try {
 }
 
 const dbPath = process.env.MANDIBLE_DB || path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+// Issue 07edc0d — this helper opens the production DB directly (and writes to
+// the settings table), bypassing openDb()'s guard. Apply the shared refusal so
+// an instructions-CLI test invoked under vitest cannot mutate live settings.
+require(path.join(root, "cli", "production-db-guard.cjs")).assertNotProductionDbUnderTest(dbPath);
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 db.pragma("journal_mode = WAL");
