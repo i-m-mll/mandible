@@ -180,7 +180,18 @@ describe("reserved credential parameter", () => {
     expect(sanitizeEnrollmentHash("#/issues?mandible_auth=stale")).toBe("/issues");
     expect(sanitizeEnrollmentHash("#/issues?repo=mandible&mandible_auth=stale"))
       .toBe("/issues?repo=mandible");
+  });
+
+  it("matches the key structurally, as the shell does", () => {
+    // Percent-encoded and differently-cased spellings must not slip past the
+    // UI and then be refused by the shell.
+    expect(sanitizeEnrollmentHash("#/issues?mandible%5Fauth=stale")).toBe("/issues");
+    expect(sanitizeEnrollmentHash("#/issues?MANDIBLE_AUTH=stale")).toBe("/issues");
+    // Values, paths, and merely similar keys are not grounds for stripping.
+    expect(sanitizeEnrollmentHash("#/search?q=mandible_authentication"))
+      .toBe("/search?q=mandible_authentication");
     expect(sanitizeEnrollmentHash("#/issues?repo=mandible")).toBe("/issues?repo=mandible");
+    expect(sanitizeEnrollmentHash("#/mandible_auth")).toBe("/mandible_auth");
     expect(sanitizeEnrollmentHash("#/auth")).toBe("/auth");
     expect(sanitizeEnrollmentHash("")).toBe("");
   });
@@ -214,8 +225,9 @@ describe("desktop shell keychain command", () => {
     );
     expect(rust).toContain("fn client_auth_keychain_enroll(");
     expect(rust).toContain("client_auth_keychain_enroll,");
-    // Same daemon-ownership gate as the bootstrap path.
-    expect(rust).toContain("verify_same_user_daemon(&app)");
+    // Same daemon-ownership gate as the bootstrap path, run as a precheck.
+    expect(rust).toContain("|| enrollment_precheck(&app),");
+    expect(rust).toContain("verify_same_user_daemon(app)");
     // Same keychain item the CLI falls back to, read through `security`.
     expect(rust).toContain('const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator"');
     expect(rust).toContain('.args(["find-generic-password", "-s", service, "-w"])');
@@ -228,12 +240,38 @@ describe("desktop shell keychain command", () => {
     expect(rust).toContain("POST /api/client-auth/handshake HTTP/1.1");
     expect(rust).toContain("Authorization: Bearer ");
     expect(rust).toContain("credential.fill(0);");
-    expect(rust).toContain("navigate_to_enrolled_dashboard(&app, &session?, route.as_deref())");
-    expect(rust).toContain("navigate_to_enrolled_dashboard(&app, &session?, None)");
+    expect(rust).toContain("navigate_to_enrolled_dashboard(&app, &token, &route)");
     expect(rust).toContain("Result<bool, String>");
-    expect(rust).toContain("{separator}mandible_auth={token}");
+    expect(rust).toContain("{separator}{CREDENTIAL_QUERY_PARAM}={token}");
     expect(rust).toContain("window.location.replace({encoded})");
-    // A forwarded credential parameter is refused rather than shadowing.
-    expect(rust).toContain('route.to_ascii_lowercase().contains("mandible_auth")');
+    // Bytes that could smuggle a header are refused at read time.
+    expect(rust).toContain("fn is_credential_material(value: &[u8])");
+    expect(rust).toContain("not a valid Mandible token");
+    // A forwarded credential parameter is refused structurally, after decoding.
+    expect(rust).toContain("percent_decode_ascii(key).eq_ignore_ascii_case(CREDENTIAL_QUERY_PARAM)");
+    // The response is bounded and its status line strictly parsed.
+    expect(rust).toContain("MAX_HANDSHAKE_RESPONSE_BYTES");
+    expect(rust).toContain('strip_prefix("HTTP/1.")');
+    expect(rust).toContain("fn declared_content_length(head: &str)");
+  });
+
+  it("spends a one-shot bootstrap proof only once the daemon has seen it", () => {
+    const rust = fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "src", "lib.rs"),
+      "utf8",
+    );
+    // Ordering: validate, precheck, read, exchange — the file is removed only
+    // in the Session and Refused arms, never on an unreachable daemon.
+    expect(rust).toContain("fn run_enrollment<P, C, E>(");
+    expect(rust).toContain("let route = normalize_enrollment_route(route)?;\n    precheck()?;");
+    const bootstrap = rust.slice(
+      rust.indexOf("fn client_auth_enroll("),
+      rust.indexOf("/// Log the desktop shell in"),
+    );
+    expect(bootstrap).toContain("|| read_client_auth_bootstrap(&path)");
+    expect(bootstrap.match(/fs::remove_file\(&path\)/g)).toHaveLength(2);
+    expect(bootstrap).toContain("CLIENT_AUTH_BOOTSTRAP_CONSUMED.store(false, Ordering::Release)");
+    // A transient failure must not require an app restart to retry.
+    expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_ATTEMPTED.store(false, Ordering::Release)");
   });
 });

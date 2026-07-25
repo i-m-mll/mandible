@@ -13,6 +13,11 @@ const DEFAULT_LAUNCH_MODE: &str = "on_demand";
 /// Generic-password service holding the operator's durable bearer credential.
 /// Same item the CLI falls back to in unmarked operator terminals (issue 9283a50).
 const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator";
+/// Fragment parameter the dashboard adopts a session from. Reserved: a route
+/// may never carry it, or it would shadow the session injected after it.
+const CREDENTIAL_QUERY_PARAM: &str = "mandible_auth";
+/// Cap on a handshake response before it is treated as untrustworthy.
+const MAX_HANDSHAKE_RESPONSE_BYTES: usize = 64 * 1024;
 static CLIENT_AUTH_BOOTSTRAP_CONSUMED: AtomicBool = AtomicBool::new(false);
 static CLIENT_AUTH_KEYCHAIN_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
@@ -113,31 +118,114 @@ fn daemon_restart(app: AppHandle) -> Result<DaemonStatus, String> {
     daemon_start(app)
 }
 
+/// What an enrollment attempt produced. The distinction between a daemon that
+/// answered and a daemon that was never reached is load-bearing: only the
+/// former means a one-shot bootstrap proof has been spent.
+enum Enrollment {
+    /// No credential to enroll with — a normal state, not a failure.
+    Missing,
+    /// A bounded dashboard session, plus the validated route to return to.
+    Session { route: String, token: String },
+    /// The daemon answered and refused. Any one-shot proof is now spent.
+    Refused(String),
+    /// The daemon was never reached. A one-shot proof is still good.
+    Unreachable(String),
+}
+
+/// The fixed order every enrollment follows, so that a request which cannot
+/// possibly succeed spends nothing:
+///
+///   1. validate the caller-supplied route (pure, local),
+///   2. run local prechecks (window lookup, same-user daemon verification),
+///   3. read and validate the credential,
+///   4. exchange it for a bounded dashboard session, scrubbing it afterwards.
+///
+/// A route rejected in step 1 therefore performs zero keychain reads and zero
+/// network calls, and cannot consume a bootstrap proof or rotate the daemon's
+/// single dashboard session. The effects are injected so that ordering is
+/// unit-testable without a Tauri app or a daemon.
+fn run_enrollment<P, C, E>(
+    route: Option<&str>,
+    precheck: P,
+    read_credential: C,
+    exchange: E,
+) -> Result<Enrollment, String>
+where
+    P: FnOnce() -> Result<(), String>,
+    C: FnOnce() -> Result<Option<Vec<u8>>, String>,
+    E: FnOnce(&[u8]) -> Enrollment,
+{
+    let route = normalize_enrollment_route(route)?;
+    precheck()?;
+    let Some(mut credential) = read_credential()? else {
+        return Ok(Enrollment::Missing);
+    };
+    let outcome = exchange(&credential);
+    // Best-effort scrub: it narrows the window in which the credential is
+    // resident, but cannot undo copies made by the allocator or the pipe.
+    credential.fill(0);
+    Ok(match outcome {
+        Enrollment::Session { token, .. } => Enrollment::Session { route, token },
+        other => other,
+    })
+}
+
+/// Local prechecks shared by both enrollment commands. The window lookup runs
+/// up front so a missing webview fails before any credential is read, rather
+/// than after a proof has already been redeemed.
+fn enrollment_precheck(app: &AppHandle) -> Result<(), String> {
+    app.get_webview_window("main")
+        .ok_or_else(|| "desktop main window is unavailable".to_string())?;
+    verify_same_user_daemon(app)
+}
+
 /// Navigate the bundled desktop shell to an enrolled dashboard without ever
 /// handing the same-user bootstrap proof to the renderer. The shell redeems the
 /// proof for a bounded dashboard session itself (see
 /// `exchange_credential_for_dashboard_session`) and injects only that session in
 /// a URL fragment; fragments are not sent to the daemon and the UI removes it
 /// before its first API request.
+///
+/// The proof file outlives a failed attempt on purpose: it is deleted only once
+/// the daemon has actually seen it (redeemed, or refused because a racing
+/// surface already spent it). A daemon that is merely unreachable leaves the
+/// first-run enrollment window intact and re-arms the attempt guard.
 #[command]
 fn client_auth_enroll(app: AppHandle) -> Result<bool, String> {
     if CLIENT_AUTH_BOOTSTRAP_CONSUMED.swap(true, Ordering::AcqRel) {
         return Ok(false);
     }
-    verify_same_user_daemon(&app)?;
-    let Some(token) = read_client_auth_bootstrap(&client_auth_bootstrap_path())? else {
-        return Ok(false);
-    };
-    fs::remove_file(client_auth_bootstrap_path())
-        .map_err(|error| format!("failed to consume client-auth bootstrap file: {error}"))?;
+    let path = client_auth_bootstrap_path();
     // The bootstrap proof authenticates as the operator exactly once, and the
     // handshake is an ordinary authenticated request, so redeeming it here
     // consumes it the same way the dashboard used to.
-    let mut credential = token.into_bytes();
-    let session = exchange_credential_for_dashboard_session(&credential);
-    credential.fill(0);
-    navigate_to_enrolled_dashboard(&app, &session?, None)?;
-    Ok(true)
+    let enrollment = run_enrollment(
+        None,
+        || enrollment_precheck(&app),
+        || read_client_auth_bootstrap(&path),
+        exchange_credential_for_dashboard_session,
+    );
+    match enrollment {
+        Ok(Enrollment::Session { route, token }) => {
+            // The daemon consumed the proof; the file is stale either way.
+            let _ = fs::remove_file(&path);
+            navigate_to_enrolled_dashboard(&app, &token, &route)?;
+            Ok(true)
+        }
+        Ok(Enrollment::Missing) => Ok(false),
+        Ok(Enrollment::Refused(message)) => {
+            let _ = fs::remove_file(&path);
+            Err(message)
+        }
+        Ok(Enrollment::Unreachable(message)) => {
+            CLIENT_AUTH_BOOTSTRAP_CONSUMED.store(false, Ordering::Release);
+            Err(message)
+        }
+        Err(message) => {
+            CLIENT_AUTH_BOOTSTRAP_CONSUMED.store(false, Ordering::Release);
+            Err(message)
+        }
+    }
 }
 
 /// Log the desktop shell in after the one-shot bootstrap window has closed, by
@@ -181,16 +269,25 @@ fn client_auth_keychain_enroll(
     if CLIENT_AUTH_KEYCHAIN_ATTEMPTED.swap(true, Ordering::AcqRel) && !force.unwrap_or(false) {
         return Ok(false);
     }
-    verify_same_user_daemon(&app)?;
-    let Some(mut credential) = read_keychain_operator_token(KEYCHAIN_OPERATOR_SERVICE)? else {
-        return Ok(false);
-    };
-    let session = exchange_credential_for_dashboard_session(&credential);
-    // Best-effort scrub: it narrows the window in which the durable credential
-    // is resident, but cannot undo copies made by the allocator or the pipe.
-    credential.fill(0);
-    navigate_to_enrolled_dashboard(&app, &session?, route.as_deref())?;
-    Ok(true)
+    let enrollment = run_enrollment(
+        route.as_deref(),
+        || enrollment_precheck(&app),
+        || read_keychain_operator_token(KEYCHAIN_OPERATOR_SERVICE),
+        exchange_credential_for_dashboard_session,
+    );
+    match enrollment {
+        Ok(Enrollment::Session { route, token }) => {
+            navigate_to_enrolled_dashboard(&app, &token, &route)?;
+            Ok(true)
+        }
+        Ok(Enrollment::Missing) => Ok(false),
+        Ok(Enrollment::Refused(message)) => Err(message),
+        // Nothing was spent, so let the next attempt run without a restart.
+        Ok(Enrollment::Unreachable(message)) | Err(message) => {
+            CLIENT_AUTH_KEYCHAIN_ATTEMPTED.store(false, Ordering::Release);
+            Err(message)
+        }
+    }
 }
 
 /// Read the operator's durable bearer credential from the login keychain. An
@@ -216,19 +313,53 @@ fn read_keychain_operator_token(service: &str) -> Result<Option<Vec<u8>>, String
     if !output.status.success() {
         return Ok(None);
     }
-    let mut credential = output.stdout;
-    let start = credential
+    let mut raw = output.stdout;
+    extract_credential(&mut raw, "keychain")
+}
+
+/// Trim, validate, and take ownership of a credential read from a local secret
+/// store, scrubbing the full source buffer before returning.
+///
+/// Validation is the header-injection gate: a poisoned keychain item or
+/// bootstrap file containing CR/LF (or anything else outside the token grammar)
+/// would otherwise be spliced verbatim into an `Authorization` header and could
+/// smuggle further headers into the request. Rejection is fail-closed and the
+/// message never quotes the value.
+fn extract_credential(raw: &mut Vec<u8>, source: &str) -> Result<Option<Vec<u8>>, String> {
+    let start = raw
         .iter()
         .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(credential.len());
-    let end = credential
+        .unwrap_or(raw.len());
+    let end = raw
         .iter()
         .rposition(|byte| !byte.is_ascii_whitespace())
         .map(|index| index + 1)
         .unwrap_or(start);
-    credential.truncate(end);
-    credential.drain(..start);
-    Ok((!credential.is_empty()).then_some(credential))
+    let credential = raw[start..end].to_vec();
+    // Scrub the whole original read buffer, not just the trimmed span.
+    raw.fill(0);
+    if credential.is_empty() {
+        return Ok(None);
+    }
+    if !is_credential_material(&credential) {
+        let mut credential = credential;
+        credential.fill(0);
+        return Err(format!(
+            "the {source} operator credential is not a valid Mandible token"
+        ));
+    }
+    Ok(Some(credential))
+}
+
+/// The Mandible token grammar: `mandible_pat_` plus base64url payload, i.e.
+/// ASCII alphanumerics and `-._~`. It is deliberately the same allowlist that
+/// guards fragment injection, so a credential that may be sent can also be
+/// carried in a URL and neither check can drift from the other.
+fn is_credential_material(value: &[u8]) -> bool {
+    !value.is_empty()
+        && value
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~'))
 }
 
 /// Redeem a durable operator credential for a bounded dashboard session by
@@ -238,16 +369,34 @@ fn read_keychain_operator_token(service: &str) -> Result<Option<Vec<u8>>, String
 /// The daemon speaks plain HTTP on loopback and already writes `Content-Length`
 /// with `Connection: close`, so this uses the same dependency-free `TcpStream`
 /// request style as `zone2_bootstrap` rather than adding an HTTP client crate.
-fn exchange_credential_for_dashboard_session(credential: &[u8]) -> Result<String, String> {
+fn exchange_credential_for_dashboard_session(credential: &[u8]) -> Enrollment {
+    // Defence in depth. The credential was validated at read time; refuse to
+    // build a request at all from bytes that could smuggle a header.
+    if !is_credential_material(credential) {
+        return Enrollment::Unreachable(
+            "refusing to send a malformed operator credential".to_string(),
+        );
+    }
     let port = daemon_port();
-    let addr = format!("127.0.0.1:{port}")
+    let addr = match format!("127.0.0.1:{port}")
         .to_socket_addrs()
-        .map_err(|error| format!("failed to resolve the daemon address: {error}"))?
-        .next()
-        .ok_or_else(|| "failed to resolve the daemon address".to_string())?;
+        .ok()
+        .and_then(|mut addrs| addrs.next())
+    {
+        Some(addr) => addr,
+        None => {
+            return Enrollment::Unreachable("failed to resolve the daemon address".to_string());
+        }
+    };
 
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_millis(2000))
-        .map_err(|error| format!("failed to reach the daemon for enrollment: {error}"))?;
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(2000)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            return Enrollment::Unreachable(format!(
+                "failed to reach the daemon for enrollment: {error}"
+            ));
+        }
+    };
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
     let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
 
@@ -255,13 +404,24 @@ fn exchange_credential_for_dashboard_session(credential: &[u8]) -> Result<String
     let sent = stream.write_all(&request);
     // The request buffer is the only other place the credential is materialized.
     request.fill(0);
-    sent.map_err(|error| format!("failed to send the enrollment handshake: {error}"))?;
+    if let Err(error) = sent {
+        return Enrollment::Unreachable(format!(
+            "failed to send the enrollment handshake: {error}"
+        ));
+    }
 
-    let mut response = String::new();
-    stream
-        .read_to_string(&mut response)
-        .map_err(|error| format!("failed to read the enrollment handshake response: {error}"))?;
-    parse_dashboard_session_response(&response)
+    // Bounded read: a hostile or broken listener must not be able to make the
+    // shell buffer without limit. One byte past the cap detects overflow.
+    let mut response = Vec::with_capacity(1024);
+    if let Err(error) = stream
+        .take((MAX_HANDSHAKE_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut response)
+    {
+        return Enrollment::Unreachable(format!(
+            "failed to read the enrollment handshake response: {error}"
+        ));
+    }
+    interpret_handshake_response(&response)
 }
 
 /// Build the handshake request. Split out so the header shape is unit-testable
@@ -280,41 +440,89 @@ fn build_handshake_request(credential: &[u8], port: u16) -> Vec<u8> {
     request
 }
 
-/// Extract the dashboard session token from the handshake response. Failures
-/// report the status only — a rejected credential must never be echoed back.
-fn parse_dashboard_session_response(response: &str) -> Result<String, String> {
-    let status = response
-        .lines()
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| "the daemon returned a malformed enrollment response".to_string())?;
+/// Turn raw handshake response bytes into an enrollment outcome.
+///
+/// Anything that leaves real doubt about whether the daemon processed the
+/// credential — an oversized, unparseable, or truncated response — is reported
+/// as `Unreachable`, which is the conservative classification: it preserves a
+/// one-shot bootstrap proof rather than deleting one that may still be live.
+/// Failures report the status only; a rejected credential is never echoed back.
+fn interpret_handshake_response(response: &[u8]) -> Enrollment {
+    if response.len() > MAX_HANDSHAKE_RESPONSE_BYTES {
+        return Enrollment::Unreachable(
+            "the daemon returned an oversized enrollment response".to_string(),
+        );
+    }
+    let malformed = || {
+        Enrollment::Unreachable("the daemon returned a malformed enrollment response".to_string())
+    };
+    let response = String::from_utf8_lossy(response);
+    let Some((head, body)) = response.split_once("\r\n\r\n") else {
+        return malformed();
+    };
+    let Some(status) = parse_status_line(head.lines().next().unwrap_or_default()) else {
+        return malformed();
+    };
+    if let Some(expected) = declared_content_length(head) {
+        if body.len() != expected {
+            return Enrollment::Unreachable(
+                "the daemon returned a truncated enrollment response".to_string(),
+            );
+        }
+    }
     if !(200..300).contains(&status) {
-        return Err(match status {
+        return Enrollment::Refused(match status {
             401 | 403 => "the stored operator credential was rejected by the daemon".to_string(),
             409 => "no operator is configured; run `mandible user setup` first".to_string(),
             other => format!("the daemon refused the enrollment handshake (HTTP {other})"),
         });
     }
-    let body = response
-        .split_once("\r\n\r\n")
-        .map(|(_, body)| body)
-        .ok_or_else(|| "the daemon returned a malformed enrollment response".to_string())?;
-    let parsed: serde_json::Value = serde_json::from_str(body.trim())
-        .map_err(|_| "the daemon returned an unreadable enrollment response".to_string())?;
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return Enrollment::Refused(
+            "the daemon returned an unreadable enrollment response".to_string(),
+        );
+    };
     match parsed.get("token").and_then(serde_json::Value::as_str) {
-        Some(token) if !token.is_empty() => Ok(token.to_string()),
-        _ => Err("the daemon returned no dashboard session".to_string()),
+        Some(token) if !token.is_empty() => Enrollment::Session {
+            route: String::new(),
+            token: token.to_string(),
+        },
+        _ => Enrollment::Refused("the daemon returned no dashboard session".to_string()),
     }
 }
 
+/// Accept only a strict `HTTP/1.x <3-digit>` status line, so a listener that is
+/// not the daemon cannot be read as a successful handshake.
+fn parse_status_line(line: &str) -> Option<u16> {
+    let mut rest = line.strip_prefix("HTTP/1.")?.chars();
+    if !rest.next()?.is_ascii_digit() || rest.next()? != ' ' {
+        return None;
+    }
+    let code: String = rest.by_ref().take(3).collect();
+    if code.len() != 3 || !code.chars().all(|value| value.is_ascii_digit()) {
+        return None;
+    }
+    match rest.next() {
+        None | Some(' ') => code.parse().ok(),
+        _ => None,
+    }
+}
+
+fn declared_content_length(head: &str) -> Option<usize> {
+    head.lines().skip(1).find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim()
+            .eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse().ok())
+            .flatten()
+    })
+}
+
 /// Both enrollment paths carry the bounded session token in a URL fragment, so
-/// it must be fragment-safe before it is spliced into the navigation URL.
+/// it must be fragment-safe before it is spliced into the navigation URL. This
+/// is the same allowlist that gates what may be sent as a bearer credential.
 fn is_url_fragment_safe(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | '~'))
+    is_credential_material(value.as_bytes())
 }
 
 /// Keep the dashboard on the operator's current view across enrollment instead
@@ -322,16 +530,17 @@ fn is_url_fragment_safe(value: &str) -> bool {
 /// restricted to characters that stay inside the fragment; the loopback origin
 /// and path are fixed here and can never be moved by the caller.
 ///
-/// A route that already carries `mandible_auth` is refused: the dashboard reads
-/// the first occurrence, so a forwarded stale value would shadow the session
-/// injected here and strand a credential in the visible URL.
+/// A route whose query already carries a `mandible_auth` key is refused: the
+/// dashboard reads the first occurrence, so a forwarded stale value would
+/// shadow the session injected after it and strand a credential in the visible
+/// URL. The check is structural — keys are split out and percent-decoded the
+/// way `URLSearchParams` decodes them — so neither `%5F` nor any other encoding
+/// slips through, and an ordinary route like `/search?q=mandible_authentication`
+/// is not caught by an over-broad substring match.
 fn normalize_enrollment_route(route: Option<&str>) -> Result<String, String> {
     let route = route.map(str::trim).unwrap_or_default();
     if route.is_empty() {
         return Ok("/".to_string());
-    }
-    if route.to_ascii_lowercase().contains("mandible_auth") {
-        return Err("desktop enrollment route may not carry a mandible_auth value".to_string());
     }
     let allowed = route.chars().all(|value| {
         value.is_ascii_alphanumeric()
@@ -343,24 +552,61 @@ fn normalize_enrollment_route(route: Option<&str>) -> Result<String, String> {
     if !route.starts_with('/') || !allowed {
         return Err("desktop enrollment route contains unsupported characters".to_string());
     }
+    if let Some((_, query)) = route.split_once('?') {
+        let reserved = query
+            .split('&')
+            .map(|pair| pair.split('=').next().unwrap_or_default())
+            .any(|key| percent_decode_ascii(key).eq_ignore_ascii_case(CREDENTIAL_QUERY_PARAM));
+        if reserved {
+            return Err("desktop enrollment route may not carry a mandible_auth value".to_string());
+        }
+    }
     Ok(route.to_string())
 }
 
-fn navigate_to_enrolled_dashboard(
-    app: &AppHandle,
-    token: &str,
-    route: Option<&str>,
-) -> Result<(), String> {
+/// Decode `%XX` escapes the way a query-string parser does, so a reserved key
+/// cannot hide behind an encoding. Invalid escapes are left literal, matching
+/// `URLSearchParams` leniency.
+fn percent_decode_ascii(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut decoded = String::with_capacity(value.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let Some(byte) = decode_hex_pair(bytes[index + 1], bytes[index + 2]) {
+                decoded.push(byte as char);
+                index += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[index] as char);
+        index += 1;
+    }
+    decoded
+}
+
+fn decode_hex_pair(high: u8, low: u8) -> Option<u8> {
+    let nibble = |byte: u8| match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    };
+    Some(nibble(high)? * 16 + nibble(low)?)
+}
+
+/// Navigate to the enrolled dashboard. `route` is already normalized by
+/// `run_enrollment`, so this only guards the injected session token.
+fn navigate_to_enrolled_dashboard(app: &AppHandle, token: &str, route: &str) -> Result<(), String> {
     if !is_url_fragment_safe(token) {
         return Err("client-auth credential contains invalid URL-fragment characters".to_string());
     }
-    let route = normalize_enrollment_route(route)?;
     let separator = if route.contains('?') { '&' } else { '?' };
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "desktop main window is unavailable".to_string())?;
     let url = format!(
-        "http://127.0.0.1:{}/#{route}{separator}mandible_auth={token}",
+        "http://127.0.0.1:{}/#{route}{separator}{CREDENTIAL_QUERY_PARAM}={token}",
         daemon_port()
     );
     let encoded = serde_json::to_string(&url)
@@ -415,7 +661,7 @@ fn verify_same_user_daemon(app: &AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-fn read_client_auth_bootstrap(path: &Path) -> Result<Option<String>, String> {
+fn read_client_auth_bootstrap(path: &Path) -> Result<Option<Vec<u8>>, String> {
     if !path.exists() {
         return Ok(None);
     }
@@ -431,10 +677,9 @@ fn read_client_auth_bootstrap(path: &Path) -> Result<Option<String>, String> {
             return Err("client-auth bootstrap permissions are broader than 0600".to_string());
         }
     }
-    let token = fs::read_to_string(path)
-        .map_err(|error| format!("failed to read client-auth bootstrap: {error}"))?;
-    let token = token.trim();
-    Ok((!token.is_empty()).then(|| token.to_string()))
+    let mut raw =
+        fs::read(path).map_err(|error| format!("failed to read client-auth bootstrap: {error}"))?;
+    extract_credential(&mut raw, "bootstrap")
 }
 
 fn client_auth_bootstrap_path() -> PathBuf {
@@ -852,11 +1097,27 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_handshake_request, is_url_fragment_safe, normalize_enrollment_route,
-        parse_dashboard_session_response, read_client_auth_bootstrap,
+        build_handshake_request, extract_credential, interpret_handshake_response,
+        is_url_fragment_safe, normalize_enrollment_route, read_client_auth_bootstrap,
+        run_enrollment, Enrollment, MAX_HANDSHAKE_RESPONSE_BYTES,
     };
+    use std::cell::Cell;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn session_token(enrollment: Enrollment) -> Option<String> {
+        match enrollment {
+            Enrollment::Session { token, .. } => Some(token),
+            _ => None,
+        }
+    }
+
+    fn failure_message(enrollment: &Enrollment) -> String {
+        match enrollment {
+            Enrollment::Refused(message) | Enrollment::Unreachable(message) => message.clone(),
+            _ => panic!("expected a failed enrollment"),
+        }
+    }
 
     fn temp_path(name: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
@@ -877,8 +1138,24 @@ mod tests {
         }
         assert_eq!(
             read_client_auth_bootstrap(&path).expect("read bootstrap"),
-            Some("desktop-token".to_string()),
+            Some(b"desktop-token".to_vec()),
         );
+        fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn refuses_a_bootstrap_file_that_is_not_a_token() {
+        let path = temp_path("poisoned");
+        fs::write(&path, "VALID\r\nX-Request-Id: VALID\n").expect("write bootstrap");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).expect("chmod");
+        }
+        let error = read_client_auth_bootstrap(&path).expect_err("poisoned bootstrap");
+        assert!(error.contains("not a valid Mandible token"));
+        // The rejection must not quote the value it refused.
+        assert!(!error.contains("VALID"));
         fs::remove_file(path).expect("cleanup");
     }
 
@@ -924,7 +1201,129 @@ mod tests {
         // would win over the session injected after it.
         assert!(normalize_enrollment_route(Some("/issues?mandible_auth=stolen")).is_err());
         assert!(normalize_enrollment_route(Some("/issues?MANDIBLE_AUTH=stolen")).is_err());
+        assert!(normalize_enrollment_route(Some("/issues?repo=x&mandible_auth=stolen")).is_err());
+        // Percent-encoded spellings decode to the same key in the dashboard.
+        assert!(normalize_enrollment_route(Some("/issues?mandible%5Fauth=stolen")).is_err());
+        assert!(normalize_enrollment_route(Some("/issues?mandible%5fauth=stolen")).is_err());
+        assert!(normalize_enrollment_route(Some("/issues?%6Dandible_auth=stolen")).is_err());
+        // Matching is structural, so ordinary keys, values, and paths survive.
+        assert!(normalize_enrollment_route(Some("/search?q=mandible_authentication")).is_ok());
+        assert!(normalize_enrollment_route(Some("/mandible_auth")).is_ok());
         assert!(normalize_enrollment_route(Some("/issues?repo=mandible")).is_ok());
+    }
+
+    #[test]
+    fn validates_the_route_before_reading_or_sending_any_credential() {
+        let read = Cell::new(false);
+        let exchanged = Cell::new(false);
+        let prechecked = Cell::new(false);
+
+        let rejected = run_enrollment(
+            Some("/issues?mandible%5Fauth=stolen"),
+            || {
+                prechecked.set(true);
+                Ok(())
+            },
+            || {
+                read.set(true);
+                Ok(Some(b"mandible_pat_secret".to_vec()))
+            },
+            |_| {
+                exchanged.set(true);
+                Enrollment::Session {
+                    route: String::new(),
+                    token: "dashboard-session".to_string(),
+                }
+            },
+        );
+
+        assert!(rejected.is_err());
+        // A rejected route spends nothing: no daemon probe, no keychain read,
+        // no handshake, so no one-shot proof and no session rotation is lost.
+        assert!(!prechecked.get());
+        assert!(!read.get());
+        assert!(!exchanged.get());
+    }
+
+    #[test]
+    fn carries_the_validated_route_alongside_the_issued_session() {
+        let enrollment = run_enrollment(
+            Some("/issues?repo=mandible"),
+            || Ok(()),
+            || Ok(Some(b"mandible_pat_secret".to_vec())),
+            |credential| {
+                assert_eq!(credential, b"mandible_pat_secret");
+                Enrollment::Session {
+                    route: String::new(),
+                    token: "dashboard-session".to_string(),
+                }
+            },
+        )
+        .expect("enrollment");
+        match enrollment {
+            Enrollment::Session { route, token } => {
+                assert_eq!(route, "/issues?repo=mandible");
+                assert_eq!(token, "dashboard-session");
+            }
+            _ => panic!("expected a session"),
+        }
+    }
+
+    #[test]
+    fn treats_an_absent_credential_as_nothing_to_enroll() {
+        let exchanged = Cell::new(false);
+        let enrollment = run_enrollment(
+            None,
+            || Ok(()),
+            || Ok(None),
+            |_| {
+                exchanged.set(true);
+                Enrollment::Unreachable("unused".to_string())
+            },
+        )
+        .expect("enrollment");
+        assert!(matches!(enrollment, Enrollment::Missing));
+        assert!(!exchanged.get());
+    }
+
+    #[test]
+    fn never_sends_a_credential_that_failed_validation() {
+        let exchanged = Cell::new(false);
+        let result = run_enrollment(
+            None,
+            || Ok(()),
+            || Err("the keychain operator credential is not a valid Mandible token".to_string()),
+            |_| {
+                exchanged.set(true);
+                Enrollment::Unreachable("unused".to_string())
+            },
+        );
+        assert!(result.is_err());
+        assert!(!exchanged.get());
+    }
+
+    #[test]
+    fn trims_validates_and_scrubs_a_credential_buffer() {
+        let mut raw = b"  mandible_pat_abc-123~. \n".to_vec();
+        let credential = extract_credential(&mut raw, "keychain")
+            .expect("valid credential")
+            .expect("present");
+        assert_eq!(credential, b"mandible_pat_abc-123~.".to_vec());
+        // The whole source buffer is scrubbed, not just the trimmed span.
+        assert!(raw.iter().all(|byte| *byte == 0));
+
+        // A CR/LF-bearing value would smuggle headers into the handshake; it is
+        // refused at read time, before any connection is opened.
+        let mut poisoned = b"VALID\r\nX-Request-Id: VALID".to_vec();
+        let error = extract_credential(&mut poisoned, "keychain").expect_err("poisoned");
+        assert!(error.contains("not a valid Mandible token"));
+        assert!(!error.contains("VALID"));
+        assert!(poisoned.iter().all(|byte| *byte == 0));
+
+        let mut blank = b"   \n".to_vec();
+        assert!(extract_credential(&mut blank, "keychain")
+            .expect("blank credential")
+            .is_none());
     }
 
     #[test]
@@ -942,34 +1341,73 @@ mod tests {
 
     #[test]
     fn reads_only_the_session_token_out_of_a_handshake_response() {
-        let response =
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 61\r\n\r\n\
-{\"token\":\"dashboard-session\",\"expires_at\":1,\"user\":{\"slug\":\"op\"}}";
+        let body = "{\"token\":\"dashboard-session\",\"expires_at\":1,\"user\":{\"slug\":\"op\"}}";
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len(),
+        );
         assert_eq!(
-            parse_dashboard_session_response(response).expect("session"),
-            "dashboard-session",
+            session_token(interpret_handshake_response(response.as_bytes())),
+            Some("dashboard-session".to_string()),
         );
     }
 
     #[test]
     fn reports_handshake_failures_without_echoing_the_credential() {
-        let rejected = parse_dashboard_session_response(
-            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
-        )
-        .expect_err("rejected");
-        assert!(rejected.contains("rejected by the daemon"));
+        // A daemon that answered has seen the credential: a one-shot proof is
+        // spent, so these are Refused rather than Unreachable.
+        let rejected =
+            interpret_handshake_response(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n");
+        assert!(matches!(rejected, Enrollment::Refused(_)));
+        let message = failure_message(&rejected);
+        assert!(message.contains("rejected by the daemon"));
 
-        let unconfigured = parse_dashboard_session_response(
-            "HTTP/1.1 409 Conflict\r\nContent-Length: 2\r\n\r\n{}",
-        )
-        .expect_err("unconfigured");
-        assert!(unconfigured.contains("mandible user setup"));
+        let unconfigured =
+            interpret_handshake_response(b"HTTP/1.1 409 Conflict\r\nContent-Length: 2\r\n\r\n{}");
+        assert!(failure_message(&unconfigured).contains("mandible user setup"));
 
-        assert!(parse_dashboard_session_response("HTTP/1.1 500 Server Error\r\n\r\n").is_err());
-        assert!(parse_dashboard_session_response("not http at all").is_err());
+        assert!(matches!(
+            interpret_handshake_response(b"HTTP/1.1 500 Server Error\r\n\r\n"),
+            Enrollment::Refused(_)
+        ));
         // A 200 without a usable token is a failure, never an empty enrollment.
-        assert!(
-            parse_dashboard_session_response("HTTP/1.1 200 OK\r\n\r\n{\"token\":\"\"}").is_err()
+        assert!(matches!(
+            interpret_handshake_response(b"HTTP/1.1 200 OK\r\n\r\n{\"token\":\"\"}"),
+            Enrollment::Refused(_)
+        ));
+    }
+
+    #[test]
+    fn refuses_responses_that_cannot_be_trusted_as_the_daemons() {
+        // Everything here leaves doubt about whether the credential was seen,
+        // so it must classify as Unreachable and preserve a one-shot proof.
+        let oversized = vec![b'x'; MAX_HANDSHAKE_RESPONSE_BYTES + 1];
+        assert!(matches!(
+            interpret_handshake_response(&oversized),
+            Enrollment::Unreachable(_)
+        ));
+
+        let truncated = interpret_handshake_response(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n{\"token\":\"short\"}",
         );
+        assert!(matches!(truncated, Enrollment::Unreachable(_)));
+        assert!(failure_message(&truncated).contains("truncated"));
+
+        for garbage in [
+            &b"not http at all\r\n\r\n{}"[..],
+            &b"HTTP/2 200 OK\r\n\r\n{}"[..],
+            &b"HTTP/1.1 20 OK\r\n\r\n{}"[..],
+            &b"HTTP/1.1 2000 OK\r\n\r\n{}"[..],
+            &b"HTTP/1.1 OK\r\n\r\n{}"[..],
+            &b"HTTP/1.1 200 OK"[..],
+        ] {
+            assert!(
+                matches!(
+                    interpret_handshake_response(garbage),
+                    Enrollment::Unreachable(_)
+                ),
+                "expected an untrusted classification",
+            );
+        }
     }
 }

@@ -78,20 +78,30 @@ export async function attemptDesktopLogin(
   return failed ? 'failed' : 'unavailable';
 }
 
+const CREDENTIAL_QUERY_PARAM = 'mandible_auth';
+
 /**
  * Strip any `mandible_auth` already present in the hash before it is forwarded
  * as the return route. The dashboard reads the first occurrence, so forwarding
  * a stale one would shadow the session the shell injects after it and leave a
- * credential sitting in the visible URL. The Rust side refuses such a route as
- * well; this keeps the UI from ever asking for it.
+ * credential sitting in the visible URL.
+ *
+ * The match is structural and mirrors the shell's: keys are compared after
+ * `URLSearchParams` has percent-decoded them (so `mandible%5Fauth` is caught
+ * too) and case-insensitively (so this never forwards a route the shell would
+ * then refuse). Only a reserved *key* is stripped — a route like
+ * `/search?q=mandible_authentication` passes through untouched.
  */
 export function sanitizeEnrollmentHash(hash: string): string {
   const raw = hash.replace(/^#/, '');
   const queryIndex = raw.indexOf('?');
   if (queryIndex < 0) return raw;
   const params = new URLSearchParams(raw.slice(queryIndex + 1));
-  if (!params.has('mandible_auth')) return raw;
-  params.delete('mandible_auth');
+  const reserved = [...params.keys()].filter(
+    (key) => key.toLowerCase() === CREDENTIAL_QUERY_PARAM,
+  );
+  if (reserved.length === 0) return raw;
+  for (const key of reserved) params.delete(key);
   const remaining = params.toString();
   return `${raw.slice(0, queryIndex)}${remaining ? `?${remaining}` : ''}`;
 }
