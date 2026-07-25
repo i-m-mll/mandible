@@ -478,6 +478,52 @@ a {
   opacity: 0.7;
 }
 
+/* Desktop-shell login affordance (issue 54b5677). Sits in the header actions,
+   so it must stay compact and must not shift the surrounding controls. */
+.desktop-login {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 420px;
+  padding: 3px 4px 3px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface-popover);
+  font-size: 12px;
+}
+
+.desktop-login__label {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.desktop-login__button {
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: none;
+  color: var(--accent-blue);
+  cursor: pointer;
+  padding: 2px 10px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.desktop-login__button:hover:not(:disabled) {
+  border-color: var(--accent-blue);
+}
+
+.desktop-login__button:disabled {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.desktop-login__error {
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .daemon-warm-status {
   position: fixed;
   right: 16px;
