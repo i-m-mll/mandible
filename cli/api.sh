@@ -11,14 +11,21 @@ MANDIBLE_API_TEMP_ROOT=""
 api_ensure_temp_root() {
   if [[ -z "$MANDIBLE_API_TEMP_ROOT" ]]; then
     MANDIBLE_API_TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mandible-api.XXXXXX")"
-    # Asserted, not assumed: token-bearing bodies live under this root.
-    chmod 700 "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || true
+    # Asserted, not assumed: token-bearing bodies live under this root, so a
+    # failure to secure it is fatal rather than silently downgraded.
+    if ! chmod 700 "$MANDIBLE_API_TEMP_ROOT"; then
+      printf 'mandible: could not restrict permissions on %s; refusing to stage request data there\n' \
+        "$MANDIBLE_API_TEMP_ROOT" >&2
+      rm -rf -- "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || true
+      MANDIBLE_API_TEMP_ROOT=""
+      return 1
+    fi
     : > "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
   fi
 }
 
 api_track_temp() {
-  api_ensure_temp_root
+  api_ensure_temp_root || return 1
   printf '%s\n' "$1" >> "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
 }
 
@@ -39,10 +46,14 @@ api_untrack_temp() {
 # guarantee is what keeps another local account from reading a token out of the
 # window between write and unlink.
 api_temp_file() {
-  api_ensure_temp_root
+  api_ensure_temp_root || return 1
   local temp_path
   temp_path="$(mktemp "$MANDIBLE_API_TEMP_ROOT/file.XXXXXX")" || return 1
-  chmod 600 "$temp_path" 2>/dev/null || true
+  if ! chmod 600 "$temp_path"; then
+    printf 'mandible: could not restrict permissions on %s; refusing to use it\n' "$temp_path" >&2
+    rm -f -- "$temp_path" 2>/dev/null || true
+    return 1
+  fi
   printf '%s' "$temp_path"
 }
 
@@ -116,9 +127,11 @@ api_managed_client_markers_present() {
 #   - Nothing reaches argv, so `ps` (and Mandible's own process scanner) never
 #     sees a secret. The macOS write uses `security -i` batch mode, where the
 #     whole command line — password included — arrives on stdin.
-#   - Every entry point suspends `xtrace` for the duration and restores the
-#     previous setting, so running a CLI under `bash -x` / `zsh -x` cannot echo
-#     secret material.
+#   - Secret-bearing regions suspend `xtrace` and restore the previous setting,
+#     so running a CLI under `bash -x` / `zsh -x` cannot echo secret material.
+#     This obligation is shared: a callee cannot protect its caller, so every
+#     site that CAPTURES a secret suspends around its own assignment. See the
+#     xtrace idiom below.
 #
 # Keying contract. An item is identified by (service, account):
 #   - secret_set always writes both, and verifies by reading back both.
@@ -150,7 +163,33 @@ api_managed_client_markers_present() {
 # The keychain tool by absolute path: a hostile PATH must not be able to
 # substitute the binary that reads and writes credentials. The override exists
 # so tests can point the seam at a stub; it is not an operator knob.
+#
+# Trust note: MANDIBLE_SECURITY_BIN names an executable chosen by the
+# environment, so anyone who can set it can substitute the credential tool. It
+# is exactly as trusted as PATH itself, and is only more constrained: the
+# default resolves to an absolute path that PATH cannot influence.
 : "${MANDIBLE_SECURITY_BIN:=/usr/bin/security}"
+
+# ── xtrace suspension idiom for secret-bearing regions (issue e2cb93f) ───────
+#
+# A function cannot protect its callers. Command substitution runs in a
+# subshell, and the shell prints the trace line for `token=$(secret_get …)`
+# after the substitution completes — so whatever the callee does to its own
+# tracing, the CALLER still echoes the expanded value. Every site that captures
+# or handles secret material must therefore suspend tracing around its own
+# region, using this idiom verbatim:
+#
+#   local traced=0
+#   case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+#   token=$(secret_get some-service)
+#   ... use "$token" ...
+#   (( traced == 0 )) || set -x
+#
+# It is deliberately inlined rather than wrapped in a helper function: in zsh
+# the xtrace option is restored when the function that changed it returns, so a
+# `suspend_tracing` helper would protect nothing in its caller (verified on zsh
+# 5.9; bash propagates, zsh does not). Every non-fatal exit path from a
+# suspended region must restore.
 
 # Reject material that the backend cannot store faithfully (see header).
 secret_material_valid() {
@@ -226,21 +265,41 @@ secret_get_impl() {
   printf '%s' "$value"
 }
 
+# Exit status of `security find-generic-password` when no item matches. Every
+# other nonzero status is an operational failure (locked keychain, missing
+# keychain file, permission denial) that callers must not read as "absent".
+SECRET_KEYCHAIN_NOT_FOUND_STATUS=44
+
 # secret_account_for_service <service>
-# Print the account attribute of the item a service-only lookup resolves to, or
-# return nonzero when there is no such item. Reads attributes only: without -w
-# and without -g, `security` never emits the password. Best effort — macOS
-# returns one match, and which one it picks among same-service items is not a
-# documented ordering.
+# Report which account a SERVICE-ONLY lookup resolves to — the lookup the two
+# ambient readers perform. Reads attributes only: without -w and without -g,
+# `security` never emits the password.
+#
+# Three outcomes, deliberately distinguished so callers can fail closed:
+#   0 — an item exists; its account is printed
+#   1 — no such item (the backend reported not-found, status 44)
+#   3 — could not determine: backend unavailable, an operational failure, or an
+#       item whose attributes did not yield an account
+#   2 — unusable argument
+#
+# Which item macOS returns among several sharing a service is not a documented
+# ordering (observed: the oldest), so treat the answer as "what a reader would
+# get right now", not as an enumeration.
 secret_account_for_service() {
-  local service="${1:-}" attributes account
+  # Not named `status`: that identifier is a read-only alias for $? in zsh.
+  local service="${1:-}" attributes account lookup_status=0
   secret_material_valid "$service" || return 2
-  secret_backend_available || return 1
-  attributes=$("$MANDIBLE_SECURITY_BIN" find-generic-password -s "$service" 2>/dev/null) || return 1
+  secret_backend_available || return 3
+  attributes=$("$MANDIBLE_SECURITY_BIN" find-generic-password -s "$service" 2>/dev/null) \
+    || lookup_status=$?
+  if (( lookup_status != 0 )); then
+    (( lookup_status == SECRET_KEYCHAIN_NOT_FOUND_STATUS )) && return 1
+    return 3
+  fi
   account=$(printf '%s\n' "$attributes" \
     | sed -n 's/^[[:space:]]*"acct"<blob>="\(.*\)"$/\1/p' \
     | sed -n '1p')
-  [[ -n "$account" ]] || return 1
+  [[ -n "$account" ]] || return 3
   printf '%s' "$account"
 }
 
@@ -269,11 +328,17 @@ secret_set() {
 }
 
 secret_set_impl() {
-  local service="${1:-}" account="${2:-}" value="" stored=""
+  local service="${1:-}" account="${2:-}" value="" stored="" remainder=""
   secret_material_valid "$service" || return 2
   secret_material_valid "$account" || return 2
   secret_backend_available || return 1
   IFS= read -r value || true
+  # A single line, and nothing after it. Storing only the first line of a
+  # multi-line input would silently truncate a caller's secret and report
+  # success. The sentinel keeps command substitution from stripping a lone
+  # trailing newline, so "value\n\n" is caught as surplus too.
+  remainder="$(cat; printf 'X')"
+  [[ "$remainder" == "X" ]] || return 2
   secret_material_valid "$value" || return 2
   # printf is a shell builtin, so the assembled command line never becomes the
   # argv of a new process; only `security -i` is exec'd.
@@ -297,6 +362,15 @@ secret_set_impl() {
 # printed or logged — it is emitted on stdout solely for command-substitution
 # capture by api_client_token. Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
 api_keychain_operator_token() {
+  local traced=0 rc=0
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  api_keychain_operator_token_impl
+  rc=$?
+  (( traced == 0 )) || set -x
+  return "$rc"
+}
+
+api_keychain_operator_token_impl() {
   [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]] && return 0
   local token
   token=$(secret_get mandible-operator) || return 0
@@ -328,6 +402,18 @@ api_keychain_operator_token() {
 # ever fires pre-enrollment. Both ambient fallbacks are fenced off managed
 # agents by api_managed_client_markers_present.
 api_client_token() {
+  local traced=0 rc=0
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  api_client_token_impl "$@"
+  rc=$?
+  (( traced == 0 )) || set -x
+  return "$rc"
+}
+
+# Suspension covers the whole body, not just the keychain capture: every branch
+# here either echoes a token or captures one, and the bootstrap-file read is as
+# sensitive as the keychain read.
+api_client_token_impl() {
   local method="${1:-}"
   if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
     printf '%s' "$MANDIBLE_TOKEN"
@@ -502,12 +588,17 @@ api_http_exchange() {
   # curl config file, never on argv (which is visible in `ps`). Resolve it from
   # MANDIBLE_TOKEN or the same-user operator bootstrap-token file. Pass the
   # method so GET reads never pick up the one-shot bootstrap proof (issue a9ede3c).
+  #
+  # xtrace is suspended across the capture and the config write (issue e2cb93f):
+  # both the assignment and the printf would otherwise echo the bearer token.
+  local token_traced=0
+  case "$-" in *x*) token_traced=1; { set +x; } 2>/dev/null ;; esac
   token="$(api_client_token "$method")"
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
-    chmod 600 "$token_cfg" 2>/dev/null || true
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
   fi
+  (( token_traced == 0 )) || set -x
 
   while true; do
     : > "$output_file"
@@ -1046,6 +1137,11 @@ api_file_rpc_exchange() {
   # still lands in the spool request file, which is the file-RPC trust anchor.
   : > "$request_tmp"
   chmod 600 "$request_tmp"
+  # xtrace is suspended across the command below (issue e2cb93f): the
+  # MANDIBLE_CLIENT_TOKEN environment-assignment prefix is expanded into the
+  # trace line, which would echo the capability token.
+  local rpc_token_traced=0
+  case "$-" in *x*) rpc_token_traced=1; { set +x; } 2>/dev/null ;; esac
   MANDIBLE_CLIENT_TOKEN="$(api_client_token "$method")" jq -n \
     --arg id "$request_id" \
     --arg method "$method" \
@@ -1062,6 +1158,7 @@ api_file_rpc_exchange() {
      + (if $method != "GET" and $provider != "" and $provider_session_id != ""
         then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
         else {} end)' > "$request_tmp"
+  (( rpc_token_traced == 0 )) || set -x
   rm -f "$body_tmp"
   mv "$request_tmp" "$request_file"
   chmod 600 "$request_file"

@@ -171,19 +171,26 @@ cmd_setup() {
 
 cmd_dashboard_link() {
   require_tools
-  local token encoded base bootstrap_file=""
+  local token encoded base bootstrap_file="" traced=0
   if [[ -z "${MANDIBLE_TOKEN:-}" ]]; then
     bootstrap_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
   fi
+  # Suspend xtrace from the token capture through the final printf (issue
+  # e2cb93f): the capture, the encoding and the URL itself all carry the
+  # enrollment credential. stdout is the intended channel for that URL; a trace
+  # stream is not.
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
   token="$(api_client_token)"
   [[ -n "$token" ]] \
     || die "No operator bootstrap token is available. Run mandible user setup first." 1
   encoded="$(jq -rn --arg value "$token" '$value|@uri')"
+  token=""
   base="$(api_base)"
   [[ "$base" == http://* || "$base" == https://* ]] \
     || die "Dashboard enrollment requires an HTTP Mandible endpoint." 1
   [[ -z "$bootstrap_file" ]] || rm -f -- "$bootstrap_file"
   printf '%s/#/?mandible_auth=%s\n' "${base%/}" "$encoded"
+  (( traced == 0 )) || set -x
 }
 
 cmd_list() {
@@ -449,19 +456,26 @@ token_mint() {
       || die "${RED}User slug '${account}' cannot be used as a secret-store account (printable ASCII only).${RESET} Pass --service and rename the user, or store it manually." 1
     # The ambient readers look up this service without an account, so an item
     # under a different account would leave them reading the older token while
-    # this command reports success. Refuse instead.
-    local existing_account=""
-    existing_account="$(secret_account_for_service "$service" 2>/dev/null)" || existing_account=""
-    if [[ -n "$existing_account" && "$existing_account" != "$account" ]]; then
-      die "${RED}Refusing to store: service '${service}' already holds an item for account '${existing_account}', not '${account}'.${RESET} Readers resolve this service without an account, so a second item would shadow the first. Remove the stale item or pass an explicit --service <name>." 1
-    fi
-    # Rotation detection is best effort and advisory only: it reports the state
-    # observed before the mint, and a concurrent writer between this read and the
-    # write below would make it stale. It never gates the write, and the existing
-    # value is discarded here, never printed.
-    if [[ -n "$existing_account" ]]; then
-      rotated=1
-    fi
+    # this command reports success. The three outcomes are kept distinct: only a
+    # definite "no such item" proceeds, and an unreadable keychain fails closed
+    # rather than being mistaken for absence.
+    local existing_account="" account_status=0
+    existing_account="$(secret_account_for_service "$service")" || account_status=$?
+    case "$account_status" in
+      0)
+        if [[ "$existing_account" != "$account" ]]; then
+          die "${RED}Refusing to store: service '${service}' already holds an item for account '${existing_account}', not '${account}'.${RESET} Readers resolve this service without an account, so a second item would shadow the first. Remove the stale item or pass an explicit --service <name>." 1
+        fi
+        # Advisory only: this is the state observed before the mint, and a
+        # concurrent writer would make it stale. It never gates the write, and
+        # the existing value is never read or printed — only its account is.
+        rotated=1
+        ;;
+      1) ;; # no such item: a fresh write
+      *)
+        die "${RED}Refusing to store: could not read the existing secret-store item for service '${service}' (keychain attribute lookup failed).${RESET} Fix the secret store — an unreadable keychain must not be mistaken for an empty one — or pass --service <name>." 1
+        ;;
+    esac
   fi
 
   # The raw token is live in shell state from the mint call until the scrub
@@ -496,6 +510,17 @@ token_mint() {
     || die "${RED}Token minted (credential ${credential_id:-unknown}) but the daemon returned no token value to store.${RESET} Revoke it with: mandible user token revoke ${credential_id:-<credential-id>}" 1
   printf '%s' "$token" | secret_set "$service" "$account" \
     || die "${RED}Token minted (credential ${credential_id}) but could NOT be stored in the secret backend.${RESET} Revoke it with: mandible user token revoke ${credential_id}" 1
+
+  # Post-write check, against the exact lookup the ambient readers perform. The
+  # pre-write check narrows the window in which a competing item can appear; this
+  # one catches what slips through it, including a writer that raced this
+  # command. The token IS stored under (service, account) at this point — the
+  # failure being reported is that readers would resolve somewhere else.
+  local resolved_account="" resolved_status=0
+  resolved_account="$(secret_account_for_service "$service")" || resolved_status=$?
+  if (( resolved_status != 0 )) || [[ "$resolved_account" != "$account" ]]; then
+    die "${RED}Token minted (credential ${credential_id}) and stored under service '${service}' account '${account}', but a service-only lookup resolves to '${resolved_account:-<unreadable>}'.${RESET} Ambient readers (mandible-operator / mandible-agent-<app>) will use that item, not this one. Remove the shadowing item, then store again — or store under a service you control with --service <name>." 1
+  fi
 
   # The raw token is deliberately absent from the output: with --store the whole
   # point is that it goes to the secret store and nowhere else.

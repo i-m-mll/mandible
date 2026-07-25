@@ -92,13 +92,24 @@ inject_agent_token() {
   # Need a known app to derive the service name.
   [ -n "$APP" ] || return 0
 
-  local service token
+  local service token traced=0
   service="mandible-agent-$APP"
+  # Suspend xtrace across the capture AND the export: under `bash -x` both the
+  # assignment and the export line would echo the token (issue e2cb93f). The
+  # previous setting is restored on every path below, so the state this function
+  # leaves behind — and therefore what the exec'd command inherits — is exactly
+  # what it found.
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
   # An unavailable backend or an absent item is normal here: leave the token
   # unset and let the session run with whatever identity it already has.
-  token=$(secret_get "$service") || return 0
-  [ -n "$token" ] || return 0
-  export MANDIBLE_TOKEN="$token"
+  if ! token=$(secret_get "$service"); then
+    [ "$traced" -eq 0 ] || set -x
+    return 0
+  fi
+  if [ -n "$token" ]; then
+    export MANDIBLE_TOKEN="$token"
+  fi
+  [ "$traced" -eq 0 ] || set -x
 }
 
 inject_agent_token

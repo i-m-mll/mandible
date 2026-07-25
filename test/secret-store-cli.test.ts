@@ -22,19 +22,33 @@ let homeDir = "";
 let argvLog = "";
 let securityStub = "";
 let server: http.Server | null = null;
+let authHeaders: string[] = [];
 
 /**
- * A fake keychain tool. Generic passwords are two-line files
- * (`<account>\n<secret>`) under storeDir. It understands both argv invocations
- * and `-i` batch mode, applying the same quoting rules as security's batch
- * parser (`"` delimits, `\` escapes inside quotes).
+ * A fake keychain tool with the fidelity these tests need. Items are stored one
+ * per file under `<store>/items/NNN` as `<service>\n<account>\n<secret>`, with
+ * NNN increasing by creation order, so:
+ *   - items are keyed by (service, account), and several may share a service;
+ *   - a service-only lookup resolves to the OLDEST match, which is what the
+ *     real keychain was observed to do;
+ *   - a lookup that matches nothing exits 44, the status the real tool uses for
+ *     item-not-found and which the seam distinguishes from operational errors.
  *
- * Two behaviors are deliberate regression guards:
- *   - every invocation's argv is appended to argvLog, so tests can assert no
- *     secret ever reaches a process argument list;
- *   - `add-generic-password` with no inline value (the getpass/tty protocol) is
- *     refused outright, so reverting to "pipe the password to -w" fails the
- *     suite on every platform, not only under a controlling terminal.
+ * It understands argv invocations and `-i` batch mode, applying security's
+ * batch quoting rules (`"` delimits, `\` escapes inside quotes).
+ *
+ * Injectable behavior, via the environment:
+ *   - MANDIBLE_TEST_SECURITY_FAIL=attributes — attribute reads fail with an
+ *     operational error (exit 1), never 44.
+ *   - MANDIBLE_TEST_SECURITY_SHADOW=<account> — before writing, insert an older
+ *     competing item for the same service under <account>, simulating a writer
+ *     that raced us and now wins service-only resolution.
+ *
+ * Two behaviors are deliberate regression guards: every invocation's argv is
+ * appended to argvLog so tests can assert no secret reaches a process argument
+ * list, and `add-generic-password` with no inline value (the getpass/tty
+ * protocol) is refused outright, so reverting to "pipe the password to -w"
+ * fails the suite on every platform, not only under a controlling terminal.
  */
 function writeSecurityStub(): void {
   securityStub = path.join(stubDir, "security");
@@ -44,12 +58,42 @@ function writeSecurityStub(): void {
 set -u
 STORE=${JSON.stringify(storeDir)}
 LOG=${JSON.stringify(argvLog)}
+ITEMS="$STORE/items"
+mkdir -p "$ITEMS"
 printf '%s\\n' "$*" >> "$LOG"
+
+next_index() {
+  local last
+  last="$(ls "$ITEMS" 2>/dev/null | sort | tail -n 1)"
+  if [ -z "$last" ]; then printf '001'; else printf '%03d' "$((10#$last + 1))"; fi
+}
+
+# Echo the path of the oldest item matching a service and, when given, account.
+find_item() {
+  local svc="$1" acct="$2" name file
+  for name in $(ls "$ITEMS" 2>/dev/null | sort); do
+    file="$ITEMS/$name"
+    [ "$(sed -n 1p "$file")" = "$svc" ] || continue
+    if [ -n "$acct" ] && [ "$(sed -n 2p "$file")" != "$acct" ]; then continue; fi
+    printf '%s' "$file"
+    return 0
+  done
+  return 1
+}
+
+write_item() {
+  local svc="$1" acct="$2" secret="$3" file
+  if file="$(find_item "$svc" "$acct")"; then
+    printf '%s\\n%s\\n%s\\n' "$svc" "$acct" "$secret" > "$file"
+  else
+    printf '%s\\n%s\\n%s\\n' "$svc" "$acct" "$secret" > "$ITEMS/$(next_index)"
+  fi
+}
 
 handle() {
   local cmd="\${1:-}"
   shift || true
-  local svc="" acct="" inline="" update=0 have_w=0 file stored_acct
+  local svc="" acct="" inline="" update=0 have_w=0 file
   while [ $# -gt 0 ]; do
     case "$1" in
       -s) svc="\${2:-}"; shift 2 ;;
@@ -70,14 +114,16 @@ handle() {
   done
   case "$cmd" in
     find-generic-password)
-      file="$STORE/$svc"
-      [ -f "$file" ] || return 44
-      stored_acct="$(sed -n 1p "$file")"
-      if [ -n "$acct" ] && [ "$stored_acct" != "$acct" ]; then return 44; fi
+      if [ "$have_w" -eq 0 ] && [ "\${MANDIBLE_TEST_SECURITY_FAIL:-}" = "attributes" ]; then
+        printf 'stub: simulated keychain failure\\n' >&2
+        return 1
+      fi
+      file="$(find_item "$svc" "$acct")" || return 44
       if [ "$have_w" -eq 1 ]; then
-        sed -n 2p "$file"
+        sed -n 3p "$file"
       else
-        printf '    "acct"<blob>="%s"\\n    "svce"<blob>="%s"\\n' "$stored_acct" "$svc"
+        printf '    "acct"<blob>="%s"\\n    "svce"<blob>="%s"\\n' \\
+          "$(sed -n 2p "$file")" "$(sed -n 1p "$file")"
       fi
       ;;
     add-generic-password)
@@ -85,8 +131,13 @@ handle() {
         printf 'stub: refusing the interactive getpass protocol\\n' >&2
         return 1
       fi
-      if [ -f "$STORE/$svc" ] && [ "$update" -eq 0 ]; then return 45; fi
-      printf '%s\\n%s\\n' "$acct" "$inline" > "$STORE/$svc"
+      if [ -n "\${MANDIBLE_TEST_SECURITY_SHADOW:-}" ]; then
+        if ! find_item "$svc" "\$MANDIBLE_TEST_SECURITY_SHADOW" >/dev/null; then
+          write_item "$svc" "\$MANDIBLE_TEST_SECURITY_SHADOW" "shadow-token"
+        fi
+      fi
+      if find_item "$svc" "$acct" >/dev/null && [ "$update" -eq 0 ]; then return 45; fi
+      write_item "$svc" "$acct" "$inline"
       ;;
     *) return 1 ;;
   esac
@@ -146,15 +197,44 @@ function writeUnameStub(kernel: "Darwin" | "Linux"): void {
   );
 }
 
-function storedItem(service: string): { account: string; secret: string } | null {
-  const file = path.join(storeDir, service);
-  if (!fs.existsSync(file)) return null;
-  const [account = "", secret = ""] = fs.readFileSync(file, "utf8").split("\n");
-  return { account, secret };
+interface StoredItem {
+  service: string;
+  account: string;
+  secret: string;
+}
+
+/** Every item in the stub store, oldest first. */
+function storedItems(): StoredItem[] {
+  const itemsDir = path.join(storeDir, "items");
+  if (!fs.existsSync(itemsDir)) return [];
+  return fs
+    .readdirSync(itemsDir)
+    .sort()
+    .map((name) => {
+      const [service = "", account = "", secret = ""] = fs
+        .readFileSync(path.join(itemsDir, name), "utf8")
+        .split("\n");
+      return { service, account, secret };
+    });
+}
+
+/**
+ * The item a lookup resolves to: with an account, that exact item; without one,
+ * the oldest item for the service — the ambient readers' lookup.
+ */
+function storedItem(service: string, account?: string): StoredItem | null {
+  return (
+    storedItems().find(
+      (item) => item.service === service && (account === undefined || item.account === account),
+    ) ?? null
+  );
 }
 
 function seedItem(service: string, account: string, secret: string): void {
-  fs.writeFileSync(path.join(storeDir, service), `${account}\n${secret}\n`);
+  const itemsDir = path.join(storeDir, "items");
+  fs.mkdirSync(itemsDir, { recursive: true });
+  const next = String(fs.readdirSync(itemsDir).length + 1).padStart(3, "0");
+  fs.writeFileSync(path.join(itemsDir, next), `${service}\n${account}\n${secret}\n`);
 }
 
 function baseEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -173,6 +253,7 @@ beforeEach(() => {
   homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-secret-home-"));
   argvLog = path.join(stubDir, "argv.log");
   fs.writeFileSync(argvLog, "");
+  authHeaders = [];
   writeSecurityStub();
   writeUnameStub("Darwin");
 });
@@ -212,6 +293,7 @@ describe("secret backend seam", () => {
       );
       expect(written.status, written.stderr).toBe(0);
       expect(storedItem("mandible-agent-test")).toEqual({
+        service: "mandible-agent-test",
         account: "acct-1",
         secret: "tok-round-trip",
       });
@@ -248,6 +330,53 @@ describe("secret backend seam", () => {
       expect(runSeam(shell, "secret_get svc-shared").stdout).toBe("acct-1-token");
       // And the account behind a service-only lookup is discoverable.
       expect(runSeam(shell, "secret_account_for_service svc-shared").stdout).toBe("acct-1");
+    });
+
+    it(`resolves a service-only lookup to the oldest item under ${shell}`, () => {
+      // Two items share a service. The ambient readers pass no account, so the
+      // answer must be the same one the real keychain gives: the older item.
+      seedItem("svc-multi", "older", "older-token");
+      seedItem("svc-multi", "newer", "newer-token");
+
+      expect(runSeam(shell, "secret_get svc-multi").stdout).toBe("older-token");
+      expect(runSeam(shell, "secret_get svc-multi newer").stdout).toBe("newer-token");
+      expect(runSeam(shell, "secret_account_for_service svc-multi").stdout).toBe("older");
+    });
+
+    it(`separates item-absent from an unreadable keychain under ${shell}`, () => {
+      seedItem("svc-present", "acct-1", "token");
+
+      const present = runSeam(shell, 'secret_account_for_service svc-present; printf "rc=%s" "$?"');
+      expect(present.stdout).toBe("acct-1rc=0");
+
+      // Nothing there: the backend's not-found status, reported as rc 1.
+      const absent = runSeam(shell, 'secret_account_for_service svc-absent; printf "rc=%s" "$?"');
+      expect(absent.stdout).toBe("rc=1");
+
+      // Operational failure: never reported as absence.
+      const broken = runSeam(
+        shell,
+        'secret_account_for_service svc-present; printf "rc=%s" "$?"',
+        { MANDIBLE_TEST_SECURITY_FAIL: "attributes" },
+      );
+      expect(broken.stdout).toBe("rc=3");
+    });
+
+    it(`refuses multi-line stdin instead of storing the first line under ${shell}`, () => {
+      const multiline = runSeam(
+        shell,
+        'printf "first\\nsecond\\n" | secret_set svc-multiline acct-1; printf "rc=%s" "$?"',
+      );
+      expect(multiline.stdout).toBe("rc=2");
+      expect(storedItem("svc-multiline")).toBeNull();
+
+      // A single trailing newline is still fine.
+      const single = runSeam(
+        shell,
+        'printf "only\\n" | secret_set svc-multiline acct-1; printf "rc=%s" "$?"',
+      );
+      expect(single.stdout).toBe("rc=0");
+      expect(storedItem("svc-multiline")?.secret).toBe("only");
     });
 
     it(`round-trips values that need batch-line quoting under ${shell}`, () => {
@@ -338,6 +467,88 @@ describe("secret backend seam", () => {
       // …but tracing is still on afterwards, so the guard restored it.
       expect(result.stderr).toContain("marker-after-restore");
     });
+
+    it(`never echoes the operator token through a real request under ${shell}`, async () => {
+      // The ambient-reader call chain end to end, under -x: api_client_token →
+      // api_keychain_operator_token → secret_get, then the bearer token written
+      // into curl's config file. A callee cannot protect its caller (the shell
+      // prints `token=<value>` for a command substitution after it returns), so
+      // this must be exercised through the real call sites, not by capturing a
+      // token-printing function from a test script.
+      seedItem("mandible-operator", "mll", "captured-operator-token");
+      const port = await startUserServer({ slug: "mll", kind: "human" }, []);
+
+      const result = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
+        const child = spawn(
+          shell,
+          ["-x", path.join(process.cwd(), "cli", "user.sh"), "list"],
+          {
+            cwd: process.cwd(),
+            env: {
+              ...cliEnv(port),
+              MANDIBLE_CLI_DIR: path.join(process.cwd(), "cli"),
+              // Keychain reads on: this test is about the reader path.
+              MANDIBLE_NO_KEYCHAIN_TOKEN: "",
+            },
+          },
+        );
+        let stderr = "";
+        child.stderr.setEncoding("utf8");
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        child.on("close", (status) => resolve({ status, stderr }));
+      });
+
+      expect(result.status).toBe(0);
+      // The keychain token really was resolved and sent…
+      expect(authHeaders).toContain("Bearer captured-operator-token");
+      // …and never appeared in the trace.
+      expect(result.stderr).not.toContain("captured-operator-token");
+      expect(result.stderr).toContain("+"); // tracing really was on
+    }, 20_000);
+
+    it(`never echoes the injected agent token from wrap.sh under ${shell}`, async () => {
+      // inject_agent_token captures and exports; both lines would echo the
+      // token under -x. The wrapped command proves the injection still works.
+      seedItem("mandible-agent-claude", "claude-code", "wrapped-agent-token");
+      const port = await startUserServer({ slug: "claude-code", kind: "agent" }, []);
+
+      const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(
+        (resolve) => {
+          const child = spawn(
+            shell,
+            [
+              "-x",
+              path.join(process.cwd(), "cli", "wrap.sh"),
+              "--app",
+              "claude",
+              "--id",
+              "secret-store-test-session",
+              "--",
+              "/bin/sh",
+              "-c",
+              'test -n "$MANDIBLE_TOKEN" && printf "injected_len=%s" "${#MANDIBLE_TOKEN}"',
+            ],
+            { cwd: process.cwd(), env: { ...cliEnv(port), MANDIBLE_NO_KEYCHAIN_TOKEN: "" } },
+          );
+          let stdout = "";
+          let stderr = "";
+          child.stdout.setEncoding("utf8");
+          child.stderr.setEncoding("utf8");
+          child.stdout.on("data", (chunk) => {
+            stdout += chunk;
+          });
+          child.stderr.on("data", (chunk) => {
+            stderr += chunk;
+          });
+          child.on("close", (status) => resolve({ status, stdout, stderr }));
+        },
+      );
+
+      expect(result.stdout).toContain("injected_len=19");
+      expect(result.stderr).not.toContain("wrapped-agent-token");
+    }, 20_000);
   }
 
   it("keeps api_keychain_operator_token semantics when routed through the seam", () => {
@@ -383,6 +594,13 @@ const MINTED_TOKEN = "mandible_pat_test-token-value";
 async function startUserServer(user: FakeUser, requests: string[]): Promise<number> {
   server = http.createServer((req, res) => {
     requests.push(`${req.method} ${req.url}`);
+    if (req.headers.authorization) authHeaders.push(req.headers.authorization);
+    if (req.method === "GET" && req.url?.startsWith("/api/users") && !req.url.startsWith("/api/users/")) {
+      // The list route, used by the reader-path trace test.
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ users: [] }));
+      return;
+    }
     if (req.method === "GET" && req.url?.startsWith("/api/users/")) {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(
@@ -516,6 +734,7 @@ describe("user token mint --store", () => {
     expect(result.stdout).toContain("service: mandible-agent-claude");
     expect(result.stdout).toContain("account: claude-code");
     expect(storedItem("mandible-agent-claude")).toEqual({
+      service: "mandible-agent-claude",
       account: "claude-code",
       secret: MINTED_TOKEN,
     });
@@ -610,6 +829,68 @@ describe("user token mint --store", () => {
     expect(result.stderr).toContain("--service");
     expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
     expect(storedItem("mandible-operator")?.secret).toBe("previous-token");
+  });
+
+  it("fails closed when the existing item cannot be read", async () => {
+    // An unreadable keychain must never be mistaken for an empty one: that is
+    // how a shadowing item gets created.
+    const requests: string[] = [];
+    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
+
+    const result = await new Promise<{ status: number | null; stderr: string }>((resolve) => {
+      const child = spawn(CLI, ["user", "token", "mint", "mll", "--store"], {
+        cwd: process.cwd(),
+        env: { ...cliEnv(port), MANDIBLE_TEST_SECURITY_FAIL: "attributes" },
+      });
+      let stderr = "";
+      child.stderr.setEncoding("utf8");
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("close", (status) => resolve({ status, stderr }));
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("could not read the existing secret-store item");
+    expect(requests.some((entry) => entry.startsWith("POST"))).toBe(false);
+    expect(storedItems()).toEqual([]);
+  });
+
+  it("reports when a racing writer shadows the item it just stored", async () => {
+    // The pre-write check passes (nothing there yet), then a competing older
+    // item appears at write time and wins service-only resolution.
+    const requests: string[] = [];
+    const port = await startUserServer({ slug: "mll", kind: "human" }, requests);
+
+    const result = await new Promise<{ status: number | null; stdout: string; stderr: string }>(
+      (resolve) => {
+        const child = spawn(CLI, ["user", "token", "mint", "mll", "--store"], {
+          cwd: process.cwd(),
+          env: { ...cliEnv(port), MANDIBLE_TEST_SECURITY_SHADOW: "intruder" },
+        });
+        let stdout = "";
+        let stderr = "";
+        child.stdout.setEncoding("utf8");
+        child.stderr.setEncoding("utf8");
+        child.stdout.on("data", (chunk) => {
+          stdout += chunk;
+        });
+        child.stderr.on("data", (chunk) => {
+          stderr += chunk;
+        });
+        child.on("close", (status) => resolve({ status, stdout, stderr }));
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("credential-1");
+    expect(result.stderr).toContain("intruder");
+    expect(result.stderr).toContain("mll");
+    expect(result.stderr).not.toContain(MINTED_TOKEN);
+    // The write itself did happen — the failure being reported is that ambient
+    // readers would resolve to the shadowing item instead.
+    expect(storedItem("mandible-operator", "mll")?.secret).toBe(MINTED_TOKEN);
+    expect(storedItem("mandible-operator")?.account).toBe("intruder");
   });
 
   it("honors an explicit --service override", async () => {
