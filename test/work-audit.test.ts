@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/sse", () => ({ broadcast: vi.fn() }));
 
+import { migrate, setDb, type Db } from "../src/db";
 import { buildWorkAudit } from "../src/work-audit";
 import {
   deriveReapingSafety,
@@ -11,6 +13,22 @@ import {
 } from "../src/work-scanner";
 import { registerWorkRoutes } from "../src/routes/work";
 import { Router } from "../src/server";
+
+// The audit route resolves repo access through the process-global DB singleton
+// (getDb()), which falls through to opening the real database when nothing has
+// been registered. These tests drive the route with mocked scanners and never
+// otherwise need a database, so register an isolated in-memory one per test.
+let db: Db;
+
+beforeEach(() => {
+  db = new Database(":memory:");
+  migrate(db);
+  setDb(db);
+});
+
+afterEach(() => {
+  db.close();
+});
 
 const repo: RepoInfo = {
   id: "repo-1",

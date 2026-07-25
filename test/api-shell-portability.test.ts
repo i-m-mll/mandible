@@ -94,21 +94,21 @@ describe("api_client_token bootstrap attachment by method", () => {
 // one-shot bootstrap proof it behaves like an explicit token — it attaches on
 // every method, GET included — but it is still fenced off managed agents by the
 // same marker guard and honors the MANDIBLE_NO_KEYCHAIN_TOKEN opt-out. These
-// tests stub the macOS `security` binary via PATH and never touch the real
-// keychain.
+// tests stub the keychain binary (MANDIBLE_SECURITY_BIN, issue e2cb93f) and
+// `uname`, so they never touch the real keychain and still exercise the
+// Darwin-gated backend on a Linux CI runner.
 describe("api_client_token keychain operator fallback", () => {
   const KEYCHAIN_TOKEN = "keychain-operator-token";
   let stubDir = "";
+  let securityStub = "";
   let configDir = "";
 
   beforeEach(() => {
-    // A stub `security` that only answers for service `mandible-operator`,
-    // placed first on PATH so it shadows the real /usr/bin/security. This never
-    // reads the developer machine's real keychain.
+    // A stub keychain tool that only answers for service `mandible-operator`.
     stubDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-security-stub-"));
-    const stub = path.join(stubDir, "security");
+    securityStub = path.join(stubDir, "security");
     fs.writeFileSync(
-      stub,
+      securityStub,
       [
         "#!/usr/bin/env bash",
         "for arg in \"$@\"; do",
@@ -119,6 +119,11 @@ describe("api_client_token keychain operator fallback", () => {
         "done",
         "exit 44",
       ].join("\n"),
+      { mode: 0o755 },
+    );
+    fs.writeFileSync(
+      path.join(stubDir, "uname"),
+      "#!/usr/bin/env bash\nprintf 'Darwin\\n'\n",
       { mode: 0o755 },
     );
 
@@ -146,6 +151,7 @@ describe("api_client_token keychain operator fallback", () => {
       encoding: "utf8",
       env: {
         PATH: `${stubDir}:${process.env.PATH ?? ""}`,
+        MANDIBLE_SECURITY_BIN: securityStub,
         MANDIBLE_CONFIG_DIR: configDir,
         ...env,
       },

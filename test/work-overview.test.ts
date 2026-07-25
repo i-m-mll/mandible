@@ -3,7 +3,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import Database from "better-sqlite3";
-import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/sse", () => ({
   broadcast: vi.fn(),
@@ -11,7 +11,7 @@ vi.mock("../src/sse", () => ({
 
 import { WorkScanner, type BranchData } from "../src/work-scanner";
 import { filterAndSortBranches, registerWorkRoutes } from "../src/routes/work";
-import { migrate } from "../src/db";
+import { migrate, setDb } from "../src/db";
 import { Router } from "../src/server";
 
 const gitEnv = {
@@ -31,9 +31,18 @@ function writeFile(filePath: string, content: string): void {
   fs.writeFileSync(filePath, content, "utf8");
 }
 
+// Databases opened by the current test, closed in afterEach.
+const openDbs: Array<InstanceType<typeof Database>> = [];
+
 function createMigratedDb(): InstanceType<typeof Database> {
   const db = new Database(":memory:");
   migrate(db);
+  openDbs.push(db);
+  // Route handlers resolve repo access through the process-global DB singleton
+  // (getDb()), which falls through to opening the real database when nothing
+  // has been registered. Point the singleton at this same isolated in-memory
+  // DB rather than a second one, so a test exercises exactly one database.
+  setDb(db);
   return db;
 }
 
@@ -91,6 +100,16 @@ describe.sequential("WorkScanner", () => {
 
   afterAll(() => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
+  });
+
+  afterEach(() => {
+    // Close every DB this test opened so no connection or singleton state
+    // leaks into the next test. The singleton is re-pointed by the next
+    // createMigratedDb() call; until then it holds a closed handle, which
+    // fails loudly rather than silently reopening the real database.
+    while (openDbs.length > 0) {
+      openDbs.pop()?.close();
+    }
   });
 
   it("creates schema with last_commit_date column", () => {

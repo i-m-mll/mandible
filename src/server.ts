@@ -73,6 +73,13 @@ export interface ResolvedClientIdentity {
   method: "api_token" | "ephemeral";
   credential_id: string | null;
   source: "http_bearer" | "file_rpc_capability" | "bootstrap" | "in_process";
+  /**
+   * Issue 499c148 — which daemon-minted ephemeral credential answered
+   * (`dashboard_handshake`, `operator_bootstrap`, `agent_session:<id>`). Set
+   * only for `method: "ephemeral"`; reporting-only, never an authorization
+   * input, and deliberately absent for api_token identities.
+   */
+  ephemeral_purpose?: string | null;
 }
 
 export interface ClientAuthRequestContext {

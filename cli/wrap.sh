@@ -78,27 +78,38 @@ export AI_AGENT_SIGNING=1
 # the app: `mandible-agent-<app>` (e.g. mandible-agent-claude,
 # mandible-agent-codex). This is the same mechanism for every app that has
 # such an item; apps without one simply get nothing. Absence is normal.
+# Provision one with `mandible user token mint <user> --store` (issue e2cb93f).
 #
-# The token value is never printed, logged, echoed, or written to disk;
-# fetch success is judged only by security's exit status and a non-empty
-# result. Everything here is non-fatal and quiet by default. Opt out with
-# MANDIBLE_NO_KEYCHAIN_TOKEN=1.
+# The token value is never printed, logged, echoed, or written to disk; the
+# read goes through the secret seam in cli/api.sh, whose exit status and a
+# non-empty result are the only success signals. Everything here is non-fatal
+# and quiet by default. Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
 inject_agent_token() {
   # Explicit opt-out.
   [ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" = "1" ] && return 0
   # Respect an already-provided token (e.g. injected by the launcher).
   [ -n "${MANDIBLE_TOKEN:-}" ] && return 0
-  # Need a known app to derive the service name; need the keychain tool.
+  # Need a known app to derive the service name.
   [ -n "$APP" ] || return 0
-  command -v security >/dev/null 2>&1 || return 0
 
-  local service token
+  local service token traced=0
   service="mandible-agent-$APP"
-  # -w prints only the password to stdout; 2>/dev/null suppresses the
-  # "item not found" diagnostic. On any failure we leave the token unset.
-  token=$(security find-generic-password -s "$service" -w 2>/dev/null) || return 0
-  [ -n "$token" ] || return 0
-  export MANDIBLE_TOKEN="$token"
+  # Suspend xtrace across the capture AND the export: under `bash -x` both the
+  # assignment and the export line would echo the token (issue e2cb93f). The
+  # previous setting is restored on every path below, so the state this function
+  # leaves behind — and therefore what the exec'd command inherits — is exactly
+  # what it found.
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  # An unavailable backend or an absent item is normal here: leave the token
+  # unset and let the session run with whatever identity it already has.
+  if ! token=$(secret_get "$service"); then
+    [ "$traced" -eq 0 ] || set -x
+    return 0
+  fi
+  if [ -n "$token" ]; then
+    export MANDIBLE_TOKEN="$token"
+  fi
+  [ "$traced" -eq 0 ] || set -x
 }
 
 inject_agent_token

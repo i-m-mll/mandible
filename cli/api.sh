@@ -11,12 +11,21 @@ MANDIBLE_API_TEMP_ROOT=""
 api_ensure_temp_root() {
   if [[ -z "$MANDIBLE_API_TEMP_ROOT" ]]; then
     MANDIBLE_API_TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/mandible-api.XXXXXX")"
+    # Asserted, not assumed: token-bearing bodies live under this root, so a
+    # failure to secure it is fatal rather than silently downgraded.
+    if ! chmod 700 "$MANDIBLE_API_TEMP_ROOT"; then
+      printf 'mandible: could not restrict permissions on %s; refusing to stage request data there\n' \
+        "$MANDIBLE_API_TEMP_ROOT" >&2
+      rm -rf -- "$MANDIBLE_API_TEMP_ROOT" 2>/dev/null || true
+      MANDIBLE_API_TEMP_ROOT=""
+      return 1
+    fi
     : > "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
   fi
 }
 
 api_track_temp() {
-  api_ensure_temp_root
+  api_ensure_temp_root || return 1
   printf '%s\n' "$1" >> "$MANDIBLE_API_TEMP_ROOT/cleanup-manifest"
 }
 
@@ -30,9 +39,22 @@ api_untrack_temp() {
   mv "$next_manifest" "$manifest"
 }
 
+# Response and request bodies pass through these files, and some of them carry
+# bearer tokens (issue e2cb93f: the `token mint` response holds a raw token until
+# api_request cats and removes it). mktemp already creates 0600 files inside the
+# 0700 root, but the permission is asserted rather than assumed, because the
+# guarantee is what keeps another local account from reading a token out of the
+# window between write and unlink.
 api_temp_file() {
-  api_ensure_temp_root
-  mktemp "$MANDIBLE_API_TEMP_ROOT/file.XXXXXX"
+  api_ensure_temp_root || return 1
+  local temp_path
+  temp_path="$(mktemp "$MANDIBLE_API_TEMP_ROOT/file.XXXXXX")" || return 1
+  if ! chmod 600 "$temp_path"; then
+    printf 'mandible: could not restrict permissions on %s; refusing to use it\n' "$temp_path" >&2
+    rm -f -- "$temp_path" 2>/dev/null || true
+    return 1
+  fi
+  printf '%s' "$temp_path"
 }
 
 api_cleanup_temp_files() {
@@ -91,19 +113,307 @@ api_managed_client_markers_present() {
   [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
 }
 
-# Read the durable operator bearer token from the OS keychain: a macOS Security
-# generic-password item with service name `mandible-operator` (git-credential-
-# helper pattern; naming contract on dotfiles/dfa69d1). Mirrors cli/wrap.sh's
-# inject_agent_token conventions: `-w` prints only the password, security's exit
-# status and a non-empty result are the only success signals, and the value is
-# never printed, logged, or written to disk — it is emitted on stdout solely for
-# command-substitution capture by api_client_token. Missing tool or absent item
-# is normal and non-fatal (empty output). Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
+# ── Secret backend seam (issue e2cb93f) ──────────────────────────────────────
+# One place that knows how OS secret storage is reached, so readers (this file's
+# operator token, cli/wrap.sh's per-agent token) and the writer
+# (`mandible user token mint --store`) share a single dispatch point instead of
+# each open-coding `security`. It lives in api.sh because api.sh is the helper
+# every CLI entry point already sources; it is otherwise independent of HTTP.
+#
+# Secret handling rules these helpers keep:
+#   - Values are never printed, logged, or written to disk here. secret_get
+#     emits the value on stdout solely for command-substitution capture by an
+#     immediate caller; secret_set takes it on stdin, never as an argument.
+#   - Nothing reaches argv, so `ps` (and Mandible's own process scanner) never
+#     sees a secret. The macOS write uses `security -i` batch mode, where the
+#     whole command line — password included — arrives on stdin.
+#   - Secret-bearing regions suspend `xtrace` and restore the previous setting,
+#     so running a CLI under `bash -x` / `zsh -x` cannot echo secret material.
+#     This obligation is shared: a callee cannot protect its caller, so every
+#     site that CAPTURES a secret suspends around its own assignment. See the
+#     xtrace idiom below.
+#
+# Keying contract. An item is identified by (service, account):
+#   - secret_set always writes both, and verifies by reading back both.
+#   - secret_get takes the account as an optional second argument. The ambient
+#     readers (api_keychain_operator_token, cli/wrap.sh's inject_agent_token)
+#     deliberately query service-only, because they have no user slug in hand
+#     and must keep working with the items the operator created by hand.
+#   - A service-only lookup resolves to whichever item macOS returns first, so
+#     two items sharing a service but differing in account are ambiguous for
+#     those readers. secret_account_for_service exposes the account a
+#     service-only read would land on; `token mint --store` uses it to refuse
+#     rather than create such a pair.
+#
+# Accepted material (service, account and secret alike): non-empty, ASCII, and
+# free of control characters — in practice one line of printable ASCII. This is
+# not arbitrary conservatism: `security` returns non-ASCII password data as a
+# hex string rather than the original bytes (so UTF-8 would silently round-trip
+# wrong), and tabs/newlines break the batch parser's tokenization. Anything else
+# is refused (exit 2) instead of stored incorrectly. Mandible bearer tokens are
+# `mandible_pat_` + base64url, well inside this set.
+#
+# macOS is the only implemented backend today. Other platforms fail visibly for
+# writers (secret_backend_available is false and callers surface
+# secret_backend_unavailable_reason); for the two ambient readers, absence stays
+# deliberately silent, because "no token here" is a normal state on every code
+# path that calls them and a warning would fire on every unrelated command. The
+# Linux secret-tool backend stays open on issue e2cb93f.
+
+# The keychain tool by absolute path: a hostile PATH must not be able to
+# substitute the binary that reads and writes credentials. The override exists
+# so tests can point the seam at a stub; it is not an operator knob.
+#
+# Trust note: MANDIBLE_SECURITY_BIN names an executable chosen by the
+# environment, so anyone who can set it can substitute the credential tool. It
+# is exactly as trusted as PATH itself, and is only more constrained: the
+# default resolves to an absolute path that PATH cannot influence.
+: "${MANDIBLE_SECURITY_BIN:=/usr/bin/security}"
+
+# ── xtrace suspension idiom for secret-bearing regions (issue e2cb93f) ───────
+#
+# A function cannot protect its callers. Command substitution runs in a
+# subshell, and the shell prints the trace line for `token=$(secret_get …)`
+# after the substitution completes — so whatever the callee does to its own
+# tracing, the CALLER still echoes the expanded value. Every site that captures
+# or handles secret material must therefore suspend tracing around its own
+# region, using this idiom verbatim:
+#
+#   local traced=0
+#   case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+#   token=$(secret_get some-service)
+#   ... use "$token" ...
+#   (( traced == 0 )) || set -x
+#
+# It is deliberately inlined rather than wrapped in a helper function: in zsh
+# the xtrace option is restored when the function that changed it returns, so a
+# `suspend_tracing` helper would protect nothing in its caller (verified on zsh
+# 5.9; bash propagates, zsh does not). Every non-fatal exit path from a
+# suspended region must restore.
+
+# Reject material that the backend cannot store faithfully (see header).
+secret_material_valid() {
+  case "${1-}" in
+    "") return 1 ;;
+    *[![:ascii:]]*) return 1 ;;
+    *[[:cntrl:]]*) return 1 ;;
+  esac
+  return 0
+}
+
+# Quote a value for security's batch-mode line parser, which treats `"` as a
+# string terminator and `\` as an escape inside a quoted string. Backslash first,
+# then quote. Callers wrap the result in double quotes.
+secret_batch_escape() {
+  local value="${1-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '%s' "$value"
+}
+
+# Print the active backend name and return 0, or return nonzero when none is
+# usable. Never prints anything on the unavailable path.
+secret_backend_kind() {
+  if [[ "$(uname -s)" == "Darwin" && -x "$MANDIBLE_SECURITY_BIN" ]]; then
+    printf 'keychain'
+    return 0
+  fi
+  return 1
+}
+
+secret_backend_available() {
+  secret_backend_kind >/dev/null 2>&1
+}
+
+# One-line human explanation of why no backend is usable, for callers that need
+# to fail loudly. Safe to call even when a backend is available.
+secret_backend_unavailable_reason() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf 'the macOS keychain tool is missing at %s' "$MANDIBLE_SECURITY_BIN"
+  else
+    printf 'no secret backend available on this platform (%s); see Mandible issue e2cb93f' "$(uname -s)"
+  fi
+}
+
+# secret_get <service> [account]
+# Print the stored secret on stdout (no trailing newline) and return 0. Return
+# nonzero, silently and with no output, when the backend is unavailable or the
+# item is absent — absence is a normal condition every current caller treats as
+# "no token", so diagnostics are left to the caller. Exit 2 marks unusable
+# arguments. Omitting the account performs the service-only lookup described in
+# the keying contract above.
+secret_get() {
+  local secret_traced=0 secret_rc=0
+  case "$-" in *x*) secret_traced=1; { set +x; } 2>/dev/null ;; esac
+  secret_get_impl "$@"
+  secret_rc=$?
+  (( secret_traced == 0 )) || set -x
+  return "$secret_rc"
+}
+
+secret_get_impl() {
+  local service="${1:-}" account="${2:-}" value
+  secret_material_valid "$service" || return 2
+  [[ -z "$account" ]] || secret_material_valid "$account" || return 2
+  secret_backend_available || return 1
+  if [[ -n "$account" ]]; then
+    value=$("$MANDIBLE_SECURITY_BIN" find-generic-password -s "$service" -a "$account" -w 2>/dev/null) || return 1
+  else
+    value=$("$MANDIBLE_SECURITY_BIN" find-generic-password -s "$service" -w 2>/dev/null) || return 1
+  fi
+  [[ -n "$value" ]] || return 1
+  printf '%s' "$value"
+}
+
+# Exit status of `security find-generic-password` when no item matches. Every
+# other nonzero status is an operational failure (locked keychain, missing
+# keychain file, permission denial) that callers must not read as "absent".
+SECRET_KEYCHAIN_NOT_FOUND_STATUS=44
+
+# secret_account_for_service <service>
+# Report which account a SERVICE-ONLY lookup resolves to — the lookup the two
+# ambient readers perform. Reads attributes only: without -w and without -g,
+# `security` never emits the password.
+#
+# Three outcomes, deliberately distinguished so callers can fail closed:
+#   0 — an item exists; its account is printed
+#   1 — no such item (the backend reported not-found, status 44)
+#   3 — could not determine: backend unavailable, an operational failure, or an
+#       item whose attributes did not yield an account
+#   2 — unusable argument
+#
+# Which item macOS returns among several sharing a service is not a documented
+# ordering (observed: the oldest), so treat the answer as "what a reader would
+# get right now", not as an enumeration.
+secret_account_for_service() {
+  # Not named `status`: that identifier is a read-only alias for $? in zsh.
+  local service="${1:-}" attributes account lookup_status=0
+  secret_material_valid "$service" || return 2
+  secret_backend_available || return 3
+  attributes=$("$MANDIBLE_SECURITY_BIN" find-generic-password -s "$service" 2>/dev/null) \
+    || lookup_status=$?
+  if (( lookup_status != 0 )); then
+    (( lookup_status == SECRET_KEYCHAIN_NOT_FOUND_STATUS )) && return 1
+    return 3
+  fi
+  account=$(printf '%s\n' "$attributes" \
+    | sed -n 's/^[[:space:]]*"acct"<blob>="\(.*\)"$/\1/p' \
+    | sed -n '1p')
+  [[ -n "$account" ]] || return 3
+  printf '%s' "$account"
+}
+
+# secret_set <service> <account>  (secret value read from stdin)
+# Create or rotate the item keyed by (service, account), then read it back and
+# verify it matches. Returns nonzero on any failure and never echoes the value.
+#
+# The value is one line on a pipe, with an optional trailing newline:
+#   printf '%s' "$token" | secret_set mandible-operator mll
+# Anything more on that stream — a second line, stray NULs — is refused with
+# exit 2 rather than silently truncated to the first line.
+#
+# The write goes through `security -i` batch mode: the full
+# `add-generic-password ...` command line is fed on stdin, so the password is
+# neither an argv element nor a getpass() prompt. The obvious alternatives are
+# both wrong. Passing `-w <secret>` inline exposes the secret in `ps` output for
+# the lifetime of the call. Passing `-w` with no value and piping the password
+# works only when the process has no controlling terminal: `security` collects a
+# missing password with getpass(3), which opens /dev/tty when one exists and
+# ignores the pipe entirely — an operator running this from a terminal gets a
+# hung interactive prompt instead of the piped value.
+#
+# `-U` is what makes a second call a rotation instead of a duplicate-item error.
+secret_set() {
+  local secret_traced=0 secret_rc=0
+  case "$-" in *x*) secret_traced=1; { set +x; } 2>/dev/null ;; esac
+  secret_set_impl "$@"
+  secret_rc=$?
+  (( secret_traced == 0 )) || set -x
+  return "$secret_rc"
+}
+
+secret_set_impl() {
+  local service="${1:-}" account="${2:-}" value="" stored="" extra_bytes=""
+  secret_material_valid "$service" || return 2
+  secret_material_valid "$account" || return 2
+  secret_backend_available || return 1
+  # Read with NUL as the delimiter, not newline, and treat a SUCCESSFUL read as
+  # a refusal. `read -r -d ''` returns 0 only when it actually consumed a NUL
+  # delimiter, and nonzero at clean EOF with the value retained — identical on
+  # bash 3.2 and zsh 5.9. So the read status alone answers "did the input
+  # contain a NUL anywhere?", structurally, wherever the NUL sits: terminal
+  # (`tok\0`), leading (`\0tok`), or interior (`t\0ok`).
+  #
+  # That is stronger than inspecting the value or the leftover bytes, both of
+  # which miss a terminal NUL: it is swallowed as the delimiter, so nothing
+  # invalid lands in the value and nothing is left over to count, and `tok\0`
+  # would otherwise be stored as the truncated `tok` with exit 0. A
+  # newline-delimited read is worse still — bash drops NULs silently on the way
+  # into the variable.
+  if IFS= read -r -d '' value; then
+    return 2
+  fi
+  # A single trailing newline is part of the calling convention; a second one is
+  # surplus and is caught by the material check below as a control character.
+  value="${value%$'\n'}"
+
+  # Nothing may follow. NULs are already refused above, so this covers the rest:
+  # a second line, and any input the read did not consume. `wc` reads this
+  # function's stdin directly, and both properties of that matter:
+  #   - the leftover bytes never pass through a shell variable, so they are
+  #     counted rather than sanitized. A capture-and-compare scheme cannot see
+  #     NUL material at all: command substitution drops NULs, so a NUL-only
+  #     remainder is indistinguishable from an empty one.
+  #   - there is no pipeline, so the status is `wc`'s own. A broken or missing
+  #     counter fails closed instead of reading as "nothing left", with no need
+  #     to reconcile bash's PIPESTATUS against zsh's pipestatus (different name,
+  #     different base index).
+  #
+  # The value must arrive on a pipe or another non-seekable stream. Both shells
+  # rewind a seekable fd after `read`, so a file redirection would make this
+  # count re-see bytes that were already consumed — that fails closed (exit 2),
+  # never a wrong store.
+  extra_bytes="$(wc -c)" || return 2
+  # BSD wc pads its count with spaces; GNU wc does not.
+  extra_bytes="${extra_bytes//[[:space:]]/}"
+  # Equality with "0" is the entire validation: empty output, a non-numeric
+  # count, and any positive count all refuse.
+  [[ "$extra_bytes" == "0" ]] || return 2
+  secret_material_valid "$value" || return 2
+  # printf is a shell builtin, so the assembled command line never becomes the
+  # argv of a new process; only `security -i` is exec'd.
+  printf 'add-generic-password -U -s "%s" -a "%s" -w "%s"\n' \
+    "$(secret_batch_escape "$service")" \
+    "$(secret_batch_escape "$account")" \
+    "$(secret_batch_escape "$value")" \
+    | "$MANDIBLE_SECURITY_BIN" -i >/dev/null 2>&1 \
+    || return 1
+  # Batch mode reports parse failures on its own stream rather than always
+  # through exit status, so the read-back is the real success signal.
+  stored=$(secret_get_impl "$service" "$account") || return 1
+  [[ "$stored" == "$value" ]] || return 1
+}
+
+# Read the durable operator bearer token from the OS keychain: a generic-password
+# item with service name `mandible-operator` (git-credential-helper pattern;
+# naming contract on dotfiles/dfa69d1). Reads through the secret seam above, so
+# an absent tool, an absent item, or an unsupported platform are all the same
+# normal, non-fatal "no token" outcome (empty output, exit 0). The value is never
+# printed or logged — it is emitted on stdout solely for command-substitution
+# capture by api_client_token. Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
 api_keychain_operator_token() {
+  local traced=0 rc=0
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  api_keychain_operator_token_impl
+  rc=$?
+  (( traced == 0 )) || set -x
+  return "$rc"
+}
+
+api_keychain_operator_token_impl() {
   [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]] && return 0
-  command -v security >/dev/null 2>&1 || return 0
   local token
-  token=$(security find-generic-password -s mandible-operator -w 2>/dev/null) || return 0
+  token=$(secret_get mandible-operator) || return 0
   [[ -n "$token" ]] || return 0
   printf '%s' "$token"
 }
@@ -132,6 +442,18 @@ api_keychain_operator_token() {
 # ever fires pre-enrollment. Both ambient fallbacks are fenced off managed
 # agents by api_managed_client_markers_present.
 api_client_token() {
+  local traced=0 rc=0
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
+  api_client_token_impl "$@"
+  rc=$?
+  (( traced == 0 )) || set -x
+  return "$rc"
+}
+
+# Suspension covers the whole body, not just the keychain capture: every branch
+# here either echoes a token or captures one, and the bootstrap-file read is as
+# sensitive as the keychain read.
+api_client_token_impl() {
   local method="${1:-}"
   if [[ -n "${MANDIBLE_TOKEN:-}" ]]; then
     printf '%s' "$MANDIBLE_TOKEN"
@@ -306,12 +628,17 @@ api_http_exchange() {
   # curl config file, never on argv (which is visible in `ps`). Resolve it from
   # MANDIBLE_TOKEN or the same-user operator bootstrap-token file. Pass the
   # method so GET reads never pick up the one-shot bootstrap proof (issue a9ede3c).
+  #
+  # xtrace is suspended across the capture and the config write (issue e2cb93f):
+  # both the assignment and the printf would otherwise echo the bearer token.
+  local token_traced=0
+  case "$-" in *x*) token_traced=1; { set +x; } 2>/dev/null ;; esac
   token="$(api_client_token "$method")"
   if [[ -n "$token" ]]; then
     token_cfg=$(api_temp_file)
-    chmod 600 "$token_cfg" 2>/dev/null || true
     printf 'header = "Authorization: Bearer %s"\n' "$token" > "$token_cfg"
   fi
+  (( token_traced == 0 )) || set -x
 
   while true; do
     : > "$output_file"
@@ -850,6 +1177,11 @@ api_file_rpc_exchange() {
   # still lands in the spool request file, which is the file-RPC trust anchor.
   : > "$request_tmp"
   chmod 600 "$request_tmp"
+  # xtrace is suspended across the command below (issue e2cb93f): the
+  # MANDIBLE_CLIENT_TOKEN environment-assignment prefix is expanded into the
+  # trace line, which would echo the capability token.
+  local rpc_token_traced=0
+  case "$-" in *x*) rpc_token_traced=1; { set +x; } 2>/dev/null ;; esac
   MANDIBLE_CLIENT_TOKEN="$(api_client_token "$method")" jq -n \
     --arg id "$request_id" \
     --arg method "$method" \
@@ -866,6 +1198,7 @@ api_file_rpc_exchange() {
      + (if $method != "GET" and $provider != "" and $provider_session_id != ""
         then {ambient_identity:{provider:$provider, provider_session_id:$provider_session_id}}
         else {} end)' > "$request_tmp"
+  (( rpc_token_traced == 0 )) || set -x
   rm -f "$body_tmp"
   mv "$request_tmp" "$request_file"
   chmod 600 "$request_file"

@@ -7,9 +7,10 @@ import { migrate, openDb, type Db } from "../src/db.js";
 
 // Integration reconciliation (umbrella c16807e): the work-unit merge-scan
 // retirement migration (issue 93d978e) was renumbered to v113 atop main's
-// user-system migrations v107-v111. Migration head is now v116 (issue a64d2de's
-// v115 corrective attribution pass plus issue be2ab49's v116 residual sweep), so
-// a re-migration from a simulated v106 database advances all the way to v116.
+// user-system migrations v107-v111. Migration head is now v117 (issue a64d2de's
+// v115 corrective attribution pass, issue 499c148's v116 session
+// identity-mismatch columns, and issue be2ab49's v117 residual sweep), so a
+// re-migration from a simulated v106 database advances all the way to v117.
 describe("migration v113: work-unit merge-scan retirement", () => {
   let tempDir: string;
   let db: Db;
@@ -39,7 +40,7 @@ describe("migration v113: work-unit merge-scan retirement", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "116",
+      value: "117",
     });
     const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
       name: string;
@@ -56,14 +57,14 @@ describe("migration v113: work-unit merge-scan retirement", () => {
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
-  it("leaves a freshly migrated database at head (v114) with the column present", () => {
+  it("leaves a freshly migrated database at head (v117) with the column present", () => {
     // A fresh baseline (replayed to head) already carries the column.
     const fresh = openDb(path.join(tempDir, "fresh.db"));
     try {
       const columns = fresh.prepare("PRAGMA table_info(work_units)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_scan_retired_at");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "116",
+        value: "117",
       });
     } finally {
       fresh.close();

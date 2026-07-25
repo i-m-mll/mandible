@@ -226,6 +226,31 @@ describe("client-auth: dashboard handshake (finding 1/3)", () => {
     });
   });
 
+  it("lets a dashboard session token re-handshake, as the desktop shell flow needs", async () => {
+    // Issue 54b5677: the desktop shell redeems the durable operator credential
+    // for a session itself, then hands only that session to the webview, whose
+    // normal boot handshake must be able to rotate it.
+    const shellSession = (
+      await requestJson("POST", "/api/client-auth/handshake", undefined, bearer(operatorToken()))
+    ).body as { token: string };
+
+    const rotated = await requestJson(
+      "POST",
+      "/api/client-auth/handshake",
+      undefined,
+      bearer(shellSession.token),
+    );
+
+    expect(rotated.status).toBe(200);
+    const dashboardToken = (rotated.body as { token: string }).token;
+    expect(dashboardToken).not.toBe(shellSession.token);
+    // Rotation revokes the token it replaced, so only the newest one works.
+    expect(authenticator.authenticate(shellSession.token, "http_bearer")).toBeNull();
+    expect(authenticator.authenticate(dashboardToken, "http_bearer")).toMatchObject({
+      method: "ephemeral",
+    });
+  });
+
   it("renews an expired dashboard only at the handshake during a bounded grace", () => {
     let now = 1_000;
     const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });

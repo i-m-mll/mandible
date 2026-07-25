@@ -156,6 +156,7 @@ export class ClientAuthenticator implements ClientAuthGate {
         method: "ephemeral",
         credential_id: null,
         source,
+        ephemeral_purpose: eph.purpose,
       };
       if (eph.purpose === "operator_bootstrap") {
         // The filesystem proof exists only for first enrollment and is
