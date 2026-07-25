@@ -8,9 +8,9 @@ import { migrate, openDb, type Db } from "../src/db.js";
 // Integration reconciliation (umbrella c16807e): the work-unit merge-scan
 // retirement migration (issue 93d978e) was renumbered to v113 atop main's
 // user-system migrations v107-v111. Migration head is now v117 (issue a64d2de's
-// v115 corrective attribution pass, issue be2ab49's v116 residual sweep, and
-// issue 499c148's v117 session identity-mismatch columns), so a re-migration
-// from a simulated v106 database advances all the way to v117.
+// v115 corrective attribution pass, issue 499c148's v116 session
+// identity-mismatch columns, and issue be2ab49's v117 residual sweep), so a
+// re-migration from a simulated v106 database advances all the way to v117.
 describe("migration v113: work-unit merge-scan retirement", () => {
   let tempDir: string;
   let db: Db;

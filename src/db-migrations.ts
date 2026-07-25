@@ -3187,8 +3187,29 @@ export const MIGRATIONS: readonly Migration[] = [
   },
   {
     version: 116,
+    name: "session_identity_mismatch_flag",
+    // Issue 499c148 — record when a session's authenticated client user and its
+    // binding-resolved user disagree. Two nullable additive columns on sessions:
+    // identity_mismatch_at (ms epoch of the most recent disagreeing
+    // registration, NULL when consistent or never checked) and
+    // identity_mismatch_json (the structured detail shown in warnings and the
+    // dashboard). This is surfacing state only — no write path consults it for
+    // authorization, and the auth-request requester gate is unchanged. Added by
+    // the guarded ensureSessionIdentityMismatchColumns() hook so a replay over a
+    // DB that already carries the columns is idempotent, matching the
+    // v106/v107/v114 additive-column pattern.
+    statements: []
+  },
+  {
+    version: 117,
     name: "clear_residual_local_default_ledger_misattribution",
     // Issue be2ab49 — one-shot corrective follow-up to migration 115.
+    //
+    // Integration renumbering: this entry was authored as migration 116 on its
+    // feature branch and moved to 117 on integration. Issue 499c148's
+    // session_identity_mismatch_flag migration had already executed against the
+    // live production database as version 116, so that number is taken there;
+    // keeping this sweep at 116 would make the live DB skip it forever.
     //
     // Deployment-history rationale: migration 115 (evidence class 'local_default'
     // clearing) was executed prematurely against the live production database by
@@ -3223,25 +3244,6 @@ export const MIGRATIONS: readonly Migration[] = [
     // fresh database the fresh-baseline path applies and this migration never
     // runs; on any DB with no matching residual rows the UPDATE is a no-op. It is
     // naturally idempotent (a second run finds nothing to clear).
-    statements: []
-  },
-  {
-    version: 117,
-    name: "session_identity_mismatch_flag",
-    // Issue 499c148 — record when a session's authenticated client user and its
-    // binding-resolved user disagree. Two nullable additive columns on sessions:
-    // identity_mismatch_at (ms epoch of the most recent disagreeing
-    // registration, NULL when consistent or never checked) and
-    // identity_mismatch_json (the structured detail shown in warnings and the
-    // dashboard). This is surfacing state only — no write path consults it for
-    // authorization, and the auth-request requester gate is unchanged. Added by
-    // the guarded ensureSessionIdentityMismatchColumns() hook so a replay over a
-    // DB that already carries the columns is idempotent, matching the
-    // v106/v107/v114 additive-column pattern.
-    //
-    // Integration renumbering: this entry was authored as migration 116 on its
-    // feature branch and moved to 117 when it merged alongside issue be2ab49's
-    // residual-attribution sweep, which reached the auth queue at 116 first.
     statements: []
   }
 ];
@@ -3339,10 +3341,10 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
         clearLocalDefaultLedgerAttribution(db);
       }
       if (migration.version === 116) {
-        clearResidualLocalDefaultLedgerAttribution(db);
+        ensureSessionIdentityMismatchColumns(db);
       }
       if (migration.version === 117) {
-        ensureSessionIdentityMismatchColumns(db);
+        clearResidualLocalDefaultLedgerAttribution(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5957,7 +5959,7 @@ function clearLocalDefaultLedgerAttribution(db: Db): void {
   }
 }
 
-// Issue be2ab49 (migration 116) — cutoff for the residual local_default sweep.
+// Issue be2ab49 (migration 117) — cutoff for the residual local_default sweep.
 // This is the exact commit timestamp of the v115 merge commit 08bcc7c on main
 // ("2026-07-23 20:29:16 -0400" = epoch seconds 1784852956) in milliseconds. It
 // is deliberately hard-coded rather than derived at runtime: this is a one-shot
@@ -5985,9 +5987,9 @@ export const RESIDUAL_LOCAL_DEFAULT_CUTOFF_MS = 1784852956000;
 // untouched, and the migration is a no-op there.
 export const RESIDUAL_MISATTRIBUTION_OPERATOR_ID = "01KY5J56GRJDK8ZEQS79DPPJFN";
 
-// Issue be2ab49 (migration 116): clear the residual operator misattribution that
+// Issue be2ab49 (migration 117): clear the residual operator misattribution that
 // migration 115 could not reach because it was consumed prematurely (see the
-// migration 116 entry and issue 07edc0d for the deployment-history rationale).
+// migration 117 entry and issue 07edc0d for the deployment-history rationale).
 // Mirrors clearLocalDefaultLedgerAttribution but narrows the WHERE clause three
 // ways so only this deployment's historical residue is cleared:
 //   1. evidence_method = 'local_default' (as v115);
@@ -6055,7 +6057,7 @@ function ensureSessionOwnershipColumns(db: Db): void {
   }
 }
 
-// Issue 499c148 (migration 117): both columns are nullable and additive, so
+// Issue 499c148 (migration 116): both columns are nullable and additive, so
 // legacy session rows simply start out unflagged.
 function ensureSessionIdentityMismatchColumns(db: Db): void {
   if (!tableExists(db, "sessions")) return;

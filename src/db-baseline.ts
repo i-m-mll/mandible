@@ -4,9 +4,9 @@ import type { Db } from "./db.js";
  * Schema snapshot generated from a full v1-v117 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
- * Migrations 115 and 116 are data-only corrective passes (no DDL), so they leave
+ * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
  * the statements below unchanged from the v114 schema and only advance the head
- * version. Migration 117 is additive DDL: it contributes the two nullable
+ * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
 export const BASELINE_SCHEMA_VERSION = 117;

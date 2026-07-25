@@ -9,8 +9,8 @@ import { migrate, openDb, type Db } from "../src/db.js";
 // state migration (issue 75f52ac) was renumbered to v114 atop main's
 // user-system migrations v107-v111 and our v112/v113 additive columns.
 // Migration head is now v117 (issue a64d2de's v115 corrective attribution pass,
-// issue be2ab49's v116 residual sweep, and issue 499c148's v117 session
-// identity-mismatch columns).
+// issue 499c148's v116 session identity-mismatch columns, and issue be2ab49's
+// v117 residual sweep).
 describe("migration v114: auth-request finalizer state", () => {
   let tempDir: string;
   let db: Db;
