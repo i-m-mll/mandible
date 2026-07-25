@@ -118,6 +118,7 @@ export function registerClientAuthRoutes(
           user: null,
           evidence_method: null,
           source: null,
+          ephemeral_purpose: null,
           credential: null,
         });
         return;
@@ -144,6 +145,9 @@ export function registerClientAuthRoutes(
           : { id: identity.user_id, slug: identity.slug, kind: null, display_name: null },
         evidence_method: identity.method,
         source: identity.source,
+        // Distinguishes a dashboard handshake from the operator bootstrap proof
+        // or a per-agent file-RPC capability; null for api_token identities.
+        ephemeral_purpose: identity.ephemeral_purpose ?? null,
         credential: credential
           ? {
               id: credential.id,

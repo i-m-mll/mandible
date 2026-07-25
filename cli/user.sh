@@ -200,7 +200,7 @@ cmd_whoami() {
   done
   require_tools
   response="$(api_read "/api/client-auth/whoami" "client identity")" || exit 1
-  emit "$response" "$json" '"user: \(.user.slug // "-") (\(.user.kind // "unauthenticated"))\nevidence: \(.evidence_method // "none")\nsource: \(.source // "-")\ncredential: \(.credential.label // .credential.id // "-")\nmode: \(.mode)"'
+  emit "$response" "$json" '"user: \(.user.slug // "-") (\(.user.kind // "unauthenticated"))\nevidence: \(.evidence_method // "none")\nsource: \(.source // "-")\(if .ephemeral_purpose then " (\(.ephemeral_purpose))" else "" end)\ncredential: \(.credential.label // .credential.id // "-")\nmode: \(.mode)"'
 }
 
 cmd_list() {

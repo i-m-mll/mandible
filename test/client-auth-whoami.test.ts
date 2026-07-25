@@ -51,6 +51,7 @@ describe("GET /api/client-auth/whoami", () => {
       user: null,
       evidence_method: null,
       source: null,
+      ephemeral_purpose: null,
       credential: null,
     });
   });
@@ -83,6 +84,7 @@ describe("GET /api/client-auth/whoami", () => {
       },
       evidence_method: "api_token",
       source: "http_bearer",
+      ephemeral_purpose: null,
       credential: {
         id: minted.credential.id,
         type: "api_token",
@@ -122,6 +124,7 @@ describe("GET /api/client-auth/whoami", () => {
       authenticated: true,
       user: { id: operator.id, slug: operator.slug, kind: "human" },
       evidence_method: "ephemeral",
+      ephemeral_purpose: "dashboard_handshake",
       credential: null,
     });
   });
@@ -137,6 +140,7 @@ describe("GET /api/client-auth/whoami", () => {
       authenticated: true,
       user: { id: operator.id, kind: "human" },
       evidence_method: "ephemeral",
+      ephemeral_purpose: "operator_bootstrap",
       credential: null,
     });
   });
