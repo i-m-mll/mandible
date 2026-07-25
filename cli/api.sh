@@ -337,24 +337,33 @@ secret_set_impl() {
   secret_material_valid "$service" || return 2
   secret_material_valid "$account" || return 2
   secret_backend_available || return 1
-  # Read with NUL as the delimiter, not newline. `read -r -d ''` is byte-exact
-  # up to the first NUL, so a NUL can no longer be dropped on the way into the
-  # value: it either terminates the read — leaving surplus bytes for the count
-  # below to catch — or it lands inside the value, where the material check
-  # rejects it. A newline-delimited read discards NULs silently in bash, which
-  # is precisely the material an "is anything left?" check cannot see.
-  # Identical behavior verified on bash 3.2 and zsh 5.9.
-  IFS= read -r -d '' value || true
+  # Read with NUL as the delimiter, not newline, and treat a SUCCESSFUL read as
+  # a refusal. `read -r -d ''` returns 0 only when it actually consumed a NUL
+  # delimiter, and nonzero at clean EOF with the value retained — identical on
+  # bash 3.2 and zsh 5.9. So the read status alone answers "did the input
+  # contain a NUL anywhere?", structurally, wherever the NUL sits: terminal
+  # (`tok\0`), leading (`\0tok`), or interior (`t\0ok`).
+  #
+  # That is stronger than inspecting the value or the leftover bytes, both of
+  # which miss a terminal NUL: it is swallowed as the delimiter, so nothing
+  # invalid lands in the value and nothing is left over to count, and `tok\0`
+  # would otherwise be stored as the truncated `tok` with exit 0. A
+  # newline-delimited read is worse still — bash drops NULs silently on the way
+  # into the variable.
+  if IFS= read -r -d '' value; then
+    return 2
+  fi
   # A single trailing newline is part of the calling convention; a second one is
   # surplus and is caught by the material check below as a control character.
   value="${value%$'\n'}"
 
-  # Nothing may follow. `wc` reads this function's stdin directly, and both
-  # properties of that matter:
-  #   - the leftover bytes never pass through a shell variable, so NUL bytes are
-  #     counted rather than stripped. A capture-and-compare scheme cannot see
-  #     them at all: command substitution drops NULs, so a NUL-only remainder is
-  #     indistinguishable from an empty one.
+  # Nothing may follow. NULs are already refused above, so this covers the rest:
+  # a second line, and any input the read did not consume. `wc` reads this
+  # function's stdin directly, and both properties of that matter:
+  #   - the leftover bytes never pass through a shell variable, so they are
+  #     counted rather than sanitized. A capture-and-compare scheme cannot see
+  #     NUL material at all: command substitution drops NULs, so a NUL-only
+  #     remainder is indistinguishable from an empty one.
   #   - there is no pipeline, so the status is `wc`'s own. A broken or missing
   #     counter fails closed instead of reading as "nothing left", with no need
   #     to reconcile bash's PIPESTATUS against zsh's pipestatus (different name,

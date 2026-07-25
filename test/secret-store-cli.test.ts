@@ -382,17 +382,22 @@ describe("secret backend seam", () => {
     // Byte-exact fixtures, written by the test rather than through shell
     // printf, whose NUL handling differs per shell. Piped in with `cat` so the
     // stream is non-seekable, which is the seam's calling convention.
+    //
+    // Every position a NUL can occupy is covered. A TERMINAL NUL is the case
+    // neither the value nor the leftover count can see — it is swallowed as
+    // read's delimiter, so `tok\0` looks like a clean `tok` with nothing left
+    // over — which is why the refusal is driven by the read status itself.
     const nulCases: Array<{ name: string; bytes: number[] }> = [
+      { name: "a single terminal NUL", bytes: [0x74, 0x6f, 0x6b, 0x00] },
+      { name: "a terminal NUL after the newline", bytes: [0x74, 0x6f, 0x6b, 0x0a, 0x00] },
+      { name: "a leading NUL", bytes: [0x00, 0x74, 0x6f, 0x6b, 0x0a] },
+      { name: "a NUL inside the line", bytes: [0x74, 0x00, 0x6f, 0x6b, 0x0a] },
       { name: "NUL bytes after the line", bytes: [0x74, 0x6f, 0x6b, 0x0a, 0x00, 0x00] },
       { name: "NUL bytes with no trailing newline", bytes: [0x74, 0x6f, 0x6b, 0x00, 0x00] },
-      { name: "a NUL inside the line", bytes: [0x74, 0x00, 0x6f, 0x6b, 0x0a] },
+      { name: "NUL-only input", bytes: [0x00] },
     ];
     for (const { name, bytes } of nulCases) {
       it(`refuses ${name} under ${shell}`, () => {
-        // NULs are invisible to any capture-and-compare check — command
-        // substitution strips them, so `tok\n\0\0` looks like a clean single
-        // line — and a newline-delimited read drops them before the check even
-        // runs. NUL-delimited reading plus a byte count catches all three.
         const fixture = path.join(stubDir, `nul-${bytes.join("-")}`);
         fs.writeFileSync(fixture, Buffer.from(bytes));
 
@@ -404,6 +409,15 @@ describe("secret backend seam", () => {
         expect(storedItem("svc-nul")).toBeNull();
       });
     }
+
+    it(`refuses entirely empty stdin under ${shell}`, () => {
+      const result = runSeam(
+        shell,
+        'secret_set svc-empty acct-1 < /dev/null; printf "rc=%s" "$?"',
+      );
+      expect(result.stdout).toBe("rc=2");
+      expect(storedItem("svc-empty")).toBeNull();
+    });
 
     it(`fails closed when the leftover-byte count cannot be taken under ${shell}`, () => {
       // A broken or missing counter must never be read as "nothing left". The
