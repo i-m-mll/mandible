@@ -5,7 +5,15 @@ import { getDb } from "../db.js";
 import { broadcast } from "../sse.js";
 import { decompressContent, decompressContentAsync } from "../compression.js";
 import { deriveConversationAttachState } from "../conversation-attach-state.js";
-import { operatorOnlyManagedSessionRoute } from "../client-auth/authz.js";
+import {
+  ClientAuthzError,
+  operatorOnlyManagedSessionRoute,
+  requireOperator,
+} from "../client-auth/authz.js";
+import {
+  backfillCredentialLeakScan,
+  remediationFor,
+} from "../credential-leak-scan.js";
 import { triggerFullIngest } from "../ingestion.js";
 import { transformContent } from "../transform.js";
 import type { SessionManager } from "../session-manager.js";
@@ -262,6 +270,55 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       });
     }
   }, { fileRpc: "deny" });
+
+  // POST /api/conversations/scan-credentials — issue 71a287e.
+  // On-demand sweep of the normalized index for leaked Mandible credentials.
+  // Operator-only: it reports which credentials leaked where and applies the
+  // auto-revoke policy to session-scoped tokens. The response never contains
+  // token material — only credential ids, labels, locations, and remediation.
+  server.post("/api/conversations/scan-credentials", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      const body = (req.body && typeof req.body === "object" && !Array.isArray(req.body)
+        ? req.body
+        : {}) as Record<string, unknown>;
+      const result = backfillCredentialLeakScan(getDb(), {
+        conversationId: typeof body.conversation_id === "string" ? body.conversation_id : null,
+        limit: typeof body.limit === "number" ? body.limit : undefined,
+        record: body.record === false ? false : undefined,
+      });
+      sendJson(res, 200, {
+        scanned_blocks: result.scanned_blocks,
+        scanned_conversations: result.scanned_conversations,
+        skipped: result.skipped ?? null,
+        detections: result.detections.map((detection) => ({
+          event_id: detection.event_id,
+          detected_at: detection.detected_at,
+          credential_id: detection.credential.credential_id,
+          credential_label: detection.credential.label,
+          user_slug: detection.credential.user_slug,
+          session_scoped: detection.credential.session_scoped,
+          auto_revoked: detection.revoked,
+          new_alert: detection.new_event,
+          conversation_id: detection.location.conversation_id,
+          conversation_title: detection.location.conversation_title ?? null,
+          session_id: detection.location.session_id ?? null,
+          provider: detection.location.source ?? null,
+          block_position: detection.location.block_position ?? null,
+          remediation: remediationFor(detection.credential),
+        })),
+      });
+    } catch (error) {
+      if (error instanceof ClientAuthzError) {
+        sendJson(res, error.status, { error: error.code, message: error.message });
+        return;
+      }
+      sendJson(res, 500, {
+        error: "credential_scan_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }, { fileRpc: "allow" });
 
   // POST /api/conversations/export/transform — AI transform via Claude CLI
   server.post("/api/conversations/export/transform", async (req, res) => {

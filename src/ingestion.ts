@@ -15,6 +15,7 @@ import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
+import { scanBlocksForCredentialLeaks } from "./credential-leak-scan.js";
 import {
   ingestClaudeWorkflowArtifact,
   isClaudeWorkflowJournalPath,
@@ -1798,6 +1799,38 @@ async function ingestFile(
 
   if (!isSidechain && result.conversation.source === "claude_code") {
     linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
+  }
+
+  // Issue 71a287e — scan the newly indexed text for leaked Mandible credentials.
+  // Runs after the blocks are durably persisted so an alert always points at
+  // content that is actually in the index. Never fatal to ingestion, and the
+  // matched token itself never leaves the scanner.
+  try {
+    const leaks = scanBlocksForCredentialLeaks(
+      db,
+      newBlocks.map((block) => ({ content: block.content, position: block.position })),
+      {
+        conversation_id: conversationId,
+        conversation_title: result.conversation.title,
+        session_id: result.conversation.session_id,
+        source: result.conversation.source,
+        branch: result.conversation.branch,
+      },
+    );
+    for (const leak of leaks) {
+      if (!leak.new_event) continue;
+      logger("warn", "credential_leak_detected", {
+        conversation: conversationId,
+        credential_id: leak.credential.credential_id,
+        session_scoped: leak.credential.session_scoped,
+        auto_revoked: leak.revoked,
+      });
+    }
+  } catch (error) {
+    logger("warn", "credential_leak_scan_failed", {
+      file: filePath,
+      error: String(error),
+    });
   }
 
   // Broadcast SSE event
