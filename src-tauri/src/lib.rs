@@ -10,7 +10,11 @@ use tauri::{command, AppHandle, Manager};
 
 const DEFAULT_PORT: u16 = 19420;
 const DEFAULT_LAUNCH_MODE: &str = "on_demand";
+/// Generic-password service holding the operator's durable bearer credential.
+/// Same item the CLI falls back to in unmarked operator terminals (issue 9283a50).
+const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator";
 static CLIENT_AUTH_BOOTSTRAP_CONSUMED: AtomicBool = AtomicBool::new(false);
+static CLIENT_AUTH_KEYCHAIN_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -124,25 +128,128 @@ fn client_auth_enroll(app: AppHandle) -> Result<bool, String> {
     };
     fs::remove_file(client_auth_bootstrap_path())
         .map_err(|error| format!("failed to consume client-auth bootstrap file: {error}"))?;
-    if !token
-        .chars()
-        .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | '~'))
-    {
-        return Err("client-auth bootstrap contains invalid URL-fragment characters".to_string());
+    navigate_to_enrolled_dashboard(&app, &token, None)?;
+    Ok(true)
+}
+
+/// Log the desktop shell in after the one-shot bootstrap window has closed, by
+/// reading the operator's durable keychain credential — the same
+/// `mandible-operator` generic password the CLI falls back to (issue 9283a50).
+/// Without this the app has no login path at all once the operator enrolled
+/// anywhere else, because the bootstrap file exists only for first enrollment.
+///
+/// The raw credential never crosses Tauri IPC: as in the bootstrap path it only
+/// appears in the injected URL fragment, which is not sent to the daemon and is
+/// stripped by the dashboard before its first API request. `Ok(false)` means
+/// "nothing to enroll from" (no keychain item, or the automatic attempt was
+/// already spent) — a normal state, not a failure.
+///
+/// Rotation semantics: the daemon keeps exactly ONE operator dashboard session
+/// (`ClientAuthenticator.issueDashboardToken` drops every existing
+/// `dashboard_handshake` entry before minting the next one), so enrolling here
+/// revokes a session held by a regular browser profile, and a browser enrolling
+/// later revokes this one. Enrollment is therefore only attempted when this
+/// webview has no working session of its own, or when the operator explicitly
+/// asks to log in.
+#[command]
+fn client_auth_keychain_enroll(
+    app: AppHandle,
+    route: Option<String>,
+    force: Option<bool>,
+) -> Result<bool, String> {
+    // One automatic attempt per app process: a credential that does not produce
+    // a session must not loop through enroll -> navigate -> enroll. An explicit
+    // "Log in" action passes force and retries deliberately.
+    if CLIENT_AUTH_KEYCHAIN_ATTEMPTED.swap(true, Ordering::AcqRel) && !force.unwrap_or(false) {
+        return Ok(false);
     }
+    verify_same_user_daemon(&app)?;
+    let Some(token) = read_keychain_operator_token(KEYCHAIN_OPERATOR_SERVICE)? else {
+        return Ok(false);
+    };
+    navigate_to_enrolled_dashboard(&app, &token, route.as_deref())?;
+    Ok(true)
+}
+
+/// Read the operator's durable bearer credential from the login keychain. An
+/// absent item is the normal pre-enrollment state and yields `Ok(None)`; the
+/// raw value is never logged, returned, or included in an error.
+fn read_keychain_operator_token(service: &str) -> Result<Option<String>, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let output = match Command::new("security")
+        .args(["find-generic-password", "-s", service, "-w"])
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()
+    {
+        Ok(output) => output,
+        // No `security` binary is the same situation as no keychain item.
+        Err(_) => return Ok(None),
+    };
+    // Exit 44 is "item not found"; a declined keychain prompt is equally
+    // non-fatal — both mean the shell has no credential to enroll with.
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Ok((!token.is_empty()).then_some(token))
+}
+
+/// Both enrollment paths carry the credential in a URL fragment, so it must be
+/// fragment-safe before it is spliced into the navigation URL.
+fn is_url_fragment_safe(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|value| value.is_ascii_alphanumeric() || matches!(value, '-' | '_' | '.' | '~'))
+}
+
+/// Keep the dashboard on the operator's current view across enrollment instead
+/// of resetting it to the default route. The route is caller-supplied, so it is
+/// restricted to characters that stay inside the fragment; the loopback origin
+/// and path are fixed here and can never be moved by the caller.
+fn normalize_enrollment_route(route: Option<&str>) -> Result<String, String> {
+    let route = route.map(str::trim).unwrap_or_default();
+    if route.is_empty() {
+        return Ok("/".to_string());
+    }
+    let allowed = route.chars().all(|value| {
+        value.is_ascii_alphanumeric()
+            || matches!(
+                value,
+                '-' | '_' | '.' | '~' | '/' | '?' | '&' | '=' | '%' | ':' | '+' | ','
+            )
+    });
+    if !route.starts_with('/') || !allowed {
+        return Err("desktop enrollment route contains unsupported characters".to_string());
+    }
+    Ok(route.to_string())
+}
+
+fn navigate_to_enrolled_dashboard(
+    app: &AppHandle,
+    token: &str,
+    route: Option<&str>,
+) -> Result<(), String> {
+    if !is_url_fragment_safe(token) {
+        return Err("client-auth credential contains invalid URL-fragment characters".to_string());
+    }
+    let route = normalize_enrollment_route(route)?;
+    let separator = if route.contains('?') { '&' } else { '?' };
     let window = app
         .get_webview_window("main")
         .ok_or_else(|| "desktop main window is unavailable".to_string())?;
     let url = format!(
-        "http://127.0.0.1:{}/#/?mandible_auth={token}",
+        "http://127.0.0.1:{}/#{route}{separator}mandible_auth={token}",
         daemon_port()
     );
     let encoded = serde_json::to_string(&url)
         .map_err(|error| format!("failed to encode dashboard enrollment URL: {error}"))?;
     window
         .eval(&format!("window.location.replace({encoded});"))
-        .map_err(|error| format!("failed to navigate to enrolled dashboard: {error}"))?;
-    Ok(true)
+        .map_err(|error| format!("failed to navigate to enrolled dashboard: {error}"))
 }
 
 fn verify_same_user_daemon(app: &AppHandle) -> Result<(), String> {
@@ -616,6 +723,7 @@ pub fn run() {
             daemon_stop,
             daemon_restart,
             client_auth_enroll,
+            client_auth_keychain_enroll,
             zone2_status,
             zone2_bootstrap
         ])
@@ -625,7 +733,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::read_client_auth_bootstrap;
+    use super::{is_url_fragment_safe, normalize_enrollment_route, read_client_auth_bootstrap};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -662,5 +770,30 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).expect("chmod");
         assert!(read_client_auth_bootstrap(&path).is_err());
         fs::remove_file(path).expect("cleanup");
+    }
+
+    #[test]
+    fn accepts_only_fragment_safe_credentials() {
+        assert!(is_url_fragment_safe("abc-123_XYZ.token~"));
+        assert!(!is_url_fragment_safe(""));
+        // A credential carrying fragment or script syntax must never be spliced
+        // into the navigation URL.
+        assert!(!is_url_fragment_safe("token&mandible_auth=other"));
+        assert!(!is_url_fragment_safe("token#/settings"));
+        assert!(!is_url_fragment_safe("token with space"));
+        assert!(!is_url_fragment_safe("\"});alert(1);//"));
+    }
+
+    #[test]
+    fn normalizes_the_dashboard_return_route() {
+        assert_eq!(normalize_enrollment_route(None).expect("default"), "/");
+        assert_eq!(normalize_enrollment_route(Some("  ")).expect("blank"), "/");
+        assert_eq!(
+            normalize_enrollment_route(Some("/issues?repo=mandible&issue=54b5677")).expect("route"),
+            "/issues?repo=mandible&issue=54b5677",
+        );
+        assert!(normalize_enrollment_route(Some("issues")).is_err());
+        assert!(normalize_enrollment_route(Some("/issues#/settings")).is_err());
+        assert!(normalize_enrollment_route(Some("/issues\"};alert(1)")).is_err());
     }
 }

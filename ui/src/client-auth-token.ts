@@ -12,6 +12,35 @@ const STORAGE_KEY = 'mandible.client_auth.token';
 const HANDSHAKE_PATH = '/api/client-auth/handshake';
 const WEBSOCKET_AUTH_PROTOCOL_PREFIX = 'mandible-auth.';
 
+/**
+ * Outcome of the last handshake attempt (issue 54b5677). The desktop shell
+ * needs to distinguish "this surface holds no operator session" (offer a login
+ * path) from "the daemon could not answer" (nothing to log into yet).
+ */
+export type ClientAuthSessionState = 'enrolled' | 'unauthenticated' | 'unreachable';
+
+let sessionState: ClientAuthSessionState = 'unauthenticated';
+const sessionStateListeners = new Set<(state: ClientAuthSessionState) => void>();
+
+export function getClientAuthSessionState(): ClientAuthSessionState {
+  return sessionState;
+}
+
+export function subscribeClientAuthSessionState(
+  listener: (state: ClientAuthSessionState) => void,
+): () => void {
+  sessionStateListeners.add(listener);
+  return () => {
+    sessionStateListeners.delete(listener);
+  };
+}
+
+function setSessionState(next: ClientAuthSessionState): void {
+  if (next === sessionState) return;
+  sessionState = next;
+  for (const listener of [...sessionStateListeners]) listener(next);
+}
+
 function storage(): Storage | null {
   try {
     return typeof window !== 'undefined' ? window.localStorage : null;
@@ -160,20 +189,34 @@ export function installClientAuthFetch(): void {
 export async function ensureClientAuthToken(): Promise<string | null> {
   adoptTokenFromUrlFragment();
   const existing = getStoredToken();
-  if (!existing) return null;
+  if (!existing) {
+    setSessionState('unauthenticated');
+    return null;
+  }
   try {
     const response = await fetch(HANDSHAKE_PATH, {
       method: 'POST',
       headers: { Accept: 'application/json' },
     });
-    if (!response.ok) return getStoredToken();
+    if (!response.ok) {
+      // 401/403 means the stored credential is not (or is no longer) an
+      // operator session, which a login can fix; anything else is a daemon-side
+      // problem that logging in again would not resolve.
+      setSessionState(
+        response.status === 401 || response.status === 403 ? 'unauthenticated' : 'unreachable',
+      );
+      return getStoredToken();
+    }
     const body = (await response.json()) as { token?: unknown };
     if (typeof body.token === 'string' && body.token) {
       setStoredToken(body.token);
+      setSessionState('enrolled');
       return body.token;
     }
+    setSessionState('unreachable');
     return getStoredToken();
   } catch {
+    setSessionState('unreachable');
     return getStoredToken();
   }
 }

@@ -2173,6 +2173,36 @@ export async function restartDesktopDaemon(): Promise<DesktopDaemonStatus> {
   return invokeDesktop<DesktopDaemonStatus>('daemon_restart');
 }
 
+/**
+ * Where the desktop shell reads the credential it enrolls this webview with:
+ * the one-shot operator bootstrap file, or the durable `mandible-operator`
+ * keychain item that outlives the first-enrollment window (issue 54b5677).
+ */
+export type DesktopEnrollmentSource = 'bootstrap' | 'keychain';
+
+/**
+ * Ask the desktop shell to enroll this webview. The shell reads the credential
+ * itself and navigates with it in a URL fragment, so `true` only means "a
+ * credential was injected" — the raw token never crosses Tauri IPC. `route`
+ * keeps the operator on their current view instead of resetting it; `force`
+ * bypasses the shell's once-per-process guard for an explicit login action.
+ */
+export async function enrollDesktopClientAuth(
+  source: DesktopEnrollmentSource,
+  options: { route?: string; force?: boolean } = {},
+): Promise<boolean> {
+  if (!hasTauriRuntime()) {
+    return false;
+  }
+  if (source === 'bootstrap') {
+    return invokeDesktop<boolean>('client_auth_enroll');
+  }
+  return invokeDesktop<boolean>('client_auth_keychain_enroll', {
+    route: options.route ?? null,
+    force: options.force === true,
+  });
+}
+
 export async function navigateToDesktopBootstrap(): Promise<void> {
   if (!hasTauriRuntime()) {
     return;
