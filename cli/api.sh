@@ -91,19 +91,96 @@ api_managed_client_markers_present() {
   [[ -n "${MANDIBLE_MANAGED_CLIENT:-}${CODEX_THREAD_ID:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_SESSION_ID:-}${MANDIBLE_SESSION_ID:-}" ]]
 }
 
-# Read the durable operator bearer token from the OS keychain: a macOS Security
-# generic-password item with service name `mandible-operator` (git-credential-
-# helper pattern; naming contract on dotfiles/dfa69d1). Mirrors cli/wrap.sh's
-# inject_agent_token conventions: `-w` prints only the password, security's exit
-# status and a non-empty result are the only success signals, and the value is
-# never printed, logged, or written to disk — it is emitted on stdout solely for
-# command-substitution capture by api_client_token. Missing tool or absent item
-# is normal and non-fatal (empty output). Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
+# ── Secret backend seam (issue e2cb93f) ──────────────────────────────────────
+# One place that knows how OS secret storage is reached, so readers (this file's
+# operator token, cli/wrap.sh's per-agent token) and the writer
+# (`mandible user token mint --store`) share a single dispatch point instead of
+# each open-coding `security`. It lives in api.sh because api.sh is the helper
+# every CLI entry point already sources; it is otherwise independent of HTTP.
+#
+# Secret values are never printed, logged, or written to disk by these helpers.
+# secret_get emits the value on stdout solely for command-substitution capture
+# by an immediate caller; secret_set takes it on stdin, never as an argument.
+#
+# macOS is the only implemented backend today. Other platforms fail visibly
+# (secret_backend_kind returns nonzero and callers surface
+# secret_backend_unavailable_reason) rather than degrading silently; the Linux
+# secret-tool backend stays open on issue e2cb93f.
+
+# Print the active backend name and return 0, or return nonzero when none is
+# usable. Never prints anything on the unavailable path.
+secret_backend_kind() {
+  if [[ "$(uname -s)" == "Darwin" ]] && command -v security >/dev/null 2>&1; then
+    printf 'keychain'
+    return 0
+  fi
+  return 1
+}
+
+secret_backend_available() {
+  secret_backend_kind >/dev/null 2>&1
+}
+
+# One-line human explanation of why no backend is usable, for callers that need
+# to fail loudly. Safe to call even when a backend is available.
+secret_backend_unavailable_reason() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    printf 'the macOS `security` tool is not on PATH'
+  else
+    printf 'no secret backend available on this platform (%s); see Mandible issue e2cb93f' "$(uname -s)"
+  fi
+}
+
+# secret_get <service> [account]
+# Print the stored secret on stdout (no trailing newline) and return 0. Return
+# nonzero, silently and with no output, when the backend is unavailable or the
+# item is absent — absence is a normal condition every current caller treats as
+# "no token", so diagnostics are left to the caller.
+secret_get() {
+  local service="${1:-}" account="${2:-}" value
+  [[ -n "$service" ]] || return 2
+  secret_backend_available || return 1
+  if [[ -n "$account" ]]; then
+    value=$(security find-generic-password -s "$service" -a "$account" -w 2>/dev/null) || return 1
+  else
+    value=$(security find-generic-password -s "$service" -w 2>/dev/null) || return 1
+  fi
+  [[ -n "$value" ]] || return 1
+  printf '%s' "$value"
+}
+
+# secret_set <service> <account>  (secret value read from stdin)
+# Create or rotate the named item, then read it back and verify it matches. The
+# value arrives on stdin and is never passed in argv: process arguments are
+# visible to `ps` for the lifetime of the call, and Mandible itself scans
+# process command lines. `security add-generic-password -w` with no inline value
+# reads the password from stdin and asks for it twice, so the value is fed twice.
+# `-U` is what makes a second call a rotation instead of a duplicate-item error.
+# Returns nonzero on any failure and never echoes the value.
+secret_set() {
+  local service="${1:-}" account="${2:-}" value="" stored=""
+  [[ -n "$service" && -n "$account" ]] || return 2
+  secret_backend_available || return 1
+  IFS= read -r value || true
+  [[ -n "$value" ]] || return 2
+  printf '%s\n%s\n' "$value" "$value" \
+    | security add-generic-password -U -s "$service" -a "$account" -w >/dev/null 2>&1 \
+    || return 1
+  stored=$(secret_get "$service" "$account") || return 1
+  [[ "$stored" == "$value" ]] || return 1
+}
+
+# Read the durable operator bearer token from the OS keychain: a generic-password
+# item with service name `mandible-operator` (git-credential-helper pattern;
+# naming contract on dotfiles/dfa69d1). Reads through the secret seam above, so
+# an absent tool, an absent item, or an unsupported platform are all the same
+# normal, non-fatal "no token" outcome (empty output, exit 0). The value is never
+# printed or logged — it is emitted on stdout solely for command-substitution
+# capture by api_client_token. Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
 api_keychain_operator_token() {
   [[ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" == "1" ]] && return 0
-  command -v security >/dev/null 2>&1 || return 0
   local token
-  token=$(security find-generic-password -s mandible-operator -w 2>/dev/null) || return 0
+  token=$(secret_get mandible-operator) || return 0
   [[ -n "$token" ]] || return 0
   printf '%s' "$token"
 }

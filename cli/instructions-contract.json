@@ -1,6 +1,6 @@
 {
   "title": "Mandible Interface Contract",
-  "version": 4,
+  "version": 5,
   "commands": [
     {
       "name": "mandible issue report <id> [--json]",
@@ -221,6 +221,10 @@
     {
       "name": "mandible user credential list <ref> [--all] [--json]",
       "description": "List a user's active credentials, or all including revoked with --all."
+    },
+    {
+      "name": "mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]",
+      "description": "Mint a per-user bearer token. Without --store the raw token is printed once and never again. With --store it is written straight to the OS secret store and not printed: service defaults to mandible-operator for the human operator and mandible-agent-<app> for an agent user (its shortest active app_name binding), account is the user slug, and storing again rotates the item in place. macOS keychain is the only backend today; other platforms fail visibly."
     },
     {
       "name": "mandible user binding add <ref> --type <t> --value <v> [--scope <s>] [--json]",
