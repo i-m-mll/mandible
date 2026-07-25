@@ -41,7 +41,7 @@ Usage:
   mandible user credential add <ref> (--type <t> --fingerprint <f> [--public-material <m>] | --from-git-signingkey) [--label <l>] [--json]
   mandible user credential revoke <id> [--json]
   mandible user credential list <ref> [--all] [--json]
-  mandible user token mint <ref> [--label <l>] [--json]
+  mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]
   mandible user token list <ref> [--all] [--json]
   mandible user token revoke <credential-id> [--json]
   mandible user binding add <ref> --type <t> --value <v> [--scope <s>] [--json]
@@ -65,6 +65,11 @@ private key material is ever accepted.
 Tokens are per-user bearer secrets stored hashed (never in the clear). The raw
 token is printed once at mint time and cannot be retrieved again; export it as
 MANDIBLE_TOKEN for the CLI to authenticate. Revoke a token via its credential id.
+token mint --store writes the new token straight into the OS secret store
+instead of printing it: `mandible-operator` for the human operator, or
+`mandible-agent-<app>` for an agent user (<app> is its shortest active app_name
+binding), with the user slug as the account. --service overrides that name.
+Storing again rotates the item in place.
 Use dashboard-link to enroll a browser without placing a bearer token in an HTTP URL.
 Use whoami to check which user the daemon actually resolves for this shell's
 credential before a session starts writing to the ledger.
@@ -170,19 +175,26 @@ cmd_setup() {
 
 cmd_dashboard_link() {
   require_tools
-  local token encoded base bootstrap_file=""
+  local token encoded base bootstrap_file="" traced=0
   if [[ -z "${MANDIBLE_TOKEN:-}" ]]; then
     bootstrap_file="$(api_client_auth_config_dir)/client-auth/bootstrap-token"
   fi
+  # Suspend xtrace from the token capture through the final printf (issue
+  # e2cb93f): the capture, the encoding and the URL itself all carry the
+  # enrollment credential. stdout is the intended channel for that URL; a trace
+  # stream is not.
+  case "$-" in *x*) traced=1; { set +x; } 2>/dev/null ;; esac
   token="$(api_client_token)"
   [[ -n "$token" ]] \
     || die "No operator bootstrap token is available. Run mandible user setup first." 1
   encoded="$(jq -rn --arg value "$token" '$value|@uri')"
+  token=""
   base="$(api_base)"
   [[ "$base" == http://* || "$base" == https://* ]] \
     || die "Dashboard enrollment requires an HTTP Mandible endpoint." 1
   [[ -z "$bootstrap_file" ]] || rm -f -- "$bootstrap_file"
   printf '%s/#/?mandible_auth=%s\n' "${base%/}" "$encoded"
+  (( traced == 0 )) || set -x
 }
 
 # Issue 499c148 — print the identity the daemon resolves for THIS shell's
@@ -391,26 +403,172 @@ cmd_token() {
   esac
 }
 
+# Default secret-store service name for a user (issue e2cb93f). $1 is the JSON
+# body of GET /api/users/<ref>. Prints the service name, or nothing when no
+# default applies (the caller then requires an explicit --service).
+#
+#   kind human -> mandible-operator          (the local operator credential)
+#   kind agent -> mandible-agent-<app>, where <app> is the shortest active
+#                 app_name binding, ties broken alphabetically. Shortest is the
+#                 primary app name: user claude-code binds claude, claude-code
+#                 and claude-channel, and the item cli/wrap.sh already reads for
+#                 a `claude` session is mandible-agent-claude. An agent with no
+#                 active app_name binding has no default.
+#   any other kind (system, external, …) -> no default. Those identities have no
+#                 established naming contract, and guessing one would create an
+#                 item no reader looks for.
+default_secret_service_for_user() {
+  printf '%s' "$1" | jq -r '
+    .user as $u
+    | if $u.kind == "human" then "mandible-operator"
+      elif $u.kind == "agent" then
+        (($u.bindings // [])
+          | map(select(.binding_type == "app_name" and .status == "active") | .value)
+          | sort_by(length, .)
+          | first) as $app
+        | if $app == null then "" else "mandible-agent-" + $app end
+      else "" end'
+}
+
 token_mint() {
-  local ref="" label="" json=0
+  local ref="" label="" json=0 store=0 service="" service_set=0
   while (( $# > 0 )); do
     case "$1" in
-      --label) label="$2"; shift 2 ;;
-      --json)  json=1; shift ;;
+      --label)   label="$2"; shift 2 ;;
+      --store)   store=1; shift ;;
+      --service) service="$2"; service_set=1; shift 2 ;;
+      --json)    json=1; shift ;;
       -*) die "Unknown option: $1" 2 ;;
       *) [[ -z "$ref" ]] || die "Unexpected argument: $1" 2; ref="$1"; shift ;;
     esac
   done
-  [[ -n "$ref" ]] || die "Usage: mandible user token mint <ref> [--label <l>] [--json]" 2
+  [[ -n "$ref" ]] \
+    || die "Usage: mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]" 2
+  (( service_set == 0 || store == 1 )) || die "--service requires --store." 2
+  if (( service_set )); then
+    [[ -n "${service//[[:space:]]/}" ]] || die "--service must name a service; it cannot be empty." 2
+  fi
   require_tools
+
+  # Everything that can fail without minting is resolved first: a mint creates a
+  # credential, and a token that cannot be stored is a token nobody has.
+  local account="" rotated=0
+  if (( store )); then
+    secret_backend_available \
+      || die "${RED}Cannot store the token: $(secret_backend_unavailable_reason).${RESET}" 1
+    local user_json user_kind
+    user_json="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
+    account="$(printf '%s' "$user_json" | jq -r '.user.slug // ""')"
+    [[ -n "$account" ]] || die "${RED}Could not resolve the user slug for '$ref'.${RESET}" 1
+    user_kind="$(printf '%s' "$user_json" | jq -r '.user.kind // "unknown"')"
+    if (( ! service_set )); then
+      service="$(default_secret_service_for_user "$user_json")"
+      if [[ -z "$service" ]]; then
+        case "$user_kind" in
+          agent) die "No default secret service name for '$ref': the agent has no active app_name binding. Pass --service <name>." 2 ;;
+          *)     die "No default secret service name for '$ref' (user kind '${user_kind}'). Only human and agent users have one. Pass --service <name>." 2 ;;
+        esac
+      fi
+    fi
+    # Checked before minting, not at write time: material the backend cannot
+    # store faithfully would otherwise fail after a credential already exists.
+    secret_material_valid "$service" \
+      || die "Service name must be one line of printable ASCII: '${service}'." 2
+    secret_material_valid "$account" \
+      || die "${RED}User slug '${account}' cannot be used as a secret-store account (printable ASCII only).${RESET} Pass --service and rename the user, or store it manually." 1
+    # The ambient readers look up this service without an account, so an item
+    # under a different account would leave them reading the older token while
+    # this command reports success. The three outcomes are kept distinct: only a
+    # definite "no such item" proceeds, and an unreadable keychain fails closed
+    # rather than being mistaken for absence.
+    local existing_account="" account_status=0
+    existing_account="$(secret_account_for_service "$service")" || account_status=$?
+    case "$account_status" in
+      0)
+        if [[ "$existing_account" != "$account" ]]; then
+          die "${RED}Refusing to store: service '${service}' already holds an item for account '${existing_account}', not '${account}'.${RESET} Readers resolve this service without an account, so a second item would shadow the first. Remove the stale item or pass an explicit --service <name>." 1
+        fi
+        # Advisory only: this is the state observed before the mint, and a
+        # concurrent writer would make it stale. It never gates the write, and
+        # the existing value is never read or printed — only its account is.
+        rotated=1
+        ;;
+      1) ;; # no such item: a fresh write
+      *)
+        die "${RED}Refusing to store: could not read the existing secret-store item for service '${service}' (keychain attribute lookup failed).${RESET} Fix the secret store — an unreadable keychain must not be mistaken for an empty one — or pass --service <name>." 1
+        ;;
+    esac
+  fi
+
+  # The raw token is live in shell state from the mint call until the scrub
+  # below, and the response body carries it too — under `zsh -x` even the
+  # `response=...` assignment would echo it. xtrace is therefore suspended
+  # across the whole region, not just inside the seam, and restored on every
+  # non-fatal exit path. The response body also passed through a 0600 temp file
+  # that api_request removes on the success path, with cli/api.sh's
+  # EXIT/INT/TERM trap removing the whole 0700 temp root otherwise; the residual
+  # window is an unhandleable kill (SIGKILL, power loss) between write and unlink.
+  local mint_traced=0
+  case "$-" in *x*) mint_traced=1; { set +x; } 2>/dev/null ;; esac
+
   local payload response
   payload="$(jq -n --arg label "$label" \
     '{} + (if $label == "" then {} else {label:$label} end)')"
   response="$(api_send POST "/api/users/$(urlencode "$ref")/tokens" "$payload")" \
     || die "${RED}Failed to mint token.${RESET}" 1
-  err "${GREEN}Token minted. Copy it now — it will not be shown again.${RESET}"
-  emit "$response" "$json" \
-    '"token: \(.token)", "credential: \(.credential.id) [\(.credential.status)]"'
+
+  if (( ! store )); then
+    err "${GREEN}Token minted. Copy it now — it will not be shown again.${RESET}"
+    emit "$response" "$json" \
+      '"token: \(.token)", "credential: \(.credential.id) [\(.credential.status)]"'
+    (( mint_traced == 0 )) || set -x
+    return 0
+  fi
+
+  local token credential_id result
+  token="$(printf '%s' "$response" | jq -r '.token // ""')"
+  credential_id="$(printf '%s' "$response" | jq -r '.credential.id // ""')"
+  [[ -n "$token" ]] \
+    || die "${RED}Token minted (credential ${credential_id:-unknown}) but the daemon returned no token value to store.${RESET} Revoke it with: mandible user token revoke ${credential_id:-<credential-id>}" 1
+  printf '%s' "$token" | secret_set "$service" "$account" \
+    || die "${RED}Token minted (credential ${credential_id}) but could NOT be stored in the secret backend.${RESET} Revoke it with: mandible user token revoke ${credential_id}" 1
+
+  # Post-write check, against the exact lookup the ambient readers perform. The
+  # pre-write check narrows the window in which a competing item can appear; this
+  # one catches what slips through it, including a writer that raced this
+  # command. The token IS stored under (service, account) at this point — the
+  # failure being reported is that readers would resolve somewhere else.
+  local resolved_account="" resolved_status=0
+  resolved_account="$(secret_account_for_service "$service")" || resolved_status=$?
+  if (( resolved_status != 0 )) || [[ "$resolved_account" != "$account" ]]; then
+    die "${RED}Token minted (credential ${credential_id}) and stored under service '${service}' account '${account}', but a service-only lookup resolves to '${resolved_account:-<unreadable>}'.${RESET} Ambient readers (mandible-operator / mandible-agent-<app>) will use that item, not this one. Remove the shadowing item, then store again — or store under a service you control with --service <name>." 1
+  fi
+
+  # The raw token is deliberately absent from the output: with --store the whole
+  # point is that it goes to the secret store and nowhere else.
+  result="$(printf '%s' "$response" | jq \
+    --arg backend "$(secret_backend_kind)" \
+    --arg service "$service" \
+    --arg account "$account" \
+    --argjson rotated "$rotated" \
+    '{credential: .credential,
+      secret: {backend: $backend, service: $service, account: $account, rotated: ($rotated == 1)}}')"
+  # Drop the raw token from shell state as soon as it is no longer needed, then
+  # restore whatever xtrace setting the caller had.
+  token=""
+  response=""
+  (( mint_traced == 0 )) || set -x
+  if (( rotated )); then
+    err "${GREEN}Token minted and stored (existing item rotated). It was not printed.${RESET}"
+  else
+    err "${GREEN}Token minted and stored. It was not printed.${RESET}"
+  fi
+  emit "$result" "$json" \
+    '"credential: \(.credential.id) [\(.credential.status)]",
+     "label: \(.credential.label // "-")",
+     "backend: \(.secret.backend)",
+     "service: \(.secret.service)",
+     "account: \(.secret.account)"'
 }
 
 token_list() {
