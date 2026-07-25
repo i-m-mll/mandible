@@ -2637,6 +2637,16 @@ function LiveSessionDetail({
             <span title={session.transport_badge?.title}>
               {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
             </span>
+            {/* Issue 499c148 — the session's client token and its session
+                bindings resolve to different users. */}
+            {session.identity_mismatch && (
+              <span
+                className="chat-live-detail__identity-warning"
+                title={session.identity_mismatch.message}
+              >
+                ⚠ identity mismatch
+              </span>
+            )}
           </div>
         </div>
       </div>

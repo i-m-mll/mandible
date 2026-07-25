@@ -1,6 +1,7 @@
 // Client-authentication routes (issue 708dc4c):
 //   POST /api/client-auth/handshake   dashboard acquires an ephemeral operator token
 //   GET  /api/client-auth/status      current mode + unattributed-write telemetry (read)
+//   GET  /api/client-auth/whoami      effective client identity for this request (read)
 //   PUT  /api/client-auth/mode        set mode (operator only, both directions)
 //   POST /api/users/:ref/tokens       mint an api_token (self or operator)
 //   GET  /api/users/:ref/tokens       list a user's api_token credentials (self or operator)
@@ -21,6 +22,7 @@ import {
 import { getClientAuthMode, setClientAuthMode } from "../client-auth/mode.js";
 import {
   getOperator,
+  getUserById,
   listCredentials,
   resolveUserOrThrow,
   UserRegistryError,
@@ -91,6 +93,65 @@ export function registerClientAuthRoutes(
       sendJson(res, 200, {
         mode: getClientAuthMode(getDb()),
         telemetry: authenticator.telemetrySnapshot(),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  // Issue 499c148 — the cheap self-check. A session that carries the wrong
+  // bearer (e.g. an inherited operator token in an agent shell) previously had
+  // no way to notice before the auth-request gate refused it. This reports the
+  // identity the daemon actually resolves for the calling request. It is a read
+  // of the caller's own request context and reveals nothing another route would
+  // not, so it stays usable while anonymous: an unauthenticated caller gets
+  // `authenticated: false` rather than a 401, which is itself the answer.
+  router.get("/api/client-auth/whoami", (req, res) => {
+    try {
+      const db = getDb();
+      const mode = getClientAuthMode(db);
+      const identity = req.client_identity ?? null;
+      if (!identity) {
+        sendJson(res, 200, {
+          authenticated: false,
+          mode,
+          user: null,
+          evidence_method: null,
+          source: null,
+          credential: null,
+        });
+        return;
+      }
+      const user = getUserById(db, identity.user_id);
+      // The credential label is the operator-facing name of the presented
+      // api_token ("mll-cli"), which is what makes a wrong-token diagnosis
+      // actionable. Ephemeral identities have no persisted credential row.
+      const credential = identity.credential_id
+        ? listCredentials(db, identity.user_id, { includeRevoked: true }).find(
+            (row) => row.id === identity.credential_id,
+          ) ?? null
+        : null;
+      sendJson(res, 200, {
+        authenticated: true,
+        mode,
+        user: user
+          ? {
+              id: user.id,
+              slug: user.slug,
+              kind: user.kind,
+              display_name: user.display_name,
+            }
+          : { id: identity.user_id, slug: identity.slug, kind: null, display_name: null },
+        evidence_method: identity.method,
+        source: identity.source,
+        credential: credential
+          ? {
+              id: credential.id,
+              type: credential.type,
+              label: credential.label,
+              status: credential.status,
+            }
+          : null,
       });
     } catch (error) {
       handleError(res, error);

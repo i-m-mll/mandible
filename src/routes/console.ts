@@ -5,6 +5,7 @@
 
 import { getDb } from "../db.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
+import { readSessionIdentityMismatch } from "../identity/session-mismatch.js";
 import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
@@ -230,7 +231,8 @@ export function registerConsoleRoutes(
   // GET /api/console/sessions — list all sessions
   // ------------------------------------------------------------------
   server.get("/api/console/sessions", (req, res) => {
-    const attributionResolver = new AttributionReadResolver(getDb());
+    const db = getDb();
+    const attributionResolver = new AttributionReadResolver(db);
     const sessions = manager.getAll()
       .filter((session) => (
         !sessionIsCredentialBearing(manager, session) || isOperatorRequest(req)
@@ -240,6 +242,12 @@ export function registerConsoleRoutes(
         return {
           ...session,
           owner: session.owner ?? attributionResolver.user(session.owner_user_id),
+          // Issue 499c148 — read the flag per request rather than caching it on
+          // the in-memory console session, so a mismatch recorded long after the
+          // session was created still reaches the dashboard.
+          identity_mismatch: session.mandible_session_id
+            ? readSessionIdentityMismatch(db, session.mandible_session_id)
+            : null,
         };
       });
     res.status(200).json({ sessions });

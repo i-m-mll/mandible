@@ -83,6 +83,16 @@
   line-height: 1.3;
 }
 
+/* Issue 499c148 — client-token / session-binding identity mismatch marker. */
+.console-tab__identity-warning,
+.chat-live-detail__identity-warning {
+  flex-shrink: 0;
+  color: var(--accent-yellow, #d29922);
+  font-size: 11px;
+  line-height: 1.3;
+  cursor: help;
+}
+
 .console-tab__close {
   opacity: 0;
   background: none;

@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   // dashboard shows it immediately, not just on first tool call.
   if (sessionId) {
     try {
-      await client.registerSession({
+      const registration = await client.registerSession({
         id: sessionId,
         app: "claude-channel",
         status: "active",
@@ -103,6 +103,14 @@ async function main(): Promise<void> {
         branch,
         conversation_id: conversationId,
       });
+      // Issue 499c148 — Mandible compares this session's bearer token against
+      // its app binding at registration. A disagreement means every ledger
+      // write is landing under the wrong user, so say so at startup instead of
+      // letting it surface as a 403 at end-of-day auth submission.
+      const warning = registration?.identity_warning as { message?: string } | null | undefined;
+      if (warning?.message) {
+        process.stderr.write(`Mandible identity warning: ${warning.message}\n`);
+      }
     } catch {
       // Best effort — Mandible may not be running yet
       process.stderr.write("Warning: could not register channel session with Mandible\n");

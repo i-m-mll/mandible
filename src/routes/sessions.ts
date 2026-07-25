@@ -18,6 +18,7 @@ import type { SessionDiscovery } from "../session-discovery.js";
 import type { ResponseLike, RouteRegistrar } from "../server.js";
 import type { SessionStatus } from "../types.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
+import { checkSessionIdentity } from "../identity/session-mismatch.js";
 import { readBody, sendJson } from "./http.js";
 
 function linkSessionLedgerIssue(
@@ -151,7 +152,12 @@ export function registerSessionRoutes(
       return;
     }
     const session = registry.registerSession(payload);
-    sendJson(res, 200, session);
+    // Issue 499c148 — the row now exists, so its bindings can be compared with
+    // the authenticated client. The warning rides the registration response so
+    // the connecting agent learns about a misconfigured token immediately
+    // instead of at end-of-day auth submission.
+    const identityWarning = checkSessionIdentity(getDb(), session.id, req.client_identity);
+    sendJson(res, 200, { ...session, identity_warning: identityWarning });
   }, { fileRpc: "allow" });
 
   server.patch("/api/sessions/:id", (req, res) => {
@@ -350,6 +356,7 @@ export function registerSessionRoutes(
           is_alive: channelRegistry.isAlive(live.session_id),
           tools_called: live.tools_called,
           last_tool_call_in_memory: live.last_tool_call,
+          identity_mismatch: null,
         });
       }
     }
@@ -378,7 +385,10 @@ export function registerSessionRoutes(
     channelRegistry.register(id, session?.cwd ?? null, session?.branch ?? null);
     channelRegistry.recordToolCall(id, toolName, body.tool_input, body.tool_output);
 
-    sendJson(res, 200, { ok: true });
+    // Issue 499c148 — channel sessions reach the daemon here on every tool call,
+    // so a token swapped mid-session is caught without waiting for a re-register.
+    const identityWarning = checkSessionIdentity(getDb(), id, req.client_identity);
+    sendJson(res, 200, { ok: true, identity_warning: identityWarning });
   }, { fileRpc: "deny" });
 
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
@@ -532,12 +542,17 @@ export function registerSessionRoutes(
 
     const ledgerIssueId = linkSessionLedgerIssue(sessionId, body.issue_id, canonicalRepoId);
 
+    // Issue 499c148 — linking a session to an issue is an authenticated client
+    // claiming that session's work, so it is a natural second checkpoint.
+    const identityWarning = checkSessionIdentity(db, sessionId, req.client_identity);
+
     sendJson(res, 200, {
       session_id: sessionId,
       issue_id: body.issue_id,
       repo_id: canonicalRepoId,
       created_at: now,
       ledger_issue_id: ledgerIssueId,
+      identity_warning: identityWarning,
     });
   }, { fileRpc: "allow" });
 

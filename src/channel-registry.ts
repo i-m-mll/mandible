@@ -10,6 +10,10 @@
 
 import { EventEmitter } from "node:events";
 import { getDb } from "./db.js";
+import {
+  parseSessionIdentityMismatch,
+  type SessionIdentityMismatch,
+} from "./identity/session-mismatch.js";
 import { broadcast } from "./sse.js";
 
 // Bug: 7ab2f3e — Channel event types emitted by ChannelRegistry for bridging
@@ -284,12 +288,15 @@ export function getChannelConnectedSessionsFromDb(): Array<{
   cwd: string | null;
   channel_connected_at: number;
   channel_last_tool_call: number | null;
+  // Issue 499c148 — client-token vs session-binding user disagreement.
+  identity_mismatch: SessionIdentityMismatch | null;
 }> {
   try {
     const db = getDb();
-    return db
+    const rows = db
       .prepare(
-        `SELECT id, app, status, branch, cwd, channel_connected_at, channel_last_tool_call
+        `SELECT id, app, status, branch, cwd, channel_connected_at, channel_last_tool_call,
+                identity_mismatch_at, identity_mismatch_json
          FROM sessions
          WHERE channel_connected_at IS NOT NULL
          ORDER BY channel_last_tool_call DESC NULLS LAST, channel_connected_at DESC`
@@ -302,7 +309,16 @@ export function getChannelConnectedSessionsFromDb(): Array<{
         cwd: string | null;
         channel_connected_at: number;
         channel_last_tool_call: number | null;
+        identity_mismatch_at: number | null;
+        identity_mismatch_json: string | null;
       }>;
+    return rows.map(({ identity_mismatch_at, identity_mismatch_json, ...row }) => ({
+      ...row,
+      identity_mismatch: parseSessionIdentityMismatch(
+        identity_mismatch_at,
+        identity_mismatch_json,
+      ),
+    }));
   } catch {
     return [];
   }

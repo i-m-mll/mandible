@@ -7,6 +7,7 @@
 #   GET  /api/users/<ref>                    show (with credentials + bindings)
 #   PATCH /api/users/<ref>                   update
 #   GET  /api/users/operator                 current operator
+#   GET  /api/client-auth/whoami             effective client identity (this request)
 #   POST /api/users/setup                    idempotent operator setup
 #   dashboard-link                          same-user dashboard enrollment URL
 #   GET  /api/users/<ref>/credentials        list credentials
@@ -33,6 +34,7 @@ usage() {
 Usage:
   mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]
   mandible user dashboard-link
+  mandible user whoami [--json]
   mandible user list [--kind <k>] [--status <s>] [--json]
   mandible user show <ref> [--json]
   mandible user update <ref> [--name <n>] [--email <e>] [--status active|retired] [--json]
@@ -64,6 +66,8 @@ Tokens are per-user bearer secrets stored hashed (never in the clear). The raw
 token is printed once at mint time and cannot be retrieved again; export it as
 MANDIBLE_TOKEN for the CLI to authenticate. Revoke a token via its credential id.
 Use dashboard-link to enroll a browser without placing a bearer token in an HTTP URL.
+Use whoami to check which user the daemon actually resolves for this shell's
+credential before a session starts writing to the ledger.
 EOF
 }
 
@@ -179,6 +183,24 @@ cmd_dashboard_link() {
     || die "Dashboard enrollment requires an HTTP Mandible endpoint." 1
   [[ -z "$bootstrap_file" ]] || rm -f -- "$bootstrap_file"
   printf '%s/#/?mandible_auth=%s\n' "${base%/}" "$encoded"
+}
+
+# Issue 499c148 — print the identity the daemon resolves for THIS shell's
+# credential. The mismatch this catches is an agent session inheriting a human
+# operator's token: writes still succeed, attributed to the wrong user, until
+# the auth-request gate refuses the submission hours later.
+cmd_whoami() {
+  local json=0 response
+  while (( $# > 0 )); do
+    case "$1" in
+      --json) json=1; shift ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) die "Unexpected argument: $1" 2 ;;
+    esac
+  done
+  require_tools
+  response="$(api_read "/api/client-auth/whoami" "client identity")" || exit 1
+  emit "$response" "$json" '"user: \(.user.slug // "-") (\(.user.kind // "unauthenticated"))\nevidence: \(.evidence_method // "none")\nsource: \(.source // "-")\ncredential: \(.credential.label // .credential.id // "-")\nmode: \(.mode)"'
 }
 
 cmd_list() {
@@ -644,6 +666,7 @@ cmd="$1"; shift
 case "$cmd" in
   setup)      cmd_setup "$@" ;;
   dashboard-link) cmd_dashboard_link "$@" ;;
+  whoami)     cmd_whoami "$@" ;;
   list)       cmd_list "$@" ;;
   show)       cmd_show "$@" ;;
   update)     cmd_update "$@" ;;
