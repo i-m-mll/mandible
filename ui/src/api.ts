@@ -2181,11 +2181,14 @@ export async function restartDesktopDaemon(): Promise<DesktopDaemonStatus> {
 export type DesktopEnrollmentSource = 'bootstrap' | 'keychain';
 
 /**
- * Ask the desktop shell to enroll this webview. The shell reads the credential
- * itself and navigates with it in a URL fragment, so `true` only means "a
- * credential was injected" — the raw token never crosses Tauri IPC. `route`
- * keeps the operator on their current view instead of resetting it; `force`
- * bypasses the shell's once-per-process guard for an explicit login action.
+ * Ask the desktop shell to enroll this webview. The shell reads the local
+ * credential, redeems it for a bounded dashboard session against the daemon,
+ * and navigates with only that session in a URL fragment — no durable
+ * credential is returned across IPC or exposed to this renderer, so `true`
+ * means "a session was injected". `route` keeps the operator on their current
+ * view instead of resetting it; `force` bypasses the shell's once-per-process
+ * guard for an explicit login action (the shell treats it as untrusted input,
+ * bounded to churning the session this renderer already holds).
  */
 export async function enrollDesktopClientAuth(
   source: DesktopEnrollmentSource,

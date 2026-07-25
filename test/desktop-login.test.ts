@@ -11,11 +11,14 @@ import {
   AUTOMATIC_ENROLLMENT_SOURCES,
   MANUAL_ENROLLMENT_SOURCES,
   attemptDesktopLogin,
+  sanitizeEnrollmentHash,
   type DesktopLoginDeps,
 } from "../ui/src/desktop-login.js";
 import {
   ensureClientAuthToken,
   getClientAuthSessionState,
+  getStoredToken,
+  installClientAuthFetch,
   subscribeClientAuthSessionState,
 } from "../ui/src/client-auth-token.js";
 
@@ -170,8 +173,41 @@ describe("client-auth session state", () => {
   });
 });
 
+describe("reserved credential parameter", () => {
+  it("never forwards a mandible_auth already present in the hash", () => {
+    // URLSearchParams.get returns the first value, so a forwarded stale
+    // credential would shadow the session the shell injects after it.
+    expect(sanitizeEnrollmentHash("#/issues?mandible_auth=stale")).toBe("/issues");
+    expect(sanitizeEnrollmentHash("#/issues?repo=mandible&mandible_auth=stale"))
+      .toBe("/issues?repo=mandible");
+    expect(sanitizeEnrollmentHash("#/issues?repo=mandible")).toBe("/issues?repo=mandible");
+    expect(sanitizeEnrollmentHash("#/auth")).toBe("/auth");
+    expect(sanitizeEnrollmentHash("")).toBe("");
+  });
+});
+
+describe("losing a dashboard session mid-session", () => {
+  it("marks the surface unauthenticated when a 401 clears the stored token", async () => {
+    window.localStorage.setItem("mandible.client_auth.token", "revoked-session");
+    const states: string[] = [];
+    const unsubscribe = subscribeClientAuthSessionState((state) => states.push(state));
+    // Another surface enrolled and rotated this session away: the request 401s
+    // and the renewal handshake cannot revive an unknown token.
+    window.fetch = vi.fn(async () => new Response(null, { status: 401 })) as typeof window.fetch;
+    installClientAuthFetch();
+
+    const response = await window.fetch("/api/write", { method: "POST" });
+
+    expect(response.status).toBe(401);
+    expect(getStoredToken()).toBeNull();
+    expect(getClientAuthSessionState()).toBe("unauthenticated");
+    expect(states).toContain("unauthenticated");
+    unsubscribe();
+  });
+});
+
 describe("desktop shell keychain command", () => {
-  it("reads the operator keychain item without returning it across IPC", () => {
+  it("redeems the keychain credential in Rust and injects only a session", () => {
     const rust = fs.readFileSync(
       path.join(process.cwd(), "src-tauri", "src", "lib.rs"),
       "utf8",
@@ -186,9 +222,18 @@ describe("desktop shell keychain command", () => {
     // Re-entrancy guard, with an explicit-action escape hatch.
     expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_ATTEMPTED.swap(true");
     expect(rust).toContain("&& !force.unwrap_or(false)");
-    // The credential only ever leaves through the injected URL fragment.
+    // The durable credential is exchanged for a bounded session and scrubbed,
+    // so only the session reaches the fragment both enrollment paths inject.
+    expect(rust).toContain("fn exchange_credential_for_dashboard_session(credential: &[u8])");
+    expect(rust).toContain("POST /api/client-auth/handshake HTTP/1.1");
+    expect(rust).toContain("Authorization: Bearer ");
+    expect(rust).toContain("credential.fill(0);");
+    expect(rust).toContain("navigate_to_enrolled_dashboard(&app, &session?, route.as_deref())");
+    expect(rust).toContain("navigate_to_enrolled_dashboard(&app, &session?, None)");
     expect(rust).toContain("Result<bool, String>");
     expect(rust).toContain("{separator}mandible_auth={token}");
     expect(rust).toContain("window.location.replace({encoded})");
+    // A forwarded credential parameter is refused rather than shadowing.
+    expect(rust).toContain('route.to_ascii_lowercase().contains("mandible_auth")');
   });
 });

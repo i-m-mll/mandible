@@ -167,6 +167,7 @@ export function installClientAuthFetch(): void {
             const body = (await renewal.json()) as { token?: unknown };
             if (typeof body.token === 'string' && body.token) {
               setStoredToken(body.token);
+              setSessionState('enrolled');
               headers.set('Authorization', `Bearer ${body.token}`);
               return originalFetch(retryInput, { ...init, headers });
             }
@@ -175,7 +176,13 @@ export function installClientAuthFetch(): void {
           // Fall through to clearing a credential that cannot be renewed.
         }
       }
-      if (getStoredToken() === token) clearStoredToken();
+      if (getStoredToken() === token) {
+        clearStoredToken();
+        // Losing the session mid-run (e.g. another surface enrolled and rotated
+        // it away) must surface a login affordance immediately, not at the next
+        // reload.
+        setSessionState('unauthenticated');
+      }
     }
     return response;
   };

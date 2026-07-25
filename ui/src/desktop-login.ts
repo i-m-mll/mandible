@@ -1,10 +1,11 @@
 // Desktop-shell operator login (issue 54b5677).
 //
 // The Tauri shell owns the credential: each enrollment command reads a
-// protected local secret and navigates this webview to a fragment-carrying URL,
-// so the raw token never crosses Tauri IPC. This module only decides which
-// sources to try, waits for the injected fragment, and re-runs the normal
-// handshake that adopts and strips it.
+// protected local secret, redeems it for a bounded dashboard session against
+// the daemon itself, and navigates this webview to a URL whose fragment carries
+// only that session. No durable credential ever reaches this renderer. This
+// module only decides which sources to try, waits for the injected fragment,
+// and re-runs the normal handshake that adopts, strips, and rotates it.
 //
 // Enrollment is attempted only when this surface has no working session, and at
 // most once automatically per shell process, because the daemon keeps exactly
@@ -77,6 +78,24 @@ export async function attemptDesktopLogin(
   return failed ? 'failed' : 'unavailable';
 }
 
+/**
+ * Strip any `mandible_auth` already present in the hash before it is forwarded
+ * as the return route. The dashboard reads the first occurrence, so forwarding
+ * a stale one would shadow the session the shell injects after it and leave a
+ * credential sitting in the visible URL. The Rust side refuses such a route as
+ * well; this keeps the UI from ever asking for it.
+ */
+export function sanitizeEnrollmentHash(hash: string): string {
+  const raw = hash.replace(/^#/, '');
+  const queryIndex = raw.indexOf('?');
+  if (queryIndex < 0) return raw;
+  const params = new URLSearchParams(raw.slice(queryIndex + 1));
+  if (!params.has('mandible_auth')) return raw;
+  params.delete('mandible_auth');
+  const remaining = params.toString();
+  return `${raw.slice(0, queryIndex)}${remaining ? `?${remaining}` : ''}`;
+}
+
 function hasCredentialFragment(): boolean {
   return typeof window !== 'undefined' && window.location.hash.includes('mandible_auth=');
 }
@@ -129,8 +148,11 @@ export async function runDesktopLogin(
 ): Promise<DesktopLoginOutcome> {
   if (!isDesktopShell()) return 'unavailable';
   const manual = options.manual === true;
-  const returnHash = typeof window !== 'undefined' ? window.location.hash : '';
-  const route = returnHash.replace(/^#/, '') || '/';
+  const sanitized = sanitizeEnrollmentHash(
+    typeof window !== 'undefined' ? window.location.hash : '',
+  );
+  const returnHash = sanitized ? `#${sanitized}` : '';
+  const route = sanitized || '/';
   return attemptDesktopLogin(manual ? MANUAL_ENROLLMENT_SOURCES : AUTOMATIC_ENROLLMENT_SOURCES, {
     enroll: (source) => enrollDesktopClientAuth(source, { route, force: manual }),
     awaitCredentialFragment,
