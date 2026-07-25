@@ -14,10 +14,11 @@ import { registerConsoleRoutes } from "../src/routes/console.js";
 import { getChannelRegistry } from "../src/channel-registry.js";
 import { SessionRegistry } from "../src/registry.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
-import { addBinding, createUser, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, removeBinding, setupOperator } from "../src/users/store.js";
 import {
   evaluateSessionIdentity,
   readSessionIdentityMismatch,
+  readSessionIdentityMismatchBatch,
 } from "../src/identity/session-mismatch.js";
 
 let tempDir = "";
@@ -137,6 +138,13 @@ describe("session identity mismatch detection", () => {
       binding: { user_id: agentId, slug: "claude-code", kind: "agent" },
     });
     expect(String(body.identity_warning?.message)).toContain("mandible user whoami");
+    // The message must describe the gate that actually exists: `resolveAuthRequester`
+    // refuses only when both sides resolve and disagree, so an unconditional
+    // "will be refused" would send an operator hunting for a block that will not
+    // happen once the binding side stops resolving.
+    expect(String(body.identity_warning?.message))
+      .toContain("refused while both identities resolve and disagree");
+    expect(String(body.identity_warning?.message)).not.toContain("until the two agree");
 
     const stored = readSessionIdentityMismatch(db, "channel-session");
     expect(stored).toMatchObject({
@@ -221,6 +229,46 @@ describe("session identity mismatch detection", () => {
     expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
   });
 
+  // The rebind fix. Re-registering under an app that binds to a human leaves the
+  // resolver at no_match (it constrains session claims to agent principals), so
+  // the check is indeterminate — but the recorded flag names a binding this
+  // session no longer has, and keeping it would keep asserting a disagreement
+  // nobody can verify.
+  it("retires the flag when the session is re-registered under a different app", async () => {
+    await register(operatorToken);
+    expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
+    addBinding(db, operatorId, { binding_type: "app_name", value: "operator-shell" });
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/sessions/register",
+      body: { id: "channel-session", app: "operator-shell", status: "active" },
+      credential: operatorToken,
+      transport: "http",
+    });
+
+    expect((response.body as { identity_warning: unknown }).identity_warning).toBeNull();
+    expect(readSessionIdentityMismatch(db, "channel-session")).toBeNull();
+  });
+
+  // The case the flag exists for: the app is untouched and the token is still
+  // wrong; the binding merely stopped resolving. Clearing here would be the
+  // regression the transition rule must not cause.
+  it("keeps the flag when the app is unchanged and its binding stops resolving", async () => {
+    await register(operatorToken);
+    expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
+    const binding = db
+      .prepare("SELECT id FROM user_bindings WHERE user_id = ? AND value = ?")
+      .get(agentId, "claude-channel") as { id: string };
+    removeBinding(db, binding.id);
+
+    const response = await register(operatorToken);
+
+    expect((response.body as { identity_warning: Record<string, unknown> | null }).identity_warning)
+      .toMatchObject({ binding: { user_id: agentId }, client: { user_id: operatorId } });
+    expect(readSessionIdentityMismatch(db, "channel-session")).not.toBeNull();
+  });
+
   it("catches a token swapped mid-session on the channel tool-call route", async () => {
     await register(agentToken);
     expect(readSessionIdentityMismatch(db, "channel-session")).toBeNull();
@@ -274,18 +322,30 @@ describe("session identity mismatch detection", () => {
       .toMatchObject({ client: { user_id: operatorId } });
   });
 
+  // The listing reads every row's flag in one batched statement, so it has to
+  // keep them attached to the right sessions: flagged, clean, and console rows
+  // with no Mandible session at all, in one response.
   it("projects the flag onto the console session list via mandible_session_id", async () => {
     await register(operatorToken);
+    await register(agentToken, "clean-session");
 
-    const { server, routes } = makeRegistrar();
-    const consoleSession = {
-      id: "console-1",
+    const consoleSessions = [
+      { id: "console-1", mandible_session_id: "channel-session" },
+      { id: "console-2", mandible_session_id: "clean-session" },
+      { id: "console-3", mandible_session_id: null },
+      { id: "console-4", mandible_session_id: "never-registered" },
+    ].map((row) => ({
+      ...row,
       is_operator: false,
-      mandible_session_id: "channel-session",
       owner_user_id: null,
       transport_lane: "channel",
-    };
-    registerConsoleRoutes(server, { getAll: () => [{ meta: consoleSession }] } as never);
+    }));
+
+    const { server, routes } = makeRegistrar();
+    registerConsoleRoutes(
+      server,
+      { getAll: () => consoleSessions.map((meta) => ({ meta })) } as never,
+    );
     const route = routes.find(
       (item) => item.method === "GET" && item.path === "/api/console/sessions",
     );
@@ -294,8 +354,36 @@ describe("session identity mismatch detection", () => {
     route?.handler({ params: {}, query: {}, body: null } as never, res as never);
 
     const listed = (payloads[0].payload as {
-      sessions: Array<{ identity_mismatch: Record<string, unknown> | null }>;
+      sessions: Array<{ id: string; identity_mismatch: Record<string, unknown> | null }>;
     }).sessions;
-    expect(listed[0].identity_mismatch).toMatchObject({ client: { user_id: operatorId } });
+    const byId = new Map(listed.map((row) => [row.id, row.identity_mismatch]));
+    expect(byId.get("console-1")).toMatchObject({
+      client: { user_id: operatorId },
+      binding: { user_id: agentId },
+    });
+    expect(byId.get("console-2")).toBeNull();
+    expect(byId.get("console-3")).toBeNull();
+    expect(byId.get("console-4")).toBeNull();
+  });
+
+  it("reads many sessions' flags in one batch, keyed by session id", async () => {
+    await register(operatorToken);
+    await register(agentToken, "clean-session");
+
+    const found = readSessionIdentityMismatchBatch(db, [
+      "channel-session",
+      "clean-session",
+      "never-registered",
+      // Duplicates and empties must not produce extra or malformed lookups.
+      "channel-session",
+      "",
+    ]);
+
+    expect([...found.keys()]).toEqual(["channel-session"]);
+    expect(found.get("channel-session")).toMatchObject({
+      client: { user_id: operatorId },
+      binding: { user_id: agentId },
+    });
+    expect(readSessionIdentityMismatchBatch(db, [])).toEqual(new Map());
   });
 });

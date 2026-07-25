@@ -5,7 +5,7 @@
 
 import { getDb } from "../db.js";
 import { AttributionReadResolver } from "../identity/read-projection.js";
-import { readSessionIdentityMismatch } from "../identity/session-mismatch.js";
+import { readSessionIdentityMismatchBatch } from "../identity/session-mismatch.js";
 import type { PermissionDecision } from "../agentic-backend.js";
 import { SessionManager } from "../session-manager.js";
 import { SDKBackend, type SDKBackendOptions } from "../backends/sdk-backend.js";
@@ -233,23 +233,28 @@ export function registerConsoleRoutes(
   server.get("/api/console/sessions", (req, res) => {
     const db = getDb();
     const attributionResolver = new AttributionReadResolver(db);
-    const sessions = manager.getAll()
+    const visible = manager.getAll()
       .filter((session) => (
         !sessionIsCredentialBearing(manager, session) || isOperatorRequest(req)
       ))
-      .map((s) => {
-        const session = enrichWithProcessing(s);
-        return {
-          ...session,
-          owner: session.owner ?? attributionResolver.user(session.owner_user_id),
-          // Issue 499c148 — read the flag per request rather than caching it on
-          // the in-memory console session, so a mismatch recorded long after the
-          // session was created still reaches the dashboard.
-          identity_mismatch: session.mandible_session_id
-            ? readSessionIdentityMismatch(db, session.mandible_session_id)
-            : null,
-        };
-      });
+      .map((s) => enrichWithProcessing(s));
+    // Issue 499c148 — read the flags per request rather than caching them on the
+    // in-memory console sessions, so a mismatch recorded long after a session was
+    // created still reaches the dashboard. One batched read for the whole
+    // listing: this route is polled, and a statement per session was an N+1.
+    const identityMismatches = readSessionIdentityMismatchBatch(
+      db,
+      visible
+        .map((session) => session.mandible_session_id)
+        .filter((id): id is string => Boolean(id)),
+    );
+    const sessions = visible.map((session) => ({
+      ...session,
+      owner: session.owner ?? attributionResolver.user(session.owner_user_id),
+      identity_mismatch: session.mandible_session_id
+        ? identityMismatches.get(session.mandible_session_id) ?? null
+        : null,
+    }));
     res.status(200).json({ sessions });
   }, { fileRpc: "deny" });
 
