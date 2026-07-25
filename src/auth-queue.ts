@@ -75,7 +75,9 @@ import type {
   SseEvent
 } from "./types.js";
 
-const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
+// Pending approvals are human-cadence, not machine-cadence — the queue is
+// async by design, so the default TTL gives a week rather than a day.
+const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const RECENT_RESOLVED_MS = 60 * 60 * 1000; // Show resolved items for 1 hour
 
 // Columns selected for the history list projection. Deliberately excludes the
