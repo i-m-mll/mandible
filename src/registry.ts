@@ -6,6 +6,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { broadcast } from "./sse.js";
 import { AttributionReadResolver } from "./identity/read-projection.js";
+import { parseSessionIdentityMismatch } from "./identity/session-mismatch.js";
 import { resolveSessionOwnerUserId } from "./session-ownership.js";
 import type { Logger, NavMetadataStatus, Session, SessionStatus } from "./types.js";
 
@@ -223,6 +224,9 @@ interface SessionRow {
   channel_connected_at: number | null;
   channel_last_tool_call: number | null;
   owner_user_id: string | null;
+  // Issue 499c148 — client-token vs session-binding user disagreement.
+  identity_mismatch_at: number | null;
+  identity_mismatch_json: string | null;
 }
 
 const SESSION_SCHEMA = `
@@ -258,6 +262,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   channel_connected_at INTEGER,
   channel_last_tool_call INTEGER,
   owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  identity_mismatch_at INTEGER,
+  identity_mismatch_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   ended_at TEXT,
@@ -325,6 +331,13 @@ function ensureSessionColumns(db: SqliteDatabase): void {
     db.exec(
       "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL",
     );
+  }
+  // Issue 499c148 — client-token vs session-binding user disagreement.
+  if (!names.has("identity_mismatch_at")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN identity_mismatch_at INTEGER");
+  }
+  if (!names.has("identity_mismatch_json")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN identity_mismatch_json TEXT");
   }
 }
 
@@ -572,6 +585,12 @@ function toSession(row: SessionRow, attributionResolver: AttributionReadResolver
     channel_last_tool_call: row.channel_last_tool_call ?? null,
     owner_user_id: row.owner_user_id ?? null,
     owner: attributionResolver.user(row.owner_user_id),
+    // Issue 499c148 — null unless a registration saw the client token and the
+    // session bindings resolve to different users.
+    identity_mismatch: parseSessionIdentityMismatch(
+      row.identity_mismatch_at,
+      row.identity_mismatch_json,
+    ),
   };
 }
 

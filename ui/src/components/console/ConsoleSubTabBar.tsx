@@ -126,6 +126,20 @@ export function ConsoleSubTabBar({
               {session.transport_badge?.label ?? session.transport_lane ?? session.backend_type}
             </span>
 
+            {/* Issue 499c148 — this session's client token and its session
+                bindings resolve to different users, so its ledger writes are
+                landing under the wrong identity. */}
+            {session.identity_mismatch && (
+              <span
+                className="console-tab__identity-warning"
+                title={session.identity_mismatch.message}
+                role="img"
+                aria-label="Client token and session binding resolve to different users"
+              >
+                ⚠
+              </span>
+            )}
+
             {/* Status indicator: red dot for crashed, muted dot for stopped.
                 Bug: 1d286c1 — requires Bug 3 (SSE events) to propagate status correctly */}
             {(session.status === 'crashed' || session.status === 'stopped') && (

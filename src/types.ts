@@ -11,6 +11,7 @@ import type {
   AttributionReadProjection,
   ReadUserIdentity,
 } from "./identity/read-projection.js";
+import type { SessionIdentityMismatch } from "./identity/session-mismatch.js";
 
 export interface SSEEvent {
   type: string;
@@ -128,6 +129,9 @@ export interface Session {
   channel_last_tool_call: number | null;
   owner_user_id: string | null;
   owner?: ReadUserIdentity | null;
+  // Issue 499c148 — set when this session's client token and its session
+  // bindings resolved to different users at registration.
+  identity_mismatch: SessionIdentityMismatch | null;
   children?: Session[];
 }
 
@@ -707,6 +711,11 @@ export interface ConsoleSession {
   channel_enabled: boolean;
   owner_user_id: string | null;
   owner?: ReadUserIdentity | null;
+  /**
+   * Issue 499c148 — projected from the linked `sessions` row at list time, so
+   * a mismatch recorded after the console session was created still shows up.
+   */
+  identity_mismatch?: SessionIdentityMismatch | null;
   /** Bug: 81c9d85 — derived from backend.processing, not stored in DB. */
   is_processing?: boolean;
   /** Derived from PTY screen state. Not stored in DB. */

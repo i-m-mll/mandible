@@ -199,6 +199,10 @@
       "description": "Idempotently create or update the local human operator and record its user id in settings; --agents deliberately provisions the built-in agent users and bindings. Migrations never create either the operator or agent users."
     },
     {
+      "name": "mandible user whoami [--json]",
+      "description": "Print the client identity the daemon resolves for the calling request: user, evidence method, credential label, and client-auth mode. Reports an unauthenticated caller rather than failing."
+    },
+    {
       "name": "mandible user list [--kind <k>] [--status <s>] [--json]",
       "description": "List registry users, optionally filtered by kind (human|agent|system|external) or status (active|retired)."
     },

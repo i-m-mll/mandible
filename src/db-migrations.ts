@@ -3184,6 +3184,21 @@ export const MIGRATIONS: readonly Migration[] = [
     // an operator DB backup precedes the protected-branch merge, so the original
     // bytes remain recoverable if ever needed.
     statements: []
+  },
+  {
+    version: 116,
+    name: "session_identity_mismatch_flag",
+    // Issue 499c148 — record when a session's authenticated client user and its
+    // binding-resolved user disagree. Two nullable additive columns on sessions:
+    // identity_mismatch_at (ms epoch of the most recent disagreeing
+    // registration, NULL when consistent or never checked) and
+    // identity_mismatch_json (the structured detail shown in warnings and the
+    // dashboard). This is surfacing state only — no write path consults it for
+    // authorization, and the auth-request requester gate is unchanged. Added by
+    // the guarded ensureSessionIdentityMismatchColumns() hook so a replay over a
+    // DB that already carries the columns is idempotent, matching the
+    // v106/v107/v114 additive-column pattern.
+    statements: []
   }
 ];
 
@@ -3278,6 +3293,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 115) {
         clearLocalDefaultLedgerAttribution(db);
+      }
+      if (migration.version === 116) {
+        ensureSessionIdentityMismatchColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -5904,6 +5922,19 @@ function ensureSessionOwnershipColumns(db: Db): void {
           TEXT REFERENCES users(id) ON DELETE SET NULL`,
       );
     }
+  }
+}
+
+// Issue 499c148 (migration 116): both columns are nullable and additive, so
+// legacy session rows simply start out unflagged.
+function ensureSessionIdentityMismatchColumns(db: Db): void {
+  if (!tableExists(db, "sessions")) return;
+  const columns = tableColumnNames(db, "sessions");
+  if (!columns.has("identity_mismatch_at")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN identity_mismatch_at INTEGER");
+  }
+  if (!columns.has("identity_mismatch_json")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN identity_mismatch_json TEXT");
   }
 }
 

@@ -1,7 +1,7 @@
 import type { AuthRequest } from './views/auth';
 import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
-import type { SessionRecord } from './types/session';
+import type { SessionIdentityMismatch, SessionRecord } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { Conversation } from './api';
 import type { SSEPayload } from './sse-client';
@@ -52,6 +52,9 @@ type ConsoleSession = {
   };
   // Bug: b5e1c51 — Whether this PTY session has channel integration (Terminal + Events)
   channel_enabled?: boolean;
+  // Issue 499c148 — set when this session's client token and its session
+  // bindings resolve to different users.
+  identity_mismatch?: SessionIdentityMismatch | null;
   allowed_tools?: string[] | null;
   mandible_session_id?: string | null;
   resume_at_message?: string | null;

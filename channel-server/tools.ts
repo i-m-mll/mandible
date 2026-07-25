@@ -50,13 +50,19 @@ export function registerTools(
         } catch {
           // Not in a git repo — branch stays null
         }
-        await client.registerSession({
+        const registration = await client.registerSession({
           id: sessionId,
           app: "claude-channel",
           status: "active",
           cwd,
           branch,
         });
+        // Issue 499c148 — surface a client-token / session-binding mismatch as
+        // soon as the session touches the daemon.
+        const warning = registration?.identity_warning as { message?: string } | null | undefined;
+        if (warning?.message) {
+          process.stderr.write(`Mandible identity warning: ${warning.message}\n`);
+        }
         channelRegistered = true;
       } catch {
         // Best effort — Mandible may not be running
