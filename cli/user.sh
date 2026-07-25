@@ -378,23 +378,27 @@ cmd_token() {
 # body of GET /api/users/<ref>. Prints the service name, or nothing when no
 # default applies (the caller then requires an explicit --service).
 #
-#   human user  -> mandible-operator          (the local operator credential)
-#   other users -> mandible-agent-<app>, where <app> is the shortest active
-#                  app_name binding, ties broken alphabetically. Shortest is the
-#                  primary app name: user claude-code binds claude, claude-code
-#                  and claude-channel, and the item cli/wrap.sh already reads for
-#                  a `claude` session is mandible-agent-claude.
+#   kind human -> mandible-operator          (the local operator credential)
+#   kind agent -> mandible-agent-<app>, where <app> is the shortest active
+#                 app_name binding, ties broken alphabetically. Shortest is the
+#                 primary app name: user claude-code binds claude, claude-code
+#                 and claude-channel, and the item cli/wrap.sh already reads for
+#                 a `claude` session is mandible-agent-claude. An agent with no
+#                 active app_name binding has no default.
+#   any other kind (system, external, …) -> no default. Those identities have no
+#                 established naming contract, and guessing one would create an
+#                 item no reader looks for.
 default_secret_service_for_user() {
   printf '%s' "$1" | jq -r '
     .user as $u
     | if $u.kind == "human" then "mandible-operator"
-      else
+      elif $u.kind == "agent" then
         (($u.bindings // [])
           | map(select(.binding_type == "app_name" and .status == "active") | .value)
           | sort_by(length, .)
           | first) as $app
         | if $app == null then "" else "mandible-agent-" + $app end
-      end'
+      else "" end'
 }
 
 token_mint() {
@@ -412,6 +416,9 @@ token_mint() {
   [[ -n "$ref" ]] \
     || die "Usage: mandible user token mint <ref> [--label <l>] [--store [--service <name>]] [--json]" 2
   (( service_set == 0 || store == 1 )) || die "--service requires --store." 2
+  if (( service_set )); then
+    [[ -n "${service//[[:space:]]/}" ]] || die "--service must name a service; it cannot be empty." 2
+  fi
   require_tools
 
   # Everything that can fail without minting is resolved first: a mint creates a
@@ -420,21 +427,53 @@ token_mint() {
   if (( store )); then
     secret_backend_available \
       || die "${RED}Cannot store the token: $(secret_backend_unavailable_reason).${RESET}" 1
-    local user_json
+    local user_json user_kind
     user_json="$(api_read "/api/users/$(urlencode "$ref")" "user")" || exit 1
     account="$(printf '%s' "$user_json" | jq -r '.user.slug // ""')"
     [[ -n "$account" ]] || die "${RED}Could not resolve the user slug for '$ref'.${RESET}" 1
+    user_kind="$(printf '%s' "$user_json" | jq -r '.user.kind // "unknown"')"
     if (( ! service_set )); then
       service="$(default_secret_service_for_user "$user_json")"
-      [[ -n "$service" ]] \
-        || die "No default secret service name for '$ref' (no active app_name binding). Pass --service <name>." 2
+      if [[ -z "$service" ]]; then
+        case "$user_kind" in
+          agent) die "No default secret service name for '$ref': the agent has no active app_name binding. Pass --service <name>." 2 ;;
+          *)     die "No default secret service name for '$ref' (user kind '${user_kind}'). Only human and agent users have one. Pass --service <name>." 2 ;;
+        esac
+      fi
     fi
-    # Exit status only: the existing value is discarded, never printed. This is
-    # solely so the output can say whether the item was created or rotated.
-    if secret_get "$service" "$account" >/dev/null 2>&1; then
+    # Checked before minting, not at write time: material the backend cannot
+    # store faithfully would otherwise fail after a credential already exists.
+    secret_material_valid "$service" \
+      || die "Service name must be one line of printable ASCII: '${service}'." 2
+    secret_material_valid "$account" \
+      || die "${RED}User slug '${account}' cannot be used as a secret-store account (printable ASCII only).${RESET} Pass --service and rename the user, or store it manually." 1
+    # The ambient readers look up this service without an account, so an item
+    # under a different account would leave them reading the older token while
+    # this command reports success. Refuse instead.
+    local existing_account=""
+    existing_account="$(secret_account_for_service "$service" 2>/dev/null)" || existing_account=""
+    if [[ -n "$existing_account" && "$existing_account" != "$account" ]]; then
+      die "${RED}Refusing to store: service '${service}' already holds an item for account '${existing_account}', not '${account}'.${RESET} Readers resolve this service without an account, so a second item would shadow the first. Remove the stale item or pass an explicit --service <name>." 1
+    fi
+    # Rotation detection is best effort and advisory only: it reports the state
+    # observed before the mint, and a concurrent writer between this read and the
+    # write below would make it stale. It never gates the write, and the existing
+    # value is discarded here, never printed.
+    if [[ -n "$existing_account" ]]; then
       rotated=1
     fi
   fi
+
+  # The raw token is live in shell state from the mint call until the scrub
+  # below, and the response body carries it too — under `zsh -x` even the
+  # `response=...` assignment would echo it. xtrace is therefore suspended
+  # across the whole region, not just inside the seam, and restored on every
+  # non-fatal exit path. The response body also passed through a 0600 temp file
+  # that api_request removes on the success path, with cli/api.sh's
+  # EXIT/INT/TERM trap removing the whole 0700 temp root otherwise; the residual
+  # window is an unhandleable kill (SIGKILL, power loss) between write and unlink.
+  local mint_traced=0
+  case "$-" in *x*) mint_traced=1; { set +x; } 2>/dev/null ;; esac
 
   local payload response
   payload="$(jq -n --arg label "$label" \
@@ -446,13 +485,15 @@ token_mint() {
     err "${GREEN}Token minted. Copy it now — it will not be shown again.${RESET}"
     emit "$response" "$json" \
       '"token: \(.token)", "credential: \(.credential.id) [\(.credential.status)]"'
+    (( mint_traced == 0 )) || set -x
     return 0
   fi
 
   local token credential_id result
   token="$(printf '%s' "$response" | jq -r '.token // ""')"
   credential_id="$(printf '%s' "$response" | jq -r '.credential.id // ""')"
-  [[ -n "$token" ]] || die "${RED}The daemon returned no token to store.${RESET}" 1
+  [[ -n "$token" ]] \
+    || die "${RED}Token minted (credential ${credential_id:-unknown}) but the daemon returned no token value to store.${RESET} Revoke it with: mandible user token revoke ${credential_id:-<credential-id>}" 1
   printf '%s' "$token" | secret_set "$service" "$account" \
     || die "${RED}Token minted (credential ${credential_id}) but could NOT be stored in the secret backend.${RESET} Revoke it with: mandible user token revoke ${credential_id}" 1
 
@@ -465,9 +506,11 @@ token_mint() {
     --argjson rotated "$rotated" \
     '{credential: .credential,
       secret: {backend: $backend, service: $service, account: $account, rotated: ($rotated == 1)}}')"
-  # Drop the raw token from shell state as soon as it is no longer needed.
+  # Drop the raw token from shell state as soon as it is no longer needed, then
+  # restore whatever xtrace setting the caller had.
   token=""
   response=""
+  (( mint_traced == 0 )) || set -x
   if (( rotated )); then
     err "${GREEN}Token minted and stored (existing item rotated). It was not printed.${RESET}"
   else
