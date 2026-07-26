@@ -15,6 +15,11 @@ import {
   type DesktopLoginDeps,
 } from "../ui/src/desktop-login.js";
 import {
+  enrollDesktopClientAuth,
+  isDesktopShell,
+  startDesktopDaemon,
+} from "../ui/src/api.js";
+import {
   ensureClientAuthToken,
   getClientAuthSessionState,
   getStoredToken,
@@ -128,6 +133,63 @@ describe("desktop enrollment source ordering", () => {
       },
     }));
     expect(attempted).toEqual(["keychain"]);
+  });
+});
+
+describe("desktop shell command bridge", () => {
+  // The dashboard is served over HTTP into the webview, where a bare module
+  // specifier such as "@tauri-apps/api/core" has no URL to resolve. The shell
+  // API must therefore be read off the window globals Tauri installs.
+  type TauriTestWindow = typeof window & {
+    __TAURI__?: unknown;
+    __TAURI_INTERNALS__?: unknown;
+  };
+
+  afterEach(() => {
+    delete (window as TauriTestWindow).__TAURI__;
+    delete (window as TauriTestWindow).__TAURI_INTERNALS__;
+  });
+
+  it("invokes shell commands through window.__TAURI__.core", async () => {
+    const calls: Array<{ command: string; args: unknown }> = [];
+    (window as TauriTestWindow).__TAURI__ = {
+      core: {
+        invoke: async (command: string, args?: Record<string, unknown>) => {
+          calls.push({ command, args });
+          return true;
+        },
+      },
+    };
+
+    expect(isDesktopShell()).toBe(true);
+    await expect(enrollDesktopClientAuth("keychain", { route: "/issues" })).resolves.toBe(true);
+    expect(calls).toEqual([
+      { command: "client_auth_keychain_enroll", args: { route: "/issues", force: false } },
+    ]);
+  });
+
+  it("falls back to the internals bridge the runtime check also accepts", async () => {
+    // `withGlobalTauri` publishes `__TAURI__`, but `__TAURI_INTERNALS__` is
+    // present either way: a runtime that passes the desktop-shell check must
+    // never fail the access path.
+    const calls: string[] = [];
+    (window as TauriTestWindow).__TAURI_INTERNALS__ = {
+      invoke: async (command: string) => {
+        calls.push(command);
+        return true;
+      },
+    };
+
+    expect(isDesktopShell()).toBe(true);
+    await expect(enrollDesktopClientAuth("bootstrap")).resolves.toBe(true);
+    expect(calls).toEqual(["client_auth_enroll"]);
+  });
+
+  it("reports a plain browser instead of failing to resolve a module", async () => {
+    expect(isDesktopShell()).toBe(false);
+    await expect(startDesktopDaemon()).rejects.toThrow(
+      "Desktop daemon controls are only available in the Tauri app.",
+    );
   });
 });
 

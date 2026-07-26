@@ -96,7 +96,6 @@ const buildOptions = {
     'react-dom': 'preact/compat',
     'react/jsx-runtime': 'preact/jsx-runtime',
   },
-  external: ['@tauri-apps/api/core', '@tauri-apps/api/webview'],
   loader: {
     '.css': 'css',
   },
