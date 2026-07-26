@@ -53,6 +53,18 @@ function getParam(req: unknown, key: string): string | undefined {
   return undefined;
 }
 
+/** Issue 71a287e — tolerate an unparseable webhook payload rather than 500. */
+function parseWebhookData(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function getBody(req: unknown): Record<string, unknown> | null {
   if (!req || typeof req !== "object") return null;
   const record = req as Record<string, unknown>;
@@ -505,6 +517,10 @@ export function registerInboxRoutes(
         target_branch: row.target_branch,
         target_issue: row.target_issue,
         created_at: row.created_at,
+        // Issue 71a287e — the structured payload is what the dashboard alert
+        // renders (credential label, leak location, remediation commands). It
+        // never contains credential material.
+        data: parseWebhookData(row.data_json),
       })),
       total,
     });
@@ -575,6 +591,10 @@ export function registerInboxRoutes(
         target_branch: row.target_branch,
         target_issue: row.target_issue,
         created_at: row.created_at,
+        // Issue 71a287e — the structured payload is what the dashboard alert
+        // renders (credential label, leak location, remediation commands). It
+        // never contains credential material.
+        data: parseWebhookData(row.data_json),
       })),
       total,
     });

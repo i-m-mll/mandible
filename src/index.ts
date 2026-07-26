@@ -176,7 +176,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   const sessionDiscovery = new SessionDiscovery(db, sessionRegistry, workScanner, logger);
   const reaperTimer = new ReaperTimer(sessionDiscovery, logger);
-  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner);
+  registerSessionRoutes(router, sessionRegistry, sessionDiscovery, issueScanner, clientAuth);
 
   registerGraphRoutes(router, issueScanner);
   registerProviderRoutes(router);

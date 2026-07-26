@@ -1,5 +1,6 @@
 // Client-authentication routes (issue 708dc4c):
 //   POST /api/client-auth/handshake   dashboard acquires an ephemeral operator token
+//   POST /api/client-auth/session-token  exchange an agent PAT for a session-scoped token
 //   GET  /api/client-auth/status      current mode + unattributed-write telemetry (read)
 //   GET  /api/client-auth/whoami      effective client identity for this request (read)
 //   PUT  /api/client-auth/mode        set mode (operator only, both directions)
@@ -81,6 +82,85 @@ export function registerClientAuthRoutes(
       sendJson(res, 200, {
         ...session,
         user: { id: operator.id, slug: operator.slug },
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny", countUnattributed: false });
+
+  // Issue 0b989d1 — exchange a long-lived agent PAT for a session-scoped
+  // ephemeral token. `cli/wrap.sh` calls this at launch so the credential that
+  // actually enters an agent's environment (and therefore its transcript) dies
+  // when that one session ends, instead of being a shared PAT whose leak forces
+  // a rotation across every live agent.
+  //
+  // The exchange NARROWS an identity, it never establishes one: the caller must
+  // already authenticate with a durable api_token, and the minted token resolves
+  // to that same user. Requiring api_token specifically (not merely "some
+  // authenticated identity") stops an exchanged token — or a dashboard/bootstrap
+  // ephemeral — from being re-exchanged into a fresh, differently-scoped
+  // credential with a renewed TTL.
+  router.post("/api/client-auth/session-token", (req, res) => {
+    try {
+      const db = getDb();
+      const identity = req.client_identity ?? null;
+      if (!identity) {
+        sendJson(res, 401, {
+          error: "Session-token exchange requires an authenticated client.",
+          code: "authentication_required",
+        });
+        return;
+      }
+      if (identity.method !== "api_token") {
+        sendJson(res, 403, {
+          error: "Session-token exchange requires a durable api_token credential.",
+          code: "exchange_requires_api_token",
+        });
+        return;
+      }
+      const sessionId = (optionalString(bodyRecord(req), "session_id") ?? "").trim();
+      if (!sessionId) {
+        throw new UserRegistryError("invalid", "session_id is required.");
+      }
+      const user = getUserById(db, identity.user_id);
+      if (!user || user.status !== "active") {
+        sendJson(res, 403, {
+          error: "Session-token exchange requires an active user.",
+          code: "inactive_user",
+        });
+        return;
+      }
+      const existingSession = db.prepare(
+        "SELECT status, ended_at, owner_user_id FROM sessions WHERE id = ?",
+      ).get(sessionId) as {
+        status: string;
+        ended_at: string | null;
+        owner_user_id: string | null;
+      } | undefined;
+      if (
+        existingSession
+        && (
+          existingSession.status !== "active"
+          || existingSession.ended_at !== null
+          || existingSession.owner_user_id !== user.id
+        )
+      ) {
+        sendJson(res, 403, {
+          error: "Session-token exchange requires the caller's own active session.",
+          code: "session_exchange_forbidden",
+        });
+        return;
+      }
+      const minted = authenticator.issueSessionScopedToken(
+        { user_id: user.id, slug: user.slug },
+        sessionId,
+      );
+      // The raw token is returned exactly once and is never persisted or logged.
+      sendJson(res, 201, {
+        token: minted.token,
+        expires_at: minted.expires_at,
+        session_id: sessionId,
+        user: { id: user.id, slug: user.slug },
       });
     } catch (error) {
       handleError(res, error);

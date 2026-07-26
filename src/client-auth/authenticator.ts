@@ -55,6 +55,19 @@ interface EphemeralEntry {
   renewUntil: number | null;
 }
 
+/**
+ * Purpose prefix for a wrap-time exchanged token (issue 0b989d1): a launched
+ * agent's long-lived keychain PAT is swapped for a token bound to the
+ * `sessions` row it is about to register, so a transcript leak exposes only a
+ * credential that dies with that one session instead of a shared PAT whose
+ * rotation hits every live agent.
+ */
+export const WRAP_SESSION_PURPOSE_PREFIX = "wrap_session:";
+
+export function wrapSessionPurpose(sessionId: string): string {
+  return `${WRAP_SESSION_PURPOSE_PREFIX}${sessionId}`;
+}
+
 export interface ClientAuthenticatorOptions {
   /** Override the filesystem secrets directory (tests). Defaults to config dir. */
   secretsDir?: string;
@@ -62,13 +75,22 @@ export interface ClientAuthenticatorOptions {
   dashboardSessionTtlMs?: number;
   /** Bounded handshake-only renewal grace after dashboard expiry (tests may shorten). */
   dashboardSessionRenewalGraceMs?: number;
-  /** Hard cap for daemon-lifetime ephemeral credentials. */
+  /** TTL backstop for wrap-time session-scoped agent tokens (tests may shorten). */
+  wrapSessionTtlMs?: number;
+  /** Grace before an exchanged token must have a registered session row. */
+  wrapSessionPreRegistrationGraceMs?: number;
+  /** Independent cap for wrap-time session-scoped tokens. */
+  maxWrapSessionTokens?: number;
+  /** Hard cap for non-wrap daemon-lifetime ephemeral credentials. */
   maxEphemeralTokens?: number;
   /** Injectable clock for expiry tests. */
   now?: () => number;
 }
 
 const DEFAULT_DASHBOARD_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_WRAP_SESSION_TTL_MS = 24 * 60 * 60 * 1_000;
+const DEFAULT_WRAP_SESSION_PRE_REGISTRATION_GRACE_MS = 10 * 60 * 1_000;
+const DEFAULT_MAX_WRAP_SESSION_TOKENS = 64;
 const DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS = 7 * 24 * 60 * 60 * 1_000;
 const DEFAULT_EPHEMERAL_TTL_MS = 15 * 60 * 1_000;
 const OPERATOR_BOOTSTRAP_TTL_MS = 5 * 60 * 1_000;
@@ -80,6 +102,9 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly secretsDir: string;
   private readonly dashboardSessionTtlMs: number;
   private readonly dashboardSessionRenewalGraceMs: number;
+  private readonly wrapSessionTtlMs: number;
+  private readonly wrapSessionPreRegistrationGraceMs: number;
+  private readonly maxWrapSessionTokens: number;
   private readonly maxEphemeralTokens: number;
   private readonly now: () => number;
   /** Pepper is loaded from the filesystem ONCE at construction (startup). */
@@ -95,6 +120,13 @@ export class ClientAuthenticator implements ClientAuthGate {
       ?? DEFAULT_DASHBOARD_SESSION_TTL_MS;
     this.dashboardSessionRenewalGraceMs = options.dashboardSessionRenewalGraceMs
       ?? DEFAULT_DASHBOARD_SESSION_RENEWAL_GRACE_MS;
+    this.wrapSessionTtlMs = options.wrapSessionTtlMs ?? DEFAULT_WRAP_SESSION_TTL_MS;
+    this.wrapSessionPreRegistrationGraceMs = options.wrapSessionPreRegistrationGraceMs
+      ?? DEFAULT_WRAP_SESSION_PRE_REGISTRATION_GRACE_MS;
+    this.maxWrapSessionTokens = Math.max(
+      1,
+      options.maxWrapSessionTokens ?? DEFAULT_MAX_WRAP_SESSION_TOKENS,
+    );
     this.maxEphemeralTokens = Math.max(
       2,
       options.maxEphemeralTokens ?? DEFAULT_MAX_EPHEMERAL_TOKENS,
@@ -147,6 +179,10 @@ export class ClientAuthenticator implements ClientAuthGate {
         return null;
       }
       if (!this.agentSessionIdentityStillValid(eph)) {
+        this.ephemeral.delete(key);
+        return null;
+      }
+      if (!this.wrapSessionStillLive(eph)) {
         this.ephemeral.delete(key);
         return null;
       }
@@ -222,13 +258,63 @@ export class ClientAuthenticator implements ClientAuthGate {
       expiresAt: ttlMs === null ? null : createdAt + ttlMs,
       renewUntil: null,
     });
-    this.enforceEphemeralLimit();
+    if (purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)) {
+      this.enforceWrapSessionLimit();
+    } else {
+      this.enforceEphemeralLimit();
+    }
     return raw;
   }
 
   /** Revoke one daemon-lifetime capability without retaining its raw value. */
   revokeEphemeralToken(raw: string): void {
     this.ephemeral.delete(fingerprintForToken(this.pepper, raw));
+  }
+
+  /**
+   * Mint a session-scoped ephemeral token for an already-authenticated agent
+   * identity (issue 0b989d1). The caller has proved the identity with a durable
+   * api_token; this narrows that identity to one `sessions` row so a leaked
+   * transcript yields a credential that dies when the session ends. A short
+   * grace covers registration immediately after exchange; the TTL is the
+   * backstop for a registered session that never reports an end.
+   *
+   * The token lives in the in-memory ephemeral map, so a daemon restart also
+   * invalidates it — deliberately tighter than the PAT it replaces, and safe
+   * because wrap.sh falls back to the PAT when the exchange is unavailable.
+   */
+  issueSessionScopedToken(
+    identity: { user_id: string; slug: string },
+    sessionId: string,
+    options: { ttlMs?: number } = {},
+  ): { token: string; expires_at: number; purpose: string } {
+    const purpose = wrapSessionPurpose(sessionId);
+    const ttlMs = options.ttlMs ?? this.wrapSessionTtlMs;
+    for (const [key, entry] of this.ephemeral) {
+      if (entry.purpose === purpose) this.ephemeral.delete(key);
+    }
+    const token = this.issueEphemeralToken(identity, purpose, { ttlMs });
+    const entry = this.ephemeral.get(fingerprintForToken(this.pepper, token));
+    if (!entry || entry.expiresAt === null) {
+      throw new Error("Failed to create an expiring session-scoped token.");
+    }
+    return { token, expires_at: entry.expiresAt, purpose };
+  }
+
+  /**
+   * Drop every session-scoped token bound to one session. Called when the
+   * session is marked ended so the credential stops working immediately rather
+   * than at the next authenticate() liveness read. Returns the count revoked.
+   */
+  revokeSessionScopedTokens(sessionId: string): number {
+    const purpose = wrapSessionPurpose(sessionId);
+    let revoked = 0;
+    for (const [key, entry] of this.ephemeral) {
+      if (entry.purpose !== purpose) continue;
+      this.ephemeral.delete(key);
+      revoked += 1;
+    }
+    return revoked;
   }
 
   /**
@@ -425,14 +511,57 @@ export class ClientAuthenticator implements ClientAuthGate {
     return matches.length === 1 && matches[0].id === entry.identity.user_id;
   }
 
+  /**
+   * Liveness gate for a wrap-time session-scoped token (issue 0b989d1). The
+   * explicit revocation on PATCH /api/sessions/:id/end is the fast path; this
+   * read is the one that also catches every other way a session stops being
+   * active (reaper marking it `dead`, dashboard end, direct registry update),
+   * and it survives a route that forgets to revoke.
+   *
+   * wrap.sh exchanges before it registers the session, so a missing row is
+   * allowed only for a short pre-registration grace. A still-missing row after
+   * that deadline is dead; once the row exists, its normal active/ended state
+   * is authoritative.
+   */
+  private wrapSessionStillLive(entry: EphemeralEntry): boolean {
+    if (!entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)) return true;
+    const sessionId = entry.purpose.slice(WRAP_SESSION_PURPOSE_PREFIX.length);
+    const row = this.db
+      .prepare("SELECT status, ended_at FROM sessions WHERE id = ?")
+      .get(sessionId) as { status: string; ended_at: string | null } | undefined;
+    if (!row) {
+      return this.now() < entry.createdAt + this.wrapSessionPreRegistrationGraceMs;
+    }
+    return row.status === "active" && row.ended_at === null;
+  }
+
+  private enforceWrapSessionLimit(): void {
+    // Map iteration is insertion order. Same-session replacement deletes the
+    // previous entry before inserting its successor, so the first wrap entry is
+    // always the oldest even when multiple tokens share the same millisecond.
+    const entries = [...this.ephemeral.entries()]
+      .filter(([, entry]) => entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX));
+    while (entries.length > this.maxWrapSessionTokens) {
+      const [key] = entries.shift()!;
+      this.ephemeral.delete(key);
+    }
+  }
+
   private enforceEphemeralLimit(): void {
-    if (this.ephemeral.size <= this.maxEphemeralTokens) return;
+    let retained = [...this.ephemeral.values()]
+      .filter((entry) => !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX))
+      .length;
+    if (retained <= this.maxEphemeralTokens) return;
     const evictable = [...this.ephemeral.entries()]
-      .filter(([, entry]) => entry.purpose !== "operator_bootstrap")
+      .filter(([, entry]) => (
+        entry.purpose !== "operator_bootstrap"
+        && !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
+      ))
       .sort((a, b) => a[1].createdAt - b[1].createdAt);
-    while (this.ephemeral.size > this.maxEphemeralTokens && evictable.length > 0) {
+    while (retained > this.maxEphemeralTokens && evictable.length > 0) {
       const [key, entry] = evictable.shift()!;
       this.ephemeral.delete(key);
+      retained -= 1;
       if (entry.purpose === "dashboard_handshake") {
         writeDashboardSession(null, this.secretsDir);
       }

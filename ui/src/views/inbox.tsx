@@ -38,6 +38,11 @@ const INBOX_TONES = {
     fg: appColors.authResultNeutral,
     bg: appColors.authResultNeutralBg,
   },
+  // Issue 71a287e — a leaked credential is the highest-severity inbox item.
+  credentialLeak: {
+    fg: appColors.authResultProblem,
+    bg: appColors.authResultProblemBg,
+  },
 } as const;
 
 export interface InboxContinuation {
@@ -78,6 +83,36 @@ export interface InboxPresetDiff {
   created_at: number;
 }
 
+// Issue 71a287e — pending webhook events. Credential-leak alerts ride this
+// existing queue rather than introducing a parallel alert subsystem.
+export interface InboxWebhookEvent {
+  id: string;
+  source: string;
+  event_type: string;
+  title: string | null;
+  priority: string;
+  target_branch: string | null;
+  target_issue: string | null;
+  created_at: number;
+  data?: CredentialLeakEventData | Record<string, unknown> | null;
+}
+
+export interface CredentialLeakEventData {
+  credential_id?: string;
+  credential_label?: string | null;
+  user_slug?: string | null;
+  session_scoped?: boolean;
+  auto_revoked?: boolean;
+  conversation_id?: string | null;
+  conversation_title?: string | null;
+  session_id?: string | null;
+  provider?: string | null;
+  block_position?: number | null;
+  remediation?: { mint?: string; revoke?: string } | null;
+}
+
+export const CREDENTIAL_LEAK_EVENT_TYPE = 'credential_leak';
+
 export interface InboxData {
   continuations: InboxContinuation[];
   auth_results: InboxAuthResult[];
@@ -87,6 +122,8 @@ export interface InboxData {
   work_unit_continuations?: import('../api').WorkUnitWithLiveness[];
   // Bug: 11f4f47 — preset diff proposals
   preset_diffs?: InboxPresetDiff[];
+  // Issue 71a287e — pending webhook events (credential-leak alerts and others)
+  pending_webhooks?: InboxWebhookEvent[];
   total: number;
 }
 
@@ -105,7 +142,8 @@ export interface InboxViewProps {
 // ── Types for unified item list ──
 
 // Bug: cbbb3d9 — added 'work_unit_continuation' type for work-unit handoff notes
-type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation' | 'preset_diff';
+// Issue 71a287e — added 'credential_leak' for leaked-credential alerts
+type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation' | 'preset_diff' | 'credential_leak';
 
 interface UnifiedItem {
   id: string;
@@ -114,7 +152,7 @@ interface UnifiedItem {
   repo: string | null;
   branch: string | null;
   time: number | null;
-  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness | InboxPresetDiff;
+  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness | InboxPresetDiff | InboxWebhookEvent;
 }
 
 // ── Helpers ──
@@ -124,6 +162,7 @@ function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'work_unit_continuation') return INBOX_TONES.handoff.fg;
   if (item.type === 'issue') return INBOX_TONES.issue.fg;
   if (item.type === 'preset_diff') return INBOX_TONES.presetDiff.fg;
+  if (item.type === 'credential_leak') return INBOX_TONES.credentialLeak.fg;
   const ar = item.raw as InboxAuthResult;
   if (ar.status === 'completed') return INBOX_TONES.authCompleted.fg;
   if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return INBOX_TONES.authProblem.fg;
@@ -136,6 +175,7 @@ function itemTypeBadge(item: UnifiedItem): string {
   if (item.type === 'work_unit_continuation') return 'Handoff';
   if (item.type === 'issue') return 'Issue';
   if (item.type === 'preset_diff') return 'Preset Diff';
+  if (item.type === 'credential_leak') return 'Credential Leak';
   const ar = item.raw as InboxAuthResult;
   return ar.status.charAt(0).toUpperCase() + ar.status.slice(1);
 }
@@ -224,6 +264,22 @@ function buildUnifiedItems(data: InboxData): UnifiedItem[] {
       branch: null,
       time: pd.created_at,
       raw: pd,
+    });
+  }
+
+  // Issue 71a287e — credential-leak alerts from the pending webhook queue
+  for (const event of (data.pending_webhooks ?? [])) {
+    if (event.event_type !== CREDENTIAL_LEAK_EVENT_TYPE) continue;
+    const leak = (event.data ?? {}) as CredentialLeakEventData;
+    items.push({
+      id: `credential_leak:${event.id}`,
+      type: 'credential_leak',
+      title: event.title
+        || `Leaked credential: ${leak.credential_label ?? leak.credential_id ?? 'unknown'}`,
+      repo: null,
+      branch: event.target_branch,
+      time: event.created_at,
+      raw: event,
     });
   }
 
@@ -638,6 +694,97 @@ function WorkUnitContinuationDetail({
   );
 }
 
+// Issue 71a287e — leaked-credential alert. Shows which credential leaked, where
+// it leaked, and the exact remediation commands. No token material is ever
+// carried in the event payload, so there is nothing sensitive to render here.
+function CredentialLeakDetail({ item }: { item: InboxWebhookEvent }): JSX.Element {
+  const leak = (item.data ?? {}) as CredentialLeakEventData;
+  const mintCommand = leak.remediation?.mint
+    ?? `mandible user token mint ${leak.user_slug ?? '<user>'} --store`;
+  const revokeCommand = leak.remediation?.revoke
+    ?? `mandible user token revoke ${leak.credential_id ?? '<credential-id>'}`;
+  const where = leak.conversation_title
+    || leak.session_id
+    || leak.conversation_id
+    || 'an indexed conversation';
+
+  return (
+    <div className="inbox-detail__content">
+      <div className="inbox-detail__header">
+        <span
+          className="inbox-detail__type-badge"
+          style={{
+            color: INBOX_TONES.credentialLeak.fg,
+            background: INBOX_TONES.credentialLeak.bg,
+          }}
+        >
+          Credential Leak
+        </span>
+        <h2 className="inbox-detail__title">
+          {leak.credential_label ?? leak.credential_id ?? 'Leaked credential'}
+        </h2>
+      </div>
+      <div className="inbox-detail__meta">
+        {leak.user_slug && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Owner</span>
+            <span className="inbox-detail__meta-value">{leak.user_slug}</span>
+          </div>
+        )}
+        {leak.credential_id && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Credential</span>
+            <code className="inbox-detail__meta-value">{leak.credential_id}</code>
+          </div>
+        )}
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Leaked in</span>
+          <span className="inbox-detail__meta-value">{where}</span>
+        </div>
+        {leak.provider && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Provider</span>
+            <span className="inbox-detail__meta-value">{leak.provider}</span>
+          </div>
+        )}
+        {leak.block_position !== null && leak.block_position !== undefined && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Block</span>
+            <code className="inbox-detail__meta-value">#{leak.block_position}</code>
+          </div>
+        )}
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Status</span>
+          <span className="inbox-detail__meta-value">
+            {leak.auto_revoked
+              ? 'Session-scoped token — automatically revoked'
+              : 'Long-lived PAT — NOT auto-revoked, rotate manually'}
+          </span>
+        </div>
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Detected</span>
+          <span className="inbox-detail__meta-value">
+            {formatRelativeTime(item.created_at)}
+          </span>
+        </div>
+      </div>
+      <pre className="inbox-detail__pre">
+        {`Remediate — mint a replacement, then revoke the leaked credential:\n\n  ${mintCommand}\n  ${revokeCommand}`}
+      </pre>
+      <div className="inbox-detail__actions">
+        {leak.conversation_id && (
+          <a
+            href={`#/conversations?id=${encodeURIComponent(leak.conversation_id)}`}
+            className="btn btn--ghost"
+          >
+            View conversation &rarr;
+          </a>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function IssueDetail({ item }: { item: InboxIssue }): JSX.Element {
   const href = item.repo_id
     ? `#/issues?repo=${encodeURIComponent(item.repo_id)}&issue=${encodeURIComponent(item.id)}`
@@ -894,6 +1041,8 @@ export function InboxView({
           />
         ) : selectedItem.type === 'preset_diff' ? (
           <PresetDiffDetail item={selectedItem.raw as InboxPresetDiff} />
+        ) : selectedItem.type === 'credential_leak' ? (
+          <CredentialLeakDetail item={selectedItem.raw as InboxWebhookEvent} />
         ) : (
           <IssueDetail item={selectedItem.raw as InboxIssue} />
         )}

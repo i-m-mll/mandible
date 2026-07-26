@@ -84,6 +84,61 @@ export AI_AGENT_SIGNING=1
 # read goes through the secret seam in cli/api.sh, whose exit status and a
 # non-empty result are the only success signals. Everything here is non-fatal
 # and quiet by default. Opt out with MANDIBLE_NO_KEYCHAIN_TOKEN=1.
+#
+# Issue 0b989d1 — the PAT is not what gets exported. It is first exchanged for a
+# token scoped to THIS session id, which the daemon invalidates when the session
+# ends (plus a TTL backstop). The keychain PAT then never enters an agent's
+# environment, so a transcript leak exposes only a credential that is already
+# dead. The exchange is best-effort by design: any failure falls back to
+# exporting the PAT, because a down daemon must never lock an agent out.
+
+# Exchange a long-lived agent PAT for a session-scoped ephemeral token.
+# Prints the ephemeral token on stdout and returns 0 on success; returns
+# non-zero (printing nothing) on every failure, which is the caller's signal to
+# fall back to the PAT. The bearer travels in a 0600 curl config file, never on
+# argv where `ps` would show it (the cli/api.sh idiom). Callers must already
+# have suspended xtrace: the captured token would otherwise be traced.
+exchange_session_token() {
+  local pat="$1"
+  local cfg="" body="" out="" http_status="" token="" token_body=""
+
+  [ -n "${MANDIBLE_BASE:-}" ] || return 1
+  case "$MANDIBLE_BASE" in file://*) return 1 ;; esac
+  command -v curl >/dev/null 2>&1 || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+
+  cfg=$(api_temp_file) || return 1
+  body=$(api_temp_file) || { rm -f "$cfg"; return 1; }
+  out=$(api_temp_file) || { rm -f "$cfg" "$body"; return 1; }
+
+  printf 'header = "Authorization: Bearer %s"\n' "$pat" > "$cfg" \
+    && jq -n --arg id "$SESSION_ID" '{session_id: $id}' > "$body" 2>/dev/null \
+    && http_status=$(curl -s \
+      --max-time "${MANDIBLE_SESSION_TOKEN_TIMEOUT:-2}" \
+      --config "$cfg" \
+      -o "$out" -w '%{http_code}' \
+      -X POST -H 'Content-Type: application/json' \
+      --data-binary "@$body" \
+      "$(api_base)/api/client-auth/session-token" 2>/dev/null)
+
+  case "${http_status:-000}" in
+    2*) token=$(jq -r '.token // empty' < "$out" 2>/dev/null) || token="" ;;
+  esac
+
+  rm -f "$cfg" "$body" "$out"
+  case "$token" in
+    mandible_pat_*)
+      [ "${#token}" -eq 56 ] || return 1
+      token_body="${token#mandible_pat_}"
+      case "$token_body" in
+        *[!A-Za-z0-9_-]*) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "$token"
+}
+
 inject_agent_token() {
   # Explicit opt-out.
   [ "${MANDIBLE_NO_KEYCHAIN_TOKEN:-}" = "1" ] && return 0
@@ -92,7 +147,7 @@ inject_agent_token() {
   # Need a known app to derive the service name.
   [ -n "$APP" ] || return 0
 
-  local service token traced=0
+  local service token session_token traced=0
   service="mandible-agent-$APP"
   # Suspend xtrace across the capture AND the export: under `bash -x` both the
   # assignment and the export line would echo the token (issue e2cb93f). The
@@ -107,7 +162,14 @@ inject_agent_token() {
     return 0
   fi
   if [ -n "$token" ]; then
-    export MANDIBLE_TOKEN="$token"
+    # Fail open (mandatory): only a completed exchange replaces the PAT.
+    if [ "${MANDIBLE_NO_SESSION_TOKEN_EXCHANGE:-}" != "1" ] \
+      && session_token=$(exchange_session_token "$token") \
+      && [ -n "$session_token" ]; then
+      export MANDIBLE_TOKEN="$session_token"
+    else
+      export MANDIBLE_TOKEN="$token"
+    fi
   fi
   [ "$traced" -eq 0 ] || set -x
 }

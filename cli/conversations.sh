@@ -16,11 +16,23 @@ Usage:
   mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
   mandible conversations search "<query>" [search options...]
+  mandible conversations scan-credentials [--conversation <id>] [--limit N] [--dry-run] [--json]
 
 These commands read Mandible's normalized SQLite conversation index. Use
 `mandible logs ...` for provider-native source files.
 
 Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --since TIME --until TIME --content TEXT --limit N --offset N
+
+scan-credentials sweeps the existing index for leaked Mandible tokens
+(`mandible_pat_...`), verifying each candidate against the live credential
+hashes. Confirmed leaks are recorded as high-priority inbox alerts. Session-
+scoped credentials persisted in user_credentials are auto-revoked; long-lived
+PATs are alerted only and must be rotated with `mandible user token mint <ref>
+--store` plus a revoke. In-memory wrap-session tokens are invisible to this
+scanner by design and instead expire on session end, daemon restart, or TTL.
+The session-scoped predicate is reserved for a future persisted shape. Use
+--dry-run to report without recording or revoking. No token material is ever
+printed or stored.
 EOF
 }
 
@@ -196,6 +208,55 @@ file_rpc_search() {
   fi
 }
 
+# Issue 71a287e — on-demand credential-leak sweep over the normalized index.
+# The daemon does the matching (it holds the token pepper); this only shapes the
+# request and renders the structured result. No token material is ever printed.
+scan_credentials() {
+  local conversation="" limit="" dry_run=0 json=0 payload response
+  while (( $# > 0 )); do
+    case "$1" in
+      --conversation) conversation="${2:?--conversation requires a value}"; shift 2 ;;
+      --limit) limit="${2:?--limit requires a value}"; shift 2 ;;
+      --dry-run) dry_run=1; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      *) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    esac
+  done
+
+  payload=$(jq -nc \
+    --arg conversation "$conversation" \
+    --arg limit "$limit" \
+    --argjson record "$(( dry_run ? 0 : 1 ))" \
+    '{record: ($record == 1)}
+     + (if $conversation == "" then {} else {conversation_id: $conversation} end)
+     + (if $limit == "" then {} else {limit: ($limit | tonumber)} end)')
+
+  response=$(api_send POST "/api/conversations/scan-credentials" "$payload")
+
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+    return 0
+  fi
+
+  printf '%s\n' "$response" | jq -r '
+    "Scanned \(.scanned_blocks) blocks across \(.scanned_conversations) conversations."
+    + (if .truncated then "\nWarning: candidate verification was truncated at the pathological per-text limit." else "" end)
+    + (if .skipped then "\nSkipped: \(.skipped)" else "" end)
+    + (if (.detections | length) == 0 then "\nNo leaked credentials found."
+       else "\n\nLeaked credentials (\(.detections | length)):\n"
+         + ([.detections[] |
+              "  - \(.credential_label // .credential_id) (\(.credential_id))"
+              + "\n      owner:      \(.user_slug // "unknown")"
+              + "\n      leaked in:  \(.conversation_title // .conversation_id) [\(.provider // "unknown")]"
+              + "\n      policy:     " + (if .session_scoped then "session-scoped" else "long-lived PAT — not auto-revoked" end)
+              + "\n      revoked:    \(.auto_revoked)"
+              + "\n      remediate:  \(.remediation.mint)"
+              + "\n                  \(.remediation.revoke)"
+            ] | join("\n"))
+       end)'
+}
+
 file_rpc_main() {
   local command="${1:-}"
   case "$command" in
@@ -206,6 +267,7 @@ file_rpc_main() {
       echo "Error: conversations export is not supported through file-RPC. Use the main Mandible daemon or unset MANDIBLE_BASE=file://..." >&2
       exit 2 ;;
     search) shift; file_rpc_search "$@" ;;
+    scan-credentials) shift; scan_credentials "$@" ;;
     ""|-h|--help|help) usage; exit 0 ;;
     *) echo "Unknown conversations subcommand: $command" >&2; usage >&2; exit 1 ;;
   esac
@@ -213,6 +275,14 @@ file_rpc_main() {
 
 if api_is_file_rpc; then
   file_rpc_main "$@"
+  exit $?
+fi
+
+# Issue 71a287e — scan-credentials is daemon-side in every transport: only the
+# daemon holds the token pepper needed to verify a candidate.
+if [[ "${1:-}" == "scan-credentials" ]]; then
+  shift
+  scan_credentials "$@"
   exit $?
 fi
 
@@ -252,6 +322,7 @@ def usage() -> None:
   mandible conversations blocks <id|session-id> [filters] [--json]
   mandible conversations export <id|session-id> [--format json|markdown]
   mandible conversations search "<query>" [search options...]
+  mandible conversations scan-credentials [--conversation <id>] [--limit N] [--dry-run] [--json]
 """)
 
 
