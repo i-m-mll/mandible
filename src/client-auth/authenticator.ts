@@ -536,9 +536,11 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   private enforceWrapSessionLimit(): void {
+    // Map iteration is insertion order. Same-session replacement deletes the
+    // previous entry before inserting its successor, so the first wrap entry is
+    // always the oldest even when multiple tokens share the same millisecond.
     const entries = [...this.ephemeral.entries()]
-      .filter(([, entry]) => entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX))
-      .sort((a, b) => a[1].createdAt - b[1].createdAt);
+      .filter(([, entry]) => entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX));
     while (entries.length > this.maxWrapSessionTokens) {
       const [key] = entries.shift()!;
       this.ephemeral.delete(key);

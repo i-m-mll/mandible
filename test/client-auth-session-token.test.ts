@@ -241,7 +241,10 @@ describe("session-token exchange", () => {
     const agent = agentWithPat();
     const wrapTokens = Array.from(
       { length: 65 },
-      (_, index) => authenticator.issueSessionScopedToken(agent, `unknown-${index}`).token,
+      (_, index) => authenticator.issueSessionScopedToken(
+        { user_id: agent.id, slug: agent.slug },
+        `unknown-${index}`,
+      ).token,
     );
 
     expect(authenticator.authenticate(dashboard.token)).toMatchObject({
