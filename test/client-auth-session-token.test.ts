@@ -23,7 +23,7 @@ import { registerSessionRoutes } from "../src/routes/sessions.js";
 import { SessionRegistry } from "../src/registry.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import { setClientAuthMode } from "../src/client-auth/mode.js";
-import { createUser, setupOperator } from "../src/users/store.js";
+import { addBinding, createUser, setupOperator } from "../src/users/store.js";
 
 let tempDir = "";
 let db: Db;
@@ -35,7 +35,8 @@ let port = 0;
 let clock = 0;
 
 const SESSION_ID = "sess-wrap-0b989d1";
-const WRAP_TTL_MS = 60_000;
+const WRAP_TTL_MS = 30 * 60_000;
+const PRE_REGISTRATION_GRACE_MS = 10 * 60_000;
 
 function bearer(token: string): Record<string, string> {
   return { Authorization: `Bearer ${token}` };
@@ -44,6 +45,7 @@ function bearer(token: string): Record<string, string> {
 /** An agent user plus the durable PAT wrap.sh would have read from the keychain. */
 function agentWithPat(slug = "agent-wrapped"): { id: string; slug: string; pat: string } {
   const agent = createUser(db, { slug, kind: "agent", display_name: "Wrapped Agent" });
+  addBinding(db, agent.id, { binding_type: "app_name", value: "claude" });
   const { token } = authenticator.mintApiToken(agent.id, { label: `${slug}-keychain` });
   return { id: agent.id, slug: agent.slug, pat: token };
 }
@@ -74,6 +76,7 @@ beforeEach(async () => {
   authenticator = new ClientAuthenticator(db, {
     secretsDir: path.join(tempDir, "client-auth"),
     wrapSessionTtlMs: WRAP_TTL_MS,
+    wrapSessionPreRegistrationGraceMs: PRE_REGISTRATION_GRACE_MS,
     now: () => clock,
   });
   registry = new SessionRegistry(db);
@@ -188,6 +191,66 @@ describe("session-token exchange", () => {
     const response = await exchange(dashboard.token);
     expect(response.status).toBe(403);
   });
+
+  it("refuses another user's exchange for an existing active session", async () => {
+    agentWithPat();
+    registerSession();
+    const other = createUser(db, {
+      slug: "agent-other",
+      kind: "agent",
+      display_name: "Other Agent",
+    });
+    const otherPat = authenticator.mintApiToken(other.id, { label: "other-keychain" }).token;
+
+    const response = await exchange(otherPat);
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ code: "session_exchange_forbidden" });
+  });
+
+  it("allows the owner to exchange for an existing active session", async () => {
+    const agent = agentWithPat();
+    registerSession();
+
+    expect((await exchange(agent.pat)).status).toBe(201);
+  });
+
+  it("replaces a same-session exchange without growing retained state", async () => {
+    const agent = agentWithPat();
+    const first = await exchange(agent.pat);
+    const sizeAfterFirst = (
+      authenticator as unknown as { ephemeral: Map<string, unknown> }
+    ).ephemeral.size;
+    const second = await exchange(agent.pat);
+    const sizeAfterSecond = (
+      authenticator as unknown as { ephemeral: Map<string, unknown> }
+    ).ephemeral.size;
+
+    expect(sizeAfterSecond).toBe(sizeAfterFirst);
+    expect((await requestJson("POST", "/api/write", {}, bearer(first.body.token as string))).body)
+      .toMatchObject({ identity: null });
+    expect((await requestJson("POST", "/api/write", {}, bearer(second.body.token as string))).body)
+      .toMatchObject({ identity: { user_id: agent.id } });
+  });
+
+  it("caps wrap tokens without evicting a dashboard handshake", () => {
+    const operator = setupOperator(db, { display_name: "Op", email: "op@example.com" });
+    const dashboard = authenticator.issueDashboardToken({
+      user_id: operator.id,
+      slug: operator.slug,
+    });
+    const agent = agentWithPat();
+    const wrapTokens = Array.from(
+      { length: 65 },
+      (_, index) => authenticator.issueSessionScopedToken(agent, `unknown-${index}`).token,
+    );
+
+    expect(authenticator.authenticate(dashboard.token)).toMatchObject({
+      user_id: operator.id,
+      ephemeral_purpose: "dashboard_handshake",
+    });
+    expect(authenticator.authenticate(wrapTokens[0])).toBeNull();
+    expect(authenticator.authenticate(wrapTokens.at(-1)!)).toMatchObject({ user_id: agent.id });
+  });
 });
 
 describe("session-token revocation", () => {
@@ -251,6 +314,19 @@ describe("session-token revocation", () => {
     const { body } = await exchange(agent.pat);
     const response = await requestJson("POST", "/api/write", {}, bearer(body.token as string));
     expect(response.body).toMatchObject({ identity: { user_id: agent.id } });
+  });
+
+  it("kills a still-unregistered session after the ten-minute grace", async () => {
+    const agent = agentWithPat();
+    const { body } = await exchange(agent.pat);
+    const token = body.token as string;
+
+    clock += PRE_REGISTRATION_GRACE_MS - 1;
+    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
+      .toMatchObject({ identity: { user_id: agent.id } });
+    clock += 2;
+    expect((await requestJson("POST", "/api/write", {}, bearer(token))).body)
+      .toMatchObject({ identity: null });
   });
 });
 

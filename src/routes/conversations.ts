@@ -274,8 +274,10 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
   // POST /api/conversations/scan-credentials — issue 71a287e.
   // On-demand sweep of the normalized index for leaked Mandible credentials.
   // Operator-only: it reports which credentials leaked where and applies the
-  // auto-revoke policy to session-scoped tokens. The response never contains
-  // token material — only credential ids, labels, locations, and remediation.
+  // guarded auto-revoke policy to future persisted session-scoped credentials.
+  // Current in-memory wrap-session tokens are intentionally invisible here and
+  // expire through session liveness plus TTL. The response never contains token
+  // material — only credential ids, labels, locations, and remediation.
   server.post("/api/conversations/scan-credentials", (req, res) => {
     try {
       requireOperator(getDb(), req);
@@ -290,6 +292,7 @@ export function registerConversationRoutes(server: RouteRegistrar, sessionManage
       sendJson(res, 200, {
         scanned_blocks: result.scanned_blocks,
         scanned_conversations: result.scanned_conversations,
+        truncated: result.truncated,
         skipped: result.skipped ?? null,
         detections: result.detections.map((detection) => ({
           event_id: detection.event_id,

@@ -1806,7 +1806,7 @@ async function ingestFile(
   // content that is actually in the index. Never fatal to ingestion, and the
   // matched token itself never leaves the scanner.
   try {
-    const leaks = scanBlocksForCredentialLeaks(
+    const scan = scanBlocksForCredentialLeaks(
       db,
       newBlocks.map((block) => ({ content: block.content, position: block.position })),
       {
@@ -1817,7 +1817,7 @@ async function ingestFile(
         branch: result.conversation.branch,
       },
     );
-    for (const leak of leaks) {
+    for (const leak of scan.detections) {
       if (!leak.new_event) continue;
       logger("warn", "credential_leak_detected", {
         conversation: conversationId,

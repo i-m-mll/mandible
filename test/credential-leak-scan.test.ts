@@ -2,8 +2,9 @@
 //
 // Covers the four things that make the feature trustworthy: a pattern match
 // alone is not a detection, a real active credential is, the matched plaintext
-// is never persisted, and the revocation policy only auto-revokes session-scoped
-// ephemeral credentials.
+// is never persisted, and the revocation policy only auto-revokes a hypothetical
+// future persisted session-scoped shape. Current wrap-session tokens are
+// in-memory and deliberately invisible here.
 
 import fs from "node:fs";
 import os from "node:os";
@@ -20,6 +21,7 @@ import {
   CREDENTIAL_LEAK_EVENT_TYPE,
   extractTokenCandidates,
   isSessionScopedCredential,
+  MAX_CANDIDATES_PER_TEXT,
   matchActiveCredential,
   recordCredentialLeak,
   remediationFor,
@@ -31,8 +33,8 @@ let tempDir = "";
 let db: Db;
 let pepper = "";
 
-const REAL_TOKEN = `${API_TOKEN_PREFIX}rEaLtOkEn-value_0123456789`;
-const FAKE_TOKEN = `${API_TOKEN_PREFIX}notAnActualCredential_9876`;
+const REAL_TOKEN = `${API_TOKEN_PREFIX}${"R".repeat(43)}`;
+const FAKE_TOKEN = `${API_TOKEN_PREFIX}${"F".repeat(43)}`;
 
 beforeEach(() => {
   resetCredentialLeakScanCache();
@@ -121,6 +123,10 @@ describe("candidate extraction", () => {
     expect(extractTokenCandidates("no secrets here")).toEqual([]);
     expect(extractTokenCandidates(null)).toEqual([]);
   });
+
+  it("extracts the exact token prefix even when more base64url text follows", () => {
+    expect(extractTokenCandidates(`${REAL_TOKEN}A`)).toEqual([REAL_TOKEN]);
+  });
 });
 
 describe("hash verification", () => {
@@ -155,7 +161,7 @@ describe("block scanning", () => {
     makeUser();
     const credential = registerToken("mandible-agent-claude", REAL_TOKEN, { label: "agent pat" });
 
-    const detections = scanBlocksForCredentialLeaks(
+    const { detections } = scanBlocksForCredentialLeaks(
       db,
       [
         { content: "harmless", position: 0 },
@@ -177,7 +183,7 @@ describe("block scanning", () => {
     makeUser();
     registerToken("mandible-agent-claude", REAL_TOKEN);
 
-    const detections = scanBlocksForCredentialLeaks(
+    const { detections } = scanBlocksForCredentialLeaks(
       db,
       [{ content: `example token ${FAKE_TOKEN}`, position: 0 }],
       { conversation_id: "conv-1" },
@@ -201,9 +207,45 @@ describe("block scanning", () => {
     scanBlocksForCredentialLeaks(...args);
     const second = scanBlocksForCredentialLeaks(...args);
 
-    expect(second).toHaveLength(1);
-    expect(second[0].new_event).toBe(false);
+    expect(second.detections).toHaveLength(1);
+    expect(second.detections[0].new_event).toBe(false);
     expect(webhookRows()).toHaveLength(1);
+  });
+
+  it("finds a real token after more than 64 distinct decoys", () => {
+    makeUser();
+    registerToken("mandible-agent-claude", REAL_TOKEN);
+    const decoys = Array.from(
+      { length: 65 },
+      (_, index) => `${API_TOKEN_PREFIX}${index.toString(36).padStart(43, "0")}`,
+    );
+    const result = scanBlocksForCredentialLeaks(
+      db,
+      [{ content: `${decoys.join(" ")} ${REAL_TOKEN}`, position: 0 }],
+      { conversation_id: "conv-decoys" },
+      { pepper },
+    );
+
+    expect(result.truncated).toBe(false);
+    expect(result.detections).toHaveLength(1);
+  });
+
+  it("reports truncation after the 4096-distinct-candidate bound", () => {
+    makeUser();
+    registerToken("mandible-agent-claude", REAL_TOKEN);
+    const decoys = Array.from(
+      { length: MAX_CANDIDATES_PER_TEXT + 1 },
+      (_, index) => `${API_TOKEN_PREFIX}${index.toString(36).padStart(43, "0")}`,
+    );
+    const result = scanBlocksForCredentialLeaks(
+      db,
+      [{ content: decoys.join(" "), position: 0 }],
+      { conversation_id: "conv-pathological" },
+      { pepper },
+    );
+
+    expect(result.truncated).toBe(true);
+    expect(result.detections).toEqual([]);
   });
 });
 
@@ -239,14 +281,14 @@ describe("no plaintext is persisted", () => {
 });
 
 describe("revocation policy", () => {
-  it("auto-revokes a session-scoped ephemeral credential", () => {
+  it("auto-revokes the hypothetical future persisted session-scoped shape", () => {
     makeUser();
     const credential = registerToken("mandible-agent-claude", REAL_TOKEN, {
       label: "session token",
       metadata: { scope: "session", session_id: "sess-42" },
     });
 
-    const detections = scanBlocksForCredentialLeaks(
+    const { detections } = scanBlocksForCredentialLeaks(
       db,
       [{ content: REAL_TOKEN, position: 0 }],
       { conversation_id: "conv-1" },
@@ -265,7 +307,7 @@ describe("revocation policy", () => {
     makeUser();
     const credential = registerToken("mandible-agent-claude", REAL_TOKEN, { label: "agent pat" });
 
-    const detections = scanBlocksForCredentialLeaks(
+    const { detections } = scanBlocksForCredentialLeaks(
       db,
       [{ content: REAL_TOKEN, position: 0 }],
       { conversation_id: "conv-1" },
@@ -284,7 +326,7 @@ describe("revocation policy", () => {
     expect(payload.remediation.revoke).toBe(`mandible user token revoke ${credential.id}`);
   });
 
-  it("treats an unmarked credential as long-lived (TODO issue 0b989d1 default)", () => {
+  it("keeps the future-persisted predicate fail-safe for unmarked rows", () => {
     expect(isSessionScopedCredential({ type: "api_token", metadata: {} })).toBe(false);
     expect(isSessionScopedCredential({ type: "api_token", metadata: { ephemeral: true } })).toBe(true);
     expect(isSessionScopedCredential({ type: "api_token", metadata: { scope: "session" } })).toBe(true);

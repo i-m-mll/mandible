@@ -26,8 +26,11 @@ Block filters: --role ROLE --type TYPE[,TYPE...] --tool NAME --tool-kind KIND --
 scan-credentials sweeps the existing index for leaked Mandible tokens
 (`mandible_pat_...`), verifying each candidate against the live credential
 hashes. Confirmed leaks are recorded as high-priority inbox alerts. Session-
-scoped tokens are auto-revoked; long-lived PATs are alerted only and must be
-rotated with `mandible user token mint <ref> --store` plus a revoke. Use
+scoped credentials persisted in user_credentials are auto-revoked; long-lived
+PATs are alerted only and must be rotated with `mandible user token mint <ref>
+--store` plus a revoke. In-memory wrap-session tokens are invisible to this
+scanner by design and instead expire on session end, daemon restart, or TTL.
+The session-scoped predicate is reserved for a future persisted shape. Use
 --dry-run to report without recording or revoking. No token material is ever
 printed or stored.
 EOF
@@ -238,6 +241,7 @@ scan_credentials() {
 
   printf '%s\n' "$response" | jq -r '
     "Scanned \(.scanned_blocks) blocks across \(.scanned_conversations) conversations."
+    + (if .truncated then "\nWarning: candidate verification was truncated at the pathological per-text limit." else "" end)
     + (if .skipped then "\nSkipped: \(.skipped)" else "" end)
     + (if (.detections | length) == 0 then "\nNo leaked credentials found."
        else "\n\nLeaked credentials (\(.detections | length)):\n"

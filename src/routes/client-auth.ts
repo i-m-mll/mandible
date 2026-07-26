@@ -130,6 +130,27 @@ export function registerClientAuthRoutes(
         });
         return;
       }
+      const existingSession = db.prepare(
+        "SELECT status, ended_at, owner_user_id FROM sessions WHERE id = ?",
+      ).get(sessionId) as {
+        status: string;
+        ended_at: string | null;
+        owner_user_id: string | null;
+      } | undefined;
+      if (
+        existingSession
+        && (
+          existingSession.status !== "active"
+          || existingSession.ended_at !== null
+          || existingSession.owner_user_id !== user.id
+        )
+      ) {
+        sendJson(res, 403, {
+          error: "Session-token exchange requires the caller's own active session.",
+          code: "session_exchange_forbidden",
+        });
+        return;
+      }
       const minted = authenticator.issueSessionScopedToken(
         { user_id: user.id, slug: user.slug },
         sessionId,

@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 const CLI_DIR = path.join(process.cwd(), "cli");
 const WRAP = path.join(CLI_DIR, "wrap.sh");
 const PAT = "mandible_pat_keychain-long-lived";
-const EPHEMERAL = "mandible_pat_session-scoped-ephemeral";
+const EPHEMERAL = `mandible_pat_${"E".repeat(43)}`;
 
 let tempDir = "";
 let securityStub = "";
@@ -171,6 +171,11 @@ describe("cli/wrap.sh session-token exchange", () => {
 
   it("falls back to the PAT when the response carries no token", async () => {
     exchangeBody = JSON.stringify({ expires_at: 1 });
+    expect(await runWrap()).toBe(PAT);
+  });
+
+  it("falls back to the PAT when the response token has an invalid shape", async () => {
+    exchangeBody = JSON.stringify({ token: "garbage" });
     expect(await runWrap()).toBe(PAT);
   });
 

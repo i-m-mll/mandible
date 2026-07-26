@@ -100,7 +100,7 @@ export AI_AGENT_SIGNING=1
 # have suspended xtrace: the captured token would otherwise be traced.
 exchange_session_token() {
   local pat="$1"
-  local cfg="" body="" out="" http_status="" token=""
+  local cfg="" body="" out="" http_status="" token="" token_body=""
 
   [ -n "${MANDIBLE_BASE:-}" ] || return 1
   case "$MANDIBLE_BASE" in file://*) return 1 ;; esac
@@ -126,7 +126,16 @@ exchange_session_token() {
   esac
 
   rm -f "$cfg" "$body" "$out"
-  [ -n "$token" ] || return 1
+  case "$token" in
+    mandible_pat_*)
+      [ "${#token}" -eq 56 ] || return 1
+      token_body="${token#mandible_pat_}"
+      case "$token_body" in
+        *[!A-Za-z0-9_-]*) return 1 ;;
+      esac
+      ;;
+    *) return 1 ;;
+  esac
   printf '%s' "$token"
 }
 
