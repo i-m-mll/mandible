@@ -440,6 +440,78 @@ preflight_signing_check() {
   fi
 }
 
+signing_key_is_sk() {
+  local signing_key
+  signing_key=$(git config --get user.signingkey 2>/dev/null || true)
+  [[ -n "$signing_key" ]] || return 1
+
+  case "$signing_key" in
+    *sk-ssh-*|*sk-ecdsa-*) return 0 ;;
+  esac
+
+  local signing_key_path=$signing_key
+  if [[ "$signing_key_path" == "~/"* ]]; then
+    signing_key_path="${HOME}/${signing_key_path#\~/}"
+  fi
+  [[ -f "$signing_key_path" ]] || return 1
+  local key_type
+  key_type=$(awk 'NR == 1 { print $1 }' "$signing_key_path" 2>/dev/null || true)
+  case "$key_type" in
+    sk-ssh-*|sk-ecdsa-*) return 0 ;;
+  esac
+  return 1
+}
+
+is_daemon_sk_signing_failure() {
+  local signing_stderr=$1
+  local sk_key_in_use=${2:-false}
+
+  case "$signing_stderr" in
+    *"incorrect passphrase supplied to decrypt private key"*|*"invalid format"*) ;;
+    *) return 1 ;;
+  esac
+
+  case "$signing_stderr" in
+    *"Confirm user presence"*|*"sk-ssh-"*|*"sk-ecdsa-"*) return 0 ;;
+  esac
+  [[ "$sk_key_in_use" == "true" ]]
+}
+
+report_daemon_sk_signing_failure() {
+  local signing_stderr=$1
+  local sk_key_in_use=false
+  if signing_key_is_sk; then
+    sk_key_in_use=true
+  fi
+  is_daemon_sk_signing_failure "$signing_stderr" "$sk_key_in_use" || return 1
+
+  err ""
+  err "  ${RED}FATAL: The FIDO security key could not be reached from the daemon's process context.${RESET}"
+  err "  ${DIM_WHITE}On macOS, the daemon's context may lack HID / Input Monitoring permission.${RESET}"
+  err "  ${DIM_WHITE}The repo is left mid-merge with the correct staged content.${RESET}"
+  err ""
+  err "  Complete the merge in a user terminal:"
+  err "    git -c commit.gpgsign=true merge --continue"
+  err "  Touch the key when it blinks."
+  err ""
+  err "  Alternatively, grant Input Monitoring permission to the daemon's process context."
+  return 0
+}
+
+AUTH_MERGE_LAST_GIT_STDERR=""
+run_signing_git() {
+  local stderr_file
+  stderr_file=$(mktemp "${TMPDIR:-/tmp}/mandible-auth-merge-stderr.XXXXXX") || return 1
+
+  # Preserve stdout and stream stderr (including the user-presence prompt) while
+  # retaining a copy for precise post-failure diagnosis.
+  git "$@" 2>&1 1>&3 | tee "$stderr_file" >&2
+  local git_status=${PIPESTATUS[0]}
+  AUTH_MERGE_LAST_GIT_STDERR=$(<"$stderr_file")
+  rm -f "$stderr_file"
+  return "$git_status"
+} 3>&1
+
 current_branch_sha() {
   local branch="$1"
   git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true
@@ -1027,7 +1099,7 @@ main() {
     local pre_merge_head
     pre_merge_head=$locked_head
 
-    if git -c commit.gpgsign=true merge --continue; then
+    if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
       verify_merge_not_empty
       if [[ ${#sources[@]} -gt 0 ]]; then
         record_auth_merge_result "$pre_merge_head"
@@ -1040,6 +1112,7 @@ main() {
       if has_conflicts; then
         err "Conflicts remain — resolve them manually and run 'git merge --continue'."
       fi
+      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
       exit 1
     fi
   fi
@@ -1143,7 +1216,7 @@ main() {
     local pre_merge_head
     pre_merge_head=$(git rev-parse HEAD)
     auth_phase "creating signed merge commit..."
-    if git merge --no-ff --no-edit -S "$source"; then
+    if run_signing_git merge --no-ff --no-edit -S "$source"; then
       auth_phase "signed merge complete; running follow-up actions..."
       verify_merge_not_empty
       record_auth_merge_result "$pre_merge_head"
@@ -1158,7 +1231,7 @@ main() {
       if auto_resolve_dist_conflicts; then
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
         auth_phase "creating signed merge commit after generated-file conflict resolution..."
-        if git -c commit.gpgsign=true merge --continue; then
+        if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
           auth_phase "signed merge complete; running follow-up actions..."
           verify_merge_not_empty
           record_auth_merge_result "$pre_merge_head"
@@ -1167,10 +1240,12 @@ main() {
           exit 0
         else
           err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
+          report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
         fi
       fi
     else
       err "Merge failed."
+      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
     fi
     exit 1
   fi
@@ -1180,7 +1255,7 @@ main() {
   local -a succeeded=()
   for source in "${sources[@]}"; do
     auth_phase "creating signed merge commit for ${source}..."
-    if git merge --no-ff --no-edit -S "$source"; then
+    if run_signing_git merge --no-ff --no-edit -S "$source"; then
       verify_merge_not_empty
       succeeded+=("$source")
       continue
@@ -1192,16 +1267,18 @@ main() {
       if auto_resolve_dist_conflicts; then
         err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
         auth_phase "creating signed merge commit after generated-file conflict resolution..."
-        if git -c commit.gpgsign=true merge --continue; then
+        if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
           verify_merge_not_empty
           succeeded+=("$source")
           continue
         else
           err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
+          report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
         fi
       fi
     else
       err "Merge failed while merging $source."
+      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
     fi
 
     if (( ${#succeeded[@]} > 0 )); then
