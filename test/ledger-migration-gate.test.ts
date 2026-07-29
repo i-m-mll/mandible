@@ -242,6 +242,82 @@ describe("ledger issue projection", () => {
   });
 });
 
+describe("ledger relationship routes", () => {
+  it("links and unlinks project-qualified issue refs while preserving bare aliases", async () => {
+    const sourceRepo = repo("mandible", "mandible");
+    const targetRepo = repo("feedbax", "feedbax");
+    const { issue: source } = createLedgerIssue({
+      repo: sourceRepo,
+      alias: "source-alias",
+      title: "Relationship source",
+    });
+    const { project: targetProject, issue: shortTarget } = createLedgerIssue({
+      repo: targetRepo,
+      alias: "short-target-alias",
+      title: "Qualified short target",
+    });
+    const { issue: fullTarget } = createLedgerIssue({
+      repo: targetRepo,
+      alias: "full-target-alias",
+      title: "Qualified full target",
+    });
+    const { issue: aliasTarget } = createLedgerIssue({
+      repo: targetRepo,
+      alias: "bare-target-alias",
+      title: "Bare alias target",
+    });
+    const { issue: collidingSourceTarget } = createLedgerIssue({
+      repo: sourceRepo,
+      alias: "source-collision-alias",
+      title: "Same short ID in source project",
+    });
+    db.prepare("UPDATE ledger_issues SET short_id = ? WHERE id = ?")
+      .run(shortTarget.short_id, collidingSourceTarget.id);
+    const server = new TestIssueServer();
+    registerIssueRoutes(server, fakeWorkScanner([sourceRepo, targetRepo]) as never);
+    const targetRefs = [
+      `${targetProject.project_key}/${shortTarget.short_id}`,
+      `${targetProject.project_key}/${fullTarget.id}`,
+      "bare-target-alias",
+    ];
+
+    const linked = await server.invoke("POST", "/api/ledger/relationships", {
+      body: {
+        source_ref: "source-alias",
+        target_refs: targetRefs,
+        link_type: "related",
+      },
+    });
+
+    expect(linked.statusCode).toBe(200);
+    expect(linked.body).toMatchObject({
+      edges: expect.arrayContaining([
+        expect.objectContaining({ source_issue_id: source.id, target_issue_id: shortTarget.id }),
+        expect.objectContaining({ source_issue_id: source.id, target_issue_id: fullTarget.id }),
+        expect.objectContaining({ source_issue_id: source.id, target_issue_id: aliasTarget.id }),
+      ]),
+    });
+
+    const unlinked = await server.invoke("POST", "/api/ledger/relationships/unlink", {
+      body: {
+        source_ref: "source-alias",
+        target_refs: targetRefs,
+        link_type: "related",
+      },
+    });
+
+    expect(unlinked.statusCode).toBe(200);
+    expect(unlinked.body).toMatchObject({
+      edges: expect.arrayContaining([
+        expect.objectContaining({ source_issue_id: source.id, target_issue_id: shortTarget.id }),
+        expect.objectContaining({ source_issue_id: source.id, target_issue_id: fullTarget.id }),
+        expect.objectContaining({ source_issue_id: source.id, target_issue_id: aliasTarget.id }),
+      ]),
+    });
+    expect(new LedgerStore(db).listRelationshipEdges({ source_issue_id: source.id })).toHaveLength(0);
+  });
+});
+
 describe("ledger issue routes", () => {
   it("serves list, detail, context, and session routes from the ledger", async () => {
     const repoInfo = repo("repo-1", "mandible");
