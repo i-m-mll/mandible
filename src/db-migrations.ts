@@ -3245,6 +3245,18 @@ export const MIGRATIONS: readonly Migration[] = [
     // runs; on any DB with no matching residual rows the UPDATE is a no-op. It is
     // naturally idempotent (a second run finds nothing to clear).
     statements: []
+  },
+  {
+    version: 118,
+    name: "canonical_project_repo_ids",
+    // Issue 13b071e — a numbered, path-derived WorkScanner id leaked through
+    // Feedbax project APIs even after canonical project_key was introduced.
+    // Canonicalize that checkout and its current operational references, then
+    // align the affected WorkScanner roots. The outward projection fix is
+    // generic; this data rewrite is intentionally limited to the user-approved
+    // Feedbax correction. Immutable ledger bodies/events and daemon logs remain
+    // historical evidence and are not rewritten.
+    statements: []
   }
 ];
 
@@ -3345,6 +3357,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 117) {
         clearResidualLocalDefaultLedgerAttribution(db);
+      }
+      if (migration.version === 118) {
+        canonicalizeProjectRepoIds(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -4961,6 +4976,171 @@ function hasIssueIdBackfillWork(db: Db): boolean {
      LIMIT 1`,
   ).get();
   return Boolean(row);
+}
+
+function canonicalizeProjectRepoIds(db: Db): void {
+  if (
+    !tableExists(db, "ledger_projects") ||
+    !tableExists(db, "ledger_project_checkouts")
+  ) {
+    return;
+  }
+
+  const rows = db.prepare(
+    `SELECT c.root, c.work_repo_id, p.project_key
+     FROM ledger_project_checkouts c
+     JOIN ledger_projects p ON p.id = c.project_id
+     WHERE c.work_repo_id IS NOT NULL
+       AND c.work_repo_id != ''
+       AND p.project_key IS NOT NULL
+       AND p.project_key != ''
+       AND p.project_key = 'feedbax'
+       AND c.work_repo_id != p.project_key`,
+  ).all() as Array<{
+    root: string;
+    work_repo_id: string;
+    project_key: string;
+  }>;
+
+  const numbered = rows.filter((row) => /^\d+-/.test(row.work_repo_id));
+  const canonicalByLegacy = new Map<string, string>();
+  for (const row of numbered) {
+    const existing = canonicalByLegacy.get(row.work_repo_id);
+    if (existing && existing !== row.project_key) {
+      throw new Error(
+        `Cannot canonicalize ambiguous checkout repo id ${row.work_repo_id}: ` +
+          `${existing} and ${row.project_key}`,
+      );
+    }
+    canonicalByLegacy.set(row.work_repo_id, row.project_key);
+  }
+
+  const columnExists = (table: string, column: string): boolean => Boolean(
+    db.prepare(
+      "SELECT 1 FROM pragma_table_info(?) WHERE name = ? LIMIT 1",
+    ).get(table, column),
+  );
+  const updateExactColumn = (table: string, column: string, legacy: string, canonical: string): void => {
+    if (!tableExists(db, table) || !columnExists(table, column)) return;
+    db.prepare(`UPDATE "${table}" SET "${column}" = ? WHERE "${column}" = ?`)
+      .run(canonical, legacy);
+  };
+
+  const numberedRoots = new Set(numbered.map((row) => row.root));
+  const canonicalTargets = new Set(canonicalByLegacy.values());
+  for (const [legacy, canonical] of canonicalByLegacy) {
+    // These columns carry current project/repository identity. Snapshot text,
+    // issue bodies, event payloads, and logs are intentionally excluded.
+    for (const [table, column] of [
+      ["artifact", "source_repo_id"],
+      ["artifact_links", "repo_id"],
+      ["artifact_series", "repo_id"],
+      ["artifact_version", "source_repo_id"],
+      ["artifacts", "home_repo_id"],
+      ["auth_requests", "repo"],
+      ["graph_entities", "repo_id"],
+      ["issue_resolutions", "repo_id"],
+      ["push_history", "repo_id"],
+      ["work_units", "repo_id"],
+    ] as const) {
+      updateExactColumn(table, column, legacy, canonical);
+    }
+
+    if (tableExists(db, "session_issues")) {
+      db.prepare(
+        `INSERT INTO session_issues (session_id, issue_id, repo_id, created_at)
+         SELECT session_id, issue_id, ?, created_at
+         FROM session_issues
+         WHERE repo_id = ?
+         ON CONFLICT(session_id, issue_id, repo_id) DO UPDATE SET
+           created_at = MIN(session_issues.created_at, excluded.created_at)`,
+      ).run(canonical, legacy);
+      db.prepare("DELETE FROM session_issues WHERE repo_id = ?").run(legacy);
+    }
+
+    if (tableExists(db, "session_projects")) {
+      db.prepare(
+        `INSERT INTO session_projects (session_id, repo_id, repo_name, created_at)
+         SELECT session_id, ?,
+                CASE WHEN repo_name = ? THEN ? ELSE repo_name END,
+                created_at
+         FROM session_projects
+         WHERE repo_id = ?
+         ON CONFLICT(session_id, repo_id) DO UPDATE SET
+           created_at = MIN(session_projects.created_at, excluded.created_at),
+           repo_name = CASE
+             WHEN session_projects.repo_name = '' OR session_projects.repo_name = ?
+               THEN excluded.repo_name
+             ELSE session_projects.repo_name
+           END`,
+      ).run(canonical, legacy, canonical, legacy, legacy);
+      db.prepare("DELETE FROM session_projects WHERE repo_id = ?").run(legacy);
+    }
+
+    db.prepare(
+      `UPDATE ledger_project_checkouts
+       SET work_repo_id = ?, updated_at = MAX(updated_at, ?)
+       WHERE work_repo_id = ?`,
+    ).run(canonical, Date.now(), legacy);
+  }
+
+  // WorkScanner identity is rooted in work_repos, while the registry is rooted
+  // in ledger_project_checkouts. Align only the numbered checkout roots and any
+  // exact-root row currently holding one of their canonical target ids. The
+  // latter relocates a collision holder (for example a development checkout)
+  // to its own registered checkout id before the canonical id is assigned.
+  if (tableExists(db, "work_repos")) {
+    const scannerRows = db.prepare(
+      `SELECT wr.root, wr.id,
+              COALESCE(NULLIF(c.work_repo_id, ''), NULLIF(p.project_key, ''), wr.id) AS target_id
+       FROM work_repos wr
+       LEFT JOIN ledger_project_checkouts c ON c.root = wr.root
+       LEFT JOIN ledger_projects p ON p.id = c.project_id`,
+    ).all() as Array<{ root: string; id: string; target_id: string }>;
+    const plans = scannerRows.filter((row) =>
+      row.id !== row.target_id &&
+      (numberedRoots.has(row.root) || canonicalTargets.has(row.id))
+    );
+    const planByRoot = new Map(plans.map((plan) => [plan.root, plan.target_id]));
+    const plannedTargetOwner = new Map<string, string>();
+    for (const plan of plans) {
+      const owner = plannedTargetOwner.get(plan.target_id);
+      if (owner && owner !== plan.root) {
+        throw new Error(
+          `Cannot canonicalize checkout repo ids: ${owner} and ${plan.root} ` +
+            `would both use ${plan.target_id}`,
+        );
+      }
+      plannedTargetOwner.set(plan.target_id, plan.root);
+    }
+    for (const row of scannerRows) {
+      if (planByRoot.has(row.root)) continue;
+      const plannedOwner = plannedTargetOwner.get(row.id);
+      if (plannedOwner) {
+        throw new Error(
+          `Cannot canonicalize checkout repo id ${row.id}: ` +
+            `${row.root} already owns the target needed by ${plannedOwner}`,
+        );
+      }
+    }
+
+    const occupiedIds = new Set(scannerRows.map((row) => row.id));
+    const temporaryIds = new Map<string, string>();
+    for (const [index, plan] of plans.entries()) {
+      let temporary = `__mandible_v118_${index}__`;
+      while (occupiedIds.has(temporary)) temporary += "_";
+      occupiedIds.add(temporary);
+      temporaryIds.set(plan.root, temporary);
+      db.prepare(
+        "UPDATE work_repos SET id = ?, updated_at = datetime('now') WHERE root = ?",
+      ).run(temporary, plan.root);
+    }
+    for (const plan of plans) {
+      db.prepare(
+        "UPDATE work_repos SET id = ?, updated_at = datetime('now') WHERE root = ? AND id = ?",
+      ).run(plan.target_id, plan.root, temporaryIds.get(plan.root));
+    }
+  }
 }
 
 function getSchemaVersion(db: Db): number {

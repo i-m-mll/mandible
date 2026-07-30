@@ -16,11 +16,11 @@ Mandible has two overlapping identity systems:
    `remote_identity` (normalized git remote, e.g. `github.com/mll/feedbax`).
 2. **WorkScanner / `work_repos`** — local discovery. The scanner walks the
    filesystem and assigns each checkout a *path-derived* slug id
-   (`computeRepoId`), e.g. the directory `~/Main/20 Feedbax/feedbax` yields
-   `20-feedbax-feedbax`. `ledger_project_checkouts.work_repo_id` stores that id.
+   (`computeRepoId`), e.g. the directory `~/Main/20 Widgets/widgets` yields
+   `20-widgets-widgets`. `ledger_project_checkouts.work_repo_id` stores that id.
 
 The bug: issue projections used the path-derived `work_repo_id` as if it were
-the project identity, so a Feedbax issue surfaced as `20-feedbax-feedbax/64a04e0`
+the project identity, so a Feedbax issue surfaced under a path-derived checkout ref
 instead of `feedbax/64a04e0`. Worse (`dba7c41`), `POST /api/issues/:repoId`
 called `resolveProjectForCheckout`, which **mints a new project + checkout as a
 side effect** when the posted root is unknown. Running `issue new` from a
@@ -42,7 +42,7 @@ ledger_projects
 
 ledger_project_checkouts
   project_id    -> ledger_projects.id
-  work_repo_id  20-feedbax-feedbax    LOCAL DISCOVERY METADATA ONLY
+  work_repo_id  20-widgets-widgets    LOCAL DISCOVERY METADATA ONLY
   root          /Users/.../feedbax    absolute checkout path (UNIQUE)
   ...
 ```
@@ -120,7 +120,7 @@ transport's non-privileged write boundary (no approval/merge/admin/config).
 
 ## Migration vs. repair (data safety)
 
-The `20-feedbax-feedbax` symptom is two *separable* defects:
+The path-derived checkout-id symptom is two *separable* defects:
 
 - **(a) Projection used the wrong field.** Pure read bug — fixed by adding
   `project_key` and having projections prefer it. No rows move.
@@ -163,7 +163,7 @@ back. The command always returns an explicit report (counts moved / would move,
 conflicts, audit categories). `--apply` is required to execute; default is a
 dry run.
 
-There is **no requirement to preserve** bad names like `20-feedbax-feedbax`; the
+There is **no requirement to preserve** path-derived names; the
 only invariant is DB integrity — no broken FKs, no orphans, no lost issue
 history, no unresolved canonical refs.
 
@@ -181,7 +181,7 @@ short-id collision blocking consolidation).
 - `getProjectInfo` (issue *detail* projection, `src/ledger/issue-detail.ts`):
   now surfaces `project_key` and `display_name`, and prefers `project_key` for
   the legacy `repo_id` field (falling back to `work_repo_id` only when a key is
-  absent). This is the projection behind the `20-feedbax-feedbax/64a04e0`
+  absent). This is the projection behind the affected Feedbax issue
   screenshot.
 - `findCheckoutByRepoRef` / `resolveCheckout`
   (`src/ledger/issue-migration.ts`): additionally accept a `project_key` as a

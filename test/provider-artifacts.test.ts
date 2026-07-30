@@ -1896,7 +1896,7 @@ describe("provider/artifact substrate", () => {
   it("resolves provider issue refs by project_key and keeps checkout ids out of graph identity", () => {
     const issueId = createLedgerIssue("feedbax", "fbx1234", "Feedbax provider ref");
     db.prepare("UPDATE ledger_project_checkouts SET work_repo_id = ? WHERE project_id = ?")
-      .run("20-feedbax-feedbax", "prj_feedbax");
+      .run("20-widgets-widgets", "prj_feedbax");
 
     ingestProviderManifest(db, {
       manifest: {
@@ -1920,7 +1920,7 @@ describe("provider/artifact substrate", () => {
         project_key: "feedbax",
       }),
     });
-    expect(graph.nodes.some((node) => node.id === "issue:20-feedbax-feedbax:fbx1234")).toBe(false);
+    expect(graph.nodes.some((node) => node.id === "issue:20-widgets-widgets:fbx1234")).toBe(false);
     expect(graph.edges).toContainEqual(expect.objectContaining({
       source: "issue:feedbax:fbx1234",
       target: "run:feedbax:run-with-feedbax-key",

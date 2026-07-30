@@ -257,7 +257,10 @@ function listCheckouts(db: Db, repos: RepoInfo[]): CheckoutProjection[] {
     return {
       project_id: row.project_id,
       checkout_id: row.checkout_id,
-      repo_id: repo?.id ?? row.work_repo_id ?? row.project_id,
+      // project_key is the stable public identity. WorkScanner ids identify a
+      // physical checkout and may be path-derived, so they must never leak into
+      // project-scoped issue routes or summary rows.
+      repo_id: row.project_key || repo?.id || row.work_repo_id || row.project_id,
       repo_name: repo?.name ?? row.name ?? row.display_name,
       repo_root: repo?.root ?? row.root,
       project_key: row.project_key,
@@ -278,7 +281,7 @@ function checkoutFromRow(row: {
   return {
     project_id: row.project_id,
     checkout_id: row.checkout_id,
-    repo_id: repo?.id ?? row.work_repo_id ?? row.project_id,
+    repo_id: row.project_key || repo?.id || row.work_repo_id || row.project_id,
     repo_name: repo?.name ?? row.name ?? row.display_name,
     repo_root: repo?.root ?? row.root,
     project_key: row.project_key ?? "",

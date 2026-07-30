@@ -363,7 +363,7 @@ describe("project CLI write round-trips", () => {
               duplicate_display_names: [],
               local_projects: [],
               numbered_repo_ids: [
-                { project_key: "feedbax", work_repo_id: "20-feedbax-feedbax", root: "/x" },
+                { project_key: "widgets", work_repo_id: "20-widgets-widgets", root: "/x" },
               ],
               ambiguous_roots: [],
               missing_keys: [],

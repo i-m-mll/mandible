@@ -194,7 +194,7 @@ describe("ledger graph projection", () => {
     db.prepare("UPDATE ledger_projects SET project_key = ? WHERE id = ?")
       .run("feedbax", checkout.project.id);
     db.prepare("UPDATE ledger_project_checkouts SET work_repo_id = ? WHERE project_id = ?")
-      .run("20-feedbax-feedbax", checkout.project.id);
+      .run("20-widgets-widgets", checkout.project.id);
     const store = new LedgerStore(db);
     const issue = createIssue(store, checkout.project.id, "fbx1234", "Feedbax issue");
     const expectedNodeId = `issue:feedbax:${issue.short_id}`;
@@ -207,7 +207,7 @@ describe("ledger graph projection", () => {
     const byLegacy = buildLedgerIssueProjection(db, {
       mode: "issue",
       status: "all",
-      repos: ["20-feedbax-feedbax"],
+      repos: ["20-widgets-widgets"],
     });
 
     expect(byKey?.nodes).toHaveLength(1);
@@ -218,7 +218,7 @@ describe("ledger graph projection", () => {
     });
     expect(byLegacy?.nodes.map((node) => node.id)).toEqual([expectedNodeId]);
     expect(getLedgerGraphFilterOptions(db).repos).toEqual(
-      expect.arrayContaining(["feedbax", "20-feedbax-feedbax", "Feedbax"]),
+      expect.arrayContaining(["feedbax", "20-widgets-widgets", "Feedbax"]),
     );
   });
 

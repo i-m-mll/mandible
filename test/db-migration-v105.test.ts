@@ -210,14 +210,14 @@ function restoreArtifactTargetTablesToV90(): void {
 describe("migration v105: canonical Spaces export artifacts", () => {
   it("completes v105 before applying a synthetic later migration", () => {
     const migrations = MIGRATIONS as Migration[];
-    expect(migrations.at(-1)?.version).toBe(117);
+    expect(migrations.at(-1)?.version).toBe(118);
     migrations.push({
-      version: 118,
+      version: 119,
       name: "test_v105_ordering_boundary",
       statements: [
         `INSERT INTO meta (key, value)
          VALUES (
-           'test.v118.observed_v105',
+           'test.v119.observed_v105',
            COALESCE((SELECT value FROM meta WHERE key = '${COMPLETION_KEY}'), 'missing')
          )`,
       ],
@@ -225,13 +225,13 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     try {
       expect(() => migrate(db)).not.toThrow();
       expect(db.prepare(
-        "SELECT value FROM meta WHERE key = 'test.v118.observed_v105'",
+        "SELECT value FROM meta WHERE key = 'test.v119.observed_v105'",
       ).get()).toEqual({ value: "done" });
       expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "118",
+        value: "119",
       });
     } finally {
-      expect(migrations.pop()?.version).toBe(118);
+      expect(migrations.pop()?.version).toBe(119);
     }
   });
 
@@ -249,7 +249,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
     // migrations (v107-v111) and our additive v112, v113, and v114 columns,
     // advancing (never lowering) the schema version.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "117",
+      value: "118",
     });
   });
 
@@ -316,7 +316,7 @@ describe("migration v105: canonical Spaces export artifacts", () => {
       pre_export_snapshot_blob_id: "artifact-blob:legacy-snapshot",
     });
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "117",
+      value: "118",
     });
     expect(marker()).toEqual({ value: "done" });
 

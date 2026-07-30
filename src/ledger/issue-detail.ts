@@ -1429,7 +1429,7 @@ function getProjectInfo(db: Db, projectId: string): LedgerIssueDetailProject {
     : undefined;
   // Issue: 3d85f43 — the canonical project key is the route/display identity.
   // Prefer it for `repo_id` so projections surface `feedbax`, not the
-  // path-derived WorkScanner id `20-feedbax-feedbax`; fall back to work_repo_id
+  // path-derived WorkScanner ids such as `20-widgets-widgets`; fall back to work_repo_id
   // only when a key is somehow absent.
   const projectKey = project?.project_key && project.project_key !== "" ? project.project_key : null;
   return {
