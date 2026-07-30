@@ -82,8 +82,11 @@ describe('LogsView', () => {
     expect(screen.getByText('detail')).toBeTruthy();
     expect(screen.getByText('object')).toBeTruthy();
 
+    const autoScroll = screen.getByRole('checkbox', { name: 'Auto-scroll' }) as HTMLInputElement;
     sseHandler?.({ type: 'auth:updated' } as SSEPayload);
     await waitFor(() => expect(loadLogs).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('checkbox', { name: 'Auto-scroll' })).toBe(autoScroll);
+    expect(autoScroll.checked).toBe(true);
   });
 
   it('shows initial loading only in the body and keeps the auto-scroll control mounted', async () => {
@@ -93,7 +96,7 @@ describe('LogsView', () => {
     });
     const loadLogs = vi.fn(() => pending);
 
-    render(<LogsView loadLogs={loadLogs} createSse={() => ({
+    const { container } = render(<LogsView loadLogs={loadLogs} createSse={() => ({
       connect: vi.fn(),
       close: vi.fn(),
       on: vi.fn(() => vi.fn()),
@@ -102,10 +105,13 @@ describe('LogsView', () => {
     expect(screen.getByText('Loading logs…')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /refresh/i })).toBeNull();
     const autoScroll = screen.getByRole('checkbox', { name: 'Auto-scroll' });
+    const scrollRegion = container.querySelector('.logs-scroll-region') as HTMLDivElement;
+    Object.defineProperty(scrollRegion, 'scrollHeight', { configurable: true, value: 640 });
+    scrollRegion.scrollTop = 0;
 
     resolveLoad({
-      entries: [],
-      total: 0,
+      entries: [{ id: 'tail-row', level: 'info', event: 'tail', time: '2026-07-04T12:00:00.000Z' }],
+      total: 1,
       limit: 100,
       offset: 0,
       log_file: '',
@@ -114,7 +120,8 @@ describe('LogsView', () => {
       older_cursor: null,
       has_older: false,
     });
-    await screen.findByText('No log entries match the current filters.');
+    await waitFor(() => expect(screen.getAllByText('tail')).toHaveLength(2));
+    expect(scrollRegion.scrollTop).toBe(640);
     expect(screen.getByRole('checkbox', { name: 'Auto-scroll' })).toBe(autoScroll);
   });
 

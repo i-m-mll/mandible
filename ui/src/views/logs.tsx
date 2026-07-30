@@ -331,7 +331,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const [lastFailedAt, setLastFailedAt] = useState<Date | null>(null);
   const [lastSseAt, setLastSseAt] = useState<Date | null>(null);
   const [sseError, setSseError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestSeqRef = useRef(0);
   const hasLoadedRef = useRef(false);
@@ -458,9 +457,13 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     return () => window.clearInterval(timer);
   }, [fetchLogs]);
 
-  useEffect(() => {
-    if (autoScroll && typeof bottomRef.current?.scrollIntoView === 'function') {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (autoScroll && el) {
+      // Direct assignment runs before paint and has no animated intermediate
+      // positions that could make handleScroll briefly unpin the controlled
+      // Auto-scroll checkbox.
+      el.scrollTop = el.scrollHeight;
     }
   }, [entries, autoScroll]);
 
@@ -671,7 +674,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
               />
             );
           })}
-          <div ref={bottomRef} />
         </div>
       )}
     </div>
