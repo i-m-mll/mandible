@@ -1,4 +1,5 @@
 import type { ComponentChildren, JSX } from 'preact';
+import { useEffect, useRef } from 'preact/hooks';
 
 export type SidebarSearchFilterHeaderPanel = {
   id?: string;
@@ -31,13 +32,40 @@ export type SidebarSearchFilterHeaderProps = {
   className?: string;
   testId?: string;
   inputTestId?: string;
+  captureFindShortcut?: boolean;
 };
 
 export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps): JSX.Element {
+  const inputRef = useRef<HTMLInputElement>(null);
   const rootClass = props.className
     ? `sidebar-search-filter ${props.className}`
     : 'sidebar-search-filter';
   const panelVariant = props.panel?.variant ?? 'popover';
+
+  useEffect(() => {
+    if (props.captureFindShortcut === false) return undefined;
+    const focusViewSearch = (event: KeyboardEvent) => {
+      if (
+        event.defaultPrevented
+        || event.isComposing
+        || event.altKey
+        || event.shiftKey
+        || (!event.metaKey && !event.ctrlKey)
+        || event.key.toLowerCase() !== 'f'
+      ) {
+        return;
+      }
+      const input = inputRef.current;
+      if (!input || input.disabled) return;
+      const target = event.target;
+      if (target instanceof HTMLElement && target !== input && isEditableTarget(target)) return;
+      event.preventDefault();
+      input.focus();
+      input.select();
+    };
+    window.addEventListener('keydown', focusViewSearch);
+    return () => window.removeEventListener('keydown', focusViewSearch);
+  }, [props.captureFindShortcut]);
 
   return (
     <div className={rootClass} onFocusOut={props.onBlurWithin} data-testid={props.testId}>
@@ -47,6 +75,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
         ) : null}
         <div className="sidebar-search-filter__search">
           <input
+            ref={inputRef}
             type={props.inputType ?? 'search'}
             className="sidebar-search-filter__input"
             placeholder={props.placeholder}
@@ -101,6 +130,13 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       ) : null}
     </div>
   );
+}
+
+function isEditableTarget(target: HTMLElement): boolean {
+  return target instanceof HTMLInputElement
+    || target instanceof HTMLTextAreaElement
+    || target instanceof HTMLSelectElement
+    || target.isContentEditable;
 }
 
 function ClearSearchIcon(): JSX.Element {

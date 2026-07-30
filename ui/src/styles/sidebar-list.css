@@ -1,0 +1,13 @@
+.sidebar-list-item:focus {
+  outline: none;
+}
+
+.sidebar-list-item:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -2px;
+}
+
+.sidebar-list-item[aria-current="true"]:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--accent-blue) 72%, transparent);
+}
