@@ -63,6 +63,7 @@ import { DetailHeaderIdentity } from '../components/shared/DetailHeaderIdentity'
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { artifactLinkBadgeLabel } from '../lib/format';
+import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -575,7 +576,7 @@ export function ArtifactsView({
   );
   const detailPending = Boolean(selectedArtifactId && !coherentSelectedArtifact);
 
-  const selectSeries = (entry: ArtifactSeriesSummary) => {
+  const selectSeries = useCallback((entry: ArtifactSeriesSummary) => {
     const ref = seriesRef(entry);
     setSelectedSeriesRef(ref);
     setSelectedVersionNo(null);
@@ -583,7 +584,14 @@ export function ArtifactsView({
     setSelectedArtifact(entry.latest_artifact);
     setResolution(null);
     writeArtifactHash(ref, null, lastWrittenHashRef);
-  };
+  }, []);
+
+  const artifactListNavigation = useSidebarListNavigation({
+    items: series,
+    getKey: seriesRef,
+    selectedKey: selectedSeriesRef,
+    onSelect: selectSeries,
+  });
 
   const selectVersion = (versionNo: number | null) => {
     setSelectedVersionNo(versionNo);
@@ -683,20 +691,27 @@ export function ArtifactsView({
       >
               {loading && series.length === 0 && <div className="artifacts-sidebar__empty">Loading artifacts...</div>}
               {!loading && series.length === 0 && <div className="artifacts-sidebar__empty">No artifacts</div>}
-              {series.map((entry) => (
-                <button
-                  key={seriesRef(entry)}
-                  type="button"
-                  className={`artifacts-sidebar__item${seriesRef(entry) === selectedSeriesRef ? ' artifacts-sidebar__item--active' : ''}`}
-                  onClick={() => selectSeries(entry)}
-                >
-                  <span className="artifacts-sidebar__name">{seriesTitle(entry)}</span>
-                  <span className="artifacts-sidebar__meta">
-                    <span>{shortSeriesId(seriesRef(entry))}</span>
-                    {entry.latest_artifact?.role ? <em>{entry.latest_artifact.role}</em> : null}
-                  </span>
-                </button>
-              ))}
+              {series.map((entry, index) => {
+                const navigation = artifactListNavigation.getItemNavigationProps(entry, index);
+                return (
+                  <button
+                    key={seriesRef(entry)}
+                    ref={navigation.ref}
+                    type="button"
+                    tabIndex={navigation.tabIndex}
+                    aria-current={navigation['aria-current']}
+                    className={`sidebar-list-item artifacts-sidebar__item${seriesRef(entry) === selectedSeriesRef ? ' artifacts-sidebar__item--active' : ''}`}
+                    onKeyDown={navigation.onKeyDown}
+                    onClick={() => selectSeries(entry)}
+                  >
+                    <span className="artifacts-sidebar__name">{seriesTitle(entry)}</span>
+                    <span className="artifacts-sidebar__meta">
+                      <span>{shortSeriesId(seriesRef(entry))}</span>
+                      {entry.latest_artifact?.role ? <em>{entry.latest_artifact.role}</em> : null}
+                    </span>
+                  </button>
+                );
+              })}
       </ViewSidebar>
       <main className={`artifacts-detail${coherentSelectedArtifact && detailMetadataOpen ? ' artifacts-detail--metadata-open' : ''}`}>
         {error && !coherentSelectedArtifact && <div className="artifacts-error">{error}</div>}

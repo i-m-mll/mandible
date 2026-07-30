@@ -101,6 +101,48 @@ describe('SidebarSearchFilterHeader', () => {
     expect(onBlurWithin).toHaveBeenCalledTimes(1);
   });
 
+  it('captures Command-F and Control-F for the mounted view search', () => {
+    render(
+      <SidebarSearchFilterHeader
+        value="artifact"
+        onValueChange={vi.fn()}
+        placeholder="Search artifacts"
+        searchAriaLabel="Search artifacts"
+        clearAriaLabel="Clear artifact search"
+      />,
+    );
+
+    const input = screen.getByRole('searchbox', { name: 'Search artifacts' }) as HTMLInputElement;
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe('artifact'.length);
+
+    input.blur();
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('leaves find shortcuts owned by other editable controls alone', () => {
+    render(
+      <div>
+        <textarea aria-label="Document editor" />
+        <SidebarSearchFilterHeader
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Search artifacts"
+          searchAriaLabel="Search artifacts"
+          clearAriaLabel="Clear artifact search"
+        />
+      </div>,
+    );
+
+    const editor = screen.getByRole('textbox', { name: 'Document editor' });
+    editor.focus();
+    fireEvent.keyDown(editor, { key: 'f', metaKey: true });
+    expect(document.activeElement).toBe(editor);
+  });
+
   it('ships the shared CSS selectors used by migrated sidebar filter panels', () => {
     const css = readResolvedStylesheet();
     expect(css).toContain('.sidebar-search-filter__row');
@@ -108,6 +150,7 @@ describe('SidebarSearchFilterHeader', () => {
     expect(css).toContain('.sidebar-search-filter__panel--inline');
     expect(css).toContain('.sidebar-search-filter__section');
     expect(css).toContain('.sidebar-search-filter__options');
+    expect(css).toContain('.sidebar-list-item[aria-current="true"]:focus-visible');
   });
 
   it('keeps migrated views on the shared primitive instead of per-view search chrome', () => {
