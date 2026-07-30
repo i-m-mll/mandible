@@ -143,6 +143,66 @@ describe('SidebarSearchFilterHeader', () => {
     expect(document.activeElement).toBe(editor);
   });
 
+  it('lets only the visible header own find when cached panels remain mounted', () => {
+    render(
+      <div>
+        <section hidden aria-hidden="true">
+          <SidebarSearchFilterHeader
+            value=""
+            onValueChange={vi.fn()}
+            placeholder="Search auth requests"
+            searchAriaLabel="Search auth requests"
+            clearAriaLabel="Clear auth search"
+          />
+        </section>
+        <section>
+          <SidebarSearchFilterHeader
+            value="bug"
+            onValueChange={vi.fn()}
+            placeholder="Filter issues"
+            searchAriaLabel="Filter issues"
+            clearAriaLabel="Clear issue filter"
+          />
+        </section>
+      </div>,
+    );
+
+    const hiddenSearch = screen.getByRole('searchbox', {
+      name: 'Search auth requests',
+      hidden: true,
+    });
+    const visibleSearch = screen.getByRole('searchbox', { name: 'Filter issues' });
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    expect(document.activeElement).toBe(visibleSearch);
+    expect(document.activeElement).not.toBe(hiddenSearch);
+  });
+
+  it('preserves native find when every mounted header belongs to a hidden panel', () => {
+    render(
+      <section hidden aria-hidden="true">
+        <SidebarSearchFilterHeader
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Search artifacts"
+          searchAriaLabel="Search artifacts"
+          clearAriaLabel="Clear artifact search"
+        />
+      </section>,
+    );
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'f',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('ships the shared CSS selectors used by migrated sidebar filter panels', () => {
     const css = readResolvedStylesheet();
     expect(css).toContain('.sidebar-search-filter__row');
