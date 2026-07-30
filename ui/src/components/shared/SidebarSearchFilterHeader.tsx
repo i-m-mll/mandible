@@ -56,7 +56,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
         return;
       }
       const input = inputRef.current;
-      if (!input || input.disabled) return;
+      if (!input || input.disabled || isInsideInactivePanel(input)) return;
       const target = event.target;
       if (target instanceof HTMLElement && target !== input && isEditableTarget(target)) return;
       event.preventDefault();
@@ -130,6 +130,10 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       ) : null}
     </div>
   );
+}
+
+function isInsideInactivePanel(input: HTMLInputElement): boolean {
+  return input.closest('[hidden], [aria-hidden="true"]') !== null;
 }
 
 function isEditableTarget(target: HTMLElement): boolean {
