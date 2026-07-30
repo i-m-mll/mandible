@@ -535,15 +535,16 @@ function resolveProject(db: Db, input: ProjectTimelineInput): ProjectRow {
   if (!ref) throw new Error("project_id or project_ref is required");
   const row = db.prepare(
     `SELECT p.id, p.display_name,
-            COALESCE(c.work_repo_id, NULL) AS repo_id,
+            COALESCE(NULLIF(p.project_key, ''), c.work_repo_id, NULL) AS repo_id,
             COALESCE(c.name, NULL) AS repo_name,
             COALESCE(c.root, NULL) AS repo_root
        FROM ledger_projects p
        LEFT JOIN ledger_project_checkouts c ON c.project_id = p.id
-      WHERE p.id = ? OR p.display_name = ? OR c.work_repo_id = ? OR c.name = ? OR c.root = ?
-      ORDER BY CASE WHEN p.id = ? THEN 0 ELSE 1 END, c.created_at ASC
+      WHERE p.id = ? OR p.project_key = ? OR p.display_name = ?
+         OR c.work_repo_id = ? OR c.name = ? OR c.root = ?
+      ORDER BY CASE WHEN p.id = ? OR p.project_key = ? THEN 0 ELSE 1 END, c.created_at ASC
       LIMIT 1`,
-  ).get(ref, ref, ref, ref, ref, ref) as ProjectRow | undefined;
+  ).get(ref, ref, ref, ref, ref, ref, ref, ref) as ProjectRow | undefined;
   if (!row) throw new Error("timeline project not found");
   return row;
 }

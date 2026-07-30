@@ -1778,6 +1778,23 @@ describe('issue deep links', () => {
     expect(repoId).toBe('dotfiles');
   });
 
+  it('canonicalizes a checkout-shaped deep link to the project key', () => {
+    const repoId = resolveIssueRepoDeepLink(
+      [{
+        repo_id: 'scanner-checkout',
+        project_key: 'widgets',
+        repo_name: 'widgets',
+        open_count: 1,
+        merged_count: 0,
+        closed_count: 0,
+        issues: [],
+      }],
+      'scanner-checkout',
+    );
+
+    expect(repoId).toBe('widgets');
+  });
+
   it('renders selected issue metadata while ledger detail is still loading', async () => {
     let resolveDetail: (response: Response) => void = () => undefined;
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => {
@@ -1837,7 +1854,7 @@ describe('issue deep links', () => {
   it('uses the canonical project key for synthesized issue detail copy refs', async () => {
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
     const checkoutRepos: IssueRepoSummary[] = [{
-      repo_id: '20-feedbax-feedbax',
+      repo_id: '20-widgets-widgets',
       project_key: 'feedbax',
       repo_name: 'Feedbax',
       repo_root: '/Users/mll/Main/10 Projects/10 PhD/20 Feedbax/feedbax',
@@ -1846,7 +1863,7 @@ describe('issue deep links', () => {
       closed_count: 0,
       issues: [{
         id: 'fbx1234',
-        repo_id: '20-feedbax-feedbax',
+        repo_id: '20-widgets-widgets',
         repo_name: 'Feedbax',
         title: 'Feedbax synthesized issue',
         status: 'open',
@@ -1860,13 +1877,13 @@ describe('issue deep links', () => {
     render(h(IssuesView, {
       repos: checkoutRepos,
       onRescan: async () => undefined,
-      initialRepoId: '20-feedbax-feedbax',
+      initialRepoId: '20-widgets-widgets',
       initialIssueId: 'fbx1234',
     }));
 
     expect(await screen.findByRole('heading', { name: 'Feedbax synthesized issue' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Copy feedbax/fbx1234' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Copy 20-feedbax-feedbax/fbx1234' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy 20-widgets-widgets/fbx1234' })).toBeNull();
   });
 
   it('renders initial-stage comments before full ledger detail resolves', async () => {
@@ -2539,14 +2556,14 @@ describe('LedgerIssueDetail', () => {
       displayId: 'fbx1234',
       title: 'Feedbax ref',
       projectKey: 'feedbax',
-      repoId: '20-feedbax-feedbax',
+      repoId: '20-widgets-widgets',
       repoName: 'Feedbax',
     });
 
     render(h(LedgerIssueDetail, { detail }));
 
     expect(screen.getByRole('button', { name: 'Copy feedbax/fbx1234' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Copy 20-feedbax-feedbax/fbx1234' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy 20-widgets-widgets/fbx1234' })).toBeNull();
   });
 
   it('uses canonical project keys for local rendered issue and comment links', () => {
@@ -2555,7 +2572,7 @@ describe('LedgerIssueDetail', () => {
       title: 'Feedbax rendered refs',
       body: 'See [issue:def456] and [comment:#com_1].',
       projectKey: 'feedbax',
-      repoId: '20-feedbax-feedbax',
+      repoId: '20-widgets-widgets',
       repoName: 'Feedbax',
     });
 
@@ -2573,7 +2590,7 @@ describe('LedgerIssueDetail', () => {
       text: 'fbx1234#com_1',
       href: '#/issues?repo=feedbax&issue=fbx1234&comment=com_1',
     });
-    expect(issueLinks.some((link) => link.href?.includes('20-feedbax-feedbax'))).toBe(false);
+    expect(issueLinks.some((link) => link.href?.includes('20-widgets-widgets'))).toBe(false);
   });
 
   it('renders ledger issue evidence and sanitizes Markdown HTML', () => {

@@ -63,7 +63,13 @@ export function resolveIssueRepoDeepLink(
   const basename = pathBasename(trimmed);
 
   const repoMatches = (repo: IssueRepoSummary, value: string, ignoreCase: boolean): boolean => {
-    const candidates = [repo.repo_id, repo.repo_name, repo.repo_root, pathBasename(repo.repo_root)]
+    const candidates = [
+      repo.project_key,
+      repo.repo_id,
+      repo.repo_name,
+      repo.repo_root,
+      pathBasename(repo.repo_root),
+    ]
       .filter((candidate): candidate is string => typeof candidate === 'string' && candidate.trim() !== '');
     return candidates.some((candidate) => (
       ignoreCase
@@ -73,13 +79,13 @@ export function resolveIssueRepoDeepLink(
   };
 
   const exact = repos.find((repo) => repoMatches(repo, trimmed, false));
-  if (exact) return exact.repo_id;
+  if (exact) return exact.project_key || exact.repo_id;
   const basenameMatch = repos.find((repo) => repoMatches(repo, basename, false));
-  if (basenameMatch) return basenameMatch.repo_id;
+  if (basenameMatch) return basenameMatch.project_key || basenameMatch.repo_id;
   const insensitive = repos.find((repo) => (
     repoMatches(repo, trimmed, true) || repoMatches(repo, basename, true)
   ));
-  if (insensitive) return insensitive.repo_id;
+  if (insensitive) return insensitive.project_key || insensitive.repo_id;
   return trimmed;
 }
 
@@ -494,7 +500,7 @@ export function IssuesView({
   }, [repos]);
 
   const resolveIssueId = useCallback((repoId: string, rawIssueId: string): string => {
-    const repo = repos.find((r) => r.repo_id === repoId);
+    const repo = repos.find((r) => r.repo_id === repoId || r.project_key === repoId);
     return resolveIssueIdDeepLink(repo, rawIssueId);
   }, [repos]);
 
@@ -649,7 +655,9 @@ export function IssuesView({
   const selectedIssueSummary = useMemo(() => {
     if (!selectedRepoId || !selectedIssueId) return null;
     const repoId = resolveRepoId(selectedRepoId) ?? selectedRepoId;
-    const repo = repos.find((candidate) => candidate.repo_id === repoId);
+    const repo = repos.find((candidate) => (
+      candidate.repo_id === repoId || candidate.project_key === repoId
+    ));
     if (!repo) return null;
     const issueId = resolveIssueId(repoId, selectedIssueId);
     const issue = repo.issues.find((candidate) => (

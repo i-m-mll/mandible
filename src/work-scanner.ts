@@ -8,6 +8,7 @@ import { getDaemonLogger } from "./daemon-log.js";
 import { getDb } from "./db.js";
 import { ensureMandibleConfigFile } from "./platform-paths.js";
 import { broadcast, type SseEvent } from "./sse.js";
+import { canonicalizeCheckoutWorkRepoId } from "./ledger/projects.js";
 import { isPreservedAppWorktreePath } from "./worktree-preservation.js";
 
 export interface LastCommit {
@@ -1168,7 +1169,12 @@ export class WorkScanner {
     // Compute ID
     const existingIds = (this.db.prepare("SELECT id FROM work_repos").all() as Array<{ id: string }>)
       .map((r) => r.id);
-    const newId = computeRepoId(resolved, existingIds);
+    const derivedId = computeRepoId(resolved, existingIds);
+    const registeredId = this.registeredWorkRepoId(resolved);
+    const newId = registeredId ?? derivedId;
+    if (existingIds.includes(newId)) {
+      throw new Error(`Repository id already belongs to another checkout: ${newId}`);
+    }
 
     const baseName = path.basename(resolved);
     const derivedName = stripLeadingDot(baseName) || baseName;
@@ -1341,14 +1347,28 @@ export class WorkScanner {
     }
 
     const slugInstances = new Map<string, number>();
+    const persistedRows = this.db
+      .prepare("SELECT id, root FROM work_repos")
+      .all() as Array<{ id: string; root: string }>;
+    const persistedByRoot = new Map(persistedRows.map((row) => [row.root, row.id]));
+    const persistedRootById = new Map(persistedRows.map((row) => [row.id, row.root]));
+    const assignedIds = new Set<string>();
     this.repoInfos = candidates.map((candidate) => {
       const needsParent = (slugCounts.get(candidate.baseSlug) ?? 0) > 1;
       const baseId = needsParent && candidate.parentSlug
         ? `${candidate.parentSlug}-${candidate.baseSlug}`
         : candidate.baseSlug;
       const seen = slugInstances.get(baseId) ?? 0;
-      const id = seen === 0 ? baseId : `${baseId}-${seen}`;
+      const derivedId = seen === 0 ? baseId : `${baseId}-${seen}`;
       slugInstances.set(baseId, seen + 1);
+      const persistedId = persistedByRoot.get(candidate.root);
+      const registeredId = persistedId ? null : this.registeredWorkRepoId(candidate.root);
+      const id = persistedId ?? registeredId ?? derivedId;
+      const owner = persistedRootById.get(id);
+      if ((owner && owner !== candidate.root) || assignedIds.has(id)) {
+        throw new Error(`Repository id already belongs to another checkout: ${id}`);
+      }
+      assignedIds.add(id);
       const probe = probes.get(candidate.root) ?? { exists: false, defaultBranch: "" };
       return {
         id,
@@ -1396,24 +1416,57 @@ export class WorkScanner {
       ).run(now);
     }
 
-    // Reload excluded/user_modified/last_scanned_at from DB (preserved across refreshes)
+    // Reload the persisted id and mutable state from DB. The root is the
+    // work_repos primary key, so ON CONFLICT(root) deliberately preserves an
+    // existing id. Keeping the freshly derived in-memory id here would split
+    // API identity from persisted identity after a registry migration.
     const dbRows = this.db.prepare(
-      "SELECT root, excluded, user_modified, last_scanned_at FROM work_repos"
-    ).all() as Array<{ root: string; excluded: number; user_modified: number; last_scanned_at: string | null }>;
+      "SELECT id, root, name, excluded, user_modified, last_scanned_at FROM work_repos"
+    ).all() as Array<{
+      id: string;
+      root: string;
+      name: string;
+      excluded: number;
+      user_modified: number;
+      last_scanned_at: string | null;
+    }>;
     const dbByRoot = new Map(dbRows.map((r) => [r.root, r]));
     this.repoInfos = this.repoInfos.map((repo) => {
       const dbRow = dbByRoot.get(repo.root);
       if (!dbRow) return repo;
       return {
         ...repo,
+        id: dbRow.id,
         excluded: dbRow.excluded === 1,
         user_modified: dbRow.user_modified === 1,
         last_scanned_at: dbRow.last_scanned_at,
-        name: dbRow.user_modified === 1
-          ? (this.db.prepare("SELECT name FROM work_repos WHERE root = ?").get(repo.root) as { name: string } | undefined)?.name ?? repo.name
-          : repo.name,
+        name: dbRow.user_modified === 1 ? dbRow.name : repo.name,
       };
     });
+  }
+
+  private registeredWorkRepoId(root: string): string | null {
+    try {
+      const row = this.db
+        .prepare(
+          `SELECT c.work_repo_id, p.project_key
+           FROM ledger_project_checkouts c
+           JOIN ledger_projects p ON p.id = c.project_id
+           WHERE c.root = ?
+           LIMIT 1`,
+        )
+        .get(root) as { work_repo_id: string | null; project_key: string } | undefined;
+      if (!row) return null;
+      return (
+        canonicalizeCheckoutWorkRepoId(root, row.project_key, row.work_repo_id) ??
+        row.project_key?.trim() ??
+        null
+      );
+    } catch {
+      // Lightweight scanner test databases can intentionally omit the project
+      // registry. Discovery remains path-derived only in that legacy shape.
+      return null;
+    }
   }
 
   private resolveRepoRoots(): string[] {

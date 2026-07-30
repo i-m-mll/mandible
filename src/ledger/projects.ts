@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import path from "node:path";
 import type { Db } from "../db.js";
 import { createLedgerId } from "./ids.js";
-import { deriveProjectKeyBase, dedupeProjectKey } from "./project-key.js";
+import { deriveProjectKeyBase, dedupeProjectKey, slugifyProjectKey } from "./project-key.js";
 import type { LedgerNamespacePolicy, LedgerProject, LedgerProjectCheckout } from "./types.js";
 
 // Issue: 3d85f43 — allocate a stable, collision-free project_key when a project
@@ -40,6 +40,37 @@ export interface ResolveProjectInput {
 export interface ResolvedLedgerProject {
   project: LedgerProject;
   checkout: LedgerProjectCheckout;
+}
+
+/**
+ * Collapse a WorkScanner path-derived id back to the canonical project key
+ * when the checkout basename already names that project.
+ *
+ * WorkScanner historically disambiguated duplicate basenames by prefixing the
+ * parent directory, which could leak a checkout-path spelling into durable
+ * writer paths. The project registry already owns the stable identity; accept
+ * the path-derived spelling only as input and never persist it again.
+ */
+export function canonicalizeCheckoutWorkRepoId(
+  root: string,
+  projectKey: string | null | undefined,
+  workRepoId: string | null | undefined,
+): string | null {
+  const requested = workRepoId?.trim() || null;
+  const canonical = projectKey?.trim() || "";
+  if (!requested || !canonical) return requested;
+
+  const resolvedRoot = path.resolve(root);
+  const base = slugifyProjectKey(path.basename(resolvedRoot));
+  if (base !== canonical) return requested;
+
+  const parent = slugifyProjectKey(path.basename(path.dirname(resolvedRoot)));
+  // Numbered organizational folders created the bad durable alias. Other
+  // parent prefixes can be deliberate checkout disambiguators (for example a
+  // development clone) and must remain distinct.
+  if (!/^\d+(?:-|$)/.test(parent)) return requested;
+  const pathDerived = parent ? `${parent}-${base}` : base;
+  return requested === pathDerived ? canonical : requested;
 }
 
 export function normalizeRemoteIdentity(remoteUrl: string | null | undefined): string {
@@ -218,6 +249,11 @@ export function resolveProjectForCheckout(
     let checkout = db
       .prepare("SELECT * FROM ledger_project_checkouts WHERE root = ?")
       .get(root) as LedgerProjectCheckout | undefined;
+    const workRepoId = canonicalizeCheckoutWorkRepoId(
+      root,
+      (project as LedgerProject & { project_key?: string }).project_key,
+      input.workRepoId ?? checkout?.work_repo_id,
+    );
 
     if (!checkout) {
       const id = createLedgerId("chk", { now });
@@ -229,7 +265,7 @@ export function resolveProjectForCheckout(
       ).run(
         id,
         project.id,
-        input.workRepoId ?? null,
+        workRepoId,
         root,
         displayName,
         input.defaultBranch ?? "",
@@ -248,7 +284,7 @@ export function resolveProjectForCheckout(
          WHERE id = ?`,
       ).run(
         project.id,
-        input.workRepoId ?? checkout.work_repo_id,
+        workRepoId,
         displayName,
         input.defaultBranch ?? checkout.default_branch,
         remoteUrl ?? checkout.remote_url,

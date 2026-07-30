@@ -188,7 +188,7 @@ describe("ledger issue projection", () => {
     expect(summaries).toHaveLength(1);
     expect(summaries[0].issues[0]).toMatchObject({
       id: issue.short_id,
-      repo_id: "repo-1",
+      repo_id: "mandible",
       repo_name: "mandible",
       title: "Projected issue",
       parent_id: "par123",
@@ -200,8 +200,8 @@ describe("ledger issue projection", () => {
     expect(detail.ok && detail.detail.comments).toHaveLength(1);
   });
 
-  it("keeps canonical project keys on list summaries while preserving legacy checkout refs", async () => {
-    const repoInfo = repo("20-feedbax-feedbax", "Feedbax");
+  it("keeps canonical project keys on list summaries and rejects checkout ids as public filters", async () => {
+    const repoInfo = repo("20-widgets-widgets", "Feedbax");
     const { issue } = createLedgerIssue({
       repo: repoInfo,
       alias: "fbx1234",
@@ -214,19 +214,19 @@ describe("ledger issue projection", () => {
     const server = new TestIssueServer();
     registerIssueRoutes(server, workScanner as never);
     const byKey = await server.invoke("GET", "/api/issues", { query: { repo: "feedbax" } });
-    const byLegacy = await server.invoke("GET", "/api/issues", { query: { repo: "20-feedbax-feedbax" } });
+    const byLegacy = await server.invoke("GET", "/api/issues", { query: { repo: "20-widgets-widgets" } });
 
     expect(summaries).toMatchObject([{
-      repo_id: "20-feedbax-feedbax",
+      repo_id: "feedbax",
       project_key: "feedbax",
-      issues: [{ id: issue.short_id, repo_id: "20-feedbax-feedbax" }],
+      issues: [{ id: issue.short_id, repo_id: "feedbax" }],
     }]);
     expect(byKey.body).toMatchObject([{
-      repo_id: "20-feedbax-feedbax",
+      repo_id: "feedbax",
       project_key: "feedbax",
       issues: [{ id: issue.short_id }],
     }]);
-    expect(byLegacy.body).toMatchObject([{ project_key: "feedbax", issues: [{ id: issue.short_id }] }]);
+    expect(byLegacy.body).toEqual([]);
   });
 
   it("reports global alias ambiguity instead of choosing the first match", () => {
@@ -333,13 +333,13 @@ describe("ledger issue routes", () => {
     ).run("sess-1", "codex", "idle", "2026-05-16T12:00:00.000Z", "2026-05-16T12:00:00.000Z");
     db.prepare(
       "INSERT INTO session_issues (session_id, issue_id, repo_id, created_at) VALUES (?, ?, ?, ?)",
-    ).run("sess-1", issue.short_id, repoInfo.id, 1);
+    ).run("sess-1", issue.short_id, "mandible", 1);
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
 
     const list = await server.invoke("GET", "/api/issues");
     expect(list.statusCode).toBe(200);
-    expect(list.body).toMatchObject([{ repo_id: repoInfo.id, issues: [{ id: issue.short_id }] }]);
+    expect(list.body).toMatchObject([{ repo_id: "mandible", issues: [{ id: issue.short_id }] }]);
 
     const detail = await server.invoke("GET", "/api/issues/:repoId/:issueId", {
       params: { repoId: "mandible", issueId: issue.id.slice(0, 10) },
@@ -348,7 +348,7 @@ describe("ledger issue routes", () => {
     expect(detail.body).toMatchObject({ id: issue.short_id, title: "Route issue", description: "Route body" });
 
     const context = await server.invoke("GET", "/api/issues/:repoId/:issueId/context", {
-      params: { repoId: repoInfo.id, issueId: "abc123" },
+      params: { repoId: "mandible", issueId: "abc123" },
     });
     expect(context.statusCode).toBe(200);
     expect(context.body).toMatchObject({
@@ -357,7 +357,7 @@ describe("ledger issue routes", () => {
     });
 
     const sessions = await server.invoke("GET", "/api/issues/:repoId/:issueId/sessions", {
-      params: { repoId: repoInfo.id, issueId: "abc123" },
+      params: { repoId: "mandible", issueId: "abc123" },
     });
     expect(sessions.statusCode).toBe(200);
     expect(sessions.body).toMatchObject([{ session_id: "sess-1", issue_id: issue.short_id }]);

@@ -40,6 +40,46 @@ function createProject(name: string) {
 const emptyScanner = { getRepos: () => [] };
 
 describe("set-based issue summary projection", () => {
+  it("uses the canonical project key instead of a path-derived scanner id", () => {
+    const root = path.join(tempDir, "20 Widgets", "widgets");
+    fs.mkdirSync(root, { recursive: true });
+    const checkout = resolveProjectForCheckout(db, {
+      root,
+      name: "widgets",
+      workRepoId: "20-widgets-widgets",
+      defaultBranch: "main",
+      remoteUrl: "https://github.com/example/widgets.git",
+    });
+    const store = new LedgerStore(db);
+    store.createIssue({
+      ...SYSTEM_ACTOR,
+      project_id: checkout.project.id,
+      title: "Canonical route",
+      body: "Hydrated detail",
+      aliases: [{ alias_kind: "git_bug_human", alias: "abc1234", is_primary: true }],
+    });
+
+    const summaries = listLedgerIssueSummaries(db, {
+      getRepos: () => [{
+        id: "20-widgets-widgets",
+        name: "widgets",
+        root,
+        exists: true,
+        default_branch: "main",
+        excluded: false,
+        user_modified: false,
+        last_scanned_at: null,
+      }],
+    });
+
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]).toMatchObject({
+      repo_id: "widgets",
+      project_key: "widgets",
+    });
+    expect(summaries[0].issues[0].repo_id).toBe("widgets");
+  });
+
   it("omits descriptions, batches labels and counts, and derives parent refs", () => {
     const checkout = createProject("repo");
     const store = new LedgerStore(db);

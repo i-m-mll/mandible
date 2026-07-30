@@ -317,6 +317,54 @@ describe("addOrUpdateCheckout", () => {
       .get() as { n: number };
     expect(n).toBe(1);
   });
+
+  it("does not persist a parent-prefixed scanner id for a canonical checkout", () => {
+    addProject(db, {
+      project_key: "widgets",
+      remote_identity: "git@github.com:mll/widgets.git",
+    });
+    const root = path.join(tempDir, "20 Widgets", "widgets");
+    fs.mkdirSync(root, { recursive: true });
+
+    const { checkout } = addOrUpdateCheckout(db, "widgets", {
+      root,
+      work_repo_id: "20-widgets-widgets",
+    });
+    expect(checkout.work_repo_id).toBe("widgets");
+
+    const updated = addOrUpdateCheckout(db, "widgets", {
+      root,
+      work_repo_id: "20-widgets-widgets",
+    });
+    expect(updated.checkout.work_repo_id).toBe("widgets");
+  });
+
+  it("canonicalizes the same scanner id through discovery registration", () => {
+    const root = path.join(tempDir, "20 Widgets", "widgets");
+    fs.mkdirSync(root, { recursive: true });
+
+    const { checkout } = resolveProjectForCheckout(db, {
+      root,
+      remoteUrl: "git@github.com:mll/widgets.git",
+      workRepoId: "20-widgets-widgets",
+    });
+    expect(checkout.work_repo_id).toBe("widgets");
+  });
+
+  it("preserves a deliberate non-numbered checkout disambiguator", () => {
+    addProject(db, {
+      project_key: "widgets",
+      remote_identity: "git@github.com:mll/widgets.git",
+    });
+    const root = path.join(tempDir, "dev", "widgets");
+    fs.mkdirSync(root, { recursive: true });
+
+    const { checkout } = addOrUpdateCheckout(db, "widgets", {
+      root,
+      work_repo_id: "dev-widgets",
+    });
+    expect(checkout.work_repo_id).toBe("dev-widgets");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -359,12 +407,12 @@ describe("auditRegistry", () => {
     resolveProjectForCheckout(db, {
       root: dir,
       remoteUrl: "git@github.com:mll/feedbax.git",
-      workRepoId: "20-feedbax-feedbax",
+      workRepoId: "20-widgets-widgets",
     });
 
     const audit = auditRegistry(db);
     expect(audit.numbered_repo_ids.length).toBeGreaterThan(0);
-    expect(audit.numbered_repo_ids[0].work_repo_id).toBe("20-feedbax-feedbax");
+    expect(audit.numbered_repo_ids[0].work_repo_id).toBe("20-widgets-widgets");
   });
 
   it("detects duplicate_display_names", () => {
@@ -466,7 +514,7 @@ describe("buildLedgerIssueDetailProjection project fields", () => {
     const { project } = resolveProjectForCheckout(db, {
       root: dir,
       remoteUrl: "git@github.com:mll/feedbax.git",
-      workRepoId: "20-feedbax-feedbax",
+      workRepoId: "20-widgets-widgets",
     });
 
     // The project_key should be "feedbax" (tail of remote identity)
@@ -489,7 +537,7 @@ describe("buildLedgerIssueDetailProjection project fields", () => {
     // repo_id uses project_key, not the path-derived WorkScanner id
     expect(projection.project.repo_id).toBe("feedbax");
     // work_repo_id preserves the raw WorkScanner id
-    expect(projection.project.work_repo_id).toBe("20-feedbax-feedbax");
+    expect(projection.project.work_repo_id).toBe("20-widgets-widgets");
   });
 });
 

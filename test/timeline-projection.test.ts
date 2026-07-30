@@ -26,6 +26,21 @@ afterEach(() => {
 });
 
 describe("project timeline projection", () => {
+  it("uses the canonical project key as outward repo identity", () => {
+    fixture.db.prepare(
+      "UPDATE ledger_projects SET project_key = ? WHERE id = ?",
+    ).run("canonical-timeline", fixture.project.id);
+    fixture.db.prepare(
+      "UPDATE ledger_project_checkouts SET work_repo_id = ? WHERE project_id = ?",
+    ).run("20-widgets-widgets", fixture.project.id);
+
+    const projection = buildProjectTimelineProjection(fixture.db, {
+      project_ref: "canonical-timeline",
+    });
+
+    expect(projection.project.repo_id).toBe("canonical-timeline");
+  });
+
   it("passes resolved attribution through body and comment events", () => {
     const user = createUser(fixture.db, {
       slug: "timeline-agent",

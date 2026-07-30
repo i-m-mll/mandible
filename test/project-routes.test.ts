@@ -317,7 +317,7 @@ describe("canonical project_key round-trip", () => {
     const { project } = resolveProjectForCheckout(db, {
       root: "/tmp/feedbax-rt",
       name: "feedbax",
-      workRepoId: "20-feedbax-feedbax",
+      workRepoId: "20-widgets-widgets",
       remoteUrl: "git@github.com:mll/feedbax.git",
     });
     const issue = new LedgerStore(db).createIssue({
@@ -342,13 +342,13 @@ describe("canonical project_key round-trip", () => {
     expect(keyBody[0].project_key).toBe("feedbax");
     expect(keyBody[0].issues.length).toBe(1);
 
-    // The legacy path-derived work_repo_id still resolves too (accept both).
+    // Path-derived checkout ids are no longer public project filters.
     const byWorkRepo = await router.invoke({
       method: "GET",
-      url: "/api/issues?repo=20-feedbax-feedbax",
+      url: "/api/issues?repo=20-widgets-widgets",
     });
     expect(byWorkRepo.status).toBe(200);
-    expect((byWorkRepo.body as unknown[]).length).toBe(1);
+    expect((byWorkRepo.body as unknown[]).length).toBe(0);
   });
 
   it("/r/issue redirect resolves the canonical project_key as repo, not work_repo_id", () => {

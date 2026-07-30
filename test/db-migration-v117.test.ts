@@ -195,9 +195,9 @@ describe("migration v117: clear residual local_default ledger misattribution", (
 
     migrate(db);
 
-    // The sweep is the head migration, so a rewind to 116 replays exactly v117.
+    // A rewind to 116 replays the v117 sweep and the later v118 data correction.
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "117",
+      value: "118",
     });
 
     for (const { table, idPrefix, userColumn } of AFFECTED) {

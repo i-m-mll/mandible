@@ -12,6 +12,7 @@ vi.mock("../src/sse", () => ({
 import { WorkScanner, type BranchData } from "../src/work-scanner";
 import { filterAndSortBranches, registerWorkRoutes } from "../src/routes/work";
 import { migrate, setDb } from "../src/db";
+import { resolveProjectForCheckout } from "../src/ledger/projects";
 import { Router } from "../src/server";
 
 const gitEnv = {
@@ -131,6 +132,60 @@ describe.sequential("WorkScanner", () => {
     expect(branches).toContain("main");
     expect(branches).toContain("feature");
     expect(branches).toContain("no-upstream");
+  });
+
+  it("preserves the persisted repo id when refresh derives a different path id", () => {
+    const db = createMigratedDb();
+    db.prepare(
+      `INSERT INTO work_repos (
+         id, root, name, default_branch, dir_exists, excluded,
+         user_modified, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, 1, 0, 0, datetime('now'), datetime('now'))`,
+    ).run("canonical-widget", repoRoot, "repo", "main");
+
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot] });
+    scanner.scanAll();
+
+    expect(scanner.getRepos()).toContainEqual(expect.objectContaining({
+      id: "canonical-widget",
+      root: repoRoot,
+    }));
+  });
+
+  it("recreates canonical and deliberately disambiguated scanner rows without collapsing them", () => {
+    const db = createMigratedDb();
+    resolveProjectForCheckout(db, {
+      root: repoRoot,
+      remoteUrl: "git@github.com:mll/repo.git",
+      workRepoId: "repo",
+    });
+    const duplicateRoot = path.join(tempRoot, "dev", "repo");
+    resolveProjectForCheckout(db, {
+      root: duplicateRoot,
+      remoteUrl: "git@github.com:mll/repo.git",
+      workRepoId: "dev-repo",
+    });
+
+    const scanner = new WorkScanner({ db, repo_roots: [repoRoot, duplicateRoot] });
+    scanner.scanAll();
+    db.prepare("DELETE FROM work_repos WHERE root = ?").run(duplicateRoot);
+    const recreated = new WorkScanner({ db, repo_roots: [repoRoot, duplicateRoot] });
+    recreated.scanAll();
+
+    expect(recreated.getRepos()).toContainEqual(expect.objectContaining({
+      id: "repo",
+      root: repoRoot,
+    }));
+    expect(recreated.getRepos()).toContainEqual(expect.objectContaining({
+      id: "dev-repo",
+      root: duplicateRoot,
+    }));
+    expect(
+      db.prepare("SELECT id FROM work_repos WHERE root = ?").get(repoRoot),
+    ).toEqual({ id: "repo" });
+    expect(
+      db.prepare("SELECT id FROM work_repos WHERE root = ?").get(duplicateRoot),
+    ).toEqual({ id: "dev-repo" });
   });
 
   it("detects dirty worktrees", () => {

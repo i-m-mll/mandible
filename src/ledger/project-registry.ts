@@ -3,7 +3,7 @@ import type { Db } from "../db.js";
 import { tableExists } from "../db-introspection.js";
 import { createLedgerId } from "./ids.js";
 import { deriveProjectKeyBase, dedupeProjectKey, slugifyProjectKey } from "./project-key.js";
-import { normalizeRemoteIdentity } from "./projects.js";
+import { canonicalizeCheckoutWorkRepoId, normalizeRemoteIdentity } from "./projects.js";
 import type { LedgerNamespacePolicy, LedgerProject, LedgerProjectCheckout } from "./types.js";
 
 export { deriveProjectKeyBase, slugifyProjectKey } from "./project-key.js";
@@ -495,6 +495,11 @@ export function addOrUpdateCheckout(
   const existing = db
     .prepare("SELECT * FROM ledger_project_checkouts WHERE root = ?")
     .get(root) as LedgerProjectCheckout | undefined;
+  const workRepoId = canonicalizeCheckoutWorkRepoId(
+    root,
+    project.project_key,
+    input.work_repo_id ?? existing?.work_repo_id,
+  );
 
   if (existing) {
     db.prepare(
@@ -503,7 +508,7 @@ export function addOrUpdateCheckout(
        WHERE id = ?`,
     ).run(
       project.id,
-      input.work_repo_id ?? existing.work_repo_id,
+      workRepoId,
       input.name?.trim() || existing.name,
       input.default_branch ?? existing.default_branch,
       input.remote_url ?? existing.remote_url,
@@ -519,7 +524,7 @@ export function addOrUpdateCheckout(
     ).run(
       id,
       project.id,
-      input.work_repo_id ?? null,
+      workRepoId,
       root,
       input.name?.trim() || project.display_name,
       input.default_branch ?? "",

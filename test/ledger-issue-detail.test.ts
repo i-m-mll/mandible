@@ -696,7 +696,7 @@ describe("ledger issue detail projection", () => {
       ok: true,
       issue_id: issue.id,
       project_id: checkout.project.id,
-      repo_id: "repo",
+      repo_id: checkout.project.project_key,
     });
   });
 });
