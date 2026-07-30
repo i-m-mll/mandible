@@ -356,6 +356,39 @@ describe("request logging", () => {
 });
 
 describe("system log route daemon_log source", () => {
+  it("pages older rows with a stable cursor when newer rows arrive", async () => {
+    const insert = db.prepare(
+      `INSERT INTO daemon_log
+       (id, ts, level, event, subsystem, fields_json)
+       VALUES (?, ?, 'info', ?, 'test', '{}')`,
+    );
+    insert.run("a", 1000, "event-a");
+    insert.run("b", 1000, "event-b");
+    insert.run("c", 2000, "event-c");
+
+    const routes = new TestRoutes();
+    registerSystemRoutes(routes, { getRepos: () => [] }, db);
+    const newest = createResponse();
+    await routes.handler("GET", "/api/system/logs")(request({ level: "debug", limit: "2" }), newest);
+    const newestPayload = newest.payload as {
+      entries: Array<{ id: string }>;
+      older_cursor: string;
+      has_older: boolean;
+    };
+    expect(newestPayload.entries.map((entry) => entry.id)).toEqual(["b", "c"]);
+    expect(newestPayload.has_older).toBe(true);
+
+    insert.run("d", 3000, "event-d");
+    const older = createResponse();
+    await routes.handler("GET", "/api/system/logs")(request({
+      level: "debug",
+      limit: "2",
+      before: newestPayload.older_cursor,
+    }), older);
+
+    expect((older.payload as { entries: Array<{ id: string }> }).entries.map((entry) => entry.id)).toEqual(["a"]);
+  });
+
   it("returns daemon_log rows when a database is provided", async () => {
     const logger = configureDaemonLogger(db);
     logger("warn", "system_route_row", { subsystem: "test", issue_id: "issue-route" });
