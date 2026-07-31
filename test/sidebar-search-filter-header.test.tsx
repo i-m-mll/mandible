@@ -76,6 +76,44 @@ describe('SidebarSearchFilterHeader', () => {
     expect(screen.getByText('active filters')).toBeTruthy();
   });
 
+  it('owns Escape and outside-pointer dismissal for open overlays', () => {
+    const onDismiss = vi.fn();
+    render(
+      <div>
+        <SidebarSearchFilterHeader
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Filter issues"
+          searchAriaLabel="Filter issues"
+          clearAriaLabel="Clear issue filter"
+          filterTrigger={{
+            ariaLabel: 'Advanced issue filters',
+            open: true,
+            onToggle: vi.fn(),
+          }}
+          panel={{
+            id: 'issue-filter-panel',
+            ariaLabel: 'Issue filter controls',
+            onDismiss,
+            children: <button type="button">Open only</button>,
+          }}
+        />
+        <button type="button">Outside</button>
+      </div>,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Advanced issue filters' });
+    expect(trigger.getAttribute('aria-controls')).toBe('issue-filter-panel');
+    expect(screen.getByRole('dialog', { name: 'Issue filter controls' })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    screen.getByRole('button', { name: 'Outside' }).dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+    screen.getByRole('button', { name: 'Open only' }).dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+
   it('renders inline panels and calls onBlurWithin for outside-focus handling', () => {
     const onBlurWithin = vi.fn();
     const { container } = render(
@@ -208,6 +246,7 @@ describe('SidebarSearchFilterHeader', () => {
     expect(css).toContain('.sidebar-search-filter__row');
     expect(css).toContain('.sidebar-search-filter__panel--popover');
     expect(css).toContain('.sidebar-search-filter__panel--inline');
+    expect(css).toContain('max-height: min(70vh, 620px)');
     expect(css).toContain('.sidebar-search-filter__section');
     expect(css).toContain('.sidebar-search-filter__options');
     expect(css).toContain('.sidebar-list-item[aria-current="true"]:focus-visible');

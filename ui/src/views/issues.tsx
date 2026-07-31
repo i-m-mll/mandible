@@ -978,7 +978,10 @@ export function IssuesView({
                 onToggle: () => setFilterMenuOpen((prev) => !prev),
               }}
               panel={filterMenuOpen ? {
+                id: 'issue-filter-panel',
                 variant: 'popover',
+                ariaLabel: 'Issue filter controls',
+                onDismiss: () => setFilterMenuOpen(false),
                 children: (
                   <>
               <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
