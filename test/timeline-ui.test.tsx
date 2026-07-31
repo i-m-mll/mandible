@@ -1141,6 +1141,11 @@ describe('TimelineView', () => {
       expect(match).toBeTruthy();
       expect(Math.abs(Number(match?.[1]) + nextScrollLeft)).toBeLessThan(0.01);
     });
+
+    const fractionalScrollLeft = nextScrollLeft + 0.25;
+    timeScroll.scrollLeft = fractionalScrollLeft;
+    timeScroll.dispatchEvent(new Event('scroll', { bubbles: true }));
+    expect(axisSurface.style.transform).toBe(`translateX(-${fractionalScrollLeft}px)`);
   });
 
   it('maps pinch-out wheel gestures to zoom in', async () => {
