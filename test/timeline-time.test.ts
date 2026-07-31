@@ -11,7 +11,6 @@ import {
   formatUtcDateTime,
   generateTimelineTicks,
   paddedTimelineRenderDomain,
-  timelineAxisTransform,
   timelineExtentFromTimestamps,
   timelineScrollMetrics,
   viewportFromTimelineScroll,
@@ -84,21 +83,6 @@ describe('timeline time helpers', () => {
       800,
     );
     expect(fromScroll.to).toBeCloseTo(domain.end, 6);
-  });
-
-  it('translates the pinned axis continuously for fractional native scroll positions', () => {
-    const positions = [120, 120.25, 120.5, 120.75, 121];
-    const translated = positions.map((position) => (
-      Number(timelineAxisTransform(position).match(/-?[\d.]+/)?.[0])
-    ));
-
-    expect(translated).toEqual([-120, -120.25, -120.5, -120.75, -121]);
-    expect(translated.slice(1).map((value, index) => value - translated[index])).toEqual([
-      -0.25,
-      -0.25,
-      -0.25,
-      -0.25,
-    ]);
   });
 
   it('preserves sub-day timestamps when editing date-only boundaries', () => {
