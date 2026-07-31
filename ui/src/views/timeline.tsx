@@ -18,6 +18,7 @@ import {
   formatUtcDateTime,
   generateTimelineTicks,
   paddedTimelineRenderDomain,
+  timelineAxisTransform,
   timelineExtentFromTimestamps,
   timelineScrollMetrics,
   viewportFromTimelineScroll,
@@ -819,6 +820,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   const [status, setStatus] = useState<ProjectionStatus>('loading');
   const [error, setError] = useState<string | null>(null);
   const timeScrollRef = useRef<HTMLDivElement | null>(null);
+  const axisSurfaceRef = useRef<HTMLDivElement | null>(null);
   const timelineMainRef = useRef<HTMLDivElement | null>(null);
   const suppressProgrammaticScrollRef = useRef(false);
   const suppressProgrammaticScrollTimerRef = useRef<number | null>(null);
@@ -1554,6 +1556,9 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
 
   const handleTimeScroll = useCallback((event: JSX.TargetedUIEvent<HTMLDivElement>) => {
     if (suppressProgrammaticScrollRef.current) return;
+    if (axisSurfaceRef.current) {
+      axisSurfaceRef.current.style.transform = timelineAxisTransform(event.currentTarget.scrollLeft);
+    }
     const next = viewportFromTimelineScroll(
       renderDomain,
       event.currentTarget.scrollLeft,
@@ -1939,10 +1944,11 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
           </div>
           <div className="timeline-axis__viewport">
             <div
+              ref={axisSurfaceRef}
               className="timeline-axis__surface"
               style={{
                 width: `${scrollMetrics.surfaceWidthPx}px`,
-                transform: `translateX(${-scrollMetrics.scrollLeftPx}px)`,
+                transform: timelineAxisTransform(scrollMetrics.scrollLeftPx),
               } as JSX.CSSProperties}
             >
               <div className="timeline-axis__track">

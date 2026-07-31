@@ -403,6 +403,11 @@ export function viewportFromTimelineScroll(
   return clampTimelineViewport({ from, to: from + span }, domain, { minSpanMs: 1 });
 }
 
+export function timelineAxisTransform(scrollLeftPx: number): string {
+  const safeScrollLeftPx = Number.isFinite(scrollLeftPx) ? Math.max(0, scrollLeftPx) : 0;
+  return `translateX(${-safeScrollLeftPx}px)`;
+}
+
 export function formatUtcDate(timestamp: number | null | undefined): string {
   if (timestamp === null || timestamp === undefined || !Number.isFinite(timestamp)) return '';
   const parts = dateParts(timestamp);
