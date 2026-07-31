@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'preact/hooks';
 export type SidebarSearchFilterHeaderPanel = {
   id?: string;
   variant?: 'popover' | 'inline';
+  ariaLabel?: string;
+  onDismiss?: () => void;
   children: ComponentChildren;
 };
 
@@ -37,6 +39,7 @@ export type SidebarSearchFilterHeaderProps = {
 
 export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps): JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const rootClass = props.className
     ? `sidebar-search-filter ${props.className}`
     : 'sidebar-search-filter';
@@ -67,8 +70,27 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
     return () => window.removeEventListener('keydown', focusViewSearch);
   }, [props.captureFindShortcut]);
 
+  useEffect(() => {
+    if (!props.panel?.onDismiss) return undefined;
+    const dismiss = props.panel.onDismiss;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      event.preventDefault();
+      dismiss();
+    };
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target && !rootRef.current?.contains(event.target as Node)) dismiss();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('pointerdown', handlePointerDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('pointerdown', handlePointerDown);
+    };
+  }, [props.panel?.onDismiss]);
+
   return (
-    <div className={rootClass} onFocusOut={props.onBlurWithin} data-testid={props.testId}>
+    <div ref={rootRef} className={rootClass} onFocusOut={props.onBlurWithin} data-testid={props.testId}>
       <div className="sidebar-search-filter__row">
         {props.leadingAction !== undefined ? (
           <div className="sidebar-search-filter__leading">{props.leadingAction}</div>
@@ -105,6 +127,7 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
             aria-label={props.filterTrigger.ariaLabel}
             title={props.filterTrigger.title ?? props.filterTrigger.ariaLabel}
             aria-expanded={props.filterTrigger.open}
+            aria-controls={props.panel?.id}
             onClick={props.filterTrigger.onToggle}
           >
             <FilterTriggerIcon />
@@ -123,6 +146,8 @@ export function SidebarSearchFilterHeader(props: SidebarSearchFilterHeaderProps)
       {props.panel !== undefined ? (
         <div
           id={props.panel.id}
+          role="dialog"
+          aria-label={props.panel.ariaLabel ?? props.filterTrigger?.ariaLabel}
           className={`sidebar-search-filter__panel sidebar-search-filter__panel--${panelVariant}`}
         >
           {props.panel.children}

@@ -64,6 +64,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { DetailPaneShell } from '../components/shared/DetailPaneShell';
 import { artifactLinkBadgeLabel } from '../lib/format';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
+import { usePersistedViewState } from '../hooks/usePersistedViewState';
 
 type ArtifactsViewProps = {
   initialArtifactId?: string;
@@ -86,6 +87,15 @@ type ArtifactFilters = {
   location: string;
 };
 
+type ArtifactSortField = 'updated' | 'title' | 'created' | 'versions';
+type ArtifactSortDirection = 'asc' | 'desc';
+
+type ArtifactListViewState = {
+  filters: ArtifactFilters;
+  sortField: ArtifactSortField;
+  sortDirection: ArtifactSortDirection;
+};
+
 const EMPTY_FILTERS: ArtifactFilters = {
   q: '',
   repo: '',
@@ -96,6 +106,32 @@ const EMPTY_FILTERS: ArtifactFilters = {
   scheme: '',
   location: '',
 };
+
+const DEFAULT_ARTIFACT_LIST_STATE: ArtifactListViewState = {
+  filters: EMPTY_FILTERS,
+  sortField: 'updated',
+  sortDirection: 'desc',
+};
+
+const ARTIFACT_LIST_STATE_KEY = 'mandible:artifacts:list-controls:v1';
+
+function normalizeArtifactListViewState(value: unknown): ArtifactListViewState {
+  const record = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const rawFilters = record.filters && typeof record.filters === 'object'
+    ? record.filters as Record<string, unknown>
+    : {};
+  const filters = Object.fromEntries(
+    Object.keys(EMPTY_FILTERS).map((key) => [key, typeof rawFilters[key] === 'string' ? rawFilters[key] : '']),
+  ) as ArtifactFilters;
+  const sortFields: ArtifactSortField[] = ['updated', 'title', 'created', 'versions'];
+  return {
+    filters,
+    sortField: sortFields.includes(record.sortField as ArtifactSortField)
+      ? record.sortField as ArtifactSortField
+      : 'updated',
+    sortDirection: record.sortDirection === 'asc' ? 'asc' : 'desc',
+  };
+}
 
 type BundleMemberPreview = {
   artifactId: string;
@@ -147,11 +183,12 @@ export function ArtifactsView({
   sidebarHidden = false,
 }: ArtifactsViewProps): JSX.Element {
   const initialSeriesSelection = initialSeriesRef ? normalizeInitialSeriesRef(initialSeriesRef) : null;
-  const [filters, setFilters] = useState<ArtifactFilters>(() => ({
-    ...EMPTY_FILTERS,
-    repo: initialRepo ?? '',
-    role: initialRole ?? '',
-  }));
+  const [listViewState, setListViewState] = usePersistedViewState(
+    ARTIFACT_LIST_STATE_KEY,
+    normalizeArtifactListViewState,
+    DEFAULT_ARTIFACT_LIST_STATE,
+  );
+  const { filters, sortField, sortDirection } = listViewState;
   const [series, setSeries] = useState<ArtifactSeriesSummary[]>([]);
   const [selectedSeriesRef, setSelectedSeriesRef] = useState<string | null>(
     initialSeriesSelection,
@@ -189,18 +226,18 @@ export function ArtifactsView({
   );
 
   useEffect(() => {
-    setFilters((current) => {
-      const repo = initialRepo ?? current.repo;
-      return current.repo === repo ? current : { ...current, repo };
+    setListViewState((current) => {
+      if (!initialRepo || current.filters.repo === initialRepo) return current;
+      return { ...current, filters: { ...current.filters, repo: initialRepo } };
     });
-  }, [initialRepo]);
+  }, [initialRepo, setListViewState]);
 
   useEffect(() => {
-    setFilters((current) => {
-      const role = initialRole ?? current.role;
-      return current.role === role ? current : { ...current, role };
+    setListViewState((current) => {
+      if (!initialRole || current.filters.role === initialRole) return current;
+      return { ...current, filters: { ...current.filters, role: initialRole } };
     });
-  }, [initialRole]);
+  }, [initialRole, setListViewState]);
 
   useEffect(() => {
     deepLinkActiveRef.current = Boolean(initialArtifactId || initialRef || initialSeriesRef);
@@ -275,18 +312,19 @@ export function ArtifactsView({
         summary: true,
       });
       if (listRequestIdRef.current !== requestId) return;
-      setSeries(next);
+      const ordered = sortArtifactSeries(next, sortField, sortDirection);
+      setSeries(ordered);
       setSelectedSeriesRef((current) => {
-        if (current || deepLinkActiveRef.current || !next[0]) return current;
-        return seriesRef(next[0]);
+        if (current || deepLinkActiveRef.current || !ordered[0]) return current;
+        return seriesRef(ordered[0]);
       });
       setSelectedArtifactId((current) => {
-        if (current || deepLinkActiveRef.current || !next[0]?.latest_version) return current;
-        return next[0].latest_version.artifact_id;
+        if (current || deepLinkActiveRef.current || !ordered[0]?.latest_version) return current;
+        return ordered[0].latest_version.artifact_id;
       });
       setSelectedArtifact((current) => {
-        if (current || deepLinkActiveRef.current || !next[0]?.latest_artifact) return current;
-        return next[0].latest_artifact;
+        if (current || deepLinkActiveRef.current || !ordered[0]?.latest_artifact) return current;
+        return ordered[0].latest_artifact;
       });
     } catch (err) {
       if (listRequestIdRef.current === requestId) {
@@ -297,7 +335,7 @@ export function ArtifactsView({
         setLoading(false);
       }
     }
-  }, [filters]);
+  }, [filters, sortDirection, sortField]);
 
   useEffect(() => {
     void loadSeries();
@@ -636,12 +674,23 @@ export function ArtifactsView({
   }, [loadSeries]);
 
   const updateFilter = (key: keyof ArtifactFilters, value: string) => {
-    setFilters((current) => ({ ...current, [key]: value }));
+    setListViewState((current) => ({
+      ...current,
+      filters: { ...current.filters, [key]: value },
+    }));
   };
 
   const clearFilters = () => {
-    setFilters(EMPTY_FILTERS);
+    setListViewState(DEFAULT_ARTIFACT_LIST_STATE);
   };
+
+  const activeFilterCount = Object.values(filters).filter(Boolean).length
+    + Number(sortField !== DEFAULT_ARTIFACT_LIST_STATE.sortField)
+    + Number(sortDirection !== DEFAULT_ARTIFACT_LIST_STATE.sortDirection);
+  const activeFilterSummary = [
+    ...Object.entries(filters).filter(([, value]) => Boolean(value)).map(([key, value]) => `${key}: ${value}`),
+    `sort: ${sortField} ${sortDirection}`,
+  ].join(' · ');
 
   return (
     <div className="artifacts-view">
@@ -663,25 +712,46 @@ export function ArtifactsView({
               ariaLabel: 'Artifact filters',
               title: 'Artifact filters',
               open: advancedOpen,
+              active: activeFilterCount > 0,
+              count: activeFilterCount,
               onToggle: () => setAdvancedOpen((open) => !open),
             }}
+            summarySlot={<span>{activeFilterSummary}</span>}
             panel={advancedOpen ? {
-              variant: 'inline',
+              id: 'artifact-filter-panel',
+              variant: 'popover',
+              ariaLabel: 'Artifact filter and sort controls',
+              onDismiss: () => setAdvancedOpen(false),
               children: (
                 <>
+                <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
+                  <span>Filters and sorting</span>
+                  <button type="button" className="sidebar-search-filter__clear-action" onClick={clearFilters}>Reset</button>
+                </div>
+                <div className="sidebar-search-filter__section">
+                  <span className="sidebar-search-filter__label">Sort</span>
+                  <FacetSelect label="Field" value={sortField} options={['updated', 'title', 'created', 'versions']} onChange={(value) => setListViewState((current) => ({ ...current, sortField: value as ArtifactSortField }))} />
+                  <div className="sidebar-search-filter__options sidebar-search-filter__options--segmented">
+                    {(['asc', 'desc'] as ArtifactSortDirection[]).map((direction) => (
+                      <button key={direction} type="button" className={`sidebar-search-filter__option${sortDirection === direction ? ' sidebar-search-filter__option--active' : ''}`} aria-pressed={sortDirection === direction} onClick={() => setListViewState((current) => ({ ...current, sortDirection: direction }))}>
+                        {direction === 'asc' ? 'Ascending' : 'Descending'}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="sidebar-search-filter__section">
+                <span className="sidebar-search-filter__label">Facets</span>
                 <FacetSelect label="Location" value={filters.scheme} options={facetOptions.schemes} onChange={(value) => updateFilter('scheme', value)} />
                 <FacetSelect label="Custody" value={filters.custody} options={facetOptions.custodies} onChange={(value) => updateFilter('custody', value)} />
                 <FacetSelect label="Availability" value={filters.availability} options={facetOptions.availabilities} onChange={(value) => updateFilter('availability', value)} />
                 <FacetSelect label="Repo" value={filters.repo} options={facetOptions.repos} onChange={(value) => updateFilter('repo', value)} />
                 <FacetSelect label="Provider" value={filters.provider} options={facetOptions.providers} onChange={(value) => updateFilter('provider', value)} />
                 <FacetSelect label="Role" value={filters.role} options={facetOptions.roles} onChange={(value) => updateFilter('role', value)} />
-                <input
-                  className="artifacts-advanced__input"
-                  value={filters.location}
-                  placeholder="Path or locator"
-                  onInput={(e) => updateFilter('location', e.currentTarget.value)}
-                />
-                <button type="button" className="btn btn--ghost btn--sm" onClick={clearFilters}>Clear</button>
+                <label className="sidebar-search-filter__field">
+                  <span>Path or locator</span>
+                  <input value={filters.location} placeholder="Path or locator" onInput={(e) => updateFilter('location', e.currentTarget.value)} />
+                </label>
+                </div>
                 </>
               ),
             } : undefined}
@@ -765,7 +835,7 @@ function FacetSelect({ label, value, options, onChange }: {
     ? [...options, value].sort()
     : options;
   return (
-    <label className="artifacts-advanced__field">
+    <label className="sidebar-search-filter__field">
       <span>{label}</span>
       <select value={value} onChange={(e) => onChange(e.currentTarget.value)}>
         <option value="">Any</option>
@@ -773,6 +843,27 @@ function FacetSelect({ label, value, options, onChange }: {
       </select>
     </label>
   );
+}
+
+function sortArtifactSeries(
+  entries: ArtifactSeriesSummary[],
+  field: ArtifactSortField,
+  direction: ArtifactSortDirection,
+): ArtifactSeriesSummary[] {
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return [...entries].sort((left, right) => {
+    let comparison: number;
+    if (field === 'title') {
+      comparison = seriesTitle(left).localeCompare(seriesTitle(right), undefined, { sensitivity: 'base' });
+    } else if (field === 'created') {
+      comparison = left.created_at - right.created_at;
+    } else if (field === 'versions') {
+      comparison = left.version_count - right.version_count;
+    } else {
+      comparison = left.updated_at - right.updated_at;
+    }
+    return comparison * multiplier || seriesRef(left).localeCompare(seriesRef(right));
+  });
 }
 
 export type ArtifactDetailProps = {
