@@ -59,6 +59,34 @@ export interface ArtifactContentResult {
   warnings?: string[];
 }
 
+export type ArtifactOpenFileResult =
+  | { ok: true; artifact_id: string; path: string; source_kind: ArtifactContentSourceKind }
+  | { ok: false; reason: string };
+
+/** Resolve and validate the regular file backing a registered artifact. */
+export async function resolveArtifactOpenFile(db: Db, id: string): Promise<ArtifactOpenFileResult | null> {
+  const artifact = getArtifact(db, id);
+  if (!artifact) return null;
+  const resolved = resolveRegisteredArtifactPath(db, artifact);
+  if (!resolved.ok) return resolved;
+  const stat = safeStat(resolved.path);
+  if (!stat) return { ok: false, reason: "artifact bytes are not available on disk" };
+  if (!stat.isFile()) return { ok: false, reason: "artifact locator does not point to a regular file" };
+  const hashCheck = await validateContentHashAsync(
+    artifact,
+    resolved.path,
+    recoverabilityForArtifact(artifact),
+    stat.size,
+  );
+  if (!hashCheck.ok) return hashCheck;
+  return {
+    ok: true,
+    artifact_id: artifact.id,
+    path: fs.realpathSync(resolved.path),
+    source_kind: resolved.source?.kind ?? "local_file",
+  };
+}
+
 export function checkArtifactMaterialization(
   db: Db,
   id: string,

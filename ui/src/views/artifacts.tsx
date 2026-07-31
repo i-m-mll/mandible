@@ -30,6 +30,7 @@ import {
   getArtifactVersions,
   getLedgerIssueDetail,
   isApiErrorStatus,
+  openArtifactExternally,
   publishArtifactDraft,
   rebaseArtifactDraft,
   resolveArtifact,
@@ -891,6 +892,8 @@ export function ArtifactDetail({
   const [diffOpen, setDiffOpen] = useState(false);
   const [diffLoading, setDiffLoading] = useState(false);
   const [diffError, setDiffError] = useState<string | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const [openingExternally, setOpeningExternally] = useState(false);
   const [versionDiff, setVersionDiff] = useState<ArtifactDiffResult | null>(null);
   const latestDraftRef = useRef<ArtifactDraftRecord | null>(null);
   latestDraftRef.current = draft;
@@ -1038,6 +1041,23 @@ export function ArtifactDetail({
   const closeActionsAfter = (callback: () => void) => {
     callback();
     setActionsOpen(false);
+  };
+
+  const externalOpenState = content?.status === 'available' && content.source
+    ? { enabled: true, reason: '' }
+    : { enabled: false, reason: content?.reason ?? 'Artifact material is not available as a local file.' };
+
+  const openSelectedArtifactExternally = async () => {
+    setActionsOpen(false);
+    setOpeningExternally(true);
+    setOpenError(null);
+    try {
+      await openArtifactExternally(selectedVersion?.artifact_id ?? artifact.id);
+    } catch (error) {
+      setOpenError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setOpeningExternally(false);
+    }
   };
 
   const saveDraftNow = useCallback(async () => {
@@ -1290,6 +1310,16 @@ export function ArtifactDetail({
                   type="button"
                   className="artifact-detail__actions-item"
                   role="menuitem"
+                  disabled={!externalOpenState.enabled || openingExternally}
+                  title={externalOpenState.enabled ? 'Open with the OS default application' : externalOpenState.reason}
+                  onClick={() => void openSelectedArtifactExternally()}
+                >
+                  {openingExternally ? 'Opening…' : 'Open externally'}
+                </button>
+                <button
+                  type="button"
+                  className="artifact-detail__actions-item"
+                  role="menuitem"
                   disabled={spaceActionDisabled}
                   title={!spaceProjectId ? 'No project context for Spaces' : 'Add to Space'}
                   onClick={() => closeActionsAfter(() => setSpacePickerOpen(true))}
@@ -1365,6 +1395,7 @@ export function ArtifactDetail({
       overlays={overlays}
     >
         {detailError && <div className="artifacts-error">{detailError}</div>}
+        {openError && <div className="artifacts-error" role="alert">Could not open artifact: {openError}</div>}
         {resolution?.warnings?.includes('series_latest_not_pinned') && (
           <div className="artifact-detail__warning">series_latest_not_pinned</div>
         )}
