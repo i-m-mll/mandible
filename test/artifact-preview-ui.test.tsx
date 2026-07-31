@@ -69,7 +69,7 @@ function content(overrides: Partial<ArtifactContentResult> = {}): ArtifactConten
     kind: 'text',
     media_type: 'text/plain',
     size_bytes: 24,
-    source: null,
+    source: { kind: 'managed_file', locator: '/managed/train.py' },
     preview: {
       encoding: 'utf-8',
       text: 'def train():\n    return 1\n',
@@ -362,6 +362,39 @@ describe('artifact preview helpers', () => {
 });
 
 describe('ArtifactDetail artifact preview rendering', () => {
+  it('opens the selected version externally, closes the menu, and preserves actionable failure state', async () => {
+    const mockFetch = vi.fn(() => Promise.resolve(new Response(JSON.stringify({ error: 'default application failed' }), {
+      status: 500,
+      headers: { 'content-type': 'application/json' },
+    })));
+    vi.stubGlobal('fetch', mockFetch);
+    const selected = version({ id: 'artifact-version:selected', artifact_id: 'artifact:selected' });
+    renderArtifactDetail(content(), { versions: [selected], selectedVersion: selected, selectedVersionNo: 1 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Open externally' }));
+
+    expect(screen.queryByRole('menu')).toBeNull();
+    expect((await screen.findByRole('alert')).textContent).toContain('default application failed');
+    expect(screen.getByRole('heading', { name: 'train.py' })).toBeTruthy();
+    expect(mockFetch).toHaveBeenCalledWith('/api/artifacts/artifact%3Aselected/open-externally', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('disables external open with the materialization reason when no file is available', () => {
+    renderArtifactDetail(content({
+      status: 'unavailable',
+      kind: 'unavailable',
+      source: null,
+      preview: null,
+      reason: 'tracked checkout is unavailable',
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Artifact actions' }));
+    const action = screen.getByRole('menuitem', { name: 'Open externally' }) as HTMLButtonElement;
+    expect(action.disabled).toBe(true);
+    expect(action.title).toBe('tracked checkout is unavailable');
+  });
+
   it('shows one clean preview loading affordance while content is pending', () => {
     const { container } = renderArtifactDetail(null, { contentLoading: true });
 

@@ -2536,6 +2536,10 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
   return payload.content;
 }
 
+export async function openArtifactExternally(id: string): Promise<void> {
+  await apiPost(`/api/artifacts/${encodeURIComponent(id)}/open-externally`, {});
+}
+
 export async function getArtifactKnowledgeBackrefs(id: string, options: { signal?: AbortSignal } = {}): Promise<KnowledgeBackrefRecord[]> {
   const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/knowledge-backrefs`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { backrefs?: KnowledgeBackrefRecord[] };
