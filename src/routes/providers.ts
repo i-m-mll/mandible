@@ -6,6 +6,8 @@ import {
 import { scanRepoArtifacts, type RepoArtifactRoot } from "../repo-artifact-scanner.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { checkArtifactMaterialization, diffArtifacts, getArtifactContentAsync } from "../artifact-content.js";
+import { openArtifactExternally } from "../artifact-open.js";
+import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
   addArtifactBundleMembersAsync,
   associateProjectArtifact,
@@ -797,6 +799,17 @@ export function registerProviderRoutes(app: RouteRegistrar): void {
     }
     sendJson(res, 200, projectArtifactPublicValue(getDb(), { content }));
   }, { fileRpc: "allow" });
+
+  app.post("/api/artifacts/:id/open-externally", globalCapabilityRoute("open_path", async (req, res) => {
+    const artifact = resolveArtifactRouteRecord(req.params.id);
+    if (artifact && !enforceArtifactAccess(req, res, artifact.id, "read")) return;
+    const result = await openArtifactExternally(getDb(), artifact?.id ?? req.params.id);
+    if (!result.ok) {
+      sendJson(res, result.status, { error: result.reason });
+      return;
+    }
+    sendJson(res, 200, result);
+  }), { fileRpc: "deny" });
 
   app.get("/api/artifacts/:id/check", (req, res) => {
     const artifact = resolveArtifactRouteRecord(req.params.id);

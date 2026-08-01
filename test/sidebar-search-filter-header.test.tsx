@@ -76,6 +76,44 @@ describe('SidebarSearchFilterHeader', () => {
     expect(screen.getByText('active filters')).toBeTruthy();
   });
 
+  it('owns Escape and outside-pointer dismissal for open overlays', () => {
+    const onDismiss = vi.fn();
+    render(
+      <div>
+        <SidebarSearchFilterHeader
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Filter issues"
+          searchAriaLabel="Filter issues"
+          clearAriaLabel="Clear issue filter"
+          filterTrigger={{
+            ariaLabel: 'Advanced issue filters',
+            open: true,
+            onToggle: vi.fn(),
+          }}
+          panel={{
+            id: 'issue-filter-panel',
+            ariaLabel: 'Issue filter controls',
+            onDismiss,
+            children: <button type="button">Open only</button>,
+          }}
+        />
+        <button type="button">Outside</button>
+      </div>,
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Advanced issue filters' });
+    expect(trigger.getAttribute('aria-controls')).toBe('issue-filter-panel');
+    expect(screen.getByRole('dialog', { name: 'Issue filter controls' })).toBeTruthy();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+    screen.getByRole('button', { name: 'Outside' }).dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+    screen.getByRole('button', { name: 'Open only' }).dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    expect(onDismiss).toHaveBeenCalledTimes(2);
+  });
+
   it('renders inline panels and calls onBlurWithin for outside-focus handling', () => {
     const onBlurWithin = vi.fn();
     const { container } = render(
@@ -101,13 +139,117 @@ describe('SidebarSearchFilterHeader', () => {
     expect(onBlurWithin).toHaveBeenCalledTimes(1);
   });
 
+  it('captures Command-F and Control-F for the mounted view search', () => {
+    render(
+      <SidebarSearchFilterHeader
+        value="artifact"
+        onValueChange={vi.fn()}
+        placeholder="Search artifacts"
+        searchAriaLabel="Search artifacts"
+        clearAriaLabel="Clear artifact search"
+      />,
+    );
+
+    const input = screen.getByRole('searchbox', { name: 'Search artifacts' }) as HTMLInputElement;
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+    expect(document.activeElement).toBe(input);
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe('artifact'.length);
+
+    input.blur();
+    fireEvent.keyDown(window, { key: 'f', ctrlKey: true });
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('leaves find shortcuts owned by other editable controls alone', () => {
+    render(
+      <div>
+        <textarea aria-label="Document editor" />
+        <SidebarSearchFilterHeader
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Search artifacts"
+          searchAriaLabel="Search artifacts"
+          clearAriaLabel="Clear artifact search"
+        />
+      </div>,
+    );
+
+    const editor = screen.getByRole('textbox', { name: 'Document editor' });
+    editor.focus();
+    fireEvent.keyDown(editor, { key: 'f', metaKey: true });
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it('lets only the visible header own find when cached panels remain mounted', () => {
+    render(
+      <div>
+        <section hidden aria-hidden="true">
+          <SidebarSearchFilterHeader
+            value=""
+            onValueChange={vi.fn()}
+            placeholder="Search auth requests"
+            searchAriaLabel="Search auth requests"
+            clearAriaLabel="Clear auth search"
+          />
+        </section>
+        <section>
+          <SidebarSearchFilterHeader
+            value="bug"
+            onValueChange={vi.fn()}
+            placeholder="Filter issues"
+            searchAriaLabel="Filter issues"
+            clearAriaLabel="Clear issue filter"
+          />
+        </section>
+      </div>,
+    );
+
+    const hiddenSearch = screen.getByRole('searchbox', {
+      name: 'Search auth requests',
+      hidden: true,
+    });
+    const visibleSearch = screen.getByRole('searchbox', { name: 'Filter issues' });
+    fireEvent.keyDown(window, { key: 'f', metaKey: true });
+
+    expect(document.activeElement).toBe(visibleSearch);
+    expect(document.activeElement).not.toBe(hiddenSearch);
+  });
+
+  it('preserves native find when every mounted header belongs to a hidden panel', () => {
+    render(
+      <section hidden aria-hidden="true">
+        <SidebarSearchFilterHeader
+          value=""
+          onValueChange={vi.fn()}
+          placeholder="Search artifacts"
+          searchAriaLabel="Search artifacts"
+          clearAriaLabel="Clear artifact search"
+        />
+      </section>,
+    );
+
+    const event = new KeyboardEvent('keydown', {
+      key: 'f',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    window.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+  });
+
   it('ships the shared CSS selectors used by migrated sidebar filter panels', () => {
     const css = readResolvedStylesheet();
     expect(css).toContain('.sidebar-search-filter__row');
     expect(css).toContain('.sidebar-search-filter__panel--popover');
     expect(css).toContain('.sidebar-search-filter__panel--inline');
+    expect(css).toContain('max-height: min(70vh, 620px)');
     expect(css).toContain('.sidebar-search-filter__section');
     expect(css).toContain('.sidebar-search-filter__options');
+    expect(css).toContain('.sidebar-list-item[aria-current="true"]:focus-visible');
   });
 
   it('keeps migrated views on the shared primitive instead of per-view search chrome', () => {

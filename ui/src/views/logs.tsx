@@ -1,5 +1,5 @@
 // Logs viewer tab — Bug: af91bdd
-import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { getLogs, type LogEntry, type LogEntityFacetValue, type LogsResponse } from '../api';
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
@@ -24,6 +24,9 @@ type LogsViewProps = {
 
 const LEVEL_LABELS: LogLevel[] = ['debug', 'info', 'warn', 'error'];
 const DEFAULT_LEVELS: LogLevel[] = ['info', 'warn', 'error'];
+const LOG_PAGE_SIZE = 100;
+const MAX_RENDERED_LOG_ROWS = 500;
+const LOAD_OLDER_THRESHOLD_PX = 80;
 const DEFAULT_FILTERS: LogFilters = {
   levels: DEFAULT_LEVELS,
   subsystem: '',
@@ -280,7 +283,7 @@ function LogRow({
   );
 }
 
-function filterParam(filters: LogFilters): Parameters<typeof getLogs>[0] {
+function filterParam(filters: LogFilters, before?: string): Parameters<typeof getLogs>[0] {
   return {
     levels: filters.levels,
     subsystem: filters.subsystem || undefined,
@@ -289,8 +292,20 @@ function filterParam(filters: LogFilters): Parameters<typeof getLogs>[0] {
     related: filters.related || undefined,
     since: filters.since || undefined,
     until: filters.until || undefined,
-    limit: 500,
+    limit: LOG_PAGE_SIZE,
+    before,
   };
+}
+
+function mergeLogEntries(current: LogEntry[], incoming: LogEntry[]): LogEntry[] {
+  const byId = new Map<string, LogEntry>();
+  for (const entry of [...current, ...incoming]) {
+    byId.set(rowId(entry, 0), entry);
+  }
+  return [...byId.values()].sort((a, b) => {
+    const timeOrder = String(a.time || '').localeCompare(String(b.time || ''));
+    return timeOrder || rowId(a, 0).localeCompare(rowId(b, 0));
+  });
 }
 
 function facetLabel(facet: LogEntityFacetValue): string {
@@ -303,7 +318,10 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const [filters, setFilters] = useState<LogFilters>(() => parseLogsHash());
   const [facets, setFacets] = useState<LogsResponse['facets'] | null>(null);
   const [source, setSource] = useState<LogsResponse['source'] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [olderCursor, setOlderCursor] = useState<string | null>(null);
+  const [hasOlder, setHasOlder] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [logFileExists, setLogFileExists] = useState<boolean | null>(null);
   const [autoScroll, setAutoScroll] = useState(true);
@@ -313,24 +331,38 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
   const [lastFailedAt, setLastFailedAt] = useState<Date | null>(null);
   const [lastSseAt, setLastSseAt] = useState<Date | null>(null);
   const [sseError, setSseError] = useState<string | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const requestSeqRef = useRef(0);
+  const hasLoadedRef = useRef(false);
+  const autoScrollRef = useRef(true);
+  const prependAnchorRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
 
-  const fetchLogs = useCallback(async () => {
+  const fetchLogs = useCallback(async (initial = false) => {
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
-    setLoading(true);
+    if (!hasLoadedRef.current || initial) setLoading(true);
     try {
       const result = await loadLogs(filterParam(filters));
       if (requestSeq !== requestSeqRef.current) return;
-      setEntries(result.entries);
+      setEntries((current) => {
+        if (initial || !hasLoadedRef.current) return result.entries.slice(-MAX_RENDERED_LOG_ROWS);
+        const merged = mergeLogEntries(current, result.entries);
+        if (!autoScrollRef.current && merged.length > MAX_RENDERED_LOG_ROWS) {
+          return current;
+        }
+        return merged.slice(-MAX_RENDERED_LOG_ROWS);
+      });
+      if (initial || !hasLoadedRef.current) {
+        setOlderCursor(result.older_cursor || null);
+        setHasOlder(Boolean(result.has_older));
+      }
       setFacets(result.facets || null);
       setSource(result.source || null);
       setLogFileExists(result.exists ?? true);
       setError(null);
       setLastLoadedAt(new Date());
       setLastFailedAt(null);
+      hasLoadedRef.current = true;
     } catch (err) {
       if (requestSeq !== requestSeqRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
@@ -342,10 +374,46 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     }
   }, [filters, loadLogs]);
 
+  const fetchOlder = useCallback(async () => {
+    if (!olderCursor || !hasOlder || loadingOlder) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    prependAnchorRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+    autoScrollRef.current = false;
+    setAutoScroll(false);
+    setLoadingOlder(true);
+    try {
+      const result = await loadLogs(filterParam(filters, olderCursor));
+      setEntries((current) => mergeLogEntries(result.entries, current).slice(0, MAX_RENDERED_LOG_ROWS));
+      setOlderCursor(result.older_cursor || null);
+      setHasOlder(Boolean(result.has_older));
+      setError(null);
+      setLastLoadedAt(new Date());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setLastFailedAt(new Date());
+      prependAnchorRef.current = null;
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [filters, hasOlder, loadLogs, loadingOlder, olderCursor]);
+
   useEffect(() => {
     updateHash(filters);
-    fetchLogs();
+    hasLoadedRef.current = false;
+    setEntries([]);
+    setOlderCursor(null);
+    setHasOlder(false);
+    void fetchLogs(true);
   }, [filters, fetchLogs]);
+
+  useLayoutEffect(() => {
+    const anchor = prependAnchorRef.current;
+    const el = scrollRef.current;
+    if (!anchor || !el) return;
+    el.scrollTop = anchor.scrollTop + (el.scrollHeight - anchor.scrollHeight);
+    prependAnchorRef.current = null;
+  }, [entries]);
 
   useEffect(() => {
     const onHashChange = () => {
@@ -389,9 +457,13 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     return () => window.clearInterval(timer);
   }, [fetchLogs]);
 
-  useEffect(() => {
-    if (autoScroll && typeof bottomRef.current?.scrollIntoView === 'function') {
-      bottomRef.current.scrollIntoView({ behavior: 'smooth' });
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (autoScroll && el) {
+      // Direct assignment runs before paint and has no animated intermediate
+      // positions that could make handleScroll briefly unpin the controlled
+      // Auto-scroll checkbox.
+      el.scrollTop = el.scrollHeight;
     }
   }, [entries, autoScroll]);
 
@@ -399,7 +471,11 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
     const el = scrollRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 20;
+    autoScrollRef.current = atBottom;
     setAutoScroll(atBottom);
+    if (el.scrollTop <= LOAD_OLDER_THRESHOLD_PX) {
+      void fetchOlder();
+    }
   };
 
   const updateFilter = <K extends keyof LogFilters>(key: K, value: LogFilters[K]) => {
@@ -446,9 +522,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
           <p className="text-muted">Daemon log rows from {source === 'daemon_log' ? 'daemon_log' : 'stderr fallback'}.</p>
         </div>
         <div className="logs-toolbar">
-          <button type="button" className="btn" onClick={fetchLogs} disabled={loading}>
-            {loading ? 'Loading...' : 'Refresh'}
-          </button>
           <span className={`logs-refresh-status${error ? ' logs-refresh-status--stale' : ''}`}>
             {refreshStatus}
           </span>
@@ -459,7 +532,11 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
             <input
               type="checkbox"
               checked={autoScroll}
-              onChange={(e) => setAutoScroll(e.currentTarget.checked)}
+              onChange={(e) => {
+                const checked = e.currentTarget.checked;
+                autoScrollRef.current = checked;
+                setAutoScroll(checked);
+              }}
             />
             {' '}Auto-scroll
           </label>
@@ -571,6 +648,17 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
           className="logs-scroll-region"
           onScroll={handleScroll}
         >
+          {loading && entries.length === 0 && (
+            <div className="empty-state">Loading logs…</div>
+          )}
+          {loadingOlder && (
+            <div className="logs-page-status">Loading older entries…</div>
+          )}
+          {!loadingOlder && hasOlder && entries.length > 0 && (
+            <button type="button" className="logs-load-older" onClick={() => void fetchOlder()}>
+              Load older entries
+            </button>
+          )}
           {entries.length === 0 && !loading && (
             <div className="empty-state">No log entries match the current filters.</div>
           )}
@@ -586,7 +674,6 @@ export function LogsView({ loadLogs = getLogs, createSse = acquireSharedSse }: L
               />
             );
           })}
-          <div ref={bottomRef} />
         </div>
       )}
     </div>

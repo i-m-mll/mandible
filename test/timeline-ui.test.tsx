@@ -2,6 +2,7 @@ import { render, screen, waitFor, cleanup, fireEvent, within, act } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { h } from 'preact';
 import { useCallback, useMemo, useState } from 'preact/hooks';
+import { readFileSync } from 'node:fs';
 
 import { parseRouteFromHash } from '../ui/src/routing';
 import {
@@ -17,6 +18,13 @@ import type {
   TimelineRowOccurrence,
   TimelineRowSpecInput,
 } from '../ui/src/types/timeline';
+
+const timelineStylesheet = readFileSync('ui/src/styles/timeline.css', 'utf8');
+
+function timelineCssRule(selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return timelineStylesheet.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))?.[1] ?? '';
+}
 
 function stubLocalStorage(): void {
   const store = new Map<string, string>();
@@ -1081,16 +1089,29 @@ describe('TimelineView', () => {
     expect(axisSurface).toBeTruthy();
     expect(bodyScroll).toBeTruthy();
     expect(timeScroll).toBeTruthy();
-    expect(corner.parentElement?.classList.contains('timeline-main')).toBe(true);
-    expect(axisViewport.parentElement?.classList.contains('timeline-main')).toBe(true);
-    expect(bodyScroll.contains(corner)).toBe(false);
-    expect(bodyScroll.contains(axisViewport)).toBe(false);
+    expect(bodyScroll.parentElement?.classList.contains('timeline-main')).toBe(true);
+    expect(bodyScroll.contains(corner)).toBe(true);
+    expect(bodyScroll.contains(axisViewport)).toBe(true);
     expect(bodyScroll.contains(timeScroll)).toBe(true);
     expect(tick.querySelector('.timeline-axis__tick-context')).toBeTruthy();
     expect(tick.querySelector('.timeline-axis__tick-label')).toBeTruthy();
   });
 
-  it('keeps the pinned axis horizontally synchronized with the time canvas', async () => {
+  it('keeps the unified native scroller and sticky Timeline shell contracts', () => {
+    expect(timelineCssRule('.timeline-body-scroll')).toContain('overflow-x: auto');
+    expect(timelineCssRule('.timeline-body-scroll')).toContain('overflow-y: auto');
+    expect(timelineCssRule('.timeline-axis__corner')).toContain('position: sticky');
+    expect(timelineCssRule('.timeline-axis__corner')).toContain('top: 0');
+    expect(timelineCssRule('.timeline-axis__corner')).toContain('left: 0');
+    expect(timelineCssRule('.timeline-axis__viewport')).toContain('position: sticky');
+    expect(timelineCssRule('.timeline-axis__viewport')).toContain('top: 0');
+    expect(timelineCssRule('.timeline-gutter-column')).toContain('position: sticky');
+    expect(timelineCssRule('.timeline-gutter-column')).toContain('left: 0');
+    expect(timelineCssRule('.timeline-axis__surface')).not.toContain('transform');
+    expect(timelineCssRule('.timeline-axis__surface')).not.toContain('will-change');
+  });
+
+  it('keeps the pinned axis and time canvas on one native horizontal scroller', async () => {
     const base = projection();
     stubTimelineFetch(projection({
       events: [
@@ -1119,12 +1140,12 @@ describe('TimelineView', () => {
     const bodyScroll = document.querySelector('.timeline-body-scroll') as HTMLElement;
     const axisSurface = document.querySelector('.timeline-axis__surface') as HTMLElement;
     const timeScroll = screen.getByLabelText('Timeline time canvas') as HTMLElement;
-    expect(bodyScroll.contains(axisSurface)).toBe(false);
-    expect(bodyScroll.contains(timeScroll)).toBe(true);
+    expect(timeScroll).toBe(bodyScroll);
+    expect(timeScroll.contains(axisSurface)).toBe(true);
+    expect(axisSurface.style.transform).toBe('');
 
     await waitFor(() => {
       expect(timeScroll.scrollLeft).toBeGreaterThan(0);
-      expect(axisSurface.style.transform).toBe(`translateX(-${timeScroll.scrollLeft}px)`);
     });
 
     const nextScrollLeft = timeScroll.scrollLeft + 120;
@@ -1137,9 +1158,8 @@ describe('TimelineView', () => {
     fireEvent.scroll(timeScroll);
 
     await waitFor(() => {
-      const match = axisSurface.style.transform.match(/translateX\((-?[0-9.]+)px\)/);
-      expect(match).toBeTruthy();
-      expect(Math.abs(Number(match?.[1]) + nextScrollLeft)).toBeLessThan(0.01);
+      expect(timeScroll.scrollLeft).toBe(nextScrollLeft);
+      expect(axisSurface.style.transform).toBe('');
     });
   });
 

@@ -56,7 +56,10 @@ type LogFilters = {
   untilMs: number | null;
   limit: number;
   offset: number;
+  before: LogCursor | null;
 };
+
+type LogCursor = { ts: number; id: string };
 
 const DEFAULT_TAIL_CHUNK_BYTES = 256 * 1024;
 const DEFAULT_MAX_TAIL_BYTES = 64 * 1024 * 1024;
@@ -284,20 +287,28 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
   exists: boolean;
   source: "daemon_log";
   facets: LogFacets;
+  older_cursor: string | null;
+  has_older: boolean;
 } {
   const where = buildDaemonLogWhere(filters);
   const total = Number((db
     .prepare(`SELECT COUNT(*) AS count FROM daemon_log ${where.sql}`)
     .get(...where.params) as { count?: number } | undefined)?.count ?? 0);
+  const pageWhere = filters.before
+    ? {
+        sql: `${where.sql ? `${where.sql} AND` : "WHERE"} (ts < ? OR (ts = ? AND id < ?))`,
+        params: [...where.params, filters.before.ts, filters.before.ts, filters.before.id],
+      }
+    : where;
   const rows = db
     .prepare(
       `SELECT *
        FROM daemon_log
-       ${where.sql}
-       ORDER BY ts DESC
+       ${pageWhere.sql}
+       ORDER BY ts DESC, id DESC
        LIMIT ? OFFSET ?`,
     )
-    .all(...where.params, filters.limit, filters.offset) as Array<{
+    .all(...pageWhere.params, filters.limit + 1, filters.offset) as Array<{
       id: string;
       ts: number;
       level: string;
@@ -310,7 +321,9 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
       session_id: string | null;
       repo_id: string | null;
     }>;
-  const entries = rows.reverse().map((row) => {
+  const hasOlder = rows.length > filters.limit;
+  const pageRows = rows.slice(0, filters.limit);
+  const entries = [...pageRows].reverse().map((row) => {
     const fields = parseFields(row.fields_json);
     return {
       ...fields,
@@ -336,6 +349,10 @@ function queryDaemonLog(db: Db, filters: LogFilters): {
     exists: true,
     source: "daemon_log",
     facets: queryDaemonLogFacets(db, where),
+    older_cursor: hasOlder && pageRows.length > 0
+      ? encodeLogCursor(pageRows[pageRows.length - 1])
+      : null,
+    has_older: hasOlder,
   };
 }
 
@@ -352,7 +369,24 @@ function readLogFilters(req: RequestLike): LogFilters {
     untilMs: parseLogTimestamp(trimmedQuery(req, "until")),
     limit: queryNumber(req, "limit", { defaultValue: 200, min: 1, max: 1000 }),
     offset: queryNumber(req, "offset", { defaultValue: 0, min: 0 }),
+    before: decodeLogCursor(trimmedQuery(req, "before")),
   };
+}
+
+function encodeLogCursor(value: LogCursor): string {
+  return Buffer.from(JSON.stringify({ ts: value.ts, id: value.id }), "utf8").toString("base64url");
+}
+
+function decodeLogCursor(raw: string | null): LogCursor | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(raw, "base64url").toString("utf8")) as Partial<LogCursor>;
+    return Number.isFinite(parsed.ts) && typeof parsed.id === "string" && parsed.id
+      ? { ts: Number(parsed.ts), id: parsed.id }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function trimmedQuery(req: RequestLike, key: string): string | null {

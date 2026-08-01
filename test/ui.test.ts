@@ -157,6 +157,7 @@ beforeEach(() => {
 afterEach(() => {
   invalidateApiGetCache();
   cleanup();
+  window.localStorage.removeItem?.('mandible:artifacts:list-controls:v1');
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -2142,8 +2143,8 @@ describe('issue deep links', () => {
       initialRepoId: 'mandible',
     }));
 
-    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('daemon');
-    expect((screen.getByPlaceholderText('Filter by repo...') as HTMLInputElement).value).toBe('mandible');
+    expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('daemon mandible');
+    expect(screen.queryByPlaceholderText('Filter by repo...')).toBeNull();
 
     fireEvent.input(screen.getByLabelText('Filter issues'), { target: { value: 'toast' } });
     await waitFor(() => {
@@ -2151,7 +2152,6 @@ describe('issue deep links', () => {
       expect(stored).toEqual({
         filter: 'toast',
         filterEdited: true,
-        repoFilter: 'mandible',
         parentFilter: null,
       });
       expect(stored).not.toHaveProperty('selectedRepoId');
@@ -2165,7 +2165,79 @@ describe('issue deep links', () => {
       initialRepoId: 'another-route-repo',
     }));
     expect((screen.getByLabelText('Filter issues') as HTMLInputElement).value).toBe('toast');
-    expect((screen.getByPlaceholderText('Filter by repo...') as HTMLInputElement).value).toBe('mandible');
+    expect(screen.queryByPlaceholderText('Filter by repo...')).toBeNull();
+  });
+
+  it('matches repository identity through the view-wide issue filter', () => {
+    const repoFiltered: IssueRepoSummary[] = [
+      repos[0],
+      {
+        repo_id: 'feedbax-checkout',
+        project_key: 'feedbax',
+        repo_name: 'Feedbax',
+        repo_root: '/workspace/feedbax',
+        open_count: 1,
+        merged_count: 0,
+        closed_count: 0,
+        issues: [{
+          id: 'fbx1234',
+          repo_id: 'feedbax-checkout',
+          repo_name: 'Feedbax',
+          title: 'Unrelated issue title',
+          status: 'open',
+          labels: ['feature'],
+          author: 'MLL',
+          created_at: '2026-05-31T12:00:00.000Z',
+        }],
+      },
+    ];
+
+    render(h(IssuesView, {
+      repos: repoFiltered,
+      onRescan: async () => undefined,
+    }));
+
+    fireEvent.input(screen.getByLabelText('Filter issues'), { target: { value: 'feedbax' } });
+    expect(screen.getByRole('button', { name: /Unrelated issue title/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Daemon reload toast link/ })).toBeNull();
+  });
+
+  it('moves issue selection with ArrowUp and ArrowDown', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)));
+    const multiRepos: IssueRepoSummary[] = [{
+      ...repos[0],
+      issues: [
+        repos[0].issues[0],
+        {
+          id: '9f0e111',
+          repo_id: 'mandible',
+          repo_name: 'mandible',
+          title: 'Newer issue',
+          status: 'open',
+          labels: ['feature'],
+          author: 'MLL',
+          created_at: '2026-05-31T12:00:00.000Z',
+        },
+      ],
+    }];
+
+    render(h(IssuesView, {
+      repos: multiRepos,
+      onRescan: async () => undefined,
+      initialRepoId: 'mandible',
+      initialIssueId: '4c26383',
+    }));
+
+    const selected = await screen.findByRole('button', { name: /Daemon reload toast link/ });
+    selected.focus();
+    fireEvent.keyDown(selected, { key: 'ArrowUp' });
+    const newer = screen.getByRole('button', { name: /Newer issue/ });
+    expect(newer.getAttribute('aria-current')).toBe('true');
+    expect(document.activeElement).toBe(newer);
+
+    fireEvent.keyDown(newer, { key: 'ArrowDown' });
+    expect(selected.getAttribute('aria-current')).toBe('true');
+    expect(document.activeElement).toBe(selected);
   });
 
   it('keeps configured issue-filter defaults until the user edits them', async () => {
@@ -4362,6 +4434,15 @@ describe('ArtifactsView', () => {
   });
 
   it('keeps artifact facet options available after selecting a facet value', async () => {
+    const storedViewState = new Map<string, string>();
+    Object.defineProperty(window, 'localStorage', {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storedViewState.get(key) ?? null,
+        setItem: (key: string, value: string) => storedViewState.set(key, value),
+        removeItem: (key: string) => storedViewState.delete(key),
+      },
+    });
     const makeArtifact = (
       hashChar: string,
       title: string,
@@ -4442,6 +4523,23 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /input\.md/ })).toBeTruthy());
     fireEvent.click(screen.getByLabelText('Artifact filters'));
 
+    const filterDialog = screen.getByRole('dialog', { name: 'Artifact filter and sort controls' });
+    expect(filterDialog.classList.contains('sidebar-search-filter__panel--popover')).toBe(true);
+    expect(filterDialog.classList.contains('sidebar-search-filter__panel--inline')).toBe(false);
+
+    const sortField = screen.getByLabelText('Field') as HTMLSelectElement;
+    changeSelect(sortField, 'title');
+    fireEvent.click(screen.getByRole('button', { name: 'Descending' }));
+    await waitFor(() => {
+      const names = Array.from(document.querySelectorAll('.artifacts-sidebar__name')).map((node) => node.textContent);
+      expect(names).toEqual(['output.md', 'input.md']);
+    });
+    await waitFor(() => {
+      const stored = JSON.parse(window.localStorage.getItem('mandible:artifacts:list-controls:v1') ?? '{}');
+      expect(stored.sortField).toBe('title');
+      expect(stored.sortDirection).toBe('desc');
+    });
+
     const roleSelect = screen.getByLabelText('Role') as HTMLSelectElement;
     const repoSelect = screen.getByLabelText('Repo') as HTMLSelectElement;
     await waitFor(() => {
@@ -4462,6 +4560,9 @@ describe('ArtifactsView', () => {
     await waitFor(() => expect(screen.queryByRole('button', { name: /output\.md/ })).toBeNull());
     expect(listUrls.length).toBeGreaterThan(1);
     expect(listUrls.every((url) => url.includes('summary=true'))).toBe(true);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog', { name: 'Artifact filter and sort controls' })).toBeNull();
   });
 
   it('resolves direct artifact refs without selecting the first sidebar item', async () => {

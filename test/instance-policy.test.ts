@@ -43,6 +43,29 @@ describe("instance mutation policy", () => {
     });
   });
 
+  it("rejects artifact external-open before the OS-open handler runs in previews", async () => {
+    const router = previewRouter();
+    let invoked = false;
+    router.post("/api/artifacts/:id/open-externally", (_req, res) => {
+      invoked = true;
+      res.status(200).json({ ok: true });
+    }, { fileRpc: "deny" });
+
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/artifacts/artifact%3Aexample/open-externally",
+      body: {},
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({
+      error: "instance_mutation_forbidden",
+      category: "artifacts",
+      instance_role: "preview",
+    });
+    expect(invoked).toBe(false);
+  });
+
   it("leaves read-only auth checks available on preview instances", async () => {
     const router = previewRouter();
     router.post("/api/auth/check", (_req, res) => {

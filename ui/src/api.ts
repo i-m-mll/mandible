@@ -2083,6 +2083,8 @@ export type LogsResponse = {
   exists: boolean;
   source?: 'daemon_log' | 'stderr_file';
   facets?: LogFacets;
+  older_cursor?: string | null;
+  has_older?: boolean;
 };
 
 export async function getLogs(params?: {
@@ -2096,6 +2098,7 @@ export async function getLogs(params?: {
   until?: string;
   limit?: number;
   offset?: number;
+  before?: string;
 }): Promise<LogsResponse> {
   const query = new URLSearchParams();
   if (params?.levels && params.levels.length > 0) query.set('levels', params.levels.join(','));
@@ -2108,6 +2111,7 @@ export async function getLogs(params?: {
   if (params?.until) query.set('until', params.until);
   if (params?.limit != null) query.set('limit', String(params.limit));
   if (params?.offset != null) query.set('offset', String(params.offset));
+  if (params?.before) query.set('before', params.before);
   const qs = query.toString();
   const resp = await apiGet(`/api/system/logs${qs ? '?' + qs : ''}`);
   return (await parseMaybeJson(resp)) as LogsResponse;
@@ -2530,6 +2534,10 @@ export async function getArtifactContent(id: string, options: { signal?: AbortSi
   const response = await apiGet(`/api/artifacts/${encodeURIComponent(id)}/content`, { signal: options.signal });
   const payload = (await parseMaybeJson(response)) as { content: ArtifactContentResult };
   return payload.content;
+}
+
+export async function openArtifactExternally(id: string): Promise<void> {
+  await apiPost(`/api/artifacts/${encodeURIComponent(id)}/open-externally`, {});
 }
 
 export async function getArtifactKnowledgeBackrefs(id: string, options: { signal?: AbortSignal } = {}): Promise<KnowledgeBackrefRecord[]> {

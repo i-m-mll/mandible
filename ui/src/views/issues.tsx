@@ -16,6 +16,7 @@ import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFil
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
 
 // --- Types ---
 
@@ -401,7 +402,6 @@ const ISSUES_VIEW_STATE_STORAGE_KEY = 'mandible_issues_view_state:v1';
 type IssuesViewState = {
   filter: string;
   filterEdited: boolean;
-  repoFilter: string | null;
   parentFilter: string | null;
 };
 
@@ -411,15 +411,19 @@ function normalizeIssueDefaultFilter(value: string | null | undefined): string {
 
 function normalizeIssuesViewState(value: unknown, defaults: Readonly<IssuesViewState>): IssuesViewState {
   const stored = value && typeof value === 'object' ? value as Partial<IssuesViewState> : {};
-  const filterEdited = stored.filterEdited === true && typeof stored.filter === 'string';
+  const hasEditedFilter = stored.filterEdited === true && typeof stored.filter === 'string';
+  const legacyRepoFilter = typeof (stored as Partial<IssuesViewState> & { repoFilter?: unknown }).repoFilter === 'string'
+    ? (stored as Partial<IssuesViewState> & { repoFilter: string }).repoFilter.trim()
+    : '';
+  const storedFilter = hasEditedFilter
+    ? stored.filter
+    : defaults.filter;
+  const filter = legacyRepoFilter && !storedFilter.toLowerCase().includes(legacyRepoFilter.toLowerCase())
+    ? `${storedFilter} ${legacyRepoFilter}`.trim()
+    : storedFilter;
   return {
-    filter: filterEdited && typeof stored.filter === 'string'
-      ? stored.filter
-      : defaults.filter,
-    filterEdited,
-    repoFilter: stored.repoFilter === null || typeof stored.repoFilter === 'string'
-      ? stored.repoFilter
-      : defaults.repoFilter,
+    filter,
+    filterEdited: hasEditedFilter || Boolean(legacyRepoFilter),
     parentFilter: stored.parentFilter === null || typeof stored.parentFilter === 'string'
       ? stored.parentFilter
       : defaults.parentFilter,
@@ -442,7 +446,6 @@ export function IssuesView({
   const defaultViewState = useMemo<IssuesViewState>(() => ({
     filter: normalizedDefaultFilter,
     filterEdited: false,
-    repoFilter: null,
     parentFilter: null,
   }), [normalizedDefaultFilter]);
   const [viewState, setViewState] = usePersistedViewState(
@@ -450,13 +453,11 @@ export function IssuesView({
     normalizeIssuesViewState,
     defaultViewState,
   );
-  const { filter, repoFilter, parentFilter } = viewState;
+  const { filter, parentFilter } = viewState;
   // Local state
   const [selectedRepoId, setSelectedRepoId] = useState<string | null>(null);
   const [selectedIssueId, setSelectedIssueId] = useState<string | null>(null);
   const [filterMenuOpen, setFilterMenuOpen] = useState(false);
-  const [repoInput, setRepoInput] = useState('');
-  const [repoMenuOpen, setRepoMenuOpen] = useState(false);
   type SortField = 'created_at';
   const [sortField] = useState<SortField>('created_at');
   const [ledgerIssueDetail, setLedgerIssueDetail] = useState<LedgerIssueDetailProjection | null>(null);
@@ -485,10 +486,6 @@ export function IssuesView({
       filter: nextFilter,
       filterEdited: true,
     }));
-  }, [setViewState]);
-
-  const setRepoFilter = useCallback((repoFilterValue: string | null) => {
-    setViewState((current) => ({ ...current, repoFilter: repoFilterValue }));
   }, [setViewState]);
 
   const setParentFilter = useCallback((parentFilterValue: string | null) => {
@@ -541,16 +538,6 @@ export function IssuesView({
     comment.scrollIntoView({ block: 'center' });
   }, [ledgerIssueDetail, initialCommentId]);
 
-  // Sync repoInput display name when repoFilter is set externally (e.g. deep-link or "Show children")
-  useEffect(() => {
-    if (repoFilter) {
-      const repo = repos.find((r) => r.repo_id === repoFilter);
-      if (repo) setRepoInput(repo.repo_name);
-    } else {
-      setRepoInput('');
-    }
-  }, [repoFilter, repos]);
-
   const parsedFilter = useMemo(() => parseIssueFilter(filter), [filter]);
   const normalizedFilter = useMemo(() => parsedFilter.text.trim().toLowerCase(), [parsedFilter.text]);
   const selectedStatus = parsedFilter.status;
@@ -582,18 +569,26 @@ export function IssuesView({
     });
   }, [setViewState]);
 
-  // Filter issues within repos — three-state aware, plus repo/label/parent filters
+  // Filter issues within repos — three-state aware, plus repo identity,
+  // label, and parent matching through one view-wide query.
   const filteredRepos = useMemo(() => {
     return repos
-      .filter((repo) => !repoFilter || repo.repo_id === repoFilter)
       .map((repo) => {
         let issues = repo.issues;
         if (selectedStatus && selectedStatus !== 'all') {
           issues = issues.filter((issue) => getVisualState(issue) === selectedStatus);
         }
         if (normalizedFilter) {
+          const repoMatches = [
+            repo.project_key,
+            repo.repo_id,
+            repo.repo_name,
+            repo.repo_root,
+            pathBasename(repo.repo_root),
+          ].some((value) => value?.toLowerCase().includes(normalizedFilter));
           issues = issues.filter(
             (issue) =>
+              repoMatches ||
               issue.title.toLowerCase().includes(normalizedFilter) ||
               issue.id.toLowerCase().includes(normalizedFilter),
           );
@@ -610,7 +605,7 @@ export function IssuesView({
         return { ...repo, issues };
       })
       .filter((repo) => repo.issues.length > 0);
-  }, [repos, selectedStatus, normalizedFilter, repoFilter, selectedKinds, selectedPriorities, parentFilter]);
+  }, [repos, selectedStatus, normalizedFilter, selectedKinds, selectedPriorities, parentFilter]);
 
   // Build flat list items: all issues sorted by created_at descending (newest first)
   const items = useMemo<ListItem[]>(() => {
@@ -628,19 +623,6 @@ export function IssuesView({
     });
     return all;
   }, [filteredRepos, sortField]);
-
-  const repoOptions = useMemo(() => {
-    const normalized = repoInput.trim().toLowerCase();
-    return repos
-      .filter((repo) => {
-        if (!normalized) return true;
-        return (
-          repo.repo_name.toLowerCase().includes(normalized) ||
-          repo.repo_id.toLowerCase().includes(normalized)
-        );
-      })
-      .slice(0, 12);
-  }, [repos, repoInput]);
 
   const showRepoLabels = useMemo(() => {
     return new Set(items.map((item) => item.repo.repo_id)).size > 1;
@@ -827,6 +809,13 @@ export function IssuesView({
     setSelectedIssueId(issueId);
   }, [repos]);
 
+  const issueListNavigation = useSidebarListNavigation({
+    items,
+    getKey: (item) => `${item.repo.repo_id}:${item.issue.id}`,
+    selectedKey: selectedRepoId && selectedIssueId ? `${selectedRepoId}:${selectedIssueId}` : null,
+    onSelect: (item) => selectIssue(item.repo.repo_id, item.issue.id),
+  });
+
   const refreshLedgerIssueDetail = useCallback(async () => {
     if (!selectedRepoId || !selectedIssueId) return;
     const requestSeq = detailRequestSeqRef.current + 1;
@@ -989,7 +978,10 @@ export function IssuesView({
                 onToggle: () => setFilterMenuOpen((prev) => !prev),
               }}
               panel={filterMenuOpen ? {
+                id: 'issue-filter-panel',
                 variant: 'popover',
+                ariaLabel: 'Issue filter controls',
+                onDismiss: () => setFilterMenuOpen(false),
                 children: (
                   <>
               <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
@@ -1052,67 +1044,6 @@ export function IssuesView({
               } : undefined}
             />
 
-        {/* Repo filter */}
-        <div
-          className="issues-repo-filter"
-          onBlur={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setRepoMenuOpen(false);
-            }
-          }}
-        >
-          <input
-            type="search"
-            className="issues-filter__input issues-repo-filter__input"
-            placeholder="Filter by repo..."
-            value={repoInput}
-            onFocus={() => setRepoMenuOpen(true)}
-            onClick={() => setRepoMenuOpen(true)}
-            onInput={(e) => {
-              const val = e.currentTarget.value;
-              setRepoInput(val);
-              setRepoMenuOpen(true);
-              if (!val) {
-                setRepoFilter(null);
-              }
-            }}
-            onChange={(e) => {
-              const val = e.currentTarget.value;
-              // When user selects from datalist, the value is repo_name; resolve to repo_id
-              const matched = repos.find(
-                (r) => r.repo_name === val || r.repo_id === val
-              );
-              if (matched) {
-                setRepoFilter(matched.repo_id);
-                setRepoInput(matched.repo_name);
-                setRepoMenuOpen(false);
-              }
-            }}
-          />
-          {repoMenuOpen && repoOptions.length > 0 && (
-            <div className="issues-repo-filter__menu" role="listbox">
-              {repoOptions.map((repo) => (
-                <button
-                  key={repo.repo_id}
-                  type="button"
-                  className="issues-repo-filter__option"
-                  role="option"
-                  aria-selected={repoFilter === repo.repo_id}
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => {
-                    setRepoFilter(repo.repo_id);
-                    setRepoInput(repo.repo_name);
-                    setRepoMenuOpen(false);
-                  }}
-                >
-                  <span className="issues-repo-filter__option-name">{repo.repo_name}</span>
-                  <span className="issues-repo-filter__option-count">{repo.issues.length}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
         {/* Parent filter indicator */}
         {parentFilter && (
           <div className="issues-parent-filter">
@@ -1142,29 +1073,36 @@ export function IssuesView({
           </div>
         ) : (
           <div className="issues-list">
-            {items.map((item) => (
-              <button
-                key={item.issue.id}
-                type="button"
-                className={`issues-item${
-                  selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id
-                    ? ' issues-item--selected'
-                    : ''
-                }`}
-                onClick={() => selectIssue(item.repo.repo_id, item.issue.id)}
-              >
-                <span
-                  className={`issue-status-dot issue-status-dot--${getVisualState(item.issue)}`}
-                />
-                <span
-                  className="issues-item__title"
-                  dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
-                />
-                {showRepoLabels && (
-                  <span className="issues-item__repo">{item.repo.repo_name}</span>
-                )}
-              </button>
-            ))}
+            {items.map((item, index) => {
+              const navigation = issueListNavigation.getItemNavigationProps(item, index);
+              return (
+                <button
+                  key={`${item.repo.repo_id}:${item.issue.id}`}
+                  ref={navigation.ref}
+                  type="button"
+                  tabIndex={navigation.tabIndex}
+                  aria-current={navigation['aria-current']}
+                  className={`sidebar-list-item issues-item${
+                    selectedRepoId === item.repo.repo_id && selectedIssueId === item.issue.id
+                      ? ' issues-item--selected'
+                      : ''
+                  }`}
+                  onKeyDown={navigation.onKeyDown}
+                  onClick={() => selectIssue(item.repo.repo_id, item.issue.id)}
+                >
+                  <span
+                    className={`issue-status-dot issue-status-dot--${getVisualState(item.issue)}`}
+                  />
+                  <span
+                    className="issues-item__title"
+                    dangerouslySetInnerHTML={{ __html: renderInlineMarkdown(item.issue.title) }}
+                  />
+                  {showRepoLabels && (
+                    <span className="issues-item__repo">{item.repo.repo_name}</span>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
       </ViewSidebar>
@@ -1188,7 +1126,12 @@ export function IssuesView({
               onOpenEntity={handleOpenLedgerEntity}
               onShowChildren={(detail) => {
                 const projectRef = detail.project.project_key ?? detail.project.repo_id;
-                if (projectRef) setRepoFilter(projectRef);
+                if (projectRef) {
+                  setIssueFilter(formatIssueFilter({
+                    ...parseIssueFilter(filter),
+                    text: projectRef,
+                  }));
+                }
                 setParentFilter(detail.display_id);
               }}
               onResolveConflict={async (conflictId, resolution, status) => {

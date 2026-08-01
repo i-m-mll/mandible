@@ -1309,7 +1309,8 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     if (!element) return undefined;
 
     const measure = () => {
-      const width = element.clientWidth || element.getBoundingClientRect().width;
+      const elementWidth = element.clientWidth || element.getBoundingClientRect().width;
+      const width = elementWidth - viewState.panes.rowListWidth;
       if (width > 0) {
         setTimeViewportWidthPx(Math.round(width));
       }
@@ -1323,7 +1324,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     }
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
-  }, []);
+  }, [viewState.panes.rowListWidth]);
 
   useEffect(() => () => {
     if (suppressProgrammaticScrollTimerRef.current !== null) {
@@ -1897,6 +1898,12 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
             style={{ '--timeline-row-list-width': `${viewState.panes.rowListWidth}px` } as JSX.CSSProperties}
           >
         <div className="timeline-main" ref={timelineMainRef} role="grid" aria-rowcount={visibleRows.length}>
+          <div
+            className="timeline-body-scroll"
+            ref={timeScrollRef}
+            onScroll={handleTimeScroll}
+            aria-label="Timeline time canvas"
+          >
           <div className="timeline-axis__corner">
             <div className="timeline-corner-toolbar" aria-label="Timeline header controls">
               <button
@@ -1937,12 +1944,14 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
               </button>
             </div>
           </div>
-          <div className="timeline-axis__viewport">
+          <div
+            className="timeline-axis__viewport"
+            style={{ width: `${scrollMetrics.surfaceWidthPx}px` } as JSX.CSSProperties}
+          >
             <div
               className="timeline-axis__surface"
               style={{
                 width: `${scrollMetrics.surfaceWidthPx}px`,
-                transform: `translateX(${-scrollMetrics.scrollLeftPx}px)`,
               } as JSX.CSSProperties}
             >
               <div className="timeline-axis__track">
@@ -1967,7 +1976,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
               </div>
             </div>
           </div>
-          <div className="timeline-body-scroll" aria-label="Timeline rows and events">
           <div className="timeline-gutter-column" aria-label="Timeline rows">
             <div className="timeline-gutter-stack">
               {visibleRows.map((row) => {
@@ -2059,9 +2067,6 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
           </div>
           <div
             className="timeline-time-scroll"
-            ref={timeScrollRef}
-            onScroll={handleTimeScroll}
-            aria-label="Timeline time canvas"
           >
             <div
               className="timeline-time-surface"

@@ -162,6 +162,26 @@
   line-height: 1.6;
 }
 
+.logs-page-status,
+.logs-load-older {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  text-align: center;
+  color: var(--text-muted);
+  font: inherit;
+}
+
+.logs-load-older {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.logs-load-older:hover {
+  color: var(--accent-blue);
+}
+
 /* Log row */
 
 .log-row {

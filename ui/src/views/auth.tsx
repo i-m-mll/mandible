@@ -3152,7 +3152,10 @@ export function AuthQueueView({
             }}
             summarySlot={activeFilterSummary ? <span>{activeFilterSummary}</span> : undefined}
             panel={filterMenuOpen ? {
+              id: 'auth-filter-panel',
               variant: 'popover',
+              ariaLabel: 'Auth filter and sort controls',
+              onDismiss: () => setFilterMenuOpen(false),
               children: (
                 <>
               <div className="sidebar-search-filter__section sidebar-search-filter__section--header">
