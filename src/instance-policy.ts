@@ -92,6 +92,10 @@ export function evaluateInstanceMutation(
   };
 }
 
+export function allowsOperationalMutations(instance: InstanceInfo): boolean {
+  return instance.operational_mutations === "allow";
+}
+
 function operationalMutationCategory(method: string, pathname: string): string | null {
   const normalizedMethod = method.toUpperCase();
   if (!UNSAFE_METHODS.has(normalizedMethod)) {
