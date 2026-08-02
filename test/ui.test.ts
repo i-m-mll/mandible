@@ -161,7 +161,6 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllGlobals();
-  vi.doUnmock('@tauri-apps/plugin-deep-link');
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
   delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
 });
@@ -465,27 +464,30 @@ describe('App routing', () => {
     expect(capability.permissions).toContain('deep-link:default');
   });
 
-  it('registers the warm deep-link listener before reading the cold-start URL', async () => {
+  it('registers one listener for issue, auth, and artifact links before reading the cold-start URL', async () => {
     const calls: string[] = [];
     const cleanup = vi.fn(() => calls.push('cleanup'));
     const onOpenUrl = vi.fn(async (handler: (urls: string[]) => void) => {
       calls.push('listen');
+      handler(['mandible:///issues?repo=mandible&issue=warm']);
       handler(['mandible:///auth?request=warm']);
+      handler(['mandible:///artifacts?ref=artifact-version%3Awarm']);
       return cleanup;
     });
     const getCurrent = vi.fn(async () => {
       calls.push('current');
       return ['mandible:///issues?issue=cold'];
     });
-    vi.doMock('@tauri-apps/plugin-deep-link', () => ({ getCurrent, onOpenUrl }));
     (window as Window & { __TAURI__?: unknown }).__TAURI__ = {};
 
     const navigate = vi.fn((hash: string) => calls.push(`navigate:${hash}`));
-    const removeListener = await installTauriDeepLinkHandler(navigate);
+    const removeListener = await installTauriDeepLinkHandler(navigate, { getCurrent, onOpenUrl });
 
     expect(calls).toEqual([
       'listen',
+      'navigate:#/issues?issue=warm&repo=mandible',
       'navigate:#/auth?request=warm',
+      'navigate:#/artifacts?ref=artifact-version%3Awarm',
       'current',
       'navigate:#/issues?issue=cold',
     ]);
