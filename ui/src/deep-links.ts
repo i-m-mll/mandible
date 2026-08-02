@@ -1,8 +1,18 @@
+import {
+  getCurrent as getCurrentDeepLinks,
+  onOpenUrl as onOpenDeepLinks,
+} from '@tauri-apps/plugin-deep-link';
+
 import { normalizeArtifactRouteParams } from './routing';
 
 type DeepLinkModule = {
   getCurrent: () => Promise<string[] | null>;
   onOpenUrl: (handler: (urls: string[]) => void) => Promise<() => void>;
+};
+
+const tauriDeepLink: DeepLinkModule = {
+  getCurrent: getCurrentDeepLinks,
+  onOpenUrl: onOpenDeepLinks,
 };
 
 type TauriDeepLinkWindow = Window & {
@@ -96,11 +106,10 @@ export function navigateToMandibleDeepLink(
 
 export async function installTauriDeepLinkHandler(
   navigateToHash: (hash: string) => void,
+  deepLink: DeepLinkModule = tauriDeepLink,
 ): Promise<() => void> {
   if (!isTauriWindow()) return () => undefined;
 
-  const deepLinkModule = '@tauri-apps/plugin-deep-link';
-  const deepLink: DeepLinkModule = await import(/* @vite-ignore */ deepLinkModule);
   const navigateAll = (urls: string[] | null | undefined) => {
     for (const url of urls ?? []) {
       if (navigateToMandibleDeepLink(url, navigateToHash)) break;

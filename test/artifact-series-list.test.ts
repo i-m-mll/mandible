@@ -224,6 +224,43 @@ describe("artifact series list", () => {
     expect(body.series[0].latest_artifact.role).toBe("route-role");
   });
 
+  it("serves case-insensitive historical version-id prefix searches", async () => {
+    const first = recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "route-provider",
+      series_key: "managed:route-prefix-search",
+      logical_name: "route-prefix-search",
+      content: "v1\n",
+      media_type: "text/plain",
+    }, 1000);
+    recordArtifactVersion(db, {
+      source_kind: "managed",
+      provider_id: "route-provider",
+      series_key: "managed:route-prefix-search",
+      logical_name: "route-prefix-search",
+      content: "v2\n",
+      media_type: "text/plain",
+    }, 2000);
+    const versionPrefix = first.version.id.replace(/^artifact-version:/, "").slice(0, 4).toUpperCase();
+    const router = createRouter();
+
+    const bare = await router.invoke({
+      method: "GET",
+      url: `/api/artifacts/series?q=${versionPrefix}`,
+    });
+    const typed = await router.invoke({
+      method: "GET",
+      url: `/api/artifacts/series?q=ARTIFACT-VERSION%3A${versionPrefix}`,
+    });
+
+    expect(bare.status).toBe(200);
+    expect((bare.body as { series: Array<{ id: string }> }).series.map((item) => item.id))
+      .toContain(first.series.id);
+    expect(typed.status).toBe(200);
+    expect((typed.body as { series: Array<{ id: string }> }).series.map((item) => item.id))
+      .toContain(first.series.id);
+  });
+
   it("serves short artifact-series refs through resolve and history routes", async () => {
     const first = recordArtifactVersion(db, {
       source_kind: "managed",

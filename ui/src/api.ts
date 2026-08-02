@@ -1190,12 +1190,18 @@ export type LedgerIssueDetailArtifactLink = {
   series_id: string | null;
   series_ref: string | null;
   resolved_version_no: number | null;
+  target_type: 'artifact' | 'artifact_version' | 'artifact_blob' | null;
+  target_id: string | null;
   created_at: number;
   updated_at: number;
 };
 
 export type LedgerIssueDetailAssociatedArtifact = {
   id: string;
+  /** Public ref for the immutable bytes; present on canonical projections. */
+  ref?: string;
+  title: string | null;
+  logical_name: string | null;
   algorithm: string;
   content_hash: string;
   uri: string;

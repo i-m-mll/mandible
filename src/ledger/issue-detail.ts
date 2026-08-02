@@ -12,7 +12,7 @@ import {
   resolveArtifactLinkRef,
   resolveArtifactSurfaceRefReadonlyFull,
 } from "../provider-artifacts.js";
-import type { ArtifactRecord, WorkUnit } from "../types.js";
+import type { ArtifactRecord, ArtifactResolveResult, WorkUnit } from "../types.js";
 import { mapWorkUnitRow, type WorkUnitLiveness } from "../work-unit-utils.js";
 import { LedgerStore } from "./store.js";
 import type {
@@ -247,12 +247,17 @@ export interface LedgerIssueDetailArtifactLink {
   series_id: string | null;
   series_ref: string | null;
   resolved_version_no: number | null;
+  target_type: "artifact" | "artifact_version" | "artifact_blob" | null;
+  target_id: string | null;
   created_at: number;
   updated_at: number;
 }
 
 export interface LedgerIssueDetailAssociatedArtifact {
   id: string;
+  /** Human-facing logical identity, when the association resolves beyond bare bytes. */
+  title: string | null;
+  logical_name: string | null;
   algorithm: string;
   content_hash: string;
   uri: string;
@@ -645,6 +650,8 @@ function listAssociatedArtifacts(
     if (!resolved.artifact) continue;
     upsertAssociatedArtifact(artifacts, resolved.artifact, {
       link: resolved.link,
+      title: resolved.title,
+      logicalName: resolved.logicalName,
       pinState: resolved.pinState,
       isLatest: resolved.isLatest,
       resolvedVersionNo: resolved.resolvedVersionNo,
@@ -659,7 +666,12 @@ function listAssociatedArtifacts(
       try {
         const resolution = resolveArtifactLinkRef(db, ref);
         if (!resolution.artifact) continue;
-        upsertAssociatedArtifact(artifacts, resolution.artifact, { ref });
+        const displayIdentity = artifactDisplayIdentity(resolution);
+        upsertAssociatedArtifact(artifacts, resolution.artifact, {
+          ref,
+          title: displayIdentity.title,
+          logicalName: displayIdentity.logicalName,
+        });
       } catch {
         // A malformed or temporarily unsupported ref should not break issue detail.
       }
@@ -724,6 +736,8 @@ function upsertAssociatedArtifact(
   source: {
     ref?: string;
     link?: LedgerIssueDetailArtifactLink;
+    title?: string | null;
+    logicalName?: string | null;
     pinState?: "pinned" | "living";
     isLatest?: boolean | null;
     resolvedVersionNo?: number | null;
@@ -735,6 +749,8 @@ function upsertAssociatedArtifact(
   if (!entry) {
     entry = {
       id: artifact.id,
+      title: source.title ?? null,
+      logical_name: source.logicalName ?? null,
       algorithm: artifact.algorithm,
       content_hash: artifact.content_hash,
       uri: artifact.uri,
@@ -755,6 +771,8 @@ function upsertAssociatedArtifact(
     };
     artifacts.set(artifact.id, entry);
   } else {
+    if (!entry.title && source.title) entry.title = source.title;
+    if (!entry.logical_name && source.logicalName) entry.logical_name = source.logicalName;
     if (source.pinState === "living") entry.pin_state = "living";
     if (source.pinState === "living") {
       if (source.isLatest !== undefined) entry.is_latest = source.isLatest;
@@ -780,6 +798,8 @@ type IssueDetailLinkedArtifact = Pick<
 type ResolvedIssueDetailLink = {
   artifact: IssueDetailLinkedArtifact | null;
   link: LedgerIssueDetailArtifactLink;
+  title: string | null;
+  logicalName: string | null;
   pinState: "pinned" | "living";
   isLatest: boolean | null;
   resolvedVersionNo: number | null;
@@ -797,9 +817,19 @@ function resolveIssueDetailLinkArtifact(
     ? getArtifact(db, canonicalBlobId)
     : artifactFromIssueDetailRow(row);
   if (link.link_kind !== "living") {
+    const targetRef = row.canonical_target_type === "artifact_version"
+      || row.canonical_target_type === "artifact"
+      ? nullableString(row.canonical_target_id)
+      : null;
+    const resolution = targetRef
+      ? resolveArtifactSurfaceRefReadonlyFull(db, targetRef)
+      : null;
+    const displayIdentity = artifactDisplayIdentity(resolution);
     return {
-      artifact: fallback,
+      artifact: resolution?.artifact ?? fallback,
       link,
+      title: displayIdentity.title,
+      logicalName: displayIdentity.logicalName,
       pinState: "pinned",
       isLatest: null,
       resolvedVersionNo: null,
@@ -826,6 +856,7 @@ function resolveIssueDetailLinkArtifact(
       return {
         artifact: resolution.artifact,
         link: { ...link, series_id: resolvedSeriesId, resolved_version_no: resolvedVersionNo },
+        ...artifactDisplayIdentity(resolution),
         pinState: "living",
         isLatest: resolution.version && resolution.series
           ? resolution.series.latest_version_id === resolution.version.id
@@ -853,11 +884,24 @@ function livingFallback(
   return {
     artifact,
     link: { ...link, resolved_version_no: null },
+    title: null,
+    logicalName: null,
     pinState: "living",
     isLatest: null,
     resolvedVersionNo: null,
     seriesId: link.series_id,
     warnings: uniqueWarnings,
+  };
+}
+
+function artifactDisplayIdentity(
+  resolution: ArtifactResolveResult | null,
+): { title: string | null; logicalName: string | null } {
+  const logical = resolution?.logical_artifact;
+  const series = resolution?.series;
+  return {
+    title: logical?.title ?? series?.title ?? null,
+    logicalName: logical?.logical_name ?? series?.logical_name ?? null,
   };
 }
 
@@ -886,6 +930,11 @@ function artifactFromIssueDetailRow(
 }
 
 function artifactLinkFromIssueDetailRow(row: Record<string, unknown>): LedgerIssueDetailArtifactLink {
+  const targetType = row.canonical_target_type === "artifact"
+    || row.canonical_target_type === "artifact_version"
+    || row.canonical_target_type === "artifact_blob"
+    ? row.canonical_target_type
+    : null;
   return {
     id: stringOr(row.link_id, ""),
     entity_type: stringOr(row.entity_type, ""),
@@ -900,6 +949,8 @@ function artifactLinkFromIssueDetailRow(row: Record<string, unknown>): LedgerIss
     series_id: nullableString(row.series_id),
     series_ref: nullableString(row.series_ref),
     resolved_version_no: null,
+    target_type: targetType,
+    target_id: nullableString(row.canonical_target_id),
     created_at: Number(row.link_created_at ?? 0),
     updated_at: Number(row.link_updated_at ?? 0),
   };

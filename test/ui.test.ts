@@ -161,7 +161,6 @@ afterEach(() => {
   window.history.replaceState(null, '', '/');
   vi.useRealTimers();
   vi.unstubAllGlobals();
-  vi.doUnmock('@tauri-apps/plugin-deep-link');
   delete (window as Window & { __TAURI__?: unknown }).__TAURI__;
   delete (window as Window & { __MANDIBLE_BOOTSTRAP__?: unknown }).__MANDIBLE_BOOTSTRAP__;
 });
@@ -465,27 +464,30 @@ describe('App routing', () => {
     expect(capability.permissions).toContain('deep-link:default');
   });
 
-  it('registers the warm deep-link listener before reading the cold-start URL', async () => {
+  it('registers one listener for issue, auth, and artifact links before reading the cold-start URL', async () => {
     const calls: string[] = [];
     const cleanup = vi.fn(() => calls.push('cleanup'));
     const onOpenUrl = vi.fn(async (handler: (urls: string[]) => void) => {
       calls.push('listen');
+      handler(['mandible:///issues?repo=mandible&issue=warm']);
       handler(['mandible:///auth?request=warm']);
+      handler(['mandible:///artifacts?ref=artifact-version%3Awarm']);
       return cleanup;
     });
     const getCurrent = vi.fn(async () => {
       calls.push('current');
       return ['mandible:///issues?issue=cold'];
     });
-    vi.doMock('@tauri-apps/plugin-deep-link', () => ({ getCurrent, onOpenUrl }));
     (window as Window & { __TAURI__?: unknown }).__TAURI__ = {};
 
     const navigate = vi.fn((hash: string) => calls.push(`navigate:${hash}`));
-    const removeListener = await installTauriDeepLinkHandler(navigate);
+    const removeListener = await installTauriDeepLinkHandler(navigate, { getCurrent, onOpenUrl });
 
     expect(calls).toEqual([
       'listen',
+      'navigate:#/issues?issue=warm&repo=mandible',
       'navigate:#/auth?request=warm',
+      'navigate:#/artifacts?ref=artifact-version%3Awarm',
       'current',
       'navigate:#/issues?issue=cold',
     ]);
@@ -2935,6 +2937,9 @@ describe('LedgerIssueDetail', () => {
       associated_artifacts: [
         {
           id: 'artifact:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          ref: 'artifact-blob:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          title: 'R0 audit report',
+          logical_name: 'r0-audit.md',
           algorithm: 'sha256',
           content_hash: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           uri: 'artifact:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -2945,7 +2950,7 @@ describe('LedgerIssueDetail', () => {
           custody_mode: 'managed',
           availability: 'present',
           created_at: Date.now(),
-          refs: ['repo://mandible@main/results/report.md'],
+          refs: ['artifact-version:version-1'],
           links: [
             {
               id: 'link_1',
@@ -2961,6 +2966,8 @@ describe('LedgerIssueDetail', () => {
               series_id: 'artifact-series:report',
               series_ref: 'artifact-series:report',
               resolved_version_no: null,
+              target_type: 'artifact_version',
+              target_id: 'artifact-version:version-1',
               created_at: Date.now(),
               updated_at: Date.now(),
             },
@@ -2968,6 +2975,9 @@ describe('LedgerIssueDetail', () => {
         },
         {
           id: 'artifact:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          ref: 'artifact-blob:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+          title: null,
+          logical_name: null,
           algorithm: 'sha256',
           content_hash: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
           uri: 'artifact:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
@@ -2979,10 +2989,33 @@ describe('LedgerIssueDetail', () => {
           availability: 'remote_only',
           created_at: Date.now(),
           refs: [],
-          links: [],
+          links: [
+            {
+              id: 'link_blob',
+              entity_type: 'issue',
+              entity_id: 'issue_1',
+              link_type: 'references',
+              role: null,
+              repo_id: null,
+              provider_id: null,
+              source: 'artifact_registry',
+              metadata: {},
+              link_kind: 'pinned',
+              series_id: null,
+              series_ref: null,
+              resolved_version_no: null,
+              target_type: 'artifact_blob',
+              target_id: 'artifact-blob:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+              created_at: Date.now(),
+              updated_at: Date.now(),
+            },
+          ],
         },
         {
           id: 'artifact:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          ref: 'artifact-blob:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+          title: 'Live report',
+          logical_name: 'live-report.md',
           algorithm: 'sha256',
           content_hash: 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
           uri: 'artifact:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
@@ -3009,6 +3042,8 @@ describe('LedgerIssueDetail', () => {
               series_id: 'artifact-series:live-report',
               series_ref: 'artifact-series:live-report',
               resolved_version_no: 2,
+              target_type: 'artifact',
+              target_id: 'artifact:live-report',
               created_at: Date.now(),
               updated_at: Date.now(),
             },
@@ -3022,22 +3057,33 @@ describe('LedgerIssueDetail', () => {
     render(h(LedgerIssueDetail, { detail }));
 
     expect(screen.getByText('Associated Artifacts')).toBeTruthy();
-    const link = screen.getByText('repo://mandible@main/results/report.md').closest('a') as HTMLAnchorElement | null;
+    expect(screen.getAllByText('R0 audit report')).toHaveLength(2);
+    const versionRefs = screen.getAllByText('artifact-version:version-1');
+    const link = versionRefs.find((node) => node.closest('a')?.textContent?.includes('referenced'))
+      ?.closest('a') as HTMLAnchorElement | null;
     expect(link?.getAttribute('href')).toBe(
-      '#/artifacts?ref=artifact-blob%3Aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      '#/artifacts?ref=artifact-version%3Aversion-1',
     );
-    expect(link?.textContent).toContain('pinned');
+    expect(link?.textContent).toContain('R0 audit report');
     expect(link?.textContent).not.toContain('v1');
     expect(link?.textContent).not.toContain('latest');
-    const compactLink = screen.getByText('artifact:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
+    const pinnedLink = versionRefs.find((node) => node.closest('a')?.textContent?.includes('produced by'))
+      ?.closest('a') as HTMLAnchorElement | null;
+    expect(pinnedLink?.getAttribute('href')).toBe('#/artifacts?ref=artifact-version%3Aversion-1');
+    expect(pinnedLink?.textContent).toContain('artifact-version:version-1');
+    const compactLink = screen.getByText('artifact-blob:bbbbbbbbbbbb').closest('a') as HTMLAnchorElement | null;
     expect(compactLink?.getAttribute('href')).toBe(
       '#/artifacts?ref=artifact-blob%3Abbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     );
-    const livingLink = screen.getByText('artifact-series:live-report').closest('a') as HTMLAnchorElement | null;
-    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
-    expect(livingLink?.textContent).toContain('latest → v2');
-    expect(screen.getAllByText('linked + referenced')).toHaveLength(2);
-    expect(screen.getByText('report · text/markdown · provider_1 · present')).toBeTruthy();
+    const livingLinks = screen.getAllByText('artifact-series:live-report');
+    expect(livingLinks).toHaveLength(1);
+    const authoredLivingLink = livingLinks.find((node) => node.closest('a')?.textContent?.includes('referenced'))
+      ?.closest('a') as HTMLAnchorElement | null;
+    expect(authoredLivingLink?.getAttribute('href')).toBe('#/artifacts?series=artifact-series%3Alive-report');
+    const livingLink = screen.getByText('latest → v2').closest('a') as HTMLAnchorElement | null;
+    expect(livingLink?.getAttribute('href')).toBe('#/artifacts?ref=artifact%3Alive-report');
+    expect(livingLink?.textContent).toContain('artifact:live-report');
+    expect(screen.getAllByText('report · text/markdown · provider_1 · present')).toHaveLength(2);
   });
 
   it('keeps issue and comment provenance behind metadata controls', async () => {
