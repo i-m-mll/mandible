@@ -922,6 +922,21 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (match) => `\\${match}`);
 }
 
+function bindArtifactIdentifierSearch(
+  bindings: Record<string, unknown>,
+  query: string,
+): void {
+  const normalized = query.trim().toLowerCase();
+  bindings.q = `%${escapeLike(query)}%`;
+  bindings.qIdentifierFullPrefix = `${escapeLike(normalized)}%`;
+  // Bare sidebar input (`de13`) matches the payload of any public typed ref.
+  // An explicitly typed input keeps that type boundary through the full-ref
+  // predicates below instead of also matching other identity kinds by payload.
+  bindings.qIdentifierBarePrefix = /^artifact(?:-series|-version|-blob)?:/i.test(normalized)
+    ? null
+    : `${escapeLike(normalized)}%`;
+}
+
 function splitProviderIssueRef(rawRef: string): { projectRef?: string; issueRef: string } {
   const trimmed = rawRef.trim();
   const slash = trimmed.indexOf("/");
@@ -4196,13 +4211,32 @@ function listCanonicalArtifactSeriesCompatibility(
     OR al.series_id = replace(a.id, 'artifact:', 'artifact-series:'))`;
   const q = asString(options.q);
   if (q) {
-    bindings.q = `%${escapeLike(q)}%`;
+    bindArtifactIdentifierSearch(bindings, q);
     where.push(`(
-      a.id LIKE @q ESCAPE '\\' OR a.identity_key LIKE @q ESCAPE '\\'
+      lower(a.id) LIKE @qIdentifierFullPrefix ESCAPE '\\'
+      OR lower(replace(a.id, 'artifact:', 'artifact-series:'))
+         LIKE @qIdentifierFullPrefix ESCAPE '\\'
+      OR lower(substr(a.id, length('artifact:') + 1))
+         LIKE @qIdentifierBarePrefix ESCAPE '\\'
+      OR a.identity_key LIKE @q ESCAPE '\\'
       OR a.title LIKE @q ESCAPE '\\' OR a.logical_name LIKE @q ESCAPE '\\'
-      OR a.source_repo_id LIKE @q ESCAPE '\\' OR b.id LIKE @q ESCAPE '\\'
-      OR b.content_hash LIKE @q ESCAPE '\\' OR b.storage_uri LIKE @q ESCAPE '\\'
+      OR a.source_repo_id LIKE @q ESCAPE '\\' OR b.storage_uri LIKE @q ESCAPE '\\'
       OR b.provider_id LIKE @q ESCAPE '\\' OR b.role LIKE @q ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1
+          FROM artifact_version search_v
+          LEFT JOIN artifact_blob search_b ON search_b.id = search_v.blob_id
+         WHERE search_v.artifact_id = a.id
+           AND (
+             lower(search_v.id) LIKE @qIdentifierFullPrefix ESCAPE '\\'
+             OR lower(substr(search_v.id, length('artifact-version:') + 1))
+                LIKE @qIdentifierBarePrefix ESCAPE '\\'
+             OR lower(search_b.id) LIKE @qIdentifierFullPrefix ESCAPE '\\'
+             OR lower(substr(search_b.id, length('artifact-blob:') + 1))
+                LIKE @qIdentifierBarePrefix ESCAPE '\\'
+             OR lower(search_b.content_hash) LIKE @qIdentifierBarePrefix ESCAPE '\\'
+           )
+      )
       OR EXISTS (SELECT 1 FROM artifact_aliases aa WHERE aa.blob_id = b.id
         AND (aa.alias LIKE @q ESCAPE '\\' OR aa.normalized_ref LIKE @q ESCAPE '\\'))
     )`);
@@ -4321,20 +4355,36 @@ export function listArtifactSeries(db: Db, options: ArtifactListOptions = {}): A
   const q = asString(options.q);
   const hashPrefix = asString(options.hashPrefix);
   if (q) {
-    const like = `%${escapeLike(q)}%`;
-    bindings.q = like;
+    bindArtifactIdentifierSearch(bindings, q);
     where.push(`(
-      s.id LIKE @q ESCAPE '\\'
+      lower(s.id) LIKE @qIdentifierFullPrefix ESCAPE '\\'
+      OR lower(substr(s.id, length('artifact-series:') + 1))
+         LIKE @qIdentifierBarePrefix ESCAPE '\\'
       OR s.series_key LIKE @q ESCAPE '\\'
       OR s.title LIKE @q ESCAPE '\\'
       OR s.repo_id LIKE @q ESCAPE '\\'
       OR s.logical_name LIKE @q ESCAPE '\\'
-      OR a.id LIKE @q ESCAPE '\\'
-      OR a.content_hash LIKE @q ESCAPE '\\'
       OR a.uri LIKE @q ESCAPE '\\'
       OR a.provider_id LIKE @q ESCAPE '\\'
       OR a.home_repo_id LIKE @q ESCAPE '\\'
       OR a.role LIKE @q ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1
+          FROM artifact_versions search_v
+          LEFT JOIN artifacts search_a ON search_a.id = search_v.artifact_id
+         WHERE search_v.series_id = s.id
+           AND (
+             lower(search_v.id) LIKE @qIdentifierFullPrefix ESCAPE '\\'
+             OR lower(substr(search_v.id, length('artifact-version:') + 1))
+                LIKE @qIdentifierBarePrefix ESCAPE '\\'
+             OR lower(search_a.id) LIKE @qIdentifierFullPrefix ESCAPE '\\'
+             OR lower(substr(search_a.id, length('artifact:') + 1))
+                LIKE @qIdentifierBarePrefix ESCAPE '\\'
+             OR lower('artifact-blob:' || search_v.content_hash)
+                LIKE @qIdentifierFullPrefix ESCAPE '\\'
+             OR lower(search_v.content_hash) LIKE @qIdentifierBarePrefix ESCAPE '\\'
+           )
+      )
       ${hasAliases ? `OR EXISTS (
         SELECT 1 FROM artifact_aliases aa
          WHERE aa.artifact_id = a.id
