@@ -3595,6 +3595,7 @@ describe("auth queue", () => {
 
     it("uses a 2-second delay for self-rebuild exit to allow event delivery", async () => {
       let exitDelayMs: number | undefined;
+      const lifecycleEvents: string[] = [];
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       let queue: AuthQueue | null = null;
@@ -3604,7 +3605,7 @@ describe("auth queue", () => {
         // Capture the delay used for the self-rebuild exit
         if (ms !== undefined && ms >= 1000) {
           exitDelayMs = ms;
-          return originalSetTimeout(() => {}, 0);
+          return originalSetTimeout(fn, 0);
         }
         return originalSetTimeout(fn, ms);
       };
@@ -3615,7 +3616,23 @@ describe("auth queue", () => {
         registerWorkRepo(db, repo);
         queue = new AuthQueue({
           db,
-          hookManager: createNoopHookManager(),
+          hookManager: {
+            executeHooks: async () => {
+              lifecycleEvents.push("hooks");
+              return [];
+            },
+          } as unknown as AuthHookManager,
+          restartAvailability: {
+            markRebuildStarted: (generationId) => {
+              lifecycleEvents.push(`rebuild:${generationId}`);
+              return generationId ?? null;
+            },
+            markShutdownStarted: (generationId) => {
+              lifecycleEvents.push(`shutdown:${generationId}`);
+              return true;
+            },
+          },
+          restartFn: () => lifecycleEvents.push("restart"),
           executor: async () => ({
             exit_code: 0,
             signal: null,
@@ -3639,11 +3656,20 @@ describe("auth queue", () => {
 
         queue.approve(request.id);
         await waitForStatus(queue, request.id, "completed");
-        await new Promise((resolve) => originalSetTimeout(resolve, 100));
+        const restartDeadline = Date.now() + 2_000;
+        while (!lifecycleEvents.includes("restart") && Date.now() < restartDeadline) {
+          await new Promise((resolve) => originalSetTimeout(resolve, 10));
+        }
 
         // Bug: 03d6cb0 — the delay must be >= 2000ms to give the channel
         // server time to receive and process the auth:resolved event.
         expect(exitDelayMs).toBe(2000);
+        expect(lifecycleEvents).toEqual([
+          `rebuild:${request.id}`,
+          "hooks",
+          `shutdown:${request.id}`,
+          "restart",
+        ]);
       } finally {
         globalThis.setTimeout = originalSetTimeout;
         queue?.dispose();

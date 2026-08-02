@@ -33,6 +33,7 @@ import {
 } from "./codex-thread-archive.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import { getDb, resolvePrefix } from "./db.js";
+import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
   resolveOperationalIssueRef,
@@ -335,6 +336,8 @@ export interface AuthQueueOptions {
   // Issue ded17e6 — injectable process-restart hook so the self-merge drain
   // can be exercised without exiting the test runner. Defaults to process.exit.
   restartFn?: () => void;
+  // Issue ff784d8 — local, DB-independent self-merge availability receipt.
+  restartAvailability?: RestartAvailabilityLifecycle;
   // Read-only preview instances expose auth status and independence checks but
   // must not recover, reconcile, expire, or finalize requests in the copied DB.
   backgroundMaintenance?: boolean;
@@ -481,6 +484,7 @@ export class AuthQueue {
   private readonly executionChains = new Map<string, Promise<void>>();
   // Issue ded17e6 — injectable restart hook for the self-merge drain.
   private readonly restartFn: () => void;
+  private readonly restartAvailability?: RestartAvailabilityLifecycle;
   // Issue 75f52ac — bounded, idempotent, crash-safe queue that runs the heavy
   // post-merge finalizers (Stage 3) off the event loop after auth:resolved.
   private readonly finalizerQueue: FinalizerQueue;
@@ -521,6 +525,7 @@ export class AuthQueue {
     this.workUnitAbandonedScanRetentionMs =
       options.workUnitAbandonedScanRetentionMs ?? 30 * 24 * 60 * 60 * 1000;
     this.restartFn = options.restartFn ?? (() => process.exit(0));
+    this.restartAvailability = options.restartAvailability;
     // Issue 75f52ac — construct the finalizer queue before any recovery pass:
     // recovery re-runs finalizeSuccessfulMerge, which enqueues Stage 3 work.
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
@@ -2742,6 +2747,9 @@ export class AuthQueue {
             // Bug: 4db692a — also set the _rebuilding flag so the health
             // endpoint returns rebuilding:true, preventing premature reload.
             if (isSelfMerge) {
+              // Issue ff784d8 — the full blocked/splash window begins before
+              // post-merge hooks, at the same boundary that closes admission.
+              this.restartAvailability?.markRebuildStarted(request.id);
               this._rebuilding = true;
               this.broadcast({ event: "mandible:rebuilding", data: {} });
             }
@@ -2876,6 +2884,9 @@ export class AuthQueue {
     // Bug: 03d6cb0 — preserve the SSE-flush delay before exit so auth:resolved
     // reaches the channel server before the daemon goes down.
     await new Promise<void>((resolve) => setTimeout(resolve, 2000));
+    // Issue ff784d8 — the exact restart tail starts immediately before exit,
+    // after drain and flush. Do not reinterpret the earlier DB recovery marker.
+    this.restartAvailability?.markShutdownStarted(selfRequestId);
     this.restartFn();
   }
 

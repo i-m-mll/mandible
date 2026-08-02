@@ -841,6 +841,119 @@ api_non_main_operational_mutation_override_enabled() {
   esac
 }
 
+# Issue ff784d8 — local fail-fast receipt for a known self-merge lifecycle gap.
+# This read is deliberately one bounded file read plus jq: no HTTP, database,
+# process discovery, Git, polling, or sleep. Success means the caller can prove
+# the mutation was refused before upload and should return temporary failure.
+api_restart_availability_preflight() {
+  local category="$1"
+  local output_file="${2:-}"
+  local receipt_file="${MANDIBLE_RESTART_AVAILABILITY_FILE:-${HOME}/.cache/mandible/restart-availability.json}"
+  local instance_key now_ms max_age_ms notice_file phase phase_word sample_count
+  local retry_after exceeded average timing_text average_text plural message
+
+  [[ -r "$receipt_file" && -f "$receipt_file" ]] || return 1
+  instance_key="$(api_base)"
+  instance_key="${instance_key%/}"
+  instance_key="${instance_key/http:\/\/localhost:/http:\/\/127.0.0.1:}"
+  now_ms="${MANDIBLE_RESTART_AVAILABILITY_NOW_MS:-$(( $(date +%s) * 1000 ))}"
+  max_age_ms="${MANDIBLE_RESTART_AVAILABILITY_ACTIVE_MAX_AGE_MS:-300000}"
+  [[ "$now_ms" =~ ^[0-9]+$ ]] || return 1
+  [[ "$max_age_ms" =~ ^[0-9]+$ ]] || return 1
+
+  notice_file="$(api_temp_file)"
+  if ! jq -e -c \
+    --arg instance_key "$instance_key" \
+    --argjson now_ms "$now_ms" \
+    --argjson max_age_ms "$max_age_ms" '
+      def valid_stats:
+        type == "object"
+        and (.samples_ms | type == "array")
+        and (.samples_ms | length <= 20)
+        and ([.samples_ms[] | type == "number" and floor == . and . >= 0] | all)
+        and (.sample_count | type == "number" and floor == . and . >= 0)
+        and (.sample_count == (.samples_ms | length))
+        and (if .sample_count == 0 then .average_ms == null
+             else (.average_ms | type == "number" and . >= 0)
+               and .average_ms == ([.samples_ms[]] | add / length)
+             end);
+      select(
+        .version == 1
+        and .instance_key == $instance_key
+        and (.active | type == "object")
+        and (.active.generation_id | type == "string" and length > 0)
+        and .active.reason == "self_merge"
+        and (.active.phase == "rebuilding" or .active.phase == "shutdown")
+        and (.active.rebuild_started_at_ms | type == "number" and floor == . and . >= 0)
+        and .active.rebuild_started_at_ms <= ($now_ms + 5000)
+        and ($now_ms - .active.rebuild_started_at_ms) <= $max_age_ms
+        and (if .active.phase == "shutdown"
+             then (.active.shutdown_started_at_ms | type == "number" and floor == .)
+               and .active.shutdown_started_at_ms >= .active.rebuild_started_at_ms
+             else .active.shutdown_started_at_ms == null end)
+        and (.blocked_window | valid_stats)
+        and (.shutdown_to_ready | valid_stats)
+        and (.ready_to_warm | valid_stats)
+        and (.active.expected_ready_at_ms == null
+             or (.active.expected_ready_at_ms | type == "number" and floor == . and . >= 0))
+      )
+      | .active as $active
+      | (if $active.phase == "shutdown" then .shutdown_to_ready else .blocked_window end) as $stats
+      | {
+          error: "mandible_restarting",
+          retryable: true,
+          request_sent: false,
+          phase: $active.phase,
+          reason: $active.reason,
+          sample_count: $stats.sample_count
+        }
+        + (if $stats.average_ms == null then {}
+           else {average_seconds: (($stats.average_ms / 1000 * 10 | round) / 10)} end)
+        + (if $active.expected_ready_at_ms == null then {}
+           elif $active.expected_ready_at_ms >= $now_ms
+             then {retry_after_seconds: (($active.expected_ready_at_ms - $now_ms) / 1000 | ceil)}
+           else {eta_exceeded_seconds: (($now_ms - $active.expected_ready_at_ms) / 1000 | ceil)}
+           end)
+    ' "$receipt_file" > "$notice_file" 2>/dev/null; then
+    rm -f "$notice_file"
+    return 1
+  fi
+
+  phase=$(jq -r '.phase' "$notice_file")
+  case "$phase" in
+    rebuilding) phase_word="rebuilding" ;;
+    shutdown) phase_word="restarting" ;;
+    *) rm -f "$notice_file"; return 1 ;;
+  esac
+  sample_count=$(jq -r '.sample_count' "$notice_file")
+  retry_after=$(jq -r '.retry_after_seconds // empty' "$notice_file")
+  exceeded=$(jq -r '.eta_exceeded_seconds // empty' "$notice_file")
+  average=$(jq -r '.average_seconds // empty' "$notice_file")
+
+  if [[ -n "$retry_after" ]]; then
+    timing_text="about ${retry_after} s remaining"
+  elif [[ -n "$exceeded" ]]; then
+    timing_text="estimate exceeded by ${exceeded} s"
+  else
+    timing_text="timing estimate unavailable"
+  fi
+  if [[ -n "$average" ]]; then
+    plural="rebuilds"
+    [[ "$sample_count" == "1" ]] && plural="rebuild"
+    average_text="average ${average} s over ${sample_count} ${plural}"
+    message="Mandible ${phase_word}; request not sent (self-merge, ${timing_text}; ${average_text})."
+  else
+    message="Mandible ${phase_word}; request not sent (self-merge; ${timing_text}; no completed rebuild samples)."
+  fi
+  printf '%s\n' "$message" >&2
+  if [[ -n "$output_file" ]]; then
+    jq --arg message "$message" --arg category "$category" \
+      '. + {message:$message, category:$category}' "$notice_file" > "$output_file"
+  fi
+  rm -f "$notice_file"
+  return 0
+}
+
 api_instance_metadata_valid() {
   local input_file="$1"
   jq -e '
@@ -933,6 +1046,9 @@ api_preflight_operational_mutation() {
 
   category=$(api_operational_mutation_category "$method" "$request_path") || return 0
   api_is_file_rpc && return 0
+  if api_restart_availability_preflight "$category" "$output_file"; then
+    return 75
+  fi
   api_non_main_operational_mutation_override_enabled && return 0
 
   tmp_response="$(api_temp_file)"

@@ -234,7 +234,199 @@ function writeRouteMutationCategories(payload: unknown): string {
   return file;
 }
 
+function writeRestartAvailability(port: number, payload: Record<string, unknown>): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-restart-receipt-"));
+  tempRoots.push(root);
+  const file = path.join(root, "restart-availability.json");
+  fs.writeFileSync(file, `${JSON.stringify({
+    version: 1,
+    instance_key: `http://127.0.0.1:${port}`,
+    updated_at_ms: 1_000_000,
+    active: {
+      generation_id: "self-merge-generation",
+      reason: "self_merge",
+      phase: "rebuilding",
+      rebuild_started_at_ms: 990_000,
+      expected_ready_at_ms: 1_012_000,
+    },
+    last_completion: null,
+    blocked_window: { samples_ms: [18_000, 18_800], average_ms: 18_400, sample_count: 2 },
+    shutdown_to_ready: { samples_ms: [2_400, 2_500], average_ms: 2_450, sample_count: 2 },
+    ready_to_warm: { samples_ms: [1_000], average_ms: 1_000, sample_count: 1 },
+    ...payload,
+  })}\n`, "utf8");
+  return file;
+}
+
 describe("CLI instance mutation preflight", () => {
+  it("fails fast from a fresh rebuild receipt with deliberate human and structured output", async () => {
+    const port = 19420;
+    const receipt = writeRestartAvailability(port, {
+      blocked_window: {
+        samples_ms: [18_400, 18_400, 18_400, 18_400, 18_400, 18_400, 18_400],
+        average_ms: 18_400,
+        sample_count: 7,
+      },
+    });
+    const started = Date.now();
+    const result = await runBash([
+      "set -euo pipefail",
+      "source cli/api.sh",
+      "tmp_response=$(mktemp)",
+      "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Not sent\"}' \"$tmp_response\")",
+      "printf '%s\\n' \"$status\"",
+      "cat \"$tmp_response\"",
+    ].join("\n"), port, {
+      MANDIBLE_RESTART_AVAILABILITY_FILE: receipt,
+      MANDIBLE_RESTART_AVAILABILITY_NOW_MS: "1000000",
+      MANDIBLE_HTTP_RETRY_BASE_MS: "2000",
+      MANDIBLE_HTTP_RETRIES: "5",
+    });
+
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe(
+      "Mandible rebuilding; request not sent (self-merge, about 12 s remaining; average 18.4 s over 7 rebuilds).\n",
+    );
+    expect(result.stderr).not.toContain("retrying");
+    expect(result.stdout).toBe([
+      "503",
+      "{",
+      '  "error": "mandible_restarting",',
+      '  "retryable": true,',
+      '  "request_sent": false,',
+      '  "phase": "rebuilding",',
+      '  "reason": "self_merge",',
+      '  "sample_count": 7,',
+      '  "average_seconds": 18.4,',
+      '  "retry_after_seconds": 12,',
+      '  "message": "Mandible rebuilding; request not sent (self-merge, about 12 s remaining; average 18.4 s over 7 rebuilds).",',
+      '  "category": "ledger"',
+      "}",
+      "",
+    ].join("\n"));
+  });
+
+  it("reports first-sample and overdue states without claiming availability", async () => {
+    const port = 19422;
+    const first = writeRestartAvailability(port, {
+      active: {
+        generation_id: "first",
+        reason: "self_merge",
+        phase: "rebuilding",
+        rebuild_started_at_ms: 1_000_000,
+      },
+      blocked_window: { samples_ms: [], average_ms: null, sample_count: 0 },
+    });
+    const firstResult = await runBash([
+      "source cli/api.sh",
+      "api_preflight_operational_mutation POST /api/projects",
+    ].join("\n"), port, {
+      MANDIBLE_RESTART_AVAILABILITY_FILE: first,
+      MANDIBLE_RESTART_AVAILABILITY_NOW_MS: "1000000",
+    });
+    expect(firstResult.status).toBe(75);
+    expect(firstResult.stderr).toBe(
+      "Mandible rebuilding; request not sent (self-merge; timing estimate unavailable; no completed rebuild samples).\n",
+    );
+
+    const overdue = writeRestartAvailability(port, {
+      active: {
+        generation_id: "overdue",
+        reason: "self_merge",
+        phase: "shutdown",
+        rebuild_started_at_ms: 990_000,
+        shutdown_started_at_ms: 997_000,
+        expected_ready_at_ms: 999_000,
+      },
+    });
+    const overdueResult = await runBash([
+      "source cli/api.sh",
+      "api_preflight_operational_mutation POST /api/projects",
+    ].join("\n"), port, {
+      MANDIBLE_RESTART_AVAILABILITY_FILE: overdue,
+      MANDIBLE_RESTART_AVAILABILITY_NOW_MS: "1000000",
+    });
+    expect(overdueResult.status).toBe(75);
+    expect(overdueResult.stderr).toBe(
+      "Mandible restarting; request not sent (self-merge, estimate exceeded by 1 s; average 2.5 s over 2 rebuilds).\n",
+    );
+  });
+
+  it.each([
+    ["stale", { active: { generation_id: "old", reason: "self_merge", phase: "rebuilding", rebuild_started_at_ms: 1 } }],
+    ["unrelated instance", { instance_key: "http://127.0.0.1:19999" }],
+    ["future version", { version: 2 }],
+    ["mixed old version", { version: 0, blocked_window: undefined }],
+    ["inconsistent statistics", {
+      blocked_window: { samples_ms: [18_000, 18_800], average_ms: 1, sample_count: 2 },
+    }],
+  ])("ignores %s restart state", async (_label, override) => {
+    const port = 19423;
+    const receipt = writeRestartAvailability(port, override as Record<string, unknown>);
+    const result = await runBash([
+      "source cli/api.sh",
+      "if api_restart_availability_preflight projects; then printf classified; else printf ignored; fi",
+    ].join("\n"), port, {
+      MANDIBLE_RESTART_AVAILABILITY_FILE: receipt,
+      MANDIBLE_RESTART_AVAILABILITY_NOW_MS: "1000000",
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("ignored");
+    expect(result.stderr).toBe("");
+  });
+
+  it("ignores malformed restart state", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-restart-malformed-"));
+    tempRoots.push(root);
+    const receipt = path.join(root, "restart-availability.json");
+    fs.writeFileSync(receipt, "{not-json\n");
+    const result = await runBash([
+      "source cli/api.sh",
+      "if api_restart_availability_preflight projects; then printf classified; else printf ignored; fi",
+    ].join("\n"), 19424, {
+      MANDIBLE_RESTART_AVAILABILITY_FILE: receipt,
+      MANDIBLE_RESTART_AVAILABILITY_NOW_MS: "1000000",
+    });
+    expect(result.stdout).toBe("ignored");
+    expect(result.stderr).toBe("");
+  });
+
+  it("allows mutation immediately after ready while warm completion is still pending", async () => {
+    const target = await listenForInstancePreflight({ instance: MAIN_INSTANCE });
+    const receipt = writeRestartAvailability(target.port, {
+      active: null,
+      last_completion: {
+        generation_id: "ready-not-warm",
+        rebuild_started_at_ms: 980_000,
+        shutdown_started_at_ms: 997_000,
+        ready_at_ms: 1_000_000,
+      },
+      ready_to_warm: { samples_ms: [], average_ms: null, sample_count: 0 },
+    });
+    try {
+      const result = await runBash([
+        "set -euo pipefail",
+        "source cli/api.sh",
+        "tmp_response=$(mktemp)",
+        "status=$(api_send_capture POST /api/ledger/issues/abc/comments '{\"message\":\"Ready\"}' \"$tmp_response\")",
+        "printf '%s\\n' \"$status\"",
+        "cat \"$tmp_response\"",
+      ].join("\n"), target.port, {
+        MANDIBLE_RESTART_AVAILABILITY_FILE: receipt,
+        MANDIBLE_RESTART_AVAILABILITY_NOW_MS: "1000001",
+      });
+      expect(result.stdout).toBe("200\n{\"id\":\"comment-1\"}");
+      expect(result.stderr).toBe("");
+      expect(target.requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+        "GET /api/instance",
+        "POST /api/ledger/issues/abc/comments",
+      ]);
+    } finally {
+      await target.close();
+    }
+  });
+
   it("uses generated route mutation categories before the fallback table", async () => {
     const categoryFile = writeRouteMutationCategories({
       schema: 1,
