@@ -27,7 +27,7 @@ try {
     assert.ok(activeDryRun.openFileInspection.paths.some((entryPath) => {
       return entryPath.endsWith("mandible-20240101-000005.db-wal");
     }));
-    assert.equal(activeDryRun.snapshotCleanup.entries.filter((entry) => entry.action === "delete-file").length, 3);
+    assert.equal(activeDryRun.snapshotCleanup.entries.filter((entry) => entry.action === "delete-file").length, 6);
   } else {
     assert.equal(activeDryRun.bytes, 0);
     assert.equal(activeDryRun.snapshotCleanup.entries.filter((entry) => entry.action === "delete-file").length, 0);
@@ -58,12 +58,17 @@ try {
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000004.db")), true);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000004.db-wal")), true);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000004.db-shm")), true);
+  assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000004.db.manifest.json")), true);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000005.db")), true);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000005.db-wal")), true);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000005.db-shm")), true);
+  assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000005.db.manifest.json")), true);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000006.db")), !hasLsof);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000006.db-wal")), !hasLsof);
   assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000006.db-shm")), !hasLsof);
+  assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000006.db.manifest.json")), !hasLsof);
+  assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000007.db.partial-123")), !hasLsof);
+  assert.equal(fs.existsSync(path.join(tempDir, "active-preview", "mandible-20240101-000007.db.manifest.json.partial-123")), !hasLsof);
 
   console.log("iab-preview cleanup fixture checks passed");
 } finally {
@@ -94,19 +99,25 @@ function makeFixture() {
   fs.writeFileSync(protectedRootDb, "protected");
   fs.writeFileSync(`${protectedRootDb}-wal`, "protected wal");
   fs.writeFileSync(`${protectedRootDb}-shm`, "protected shm");
+  fs.writeFileSync(`${protectedRootDb}.manifest.json`, "protected manifest");
   const metadataDb = path.join(activeDir, "mandible-20240101-000004.db");
   fs.writeFileSync(metadataDb, "metadata protected");
   fs.writeFileSync(`${metadataDb}-wal`, "metadata protected wal");
   fs.writeFileSync(`${metadataDb}-shm`, "metadata protected shm");
+  fs.writeFileSync(`${metadataDb}.manifest.json`, "metadata protected manifest");
   const heldActiveDb = path.join(activeDir, "mandible-20240101-000005.db");
   fs.writeFileSync(heldActiveDb, "held active");
   fs.writeFileSync(`${heldActiveDb}-wal`, "held active wal");
   fs.writeFileSync(`${heldActiveDb}-shm`, "held active shm");
+  fs.writeFileSync(`${heldActiveDb}.manifest.json`, "held active manifest");
   heldFileDescriptors.push(fs.openSync(`${heldActiveDb}-wal`, "r"));
   const staleActiveDb = path.join(activeDir, "mandible-20240101-000006.db");
   fs.writeFileSync(staleActiveDb, "stale active");
   fs.writeFileSync(`${staleActiveDb}-wal`, "stale active wal");
   fs.writeFileSync(`${staleActiveDb}-shm`, "stale active shm");
+  fs.writeFileSync(`${staleActiveDb}.manifest.json`, "stale active manifest");
+  fs.writeFileSync(path.join(activeDir, "mandible-20240101-000007.db.partial-123"), "partial");
+  fs.writeFileSync(path.join(activeDir, "mandible-20240101-000007.db.manifest.json.partial-123"), "partial manifest");
   fs.symlinkSync(protectedRootDb, path.join(activeDir, "current.db"));
   fs.writeFileSync(path.join(activeDir, "metadata.json"), JSON.stringify({
     port: 9,

@@ -12,7 +12,7 @@ const DEFAULT_DB_PATH = path.join(os.homedir(), ".cache", "mandible", "mandible.
 const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
-const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm))?$/;
+const DB_SNAPSHOT_ARTIFACT_PATTERN = /^mandible-\d{8}-\d{6}\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)?$/;
 
 const command = process.argv[2] === "cleanup" ? "cleanup" : "preview";
 const args = parseArgs(command === "cleanup" ? process.argv.slice(3) : process.argv.slice(2), command);
@@ -103,8 +103,13 @@ async function main(options) {
       protectedBranch,
       previewRoot: preview.root,
       wouldBuild: !options.noBuild,
-      wouldCopyDb: true,
+      wouldCopyDb: false,
+      wouldProjectDb: true,
       wouldStart: true,
+      projection: {
+        logs: "all rows from 24h plus warn/error rows from 7d",
+        conversations: "whole 7d-active/starred/session-linked/referenced/newest-per-project conversations",
+      },
       instanceEnv: {
         MANDIBLE_INSTANCE_ROLE: "preview",
         MANDIBLE_OPERATIONAL_MUTATIONS: "reject",
@@ -117,6 +122,11 @@ async function main(options) {
 
   fs.mkdirSync(preview.root, { recursive: true });
 
+  const preStartCleanup = await cleanupPreviewCache({
+    apply: true,
+    previewBaseDir: options.previewBaseDir,
+  });
+
   if (!options.noBuild) {
     ensureDependencies(worktree);
     run("npm", ["run", "build"], { cwd: worktree });
@@ -128,7 +138,7 @@ async function main(options) {
   }
 
   const dbCopy = path.join(preview.root, `mandible-${formatDateTimeForFile(new Date())}.db`);
-  run("sqlite3", [sourceDb, `.backup '${dbCopy.replaceAll("'", "''")}'`], { cwd: worktree });
+  const projection = createProjectedSnapshot({ sourceDb, dbCopy, worktree });
   replaceSymlink(dbCopy, path.join(preview.root, "current.db"));
 
   const stdoutLog = path.join(preview.root, "stdout.log");
@@ -174,6 +184,8 @@ async function main(options) {
     freshUrl: `http://127.0.0.1:${port}/?fresh=${Date.now()}#/timeline`,
     db: dbCopy,
     sourceDb,
+    projection,
+    preStartCleanup,
     instanceEnv: previewInstanceEnv({ port, dbCopy, sourceDb, pidFile }),
     previewRoot: preview.root,
     launchLabel,
@@ -722,11 +734,15 @@ function snapshotBaseDbPath(artifactPath) {
   const basename = path.basename(artifactPath);
   if (!DB_SNAPSHOT_ARTIFACT_PATTERN.test(basename)) return null;
   if (basename.endsWith(".db")) return artifactPath;
-  return artifactPath.replace(/\.db-(?:wal|shm)$/, ".db");
+  return artifactPath.replace(
+    /\.db(?:-(?:wal|shm)|\.manifest\.json|\.partial-\d+(?:-(?:journal|wal|shm))?|\.manifest\.json\.partial-\d+)$/,
+    ".db",
+  );
 }
 
 function snapshotSidecarPaths(dbPath) {
-  return [`${dbPath}-wal`, `${dbPath}-shm`].map((candidate) => canonicalPath(candidate));
+  return [`${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}.manifest.json`]
+    .map((candidate) => canonicalPath(candidate));
 }
 
 function isPathWithin(parentPath, candidatePath) {
@@ -759,6 +775,26 @@ function ensureDependencies(worktree) {
   if (ci.status === 0) return;
 
   run("npm", ["install", "--no-package-lock", "--no-audit", "--no-fund"], { cwd: worktree });
+}
+
+function createProjectedSnapshot({ sourceDb, dbCopy, worktree }) {
+  const script = path.join(worktree, "scripts", "project-db-snapshot.mjs");
+  if (!fs.existsSync(script)) {
+    throw new Error(`Projected database extractor does not exist: ${script}`);
+  }
+  const result = run(process.execPath, [
+    script,
+    "--source", sourceDb,
+    "--output", dbCopy,
+    "--json",
+  ], { cwd: worktree });
+  try {
+    return JSON.parse(result.stdout);
+  } catch (error) {
+    throw new Error(
+      `Projected database extractor returned invalid JSON: ${error instanceof Error ? error.message : error}`,
+    );
+  }
 }
 
 async function startPreviewProcess(details) {

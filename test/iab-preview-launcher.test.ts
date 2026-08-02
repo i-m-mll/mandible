@@ -96,6 +96,12 @@ describe("iab-preview launcher", () => {
       MANDIBLE_INSTANCE_SOURCE_DB: sourceDb,
       MANDIBLE_FILE_RPC_DIR: path.join(previewRoot, "agent-rpc"),
     });
+    expect(payload.wouldCopyDb).toBe(false);
+    expect(payload.wouldProjectDb).toBe(true);
+    expect(payload.projection).toMatchObject({
+      logs: expect.stringContaining("24h"),
+      conversations: expect.stringContaining("whole"),
+    });
   });
 
   it("does not reuse a healthy daemon without preview reject policy metadata", async () => {
