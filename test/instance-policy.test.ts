@@ -3,12 +3,28 @@ import type http from "node:http";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { resolveInstanceInfo } from "../src/instance-policy.js";
+import {
+  allowsOperationalMutations,
+  resolveInstanceInfo,
+} from "../src/instance-policy.js";
 import { createServer, Router } from "../src/server.js";
 import { SseManager } from "../src/sse.js";
 import type { Db } from "../src/db.js";
 
 describe("instance mutation policy", () => {
+  it("uses the same policy decision for route and background mutations", () => {
+    expect(allowsOperationalMutations(resolveInstanceInfo({ env: {} }))).toBe(true);
+    expect(allowsOperationalMutations(resolveInstanceInfo({
+      env: { MANDIBLE_INSTANCE_ROLE: "preview" },
+    }))).toBe(false);
+    expect(allowsOperationalMutations(resolveInstanceInfo({
+      env: {
+        MANDIBLE_INSTANCE_ROLE: "preview",
+        MANDIBLE_OPERATIONAL_MUTATIONS: "allow",
+      },
+    }))).toBe(true);
+  });
+
   it("defaults to a main instance that accepts operational mutations", async () => {
     const router = new Router({
       instance: resolveInstanceInfo({ env: {}, dbPath: "/tmp/mandible-main.db" }),

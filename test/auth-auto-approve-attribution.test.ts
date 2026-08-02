@@ -57,6 +57,21 @@ describe("delegated signing attribution persistence", () => {
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
+  it("does not seed settings when constructed for a read-only preview", () => {
+    db.prepare(
+      "DELETE FROM settings WHERE key = 'auth_auto_approve_duration_minutes'",
+    ).run();
+
+    new AuthAutoApproveManager({
+      db,
+      seedDefaultDurationSetting: false,
+    });
+
+    expect(db.prepare(
+      "SELECT value FROM settings WHERE key = 'auth_auto_approve_duration_minutes'",
+    ).get()).toBeUndefined();
+  });
+
   it("registers public credentials and persists the freshly authorized lease", async () => {
     const manager = new AuthAutoApproveManager({
       db,

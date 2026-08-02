@@ -400,6 +400,32 @@ describe("auth queue", () => {
     }
   });
 
+  it("leaves copied auth state unchanged when background maintenance is disabled", () => {
+    const db = createMigratedDb();
+    const initial = new AuthQueue({ db, now: () => 0 });
+    const request = initial.submit({
+      command: "mandible auth merge feature/preview",
+      title: "Copied preview request",
+      execution_mode: "remote",
+    });
+    db.prepare(
+      "UPDATE auth_requests SET status = 'executing', updated_at = 0 WHERE id = ?",
+    ).run(request.id);
+    initial.dispose();
+
+    const preview = new AuthQueue({
+      db,
+      now: () => 6 * 60 * 1_000,
+      backgroundMaintenance: false,
+    });
+    try {
+      expect(preview.getRequest(request.id)?.status).toBe("executing");
+    } finally {
+      preview.dispose();
+      db.close();
+    }
+  });
+
   it("aborts an unambiguous interrupted merge and requeues it with a clean checkout", () => {
     let now = 0;
     const repo = createAuthCheckRepo();

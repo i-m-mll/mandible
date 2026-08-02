@@ -335,6 +335,9 @@ export interface AuthQueueOptions {
   // Issue ded17e6 — injectable process-restart hook so the self-merge drain
   // can be exercised without exiting the test runner. Defaults to process.exit.
   restartFn?: () => void;
+  // Read-only preview instances expose auth status and independence checks but
+  // must not recover, reconcile, expire, or finalize requests in the copied DB.
+  backgroundMaintenance?: boolean;
 }
 
 const SHA40_RE = /^[0-9a-f]{40}$/i;
@@ -523,15 +526,17 @@ export class AuthQueue {
     this.finalizerQueue = new FinalizerQueue((id) => this.runBackgroundFinalizers(id));
     // Bug: 681739e — fast-recover executions orphaned by a self-merge restart
     // before the generic (threshold-based) stuck-request recovery runs.
-    this.recoverSelfMergeShutdown();
-    this.recoverStuckRequests();
-    // Issue fbf2a58 — reconcile merge requests whose merge already landed but
-    // whose finalization write was lost (e.g. a terminal-executed auth-merge
-    // whose post-merge dist rebuild restarted the daemon before the finalize
-    // committed). Runs after the stuck-request recovery so it only inspects
-    // rows the other recovery paths left pending/approved.
-    this.reconcileAlreadyMergedRequests();
-    this.startExpiryTimer();
+    if (options.backgroundMaintenance !== false) {
+      this.recoverSelfMergeShutdown();
+      this.recoverStuckRequests();
+      // Issue fbf2a58 — reconcile merge requests whose merge already landed but
+      // whose finalization write was lost (e.g. a terminal-executed auth-merge
+      // whose post-merge dist rebuild restarted the daemon before the finalize
+      // committed). Runs after the stuck-request recovery so it only inspects
+      // rows the other recovery paths left pending/approved.
+      this.reconcileAlreadyMergedRequests();
+      this.startExpiryTimer();
+    }
   }
 
   /** Bug: 4db692a — whether the daemon is shutting down for a self-merge rebuild. */

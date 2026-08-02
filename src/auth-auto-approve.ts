@@ -68,6 +68,7 @@ export interface AuthAutoApproveOptions {
   now?: () => number;
   broadcast?: (event: SseEvent) => void;
   configDir?: string;
+  seedDefaultDurationSetting?: boolean;
 }
 
 interface ActiveLease {
@@ -93,7 +94,9 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     this.now = options.now ?? (() => Date.now());
     this.broadcast = options.broadcast ?? defaultBroadcast;
     this.configDir = options.configDir ?? getMandibleConfigPath("delegated-signing");
-    this.seedDefaultDurationSetting();
+    if (options.seedDefaultDurationSetting !== false) {
+      this.seedDefaultDurationSetting();
+    }
   }
 
   getStatus(): AuthAutoApproveStatus {
