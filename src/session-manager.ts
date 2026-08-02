@@ -389,11 +389,21 @@ export class SessionManager {
     this.clientAuth = clientAuth ?? null;
   }
 
-  init(): void {
+  init({ readOnly = false }: { readOnly?: boolean } = {}): void {
     const db = getDb();
     const rows = db
       .prepare("SELECT * FROM console_sessions")
       .all() as ConsoleSessionRow[];
+
+    if (readOnly) {
+      const attributionResolver = new AttributionReadResolver(db);
+      for (const row of rows) {
+        const session = rowToSession(row, attributionResolver);
+        this.pinClientIdentity(session);
+        this.sessions.set(session.id, new DormantBackend(session));
+      }
+      return;
+    }
 
     const retainedTerminalIds = new Set(
       rows

@@ -53,6 +53,10 @@ export interface StderrRotationConfig {
   keepSegments?: number;
 }
 
+export interface DaemonLoggerConfig {
+  persist?: boolean;
+}
+
 export interface DaemonLogRetentionOptions {
   now?: number;
   batchSize?: number;
@@ -120,24 +124,28 @@ class DaemonLogger {
     this.rotationCheckMs = parsePositiveInteger(env.MANDIBLE_STDERR_ROTATION_CHECK_MS, DEFAULT_ROTATION_CHECK_MS);
   }
 
-  configure(db: Db): void {
+  configure(db: Db, config: DaemonLoggerConfig = {}): void {
     // A re-configure (fresh startup, or a new DB in tests) abandons any rows
     // still queued against the previous connection and restarts both timers.
     this.stopTimers();
     this.queue = [];
-    this.db = db;
-    this.insert = db.prepare(
-      `INSERT INTO daemon_log (
-        id, ts, level, event, subsystem, fields_json,
-        issue_id, auth_request_id, artifact_id, session_id, repo_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ) as InsertStatement;
+    this.db = config.persist === false ? null : db;
+    this.insert = config.persist === false
+      ? null
+      : db.prepare(
+        `INSERT INTO daemon_log (
+          id, ts, level, event, subsystem, fields_json,
+          issue_id, auth_request_id, artifact_id, session_id, repo_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ) as InsertStatement;
     const insert = this.insert;
-    this.insertMany = db.transaction((rows: LogInsertParams[]) => {
-      for (const row of rows) {
-        insert.run(...row);
-      }
-    });
+    this.insertMany = insert
+      ? db.transaction((rows: LogInsertParams[]) => {
+        for (const row of rows) {
+          insert.run(...row);
+        }
+      })
+      : null;
     this.stderrRotation = {
       ...this.stderrRotation,
       filePath: process.env.MANDIBLE_STDERR_LOG_PATH || this.stderrRotation.filePath,
@@ -252,8 +260,8 @@ export function getDaemonLogger(): Logger {
   return singleton.log;
 }
 
-export function configureDaemonLogger(db: Db): Logger {
-  singleton.configure(db);
+export function configureDaemonLogger(db: Db, config: DaemonLoggerConfig = {}): Logger {
+  singleton.configure(db, config);
   return singleton.log;
 }
 

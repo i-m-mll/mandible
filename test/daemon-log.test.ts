@@ -94,6 +94,16 @@ function request(query: Record<string, string>): RequestLike {
 }
 
 describe("daemon logger", () => {
+  it("can mirror logs without mutating a read-only preview database", () => {
+    const logger = configureDaemonLogger(db, { persist: false });
+
+    logger("info", "preview_started", { subsystem: "test" });
+    flushDaemonLogger();
+
+    expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_log").get()).toEqual({ count: 0 });
+    expect(stderrSpy).toHaveBeenCalled();
+  });
+
   it("persists info and above while dropping debug noise", () => {
     const logger = configureDaemonLogger(db);
 

@@ -13,7 +13,9 @@ import {
   getDaemonLogger,
   startDaemonLogRetention,
 } from "./daemon-log.js";
-import { resolveInstanceInfo } from "./instance-policy.js";
+import { allowsOperationalMutations, resolveInstanceInfo } from "./instance-policy.js";
+import { AuthAutoApproveManager } from "./auth-auto-approve.js";
+import { AuthQueue } from "./auth-queue.js";
 import { NavMetadataEnricher } from "./nav-enrichment.js";
 import { SessionRegistry } from "./registry.js";
 import { SessionDiscovery, ReaperTimer } from "./session-discovery.js";
@@ -109,18 +111,6 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
   memoryDiagnostics.sample();
   const dbPath = options.dbPath ?? getDbPath();
-  const db = openDb(dbPath);
-  // Synchronous lock waits happen on the request thread. Clients already retry
-  // transient contention, so keep this bounded while the ingestion actor uses
-  // its own connection and explicit backoff.
-  db.pragma("busy_timeout = 250");
-  logger = configureDaemonLogger(db);
-  const eventLoopDiagnostics = new EventLoopLagDiagnostics(
-    (level, message, details) => logger(level, message, details),
-  );
-  // Seed the snapshot so health and ingestion-backoff reads (which no longer
-  // sample directly) have a value before the first periodic tick.
-  eventLoopDiagnostics.sample();
   const instance = resolveInstanceInfo({
     dbPath,
     dbPathSource: options.dbPath
@@ -128,6 +118,19 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
       : process.env.MANDIBLE_INSTANCE_DB_PATH_SOURCE
         ?? (process.env.MANDIBLE_DB ? "env" : "default"),
   });
+  const operationalMutationsAllowed = allowsOperationalMutations(instance);
+  const db = openDb(dbPath);
+  // Synchronous lock waits happen on the request thread. Clients already retry
+  // transient contention, so keep this bounded while the ingestion actor uses
+  // its own connection and explicit backoff.
+  db.pragma("busy_timeout = 250");
+  logger = configureDaemonLogger(db, { persist: operationalMutationsAllowed });
+  const eventLoopDiagnostics = new EventLoopLagDiagnostics(
+    (level, message, details) => logger(level, message, details),
+  );
+  // Seed the snapshot so health and ingestion-backoff reads (which no longer
+  // sample directly) have a value before the first periodic tick.
+  eventLoopDiagnostics.sample();
   const sse = new SseManager();
   const version = resolveVersion();
   const startupEpoch = randomUUID();
@@ -154,7 +157,14 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const sessionRegistry = new SessionRegistry(db, logger);
   // Bug: 4e32923 — capture the auth queue so the inbox route can mark
   // auth_requests as delivered when the channel server forwards the event.
-  const authQueue = registerAuthRoutes(router);
+  const autoApproveManager = new AuthAutoApproveManager({
+    seedDefaultDurationSetting: operationalMutationsAllowed,
+  });
+  const authQueue = new AuthQueue({
+    autoApprover: autoApproveManager,
+    backgroundMaintenance: operationalMutationsAllowed,
+  });
+  registerAuthRoutes(router, authQueue, autoApproveManager);
   registerChatRoutes(router);
   const workScanner = registerWorkRoutes(router, new WorkScanner({
     on_event: (event) => {
@@ -240,7 +250,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   }, { fileRpc: "deny" });
 
   const navEnricher = new NavMetadataEnricher(sessionRegistry, logger);
-  navEnricher.start();
+  if (operationalMutationsAllowed) {
+    navEnricher.start();
+  }
 
   // Bug: 4db692a — expose auth queue's rebuilding state to the health endpoint
   // so the UI doesn't reload while the daemon is still alive but about to restart.
@@ -311,7 +323,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Initialize console session manager: reconcile DB state, restart operator if configured.
   try {
-    sessionManager.init();
+    sessionManager.init({ readOnly: !operationalMutationsAllowed });
   } catch (error) {
     logger("warn", "session_manager_init_failed", { error: String(error) });
   }
@@ -347,9 +359,13 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // start the yielding scanner explicitly. Its completion event advances the
   // warm tier after the first reconciliation pass, even when a recent scan is
   // reused from the persisted skip window.
-  void workScanner.scanAllAsync({ skip_recent: true }).catch((error) => {
-    logger("warn", "startup_work_scan_failed", { error: String(error) });
-  });
+  if (operationalMutationsAllowed) {
+    void workScanner.scanAllAsync({ skip_recent: true }).catch((error) => {
+      logger("warn", "startup_work_scan_failed", { error: String(error) });
+    });
+  } else {
+    startupWorkScanComplete = true;
+  }
 
   // Resolve the startup epoch after critical readiness. A slow git process must
   // not delay mutation safety; health temporarily reports an unknown epoch and
@@ -360,87 +376,105 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   });
 
   // Start conversation ingestion watchers
-  try {
-    startIngestion(logger, {
-      dbPath,
-      // Read the last periodic sample so ingestion backoff does not reset the
-      // shared lag histogram between batches. Issue: 0d81726.
-      getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
-    });
-  } catch (error) {
-    logger("warn", "ingestion_start_failed", { error: String(error) });
+  if (operationalMutationsAllowed) {
+    try {
+      startIngestion(logger, {
+        dbPath,
+        // Read the last periodic sample so ingestion backoff does not reset the
+        // shared lag histogram between batches. Issue: 0d81726.
+        getBackgroundBackoffMs: () => eventLoopDiagnostics.snapshot().backgroundBackoffMs,
+      });
+    } catch (error) {
+      logger("warn", "ingestion_start_failed", { error: String(error) });
+    }
   }
 
   // Startup reconciliation can shell out to inspect many local processes and
   // worktrees. Run it after the daemon is healthy so startup callers are not
   // blocked by machine-size-dependent discovery latency.
-  const startupDiscoveryTimer = setTimeout(() => {
-    void (async () => {
-      try {
-        const activeSessions = sessionRegistry.listSessions({ status: "active" });
-        if (activeSessions.length === 0) {
-          const result = await sessionDiscovery.discoverSessions();
-          if (result.discovered > 0 || result.dead_reaped > 0) {
-            logger("info", "startup_discovery", { ...result });
+  const startupDiscoveryTimer = operationalMutationsAllowed
+    ? setTimeout(() => {
+      void (async () => {
+        try {
+          const activeSessions = sessionRegistry.listSessions({ status: "active" });
+          if (activeSessions.length === 0) {
+            const result = await sessionDiscovery.discoverSessions();
+            if (result.discovered > 0 || result.dead_reaped > 0) {
+              logger("info", "startup_discovery", { ...result });
+            }
           }
+        } catch (error) {
+          logger("warn", "startup_discovery_failed", { error: String(error) });
+        } finally {
+          startupSessionDiscoveryComplete = true;
+          updateWarmReadiness();
         }
-      } catch (error) {
-        logger("warn", "startup_discovery_failed", { error: String(error) });
-      } finally {
-        startupSessionDiscoveryComplete = true;
-        updateWarmReadiness();
-      }
-    })();
-  }, STARTUP_DISCOVERY_DELAY_MS);
-  if (typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
+      })();
+    }, STARTUP_DISCOVERY_DELAY_MS)
+    : null;
+  if (startupDiscoveryTimer && typeof startupDiscoveryTimer === "object" && "unref" in startupDiscoveryTimer) {
     startupDiscoveryTimer.unref();
+  }
+  if (!operationalMutationsAllowed) {
+    startupSessionDiscoveryComplete = true;
+    updateWarmReadiness();
+    logger("info", "background_operational_mutations_disabled", {
+      instance_role: instance.role,
+      operational_mutations: instance.operational_mutations,
+    });
   }
 
   // Bug: 73e0adf — clear stale channel_connected_at on daemon startup.
   // Sessions that were channel-connected when the daemon last stopped are
   // no longer live; clear their channel metadata so the dashboard doesn't
   // show phantom channel badges.
-  try {
-    db.prepare(
-      `UPDATE sessions SET channel_connected_at = NULL, channel_last_tool_call = NULL
-       WHERE channel_connected_at IS NOT NULL AND status NOT IN ('active', 'idle')`
-    ).run();
-  } catch (error) {
-    logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
+  if (operationalMutationsAllowed) {
+    try {
+      db.prepare(
+        `UPDATE sessions SET channel_connected_at = NULL, channel_last_tool_call = NULL
+         WHERE channel_connected_at IS NOT NULL AND status NOT IN ('active', 'idle')`
+      ).run();
+    } catch (error) {
+      logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
+    }
   }
 
   // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup.
   // Bug: 52b75c0 — Re-import if content has changed (hash comparison), not just if missing.
-  try {
-    const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
-    if (fs.existsSync(globalClaudeMd)) {
-      const content = fs.readFileSync(globalClaudeMd, "utf8");
-      const currentHash = computeContentHash(content);
-      const existingPreset = db.prepare(
-        "SELECT id, content_hash FROM presets WHERE source_path = ? LIMIT 1"
-      ).get(globalClaudeMd) as { id: string; content_hash: string } | undefined;
+  if (operationalMutationsAllowed) {
+    try {
+      const globalClaudeMd = path.join(os.homedir(), ".claude", "CLAUDE.md");
+      if (fs.existsSync(globalClaudeMd)) {
+        const content = fs.readFileSync(globalClaudeMd, "utf8");
+        const currentHash = computeContentHash(content);
+        const existingPreset = db.prepare(
+          "SELECT id, content_hash FROM presets WHERE source_path = ? LIMIT 1"
+        ).get(globalClaudeMd) as { id: string; content_hash: string } | undefined;
 
-      if (existingPreset) {
-        if (existingPreset.content_hash !== currentHash) {
-          // Content changed — delete old nodes and preset, then re-import
-          db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(existingPreset.id);
-          db.prepare("DELETE FROM presets WHERE id = ?").run(existingPreset.id);
+        if (existingPreset) {
+          if (existingPreset.content_hash !== currentHash) {
+            // Content changed — delete old nodes and preset, then re-import
+            db.prepare("DELETE FROM preset_nodes WHERE preset_id = ?").run(existingPreset.id);
+            db.prepare("DELETE FROM presets WHERE id = ?").run(existingPreset.id);
+            importClaudeMd(globalClaudeMd, db);
+            logger("info", "startup_preset_reimport", { path: globalClaudeMd, reason: "content_changed" });
+          }
+          // else: hashes match, skip (no change)
+        } else {
+          // No preset exists for this path — import fresh
           importClaudeMd(globalClaudeMd, db);
-          logger("info", "startup_preset_reimport", { path: globalClaudeMd, reason: "content_changed" });
+          logger("info", "startup_preset_import", { path: globalClaudeMd });
         }
-        // else: hashes match, skip (no change)
-      } else {
-        // No preset exists for this path — import fresh
-        importClaudeMd(globalClaudeMd, db);
-        logger("info", "startup_preset_import", { path: globalClaudeMd });
       }
+    } catch (error) {
+      logger("warn", "startup_preset_import_failed", { error: String(error) });
     }
-  } catch (error) {
-    logger("warn", "startup_preset_import_failed", { error: String(error) });
   }
 
   // Start periodic reaper (marks dead sessions whose PIDs vanished)
-  reaperTimer.start();
+  if (operationalMutationsAllowed) {
+    reaperTimer.start();
+  }
 
   // Bug: 73e0adf — periodic channel registry pruning (every 5 minutes).
   // Removes in-memory entries for channel sessions that haven't called
@@ -462,15 +496,21 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
 
   // Bug: 8a281b3 — periodic work-unit reconciler (dead sessions, abandoned branches, auto-commit)
   const workUnitReconciler = new WorkUnitReconciler(logger);
-  workUnitReconciler.start();
+  if (operationalMutationsAllowed) {
+    workUnitReconciler.start();
+  }
 
   // Start scheduled metadata backups
-  startBackupScheduler();
-  startTrashGcScheduler(db, (level, event, fields) => logger(level, event, fields));
+  if (operationalMutationsAllowed) {
+    startBackupScheduler();
+    startTrashGcScheduler(db, (level, event, fields) => logger(level, event, fields));
+  }
 
   // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
   // paced passes. Disk-reclaiming VACUUM remains an explicit maintenance task.
-  const daemonLogRetention = startDaemonLogRetention(db, logger);
+  const daemonLogRetention = operationalMutationsAllowed
+    ? startDaemonLogRetention(db, logger)
+    : { stop: () => undefined };
 
   let closing = false;
   const close = async () => {
@@ -508,7 +548,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     navEnricher.stop();
     fileRpcTransport.stop();
     authQueue.dispose();
-    clearTimeout(startupDiscoveryTimer);
+    if (startupDiscoveryTimer) clearTimeout(startupDiscoveryTimer);
     clearInterval(channelPruneTimer);
     // Bug: 737df04 — destroy all open connections (including SSE streams) before
     // calling server.close(). Without this, server.close() waits indefinitely for
