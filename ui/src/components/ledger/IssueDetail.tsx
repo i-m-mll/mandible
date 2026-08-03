@@ -6,6 +6,7 @@ import {
   compactArtifactBlobRef,
   compactArtifactRef,
   displayResourceRef,
+  resourceRefHref,
   seriesDetailHref,
   versionDetailHref,
 } from '../../resource-refs';
@@ -360,19 +361,24 @@ function AssociatedArtifactList({
   return (
     <div className="ledger-evidence-list">
       {artifacts.flatMap((artifact) => {
-        const links = artifact.links.length > 0 ? artifact.links : [null];
-        return links.map((link) => (
+        const rows: Array<{ key: string; link: LedgerIssueDetailArtifactLink | null; authoredRef: string | null }> = [
+          ...artifact.refs.map((ref) => ({ key: `ref:${ref}`, link: null, authoredRef: ref })),
+          ...artifact.links.map((link) => ({ key: `link:${link.id}`, link, authoredRef: null })),
+        ];
+        if (rows.length === 0) rows.push({ key: 'artifact', link: null, authoredRef: null });
+        return rows.map(({ key, link, authoredRef }) => (
           <a
-            key={`${artifact.id}:${link?.id ?? 'artifact'}`}
+            key={`${artifact.id}:${key}`}
             className="ledger-evidence-row"
-            href={artifactLinkHref(artifact, link)}
+            href={artifactLinkHref(artifact, link, authoredRef)}
             title={artifact.uri}
           >
-            <span>{artifactSourceLabel(artifact)}</span>
+            <span>{artifactSourceLabel(artifact, link, authoredRef)}</span>
             <strong>{artifactTitle(artifact)}</strong>
             <span className="ledger-evidence-row__meta">
               {link && <ArtifactLinkBadge link={link} />}
-              <code>{artifactMetaLabel(artifact)}</code>
+              <code>{artifactTypedRef(artifact, link, authoredRef)}</code>
+              {artifactMetaLabel(artifact) && <span>{artifactMetaLabel(artifact)}</span>}
             </span>
           </a>
         ));
@@ -393,8 +399,11 @@ function ArtifactLinkBadge({ link }: { link: LedgerIssueDetailArtifactLink }): J
 function artifactLinkHref(
   artifact: LedgerIssueDetailAssociatedArtifact,
   link: LedgerIssueDetailArtifactLink | null,
+  authoredRef: string | null,
 ): string {
-  if (!link) return artifactDetailHref(artifact.id);
+  if (authoredRef) return resourceRefHref(authoredRef);
+  if (!link) return artifact.ref ? resourceRefHref(artifact.ref) : artifactDetailHref(artifact.id);
+  if (link.target_id) return resourceRefHref(link.target_id);
 
   const seriesRef = link.series_ref
     ? logicalArtifactRefFromSeriesId(link.series_ref)
@@ -416,28 +425,49 @@ function logicalArtifactRefFromSeriesId(ref: string): string {
   return `artifact-series:${trimmed.replace(/^artifact:/i, '')}`;
 }
 
-function artifactSourceLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
-  if (artifact.links.length > 0 && artifact.refs.length > 0) return 'linked + referenced';
-  if (artifact.links.length > 0) return artifact.links[0].link_type.replace(/_/g, ' ');
+function artifactSourceLabel(
+  artifact: LedgerIssueDetailAssociatedArtifact,
+  link: LedgerIssueDetailArtifactLink | null,
+  authoredRef: string | null,
+): string {
+  if (authoredRef) return 'referenced';
+  if (link) return link.link_type.replace(/_/g, ' ');
   return 'referenced';
 }
 
 function artifactTitle(artifact: LedgerIssueDetailAssociatedArtifact): string {
-  const ref = artifact.refs[0];
-  if (ref) return displayResourceRef(ref);
-  return artifactFileLabel(artifact.uri)
+  return artifact.title
+    || artifact.logical_name
+    || artifactFileLabel(artifact.uri)
     || displayResourceRef(artifact.uri)
     || compactArtifactBlobRef(`artifact-blob:${artifact.content_hash}`);
 }
 
+function artifactTypedRef(
+  artifact: LedgerIssueDetailAssociatedArtifact,
+  link: LedgerIssueDetailArtifactLink | null,
+  authoredRef: string | null,
+): string {
+  if (authoredRef) return displayResourceRef(authoredRef);
+  if (link?.target_id) return displayResourceRef(link.target_id);
+  if (link?.link_kind === 'living') {
+    const seriesRef = link.series_ref ?? link.series_id;
+    if (seriesRef) return displayResourceRef(seriesRef);
+  }
+  if (link?.series_ref && typeof link.resolved_version_no === 'number') {
+    return `${displayResourceRef(link.series_ref)}@${link.resolved_version_no}`;
+  }
+  if (artifact.ref) return displayResourceRef(artifact.ref);
+  return compactArtifactRef(artifact.id);
+}
+
 function artifactMetaLabel(artifact: LedgerIssueDetailAssociatedArtifact): string {
-  const parts = [
+  return [
     artifact.role,
     artifact.media_type,
     artifact.provider_id,
     artifact.availability === 'unchecked' ? null : artifact.availability,
-  ].filter(Boolean);
-  return parts.length > 0 ? parts.join(' · ') : artifact.id;
+  ].filter(Boolean).join(' · ');
 }
 
 function artifactFileLabel(uri: string): string {

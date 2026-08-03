@@ -22,6 +22,7 @@ const execFileAsync = promisify(execFile);
 
 export const AUTO_APPROVE_DURATION_SETTING = "auth_auto_approve_duration_minutes";
 const DEFAULT_DURATION_MINUTES = 60;
+const DEFAULT_PRESENCE_COMMAND_TIMEOUT_MS = 15_000;
 const PROVIDER = "yubikey-age";
 
 export interface AuthApprovalContext {
@@ -69,6 +70,7 @@ export interface AuthAutoApproveOptions {
   broadcast?: (event: SseEvent) => void;
   configDir?: string;
   seedDefaultDurationSetting?: boolean;
+  presenceCommandTimeoutMs?: number;
 }
 
 interface ActiveLease {
@@ -80,6 +82,7 @@ interface ActiveLease {
   sshAuthSock: string;
   timer: ReturnType<typeof setTimeout> | null;
   publicKeyPath: string;
+  terminationPending?: boolean;
 }
 
 export class AuthAutoApproveManager implements AuthAutoApprover {
@@ -87,6 +90,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   private readonly now: () => number;
   private readonly broadcast: (event: SseEvent) => void;
   private readonly configDir: string;
+  private readonly presenceCommandTimeoutMs: number;
   private activeLease: ActiveLease | null = null;
 
   constructor(options: AuthAutoApproveOptions = {}) {
@@ -94,6 +98,10 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     this.now = options.now ?? (() => Date.now());
     this.broadcast = options.broadcast ?? defaultBroadcast;
     this.configDir = options.configDir ?? getMandibleConfigPath("delegated-signing");
+    this.presenceCommandTimeoutMs = Math.max(
+      1,
+      options.presenceCommandTimeoutMs ?? DEFAULT_PRESENCE_COMMAND_TIMEOUT_MS,
+    );
     if (options.seedDefaultDurationSetting !== false) {
       this.seedDefaultDurationSetting();
     }
@@ -101,7 +109,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
   getStatus(): AuthAutoApproveStatus {
     this.expireIfNeeded();
-    const lease = this.activeLease;
+    const lease = this.activeLease?.terminationPending ? null : this.activeLease;
     const enabledUntil = lease?.enabledUntil ?? null;
     const remainingMs = enabledUntil == null ? 0 : Math.max(0, enabledUntil - this.now());
     return {
@@ -116,7 +124,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
   getActiveApprovalContext(): AuthApprovalContext | null {
     this.expireIfNeeded();
-    if (!this.activeLease) return null;
+    if (!this.activeLease || this.activeLease.terminationPending) return null;
     return {
       source: "auto_lease",
       leaseId: this.activeLease.id,
@@ -241,7 +249,9 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     if (!operator) {
       throw new Error("Delegated signing requires a configured local operator.");
     }
-    const identity = await execFileText("age-plugin-yubikey", ["--identity"]);
+    const identity = await execFileText("age-plugin-yubikey", ["--identity"], {
+      timeoutMs: this.presenceCommandTimeoutMs,
+    });
     if (!identity.trim()) {
       throw new Error("No age-plugin-yubikey identity available from the inserted YubiKey.");
     }
@@ -249,6 +259,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
       "age",
       ["--decrypt", "--identity", "-", paths.encryptedPassphrase],
       identity,
+      { timeoutMs: this.presenceCommandTimeoutMs },
     );
     const agent = await startSshAgent();
 
@@ -257,7 +268,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
         "ssh-add",
         ["-t", String(durationSeconds), paths.privateKey],
         `${passphrase.trimEnd()}\n`,
-        { SSH_AUTH_SOCK: agent.sshAuthSock },
+        { env: { SSH_AUTH_SOCK: agent.sshAuthSock } },
       );
     } catch (error) {
       await stopSshAgent(agent.sshAgentPid);
@@ -354,14 +365,49 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   }
 
   disable(reason = "disabled"): AuthAutoApproveStatus {
+    this.clearActiveLease(reason, true);
+    return this.getStatus();
+  }
+
+  async removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
+    const lease = this.activeLease;
+    if (lease) {
+      this.db.prepare(
+        `UPDATE delegated_signing_leases
+         SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?))
+         WHERE id = ?`,
+      ).run(this.now(), lease.id);
+      if (lease.timer) clearTimeout(lease.timer);
+      lease.timer = null;
+      lease.terminationPending = true;
+      await stopSshAgent(lease.sshAgentPid);
+      if (this.activeLease !== lease) {
+        throw new Error("Delegated signing lease changed during removal; retry removal.");
+      }
+      this.activeLease = null;
+    }
+    const paths = this.paths();
+    for (const file of [paths.privateKey, paths.publicKey, paths.encryptedPassphrase, paths.recipient]) {
+      fs.rmSync(file, { force: true });
+    }
+    try {
+      fs.rmdirSync(this.configDir);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTEMPTY") throw error;
+    }
+    this.broadcastStatus("signing_removed");
+    return this.getStatus();
+  }
+
+  private clearActiveLease(reason: string, broadcast: boolean): void {
     const lease = this.activeLease;
     this.activeLease = null;
     if (lease?.timer) clearTimeout(lease.timer);
     if (lease) {
       void stopSshAgent(lease.sshAgentPid).catch(() => undefined);
-      this.broadcastStatus(reason);
+      if (broadcast) this.broadcastStatus(reason);
     }
-    return this.getStatus();
   }
 
   getDurationMinutes(): number {
@@ -436,7 +482,11 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   }
 
   private expireIfNeeded(): void {
-    if (this.activeLease && this.activeLease.enabledUntil <= this.now()) {
+    if (
+      this.activeLease &&
+      !this.activeLease.terminationPending &&
+      this.activeLease.enabledUntil <= this.now()
+    ) {
       this.disable("expired");
     }
   }
@@ -458,31 +508,63 @@ function hasCommand(command: string): boolean {
   }
 }
 
-async function execFileText(command: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync(command, args, {
-    env: { ...process.env, LC_ALL: "C" },
-    maxBuffer: 1024 * 1024,
-  });
-  return stdout;
+async function execFileText(
+  command: string,
+  args: string[],
+  options: { timeoutMs?: number } = {},
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(command, args, {
+      env: { ...process.env, LC_ALL: "C" },
+      maxBuffer: 1024 * 1024,
+      timeout: options.timeoutMs,
+      killSignal: "SIGKILL",
+    });
+    return stdout;
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: boolean; signal?: string };
+    if (options.timeoutMs != null && (failure.killed || failure.signal === "SIGKILL")) {
+      throw new Error(`${command} timed out after ${options.timeoutMs}ms`);
+    }
+    throw error;
+  }
 }
 
 function runWithInput(
   command: string,
   args: string[],
   input: string,
-  env: NodeJS.ProcessEnv = {},
+  options: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, LC_ALL: "C", ...env },
+      env: { ...process.env, LC_ALL: "C", ...options.env },
     });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const timer = options.timeoutMs == null
+      ? null
+      : setTimeout(() => {
+          if (settled) return;
+          settled = true;
+          child.kill("SIGKILL");
+          reject(new Error(`${command} timed out after ${options.timeoutMs}ms`));
+        }, options.timeoutMs);
+    timer?.unref();
     child.stdout.on("data", (data: Buffer) => { stdout += data.toString("utf8"); });
     child.stderr.on("data", (data: Buffer) => { stderr += data.toString("utf8"); });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
       if (code === 0) {
         resolve(stdout);
       } else {
@@ -506,7 +588,10 @@ async function startSshAgent(): Promise<{ sshAgentPid: string; sshAuthSock: stri
 async function stopSshAgent(pid: string): Promise<void> {
   try {
     await execFileAsync("kill", [pid]);
-  } catch {
-    // Best effort. The agent also enforces key lifetime.
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { stderr?: string | Buffer };
+    const stderr = String(failure.stderr ?? "");
+    if (failure.code === "ESRCH" || /no such process/i.test(stderr)) return;
+    throw error;
   }
 }

@@ -9,6 +9,7 @@ import {
   isDesktopShell,
   navigateToDesktopBootstrap,
   resetRuntime,
+  removeDelegatedSigning,
   restartDesktopDaemon,
   rollbackRuntime,
   runBackupNow,
@@ -649,9 +650,10 @@ function formatBytes(bytes: number): string {
   return `${mb.toFixed(1)} MB`;
 }
 
-function DelegatedSigningSection(): JSX.Element {
+export function DelegatedSigningSection(): JSX.Element {
   const [status, setStatus] = useState<AuthAutoApproveStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirmRemove, setConfirmRemove] = useState(false);
   const [feedback, setFeedback] = useState<FeedbackState>(null);
 
   const load = useCallback(() => {
@@ -666,6 +668,21 @@ function DelegatedSigningSection(): JSX.Element {
   useEffect(() => {
     load();
   }, [load]);
+
+  const handleRemove = useCallback(async () => {
+    setBusy(true);
+    setFeedback(null);
+    try {
+      const removed = await removeDelegatedSigning();
+      setStatus(removed);
+      setConfirmRemove(false);
+      setFeedback({ type: 'success', message: 'Delegated signing material removed' });
+    } catch (err) {
+      setFeedback({ type: 'error', message: err instanceof Error ? err.message : 'Removal failed' });
+    } finally {
+      setBusy(false);
+    }
+  }, []);
 
   const handleSetup = useCallback(async () => {
     setBusy(true);
@@ -703,6 +720,16 @@ function DelegatedSigningSection(): JSX.Element {
           >
             {busy ? 'Setting up...' : signing?.configured ? 'Configured' : 'Set up'}
           </button>
+          {signing?.configured && (
+            <button
+              type="button"
+              className="btn btn--sm"
+              onClick={() => setConfirmRemove(true)}
+              disabled={busy}
+            >
+              Remove
+            </button>
+          )}
           {signing && signing.missing_tools.length > 0 && (
             <span className="settings-view__feedback settings-view__feedback--error">
               Missing {signing.missing_tools.join(', ')}
@@ -710,6 +737,20 @@ function DelegatedSigningSection(): JSX.Element {
           )}
         </div>
       </div>
+      {confirmRemove && (
+        <div className="settings-view__confirm" role="alertdialog" aria-labelledby="delegated-signing-remove-title">
+          <div className="settings-view__confirm-body">
+            <strong id="delegated-signing-remove-title">Remove delegated signing material?</strong>
+            <span>This disables any active auto-approve lease and deletes the local delegated key files. Manual YubiKey approval remains available.</span>
+          </div>
+          <div className="settings-view__confirm-actions">
+            <button type="button" className="btn btn--sm" onClick={() => setConfirmRemove(false)} disabled={busy}>Cancel</button>
+            <button type="button" className="btn btn--active btn--sm" onClick={handleRemove} disabled={busy}>
+              {busy ? 'Removing...' : 'Remove key material'}
+            </button>
+          </div>
+        </div>
+      )}
       {signing?.public_key && (
         <div className="settings-view__field">
           <textarea

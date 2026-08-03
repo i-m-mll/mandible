@@ -10,6 +10,7 @@ import { setupOperator } from "../src/users/store.js";
 describe("delegated signing attribution persistence", () => {
   let tempDir: string;
   let db: Db;
+  let binDir: string;
   let originalPath: string | undefined;
 
   beforeEach(() => {
@@ -17,7 +18,7 @@ describe("delegated signing attribution persistence", () => {
     db = openDb(path.join(tempDir, "mandible.db"));
     setupOperator(db, { slug: "delegated-operator", display_name: "Delegated Operator" }, 1);
     originalPath = process.env.PATH;
-    const binDir = path.join(tempDir, "bin");
+    binDir = path.join(tempDir, "bin");
     fs.mkdirSync(binDir);
     writeTool(binDir, "ssh-keygen", `
       const fs = require("node:fs");
@@ -53,6 +54,8 @@ describe("delegated signing attribution persistence", () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    delete process.env.MANDIBLE_TEST_KILL_MARKER;
+    delete process.env.MANDIBLE_TEST_KILL_ATTEMPTS;
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -106,6 +109,126 @@ describe("delegated signing attribution persistence", () => {
       mint_method: "fresh_presence",
     }));
     manager.disable("test_complete");
+  });
+
+  it("removes delegated signing files idempotently and reports the refreshed status", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const events: unknown[] = [];
+    const manager = new AuthAutoApproveManager({
+      db,
+      configDir,
+      broadcast: (event) => events.push(event),
+    });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+
+    expect((await manager.removeDelegatedSigning()).signing.configured).toBe(false);
+    expect((await manager.removeDelegatedSigning()).signing.configured).toBe(false);
+    expect(fs.existsSync(path.join(configDir, "id_ed25519_mandible_delegated"))).toBe(false);
+    expect(events).toHaveLength(2);
+  });
+
+  it("expires an enabled lease and awaits ssh-agent shutdown before removing files", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const marker = path.join(tempDir, "agent-stopped");
+    process.env.MANDIBLE_TEST_KILL_MARKER = marker;
+    writeTool(binDir, "kill", `
+      const fs = require("node:fs");
+      setTimeout(() => fs.writeFileSync(process.env.MANDIBLE_TEST_KILL_MARKER, "stopped"), 40);
+    `);
+    const manager = new AuthAutoApproveManager({ db, configDir, broadcast: () => undefined });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    const enabled = await manager.enable(1);
+
+    const removed = await manager.removeDelegatedSigning();
+
+    expect(fs.readFileSync(marker, "utf8")).toBe("stopped");
+    expect(removed).toMatchObject({ enabled: false, lease_id: null, signing: { configured: false } });
+    const persisted = db.prepare(
+      "SELECT expires_at FROM delegated_signing_leases WHERE id = ?",
+    ).get(enabled.lease_id) as { expires_at: number };
+    expect(persisted.expires_at).toBeLessThan(enabled.enabled_until!);
+  });
+
+  it("retains termination state and key files when shutdown fails, then removes on retry", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const attemptsFile = path.join(tempDir, "kill-attempts");
+    process.env.MANDIBLE_TEST_KILL_ATTEMPTS = attemptsFile;
+    writeTool(binDir, "kill", `
+      const fs = require("node:fs");
+      const file = process.env.MANDIBLE_TEST_KILL_ATTEMPTS;
+      const attempts = fs.existsSync(file) ? Number(fs.readFileSync(file, "utf8")) : 0;
+      fs.writeFileSync(file, String(attempts + 1));
+      if (attempts === 0) {
+        process.stderr.write("kill: operation not permitted\\n");
+        process.exitCode = 2;
+      }
+    `);
+    const manager = new AuthAutoApproveManager({ db, configDir, broadcast: () => undefined });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    const enabled = await manager.enable(1);
+
+    await expect(manager.removeDelegatedSigning()).rejects.toThrow(/operation not permitted/);
+    expect(manager.getStatus()).toMatchObject({
+      enabled: false,
+      lease_id: null,
+      signing: { configured: true },
+    });
+    expect(fs.existsSync(path.join(configDir, "id_ed25519_mandible_delegated"))).toBe(true);
+    const expired = db.prepare(
+      "SELECT expires_at FROM delegated_signing_leases WHERE id = ?",
+    ).get(enabled.lease_id) as { expires_at: number };
+    expect(expired.expires_at).toBeLessThan(enabled.enabled_until!);
+
+    const removed = await manager.removeDelegatedSigning();
+    expect(removed).toMatchObject({ enabled: false, signing: { configured: false } });
+    expect(fs.readFileSync(attemptsFile, "utf8")).toBe("2");
+  });
+
+  it("retains the active lease and key files when durable expiry fails, then removes on retry", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const manager = new AuthAutoApproveManager({ db, configDir, broadcast: () => undefined });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    await manager.enable(1);
+    db.exec(`
+      CREATE TRIGGER fail_delegated_lease_expiry
+      BEFORE UPDATE OF expires_at ON delegated_signing_leases
+      BEGIN
+        SELECT RAISE(ABORT, 'simulated expiry failure');
+      END;
+    `);
+
+    await expect(manager.removeDelegatedSigning()).rejects.toThrow(/simulated expiry failure/);
+    expect(manager.getStatus()).toMatchObject({ enabled: true, signing: { configured: true } });
+    expect(fs.existsSync(path.join(configDir, "id_ed25519_mandible_delegated"))).toBe(true);
+
+    db.exec("DROP TRIGGER fail_delegated_lease_expiry");
+    expect((await manager.removeDelegatedSigning()).signing.configured).toBe(false);
+  });
+
+  it("treats an already-gone ssh-agent as successful removal", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const manager = new AuthAutoApproveManager({ db, configDir, broadcast: () => undefined });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    await manager.enable(1);
+
+    expect((await manager.removeDelegatedSigning()).signing.configured).toBe(false);
+  });
+
+  it("times out a delegated presence command without creating an active lease", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const manager = new AuthAutoApproveManager({
+      db,
+      configDir,
+      broadcast: () => undefined,
+      presenceCommandTimeoutMs: 30,
+    });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    writeTool(binDir, "age-plugin-yubikey", `setInterval(() => undefined, 1000);`);
+
+    await expect(manager.enable(1)).rejects.toThrow(/timed out after 30ms/);
+    expect(manager.getStatus()).toMatchObject({ enabled: false, lease_id: null });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM delegated_signing_leases").get())
+      .toEqual({ count: 0 });
   });
 });
 

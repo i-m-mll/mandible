@@ -715,6 +715,11 @@ export async function setupDelegatedSigning(input: {
   return (await parseMaybeJson(response)) as AuthAutoApproveStatus['signing'];
 }
 
+export async function removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
+  const response = await apiDelete('/api/auth/auto-approve/signing');
+  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+}
+
 // Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)
 // from the dashboard so stale content can be corrected before approval.
 export async function updateAuthRequestField(
@@ -1190,12 +1195,18 @@ export type LedgerIssueDetailArtifactLink = {
   series_id: string | null;
   series_ref: string | null;
   resolved_version_no: number | null;
+  target_type: 'artifact' | 'artifact_version' | 'artifact_blob' | null;
+  target_id: string | null;
   created_at: number;
   updated_at: number;
 };
 
 export type LedgerIssueDetailAssociatedArtifact = {
   id: string;
+  /** Public ref for the immutable bytes; present on canonical projections. */
+  ref?: string;
+  title: string | null;
+  logical_name: string | null;
   algorithm: string;
   content_hash: string;
   uri: string;

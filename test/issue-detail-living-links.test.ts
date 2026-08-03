@@ -99,10 +99,10 @@ describe("issue detail living artifact links", () => {
 
     const artifacts = buildLedgerIssueDetailProjection(db, issueId).associated_artifacts;
 
-    const pinned = artifacts.find((artifact) => artifact.id === v1.artifact.id);
-    const living = artifacts.find((artifact) => artifact.id === v2.artifact.id);
+    const pinned = artifacts.find((artifact) => artifact.content_hash === v1.artifact.content_hash);
+    const living = artifacts.find((artifact) => artifact.content_hash === v2.artifact.content_hash);
     expect(pinned).toMatchObject({
-      id: v1.artifact.id,
+      content_hash: v1.artifact.content_hash,
       pin_state: "pinned",
       resolved_version_no: null,
       is_latest: null,
@@ -110,9 +110,11 @@ describe("issue detail living artifact links", () => {
     expect(pinned?.links[0]).toMatchObject({
       link_kind: "pinned",
       resolved_version_no: null,
+      target_type: "artifact_version",
+      target_id: v1.version.id,
     });
     expect(living).toMatchObject({
-      id: v2.artifact.id,
+      content_hash: v2.artifact.content_hash,
       pin_state: "living",
       series_id: v1.series.id,
       resolved_version_no: 2,
@@ -123,6 +125,7 @@ describe("issue detail living artifact links", () => {
       link_kind: "living",
       series_id: v1.series.id,
       resolved_version_no: 2,
+      target_type: "artifact",
     });
   });
 
@@ -219,7 +222,11 @@ describe("issue detail living artifact links", () => {
     const artifacts = buildLedgerIssueDetailProjection(db, issueId).associated_artifacts;
 
     expect(artifacts).toHaveLength(1);
-    expect(artifacts[0].id).toBe(v1.artifact.id);
+    expect(artifacts[0].content_hash).toBe(v1.artifact.content_hash);
+    expect(artifacts[0]).toMatchObject({
+      title: null,
+      logical_name: "body-ref",
+    });
     expect(artifacts[0].refs.sort()).toEqual([v1.series.id, v1.version.id].sort());
   });
 });
