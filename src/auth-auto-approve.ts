@@ -82,6 +82,7 @@ interface ActiveLease {
   sshAuthSock: string;
   timer: ReturnType<typeof setTimeout> | null;
   publicKeyPath: string;
+  terminationPending?: boolean;
 }
 
 export class AuthAutoApproveManager implements AuthAutoApprover {
@@ -108,7 +109,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
   getStatus(): AuthAutoApproveStatus {
     this.expireIfNeeded();
-    const lease = this.activeLease;
+    const lease = this.activeLease?.terminationPending ? null : this.activeLease;
     const enabledUntil = lease?.enabledUntil ?? null;
     const remainingMs = enabledUntil == null ? 0 : Math.max(0, enabledUntil - this.now());
     return {
@@ -123,7 +124,7 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
   getActiveApprovalContext(): AuthApprovalContext | null {
     this.expireIfNeeded();
-    if (!this.activeLease) return null;
+    if (!this.activeLease || this.activeLease.terminationPending) return null;
     return {
       source: "auto_lease",
       leaseId: this.activeLease.id,
@@ -370,15 +371,20 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
 
   async removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
     const lease = this.activeLease;
-    this.activeLease = null;
-    if (lease?.timer) clearTimeout(lease.timer);
     if (lease) {
       this.db.prepare(
         `UPDATE delegated_signing_leases
          SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?))
          WHERE id = ?`,
       ).run(this.now(), lease.id);
+      if (lease.timer) clearTimeout(lease.timer);
+      lease.timer = null;
+      lease.terminationPending = true;
       await stopSshAgent(lease.sshAgentPid);
+      if (this.activeLease !== lease) {
+        throw new Error("Delegated signing lease changed during removal; retry removal.");
+      }
+      this.activeLease = null;
     }
     const paths = this.paths();
     for (const file of [paths.privateKey, paths.publicKey, paths.encryptedPassphrase, paths.recipient]) {
@@ -476,7 +482,11 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
   }
 
   private expireIfNeeded(): void {
-    if (this.activeLease && this.activeLease.enabledUntil <= this.now()) {
+    if (
+      this.activeLease &&
+      !this.activeLease.terminationPending &&
+      this.activeLease.enabledUntil <= this.now()
+    ) {
       this.disable("expired");
     }
   }
@@ -578,7 +588,10 @@ async function startSshAgent(): Promise<{ sshAgentPid: string; sshAuthSock: stri
 async function stopSshAgent(pid: string): Promise<void> {
   try {
     await execFileAsync("kill", [pid]);
-  } catch {
-    // Best effort. The agent also enforces key lifetime.
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { stderr?: string | Buffer };
+    const stderr = String(failure.stderr ?? "");
+    if (failure.code === "ESRCH" || /no such process/i.test(stderr)) return;
+    throw error;
   }
 }
