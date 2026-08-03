@@ -2505,7 +2505,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("runs a delegated signing presence challenge before spawning auth merge execution", async () => {
+  it("keeps manual approval on the direct path when delegated signing is configured", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const approverUserId = registerTestDelegatedLease(db, "presence-1");
@@ -2531,25 +2531,14 @@ describe("auth queue", () => {
           }),
           presenceChallenge: async () => {
             order.push("challenge");
-            return {
-              source: "presence_challenge",
-              leaseId: "presence-1",
-              approverUserId,
-              env: {
-                SSH_AUTH_SOCK: "/tmp/presence.sock",
-                MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
-                GIT_CONFIG_COUNT: "1",
-                GIT_CONFIG_KEY_0: "user.signingkey",
-                GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
-              },
-            };
+            throw new Error("manual approval must not request delegated presence");
           },
         },
         executor: async (options) => {
           order.push("executor");
           expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
-          expect(options.env?.SSH_AUTH_SOCK).toBe("/tmp/presence.sock");
-          expect(options.env?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+          expect(options.env?.SSH_AUTH_SOCK).toBeUndefined();
+          expect(options.env?.GIT_CONFIG_VALUE_0).toBeUndefined();
           return {
             exit_code: 0,
             signal: null,
@@ -2575,9 +2564,9 @@ describe("auth queue", () => {
       queue.approve(request.id);
       const resolved = await waitForStatus(queue, request.id, "completed");
 
-      expect(order).toEqual(["challenge", "executor"]);
-      expect(resolved?.approval_source).toBe("presence_challenge");
-      expect(resolved?.approval_lease_id).toBe("presence-1");
+      expect(order).toEqual(["executor"]);
+      expect(resolved?.approval_source).toBe("manual");
+      expect(resolved?.approval_lease_id).toBeNull();
       const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
       expect(evidence.signature.evidence_method).toBe("credential_signature");
       expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
@@ -2586,7 +2575,7 @@ describe("auth queue", () => {
       });
       expect(evidence.authorization).toMatchObject({
         evidence_method: "hardware_presence",
-        lease_id: "presence-1",
+        lease_id: null,
       });
       expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
         authorizer_user_id: approverUserId,
@@ -2595,8 +2584,8 @@ describe("auth queue", () => {
         .filter((event) => event.event === "auth:output")
         .map((event) => ((event.data as { text?: string }).text ?? ""))
         .join("");
-      expect(output).toContain("waiting for YubiKey touch");
-      expect(output).toContain("delegated signing key ready");
+      expect(output).not.toContain("waiting for YubiKey touch");
+      expect(output).not.toContain("delegated signing key ready");
       queue.dispose();
     } finally {
       db.close();
@@ -2667,7 +2656,12 @@ describe("auth queue", () => {
           head_branch: `feature/presence-${mismatch}`,
           cwd: repo,
         });
-        queue.approve(request.id);
+        queue.approve(request.id, {
+          source: "presence_challenge",
+          leaseId: "presence-valid",
+          approverUserId: operatorId,
+          env: {},
+        });
         const failed = await waitForStatus(queue, request.id, "completed");
         expect(executed).toBe(false);
         expect(failed.error).toMatch(mismatch === "approver" ? /approver does not match/ : /lease is not valid/);

@@ -2369,7 +2369,9 @@ export class AuthQueue {
       request = this.requireRequest(id);
     }
 
-    const effectiveApproval = approval ?? this.autoApprover?.getActiveApprovalContext() ?? undefined;
+    // Manual approval is always the direct interactive signing path. Automated
+    // callers pass their delegated approval context explicitly.
+    const effectiveApproval = approval;
     const approverUserId = this.resolveApproverUserId(
       effectiveApproval?.approverUserId ?? approvedByUserId,
     );
@@ -2834,18 +2836,9 @@ export class AuthQueue {
   }
 
   private needsPresenceChallenge(request: AuthRequest): boolean {
-    if (!isAuthMergeCommand(request)) {
-      return false;
-    }
-    const existingEnv = this.executionEnvs.get(request.id);
-    if (existingEnv?.SSH_AUTH_SOCK) {
-      return false;
-    }
-    const status = this.autoApprover?.getDelegatedSigningStatus?.();
-    return Boolean(
-      status?.configured &&
-      this.autoApprover?.presenceChallenge
-    );
+    return request.approval_source === "presence_challenge" &&
+      !this.executionEnvs.get(request.id)?.SSH_AUTH_SOCK &&
+      Boolean(this.autoApprover?.presenceChallenge);
   }
 
   autoApprovePending(approval: AuthApprovalContext): AuthRequest[] {

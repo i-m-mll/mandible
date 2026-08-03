@@ -506,6 +506,15 @@ export function registerAuthRoutes(
     }
   }, { fileRpc: "deny" });
 
+  app.delete("/api/auth/auto-approve/signing", (req, res) => {
+    try {
+      requireOperator(getDb(), req);
+      res.json(autoApproveManager.removeDelegatedSigning());
+    } catch (error) {
+      handleQueueError(error, res);
+    }
+  }, { fileRpc: "deny" });
+
   return authQueue;
 }
 

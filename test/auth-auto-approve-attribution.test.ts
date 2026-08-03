@@ -10,6 +10,7 @@ import { setupOperator } from "../src/users/store.js";
 describe("delegated signing attribution persistence", () => {
   let tempDir: string;
   let db: Db;
+  let binDir: string;
   let originalPath: string | undefined;
 
   beforeEach(() => {
@@ -17,7 +18,7 @@ describe("delegated signing attribution persistence", () => {
     db = openDb(path.join(tempDir, "mandible.db"));
     setupOperator(db, { slug: "delegated-operator", display_name: "Delegated Operator" }, 1);
     originalPath = process.env.PATH;
-    const binDir = path.join(tempDir, "bin");
+    binDir = path.join(tempDir, "bin");
     fs.mkdirSync(binDir);
     writeTool(binDir, "ssh-keygen", `
       const fs = require("node:fs");
@@ -106,6 +107,39 @@ describe("delegated signing attribution persistence", () => {
       mint_method: "fresh_presence",
     }));
     manager.disable("test_complete");
+  });
+
+  it("removes delegated signing files idempotently and reports the refreshed status", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const events: unknown[] = [];
+    const manager = new AuthAutoApproveManager({
+      db,
+      configDir,
+      broadcast: (event) => events.push(event),
+    });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+
+    expect(manager.removeDelegatedSigning().signing.configured).toBe(false);
+    expect(manager.removeDelegatedSigning().signing.configured).toBe(false);
+    expect(fs.existsSync(path.join(configDir, "id_ed25519_mandible_delegated"))).toBe(false);
+    expect(events).toHaveLength(2);
+  });
+
+  it("times out a delegated presence command without creating an active lease", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const manager = new AuthAutoApproveManager({
+      db,
+      configDir,
+      broadcast: () => undefined,
+      presenceCommandTimeoutMs: 30,
+    });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    writeTool(binDir, "age-plugin-yubikey", `setInterval(() => undefined, 1000);`);
+
+    await expect(manager.enable(1)).rejects.toThrow(/timed out after 30ms/);
+    expect(manager.getStatus()).toMatchObject({ enabled: false, lease_id: null });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM delegated_signing_leases").get())
+      .toEqual({ count: 0 });
   });
 });
 
