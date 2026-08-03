@@ -77,6 +77,37 @@ function recordManaged(name: string, content: string, now: number, repoId?: stri
 }
 
 describe("canonical artifact compatibility consumers", () => {
+  it("searches public artifact identity prefixes across complete version history", () => {
+    const first = recordManaged("searchable-identity", "v1\n", 1000);
+    recordManaged("searchable-identity", "v2\n", 1001);
+    recordManaged("unrelated-identity", "other\n", 1002);
+
+    const refs = canonicalRefs(first);
+    const publicRefs = [
+      refs.logical,
+      first.series.id,
+      refs.version,
+      refs.blob,
+    ];
+
+    for (const ref of publicRefs) {
+      const separator = ref.indexOf(":");
+      const type = ref.slice(0, separator);
+      const prefix = ref.slice(separator + 1, separator + 5);
+      expect(prefix).toHaveLength(4);
+
+      expect(listArtifactSeries(db, { q: prefix.toUpperCase() }).map((item) => item.id))
+        .toContain(first.series.id);
+      expect(listArtifactSeries(db, { q: `${type.toUpperCase()}:${prefix.toUpperCase()}` })
+        .map((item) => item.id)).toContain(first.series.id);
+    }
+
+    // Identity prefix matching extends the existing human-readable substring
+    // search; it does not turn title/name matching into prefix-only matching.
+    expect(listArtifactSeries(db, { q: "ABLE-IDENT" }).map((item) => item.id))
+      .toContain(first.series.id);
+  });
+
   it("paginates canonical series and filtered matches beyond the first 500 blobs", () => {
     const insertBlob = db.prepare(
       `INSERT INTO artifact_blob (id, content_hash, role, created_at)
