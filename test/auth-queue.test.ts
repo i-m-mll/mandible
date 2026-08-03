@@ -15,6 +15,7 @@ import type { SseEvent } from "../src/types.js";
 import {
   addCredential,
   addDelegatedSigningLease,
+  createUser,
   getOperator,
   setupOperator,
 } from "../src/users/store.js";
@@ -73,8 +74,8 @@ async function waitForStatus(queue: AuthQueue, id: string, status: string, timeo
   throw new Error(`Timed out waiting for status ${status}`);
 }
 
-function git(cwd: string, args: string[]): string {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+function git(cwd: string, args: string[], extraEnv: NodeJS.ProcessEnv = {}): string {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...extraEnv };
   delete env.GIT_CONFIG_COUNT;
   for (const key of Object.keys(env)) {
     if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) delete env[key];
@@ -268,6 +269,151 @@ function insertWorkUnit(
 }
 
 describe("auth queue", () => {
+  it.each([
+    ["after CAS", false, false, false],
+    ["after worktree sync", true, false, false],
+    ["after result emission", true, true, false],
+    ["with an untracked sync collision", false, false, true],
+  ])("recovers an exact trusted atomic merge %s", async (_phase, syncBeforeRestart, resultBeforeRestart, blockSync) => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    let queue: AuthQueue | null = null;
+    try {
+      commitOnBranch(repo, "feature/atomic-recovery", { "atomic.txt": "atomic\n" });
+      git(repo, ["checkout", "feature/atomic-recovery"]);
+      git(repo, ["commit", "--amend", "-m", "atomic recovery\n\nCloses-Mandible-Issue: abc1234"]);
+      git(repo, ["checkout", "main"]);
+      registerWorkRepo(db, repo);
+      const signing = configureSigningCredential(db, repo, "ssh_key");
+      git(repo, ["config", "commit.gpgsign", "true"]);
+
+      queue = new AuthQueue({ db, hookManager: createNoopHookManager(), backgroundMaintenance: false });
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/atomic-recovery --into main",
+        title: "Atomic recovery",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/atomic-recovery",
+        merge_head_sha: git(repo, ["rev-parse", "feature/atomic-recovery"]),
+        cwd: repo,
+      });
+      db.prepare(
+        `UPDATE auth_requests
+            SET status = 'executing', approved_at = 1, approved_by_user_id = ?,
+                approval_source = 'manual', merge_atomic_enabled = 1
+          WHERE id = ?`,
+      ).run(signing.operatorId, request.id);
+      const pinned = request;
+      const mergeSha = git(repo, [
+        "commit-tree",
+        pinned.merge_candidate_tree_sha!,
+        "-p",
+        pinned.merge_preflight_base_sha!,
+        "-p",
+        pinned.merge_head_sha!,
+        "-S",
+        "-m",
+        "Merge branch 'feature/atomic-recovery'",
+      ]);
+      const prepared = `MANDIBLE_MERGE_PREPARED ${JSON.stringify({
+        merge_sha: mergeSha,
+        base_sha: pinned.merge_preflight_base_sha,
+        head_sha: pinned.merge_head_sha,
+        tree_sha: pinned.merge_candidate_tree_sha,
+      })}\n`;
+      const applied = `MANDIBLE_MERGE_APPLIED ${JSON.stringify({
+        merge_sha: mergeSha,
+        base_sha: pinned.merge_preflight_base_sha,
+      })}\n`;
+      const emittedResult = `MANDIBLE_MERGE_RESULT ${JSON.stringify({
+        merge_sha: mergeSha,
+        repo_id: path.basename(repo),
+        auto_close_issues: [],
+        declared_issues: [],
+      })}\n`;
+      db.prepare("UPDATE auth_requests SET output = ? WHERE id = ?")
+        .run(prepared + applied + (resultBeforeRestart ? emittedResult : ""), request.id);
+      git(repo, ["update-ref", "refs/heads/main", mergeSha, pinned.merge_preflight_base_sha!]);
+      if (syncBeforeRestart) {
+        git(repo, ["read-tree", "-m", "-u", pinned.merge_preflight_base_sha!, mergeSha]);
+      } else {
+        expect(git(repo, ["write-tree"])).toBe(git(repo, ["rev-parse", `${pinned.merge_preflight_base_sha}^{tree}`]));
+      }
+      if (blockSync) writeFile(repo, "atomic.txt", "local collision\n");
+      const order: string[] = [];
+      const follower = _phase === "after CAS"
+        ? queue.submit({
+            command: "echo same-repo follower",
+            title: "Same-repo follower",
+            cwd: repo,
+            target_repo_root: repo,
+          })
+        : null;
+      queue.dispose();
+
+      queue = new AuthQueue({
+        db,
+        hookManager: follower
+          ? ({
+              executeHooks: async () => {
+                order.push("recovery-hook-start");
+                await new Promise((resolve) => setTimeout(resolve, 50));
+                order.push("recovery-hook-end");
+                return [];
+              },
+            } as unknown as AuthHookManager)
+          : createNoopHookManager(),
+        executor: async () => {
+          order.push("follower-executor");
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            output: "",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        now: () => 10 * 60 * 1000,
+      });
+      if (blockSync) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        const blocked = queue.getRequest(request.id)!;
+        expect(blocked.status).toBe("executing");
+        expect(blocked.exit_code).toBeNull();
+        expect(blocked.merge_candidate_pin_sha).toBe(pinned.merge_candidate_pin_sha);
+        expect(blocked.error).toContain("needs recovery");
+        expect(fs.readFileSync(path.join(repo, "atomic.txt"), "utf8")).toBe("local collision\n");
+        return;
+      }
+      if (follower) {
+        queue.approve(follower.id);
+        await waitForStatus(queue, follower.id, "completed", 5000);
+        expect(order.indexOf("recovery-hook-end")).toBeLessThan(order.indexOf("follower-executor"));
+      }
+      const recovered = await waitForStatus(queue, request.id, "completed", 5000);
+
+      expect(recovered.exit_code).toBe(0);
+      expect(recovered.output).toContain(`"merge_sha":"${mergeSha}"`);
+      expect(recovered.output).toContain('"auto_close_issues":["abc1234"]');
+      expect(git(repo, ["write-tree"])).toBe(pinned.merge_candidate_tree_sha);
+      expect(git(repo, ["status", "--porcelain", "--untracked-files=no"])).toBe("");
+      const evidence = db.prepare(
+        "SELECT details_json FROM attribution_evidence WHERE id = ?",
+      ).get(recovered.execution_evidence_id) as { details_json: string };
+      expect(JSON.parse(evidence.details_json)).toMatchObject({
+        verified: true,
+        signer_user_id: signing.operatorId,
+      });
+    } finally {
+      queue?.dispose();
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  }, 15_000);
+
   it("submits request and returns pending status", () => {
     const queue = createQueue();
 
@@ -2014,7 +2160,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("reuses submit-time merge preflight on approve when target and queue are unchanged", async () => {
+  it("keeps legacy nullable-cache requests on preflight reuse", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -2050,6 +2196,7 @@ describe("auth queue", () => {
       });
       expect(request.merge_preflight_base_sha).toBe(git(repo, ["rev-parse", "main"]));
       expect(request.merge_preflight_queue_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(request.merge_candidate_pin_sha).toBeNull();
 
       queue.approve(request.id);
       await waitForStatus(queue, request.id, "completed");
@@ -2063,7 +2210,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("does not reuse submit-time merge preflight after the target branch moves", async () => {
+  it("requires requeue and reapproval after the target branch moves", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -2095,16 +2242,85 @@ describe("auth queue", () => {
         repo: path.basename(repo),
         base_branch: "main",
         head_branch: "feature/target-moved",
+        merge_head_sha: git(repo, ["rev-parse", "feature/target-moved"]),
         cwd: repo,
       });
+      expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
       writeFile(repo, "main-only.txt", "main\n");
       git(repo, ["add", "."]);
       git(repo, ["commit", "-m", "move main"]);
 
-      queue.approve(request.id);
-      await waitForStatus(queue, request.id, "completed");
-      expect(calls).toHaveLength(1);
-      expect(calls[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBeUndefined();
+      expect(() => queue.approve(request.id)).toThrow(/requeue and reapprove/);
+      expect(queue.getRequest(request.id)?.status).toBe("pending");
+      expect(calls).toHaveLength(0);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("enables atomic execution only for fresh single-source requests without native hooks", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    try {
+      commitOnBranch(repo, "feature/atomic-eligibility", { "atomic.txt": "atomic\n" });
+      registerWorkRepo(db, repo);
+      git(repo, ["config", "core.hooksPath", ".git/hooks"]);
+      configureSigningCredential(db, repo, "ssh_key");
+      const queue = new AuthQueue({
+        db,
+        executor: async (options) => {
+          envs.push(options.env);
+          return {
+            exit_code: 1,
+            signal: null,
+            stdout: "",
+            stderr: "fixture stop\n",
+            output: "fixture stop\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+      const submit = (suffix: string, extra = "") => queue.submit({
+        type: "merge",
+        command: `mandible auth merge feature/atomic-eligibility --into main${extra}`,
+        title: `Atomic eligibility ${suffix}`,
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/atomic-eligibility",
+        merge_head_sha: git(repo, ["rev-parse", "feature/atomic-eligibility"]),
+        cwd: repo,
+      });
+
+      const ordinary = submit("ordinary");
+      queue.approve(ordinary.id);
+      await waitForStatus(queue, ordinary.id, "completed");
+      expect(envs.at(-1)?.MANDIBLE_AUTH_ATOMIC).toBe("1");
+      expect(queue.getRequest(ordinary.id)?.merge_candidate_pin_sha).toBeNull();
+
+      const hook = path.join(repo, ".git", "hooks", "pre-merge-commit");
+      fs.writeFileSync(hook, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const hooked = submit("hooked");
+      queue.approve(hooked.id);
+      await waitForStatus(queue, hooked.id, "completed");
+      expect(envs.at(-1)?.MANDIBLE_AUTH_ATOMIC).toBeUndefined();
+      fs.rmSync(hook);
+
+      const hierarchical = submit("hierarchical", " --hierarchical");
+      queue.approve(hierarchical.id);
+      await waitForStatus(queue, hierarchical.id, "completed");
+      expect(envs.at(-1)?.MANDIBLE_AUTH_ATOMIC).toBeUndefined();
+
+      const dismissed = submit("dismissed");
+      const dismissedPin = dismissed.merge_candidate_pin_sha!;
+      queue.dismiss(dismissed.id);
+      expect(queue.getRequest(dismissed.id)?.merge_candidate_pin_sha).toBeNull();
+      expect(() => git(repo, ["cat-file", "-e", `${dismissedPin}^{commit}`])).not.toThrow();
+      expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${dismissed.id}`])).toThrow();
       queue.dispose();
     } finally {
       db.close();
@@ -2142,7 +2358,7 @@ describe("auth queue", () => {
   it("auto-approves new requests while a lease is active and passes scoped env", async () => {
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
     const db = createMigratedDb();
-    const approverUserId = getOperator(db)!.id;
+    const approverUserId = registerTestDelegatedLease(db, "lease-1");
     const queue = new AuthQueue({
       db,
       autoApprover: {
@@ -2191,7 +2407,7 @@ describe("auth queue", () => {
 
   it("auto-approves pending requests when a lease is enabled", () => {
     const db = createMigratedDb();
-    const approverUserId = getOperator(db)!.id;
+    const approverUserId = registerTestDelegatedLease(db, "lease-2");
     const queue = new AuthQueue({
       db,
       executor: async () => ({
@@ -2289,7 +2505,7 @@ describe("auth queue", () => {
     }
   });
 
-  it("runs a delegated signing presence challenge before spawning auth merge execution", async () => {
+  it("keeps manual approval on the direct path when delegated signing is configured", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const approverUserId = registerTestDelegatedLease(db, "presence-1");
@@ -2315,25 +2531,14 @@ describe("auth queue", () => {
           }),
           presenceChallenge: async () => {
             order.push("challenge");
-            return {
-              source: "presence_challenge",
-              leaseId: "presence-1",
-              approverUserId,
-              env: {
-                SSH_AUTH_SOCK: "/tmp/presence.sock",
-                MANDIBLE_AUTH_DELEGATED_SIGNING: "1",
-                GIT_CONFIG_COUNT: "1",
-                GIT_CONFIG_KEY_0: "user.signingkey",
-                GIT_CONFIG_VALUE_0: "/tmp/delegated.pub",
-              },
-            };
+            throw new Error("manual approval must not request delegated presence");
           },
         },
         executor: async (options) => {
           order.push("executor");
           expect(queue.getRequest(options.request_id)?.execution_evidence_id).toBeNull();
-          expect(options.env?.SSH_AUTH_SOCK).toBe("/tmp/presence.sock");
-          expect(options.env?.GIT_CONFIG_VALUE_0).toBe("/tmp/delegated.pub");
+          expect(options.env?.SSH_AUTH_SOCK).toBeUndefined();
+          expect(options.env?.GIT_CONFIG_VALUE_0).toBeUndefined();
           return {
             exit_code: 0,
             signal: null,
@@ -2359,9 +2564,9 @@ describe("auth queue", () => {
       queue.approve(request.id);
       const resolved = await waitForStatus(queue, request.id, "completed");
 
-      expect(order).toEqual(["challenge", "executor"]);
-      expect(resolved?.approval_source).toBe("presence_challenge");
-      expect(resolved?.approval_lease_id).toBe("presence-1");
+      expect(order).toEqual(["executor"]);
+      expect(resolved?.approval_source).toBe("manual");
+      expect(resolved?.approval_lease_id).toBeNull();
       const evidence = executionEvidenceChain(db, resolved!.execution_evidence_id!);
       expect(evidence.signature.evidence_method).toBe("credential_signature");
       expect(JSON.parse(evidence.signature.details_json)).toMatchObject({
@@ -2370,7 +2575,7 @@ describe("auth queue", () => {
       });
       expect(evidence.authorization).toMatchObject({
         evidence_method: "hardware_presence",
-        lease_id: "presence-1",
+        lease_id: null,
       });
       expect(JSON.parse(evidence.authorization.details_json)).toMatchObject({
         authorizer_user_id: approverUserId,
@@ -2379,14 +2584,148 @@ describe("auth queue", () => {
         .filter((event) => event.event === "auth:output")
         .map((event) => ((event.data as { text?: string }).text ?? ""))
         .join("");
-      expect(output).toContain("waiting for YubiKey touch");
-      expect(output).toContain("delegated signing key ready");
+      expect(output).not.toContain("waiting for YubiKey touch");
+      expect(output).not.toContain("delegated signing key ready");
       queue.dispose();
     } finally {
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["missing", "presence-missing", /lease is missing/],
+    ["expired", "presence-expired", /not currently valid/],
+  ] as const)(
+    "rejects a %s explicit delegated lease with SSH_AUTH_SOCK before execution",
+    (kind, leaseId, expectedError) => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const now = Date.now();
+      const operatorId = registerTestDelegatedLease(db, "presence-valid", now);
+      if (kind === "expired") {
+        db.prepare(
+          "UPDATE delegated_signing_leases SET id = ?, expires_at = ? WHERE id = 'presence-valid'",
+        ).run(leaseId, now - 1);
+      }
+      let executed = false;
+      try {
+        commitOnBranch(repo, `feature/${kind}-lease`, { [`${kind}.txt`]: `${kind}\n` });
+        registerWorkRepo(db, repo);
+        const queue = new AuthQueue({
+          db,
+          now: () => now,
+          executor: async () => {
+            executed = true;
+            throw new Error("executor must not run");
+          },
+          hookManager: createNoopHookManager(),
+        });
+        const request = queue.submit({
+          type: "merge",
+          command: `mandible auth merge feature/${kind}-lease --into main`,
+          title: `${kind} delegated lease`,
+          repo: path.basename(repo),
+          base_branch: "main",
+          head_branch: `feature/${kind}-lease`,
+          cwd: repo,
+        });
+
+        expect(() => queue.approve(request.id, {
+          source: "auto_lease",
+          leaseId,
+          approverUserId: operatorId,
+          env: { SSH_AUTH_SOCK: `/tmp/${kind}.sock` },
+        })).toThrow(expectedError);
+        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect(executed).toBe(false);
+        queue.dispose();
+      } finally {
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["approver", "lease"] as const)(
+    "rejects a refreshed delegated signing %s that differs from the approved request",
+    async (mismatch) => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const operatorId = registerTestDelegatedLease(db, "presence-valid");
+      const other = createUser(db, {
+        slug: `presence-other-${mismatch}`,
+        kind: "human",
+        display_name: "Other Presence User",
+      });
+      const otherCredential = addCredential(db, other.id, {
+        type: "delegated_ssh_key",
+        fingerprint: `SHA256:${"B".repeat(43)}`,
+        public_material: `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI${"B".repeat(20)} other`,
+      });
+      addDelegatedSigningLease(db, {
+        id: "presence-other-lease",
+        credential_id: otherCredential.id,
+        owner_user_id: other.id,
+        minted_at: Date.now() - 1000,
+        expires_at: Date.now() + 60_000,
+        mint_method: "fresh_presence",
+      });
+      let executed = false;
+      try {
+        commitOnBranch(repo, `feature/presence-${mismatch}`, { [`${mismatch}.txt`]: `${mismatch}\n` });
+        registerWorkRepo(db, repo);
+        const queue = new AuthQueue({
+          db,
+          autoApprover: {
+            getActiveApprovalContext: () => null,
+            getDelegatedSigningStatus: () => ({
+              provider: "yubikey-age",
+              configured: true,
+              public_key: "ssh-ed25519 delegated",
+              public_key_path: "/tmp/delegated.pub",
+              encrypted_passphrase_path: "/tmp/delegated.age",
+              recipient_path: "/tmp/recipient.txt",
+              missing_tools: [],
+            }),
+            presenceChallenge: async () => ({
+              source: "presence_challenge",
+              leaseId: mismatch === "lease" ? "presence-other-lease" : "presence-valid",
+              approverUserId: mismatch === "approver" ? other.id : operatorId,
+              env: { SSH_AUTH_SOCK: "/tmp/wrong-presence.sock" },
+            }),
+          },
+          executor: async () => {
+            executed = true;
+            throw new Error("executor must not run");
+          },
+          hookManager: createNoopHookManager(),
+        });
+        const request = queue.submit({
+          type: "merge",
+          command: `mandible auth merge feature/presence-${mismatch} --into main`,
+          title: `Presence ${mismatch} mismatch`,
+          repo: path.basename(repo),
+          base_branch: "main",
+          head_branch: `feature/presence-${mismatch}`,
+          cwd: repo,
+        });
+        queue.approve(request.id, {
+          source: "presence_challenge",
+          leaseId: "presence-valid",
+          approverUserId: operatorId,
+          env: {},
+        });
+        const failed = await waitForStatus(queue, request.id, "completed");
+        expect(executed).toBe(false);
+        expect(failed.error).toMatch(mismatch === "approver" ? /approver does not match/ : /lease is not valid/);
+        queue.dispose();
+      } finally {
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("rejects request", () => {
     const queue = createQueue();

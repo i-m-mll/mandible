@@ -537,6 +537,178 @@ run_merge_preflight() {
   mandible_auth_merge_preflight "$cwd" "$head_branch" "$base_branch"
 }
 
+tracked_worktree_is_clean() {
+  [[ -z "$(git status --porcelain --untracked-files=no --ignore-submodules=none)" ]]
+}
+
+cached_candidate_tree() {
+  local base_sha=$1
+  local head_sha=$2
+  local tree_sha=${MANDIBLE_AUTH_CANDIDATE_TREE_SHA:-}
+  local pin_sha=${MANDIBLE_AUTH_CANDIDATE_PIN_SHA:-}
+  local cached_base=${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}
+  local cached_head=${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}
+  local cache_ref=${MANDIBLE_AUTH_CANDIDATE_REF:-}
+
+  [[ -n "$tree_sha" && -n "$pin_sha" && "$base_sha" == "$cached_base" && "$head_sha" == "$cached_head" ]] || return 1
+  git cat-file -e "${tree_sha}^{tree}" 2>/dev/null || return 1
+  [[ "$(git cat-file -t "$pin_sha" 2>/dev/null || true)" == "commit" ]] || return 1
+  [[ "$(git rev-parse --verify "${pin_sha}^{tree}" 2>/dev/null || true)" == "$tree_sha" ]] || return 1
+  [[ "$(git rev-parse --verify "${pin_sha}^1" 2>/dev/null || true)" == "$base_sha" ]] || return 1
+  [[ "$(git rev-parse --verify "${pin_sha}^2" 2>/dev/null || true)" == "$head_sha" ]] || return 1
+  if [[ -n "$cache_ref" ]]; then
+    [[ "$(git rev-parse --verify "$cache_ref" 2>/dev/null || true)" == "$pin_sha" ]] || return 1
+  fi
+  printf '%s' "$tree_sha"
+}
+
+require_cached_candidate_tree() {
+  local base_sha=$1
+  local head_sha=$2
+  local tree_sha
+  if tree_sha=$(cached_candidate_tree "$base_sha" "$head_sha"); then
+    auth_phase "reusing retained submit-time merge tree ${tree_sha}."
+    printf '%s' "$tree_sha"
+    return 0
+  fi
+  err "${RED}Reviewed atomic merge inputs are stale or unavailable; requeue and reapprove the request. No ref or worktree was changed.${RESET}"
+  return 1
+}
+
+verify_atomic_merge_not_empty() {
+  local tree_sha=$1
+  local parent_sha=$2
+  local parent_tree
+  parent_tree=$(git rev-parse --verify "${parent_sha}^{tree}") || return 1
+  if [[ "$tree_sha" == "$parent_tree" ]]; then
+    err "${RED}FATAL: Merge candidate has the same tree as its first parent.${RESET}"
+    err "${DIM_WHITE}No ref or worktree was changed.${RESET}"
+    return 1
+  fi
+}
+
+create_signed_merge_commit() {
+  local tree_sha=$1
+  local first_parent=$2
+  local second_parent=$3
+  local source_branch=$4
+  local message merge_sha
+  message=$(printf "%s\t\tbranch '%s' of .\n" "$second_parent" "$source_branch" | git fmt-merge-msg) || return 1
+  if ! merge_sha=$(printf '%s\n' "$message" |
+    run_signing_git commit-tree "$tree_sha" -p "$first_parent" -p "$second_parent" -S -F -); then
+    report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
+    err "${RED}Signed commit creation failed; no ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  merge_sha=$(printf '%s' "$merge_sha" | tail -n 1 | tr -d '[:space:]')
+  [[ "$merge_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] || {
+    err "${RED}git commit-tree did not return a commit object.${RESET}"
+    return 1
+  }
+  printf '%s' "$merge_sha"
+}
+
+verify_atomic_merge_signature() {
+  local merge_sha=$1
+  local allowed_signers=${MANDIBLE_AUTH_ALLOWED_SIGNERS:-}
+  [[ -n "$allowed_signers" ]] || {
+    err "${RED}Atomic merge has no approving-user signer allowlist; refusing ref update.${RESET}"
+    return 1
+  }
+  local verify_dir allowed_file output status
+  verify_dir=$(mktemp -d "${TMPDIR:-/tmp}/mandible-auth-verify.XXXXXX") || return 1
+  allowed_file="${verify_dir}/allowed_signers"
+  printf '%s\n' "$allowed_signers" > "$allowed_file"
+  chmod 600 "$allowed_file"
+  output=$(
+    unset GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG
+    local config_var
+    for config_var in ${!GIT_CONFIG_KEY_@} ${!GIT_CONFIG_VALUE_@}; do
+      unset "$config_var"
+    done
+    env \
+      GIT_OPTIONAL_LOCKS=0 \
+      GIT_CONFIG_NOSYSTEM=1 \
+      GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_CONFIG_SYSTEM=/dev/null \
+      git \
+      -c gpg.format=ssh \
+      -c "gpg.ssh.allowedSignersFile=${allowed_file}" \
+      -c gpg.ssh.program=/usr/bin/ssh-keygen \
+      -c gpg.ssh.revocationFile=/dev/null \
+      -c gpg.minTrustLevel=fully \
+      verify-commit "$merge_sha" 2>&1
+  )
+  status=$?
+  rm -rf "$verify_dir"
+  if (( status != 0 )); then
+    err "$output"
+    err "${RED}Signed commit is not trusted for the approving user; no ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  err "$output"
+}
+
+persist_atomic_marker() {
+  local marker=$1
+  local request_id=${MANDIBLE_AUTH_REQUEST_ID:?missing auth request id}
+  local base=${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT:-19420}}
+  local payload
+  payload=$(jq -nc --arg chunk "${marker}\n" '{chunk:$chunk}') || return 1
+  curl -fsS --max-time 5 -H 'Content-Type: application/json' \
+    -d "$payload" "${base}/api/auth/request/${request_id}/output" >/dev/null
+}
+
+cas_update_and_sync_target() {
+  local target=$1
+  local expected_sha=$2
+  local merge_sha=$3
+
+  if [[ "$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)" != "$target" ]] || \
+     [[ "$(git rev-parse --verify HEAD 2>/dev/null || true)" != "$expected_sha" ]]; then
+    err "${RED}Protected checkout branch or HEAD changed before ref update; compare-and-swap refused.${RESET}"
+    return 1
+  fi
+  if ! tracked_worktree_is_clean; then
+    err "${RED}Tracked worktree state changed before ref update; refusing atomic merge.${RESET}"
+    return 1
+  fi
+  if [[ "$(current_branch_sha "$target")" != "$expected_sha" ]]; then
+    err "${RED}Target ${target} moved before ref update; compare-and-swap refused.${RESET}"
+    return 1
+  fi
+  verify_atomic_merge_signature "$merge_sha" || return 1
+  local prepared_marker applied_marker
+  prepared_marker="MANDIBLE_MERGE_PREPARED $(jq -nc --arg merge_sha "$merge_sha" --arg base_sha "$expected_sha" --arg head_sha "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" --arg tree_sha "${MANDIBLE_AUTH_CANDIDATE_TREE_SHA:-}" '{merge_sha:$merge_sha,base_sha:$base_sha,head_sha:$head_sha,tree_sha:$tree_sha}')"
+  persist_atomic_marker "$prepared_marker" || {
+    err "${RED}Could not durably record the prepared merge commit; no ref or worktree was changed.${RESET}"
+    return 1
+  }
+  err "$prepared_marker"
+  if ! git update-ref -m "mandible auth merge ${MANDIBLE_AUTH_REQUEST_ID:-unknown}" \
+    "refs/heads/${target}" "$merge_sha" "$expected_sha"; then
+    err "${RED}Target ${target} moved during ref update; compare-and-swap refused. No worktree was changed.${RESET}"
+    return 1
+  fi
+  applied_marker="MANDIBLE_MERGE_APPLIED $(jq -nc --arg merge_sha "$merge_sha" --arg base_sha "$expected_sha" '{merge_sha:$merge_sha,base_sha:$base_sha}')"
+  persist_atomic_marker "$applied_marker" || {
+    err "${RED}Target ref advanced to ${merge_sha}, but the applied checkpoint could not be persisted; recovery is required.${RESET}"
+    return 75
+  }
+  err "$applied_marker"
+  if ! git read-tree -m -u "$expected_sha" "$merge_sha"; then
+    err "${RED}Target ref advanced to ${merge_sha}, but collision-safe protected worktree synchronization was blocked; recovery is required.${RESET}"
+    return 75
+  fi
+  local merge_tree index_tree
+  merge_tree=$(git rev-parse --verify "${merge_sha}^{tree}") || return 75
+  index_tree=$(git write-tree) || return 75
+  if [[ "$index_tree" != "$merge_tree" ]] || ! tracked_worktree_is_clean || [[ "$(git rev-parse --verify HEAD)" != "$merge_sha" ]]; then
+    err "${RED}Protected worktree did not synchronize cleanly to ${merge_sha}.${RESET}"
+    return 75
+  fi
+}
+
 # Resolve the on-disk worktree path linked to a branch, if any.
 branch_worktree_path() {
   local branch="$1"
@@ -1201,8 +1373,10 @@ main() {
   response=$(printf "%s" "$response" | tr '[:upper:]' '[:lower:]')
   case "$response" in
     y|yes)
-      if ! confirm_checkout_if_needed "$current_branch" "$target"; then
-        exit 1
+      if [[ "${MANDIBLE_AUTH_ATOMIC:-}" != "1" || "$hierarchical" == "true" ]]; then
+        if ! confirm_checkout_if_needed "$current_branch" "$target"; then
+          exit 1
+        fi
       fi
       ;;
     *)
@@ -1210,6 +1384,42 @@ main() {
       exit 1
       ;;
   esac
+
+  # Atomic execution is deliberately a narrow daemon-selected fast path.
+  # Hierarchical requests, direct/legacy CLI invocations, and repositories with
+  # enabled native merge/commit hooks retain the established git-merge executor.
+  if [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" && "$hierarchical" == "false" ]]; then
+    if [[ "$current_branch" != "$target" ]]; then
+      die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
+    fi
+    if ! tracked_worktree_is_clean; then
+      die "Tracked worktree state changed after preflight; no ref or worktree was changed." 1
+    fi
+
+    local atomic_base
+    atomic_base=$(current_branch_sha "$target")
+    (( ${#sources[@]} == 1 )) || die "Atomic auth merge supports exactly one reviewed source; use the existing hierarchical merge path." 1
+    source=${sources[0]}
+    local source_head merge_tree merge_sha
+    source_head=$(current_branch_sha "$source")
+    if [[ "$atomic_base" != "${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}" ]] || \
+       [[ "$source_head" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
+      die "Reviewed base or head moved since auth submission; requeue and reapprove. No ref or worktree was changed." 1
+    fi
+    merge_tree=$(require_cached_candidate_tree "$atomic_base" "$source_head") || exit 1
+    verify_atomic_merge_not_empty "$merge_tree" "$atomic_base" || exit 1
+    auth_phase "creating signed merge commit for ${source} with git commit-tree..."
+    merge_sha=$(create_signed_merge_commit "$merge_tree" "$atomic_base" "$source_head" "$source") || exit 1
+    [[ "$(current_branch_sha "$source")" == "$source_head" ]] || die "Source ${source} moved before target update; no ref or worktree was changed." 1
+    auth_phase "signed merge commit complete; atomically advancing ${target}..."
+    cas_update_and_sync_target "$target" "$atomic_base" "$merge_sha"
+    local cas_status=$?
+    (( cas_status == 0 )) || exit "$cas_status"
+    auth_phase "protected worktree synchronized; running follow-up actions..."
+    record_auth_merge_result "$atomic_base"
+    cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$atomic_base")"
+    exit 0
+  fi
 
   if [[ "$hierarchical" == "false" ]]; then
     source=${sources[0]}
@@ -1221,11 +1431,8 @@ main() {
       verify_merge_not_empty
       record_auth_merge_result "$pre_merge_head"
       cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-      # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     fi
-
-    # Bug: bb2d9ef — auto-resolve dist file conflicts before giving up.
     if has_conflicts; then
       err "Merge conflict detected."
       if auto_resolve_dist_conflicts; then
@@ -1236,7 +1443,6 @@ main() {
           verify_merge_not_empty
           record_auth_merge_result "$pre_merge_head"
           cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-          # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
           exit 0
         else
           err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
@@ -1260,8 +1466,6 @@ main() {
       succeeded+=("$source")
       continue
     fi
-
-    # Bug: bb2d9ef — auto-resolve dist file conflicts before giving up.
     if has_conflicts; then
       err "Merge conflict detected while merging $source."
       if auto_resolve_dist_conflicts; then
@@ -1280,16 +1484,13 @@ main() {
       err "Merge failed while merging $source."
       report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
     fi
-
     if (( ${#succeeded[@]} > 0 )); then
       err "Merges completed before failure: ${succeeded[*]}"
     fi
     exit 1
   done
 
-  # Record issue-closure evidence from all merged commits (hierarchical)
   record_auth_merge_result "$pre_merge_head"
-
   for source in "${succeeded[@]}"; do
     cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
   done

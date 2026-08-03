@@ -3257,6 +3257,15 @@ export const MIGRATIONS: readonly Migration[] = [
     // Feedbax correction. Immutable ledger bodies/events and daemon logs remain
     // historical evidence and are not rewritten.
     statements: []
+  },
+  {
+    version: 119,
+    name: "auth_request_merge_candidate_tree",
+    // Issue 8d12c96 — persist the exact submit-time merge-tree candidate. The
+    // queue also keeps this tree reachable through a request-scoped private Git
+    // ref while the request is live, so ordinary object pruning cannot discard
+    // the candidate before approval.
+    statements: []
   }
 ];
 
@@ -3360,6 +3369,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 118) {
         canonicalizeProjectRepoIds(db);
+      }
+      if (migration.version === 119) {
+        ensureAuthRequestAtomicMergeColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -6363,6 +6375,20 @@ function ensureAuthRequestMergeFinalizerStateColumn(db: Db): void {
   const columns = tableColumnNames(db, "auth_requests");
   if (!columns.has("merge_finalizer_state")) {
     db.exec("ALTER TABLE auth_requests ADD COLUMN merge_finalizer_state TEXT");
+  }
+}
+
+function ensureAuthRequestAtomicMergeColumns(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("merge_candidate_tree_sha")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_candidate_tree_sha TEXT");
+  }
+  if (!columns.has("merge_candidate_pin_sha")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_candidate_pin_sha TEXT");
+  }
+  if (!columns.has("merge_atomic_enabled")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN merge_atomic_enabled INTEGER NOT NULL DEFAULT 0");
   }
 }
 

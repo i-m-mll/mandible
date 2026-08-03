@@ -70,6 +70,20 @@ function allowedSignerLine(credential: SigningCredentialRow): string | null {
   return `${credential.credential_id} ${fields[0]} ${fields[1]}`;
 }
 
+export function authorizedMergeSignerLines(
+  db: Db,
+  userId: string,
+  credentialId?: string | null,
+): string[] {
+  return activeSigningCredentials(db)
+    .filter((credential) => credential.user_id === userId)
+    .filter((credential) => !credentialId || credential.credential_id === credentialId)
+    .flatMap((credential) => {
+      const line = allowedSignerLine(credential);
+      return line ? [line] : [];
+    });
+}
+
 function unverified(
   commitSha: string | null,
   reason: string,
@@ -187,6 +201,24 @@ export function verifyMergeCommitSignature(
   } finally {
     rmSync(verificationDir, { recursive: true, force: true });
   }
+}
+
+export function verifyAuthorizedMergeCommitSignature(
+  db: Db,
+  cwd: string | null,
+  commitSha: string | null,
+  approverUserId: string,
+  credentialId?: string | null,
+): MergeSignatureVerification {
+  const verification = verifyMergeCommitSignature(db, cwd, commitSha);
+  if (!verification.verified) return verification;
+  if (verification.user_id !== approverUserId) {
+    return unverified(commitSha, "signer_is_not_approving_user", verification.fingerprint);
+  }
+  if (credentialId && verification.credential_id !== credentialId) {
+    return unverified(commitSha, "signer_is_not_delegated_credential", verification.fingerprint);
+  }
+  return verification;
 }
 
 /** Bind the recorded merge result to the target branch head before trusting its signature. */

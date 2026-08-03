@@ -90,6 +90,7 @@ describe("daemon-context auth merge signing failures", () => {
         encoding: "utf8",
         env: {
           ...process.env,
+          MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
           MANDIBLE_AUTH_MERGE_SOURCE_ONLY: "1",
           MANDIBLE_TEST_GIT_STDERR: stderr,
         },

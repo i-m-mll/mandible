@@ -715,6 +715,11 @@ export async function setupDelegatedSigning(input: {
   return (await parseMaybeJson(response)) as AuthAutoApproveStatus['signing'];
 }
 
+export async function removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
+  const response = await apiDelete('/api/auth/auto-approve/signing');
+  return (await parseMaybeJson(response)) as AuthAutoApproveStatus;
+}
+
 // Bug: 2c826ca — allow editing auth request fields (commit_message, title, etc.)
 // from the dashboard so stale content can be corrected before approval.
 export async function updateAuthRequestField(

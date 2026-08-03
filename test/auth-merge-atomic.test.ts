@@ -1,0 +1,439 @@
+import { spawn, spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import Database from "better-sqlite3";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+import { AuthQueue } from "../src/auth-queue.js";
+import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
+import { configureDaemonLogger, flushDaemonLogger } from "../src/daemon-log.js";
+import { migrate } from "../src/db.js";
+import { registerAuthRoutes } from "../src/routes/auth.js";
+import { createServer, Router } from "../src/server.js";
+import { SseManager } from "../src/sse.js";
+import { setupOperator } from "../src/users/store.js";
+
+const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
+
+let repo = "";
+let key = "";
+
+function git(args: string[], cwd = repo, env: Record<string, string> = {}): string {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...env },
+  });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function write(name: string, content: string): void {
+  const target = path.join(repo, name);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, content);
+}
+
+function commit(message: string): string {
+  git(["add", "."]);
+  git(["-c", "commit.gpgsign=false", "commit", "-m", message]);
+  return git(["rev-parse", "HEAD"]);
+}
+
+function candidate(base: string, head: string, requestId = "atomic-test"): {
+  tree: string;
+  pin: string;
+  ref: string;
+} {
+  const tree = git(["merge-tree", "--write-tree", base, head]).split(/\s+/)[0]!;
+  const pin = git(
+    ["commit-tree", tree, "-p", base, "-p", head, "-m", `mandible auth candidate pin ${requestId}`],
+    repo,
+    {
+      GIT_AUTHOR_NAME: "Mandible",
+      GIT_AUTHOR_EMAIL: "mandible@localhost",
+      GIT_COMMITTER_NAME: "Mandible",
+      GIT_COMMITTER_EMAIL: "mandible@localhost",
+      GIT_AUTHOR_DATE: "1970-01-01T00:00:00 +0000",
+      GIT_COMMITTER_DATE: "1970-01-01T00:00:00 +0000",
+    },
+  );
+  const ref = `refs/mandible/auth-candidates/${requestId}`;
+  git(["update-ref", ref, pin]);
+  return { tree, pin, ref };
+}
+
+function allowedSigner(keyPath = key, principal = "credential-test"): string {
+  return `${principal} ${fs.readFileSync(`${keyPath}.pub`, "utf8").trim()}`;
+}
+
+function runAtomic(
+  base: string,
+  head: string,
+  cached: { tree: string; pin: string; ref: string },
+  extraEnv: Record<string, string> = {},
+  stubCheckpoint = true,
+): ReturnType<typeof spawnSync> {
+  const snippet = [
+    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
+    `source ${JSON.stringify(AUTH_MERGE)}`,
+    "prompt_confirm() { printf 'y'; }",
+    "run_merge_preflight() { :; }",
+    ...(stubCheckpoint ? ["persist_atomic_marker() { printf '%s\\n' \"$1\" >&2; }"] : []),
+    "cleanup_merged_worktrees() { :; }",
+    "collect_declared_issues() { :; }",
+    "main feature/atomic --into main",
+  ].join("\n");
+  return spawnSync("bash", ["-c", snippet], {
+    cwd: repo,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_OPTIONAL_LOCKS: "0",
+      MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
+      MANDIBLE_AUTH_ATOMIC: "1",
+      MANDIBLE_AUTH_REQUEST_ID: "atomic-test",
+      MANDIBLE_AUTH_CANDIDATE_TREE_SHA: cached.tree,
+      MANDIBLE_AUTH_CANDIDATE_PIN_SHA: cached.pin,
+      MANDIBLE_AUTH_CANDIDATE_BASE_SHA: base,
+      MANDIBLE_AUTH_CANDIDATE_HEAD_SHA: head,
+      MANDIBLE_AUTH_CANDIDATE_REF: cached.ref,
+      MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(),
+      ...extraEnv,
+    },
+  });
+}
+
+function runAtomicAsync(
+  base: string,
+  head: string,
+  cached: { tree: string; pin: string; ref: string },
+  extraEnv: Record<string, string>,
+): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const snippet = [
+    "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
+    `source ${JSON.stringify(AUTH_MERGE)}`,
+    "prompt_confirm() { printf 'y'; }",
+    "run_merge_preflight() { :; }",
+    "cleanup_merged_worktrees() { :; }",
+    "collect_declared_issues() { :; }",
+    "main feature/atomic --into main",
+  ].join("\n");
+  return new Promise((resolve, reject) => {
+    const child = spawn("bash", ["-c", snippet], {
+      cwd: repo,
+      env: {
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: "0",
+        MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
+        MANDIBLE_AUTH_ATOMIC: "1",
+        MANDIBLE_AUTH_REQUEST_ID: "atomic-test",
+        MANDIBLE_AUTH_CANDIDATE_TREE_SHA: cached.tree,
+        MANDIBLE_AUTH_CANDIDATE_PIN_SHA: cached.pin,
+        MANDIBLE_AUTH_CANDIDATE_BASE_SHA: base,
+        MANDIBLE_AUTH_CANDIDATE_HEAD_SHA: head,
+        MANDIBLE_AUTH_CANDIDATE_REF: cached.ref,
+        MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(),
+        ...extraEnv,
+      },
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+    child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", reject);
+    child.on("close", (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+beforeEach(() => {
+  repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-"));
+  key = path.join(repo, "signing-key");
+  git(["init", "-b", "main"]);
+  git(["config", "user.name", "Atomic Test"]);
+  git(["config", "user.email", "atomic@example.invalid"]);
+  git(["config", "gpg.format", "ssh"]);
+  git(["config", "commit.gpgsign", "true"]);
+  const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
+    encoding: "utf8",
+  });
+  if (keygen.status !== 0) throw new Error(keygen.stderr);
+  git(["config", "user.signingkey", key]);
+  write("base.txt", "base\n");
+  commit("base");
+  git(["checkout", "-b", "feature/atomic"]);
+  write("feature.txt", "feature\n");
+  commit("feature");
+  git(["checkout", "main"]);
+});
+
+afterEach(() => fs.rmSync(repo, { recursive: true, force: true }));
+
+describe("atomic auth merge", () => {
+  it("creates the exact trusted merge commit, CAS-updates, safely syncs, and preserves untracked files", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    write("scratch.txt", "keep\n");
+
+    const result = runAtomic(base, head, cached);
+
+    expect(result.status).toBe(0);
+    const merged = git(["rev-parse", "main"]);
+    expect(git(["show", "-s", "--format=%P", merged])).toBe(`${base} ${head}`);
+    expect(git(["rev-parse", `${merged}^{tree}`])).toBe(cached.tree);
+    expect(git(["show", "-s", "--format=%B", merged])).toBe("Merge branch 'feature/atomic'");
+    expect(git(["status", "--porcelain", "--untracked-files=no"])).toBe("");
+    expect(fs.readFileSync(path.join(repo, "scratch.txt"), "utf8")).toBe("keep\n");
+    expect(result.stderr).toContain("Good \"git\" signature");
+    expect(result.stderr.indexOf("MANDIBLE_MERGE_PREPARED")).toBeLessThan(
+      result.stderr.indexOf("MANDIBLE_MERGE_APPLIED"),
+    );
+    expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
+  });
+
+  it("durably checkpoints PREPARED and APPLIED through the real output endpoint", async () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    const db = new Database(":memory:");
+    migrate(db);
+    setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
+    const queue = new AuthQueue({ db, backgroundMaintenance: false });
+    const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
+    const router = new Router();
+    registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
+    const server = createServer({
+      db,
+      sse: new SseManager(),
+      logger: configureDaemonLogger(db),
+      version: "test",
+      router,
+      getStartupInfo: () => null,
+    });
+    const port = await new Promise<number>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        resolve(typeof address === "object" && address ? address.port : 0);
+      });
+    });
+
+    try {
+      const result = await runAtomicAsync(base, head, cached, {
+        MANDIBLE_AUTH_REQUEST_ID: request.id,
+        MANDIBLE_BASE: `http://127.0.0.1:${port}`,
+      });
+      expect(result.status).toBe(0);
+      const output = queue.getRequest(request.id)?.output ?? "";
+      expect(output).toContain("MANDIBLE_MERGE_PREPARED");
+      expect(output).toContain("MANDIBLE_MERGE_APPLIED");
+      expect(output.indexOf("MANDIBLE_MERGE_PREPARED")).toBeLessThan(
+        output.indexOf("MANDIBLE_MERGE_APPLIED"),
+      );
+      expect(git(["rev-parse", "main"])).not.toBe(base);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      queue.dispose();
+      flushDaemonLogger();
+      db.close();
+    }
+  });
+
+  it("does not move the target when the durable checkpoint endpoint is unreachable", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+
+    const result = runAtomic(base, head, cached, {
+      MANDIBLE_AUTH_REQUEST_ID: "unreachable-checkpoint",
+      MANDIBLE_BASE: "http://127.0.0.1:1",
+    }, false);
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).toContain("Could not durably record the prepared merge commit");
+  });
+
+  it("rejects an unauthorized signer before CAS and leaves the worktree untouched", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    const other = path.join(repo, "other-key");
+    spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", other]);
+
+    const result = runAtomic(base, head, cached, {
+      MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(other, "other-credential"),
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(git(["status", "--porcelain", "--untracked-files=no"])).toBe("");
+    expect(result.stderr).toContain("not trusted for the approving user");
+  });
+
+  it("ignores a repository-provided ssh verifier program during the trust gate", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    const fakeVerifier = path.join(repo, "fake-verifier");
+    fs.writeFileSync(fakeVerifier, [
+      "#!/bin/sh",
+      "case \" $* \" in *\" -Y verify \"*) exit 0 ;; esac",
+      "exec /usr/bin/ssh-keygen \"$@\"",
+      "",
+    ].join("\n"), { mode: 0o755 });
+    git(["config", "gpg.ssh.program", fakeVerifier]);
+    const other = path.join(repo, "other-key");
+    spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", other]);
+
+    const result = runAtomic(base, head, cached, {
+      MANDIBLE_AUTH_ALLOWED_SIGNERS: allowedSigner(other, "other-credential"),
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).toContain("not trusted for the approving user");
+  });
+
+  it("rejects reviewed-head drift before signing or ref mutation", () => {
+    const base = git(["rev-parse", "main"]);
+    const reviewedHead = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, reviewedHead);
+    git(["checkout", "feature/atomic"]);
+    write("moved.txt", "moved\n");
+    commit("move head");
+    git(["checkout", "main"]);
+
+    const result = runAtomic(base, reviewedHead, cached);
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).toContain("moved since auth submission");
+  });
+
+  it("rejects base drift and a missing pin before signing", () => {
+    const oldBase = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(oldBase, head);
+    write("main.txt", "main drift\n");
+    const newBase = commit("move base");
+    git(["update-ref", "-d", cached.ref, cached.pin]);
+
+    const result = runAtomic(oldBase, head, cached);
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(newBase);
+    expect(result.stderr).toContain("requeue and reapprove");
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+  });
+
+  it("rejects a missing retained pin with otherwise unchanged reviewed inputs", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    git(["update-ref", "-d", cached.ref, cached.pin]);
+
+    const result = runAtomic(base, head, cached);
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).toContain("stale or unavailable");
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_PREPARED");
+  });
+
+  it("leaves an untracked collision intact and reports applied-needs-recovery after CAS", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    write("feature.txt", "local collision\n");
+
+    const result = runAtomic(base, head, cached);
+
+    expect(result.status).toBe(75);
+    expect(git(["rev-parse", "main"])).not.toBe(base);
+    expect(fs.readFileSync(path.join(repo, "feature.txt"), "utf8")).toBe("local collision\n");
+    expect(result.stderr).toContain("MANDIBLE_MERGE_APPLIED");
+    expect(result.stderr).toContain("recovery is required");
+  });
+
+  it("refuses a CAS race without applying the signed candidate", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+    git(["checkout", "-b", "race", "main"]);
+    write("race.txt", "race\n");
+    const raceSha = commit("race");
+    git(["checkout", "main"]);
+    const realGit = spawnSync("bash", ["-lc", "command -v git"], { encoding: "utf8" }).stdout.trim();
+    const fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-race-"));
+    const marker = path.join(fakeBin, "raced");
+    const wrapper = path.join(fakeBin, "git");
+    fs.writeFileSync(wrapper, [
+      "#!/usr/bin/env bash",
+      "if [[ \"$1\" == update-ref && \"$*\" == *\"refs/heads/main\"* && ! -e \"$MANDIBLE_RACE_MARKER\" ]]; then",
+      "  : > \"$MANDIBLE_RACE_MARKER\"",
+      "  \"$MANDIBLE_REAL_GIT\" update-ref refs/heads/main \"$MANDIBLE_RACE_SHA\" \"$MANDIBLE_RACE_BASE\"",
+      "fi",
+      "exec \"$MANDIBLE_REAL_GIT\" \"$@\"",
+      "",
+    ].join("\n"), { mode: 0o755 });
+
+    try {
+      const result = runAtomic(base, head, cached, {
+        PATH: `${fakeBin}:${process.env.PATH ?? "/usr/bin:/bin"}`,
+        MANDIBLE_REAL_GIT: realGit,
+        MANDIBLE_RACE_MARKER: marker,
+        MANDIBLE_RACE_SHA: raceSha,
+        MANDIBLE_RACE_BASE: base,
+      });
+      expect(result.status).not.toBe(0);
+      expect(git(["rev-parse", "main"])).toBe(raceSha);
+      expect(fs.existsSync(path.join(repo, "feature.txt"))).toBe(false);
+      expect(result.stderr).toContain("compare-and-swap refused");
+      expect(result.stderr).toContain("MANDIBLE_MERGE_PREPARED");
+      expect(result.stderr).not.toContain("MANDIBLE_MERGE_APPLIED");
+      expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
+    } finally {
+      fs.rmSync(fakeBin, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps direct and legacy invocations on the existing git-merge executor", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+    const cached = candidate(base, head);
+
+    const result = runAtomic(base, head, cached, { MANDIBLE_AUTH_ATOMIC: "" });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("creating signed merge commit...");
+    expect(result.stderr).not.toContain("with git commit-tree");
+  });
+
+  it("accepts SHA-256 repository object ids", () => {
+    fs.rmSync(repo, { recursive: true, force: true });
+    repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-atomic-sha256-"));
+    key = path.join(repo, "signing-key");
+    git(["init", "--object-format=sha256", "-b", "main"]);
+    git(["config", "user.name", "Atomic Test"]);
+    git(["config", "user.email", "atomic@example.invalid"]);
+    git(["config", "gpg.format", "ssh"]);
+    git(["config", "user.signingkey", key]);
+    spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key]);
+    write("base.txt", "base\n");
+    commit("base");
+    git(["checkout", "-b", "feature/atomic"]);
+    write("feature.txt", "feature\n");
+    commit("feature");
+    git(["checkout", "main"]);
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+
+    const result = runAtomic(base, head, candidate(base, head));
+
+    expect(base).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.status).toBe(0);
+    expect(git(["rev-parse", "main"])).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
