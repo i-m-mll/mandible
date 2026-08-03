@@ -54,6 +54,7 @@ describe("delegated signing attribution persistence", () => {
 
   afterEach(() => {
     process.env.PATH = originalPath;
+    delete process.env.MANDIBLE_TEST_KILL_MARKER;
     db.close();
     fs.rmSync(tempDir, { recursive: true, force: true });
   });
@@ -119,10 +120,32 @@ describe("delegated signing attribution persistence", () => {
     });
     await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
 
-    expect(manager.removeDelegatedSigning().signing.configured).toBe(false);
-    expect(manager.removeDelegatedSigning().signing.configured).toBe(false);
+    expect((await manager.removeDelegatedSigning()).signing.configured).toBe(false);
+    expect((await manager.removeDelegatedSigning()).signing.configured).toBe(false);
     expect(fs.existsSync(path.join(configDir, "id_ed25519_mandible_delegated"))).toBe(false);
     expect(events).toHaveLength(2);
+  });
+
+  it("expires an enabled lease and awaits ssh-agent shutdown before removing files", async () => {
+    const configDir = path.join(tempDir, "delegated-signing");
+    const marker = path.join(tempDir, "agent-stopped");
+    process.env.MANDIBLE_TEST_KILL_MARKER = marker;
+    writeTool(binDir, "kill", `
+      const fs = require("node:fs");
+      setTimeout(() => fs.writeFileSync(process.env.MANDIBLE_TEST_KILL_MARKER, "stopped"), 40);
+    `);
+    const manager = new AuthAutoApproveManager({ db, configDir, broadcast: () => undefined });
+    await manager.setupDelegatedSigning({ ageRecipient: "age1yubikeytest", overwrite: true });
+    const enabled = await manager.enable(1);
+
+    const removed = await manager.removeDelegatedSigning();
+
+    expect(fs.readFileSync(marker, "utf8")).toBe("stopped");
+    expect(removed).toMatchObject({ enabled: false, lease_id: null, signing: { configured: false } });
+    const persisted = db.prepare(
+      "SELECT expires_at FROM delegated_signing_leases WHERE id = ?",
+    ).get(enabled.lease_id) as { expires_at: number };
+    expect(persisted.expires_at).toBeLessThan(enabled.enabled_until!);
   });
 
   it("times out a delegated presence command without creating an active lease", async () => {

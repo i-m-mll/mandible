@@ -2378,10 +2378,25 @@ export class AuthQueue {
     const approvalLease = effectiveApproval?.leaseId
       ? getDelegatedSigningLease(this.db, effectiveApproval.leaseId)
       : null;
-    const exactCredentialId = approvalLease?.owner_user_id === approverUserId
-      ? approvalLease.credential_id
-      : null;
+    if (effectiveApproval) {
+      if (!approvalLease) {
+        throw new AuthQueueError("invalid_command", "Delegated approval lease is missing.");
+      }
+      if (approvalLease.owner_user_id !== approverUserId) {
+        throw new AuthQueueError("invalid_command", "Delegated approval lease is owned by another approver.");
+      }
+      if (now < approvalLease.minted_at || now >= approvalLease.expires_at) {
+        throw new AuthQueueError("invalid_command", "Delegated approval lease is not currently valid.");
+      }
+    }
+    const exactCredentialId = approvalLease?.credential_id ?? null;
     const signerLines = authorizedMergeSignerLines(this.db, approverUserId, exactCredentialId);
+    if (effectiveApproval && isAuthMergeCommand(request) && signerLines.length === 0) {
+      throw new AuthQueueError(
+        "invalid_command",
+        "Delegated approval lease has no active authorized signing credential.",
+      );
+    }
     const candidateExact = Boolean(
       request.merge_candidate_pin_sha &&
       request.cwd &&

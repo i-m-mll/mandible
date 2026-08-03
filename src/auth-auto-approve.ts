@@ -368,8 +368,18 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     return this.getStatus();
   }
 
-  removeDelegatedSigning(): AuthAutoApproveStatus {
-    this.clearActiveLease("signing_removed", false);
+  async removeDelegatedSigning(): Promise<AuthAutoApproveStatus> {
+    const lease = this.activeLease;
+    this.activeLease = null;
+    if (lease?.timer) clearTimeout(lease.timer);
+    if (lease) {
+      this.db.prepare(
+        `UPDATE delegated_signing_leases
+         SET expires_at = MIN(expires_at, MAX(minted_at + 1, ?))
+         WHERE id = ?`,
+      ).run(this.now(), lease.id);
+      await stopSshAgent(lease.sshAgentPid);
+    }
     const paths = this.paths();
     for (const file of [paths.privateKey, paths.publicKey, paths.encryptedPassphrase, paths.recipient]) {
       fs.rmSync(file, { force: true });

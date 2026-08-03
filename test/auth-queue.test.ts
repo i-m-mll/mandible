@@ -2358,7 +2358,7 @@ describe("auth queue", () => {
   it("auto-approves new requests while a lease is active and passes scoped env", async () => {
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
     const db = createMigratedDb();
-    const approverUserId = getOperator(db)!.id;
+    const approverUserId = registerTestDelegatedLease(db, "lease-1");
     const queue = new AuthQueue({
       db,
       autoApprover: {
@@ -2407,7 +2407,7 @@ describe("auth queue", () => {
 
   it("auto-approves pending requests when a lease is enabled", () => {
     const db = createMigratedDb();
-    const approverUserId = getOperator(db)!.id;
+    const approverUserId = registerTestDelegatedLease(db, "lease-2");
     const queue = new AuthQueue({
       db,
       executor: async () => ({
@@ -2592,6 +2592,60 @@ describe("auth queue", () => {
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    ["missing", "presence-missing", /lease is missing/],
+    ["expired", "presence-expired", /not currently valid/],
+  ] as const)(
+    "rejects a %s explicit delegated lease with SSH_AUTH_SOCK before execution",
+    (kind, leaseId, expectedError) => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const now = Date.now();
+      const operatorId = registerTestDelegatedLease(db, "presence-valid", now);
+      if (kind === "expired") {
+        db.prepare(
+          "UPDATE delegated_signing_leases SET id = ?, expires_at = ? WHERE id = 'presence-valid'",
+        ).run(leaseId, now - 1);
+      }
+      let executed = false;
+      try {
+        commitOnBranch(repo, `feature/${kind}-lease`, { [`${kind}.txt`]: `${kind}\n` });
+        registerWorkRepo(db, repo);
+        const queue = new AuthQueue({
+          db,
+          now: () => now,
+          executor: async () => {
+            executed = true;
+            throw new Error("executor must not run");
+          },
+          hookManager: createNoopHookManager(),
+        });
+        const request = queue.submit({
+          type: "merge",
+          command: `mandible auth merge feature/${kind}-lease --into main`,
+          title: `${kind} delegated lease`,
+          repo: path.basename(repo),
+          base_branch: "main",
+          head_branch: `feature/${kind}-lease`,
+          cwd: repo,
+        });
+
+        expect(() => queue.approve(request.id, {
+          source: "auto_lease",
+          leaseId,
+          approverUserId: operatorId,
+          env: { SSH_AUTH_SOCK: `/tmp/${kind}.sock` },
+        })).toThrow(expectedError);
+        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect(executed).toBe(false);
+        queue.dispose();
+      } finally {
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each(["approver", "lease"] as const)(
     "rejects a refreshed delegated signing %s that differs from the approved request",
