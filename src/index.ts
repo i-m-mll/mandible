@@ -73,6 +73,10 @@ import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
 import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
+import {
+  RestartAvailabilityStore,
+  restartAvailabilityInstanceKey,
+} from "./restart-availability.js";
 
 const DEFAULT_PORT = 19420;
 const DOTFILES_ROOT = resolveDotfilesRoot();
@@ -119,6 +123,9 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
         ?? (process.env.MANDIBLE_DB ? "env" : "default"),
   });
   const operationalMutationsAllowed = allowsOperationalMutations(instance);
+  const restartAvailability = operationalMutationsAllowed
+    ? new RestartAvailabilityStore({ instanceKey: restartAvailabilityInstanceKey(port) })
+    : null;
   const db = openDb(dbPath);
   // Synchronous lock waits happen on the request thread. Clients already retry
   // transient contention, so keep this bounded while the ingestion actor uses
@@ -134,11 +141,15 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const sse = new SseManager();
   const version = resolveVersion();
   const startupEpoch = randomUUID();
+  let readyRestartGeneration: string | null = null;
   let startupWorkScanComplete = false;
   let startupSessionDiscoveryComplete = false;
   const updateWarmReadiness = () => {
     if (!startupWorkScanComplete || !startupSessionDiscoveryComplete) return;
     setDaemonWarm(true);
+    if (readyRestartGeneration) {
+      restartAvailability?.markWarm(readyRestartGeneration);
+    }
     logger("info", "daemon_warm", { port });
   };
 
@@ -163,6 +174,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   const authQueue = new AuthQueue({
     autoApprover: autoApproveManager,
     backgroundMaintenance: operationalMutationsAllowed,
+    restartAvailability: restartAvailability ?? undefined,
   });
   registerAuthRoutes(router, authQueue, autoApproveManager);
   registerChatRoutes(router);
@@ -353,6 +365,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   // mutation controls. Deferred background scans (issue scan, session
   // discovery) run after this point and intentionally do NOT gate readiness.
   setDaemonReady(true);
+  readyRestartGeneration = restartAvailability?.markReady() ?? null;
   logger("info", "daemon_ready", { port: actualPort });
 
   // Visible-first boot no longer requests /api/work/repos on every route, so

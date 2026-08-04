@@ -11,6 +11,28 @@ The `mandible` command is a dispatcher that routes to subcommands. All subcomman
 | `MANDIBLE_SESSION_ID` | Current session ID (set by `mandible wrap`) |
 | `MANDIBLE_DB` | Database path (default: `~/.cache/mandible/mandible.db`) |
 
+## Restart availability temporary failures
+
+Before uploading an operational mutation, the CLI checks a small versioned
+receipt under the Mandible cache root. A fresh, instance-matching self-merge
+receipt returns immediately with temporary-failure status (exit `75`, or `503`
+from capture helpers) and does not enter the ordinary HTTP retry loop.
+
+Structured output uses `error: "mandible_restarting"`, `retryable: true`, and
+`request_sent: false`. The last field is emitted only because this check occurs
+before request upload. `phase` is `rebuilding` for the full admission-closed
+window or `shutdown` after the exact restart action begins. Available estimates
+include `retry_after_seconds` (or `eta_exceeded_seconds`), `average_seconds`, and
+`sample_count`. An absent, stale, malformed, future-version, or unrelated-instance
+receipt is ignored; it never turns arbitrary daemon unavailability into a known
+self-merge.
+
+The receipt keeps rebuild-start-to-ready, exact-shutdown-to-ready, and
+ready-to-warm samples separately. Only the first two can estimate blocking;
+`warm` remains diagnostic and never delays mutation readiness. A mutation whose
+body may already have reached a transport keeps its existing unknown-outcome,
+do-not-replay handling instead of being reclassified as `request_sent: false`.
+
 ## Subcommands
 
 ### mandible wrap
