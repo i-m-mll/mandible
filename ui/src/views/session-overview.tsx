@@ -1,0 +1,537 @@
+// Issue 037fa85 — Session Overview view: per-session page with Codex IAB
+// page-level auto-binding.
+//
+// The view is generic first: it renders for any session id (from the picker or
+// a #/overview?session=<id> deep link). When the page consumed a tab-local
+// codex_session fragment at boot, the resolver decides the binding with
+// explicit zero/one/many semantics — exactly one match auto-binds, anything
+// else is shown honestly with the session picker as fallback. The binding is
+// display/navigation-only: it is never attached to a mutation request.
+import type { ComponentChildren } from 'preact';
+import { useCallback, useEffect, useState } from 'preact/hooks';
+import {
+  getSessionOverview,
+  getSessions,
+  resolveProviderSession,
+  type SessionOverview,
+  type SessionOverviewChild,
+  type SessionOverviewConversation,
+  type SessionOverviewLinkedIssue,
+  type SessionOverviewWorkUnit,
+  type SessionResolveMatch,
+} from '../api';
+import type { SessionRecord } from '../types/session';
+
+type BindingState =
+  | { kind: 'none' }
+  | { kind: 'resolving' }
+  | { kind: 'bound'; match: SessionResolveMatch }
+  | { kind: 'zero' }
+  | { kind: 'many'; matches: SessionResolveMatch[] }
+  | { kind: 'error'; message: string };
+
+export type SessionOverviewViewProps = {
+  initialSessionId: string | null;
+  codexBinding: string | null;
+  iabDetected: boolean;
+};
+
+function formatTimestamp(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '—';
+  const date = typeof value === 'number' ? new Date(value) : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function shortUuid(value: string): string {
+  return value.length > 13 ? `${value.slice(0, 13)}…` : value;
+}
+
+function sessionText(session: Record<string, unknown>, key: string): string | null {
+  const value = session[key];
+  return typeof value === 'string' && value ? value : null;
+}
+
+/** Update the #/overview session param in place so refreshes keep the selection. */
+function writeSessionParamToHash(sessionId: string | null): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const hash = window.location.hash || '#/overview';
+    const [pathPart, queryPart] = hash.replace(/^#/, '').split('?');
+    if (pathPart.replace(/^\//, '') !== 'overview') return;
+    const params = new URLSearchParams(queryPart ?? '');
+    if (sessionId) params.set('session', sessionId);
+    else params.delete('session');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${window.location.search}#${pathPart}${query ? `?${query}` : ''}`,
+    );
+  } catch {
+    // Navigation convenience only.
+  }
+}
+
+function IssueRow({ issue }: { issue: SessionOverviewLinkedIssue }): JSX.Element {
+  const shortId = issue.short_id || issue.issue_id.slice(0, 7);
+  return (
+    <tr>
+      <td>
+        <a href={`#/issues?issue=${encodeURIComponent(shortId)}`}>{shortId}</a>
+      </td>
+      <td className="session-overview__cell-grow">{issue.title}</td>
+      <td>
+        <span className={`session-overview-badge session-overview-badge--${issue.status}`}>
+          {issue.status}
+        </span>
+      </td>
+      <td>{issue.link_type}</td>
+      <td>{formatTimestamp(issue.last_seen_at ?? issue.created_at)}</td>
+    </tr>
+  );
+}
+
+function WorkUnitRow({ unit }: { unit: SessionOverviewWorkUnit }): JSX.Element {
+  return (
+    <tr>
+      <td>{unit.issue_id.slice(0, 7)}</td>
+      <td>{unit.repo_id}</td>
+      <td className="session-overview__cell-grow">{unit.branch ?? '—'}</td>
+      <td>
+        <span className={`session-overview-badge session-overview-badge--${unit.state}`}>
+          {unit.state}
+        </span>
+      </td>
+      <td>{unit.kind}</td>
+      <td>{formatTimestamp(unit.created_at)}</td>
+    </tr>
+  );
+}
+
+function ChildRow({ child }: { child: SessionOverviewChild }): JSX.Element {
+  return (
+    <tr>
+      <td>
+        <a href={`#/overview?session=${encodeURIComponent(child.id)}`}>{shortUuid(child.id)}</a>
+      </td>
+      <td>{child.app}</td>
+      <td>
+        <span className={`session-overview-badge session-overview-badge--${child.status}`}>
+          {child.status}
+        </span>
+      </td>
+      <td className="session-overview__cell-grow">{child.task ?? child.branch ?? '—'}</td>
+      <td>{child.depth}</td>
+      <td>{formatTimestamp(child.last_active ?? child.created_at)}</td>
+    </tr>
+  );
+}
+
+function ConversationRow({ conversation }: { conversation: SessionOverviewConversation }): JSX.Element {
+  return (
+    <tr>
+      <td className="session-overview__cell-grow">
+        <a href={`#/console?conversation=${encodeURIComponent(conversation.id)}`}>
+          {conversation.title || shortUuid(conversation.id)}
+        </a>
+      </td>
+      <td>{conversation.source}</td>
+      <td>{conversation.block_count}</td>
+      <td>{formatTimestamp(conversation.started_at)}</td>
+      <td>{conversation.ended_at ? formatTimestamp(conversation.ended_at) : 'open'}</td>
+    </tr>
+  );
+}
+
+function SectionTable({
+  label,
+  columns,
+  count,
+  emptyText,
+  unavailableReason,
+  children,
+}: {
+  label: string;
+  columns: string[];
+  count: number;
+  emptyText: string;
+  unavailableReason?: string | null;
+  children?: ComponentChildren;
+}): JSX.Element {
+  return (
+    <section className="session-overview__section" aria-label={label}>
+      <h3>
+        {label}
+        {count > 0 ? <span className="session-overview__count">{count}</span> : null}
+      </h3>
+      {unavailableReason ? (
+        <p className="session-overview__unavailable">Unavailable: {unavailableReason}</p>
+      ) : count === 0 ? (
+        <p className="text-muted">{emptyText}</p>
+      ) : (
+        <div className="session-overview__table-wrap">
+          <table className="session-overview__table">
+            <thead>
+              <tr>
+                {columns.map((column) => <th key={column}>{column}</th>)}
+              </tr>
+            </thead>
+            <tbody>{children}</tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function SessionPicker({
+  onSelect,
+}: {
+  onSelect: (sessionId: string) => void;
+}): JSX.Element {
+  const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    getSessions<SessionRecord>()
+      .then((rows) => {
+        if (!cancelled) setSessions(rows);
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load sessions');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (error) return <p className="session-overview__error">{error}</p>;
+  if (sessions === null) return <p className="text-muted">Loading sessions…</p>;
+  if (sessions.length === 0) return <p className="text-muted">No sessions registered.</p>;
+
+  return (
+    <ul className="session-overview__picker" aria-label="Session picker">
+      {sessions.map((session) => {
+        const id = session.id ?? session.session_id ?? '';
+        if (!id) return null;
+        return (
+          <li key={id}>
+            <button type="button" onClick={() => onSelect(id)}>
+              <span className="session-overview__picker-id">{shortUuid(id)}</span>
+              <span className="session-overview__picker-app">{session.app ?? '?'}</span>
+              <span className={`session-overview-badge session-overview-badge--${session.status ?? 'unknown'}`}>
+                {session.status ?? '?'}
+              </span>
+              <span className="session-overview__picker-task">
+                {session.task ?? session.branch ?? session.cwd ?? ''}
+              </span>
+            </button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+export function SessionOverviewView({
+  initialSessionId,
+  codexBinding,
+  iabDetected,
+}: SessionOverviewViewProps): JSX.Element {
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
+  const [binding, setBinding] = useState<BindingState>({ kind: 'none' });
+  const [overview, setOverview] = useState<SessionOverview | null>(null);
+  const [overviewError, setOverviewError] = useState<string | null>(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [refreshToken, setRefreshToken] = useState(0);
+
+  // Deep-link/param changes (e.g. clicking a child session row) win over the
+  // in-memory selection.
+  useEffect(() => {
+    if (initialSessionId && initialSessionId !== selectedSessionId) {
+      setSelectedSessionId(initialSessionId);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialSessionId]);
+
+  // Resolve the page-local Codex binding once, only when no explicit session
+  // selection exists. Zero/one/many are surfaced honestly — only exactly one
+  // bindable match auto-selects.
+  useEffect(() => {
+    if (!codexBinding || initialSessionId) return;
+    let cancelled = false;
+    setBinding({ kind: 'resolving' });
+    resolveProviderSession('codex', codexBinding)
+      .then((result) => {
+        if (cancelled) return;
+        const bindable = result.matches.filter((match) => match.mandible_session_id);
+        if (result.matches.length === 0) {
+          setBinding({ kind: 'zero' });
+        } else if (result.matches.length === 1 && bindable.length === 1) {
+          setBinding({ kind: 'bound', match: bindable[0] });
+          setSelectedSessionId(bindable[0].mandible_session_id);
+          writeSessionParamToHash(bindable[0].mandible_session_id);
+        } else if (result.matches.length === 1) {
+          // One match but no registry session behind it — nothing to bind.
+          setBinding({ kind: 'zero' });
+        } else {
+          setBinding({ kind: 'many', matches: result.matches });
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setBinding({
+          kind: 'error',
+          message: err instanceof Error ? err.message : 'Resolver request failed',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [codexBinding]);
+
+  useEffect(() => {
+    if (!selectedSessionId) {
+      setOverview(null);
+      setOverviewError(null);
+      return;
+    }
+    let cancelled = false;
+    setOverviewLoading(true);
+    setOverviewError(null);
+    getSessionOverview(selectedSessionId, codexBinding)
+      .then((payload) => {
+        if (cancelled) return;
+        setOverview(payload);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setOverview(null);
+        setOverviewError(err instanceof Error ? err.message : 'Failed to load overview');
+      })
+      .finally(() => {
+        if (!cancelled) setOverviewLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedSessionId, codexBinding, refreshToken]);
+
+  const handleSelect = useCallback((sessionId: string) => {
+    setSelectedSessionId(sessionId);
+    writeSessionParamToHash(sessionId);
+  }, []);
+
+  const handleClearSelection = useCallback(() => {
+    setSelectedSessionId(null);
+    writeSessionParamToHash(null);
+  }, []);
+
+  const session = overview?.session ?? null;
+
+  return (
+    <div className="view session-overview">
+      <div className="view-header session-overview__header">
+        <div>
+          <h2>Session Overview</h2>
+          <p className="text-muted">
+            Linked issues, work units, child sessions, and conversations for one agent session.
+          </p>
+        </div>
+        <div className="session-overview__toolbar">
+          {selectedSessionId ? (
+            <>
+              <button type="button" onClick={() => setRefreshToken((token) => token + 1)}>
+                Refresh
+              </button>
+              <button type="button" onClick={handleClearSelection}>
+                Change session
+              </button>
+            </>
+          ) : null}
+        </div>
+      </div>
+
+      {codexBinding ? (
+        <div className="session-overview__binding" role="status">
+          {binding.kind === 'resolving' && (
+            <span>Resolving Codex session {shortUuid(codexBinding)}…</span>
+          )}
+          {binding.kind === 'bound' && (
+            <span>
+              Bound to Codex session <code>{shortUuid(codexBinding)}</code> (page-local,
+              display-only).
+            </span>
+          )}
+          {binding.kind === 'zero' && (
+            <span>
+              No Mandible session matches Codex session <code>{shortUuid(codexBinding)}</code>.
+              Pick a session below.
+            </span>
+          )}
+          {binding.kind === 'many' && (
+            <span>
+              Codex session <code>{shortUuid(codexBinding)}</code> matches multiple Mandible
+              sessions — pick one explicitly.
+            </span>
+          )}
+          {binding.kind === 'error' && (
+            <span>Codex session resolution failed: {binding.message}</span>
+          )}
+        </div>
+      ) : iabDetected && !selectedSessionId ? (
+        <div className="session-overview__binding" role="status">
+          <span>
+            Codex in-app browser detected, but no session binding arrived — pick a session below.
+          </span>
+        </div>
+      ) : null}
+
+      {binding.kind === 'many' && !selectedSessionId ? (
+        <ul className="session-overview__picker" aria-label="Codex session matches">
+          {binding.matches.map((match, index) => (
+            <li key={`${match.mandible_session_id ?? match.console_session_id ?? index}`}>
+              <button
+                type="button"
+                disabled={!match.mandible_session_id}
+                onClick={() => {
+                  if (match.mandible_session_id) handleSelect(match.mandible_session_id);
+                }}
+              >
+                <span className="session-overview__picker-id">
+                  {match.mandible_session_id
+                    ? shortUuid(match.mandible_session_id)
+                    : 'no registry session'}
+                </span>
+                <span className="session-overview__picker-task">
+                  {match.sources.join(', ')}
+                  {match.console_session_id ? ` · console ${shortUuid(match.console_session_id)}` : ''}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+
+      {!selectedSessionId ? (
+        <SessionPicker onSelect={handleSelect} />
+      ) : (
+        <div className="session-overview__body">
+          {overviewError ? <p className="session-overview__error">{overviewError}</p> : null}
+          {overviewLoading && !overview ? <p className="text-muted">Loading overview…</p> : null}
+          {session ? (
+            <>
+              <section className="session-overview__section" aria-label="Session">
+                <h3>
+                  {shortUuid(String(session.id ?? selectedSessionId))}
+                  <span
+                    className={`session-overview-badge session-overview-badge--${String(session.status ?? 'unknown')}`}
+                  >
+                    {String(session.status ?? 'unknown')}
+                  </span>
+                </h3>
+                <dl className="session-overview__facts">
+                  <div>
+                    <dt>App</dt>
+                    <dd>{sessionText(session, 'app') ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Branch</dt>
+                    <dd>{sessionText(session, 'branch') ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Cwd</dt>
+                    <dd className="session-overview__path">{sessionText(session, 'cwd') ?? '—'}</dd>
+                  </div>
+                  <div>
+                    <dt>Created</dt>
+                    <dd>{formatTimestamp(session.created_at)}</dd>
+                  </div>
+                  <div>
+                    <dt>Last active</dt>
+                    <dd>{formatTimestamp(session.last_active ?? session.updated_at)}</dd>
+                  </div>
+                  {sessionText(session, 'task') ? (
+                    <div className="session-overview__facts-wide">
+                      <dt>Task</dt>
+                      <dd>{sessionText(session, 'task')}</dd>
+                    </div>
+                  ) : null}
+                </dl>
+                {overview ? (
+                  <p className="text-muted session-overview__as-of">
+                    As of {formatTimestamp(overview.as_of)}
+                  </p>
+                ) : null}
+              </section>
+
+              {overview ? (
+                <>
+                  <SectionTable
+                    label="Linked issues"
+                    columns={['Issue', 'Title', 'Status', 'Link', 'Last seen']}
+                    count={overview.linked_issues.items.length}
+                    emptyText="No explicit ledger issue links for this session."
+                  >
+                    {overview.linked_issues.items.map((issue) => (
+                      <IssueRow key={`${issue.issue_id}:${issue.link_type}`} issue={issue} />
+                    ))}
+                  </SectionTable>
+
+                  <SectionTable
+                    label="Work units"
+                    columns={['Issue', 'Repo', 'Branch', 'State', 'Kind', 'Created']}
+                    count={overview.work_units.items.length}
+                    emptyText="No work units assigned to this session or its descendants."
+                  >
+                    {overview.work_units.items.map((unit) => (
+                      <WorkUnitRow key={unit.id} unit={unit} />
+                    ))}
+                  </SectionTable>
+
+                  <SectionTable
+                    label="Child sessions"
+                    columns={['Session', 'App', 'Status', 'Task', 'Depth', 'Last active']}
+                    count={overview.children.items.length}
+                    emptyText="No child sessions recorded."
+                    unavailableReason={overview.children.available ? null : overview.children.reason}
+                  >
+                    {overview.children.items.map((child) => (
+                      <ChildRow key={child.id} child={child} />
+                    ))}
+                  </SectionTable>
+                  {overview.children.truncated ? (
+                    <p className="text-muted">
+                      Child list truncated (depth limit {overview.children.depth_limit}, count limit{' '}
+                      {overview.children.count_limit}).
+                    </p>
+                  ) : null}
+
+                  <SectionTable
+                    label="Conversations"
+                    columns={['Conversation', 'Source', 'Blocks', 'Started', 'Ended']}
+                    count={overview.conversations.items.length}
+                    emptyText="No indexed conversations for this session."
+                  >
+                    {overview.conversations.items.map((conversation) => (
+                      <ConversationRow key={conversation.id} conversation={conversation} />
+                    ))}
+                  </SectionTable>
+                </>
+              ) : null}
+            </>
+          ) : null}
+        </div>
+      )}
+    </div>
+  );
+}

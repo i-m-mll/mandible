@@ -114,6 +114,164 @@ function ledgerIssueStatusForSessionLink(repoId: string, issueId: string): "open
   return row?.status === "closed" ? "closed" : row?.status === "open" ? "open" : null;
 }
 
+// Issue 037fa85 — provider-session alias resolution for the Session Overview
+// view. One provider UUID (e.g. a Codex thread id) may surface in several
+// stores: console_sessions (id / provider_session_id / mandible_session_id),
+// the sessions registry (id / conversation_id), and the normalized
+// conversations index (conversations.session_id holds the Codex rollout UUID
+// for source='codex' rows). The resolver reports every distinct match with
+// explicit zero/one/many semantics; it never silently picks among candidates.
+export type SessionResolveMatch = {
+  mandible_session_id: string | null;
+  console_session_id: string | null;
+  conversation_id: string | null;
+  sources: string[];
+};
+
+export function resolveCodexSessionMatches(ref: string): SessionResolveMatch[] {
+  const db = getDb();
+
+  // conversations.session_id holds the Codex rollout UUID for source='codex'.
+  const conversationRow = db.prepare(`
+    SELECT id
+    FROM conversations
+    WHERE session_id = ? AND source = 'codex'
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get(ref) as { id: string } | undefined;
+  const conversationId = conversationRow?.id ?? null;
+
+  const matches = new Map<string, SessionResolveMatch>();
+  const add = (
+    mandibleSessionId: string | null,
+    consoleSessionId: string | null,
+    source: string,
+  ): void => {
+    const key = mandibleSessionId ?? (consoleSessionId ? `console:${consoleSessionId}` : "conversation");
+    const existing = matches.get(key);
+    if (existing) {
+      if (!existing.console_session_id && consoleSessionId) {
+        existing.console_session_id = consoleSessionId;
+      }
+      if (!existing.sources.includes(source)) existing.sources.push(source);
+      return;
+    }
+    matches.set(key, {
+      mandible_session_id: mandibleSessionId,
+      console_session_id: consoleSessionId,
+      conversation_id: conversationId,
+      sources: [source],
+    });
+  };
+
+  // Same alias predicate the hook telemetry path uses (src/routes/hooks.ts),
+  // but without LIMIT 1: many-match honesty is the point here.
+  const consoleRows = db.prepare(`
+    SELECT id, provider_session_id, mandible_session_id
+    FROM console_sessions
+    WHERE id = ? OR provider_session_id = ? OR mandible_session_id = ?
+    ORDER BY updated_at DESC
+  `).all(ref, ref, ref) as Array<{
+    id: string;
+    provider_session_id: string | null;
+    mandible_session_id: string | null;
+  }>;
+  for (const row of consoleRows) {
+    add(row.mandible_session_id, row.id, "console_sessions");
+  }
+
+  const registryRows = db.prepare(`
+    SELECT id
+    FROM sessions
+    WHERE id = ? OR conversation_id = ?
+    ORDER BY updated_at DESC
+  `).all(ref, ref) as Array<{ id: string }>;
+  for (const row of registryRows) {
+    add(row.id, null, "sessions");
+  }
+
+  // A conversation-only hit is still an honest (unbindable) match: the client
+  // can link to the transcript even though no registry session exists.
+  if (matches.size === 0 && conversationId) {
+    add(null, null, "conversations");
+  }
+
+  return Array.from(matches.values());
+}
+
+// Issue 037fa85 — bounded, cycle-safe descendant walk over sessions.parent_id.
+// registry.getSessionTree loads the whole sessions table; this walks only the
+// requested subtree with explicit depth and count caps.
+const OVERVIEW_DESCENDANT_DEPTH_LIMIT = 5;
+const OVERVIEW_DESCENDANT_COUNT_LIMIT = 200;
+const OVERVIEW_CONVERSATIONS_LIMIT = 20;
+
+type OverviewDescendantRow = {
+  id: string;
+  parent_id: string | null;
+  app: string;
+  status: string;
+  branch: string | null;
+  cwd: string | null;
+  task: string | null;
+  agent_type: string | null;
+  created_at: string;
+  ended_at: string | null;
+  last_active: string | null;
+  conversation_id: string | null;
+};
+
+function collectBoundedDescendants(rootId: string): {
+  descendants: Array<OverviewDescendantRow & { depth: number }>;
+  truncated: boolean;
+} {
+  const db = getDb();
+  const seen = new Set<string>([rootId]);
+  const descendants: Array<OverviewDescendantRow & { depth: number }> = [];
+  let frontier: string[] = [rootId];
+  let depth = 0;
+  let truncated = false;
+
+  while (frontier.length > 0 && depth < OVERVIEW_DESCENDANT_DEPTH_LIMIT) {
+    const placeholders = frontier.map(() => "?").join(", ");
+    const rows = db.prepare(`
+      SELECT id, parent_id, app, status, branch, cwd, task, agent_type,
+             created_at, ended_at, last_active, conversation_id
+      FROM sessions
+      WHERE parent_id IN (${placeholders})
+      ORDER BY created_at ASC
+    `).all(...frontier) as OverviewDescendantRow[];
+
+    const next: string[] = [];
+    for (const row of rows) {
+      // Cycle safety: a row whose id already appeared upstream is skipped.
+      if (seen.has(row.id)) continue;
+      if (descendants.length >= OVERVIEW_DESCENDANT_COUNT_LIMIT) {
+        truncated = true;
+        break;
+      }
+      seen.add(row.id);
+      descendants.push({ ...row, depth: depth + 1 });
+      next.push(row.id);
+    }
+    if (truncated) break;
+    frontier = next;
+    depth += 1;
+  }
+
+  // Depth cap reached with live frontier: report truncation only if a deeper
+  // level actually exists.
+  if (!truncated && frontier.length > 0 && depth >= OVERVIEW_DESCENDANT_DEPTH_LIMIT) {
+    const placeholders = frontier.map(() => "?").join(", ");
+    const deeper = db.prepare(
+      `SELECT 1 FROM sessions WHERE parent_id IN (${placeholders}) LIMIT 1`,
+    ).get(...frontier);
+    if (deeper) truncated = true;
+  }
+
+  return { descendants, truncated };
+}
+
 // Bug: caa157e — resolve session ID prefix, returning resolved ID or sending error response
 function resolveSessionId(id: string, res: ResponseLike): string | null {
   const resolved = resolvePrefix(getDb(), "sessions", "id", id);
@@ -405,6 +563,30 @@ export function registerSessionRoutes(
     sendJson(res, 200, { ok: true, identity_warning: identityWarning });
   }, { fileRpc: "deny" });
 
+  // Issue 037fa85 — provider-session alias resolution with explicit
+  // zero/one/many semantics. Registered before /api/sessions/:id so the static
+  // segment wins route matching. Read-only: the binding a client derives from
+  // this endpoint is display/navigation-only and must never gate mutations.
+  server.get("/api/sessions/resolve", (req, res) => {
+    const query = req.query ?? {};
+    const provider = (query.provider ?? "").trim();
+    const providerSessionId = (query.provider_session_id ?? "").trim();
+    if (provider !== "codex") {
+      sendJson(res, 400, { error: "Unsupported provider — expected provider=codex" });
+      return;
+    }
+    if (!providerSessionId) {
+      sendJson(res, 400, { error: "Missing provider_session_id" });
+      return;
+    }
+    const matches = resolveCodexSessionMatches(providerSessionId);
+    sendJson(res, 200, {
+      provider: "codex",
+      provider_session_id: providerSessionId,
+      matches,
+    });
+  }, { fileRpc: "deny" });
+
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
     const pidStr = req.params.pid;
     const pid = Number(pidStr);
@@ -450,6 +632,133 @@ export function registerSessionRoutes(
       return;
     }
     sendJson(res, 200, tree);
+  }, { fileRpc: "deny" });
+
+  // Issue 037fa85 — aggregate Session Overview payload: session row, bounded
+  // descendant list, ledger-linked issues, work units, recent conversations.
+  // Every section carries provenance/completeness fields so the UI can render
+  // honest empty states instead of guessing.
+  server.get("/api/sessions/:id/overview", (req, res) => {
+    const rawId = req.params.id;
+    if (!rawId) {
+      sendJson(res, 400, { error: "Missing session id" });
+      return;
+    }
+    const id = resolveSessionId(rawId, res);
+    if (!id) return;
+    const session = registry.getSession(id);
+    if (!session) {
+      sendJson(res, 404, { error: "Session not found" });
+      return;
+    }
+
+    const db = getDb();
+    const asOf = Date.now();
+    const { descendants, truncated } = collectBoundedDescendants(id);
+    const descendantIds = descendants.map((row) => row.id);
+    const sessionIds = [id, ...descendantIds];
+    const idPlaceholders = sessionIds.map(() => "?").join(", ");
+
+    // Linked issues: explicit ledger links for this session (not the legacy
+    // session_issues table, and deliberately not "every issue this session
+    // ever touched").
+    const linkedIssues = db.prepare(`
+      SELECT l.issue_id, l.link_type, l.source, l.created_at, l.last_seen_at,
+             i.short_id, i.title, i.status, i.worker_status, i.kind
+      FROM ledger_session_issue_links l
+      JOIN ledger_issues i ON i.id = l.issue_id
+      WHERE l.session_id = ?
+      ORDER BY COALESCE(l.last_seen_at, l.created_at) DESC
+    `).all(id) as Array<Record<string, unknown>>;
+
+    // Work units handled by the session or any listed descendant. When the
+    // caller supplies the page-level Codex binding, expand provider-session
+    // aliases through the same resolver the /resolve endpoint uses. The alias
+    // only widens this read; it never influences work-unit state.
+    const providerSessionId = (req.query?.provider_session_id ?? "").trim();
+    const providerAliases = new Set<string>();
+    if (providerSessionId) {
+      providerAliases.add(providerSessionId);
+      for (const match of resolveCodexSessionMatches(providerSessionId)) {
+        if (match.console_session_id) providerAliases.add(match.console_session_id);
+        if (match.mandible_session_id) providerAliases.add(match.mandible_session_id);
+      }
+    }
+    const providerIds = [...sessionIds, ...providerAliases];
+    const providerPlaceholders = providerIds.map(() => "?").join(", ");
+    const workUnits = db.prepare(`
+      SELECT id, issue_id, ledger_issue_id, repo_id, branch, parent_branch, kind,
+             state, assigned_session_id, provider, provider_session_id,
+             created_at, activated_at, last_commit_at, resolved_at, auth_request_id
+      FROM work_units
+      WHERE assigned_session_id IN (${idPlaceholders})
+         OR provider_session_id IN (${providerPlaceholders})
+      ORDER BY created_at DESC
+    `).all(...sessionIds, ...providerIds) as Array<Record<string, unknown>>;
+
+    // Recent conversation metadata. conversations.session_id may hold the
+    // registry session id, the provider session UUID recorded on
+    // sessions.conversation_id, or (with a page binding) the Codex rollout UUID.
+    const conversationKeys = new Set<string>(sessionIds);
+    if (session.conversation_id) conversationKeys.add(session.conversation_id);
+    for (const row of descendants) {
+      if (row.conversation_id) conversationKeys.add(row.conversation_id);
+    }
+    for (const alias of providerAliases) conversationKeys.add(alias);
+    const conversationKeyList = Array.from(conversationKeys);
+    const conversationPlaceholders = conversationKeyList.map(() => "?").join(", ");
+    const conversations = db.prepare(`
+      SELECT id, source, title, session_id, started_at, ended_at, block_count,
+             model, branch, cwd, updated_at
+      FROM conversations
+      WHERE session_id IN (${conversationPlaceholders})
+      ORDER BY started_at DESC
+      LIMIT ${OVERVIEW_CONVERSATIONS_LIMIT}
+    `).all(...conversationKeyList) as Array<Record<string, unknown>>;
+
+    // Honest children section: codex child sessions are not populated today
+    // (child hooks are Claude-oriented; the codex parser emits
+    // is_sidechain: false), so an empty list for a codex-tier session is an
+    // availability gap, not "no children".
+    const isCodexTier = (session.app ?? "").toLowerCase().includes("codex");
+    const children = descendants.length === 0 && isCodexTier
+      ? {
+          available: false,
+          reason: "codex child sessions not populated",
+          items: [],
+          truncated: false,
+          depth_limit: OVERVIEW_DESCENDANT_DEPTH_LIMIT,
+          count_limit: OVERVIEW_DESCENDANT_COUNT_LIMIT,
+        }
+      : {
+          available: true,
+          items: descendants,
+          truncated,
+          depth_limit: OVERVIEW_DESCENDANT_DEPTH_LIMIT,
+          count_limit: OVERVIEW_DESCENDANT_COUNT_LIMIT,
+        };
+
+    sendJson(res, 200, {
+      as_of: asOf,
+      session,
+      children,
+      linked_issues: {
+        available: true,
+        source: "ledger_session_issue_links",
+        items: linkedIssues,
+      },
+      work_units: {
+        available: true,
+        includes_descendants: true,
+        matched_provider_aliases: Array.from(providerAliases),
+        items: workUnits,
+      },
+      conversations: {
+        available: true,
+        limit: OVERVIEW_CONVERSATIONS_LIMIT,
+        items: conversations,
+      },
+    });
   }, { fileRpc: "deny" });
 
   server.post("/api/sessions/:id/navigate", (req, res) => {

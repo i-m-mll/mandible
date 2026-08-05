@@ -1,5 +1,5 @@
 export type Route = {
-  tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'spaces';
+  tab: 'auth' | 'artifacts' | 'chat-history' | 'work' | 'issues' | 'settings' | 'inbox' | 'console' | 'logs' | 'graph' | 'timeline' | 'spaces' | 'overview';
   params: Record<string, string>;
 };
 
@@ -84,7 +84,7 @@ export function parseRouteFromHash(hashValue: string): Route {
   if (retiredReviewPath === 'presets' && !params.role) {
     params.role = 'instructions';
   }
-  const tab = ['auth', 'artifacts', 'chat-history', 'work', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'spaces'].includes(retiredPresetsPath)
+  const tab = ['auth', 'artifacts', 'chat-history', 'work', 'issues', 'settings', 'inbox', 'console', 'logs', 'graph', 'timeline', 'spaces', 'overview'].includes(retiredPresetsPath)
     ? (retiredPresetsPath as Route['tab'])
     : 'spaces';
   return { tab, params: tab === 'artifacts' ? normalizeArtifactRouteParams(params) : params };
