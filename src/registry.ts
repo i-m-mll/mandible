@@ -229,6 +229,14 @@ interface SessionRow {
   identity_mismatch_json: string | null;
 }
 
+// Issue e726bfe — this is a fresh-database bootstrap, not a migration path.
+// Migrations in src/db-migrations.ts (plus the db-baseline snapshot) are the
+// only thing that upgrades an existing database; this statement exists solely
+// so an isolated caller with an empty SQLite handle (unit tests) gets the
+// current schema in one shot. It must therefore stay column- and
+// index-complete against the migrated schema, and it must never contain
+// ALTER TABLE. If a new sessions column is needed, add a migration and mirror
+// the column here.
 const SESSION_SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
@@ -250,7 +258,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   nav_metadata_last_attempt_at TEXT,
   nav_metadata_next_retry_at TEXT,
   task TEXT,
-  status TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active',
   parent_id TEXT,
   agent_type TEXT,
   description TEXT,
@@ -264,8 +272,8 @@ CREATE TABLE IF NOT EXISTS sessions (
   owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
   identity_mismatch_at INTEGER,
   identity_mismatch_json TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   ended_at TEXT,
   FOREIGN KEY(parent_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
@@ -274,71 +282,21 @@ CREATE INDEX IF NOT EXISTS sessions_status_idx ON sessions(status);
 CREATE INDEX IF NOT EXISTS sessions_app_idx ON sessions(app);
 CREATE INDEX IF NOT EXISTS sessions_nav_metadata_idx
   ON sessions(nav_metadata_status, nav_metadata_next_retry_at);
+CREATE INDEX IF NOT EXISTS sessions_branch_idx ON sessions(branch) WHERE branch IS NOT NULL;
+CREATE INDEX IF NOT EXISTS sessions_channel_idx
+  ON sessions(channel_connected_at) WHERE channel_connected_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_sessions_conversation_id
+  ON sessions(conversation_id) WHERE conversation_id IS NOT NULL;
 `;
 
+/**
+ * Create the sessions schema on an empty database. Existing databases are
+ * upgraded by the migration chain only (issue e726bfe): this function must
+ * stay a pure CREATE ... IF NOT EXISTS bootstrap and never repair or alter a
+ * table it did not just create.
+ */
 export function ensureSessionSchema(db: SqliteDatabase): void {
   db.exec(SESSION_SCHEMA);
-  ensureSessionColumns(db);
-}
-
-function ensureSessionColumns(db: SqliteDatabase): void {
-  const columns = db
-    .prepare("PRAGMA table_info(sessions)")
-    .all() as Array<{ name: string }>;
-  const names = new Set(columns.map((column) => column.name));
-
-  if (!names.has("nav_metadata_status")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN nav_metadata_status TEXT NOT NULL DEFAULT 'not_applicable'");
-  }
-  if (!names.has("nav_metadata_attempts")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN nav_metadata_attempts INTEGER NOT NULL DEFAULT 0");
-  }
-  if (!names.has("nav_metadata_last_error")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN nav_metadata_last_error TEXT");
-  }
-  if (!names.has("nav_metadata_last_attempt_at")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN nav_metadata_last_attempt_at TEXT");
-  }
-  if (!names.has("nav_metadata_next_retry_at")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN nav_metadata_next_retry_at TEXT");
-  }
-  db.exec(`CREATE INDEX IF NOT EXISTS sessions_nav_metadata_idx
-    ON sessions(nav_metadata_status, nav_metadata_next_retry_at)`);
-  if (!names.has("pinned")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN pinned INTEGER DEFAULT 0");
-  }
-  if (!names.has("continuation")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN continuation TEXT");
-  }
-  if (!names.has("continuation_acked_by")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN continuation_acked_by TEXT");
-  }
-  // Bug: e01653d — real user activity time from JSONL transcript mtime
-  if (!names.has("last_active")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN last_active TEXT");
-  }
-  // Bug: 0b454df — channel-connected session tracking
-  if (!names.has("channel_connected_at")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN channel_connected_at INTEGER");
-  }
-  if (!names.has("channel_last_tool_call")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN channel_last_tool_call INTEGER");
-  }
-  if (!names.has("conversation_id")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN conversation_id TEXT");
-  }
-  if (!names.has("owner_user_id")) {
-    db.exec(
-      "ALTER TABLE sessions ADD COLUMN owner_user_id TEXT REFERENCES users(id) ON DELETE SET NULL",
-    );
-  }
-  // Issue 499c148 — client-token vs session-binding user disagreement.
-  if (!names.has("identity_mismatch_at")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN identity_mismatch_at INTEGER");
-  }
-  if (!names.has("identity_mismatch_json")) {
-    db.exec("ALTER TABLE sessions ADD COLUMN identity_mismatch_json TEXT");
-  }
 }
 
 function safeJsonParse(value: string | null): Record<string, unknown> | null {

@@ -7,7 +7,12 @@ import {
   normalizeAmbientProviderIdentity,
   type AmbientProviderIdentity,
 } from "./ambient-provider-identity.js";
-import { evaluateInstanceMutation, resolveInstanceInfo } from "./instance-policy.js";
+import {
+  evaluateInstanceMutation,
+  operationalMutationCategoryForPath,
+  resolveInstanceInfo,
+  UNSAFE_MUTATION_METHODS as UNSAFE_METHODS,
+} from "./instance-policy.js";
 import { SseManager } from "./sse.js";
 import type { Db } from "./db.js";
 import type { HealthResponse, InstanceInfo, Logger, StartupCommitInfo } from "./types.js";
@@ -23,7 +28,6 @@ const UI_DIST_DIR = path.join(UI_DIR, "dist");
 const UI_ASSET_MANIFEST_PATH = path.join(UI_DIST_DIR, "asset-manifest.json");
 const UI_BOOTSTRAP_SCRIPT_RE = /<script\s+id="mandible-bootstrap"\s+type="application\/json"><\/script>/;
 const HASHED_ASSET_NAME_RE = /-[A-Za-z0-9_-]{8,}\.[^.]+$/;
-const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -496,46 +500,11 @@ function serializeFileRpcPolicy(policy: FileRpcPolicy): "allow" | "deny" | "cond
   return "conditional";
 }
 
+// Issue 97cf613 — the route→category table and the exemption set live in
+// instance-policy.ts. This wrapper only names the route-pattern call site; do
+// not reintroduce a local copy of either table here.
 function operationalMutationCategoryForRoute(method: string, pathPattern: string): string | null {
-  if (!UNSAFE_METHODS.has(method)) {
-    return null;
-  }
-  if (pathPattern === "/api/auth/check") {
-    return null;
-  }
-  const pathPrefixes: Array<[string, string]> = [
-    ["/api/knowledge-backrefs", "artifacts"],
-    ["/api/work-units", "work_units"],
-    ["/api/admin", "system"],
-    ["/api/artifacts", "artifacts"],
-    ["/api/auth", "auth"],
-    ["/api/backup", "backup"],
-    ["/api/chats", "chats"],
-    ["/api/console", "console"],
-    ["/api/conversations", "conversations"],
-    ["/api/inbox", "inbox"],
-    ["/api/ledger", "ledger"],
-    ["/api/issues", "issues"],
-    ["/api/presets", "presets"],
-    ["/api/projects", "projects"],
-    ["/api/provider-manifests", "providers"],
-    ["/api/providers", "providers"],
-    ["/api/runtime", "runtime"],
-    ["/api/settings", "settings"],
-    ["/api/sessions", "sessions"],
-    ["/api/spaces", "spaces"],
-    ["/api/system", "system"],
-    ["/api/timeline", "timeline"],
-    ["/api/webhooks", "webhooks"],
-    ["/api/work", "work"],
-    ["/api", "api"],
-  ];
-  for (const [prefix, category] of pathPrefixes) {
-    if (pathPattern === prefix || pathPattern.startsWith(`${prefix}/`)) {
-      return category;
-    }
-  }
-  return null;
+  return operationalMutationCategoryForPath(method, pathPattern);
 }
 
 function ambientIdentityFromHeaders(headers: http.IncomingHttpHeaders): AmbientProviderIdentity | null {

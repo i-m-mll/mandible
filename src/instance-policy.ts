@@ -6,13 +6,27 @@ import type {
   OperationalMutationPolicy,
 } from "./types.js";
 
-const UNSAFE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
-const SAFE_UNSAFE_ROUTE_EXCEPTIONS = new Set([
+// Issue 97cf613 — this module is the single source of truth for operational
+// mutation classification. Both gates (the per-request gate in
+// `evaluateInstanceMutation` and the per-route gate behind
+// `Router.listRoutePolicies` in server.ts) import these tables; they must never
+// be copied. Keep this module dependency-light (node:path + type-only imports)
+// so server.ts can import it without creating a cycle.
+export const UNSAFE_MUTATION_METHODS: ReadonlySet<string> = new Set([
+  "POST",
+  "PUT",
+  "PATCH",
+  "DELETE",
+]);
+
+// Unsafe-method routes that are read-only in effect and therefore stay
+// available on instances that reject operational mutations.
+export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
   "POST /api/auth/check",
   "POST /api/timeline/project",
 ]);
 
-const OPERATIONAL_ROUTE_CATEGORIES: Array<{ prefix: string; category: string }> = [
+export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; category: string }> = [
   { prefix: "/api/admin", category: "system" },
   { prefix: "/api/artifacts", category: "artifacts" },
   { prefix: "/api/auth", category: "auth" },
@@ -74,7 +88,7 @@ export function evaluateInstanceMutation(
   method: string,
   pathname: string,
 ): InstanceMutationDecision {
-  const category = operationalMutationCategory(method, pathname);
+  const category = operationalMutationCategoryForPath(method, pathname);
   if (!category || instance.operational_mutations === "allow") {
     return { allowed: true };
   }
@@ -96,13 +110,23 @@ export function allowsOperationalMutations(instance: InstanceInfo): boolean {
   return instance.operational_mutations === "allow";
 }
 
-function operationalMutationCategory(method: string, pathname: string): string | null {
+/**
+ * Classify a request path or a registered route path pattern into its
+ * operational mutation category, or null when the route is not an operational
+ * mutation. Prefix matching makes this work for both concrete request
+ * pathnames (`/api/ledger/issues/abc123/comments`) and route patterns
+ * (`/api/ledger/issues/:issueId/comments`).
+ */
+export function operationalMutationCategoryForPath(
+  method: string,
+  pathname: string,
+): string | null {
   const normalizedMethod = method.toUpperCase();
-  if (!UNSAFE_METHODS.has(normalizedMethod)) {
+  if (!UNSAFE_MUTATION_METHODS.has(normalizedMethod)) {
     return null;
   }
 
-  if (SAFE_UNSAFE_ROUTE_EXCEPTIONS.has(`${normalizedMethod} ${pathname}`)) {
+  if (OPERATIONAL_MUTATION_EXEMPT_ROUTES.has(`${normalizedMethod} ${pathname}`)) {
     return null;
   }
 
