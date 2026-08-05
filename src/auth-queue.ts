@@ -106,6 +106,11 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "issue_references", "issue_closures", "merge_preflight_base_sha",
   "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_candidate_tree_sha",
   "merge_candidate_pin_sha", "merge_atomic_enabled", "merge_finalized_at",
+  // Issue 98d25f3 — omitting this made summaries report every request's
+  // finalizer state as null, because `mapRow` maps an absent column to null and
+  // cannot tell "not selected" from "not set". It is a small bounded JSON blob
+  // (one record per finalizer step), not one of the unbounded body blobs.
+  "merge_finalizer_state",
 ].join(", ");
 
 // Issue 75f52ac — off-loop git spawns for the background finalizer queue.
