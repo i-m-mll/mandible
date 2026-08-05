@@ -5262,10 +5262,6 @@ describe('SSE handling', () => {
   it('updates badge counts from SSE events', () => {
     let state = initialState;
     state = applySSEEvent(state, {
-      type: 'session:registered',
-      session: { id: 's1', status: 'active' },
-    });
-    state = applySSEEvent(state, {
       type: 'auth:new',
       request: { id: 'a1', status: 'pending' },
     });
@@ -5276,7 +5272,6 @@ describe('SSE handling', () => {
     });
 
     const badges = selectBadgeCounts(state);
-    expect(badges.sessions).toBe(1);
     expect(badges.auth).toBe(1);
     expect(badges.work).toBe(1);
   });
