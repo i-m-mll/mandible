@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 const stylesheets = {
   canvas: readFileSync("ui/src/views/spaces/SpaceCanvas.css", "utf8"),
-  edges: readFileSync("ui/src/views/spaces/SpaceEdgeLayer.css", "utf8"),
   board: readFileSync("ui/src/views/spaces/space-board.css", "utf8"),
 };
 
@@ -32,27 +31,9 @@ describe("Spaces light theme surfaces", () => {
     expect(node).not.toContain("var(--text,");
   });
 
-  it("keeps the edge panel and controls on real app theme tokens", () => {
-    const panel = cssRuleBody(stylesheets.edges, ".space-edge-layer");
-    const create = cssRuleBody(stylesheets.edges, ".space-edge-layer__create");
-    const input = cssRuleBody(stylesheets.edges, ".space-edge-layer__input");
-    const button = cssRuleBody(stylesheets.edges, ".space-edge-layer__btn");
-    const empty = cssRuleBody(stylesheets.edges, ".space-edge-layer__empty");
-
-    expect(panel).toContain("background: var(--bg-secondary)");
-    expect(panel).toContain("color: var(--text-primary)");
-    expect(create).not.toContain("var(--surface");
-    expect(input).toContain("background: var(--bg-card)");
-    expect(input).toContain("color: var(--text-primary)");
-    expect(button).toContain("background: var(--bg-card)");
-    expect(button).toContain("color: var(--text-primary)");
-    expect(empty).toContain("color: var(--text-muted");
-
-    for (const body of [panel, create, input, button, empty]) {
-      expect(body).not.toContain("var(--surface");
-      expect(body).not.toContain("var(--text,");
-    }
-  });
+  // The `SpaceEdgeLayer` panel this suite also covered was retired and deleted
+  // along with `SpaceEdgeLayer.css`; the canvas inspector above is its
+  // replacement surface.
 
   it("keeps the board column menu and filter editor on real app theme tokens", () => {
     const menu = cssRuleBody(stylesheets.board, ".space-board__add-column-menu");

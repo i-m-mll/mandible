@@ -219,7 +219,6 @@ describe('ViewSidebar', () => {
       'ui/src/views/artifacts.tsx',
       'ui/src/views/conversations.tsx',
       'ui/src/views/inbox.tsx',
-      'ui/src/views/presets.tsx',
     ];
     for (const viewPath of viewPaths) {
       const source = readFileSync(resolve(viewPath), 'utf8');
