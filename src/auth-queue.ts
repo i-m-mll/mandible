@@ -71,6 +71,8 @@ import type {
   LedgerWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
+// Issue 1624ee9 — shared Mandible-Issue trailer parsing.
+import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
   AuthOutputChunk,
   AuthRequest,
@@ -5203,12 +5205,10 @@ function stringPayload(payload: Record<string, unknown>, key: string): string {
   return value;
 }
 
+// Issue 1624ee9 — trailer grammar lives in utils/bug-refs; this wrapper keeps
+// the call site's "no trailers means null" contract.
 function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefined): string[] | null {
-  if (!commitMessage) return null;
-  const refs: string[] = [];
-  const regex = /^Mandible-Issue:\s+(\S+)/gm;
-  let m;
-  while ((m = regex.exec(commitMessage)) !== null) refs.push(m[1]);
+  const refs = extractMandibleIssueRefs(commitMessage);
   return refs.length > 0 ? refs : null;
 }
 
