@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   allowsOperationalMutations,
+  operationalMutationCategoryForPath,
   resolveInstanceInfo,
 } from "../src/instance-policy.js";
 import { createServer, Router } from "../src/server.js";
@@ -318,6 +319,89 @@ describe("instance mutation policy", () => {
 
     expect(response.status).toBe(201);
     expect(response.body).toEqual({ id: "wu_test" });
+  });
+});
+
+// Issue 97cf613 — the request gate (evaluateInstanceMutation, exercised
+// through Router.invoke) and the route-policy gate (Router.listRoutePolicies,
+// which feeds the generated route-mutation-categories.json) used to keep
+// independent copies of the route→category table and of the exemption list,
+// and they had already drifted. Both now read the shared tables in
+// instance-policy.ts; this suite fails if either consumer forks again.
+describe("route mutation category table has one source", () => {
+  const SHARED_TABLE_CASES: Array<{
+    method: "POST" | "PUT" | "PATCH" | "DELETE";
+    pattern: string;
+    url: string;
+    category: string | null;
+  }> = [
+    { method: "POST", pattern: "/api/auth/request", url: "/api/auth/request", category: "auth" },
+    // Exempt in both gates: read-only in effect despite the unsafe method.
+    { method: "POST", pattern: "/api/auth/check", url: "/api/auth/check", category: null },
+    { method: "POST", pattern: "/api/timeline/project", url: "/api/timeline/project", category: null },
+    // Still an operational mutation: only the exact exempt route is exempt.
+    { method: "POST", pattern: "/api/timeline/rows", url: "/api/timeline/rows", category: "timeline" },
+    {
+      method: "POST",
+      pattern: "/api/ledger/issues/:issueId/comments",
+      url: "/api/ledger/issues/abc123/comments",
+      category: "ledger",
+    },
+    { method: "POST", pattern: "/api/work-units/claim", url: "/api/work-units/claim", category: "work_units" },
+    { method: "POST", pattern: "/api/work/push", url: "/api/work/push", category: "work" },
+    {
+      method: "POST",
+      pattern: "/api/knowledge-backrefs",
+      url: "/api/knowledge-backrefs",
+      category: "artifacts",
+    },
+    { method: "DELETE", pattern: "/api/sessions/:id", url: "/api/sessions/session-1", category: "sessions" },
+    { method: "PATCH", pattern: "/api/settings", url: "/api/settings", category: "settings" },
+    { method: "PUT", pattern: "/api/projects/:id", url: "/api/projects/prj_1", category: "projects" },
+    // Unknown API families fall back to the generic category in both gates.
+    { method: "POST", pattern: "/api/new-control-plane/write", url: "/api/new-control-plane/write", category: "api" },
+  ];
+
+  it("classifies routes identically in listRoutePolicies and the request gate", async () => {
+    for (const testCase of SHARED_TABLE_CASES) {
+      const router = previewRouter();
+      const handler = (_req: unknown, res: { status(code: number): { json(payload: unknown): void } }) => {
+        res.status(200).json({ ok: true });
+      };
+      const options = { fileRpc: "deny" } as const;
+      switch (testCase.method) {
+        case "POST": router.post(testCase.pattern, handler, options); break;
+        case "PUT": router.put(testCase.pattern, handler, options); break;
+        case "PATCH": router.patch(testCase.pattern, handler, options); break;
+        case "DELETE": router.delete(testCase.pattern, handler, options); break;
+      }
+
+      const policy = router.listRoutePolicies()[0];
+      expect(policy.operationalMutationCategory ?? null, `listRoutePolicies ${testCase.pattern}`)
+        .toBe(testCase.category);
+      expect(
+        operationalMutationCategoryForPath(testCase.method, testCase.pattern),
+        `shared table ${testCase.pattern}`,
+      ).toBe(testCase.category);
+
+      const response = await router.invoke({ method: testCase.method, url: testCase.url, body: {} });
+      if (testCase.category === null) {
+        expect(response.status, `request gate ${testCase.url}`).toBe(200);
+      } else {
+        expect(response.status, `request gate ${testCase.url}`).toBe(403);
+        expect(response.body).toMatchObject({
+          error: "instance_mutation_forbidden",
+          category: testCase.category,
+        });
+      }
+    }
+  });
+
+  it("keeps safe methods out of both gates", () => {
+    const router = previewRouter();
+    router.get("/api/projects", (_req, res) => res.json({ ok: true }), { fileRpc: "allow" });
+    expect(router.listRoutePolicies()[0].operationalMutationCategory).toBeUndefined();
+    expect(operationalMutationCategoryForPath("GET", "/api/projects")).toBeNull();
   });
 });
 
