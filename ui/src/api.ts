@@ -648,6 +648,73 @@ export async function getSessionOverview(
   return await response.json() as SessionOverview;
 }
 
+// Issue 037fa85 (follow-up) — provider-scoped overview for a Codex session
+// known only through its ingested transcript (no Mandible session row).
+export type ProviderScopedLinkedIssue = {
+  issue_id: string;
+  short_id: string;
+  title: string;
+  status: string;
+  worker_status: string | null;
+  kind: string | null;
+  work_unit_ids: string[];
+};
+
+export type ProviderScopedOverview = {
+  as_of: number;
+  binding: { kind: 'provider-scoped'; provider: string; provider_session_id: string };
+  session: { available: false; reason: string };
+  children: {
+    available: false;
+    reason: string;
+    items: SessionOverviewChild[];
+    truncated: boolean;
+    depth_limit: number;
+    count_limit: number;
+  };
+  linked_issues: SessionOverviewSection<ProviderScopedLinkedIssue> & {
+    source: string;
+    note: string;
+  };
+  work_units: SessionOverviewSection<SessionOverviewWorkUnit> & {
+    includes_descendants: boolean;
+    matched_provider_aliases: string[];
+  };
+  conversations: SessionOverviewSection<SessionOverviewConversation> & { limit: number };
+};
+
+export async function getProviderScopedOverview(
+  provider: string,
+  providerSessionId: string,
+): Promise<ProviderScopedOverview> {
+  const query = buildQuery({ provider, provider_session_id: providerSessionId });
+  const response = await apiGet(`/api/sessions/overview/by-provider${query}`);
+  return await response.json() as ProviderScopedOverview;
+}
+
+// Issue 037fa85 (follow-up) — explicit, user-initiated registration of a
+// provider-known Codex session as a Mandible session row. Uses the existing
+// session-registration surface; the provider linkage rides the existing
+// sessions.conversation_id column (provider-native conversation id), which the
+// resolver already matches, so the session becomes bindable afterward. The
+// deterministic id keeps repeat clicks idempotent (registerSession upserts).
+export async function registerProviderSession(input: {
+  provider: 'codex';
+  provider_session_id: string;
+  cwd?: string | null;
+  branch?: string | null;
+}): Promise<{ id: string }> {
+  const payload: Record<string, unknown> = {
+    id: `codex-${input.provider_session_id}`,
+    app: 'codex',
+    conversation_id: input.provider_session_id,
+  };
+  if (input.cwd) payload.cwd = input.cwd;
+  if (input.branch) payload.branch = input.branch;
+  const response = await apiPost('/api/sessions/register', payload);
+  return await response.json() as { id: string };
+}
+
 export async function navigateSession(sessionId: string): Promise<void> {
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
   const response = await fetch(path, {

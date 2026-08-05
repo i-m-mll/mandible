@@ -10,9 +10,13 @@
 import type { ComponentChildren } from 'preact';
 import { useCallback, useEffect, useState } from 'preact/hooks';
 import {
+  getProviderScopedOverview,
   getSessionOverview,
   getSessions,
+  registerProviderSession,
   resolveProviderSession,
+  type ProviderScopedLinkedIssue,
+  type ProviderScopedOverview,
   type SessionOverview,
   type SessionOverviewChild,
   type SessionOverviewConversation,
@@ -27,6 +31,9 @@ type BindingState =
   | { kind: 'resolving' }
   | { kind: 'bound'; match: SessionResolveMatch }
   | { kind: 'zero' }
+  // Issue 037fa85 (follow-up) — exactly one match with a transcript but no
+  // Mandible session row: render the provider-scoped overview, not the picker.
+  | { kind: 'provider-scoped'; match: SessionResolveMatch }
   | { kind: 'many'; matches: SessionResolveMatch[] }
   | { kind: 'error'; message: string };
 
@@ -191,6 +198,24 @@ function SectionTable({
   );
 }
 
+function ProviderIssueRow({ issue }: { issue: ProviderScopedLinkedIssue }): JSX.Element {
+  const shortId = issue.short_id || issue.issue_id.slice(0, 7);
+  return (
+    <tr>
+      <td>
+        <a href={`#/issues?issue=${encodeURIComponent(shortId)}`}>{shortId}</a>
+      </td>
+      <td className="session-overview__cell-grow">{issue.title}</td>
+      <td>
+        <span className={`session-overview-badge session-overview-badge--${issue.status}`}>
+          {issue.status}
+        </span>
+      </td>
+      <td>{issue.work_unit_ids.length}</td>
+    </tr>
+  );
+}
+
 function SessionPicker({
   onSelect,
 }: {
@@ -252,6 +277,10 @@ export function SessionOverviewView({
   const [overviewError, setOverviewError] = useState<string | null>(null);
   const [overviewLoading, setOverviewLoading] = useState(false);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [providerOverview, setProviderOverview] = useState<ProviderScopedOverview | null>(null);
+  const [providerOverviewError, setProviderOverviewError] = useState<string | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
 
   // Deep-link/param changes (e.g. clicking a child session row) win over the
   // in-memory selection.
@@ -279,8 +308,14 @@ export function SessionOverviewView({
           setBinding({ kind: 'bound', match: bindable[0] });
           setSelectedSessionId(bindable[0].mandible_session_id);
           writeSessionParamToHash(bindable[0].mandible_session_id);
+        } else if (result.matches.length === 1 && result.matches[0].conversation_id) {
+          // One match known via its ingested transcript but with no registry
+          // session row — render the provider-scoped overview instead of
+          // dropping to the picker. Display/navigation-only, like binding.
+          setBinding({ kind: 'provider-scoped', match: result.matches[0] });
         } else if (result.matches.length === 1) {
-          // One match but no registry session behind it — nothing to bind.
+          // One match but no registry session or transcript behind it —
+          // nothing to bind or render.
           setBinding({ kind: 'zero' });
         } else {
           setBinding({ kind: 'many', matches: result.matches });
@@ -326,6 +361,69 @@ export function SessionOverviewView({
     };
   }, [selectedSessionId, codexBinding, refreshToken]);
 
+  // Provider-scoped overview: loaded only for the conversation-only binding
+  // state, keyed on the page-local Codex UUID. Read-only rendering.
+  useEffect(() => {
+    if (binding.kind !== 'provider-scoped' || !codexBinding || selectedSessionId) {
+      setProviderOverview(null);
+      setProviderOverviewError(null);
+      return;
+    }
+    let cancelled = false;
+    setProviderOverviewError(null);
+    getProviderScopedOverview('codex', codexBinding)
+      .then((payload) => {
+        if (!cancelled) setProviderOverview(payload);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setProviderOverview(null);
+        setProviderOverviewError(
+          err instanceof Error ? err.message : 'Failed to load provider-scoped overview',
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [binding.kind, codexBinding, selectedSessionId, refreshToken]);
+
+  // Explicit, deliberate registration: creates a Mandible session row for the
+  // provider-known Codex session, then re-resolves so the view upgrades in
+  // place to the fully bound state. Never automatic.
+  const handleRegister = useCallback(async () => {
+    if (!codexBinding || registering) return;
+    setRegistering(true);
+    setRegisterError(null);
+    try {
+      const conversations = providerOverview?.conversations.items ?? [];
+      const meta =
+        conversations.find((c) => c.source === 'codex' && (c.cwd || c.branch)) ??
+        conversations[0] ??
+        null;
+      await registerProviderSession({
+        provider: 'codex',
+        provider_session_id: codexBinding,
+        cwd: meta?.cwd ?? null,
+        branch: meta?.branch ?? null,
+      });
+      const result = await resolveProviderSession('codex', codexBinding);
+      const bindable = result.matches.filter((match) => match.mandible_session_id);
+      if (result.matches.length === 1 && bindable.length === 1) {
+        setBinding({ kind: 'bound', match: bindable[0] });
+        setSelectedSessionId(bindable[0].mandible_session_id);
+        writeSessionParamToHash(bindable[0].mandible_session_id);
+      } else if (result.matches.length > 1) {
+        setBinding({ kind: 'many', matches: result.matches });
+      } else {
+        setRegisterError('Registration succeeded but the session did not resolve as bindable.');
+      }
+    } catch (err: unknown) {
+      setRegisterError(err instanceof Error ? err.message : 'Registration failed');
+    } finally {
+      setRegistering(false);
+    }
+  }, [codexBinding, providerOverview, registering]);
+
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);
     writeSessionParamToHash(sessionId);
@@ -348,6 +446,11 @@ export function SessionOverviewView({
           </p>
         </div>
         <div className="session-overview__toolbar">
+          {!selectedSessionId && binding.kind === 'provider-scoped' ? (
+            <button type="button" onClick={() => setRefreshToken((token) => token + 1)}>
+              Refresh
+            </button>
+          ) : null}
           {selectedSessionId ? (
             <>
               <button type="button" onClick={() => setRefreshToken((token) => token + 1)}>
@@ -376,6 +479,25 @@ export function SessionOverviewView({
             <span>
               No Mandible session matches Codex session <code>{shortUuid(codexBinding)}</code>.
               Pick a session below.
+            </span>
+          )}
+          {binding.kind === 'provider-scoped' && !selectedSessionId && (
+            <span className="session-overview__provider-scoped-banner">
+              Codex session <code>{shortUuid(codexBinding)}</code> is known via its ingested
+              transcript but is not registered as a Mandible session. Showing provider-scoped
+              data (display-only).{' '}
+              <button
+                type="button"
+                disabled={registering}
+                onClick={() => {
+                  void handleRegister();
+                }}
+              >
+                {registering ? 'Registering…' : 'Register as Mandible session'}
+              </button>
+              {registerError ? (
+                <span className="session-overview__error"> {registerError}</span>
+              ) : null}
             </span>
           )}
           {binding.kind === 'many' && (
@@ -422,7 +544,76 @@ export function SessionOverviewView({
         </ul>
       ) : null}
 
-      {!selectedSessionId ? (
+      {!selectedSessionId && binding.kind === 'provider-scoped' ? (
+        <div className="session-overview__body">
+          {providerOverviewError ? (
+            <p className="session-overview__error">{providerOverviewError}</p>
+          ) : null}
+          {!providerOverview && !providerOverviewError ? (
+            <p className="text-muted">Loading provider-scoped overview…</p>
+          ) : null}
+          {providerOverview ? (
+            <>
+              <section className="session-overview__section" aria-label="Session">
+                <h3>
+                  {shortUuid(providerOverview.binding.provider_session_id)}
+                  <span className="session-overview-badge session-overview-badge--unknown">
+                    unregistered
+                  </span>
+                </h3>
+                <p className="session-overview__unavailable">
+                  Unavailable: {providerOverview.session.reason}
+                </p>
+                <p className="text-muted session-overview__as-of">
+                  As of {formatTimestamp(providerOverview.as_of)}
+                </p>
+              </section>
+
+              <SectionTable
+                label="Linked issues"
+                columns={['Issue', 'Title', 'Status', 'Work units']}
+                count={providerOverview.linked_issues.items.length}
+                emptyText="No issues reachable via provider-matched work units."
+              >
+                {providerOverview.linked_issues.items.map((issue) => (
+                  <ProviderIssueRow key={issue.issue_id} issue={issue} />
+                ))}
+              </SectionTable>
+              <p className="text-muted">{providerOverview.linked_issues.note}</p>
+
+              <SectionTable
+                label="Work units"
+                columns={['Issue', 'Repo', 'Branch', 'State', 'Kind', 'Created']}
+                count={providerOverview.work_units.items.length}
+                emptyText="No work units matched this Codex session id."
+              >
+                {providerOverview.work_units.items.map((unit) => (
+                  <WorkUnitRow key={unit.id} unit={unit} />
+                ))}
+              </SectionTable>
+
+              <SectionTable
+                label="Child sessions"
+                columns={['Session', 'App', 'Status', 'Task', 'Depth', 'Last active']}
+                count={0}
+                emptyText=""
+                unavailableReason={providerOverview.children.reason}
+              />
+
+              <SectionTable
+                label="Conversations"
+                columns={['Conversation', 'Source', 'Blocks', 'Started', 'Ended']}
+                count={providerOverview.conversations.items.length}
+                emptyText="No indexed conversations for this Codex session."
+              >
+                {providerOverview.conversations.items.map((conversation) => (
+                  <ConversationRow key={conversation.id} conversation={conversation} />
+                ))}
+              </SectionTable>
+            </>
+          ) : null}
+        </div>
+      ) : !selectedSessionId ? (
         <SessionPicker onSelect={handleSelect} />
       ) : (
         <div className="session-overview__body">
