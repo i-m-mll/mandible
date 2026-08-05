@@ -5,6 +5,7 @@ vendor/
 *.db-wal
 *.db-shm
 target/
+src-tauri/gen/
 worktrees/
 coverage/
 AGENT_HANDOFF.md
