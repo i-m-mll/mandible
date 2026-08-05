@@ -649,14 +649,56 @@ verify_atomic_merge_signature() {
   err "$output"
 }
 
+# Issue 70dffb8 — shared daemon exchange for auth-merge's HTTP-only reads and
+# writes, replacing hand-rolled `curl` invocations.
+#
+# These call sites deliberately use api_http_exchange rather than
+# api_get/api_send:
+#   - The routes involved (POST /api/auth/request/:id/output, GET
+#     /api/settings/:key) are registered `fileRpc: "deny"`, so routing them
+#     through api_get/api_send would claim a file:// transport the daemon
+#     refuses, and would trip the CLI route-coverage lint.
+#   - api_send would additionally run the operational-mutation preflight, which
+#     can refuse or defer a write from a stale restart-availability receipt or a
+#     non-main instance reading. Inside the atomic merge window that would turn
+#     an advisory preflight into an aborted (or "recovery required") merge.
+# api_http_exchange is still the shared exchange: it resolves MANDIBLE_BASE,
+# injects the client-auth bearer token via a 0600 curl config, and keeps curl
+# handling in one place.
+#
+# Retries are pinned off and the timeout is pinned to each call site's previous
+# `--max-time`, so the attempt count and wall-clock bound of the merge path are
+# exactly what they were before the conversion. An explicit environment
+# override still wins.
+auth_merge_http_request() {
+  local method="$1"
+  local request_path="$2"
+  local data="$3"
+  local timeout="$4"
+  local resolved_timeout resolved_retries response_file status
+  resolved_timeout="${MANDIBLE_HTTP_TIMEOUT:-$timeout}"
+  resolved_retries="${MANDIBLE_HTTP_RETRIES:-0}"
+  local MANDIBLE_HTTP_TIMEOUT="$resolved_timeout"
+  local MANDIBLE_HTTP_RETRIES="$resolved_retries"
+
+  response_file=$(api_temp_file) || return 1
+  status=$(api_http_exchange "$method" "$request_path" "$data" "$response_file")
+  if [[ "$status" =~ ^2 ]]; then
+    cat "$response_file"
+    rm -f "$response_file"
+    return 0
+  fi
+  rm -f "$response_file"
+  return 1
+}
+
 persist_atomic_marker() {
   local marker=$1
   local request_id=${MANDIBLE_AUTH_REQUEST_ID:?missing auth request id}
-  local base=${MANDIBLE_BASE:-http://127.0.0.1:${MANDIBLE_PORT:-19420}}
   local payload
   payload=$(jq -nc --arg chunk "${marker}\n" '{chunk:$chunk}') || return 1
-  curl -fsS --max-time 5 -H 'Content-Type: application/json' \
-    -d "$payload" "${base}/api/auth/request/${request_id}/output" >/dev/null
+  auth_merge_http_request POST \
+    "/api/auth/request/${request_id}/output" "$payload" 5 >/dev/null
 }
 
 cas_update_and_sync_target() {
@@ -790,7 +832,9 @@ configured_protected_branches() {
     return 0
   fi
   local response value
-  response=$(curl -sf --max-time 2 "${MANDIBLE_BASE}/api/settings/protected_branches" 2>/dev/null) || return 1
+  # Issue 70dffb8 — same contract as the previous `curl -sf --max-time 2`:
+  # a single quiet 2s attempt, non-2xx or unreachable daemon returns 1.
+  response=$(auth_merge_http_request GET "/api/settings/protected_branches" "" 2 2>/dev/null) || return 1
   value=$(printf '%s' "$response" | jq -er '.value | select(type == "string" and length > 0)' 2>/dev/null) || return 1
   printf '%s' "$value"
 }
@@ -1019,7 +1063,10 @@ collect_auto_close_issues() {
   local base_commit="$1"  # commit before merge (ORIG_HEAD)
   # Check if auto-close is enabled via Mandible setting
   local setting
-  setting=$(curl -sf --max-time 2 "${MANDIBLE_BASE}/api/settings/auto_close_issues_on_merge" 2>/dev/null) || setting=""
+  # Issue 70dffb8 — same contract as the previous `curl -sf --max-time 2`:
+  # a single quiet 2s attempt; any failure leaves the setting empty, which
+  # keeps auto-close enabled by default.
+  setting=$(auth_merge_http_request GET "/api/settings/auto_close_issues_on_merge" "" 2 2>/dev/null) || setting=""
   if [[ -n "$setting" ]]; then
     local enabled
     enabled=$(printf '%s' "$setting" | jq -r '.value // "true"' 2>/dev/null)
@@ -1046,12 +1093,22 @@ collect_declared_issues() {
     return 0
   fi
 
-  local port="${MANDIBLE_PORT:-19420}"
-  local base="http://127.0.0.1:${port}"
+  # Issue 70dffb8 — read the auth request through the shared api.sh client
+  # instead of a hardcoded http://127.0.0.1:<port> base. GET /api/auth/request/:id
+  # is registered fileRpc:"allow" and GETs never enter the operational-mutation
+  # preflight, so api_get is a faithful swap: it resolves MANDIBLE_BASE (or the
+  # file:// spool) and injects the client-auth bearer token. Attempt count and
+  # the 5s bound are pinned to the previous `curl -sf --max-time 5`, and any
+  # failure still means "no declared issues".
+  local resolved_timeout resolved_retries
+  resolved_timeout="${MANDIBLE_HTTP_TIMEOUT:-5}"
+  resolved_retries="${MANDIBLE_HTTP_RETRIES:-0}"
+  local MANDIBLE_HTTP_TIMEOUT="$resolved_timeout"
+  local MANDIBLE_HTTP_RETRIES="$resolved_retries"
 
   # Query the auth request for issues
   local response
-  response=$(curl -sf --max-time 5 "${base}/api/auth/request/${request_id}" 2>/dev/null) || return 0
+  response=$(api_get "/api/auth/request/${request_id}" 2>/dev/null) || return 0
 
   local issues_json
   issues_json=$(printf '%s' "$response" | jq -r '.issue_closures // .issues // empty' 2>/dev/null) || return 0
