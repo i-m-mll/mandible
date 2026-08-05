@@ -3,13 +3,26 @@ import { describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import { migrate } from "../src/db.js";
-import { setupOperator } from "../src/users/store.js";
+import {
+  AttributionReadResolver,
+  authAttributionReadFields,
+} from "../src/identity/read-projection.js";
+import {
+  addAttributionEvidence,
+  addCredential,
+  createUser,
+  setupOperator,
+} from "../src/users/store.js";
 
 // Issue 98d25f3 — `listHistorySummaries` selects an explicit column list and
 // feeds the partial row into the full-row `mapRow`, which turns an unselected
 // column into `null`. A summary therefore cannot distinguish "column not
 // projected" from "column genuinely NULL", and history rows silently reported
 // every request's `merge_finalizer_state` as null.
+//
+// Issue 84d940f — the same gap covered `requested_by_user_id`,
+// `approved_by_user_id`, and `execution_evidence_id`, so `GET /api/auth/history`
+// resolved requester/approver/verified-signature from fabricated nulls.
 
 function createQueue(): { db: InstanceType<typeof Database>; queue: AuthQueue } {
   const db = new Database(":memory:");
@@ -34,6 +47,36 @@ function submitCompleted(queue: AuthQueue): string {
   queue.approve(request.id);
   queue.setResult(request.id, 0, "console output");
   return request.id;
+}
+
+/**
+ * Give a request real approver + execution-evidence attribution. `submit`
+ * already stores a real `requested_by_user_id`; approval attribution is
+ * normally written by the authenticated approve/merge path, which this
+ * in-memory harness does not run.
+ */
+function attributeRequest(
+  db: InstanceType<typeof Database>,
+  id: string,
+): { approverId: string; evidenceId: string; credentialId: string } {
+  const approver = createUser(db, {
+    slug: "history-summary-approver",
+    kind: "human",
+    display_name: "History Summary Approver",
+  });
+  const credential = addCredential(db, approver.id, {
+    type: "ssh_key",
+    fingerprint: "SHA256:aGlzdG9yeVN1bW1hcnlBcHByb3ZlckNyZWRlbnRpYWw=",
+    label: "yubikey",
+  });
+  const evidence = addAttributionEvidence(db, {
+    evidence_method: "credential_signature",
+    credential_id: credential.id,
+  });
+  db.prepare(
+    "UPDATE auth_requests SET approved_by_user_id = ?, execution_evidence_id = ? WHERE id = ?",
+  ).run(approver.id, evidence.id, id);
+  return { approverId: approver.id, evidenceId: evidence.id, credentialId: credential.id };
 }
 
 describe("auth history summaries", () => {
@@ -82,6 +125,64 @@ describe("auth history summaries", () => {
     expect(summary.commit_message).toBe("feat: land it");
   });
 
+  it("reports the stored attribution ids instead of fabricating null", () => {
+    const { db, queue } = createQueue();
+    const id = submitCompleted(queue);
+    const { approverId, evidenceId } = attributeRequest(db, id);
+
+    const detail = queue.getRequest(id)!;
+    expect(detail.requested_by_user_id).toBeTruthy();
+
+    const [summary] = queue.listHistorySummaries(50);
+    expect(summary.requested_by_user_id).toBe(detail.requested_by_user_id);
+    expect(summary.approved_by_user_id).toBe(approverId);
+    expect(summary.execution_evidence_id).toBe(evidenceId);
+  });
+
+  it("resolves the same attribution read fields as the detail row", () => {
+    const { db, queue } = createQueue();
+    const id = submitCompleted(queue);
+    const { approverId, credentialId } = attributeRequest(db, id);
+
+    // Mirrors GET /api/auth/history: the summary row is fed straight into
+    // authAttributionReadFields (src/routes/auth.ts).
+    const [summary] = queue.listHistorySummaries(50);
+    const summaryFields = authAttributionReadFields(new AttributionReadResolver(db), summary);
+    const detailFields = authAttributionReadFields(
+      new AttributionReadResolver(db),
+      queue.getRequest(id)!,
+    );
+
+    expect(summaryFields).toEqual(detailFields);
+    expect(summaryFields.requester?.display_name).toBe("History Summary");
+    expect(summaryFields.approver?.id).toBe(approverId);
+    expect(summaryFields.execution_evidence?.evidence_method).toBe("credential_signature");
+    expect(summaryFields.execution_evidence?.credential?.id).toBe(credentialId);
+    expect(summaryFields.verified_signature).toBe(true);
+  });
+
+  it("keeps genuinely unset approval attribution null", () => {
+    // A rejected request never gains approval attribution, so its nulls are
+    // real. It still carries a requester, which must survive the projection.
+    const { queue } = createQueue();
+    const request = queue.submit({
+      type: "merge",
+      command: "mandible auth merge feature/y --into main",
+      title: "Rejected row",
+      repo: "mandible",
+      base_branch: "main",
+      head_branch: "feature/y",
+    });
+    queue.reject(request.id);
+
+    const [summary] = queue.listHistorySummaries(50);
+    expect(summary.id).toBe(request.id);
+    expect(summary.requested_by_user_id).toBe(request.requested_by_user_id);
+    expect(summary.requested_by_user_id).toBeTruthy();
+    expect(summary.approved_by_user_id).toBeNull();
+    expect(summary.execution_evidence_id).toBeNull();
+  });
+
   it("agrees with the detail row on every field it claims to carry", () => {
     const { db, queue } = createQueue();
     const id = submitCompleted(queue);
@@ -89,25 +190,23 @@ describe("auth history summaries", () => {
       JSON.stringify({ close_issues: { state: "done", attempts: 1, at: 1 } }),
       id,
     );
+    // Populate the attribution columns too, so a fabricated null shows up as a
+    // mismatch here rather than as two nulls that happen to agree.
+    attributeRequest(db, id);
 
-    // Fields the list projection deliberately drops (unbounded body blobs).
+    // The only fields the list projection deliberately drops: the unbounded
+    // body blobs the summary exists to avoid serializing. Everything else in
+    // AuthRequestSummary (= Omit<AuthRequest, those three>) must be projected,
+    // so a future column added to the row but not to
+    // AUTH_HISTORY_SUMMARY_COLUMNS trips this test (issues 98d25f3, 84d940f).
     const bodyBlobs = new Set(["diff_summary", "spec_content", "output"]);
-    // Known remaining projection gap, tracked separately from 98d25f3: the
-    // attribution columns are still unselected, so the history route resolves
-    // requester/approver/evidence from fabricated nulls. Listed explicitly so
-    // fixing it trips this test rather than the gap widening unnoticed.
-    const knownUnprojected = new Set([
-      "requested_by_user_id",
-      "approved_by_user_id",
-      "execution_evidence_id",
-    ]);
 
     const [summary] = queue.listHistorySummaries(50);
     const detail = queue.getRequest(id)! as unknown as Record<string, unknown>;
     const summaryRecord = summary as unknown as Record<string, unknown>;
 
     const mismatched = Object.keys(detail)
-      .filter((field) => !bodyBlobs.has(field) && !knownUnprojected.has(field))
+      .filter((field) => !bodyBlobs.has(field))
       // JSON-compare so array-valued fields (issue_ids, issues, ...) are not
       // flagged purely for being distinct object references.
       .filter((field) => JSON.stringify(summaryRecord[field]) !== JSON.stringify(detail[field]));

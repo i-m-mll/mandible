@@ -111,6 +111,14 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   // cannot tell "not selected" from "not set". It is a small bounded JSON blob
   // (one record per finalizer step), not one of the unbounded body blobs.
   "merge_finalizer_state",
+  // Issue 84d940f — same class as 98d25f3. Omitting these made every history
+  // row's requester/approver/execution evidence resolve from a fabricated null:
+  // `GET /api/auth/history` feeds the summary straight into
+  // `authAttributionReadFields`, which reads exactly these three ids. They are
+  // small scalar id columns, so projecting them costs nothing.
+  "requested_by_user_id",
+  "approved_by_user_id",
+  "execution_evidence_id",
 ].join(", ");
 
 // Issue 75f52ac — off-loop git spawns for the background finalizer queue.
