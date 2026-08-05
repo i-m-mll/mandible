@@ -35,6 +35,8 @@ const POLLUTED_ENV_KEYS_EXACT = new Set([
   "CLAUDECODE",
   "GIT_CONFIG_COUNT",
 ]);
+// Keep in sync with the "@agentclientprotocol/codex-acp" pin in package.json:
+// that entry is the declared pin, and this string is what npx resolves at spawn.
 const CODEX_ACP_VERSION = "1.0.2";
 
 interface PendingPermission {
