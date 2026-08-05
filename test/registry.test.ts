@@ -7,12 +7,37 @@ import {
   ensureSessionSchema,
   readPidStartTime,
 } from "../src/registry.js";
+import { migrate } from "../src/db.js";
 import type { Session } from "../src/types.js";
+
+type SqliteDb = InstanceType<typeof Database>;
 
 function createRegistry(): SessionRegistry {
   const db = new Database(":memory:");
   db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
   return new SessionRegistry(db);
+}
+
+function describeSessionsTable(db: SqliteDb): Array<Record<string, unknown>> {
+  return (db.prepare("PRAGMA table_info(sessions)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+    pk: number;
+  }>)
+    .map(({ name, type, notnull, dflt_value, pk }) => ({ name, type, notnull, dflt_value, pk }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function sessionsIndexNames(db: SqliteDb): string[] {
+  return (db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'sessions' AND sql IS NOT NULL",
+    )
+    .all() as Array<{ name: string }>)
+    .map((row) => row.name)
+    .sort();
 }
 
 async function waitForPidStart(pid: number): Promise<string | null> {
@@ -42,6 +67,48 @@ describe("session registry", () => {
         table: "users",
         on_delete: "SET NULL",
       }));
+    } finally {
+      db.close();
+    }
+  });
+
+  // Issue e726bfe — SessionRegistry used to run a PRAGMA plus fourteen guarded
+  // ALTER TABLE statements on every construction, duplicating the migration
+  // chain. The bootstrap now only creates a fresh schema, so it has to stay
+  // column- and index-complete against the migrated schema or isolated tests
+  // would silently get a stale sessions table.
+  it("bootstraps a fresh sessions schema identical to the migrated one", () => {
+    const bootstrapped = new Database(":memory:");
+    const migrated = new Database(":memory:");
+    try {
+      bootstrapped.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
+      ensureSessionSchema(bootstrapped);
+      migrate(migrated);
+
+      expect(describeSessionsTable(bootstrapped)).toEqual(describeSessionsTable(migrated));
+      expect(sessionsIndexNames(bootstrapped)).toEqual(sessionsIndexNames(migrated));
+    } finally {
+      bootstrapped.close();
+      migrated.close();
+    }
+  });
+
+  it("never alters an existing sessions table from the registry bootstrap", () => {
+    const db = new Database(":memory:");
+    try {
+      db.exec("CREATE TABLE users (id TEXT PRIMARY KEY)");
+      ensureSessionSchema(db);
+      const before = describeSessionsTable(db);
+
+      // A second construction against an already-populated database must be a
+      // no-op: upgrades are the migration chain's job, not the registry's.
+      db.prepare(
+        "INSERT INTO sessions (id, app, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+      ).run("s1", "claude", "active", "2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z");
+      new SessionRegistry(db);
+
+      expect(describeSessionsTable(db)).toEqual(before);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM sessions").get()).toEqual({ n: 1 });
     } finally {
       db.close();
     }
