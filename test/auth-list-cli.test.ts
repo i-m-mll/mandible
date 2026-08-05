@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
@@ -42,25 +44,6 @@ function run(
       resolve({ status, stdout, stderr });
     });
   });
-}
-
-function startFileRpcResponder(spoolDir: string, queue: unknown): NodeJS.Timeout {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as { id?: string };
-      const id = request.id ?? file.replace(/\.request\.json$/, "");
-      fs.writeFileSync(
-        path.join(spoolDir, `${id}.response.json`),
-        JSON.stringify({ id, status: 200, body: queue }),
-        "utf8",
-      );
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
-  return timer;
 }
 
 function listenWithQueue(queue: unknown): Promise<number> {
@@ -187,7 +170,7 @@ describe("auth list CLI", () => {
 
   it("lists auth requests through file RPC", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-list-file-rpc-"));
-    const timer = startFileRpcResponder(spoolDir, queue);
+    const responder = startFileRpcResponder(spoolDir, () => ({ status: 200, body: queue }));
 
     try {
       const result = await run(["auth", "list", "--json"], 0, {
@@ -198,7 +181,7 @@ describe("auth list CLI", () => {
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout).requests).toHaveLength(2);
     } finally {
-      clearInterval(timer);
+      responder.stop();
       fs.rmSync(spoolDir, { recursive: true, force: true });
     }
   });

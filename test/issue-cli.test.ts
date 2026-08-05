@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
@@ -129,27 +131,6 @@ function runBash(
       resolve({ status, stdout, stderr });
     });
   });
-}
-
-function startFileRpcResponder(
-  spoolDir: string,
-  handler: (request: Record<string, unknown>) => { status: number; body: unknown },
-  afterResponse?: (request: Record<string, unknown>) => void,
-): NodeJS.Timeout {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
-      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
-      const response = handler(request);
-      fs.writeFileSync(path.join(spoolDir, `${id}.response.json`), JSON.stringify({ id, ...response }), "utf8");
-      fs.rmSync(requestPath, { force: true });
-      afterResponse?.(request);
-    }
-  }, 10);
-  return timer;
 }
 
 function git(args: string[], cwd: string): string {
@@ -622,7 +603,7 @@ describe("issue CLI body revisions", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-umbrella-file-rpc-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       return {
         status: 200,
@@ -648,7 +629,7 @@ describe("issue CLI body revisions", () => {
       });
       expect(JSON.parse(result.stdout).umbrella.short_id).toBe("abc");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -829,7 +810,7 @@ describe("issue CLI body revisions", () => {
   it("surfaces file-RPC relationship link denial status and body", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-link-file-rpc-denied-"));
     tempRoots.push(spoolDir);
-    const timer = startFileRpcResponder(spoolDir, () => ({
+    const responder = startFileRpcResponder(spoolDir, () => ({
       status: 403,
       body: {
         error: "file_rpc_route_denied",
@@ -850,7 +831,7 @@ describe("issue CLI body revisions", () => {
       expect(result.stderr).toContain("file_rpc_route_denied");
       expect(result.stderr).toContain("/api/ledger/relationships");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -890,7 +871,7 @@ describe("issue CLI body revisions", () => {
   it("surfaces file-RPC relationship unlink denial status and body", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-unlink-file-rpc-denied-"));
     tempRoots.push(spoolDir);
-    const timer = startFileRpcResponder(spoolDir, () => ({
+    const responder = startFileRpcResponder(spoolDir, () => ({
       status: 403,
       body: {
         error: "file_rpc_route_denied",
@@ -911,7 +892,7 @@ describe("issue CLI body revisions", () => {
       expect(result.stderr).toContain("file_rpc_route_denied");
       expect(result.stderr).toContain("/api/ledger/relationships/unlink");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -929,7 +910,7 @@ describe("issue CLI body revisions", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-cli-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       expect(request).toMatchObject({
         method: "GET",
@@ -967,7 +948,7 @@ describe("issue CLI body revisions", () => {
         issue_branches: [{ branch: "feature/demo", role: "primary" }],
       });
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -975,7 +956,7 @@ describe("issue CLI body revisions", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-cli-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
-    const timer = startFileRpcResponder(
+    const responder = startFileRpcResponder(
       spoolDir,
       (request) => {
         seen.push(request);
@@ -989,9 +970,7 @@ describe("issue CLI body revisions", () => {
           body: { id: "comment-3" },
         };
       },
-      () => {
-        fs.chmodSync(spoolDir, 0o555);
-      },
+      { afterResponse: () => { fs.chmodSync(spoolDir, 0o555); } },
     );
 
     try {
@@ -1017,7 +996,7 @@ describe("issue CLI body revisions", () => {
       expect(result.stdout).toBe("200\n{\"id\":\"comment-3\"}\n");
     } finally {
       fs.chmodSync(spoolDir, 0o755);
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -1025,7 +1004,7 @@ describe("issue CLI body revisions", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-label-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       expect(request).toMatchObject({
         method: "POST",
@@ -1048,7 +1027,7 @@ describe("issue CLI body revisions", () => {
       expect(seen).toHaveLength(1);
       expect(result.stderr).toContain("Removed label 'deferred' from abc");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -1684,7 +1663,7 @@ describe("issue CLI list repo scoping", () => {
   it("fails loudly when inferred cwd does not resolve to a registered repo", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-issue-list-file-rpc-"));
     tempRoots.push(spoolDir);
-    const timer = startFileRpcResponder(spoolDir, () => ({ status: 200, body: [] }));
+    const responder = startFileRpcResponder(spoolDir, () => ({ status: 200, body: [] }));
 
     try {
       const result = await run(["issue", "list"], 0, os.tmpdir(), {
@@ -1695,7 +1674,7 @@ describe("issue CLI list repo scoping", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("cwd does not resolve to a registered repo; pass --repo <path|id>");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -1703,7 +1682,7 @@ describe("issue CLI list repo scoping", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-issue-triage-file-rpc-"));
     tempRoots.push(spoolDir);
     const seenPaths: string[] = [];
-    const timer = startFileRpcResponder(
+    const responder = startFileRpcResponder(
       spoolDir,
       (request) => {
         seenPaths.push(String(request.path ?? ""));
@@ -1749,7 +1728,7 @@ describe("issue CLI list repo scoping", () => {
       expect(triagePath).toBeTruthy();
       expect(new URL(`http://127.0.0.1${triagePath}`).searchParams.get("repo")).toBe("/repo/mandible");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 });

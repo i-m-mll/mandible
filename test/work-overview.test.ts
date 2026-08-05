@@ -2,7 +2,6 @@ import { execSync } from "child_process";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import Database from "better-sqlite3";
 import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../src/sse", () => ({
@@ -11,9 +10,10 @@ vi.mock("../src/sse", () => ({
 
 import { WorkScanner, type BranchData } from "../src/work-scanner";
 import { filterAndSortBranches, registerWorkRoutes } from "../src/routes/work";
-import { migrate, setDb } from "../src/db";
+import type { Db } from "../src/db";
 import { resolveProjectForCheckout } from "../src/ledger/projects";
 import { Router } from "../src/server";
+import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
 const gitEnv = {
   ...process.env,
@@ -33,17 +33,15 @@ function writeFile(filePath: string, content: string): void {
 }
 
 // Databases opened by the current test, closed in afterEach.
-const openDbs: Array<InstanceType<typeof Database>> = [];
+const openDbs: Db[] = [];
 
-function createMigratedDb(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
-  migrate(db);
-  openDbs.push(db);
+function createMigratedDb(): Db {
   // Route handlers resolve repo access through the process-global DB singleton
   // (getDb()), which falls through to opening the real database when nothing
   // has been registered. Point the singleton at this same isolated in-memory
   // DB rather than a second one, so a test exercises exactly one database.
-  setDb(db);
+  const db = createSharedMigratedDb({ setGlobal: true });
+  openDbs.push(db);
   return db;
 }
 

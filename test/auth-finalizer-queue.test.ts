@@ -1,23 +1,22 @@
-import Database from "better-sqlite3";
 import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
-import { migrate } from "../src/db.js";
+import type { Db } from "../src/db.js";
 import type { SseEvent } from "../src/types.js";
-import { setupOperator } from "../src/users/store.js";
+import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
 // Issue 75f52ac — staged auth lifecycle (auth:merged -> auth:resolved ->
 // auth:finalized) and the bounded, idempotent, crash-safe background finalizer
 // queue. These tests exercise the queue behaviour directly, independent of the
 // git-repo integration paths covered in auth-queue.test.ts.
 
-function createMigratedDb(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
-  migrate(db);
-  // Attribution (main/user-system): submit()/approve() resolve a local operator;
-  // seed one so the staged-lifecycle tests can attribute and approve requests.
-  setupOperator(db, { slug: "finalizer-test-operator", display_name: "Finalizer Test Operator" }, 1);
-  return db;
+function createMigratedDb(): Db {
+  return createSharedMigratedDb({
+    // Attribution (main/user-system): submit()/approve() resolve a local operator;
+    // seed one so the staged-lifecycle tests can attribute and approve requests.
+    operator: { slug: "finalizer-test-operator", display_name: "Finalizer Test Operator" },
+    now: 1,
+  });
 }
 
 const HEAD_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -55,7 +54,7 @@ function submitSuccessfulRequest(
 
 /** Insert a resolved-on-merge codex worker work unit so an archive candidate exists. */
 function insertCodexWorkUnit(
-  db: InstanceType<typeof Database>,
+  db: Db,
   id: string,
   authRequestId: string,
   providerSessionId: string,
