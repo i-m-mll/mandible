@@ -2,7 +2,13 @@
 //
 // The canvas mount should expose one integrated node/edge canvas with a
 // selection inspector. It must not regress to the old composition where a
-// permanent bottom SpaceEdgeLayer form/list duplicated edge actions.
+// permanent bottom edge form/list duplicated edge actions.
+//
+// The `SpaceEdgeLayer` component that provided that old panel has since been
+// deleted (it was unreachable from the `ui/src/app.tsx` import graph). The
+// `space-edge-layer` / `space-edge-create-form` absence assertions below stay
+// as the composition guard: they fail for any reintroduction of a permanent
+// bottom edge panel, however it is implemented.
 
 import { render, screen, cleanup, waitFor } from '@testing-library/preact';
 import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';

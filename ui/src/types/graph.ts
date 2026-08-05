@@ -220,20 +220,3 @@ export interface GraphPayload {
   displayed_count?: number
   available_count?: number
 }
-
-// Internal simulation types — exported so GraphCanvas.tsx can reference them
-export interface SimGraphNode extends GraphNode {
-  x: number
-  y: number
-  vx: number
-  vy: number
-  fx?: number | null
-  fy?: number | null
-}
-
-export interface SimGraphEdge {
-  id: string
-  type: GraphEdgeType
-  source: string | SimGraphNode
-  target: string | SimGraphNode
-}
