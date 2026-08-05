@@ -4,16 +4,17 @@ import {
   type SseConnectionState,
   type SseStateHandler,
 } from './sse-client';
+import { CrossTabSseCoordinator } from './sse-cross-tab';
 
 /**
- * A ref-counted handle onto the process-wide singleton {@link SSEClient}.
+ * A ref-counted handle onto the document-local SSE subscription coordinator.
  *
- * Every mounted consumer acquires its own handle; the module keeps exactly one
- * EventSource open regardless of how many handles exist. Releasing a handle
- * (`close()`) detaches only that handle's subscriptions and decrements the
- * refcount; the socket stays open while any handle remains. This collapses the
- * former up-to-nine concurrent `/api/events` streams to one, freeing Chrome's
- * six-connections-per-host budget for ordinary fetches.
+ * Every mounted consumer acquires its own handle. Within a document the module
+ * keeps one coordinator; across documents an origin-scoped Web Lock elects one
+ * SSE leader and BroadcastChannel fans its events out to followers. Releasing
+ * a handle (`close()`) detaches only that handle's subscriptions and decrements
+ * the refcount; the origin-wide stream remains available while any leader tab
+ * is connected. Unsupported browsers retain the document-local singleton.
  */
 export type SseHandle = {
   /** Subscribe to an event type (or '*'); returns an unsubscribe for this handler. */
@@ -44,18 +45,24 @@ export function shouldSkipFallbackPoll(
   return state === 'open' && now - lastSignalAt < freshForMs;
 }
 
-let sharedClient: SSEClient | null = null;
+let sharedCoordinator: CrossTabSseCoordinator | null = null;
 let refCount = 0;
 let teardownTimer: ReturnType<typeof setTimeout> | null = null;
 let EventSourceOverride: typeof EventSource | undefined;
 
-function ensureClient(): SSEClient {
-  if (!sharedClient) {
-    sharedClient = new SSEClient(
-      EventSourceOverride ? { EventSourceImpl: EventSourceOverride } : {},
-    );
+function ensureCoordinator(): CrossTabSseCoordinator {
+  if (!sharedCoordinator) {
+    sharedCoordinator = new CrossTabSseCoordinator({
+      createTransport: () => new SSEClient(
+        EventSourceOverride ? { EventSourceImpl: EventSourceOverride } : {},
+      ),
+      // Unit tests that inject a fake EventSource exercise the legacy
+      // document-local seam deterministically. Cross-tab behavior has its own
+      // coordinator tests with explicit fake channels and locks.
+      ...(EventSourceOverride ? { channelFactory: null, lockManager: null } : {}),
+    });
   }
-  return sharedClient;
+  return sharedCoordinator;
 }
 
 function scheduleTeardown(): void {
@@ -68,8 +75,8 @@ function scheduleTeardown(): void {
   // an intervening re-acquire can cancel it and reuse the live connection.
   teardownTimer = setTimeout(() => {
     teardownTimer = null;
-    if (refCount <= 0 && sharedClient) {
-      sharedClient.disconnect();
+    if (refCount <= 0 && sharedCoordinator) {
+      sharedCoordinator.disconnect();
     }
   }, 0);
 }
@@ -86,7 +93,7 @@ export function acquireSharedSse(): SseHandle {
   // A pending teardown means we are re-acquiring before the socket was dropped:
   // cancel it and reuse the live connection.
   cancelTeardown();
-  const client = ensureClient();
+  const coordinator = ensureCoordinator();
 
   const offs = new Set<() => void>();
   let released = false;
@@ -107,16 +114,16 @@ export function acquireSharedSse(): SseHandle {
 
   return {
     on(type, handler) {
-      return track(client.on(type, handler));
+      return track(coordinator.on(type, handler));
     },
     onState(handler) {
-      return track(client.onState(handler));
+      return track(coordinator.onState(handler));
     },
     getState() {
-      return client.getState();
+      return coordinator.getState();
     },
     connect() {
-      client.connect();
+      coordinator.connect();
     },
     close() {
       if (released) {
@@ -143,10 +150,10 @@ export function acquireSharedSse(): SseHandle {
  */
 export function __resetSharedSseForTests(impl?: typeof EventSource): void {
   cancelTeardown();
-  if (sharedClient) {
-    sharedClient.disconnect();
+  if (sharedCoordinator) {
+    sharedCoordinator.disconnect();
   }
-  sharedClient = null;
+  sharedCoordinator = null;
   refCount = 0;
   EventSourceOverride = impl;
 }
