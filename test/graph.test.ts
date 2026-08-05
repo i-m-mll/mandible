@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  repoCandidatesFromCwd,
+  sessionIdsFromGraphNodeIds,
+} from "../src/graph/operational.js";
+import {
   capGraphNodesForDisplay,
   graphEdgesForMode,
+  selectGraphForDisplay,
+} from "../src/graph/selection.js";
+import {
   GRAPH_PERSPECTIVES,
   normalizeGraphSpec,
   parseQueryParams,
-  repoCandidatesFromCwd,
-  selectGraphForDisplay,
-  sessionIdsFromGraphNodeIds,
-} from "../src/routes/graph.js";
+} from "../src/graph/spec.js";
 import type { GraphEdge, GraphNode } from "../src/types.js";
 
 function node(id: string, createdAt: string): GraphNode {
