@@ -19,8 +19,8 @@
 import type { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import http from "node:http";
 import type { MandibleSSEEvent } from "./types.js";
+import { resolveBaseUrl } from "./base-url.js";
 
-const MANDIBLE_BASE = "http://localhost:19420";
 const RECONNECT_DELAY_MS = 5_000;
 const MAX_RECONNECT_DELAY_MS = 60_000;
 
@@ -37,7 +37,7 @@ export interface NotificationBridge {
  */
 export function markDelivered(requestId: string): void {
   if (!requestId) return;
-  const url = new URL(`/api/inbox/delivered/${encodeURIComponent(requestId)}`, MANDIBLE_BASE);
+  const url = new URL(`/api/inbox/delivered/${encodeURIComponent(requestId)}`, resolveBaseUrl());
   const req = http.request(
     {
       method: "POST",
@@ -237,7 +237,7 @@ export function createNotificationBridge(
   function connect(): void {
     if (!running) return;
 
-    const url = new URL("/api/events", MANDIBLE_BASE);
+    const url = new URL("/api/events", resolveBaseUrl());
 
     currentReq = http.get(url, (res) => {
       if (res.statusCode !== 200) {
