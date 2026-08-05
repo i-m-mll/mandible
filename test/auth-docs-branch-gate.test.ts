@@ -1,4 +1,3 @@
-import Database from "better-sqlite3";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -7,10 +6,10 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { migrate, setDb, type Db } from "../src/db.js";
+import { setDb, type Db } from "../src/db.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addBinding, createUser, setupOperator } from "../src/users/store.js";
+import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
 // Child issue 8921e84 (regression-only half): the `Mandible-Issue:` trailer
 // gate in src/routes/auth.ts ALREADY rejects bare-commit branches. Docs-branch
@@ -33,23 +32,18 @@ function git(cwd: string, args: string[]): string {
 }
 
 function createMigratedDb(): Db {
-  const db = new Database(":memory:");
-  migrate(db);
-  setupOperator(db, { slug: "docs-auth-test", display_name: "Docs Auth Test" });
-  // Issue a64d2de: a provider-session binding now mints session_claim attribution
-  // only for an agent principal, so a forgeable ambient signal can never resolve
-  // to the human operator. The docs-branch requester is an agent session, so bind
-  // the session env to an agent user rather than the operator.
-  const agent = createUser(db, {
-    slug: "docs-auth-agent",
-    kind: "agent",
-    display_name: "Docs Auth Agent",
+  return createSharedMigratedDb({
+    operator: { slug: "docs-auth-test", display_name: "Docs Auth Test" },
+    // Issue a64d2de: a provider-session binding now mints session_claim attribution
+    // only for an agent principal, so a forgeable ambient signal can never resolve
+    // to the human operator. The docs-branch requester is an agent session, so bind
+    // the session env to an agent user rather than the operator.
+    agent: {
+      slug: "docs-auth-agent",
+      display_name: "Docs Auth Agent",
+      sessionEnv: "docs-auth-session",
+    },
   });
-  addBinding(db, agent.id, {
-    binding_type: "provider_session_env",
-    value: "docs-auth-session",
-  });
-  return db;
 }
 
 // A repo with `main` checked out at the root and a docs branch ahead of it.

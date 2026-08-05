@@ -132,8 +132,10 @@ export function createMigratedDbWithSeeds(
 // --- production-path ledger factories --------------------------------------
 
 export interface CreateLedgerProjectOptions {
+  /** Defaults to the basename of `root`. */
   name?: string;
   workRepoId?: string | null;
+  /** Forwarded only when set; checkout identity is sensitive to these. */
   defaultBranch?: string;
   remoteUrl?: string | null;
   /** Create `root` on disk first; checkout identity reads the real path. */
@@ -151,8 +153,8 @@ export function createLedgerProject(
     root,
     name: options.name ?? path.basename(root),
     workRepoId: options.workRepoId,
-    defaultBranch: options.defaultBranch ?? "main",
-    remoteUrl: options.remoteUrl ?? "",
+    ...(options.defaultBranch === undefined ? {} : { defaultBranch: options.defaultBranch }),
+    ...(options.remoteUrl === undefined ? {} : { remoteUrl: options.remoteUrl }),
   });
 }
 

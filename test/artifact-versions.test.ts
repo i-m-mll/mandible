@@ -22,6 +22,11 @@ import {
 } from "../src/provider-artifacts.js";
 import { diffArtifacts, getArtifactContent, readArtifactBytesFull } from "../src/artifact-content.js";
 import { METADATA_BACKUP_TABLES, buildMetadataBackupSql } from "../src/ledger/backup.js";
+import {
+  insertRawLedgerCheckout,
+  insertRawLedgerIssue,
+  insertRawLedgerProject,
+} from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
@@ -32,30 +37,13 @@ function git(repo: string, args: string[]): string {
 }
 
 function createLedgerCheckout(repoId: string, root: string): void {
-  const projectId = `prj_${repoId}`;
-  db.prepare(
-    `INSERT OR IGNORE INTO ledger_projects (
-      id, display_name, created_at, updated_at
-    ) VALUES (?, ?, 1, 1)`,
-  ).run(projectId, repoId);
-  db.prepare(
-    `INSERT OR REPLACE INTO ledger_project_checkouts (
-      id, project_id, work_repo_id, root, name, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 1, 1)`,
-  ).run(`checkout_${repoId}`, projectId, repoId, root, repoId);
+  const projectId = insertRawLedgerProject(db, { name: repoId });
+  insertRawLedgerCheckout(db, { projectId, name: repoId, root, conflict: "replace" });
 }
 
 function createLedgerIssue(issueId: string, projectName = "mandible"): string {
-  const projectId = `prj_${projectName}`;
-  db.prepare(
-    `INSERT OR IGNORE INTO ledger_projects (id, display_name, created_at, updated_at) VALUES (?, ?, 1, 1)`,
-  ).run(projectId, projectName);
-  db.prepare(
-    `INSERT INTO ledger_issues (
-      id, short_id, project_id, title, status, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'open', 1, 1)`,
-  ).run(issueId, issueId.slice(0, 7), projectId, `Issue ${issueId}`);
-  return issueId;
+  const projectId = insertRawLedgerProject(db, { name: projectName });
+  return insertRawLedgerIssue(db, { id: issueId, projectId });
 }
 
 function makeTrackedRepo(name: string, content: string): { root: string; filePath: string } {

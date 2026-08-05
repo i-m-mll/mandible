@@ -22,6 +22,11 @@ import {
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
 import type { ArtifactRecord } from "../src/types.js";
+import {
+  insertRawLedgerCheckout,
+  insertRawLedgerIssue,
+  insertRawLedgerProject,
+} from "./helpers/ledger-fixtures.js";
 
 // --- id-formula replicas (must stay byte-identical to artifactRegistryId) -----
 // artifactRegistryId("artifact_link", parts) = `artifact_link:${sha256(JSON.stringify(parts)).slice(0,32)}`.
@@ -124,31 +129,27 @@ function postSnapshot(body: Record<string, unknown>): Promise<{ statusCode: numb
 
 // --- ledger fixtures ----------------------------------------------------------
 function createLedgerIssue(issueId: string, projectName = "mandible"): string {
-  const projectId = `prj_${projectName}`;
-  db.prepare(
-    `INSERT OR IGNORE INTO ledger_projects (id, display_name, created_at, updated_at) VALUES (?, ?, 1, 1)`,
-  ).run(projectId, projectName);
-  db.prepare(
-    `INSERT INTO ledger_issues (id, short_id, project_id, title, status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, 'open', 1, 1)`,
-  ).run(issueId, issueId.slice(0, 7), projectId, `Issue ${issueId}`);
-  return issueId;
+  const projectId = insertRawLedgerProject(db, { name: projectName });
+  return insertRawLedgerIssue(db, { id: issueId, projectId });
 }
 
 function createProjectCheckout(projectKey: string, root: string): void {
-  const projectId = `prj_${projectKey}`;
-  db.prepare(
-    `INSERT OR REPLACE INTO ledger_projects (
-      id, project_key, display_name, remote_identity, upstream_identity,
-      namespace_policy, created_at, updated_at
-    ) VALUES (?, ?, ?, '', '', 'local', 1, 1)`,
-  ).run(projectId, projectKey, projectKey);
-  db.prepare(
-    `INSERT OR REPLACE INTO ledger_project_checkouts (
-      id, project_id, work_repo_id, root, name, default_branch, remote_url,
-      created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
-  ).run(`checkout_${projectKey}`, projectId, projectKey, root, projectKey);
+  const projectId = insertRawLedgerProject(db, {
+    name: projectKey,
+    projectKey,
+    remoteIdentity: "",
+    upstreamIdentity: "",
+    namespacePolicy: "local",
+    conflict: "replace",
+  });
+  insertRawLedgerCheckout(db, {
+    projectId,
+    name: projectKey,
+    root,
+    defaultBranch: "main",
+    remoteUrl: "",
+    conflict: "replace",
+  });
 }
 
 let counter = 0;

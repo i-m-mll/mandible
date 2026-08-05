@@ -7,26 +7,46 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import type { AuthHookManager } from "../src/auth-hooks.js";
-import { migrate } from "../src/db.js";
-import { systemAction } from "../src/identity/resolver.js";
-import { resolveProjectForCheckout } from "../src/ledger/projects.js";
+import type { Db } from "../src/db.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import type { SseEvent } from "../src/types.js";
+import {
+  SYSTEM_ACTOR,
+  createLedgerIssue as createSharedLedgerIssue,
+  createLedgerProject as createSharedLedgerProject,
+  createMigratedDb as createSharedMigratedDb,
+} from "./helpers/ledger-fixtures.js";
 import {
   addCredential,
   addDelegatedSigningLease,
   createUser,
   getOperator,
-  setupOperator,
 } from "../src/users/store.js";
 
-const SYSTEM_ACTOR = { attribution: systemAction() };
+function createMigratedDb(): Db {
+  return createSharedMigratedDb({
+    operator: { slug: "auth-test-operator", display_name: "Auth Test Operator" },
+    now: 1,
+  });
+}
 
-function createMigratedDb(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
-  migrate(db);
-  setupOperator(db, { slug: "auth-test-operator", display_name: "Auth Test Operator" }, 1);
-  return db;
+function createLedgerProject(db: Db, root: string) {
+  return createSharedLedgerProject(db, root, { mkdir: true, defaultBranch: "main", remoteUrl: "" });
+}
+
+function createLedgerIssue(
+  db: Db,
+  projectId: string,
+  shortId: string,
+  title = `Issue ${shortId}`,
+) {
+  return createSharedLedgerIssue(db, {
+    project_id: projectId,
+    title,
+    kind: "feature",
+    source: "mandible",
+    aliases: [{ alias_kind: "git_bug_short", alias: shortId, source: "mandible", is_primary: true }],
+  });
 }
 
 function createQueue(options: ConstructorParameters<typeof AuthQueue>[0] = {}) {
@@ -171,36 +191,6 @@ function registerWorkRepo(
     `INSERT OR REPLACE INTO work_repos (id, root, name, default_branch, dir_exists, excluded)
      VALUES (?, ?, ?, ?, 1, 0)`
   ).run(path.basename(repoRoot), fs.realpathSync(repoRoot), path.basename(repoRoot), defaultBranch);
-}
-
-function createLedgerProject(
-  db: InstanceType<typeof Database>,
-  root: string,
-): ReturnType<typeof resolveProjectForCheckout> {
-  fs.mkdirSync(root, { recursive: true });
-  return resolveProjectForCheckout(db, {
-    root,
-    name: path.basename(root),
-    defaultBranch: "main",
-    remoteUrl: "",
-  });
-}
-
-function createLedgerIssue(
-  db: InstanceType<typeof Database>,
-  projectId: string,
-  shortId: string,
-  title = `Issue ${shortId}`,
-) {
-  return new LedgerStore(db).createIssue({
-    ...SYSTEM_ACTOR,
-    project_id: projectId,
-    title,
-    body: "Body",
-    kind: "feature",
-    source: "mandible",
-    aliases: [{ alias_kind: "git_bug_short", alias: shortId, source: "mandible", is_primary: true }],
-  });
 }
 
 function insertMandibleSession(

@@ -1,19 +1,11 @@
-import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-import { migrate, setDb } from "../src/db.js";
 import { SessionManager } from "../src/session-manager.js";
-
-function createMigratedDb(): InstanceType<typeof Database> {
-  const db = new Database(":memory:");
-  migrate(db);
-  return db;
-}
+import { createMigratedDb } from "./helpers/ledger-fixtures.js";
 
 describe("SessionManager Codex archive integration", () => {
   it("unarchives a Codex provider thread before creating a resume session", () => {
-    const db = createMigratedDb();
-    setDb(db);
+    const db = createMigratedDb({ setGlobal: true });
     const unarchived: string[] = [];
     const manager = new SessionManager(
       db,
