@@ -5,6 +5,11 @@ import { LedgerStore, type ResolveIssueRefResult } from "./store.js";
 import { assertEvidenceMethod, systemAction } from "../identity/resolver.js";
 import { getAttributionEvidence } from "../users/store.js";
 import type { LedgerActorInput, LedgerIssueResolution } from "./types.js";
+// Issue 1624ee9 — shared trailer parsing (was two local regex copies here).
+import {
+  extractMandibleIssueRefs as extractMandibleIssueRefsFromCommitMessage,
+  extractMandibleClosingIssueRefs as extractMandibleClosingIssueRefsFromCommitMessage,
+} from "../utils/bug-refs.js";
 
 export type OperationalLinkMismatchType = "unavailable" | "not_found" | "ambiguous";
 export type OperationalLinkReportStatus = "clean" | "incomplete" | "failed";
@@ -796,28 +801,6 @@ function authRequestActionIssueCloseRefs(db: Db, authRequestId: string): string[
        AND state IN ('staged', 'applied')`,
   ).all(authRequestId) as Array<{ target_issue_ref: string }>;
   return rows.map((row) => row.target_issue_ref).filter((ref) => ref.trim());
-}
-
-function extractMandibleIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
-  if (!commitMessage) return [];
-  const refs: string[] = [];
-  const regex = /^Mandible-Issue:\s+(\S+)/gm;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(commitMessage)) !== null) {
-    refs.push(match[1]);
-  }
-  return refs;
-}
-
-function extractMandibleClosingIssueRefsFromCommitMessage(commitMessage?: string | null): string[] {
-  if (!commitMessage) return [];
-  const refs: string[] = [];
-  const regex = /^Closes-Mandible-Issue:\s+(\S+)/gm;
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(commitMessage)) !== null) {
-    refs.push(match[1]);
-  }
-  return refs;
 }
 
 interface MergeResult {

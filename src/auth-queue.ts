@@ -71,6 +71,8 @@ import type {
   LedgerWorkerStatus,
 } from "./ledger/types.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
+// Issue 1624ee9 — shared Mandible-Issue trailer parsing.
+import { extractMandibleIssueRefs } from "./utils/bug-refs.js";
 import type {
   AuthOutputChunk,
   AuthRequest,
@@ -104,6 +106,19 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "issue_references", "issue_closures", "merge_preflight_base_sha",
   "merge_preflight_queue_fingerprint", "merge_head_sha", "merge_candidate_tree_sha",
   "merge_candidate_pin_sha", "merge_atomic_enabled", "merge_finalized_at",
+  // Issue 98d25f3 — omitting this made summaries report every request's
+  // finalizer state as null, because `mapRow` maps an absent column to null and
+  // cannot tell "not selected" from "not set". It is a small bounded JSON blob
+  // (one record per finalizer step), not one of the unbounded body blobs.
+  "merge_finalizer_state",
+  // Issue 84d940f — same class as 98d25f3. Omitting these made every history
+  // row's requester/approver/execution evidence resolve from a fabricated null:
+  // `GET /api/auth/history` feeds the summary straight into
+  // `authAttributionReadFields`, which reads exactly these three ids. They are
+  // small scalar id columns, so projecting them costs nothing.
+  "requested_by_user_id",
+  "approved_by_user_id",
+  "execution_evidence_id",
 ].join(", ");
 
 // Issue 75f52ac — off-loop git spawns for the background finalizer queue.
@@ -5203,12 +5218,10 @@ function stringPayload(payload: Record<string, unknown>, key: string): string {
   return value;
 }
 
+// Issue 1624ee9 — trailer grammar lives in utils/bug-refs; this wrapper keeps
+// the call site's "no trailers means null" contract.
 function extractIssueIdsFromCommitMessage(commitMessage: string | null | undefined): string[] | null {
-  if (!commitMessage) return null;
-  const refs: string[] = [];
-  const regex = /^Mandible-Issue:\s+(\S+)/gm;
-  let m;
-  while ((m = regex.exec(commitMessage)) !== null) refs.push(m[1]);
+  const refs = extractMandibleIssueRefs(commitMessage);
   return refs.length > 0 ? refs : null;
 }
 

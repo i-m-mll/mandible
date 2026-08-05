@@ -797,7 +797,17 @@ api_operational_mutation_category() {
     *) return 1 ;;
   esac
 
-  [[ "$pathname" != "/api/auth/check" ]] || return 1
+  # Issue c81e101 — mirror OPERATIONAL_MUTATION_EXEMPT_ROUTES in
+  # src/instance-policy.ts.
+  # The exceptions cannot be read off the generated route table: routes with no
+  # mutation category are simply absent from it, which is indistinguishable from
+  # an unknown route, so an exempt route would otherwise fall through to the
+  # prefix table below on both the generated and fallback paths. Keep this list
+  # and the TypeScript set in sync; test/cli-instance-preflight.test.ts fails on
+  # drift.
+  case "${method} ${pathname}" in
+    "POST /api/auth/check"|"POST /api/timeline/project") return 1 ;;
+  esac
 
   if generated_category="$(api_generated_operational_mutation_category "$method" "$pathname")"; then
     printf '%s' "$generated_category"

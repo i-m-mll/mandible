@@ -1,11 +1,10 @@
 import type { AuthRequest } from './views/auth';
 import type { InboxData } from './views/inbox';
 import type { IssueRepoSummary } from './views/issues';
-import type { SessionIdentityMismatch, SessionRecord } from './types/session';
+import type { SessionIdentityMismatch } from './types/session';
 import type { WorkBranch, WorkRepo } from './views/work';
 import type { Conversation } from './api';
 import type { SSEPayload } from './sse-client';
-import type { Preset, PresetNode, UndoCommand } from './types/presets';
 
 type BugRef = {
   repo_id: string;
@@ -102,14 +101,12 @@ type ConsoleSession = {
 export type { ConsoleSession };
 
 type AppState = {
-  sessions: SessionRecord[];
   authQueue: AuthRequest[];
   authHistory: AuthRequest[];
   selectedAuthId: string | null;
   workRepos: WorkRepo[];
   workBranches: Record<string, WorkBranch[]>;
   authOutputs: Record<string, string>;
-  newSessionIds: Record<string, number>;
   issueRepos: IssueRepoSummary[];
   daemonReload: DaemonReloadInfo | null;
   settings: Record<string, string>;
@@ -120,21 +117,9 @@ type AppState = {
   consoleActiveSessionId: string | null;
   consoleUnreadBadge: number;
   selectedInboxItemId: string | null;
-  // Bug: e20c88e — Presets tab state
-  presetsState: {
-    presets: Preset[];
-    selectedPresetId: string | null;
-    libraryMode: boolean;
-    editingNodeId: string | null;
-    nodes: Record<string, PresetNode[]>;
-    undoStack: UndoCommand[];
-    redoStack: UndoCommand[];
-  };
 };
 
 type Action =
-  | { type: 'setSessions'; sessions: SessionRecord[] }
-  | { type: 'upsertSession'; session: SessionRecord; markNew?: boolean }
   | { type: 'setAuthQueue'; queue: AuthRequest[] }
   | { type: 'setAuthHistory'; history: AuthRequest[] }
   | { type: 'setSelectedAuthId'; id: string | null }
@@ -169,36 +154,17 @@ type Action =
   | { type: 'setConsoleActiveSessionId'; sessionId: string | null }
   | { type: 'setConsoleUnreadBadge'; count: number }
   | { type: 'incrementConsoleUnread'; sessionId: string }
-  | { type: 'clearConsoleUnread'; sessionId: string }
-  // Bug: e20c88e — Presets actions
-  | { type: 'presetsLoaded'; presets: Preset[] }
-  | { type: 'presetSelected'; presetId: string | null }
-  | { type: 'presetCreated'; preset: Preset }
-  | { type: 'presetUpdated'; preset: Preset }
-  | { type: 'presetDeleted'; presetId: string }
-  | { type: 'nodesLoaded'; presetId: string; nodes: PresetNode[] }
-  | { type: 'nodeAdded'; presetId: string; node: PresetNode }
-  | { type: 'nodeUpdated'; presetId: string; node: PresetNode }
-  | { type: 'nodeDeleted'; presetId: string; nodeId: string }
-  | { type: 'nodeReordered'; presetId: string; nodeId: string; newParentId: string | null; newPosition: number }
-  | { type: 'libraryToggled'; libraryMode: boolean }
-  | { type: 'editingNodeSet'; nodeId: string | null }
-  | { type: 'presetsUndo' }
-  | { type: 'presetsRedo' }
-  | { type: 'presetsPushUndo'; command: UndoCommand }
-  | { type: 'presetsClearUndoStack' };
+  | { type: 'clearConsoleUnread'; sessionId: string };
 
 type AppAction = Action | { type: 'sse'; payload: SSEPayload };
 
 const initialState: AppState = {
-  sessions: [],
   authQueue: [],
   authHistory: [],
   selectedAuthId: null,
   workRepos: [],
   workBranches: {},
   authOutputs: {},
-  newSessionIds: {},
   issueRepos: [],
   daemonReload: null,
   settings: {},
@@ -209,20 +175,7 @@ const initialState: AppState = {
   consoleActiveSessionId: null,
   consoleUnreadBadge: 0,
   selectedInboxItemId: null,
-  presetsState: {
-    presets: [],
-    selectedPresetId: null,
-    libraryMode: false,
-    editingNodeId: null,
-    nodes: {},
-    undoStack: [],
-    redoStack: [],
-  },
 };
-
-function getSessionId(session: SessionRecord): string {
-  return session.id || session.session_id || '';
-}
 
 function getAuthId(request: AuthRequest): string {
   return request.id || request.request_id || '';
@@ -302,17 +255,6 @@ function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'sse':
       return applySSEEvent(state, action.payload);
-    case 'setSessions':
-      return { ...state, sessions: action.sessions };
-    case 'upsertSession': {
-      const updatedSessions = upsertById(state.sessions, getSessionId, action.session);
-      const sessionId = getSessionId(action.session);
-      const newSessionIds = { ...state.newSessionIds };
-      if (action.markNew && sessionId) {
-        newSessionIds[sessionId] = Date.now();
-      }
-      return { ...state, sessions: updatedSessions, newSessionIds };
-    }
     case 'setAuthQueue':
       return { ...state, authQueue: action.queue };
     case 'setAuthHistory':
@@ -478,168 +420,17 @@ function appReducer(state: AppState, action: AppAction): AppState {
       );
       return { ...state, consoleSessions, consoleUnreadBadge };
     }
-    // Bug: e20c88e — Presets reducer cases
-    case 'presetsLoaded':
-      return { ...state, presetsState: { ...state.presetsState, presets: action.presets } };
-    case 'presetSelected':
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          selectedPresetId: action.presetId,
-          libraryMode: false,
-          editingNodeId: null,
-          undoStack: [],
-          redoStack: [],
-        },
-      };
-    case 'presetCreated': {
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          presets: [action.preset, ...state.presetsState.presets],
-          selectedPresetId: action.preset.id,
-          libraryMode: false,
-        },
-      };
-    }
-    case 'presetUpdated': {
-      const presets = state.presetsState.presets.map((p) =>
-        p.id === action.preset.id ? { ...p, ...action.preset } : p,
-      );
-      return { ...state, presetsState: { ...state.presetsState, presets } };
-    }
-    case 'presetDeleted': {
-      const presets = state.presetsState.presets.filter((p) => p.id !== action.presetId);
-      const selectedPresetId =
-        state.presetsState.selectedPresetId === action.presetId
-          ? null
-          : state.presetsState.selectedPresetId;
-      return {
-        ...state,
-        presetsState: { ...state.presetsState, presets, selectedPresetId },
-      };
-    }
-    case 'nodesLoaded':
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          nodes: { ...state.presetsState.nodes, [action.presetId]: action.nodes },
-        },
-      };
-    case 'nodeAdded': {
-      const existing = state.presetsState.nodes[action.presetId] || [];
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          nodes: {
-            ...state.presetsState.nodes,
-            [action.presetId]: [...existing, action.node],
-          },
-        },
-      };
-    }
-    case 'nodeUpdated': {
-      const nodes = (state.presetsState.nodes[action.presetId] || []).map((n) =>
-        n.id === action.node.id ? { ...n, ...action.node } : n,
-      );
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          nodes: { ...state.presetsState.nodes, [action.presetId]: nodes },
-        },
-      };
-    }
-    case 'nodeDeleted': {
-      const nodes = (state.presetsState.nodes[action.presetId] || []).filter(
-        (n) => n.id !== action.nodeId,
-      );
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          nodes: { ...state.presetsState.nodes, [action.presetId]: nodes },
-        },
-      };
-    }
-    case 'nodeReordered': {
-      const nodes = (state.presetsState.nodes[action.presetId] || []).map((n) =>
-        n.id === action.nodeId
-          ? { ...n, parent_id: action.newParentId, position: action.newPosition }
-          : n,
-      );
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          nodes: { ...state.presetsState.nodes, [action.presetId]: nodes },
-        },
-      };
-    }
-    case 'libraryToggled':
-      return {
-        ...state,
-        presetsState: {
-          ...state.presetsState,
-          libraryMode: action.libraryMode,
-          selectedPresetId: action.libraryMode ? state.presetsState.selectedPresetId : state.presetsState.selectedPresetId,
-        },
-      };
-    case 'editingNodeSet':
-      return {
-        ...state,
-        presetsState: { ...state.presetsState, editingNodeId: action.nodeId },
-      };
-    case 'presetsPushUndo': {
-      const STACK_CAP = 50;
-      const undoStack = [...state.presetsState.undoStack, action.command].slice(-STACK_CAP);
-      return {
-        ...state,
-        presetsState: { ...state.presetsState, undoStack, redoStack: [] },
-      };
-    }
-    case 'presetsUndo': {
-      if (state.presetsState.undoStack.length === 0) return state;
-      const undoStack = state.presetsState.undoStack.slice();
-      const command = undoStack.pop()!;
-      const redoStack = [...state.presetsState.redoStack, command];
-      return {
-        ...state,
-        presetsState: { ...state.presetsState, undoStack, redoStack },
-      };
-    }
-    case 'presetsRedo': {
-      if (state.presetsState.redoStack.length === 0) return state;
-      const redoStack = state.presetsState.redoStack.slice();
-      const command = redoStack.pop()!;
-      const undoStack = [...state.presetsState.undoStack, command];
-      return {
-        ...state,
-        presetsState: { ...state.presetsState, undoStack, redoStack },
-      };
-    }
-    case 'presetsClearUndoStack':
-      return {
-        ...state,
-        presetsState: { ...state.presetsState, undoStack: [], redoStack: [] },
-      };
     default:
       return state;
   }
 }
 
 function selectBadgeCounts(state: AppState): {
-  sessions: number;
   auth: number;
   work: number;
   inbox: number;
   console: number;
 } {
-  const sessionRecords = Array.isArray(state.sessions) ? state.sessions : [];
   const authQueue = Array.isArray(state.authQueue) ? state.authQueue : [];
   const workBranches =
     state.workBranches && typeof state.workBranches === 'object'
@@ -655,13 +446,6 @@ function selectBadgeCounts(state: AppState): {
   const consoleUnreadBadge =
     typeof state.consoleUnreadBadge === 'number' ? state.consoleUnreadBadge : 0;
 
-  const sessions = sessionRecords.filter((session) => {
-    const status = (session.status || session.state || '').toLowerCase();
-    if (!status || status === 'ended' || status === 'dead' || status === 'closed' || status === 'reaped') {
-      return false;
-    }
-    return !(session as Record<string, unknown>).ended_at;
-  }).length;
   const auth = authQueue.filter((request) => {
     const status = (request.status || request.state || '').toLowerCase();
     return !status || status === 'pending' || status === 'needs_rebase';
@@ -680,42 +464,11 @@ function selectBadgeCounts(state: AppState): {
   }, 0);
   const inbox = inboxContinuations + inboxAuthResults;
   const console = consoleUnreadBadge;
-  return { sessions, auth, work, inbox, console };
+  return { auth, work, inbox, console };
 }
 
 function applySSEEvent(state: AppState, payload: SSEPayload): AppState {
   switch (payload.type) {
-    case 'session:registered':
-      if (payload.session && typeof payload.session === 'object') {
-        return appReducer(state, {
-          type: 'upsertSession',
-          session: payload.session as SessionRecord,
-          markNew: true,
-        });
-      }
-      if (payload.data && typeof payload.data === 'object') {
-        return appReducer(state, {
-          type: 'upsertSession',
-          session: payload.data as SessionRecord,
-          markNew: true,
-        });
-      }
-      return state;
-    case 'session:updated':
-    case 'session:ended':
-      if (payload.session && typeof payload.session === 'object') {
-        return appReducer(state, {
-          type: 'upsertSession',
-          session: payload.session as SessionRecord,
-        });
-      }
-      if (payload.data && typeof payload.data === 'object') {
-        return appReducer(state, {
-          type: 'upsertSession',
-          session: payload.data as SessionRecord,
-        });
-      }
-      return state;
     case 'auth:new':
     case 'auth:updated':
       // Bug: f690657 — auth:updated was not handled; server broadcasts it when
@@ -934,7 +687,7 @@ const CACHE_VERSION = 2;
 // Bug: 7136f0d — starredChats removed from cache (Chats tab removed, starring via History tab)
 type CachedFields = Pick<
   AppState,
-  'sessions' | 'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos' | 'conversations'
+  'authQueue' | 'authHistory' | 'workRepos' | 'workBranches' | 'issueRepos' | 'conversations'
   | 'inboxData' | 'consoleSessions' | 'settings'
 >;
 
@@ -1005,7 +758,6 @@ function saveCachedState(state: AppState): void {
   try {
     if (typeof window === 'undefined') return;
     const toCache: CachedFields = {
-      sessions: state.sessions,
       authQueue: state.authQueue,
       authHistory: state.authHistory,
       workRepos: state.workRepos,

@@ -116,7 +116,6 @@ import './views/spaces/renderers.css';
 import './views/spaces/space-board.css';
 import './views/spaces/SpaceCanvas.css';
 import './views/spaces/space-collection.css';
-import './views/spaces/SpaceEdgeLayer.css';
 import './views/spaces/SpaceExportDialog.css';
 import './views/spaces/SpaceItemPicker.css';
 import './views/spaces/SpaceSeedDialog.css';

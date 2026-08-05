@@ -5,8 +5,10 @@
 // configured with `--channels server:mandible`. It bridges Mandible's
 // event system and API to Claude Code via the MCP protocol.
 //
-// Architecture: STATELESS — all state lives in the Mandible daemon at
-// localhost:19420. This process is a thin adapter that:
+// Architecture: STATELESS — all state lives in the Mandible daemon, reached at
+// the base URL resolved by channel-server/base-url.ts (MANDIBLE_BASE /
+// MANDIBLE_PORT, default http://localhost:19420). This process is a thin
+// adapter that:
 //   1. Exposes Mandible operations as MCP tools
 //   2. Forwards Mandible SSE events as MCP notifications
 //   3. Communicates over stdio (stdin/stdout JSON-RPC)

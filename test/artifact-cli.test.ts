@@ -6,6 +6,8 @@ import type { AddressInfo } from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 const CLI_TEST_ENV = {
   MANDIBLE_TEST_ONLY_ALLOW_NON_MAIN_OPERATIONAL_MUTATIONS: "1",
@@ -51,29 +53,6 @@ function runAsync(
       resolve({ status, stdout, stderr });
     });
   });
-}
-
-function startFileRpcResponder(
-  spoolDir: string,
-  handler: (request: Record<string, unknown>) => { status: number; body: unknown },
-): NodeJS.Timeout {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
-      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
-      const response = handler(request);
-      fs.writeFileSync(
-        path.join(spoolDir, `${id}.response.json`),
-        JSON.stringify({ id, ...response }),
-        "utf8",
-      );
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
-  return timer;
 }
 
 interface RecordedRequest {
@@ -518,7 +497,7 @@ describe("artifact CLI", () => {
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
     const attachmentReads: Array<{ ref: unknown; bytes: string }> = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       if (request.method === "GET" && request.path === "/api/ledger/issues/abc") {
         return {
@@ -572,7 +551,7 @@ describe("artifact CLI", () => {
       expect(attachmentReads).toHaveLength(1);
       expect(attachmentReads[0].bytes).toBe("# Report\n\nReady.\n");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -583,7 +562,7 @@ describe("artifact CLI", () => {
     const newHash = "b".repeat(64);
     const newRef = "artifact:bbbbbbbbbbbb";
     const seen: Array<Record<string, unknown>> = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       if (request.method === "GET" && request.path === "/api/ledger/issues/abc") {
         return {
@@ -648,7 +627,7 @@ describe("artifact CLI", () => {
         link_type: "references",
       });
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -661,7 +640,7 @@ describe("artifact CLI", () => {
     fs.writeFileSync(bigPath, bigBytes);
 
     let attachmentSize = -1;
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       if (request.method === "POST" && request.path === "/api/artifacts/versions") {
         const attachments = request.attachments as Record<string, string> | undefined;
         const name = attachments?.path;
@@ -691,14 +670,14 @@ describe("artifact CLI", () => {
       // The full 2 MiB rode as a spool attachment, not in the JSON body/argv.
       expect(attachmentSize).toBe(bigBytes.length);
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
   it("reports file RPC issue resolver errors with the response detail", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-file-rpc-artifact-"));
     tempRoots.push(spoolDir);
-    const timer = startFileRpcResponder(spoolDir, () => ({
+    const responder = startFileRpcResponder(spoolDir, () => ({
       status: 404,
       body: { error: "issue_missing" },
     }));
@@ -712,7 +691,7 @@ describe("artifact CLI", () => {
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("HTTP 404: issue_missing");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 

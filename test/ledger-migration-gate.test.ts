@@ -3,21 +3,23 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDb, setDb, type Db } from "../src/db.js";
-import { systemAction } from "../src/identity/resolver.js";
 import {
   findLedgerIssueAcrossRepos,
   getLedgerIssueDetailForRoute,
   listLedgerIssueSummaries,
 } from "../src/ledger/issue-projection.js";
-import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerIssueRoutes, type IssueServer, type RouteHandler } from "../src/routes/issues.js";
 import { setupOperator } from "../src/users/store.js";
 import type { RepoInfo } from "../src/work-scanner.js";
+import {
+  SYSTEM_ACTOR,
+  createLedgerIssue as createSharedLedgerIssue,
+  createLedgerProject,
+} from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Db;
-const SYSTEM_ACTOR = { attribution: systemAction() };
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-migration-"));
@@ -140,19 +142,18 @@ function createLedgerIssue(input: {
   body?: string;
   labels?: string[];
 }) {
-  const { project } = resolveProjectForCheckout(db, {
-    root: input.repo.root,
+  const { project } = createLedgerProject(db, input.repo.root, {
     name: input.repo.name,
     workRepoId: input.repo.id,
     defaultBranch: input.repo.default_branch,
     remoteUrl: `git@github.com:mll/${input.repo.name}.git`,
   });
   const store = new LedgerStore(db);
-  const issue = store.createIssue({
-    ...SYSTEM_ACTOR,
+  const issue = createSharedLedgerIssue(db, {
+    store,
     project_id: project.id,
-    title: input.title ?? "Ledger issue",
-    body: input.body ?? "Body",
+    title: input.title,
+    body: input.body,
     status: "open",
     kind: "feature",
     priority: "normal",
@@ -896,7 +897,7 @@ describe("ledger issue routes", () => {
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
     // Issue 3d85f43: issue creation resolves against the registered ledger
     // checkout, so register it here before invoking the route.
-    resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
+    createLedgerProject(db, repoInfo.root, { name: repoInfo.name, workRepoId: repoInfo.id });
 
     const created = await server.invoke("POST", "/api/issues/:repoId", {
       params: { repoId: repoInfo.name },
@@ -925,7 +926,7 @@ describe("ledger issue routes", () => {
     const repoInfo = repo("repo-1", "mandible");
     const server = new TestIssueServer();
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
-    resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
+    createLedgerProject(db, repoInfo.root, { name: repoInfo.name, workRepoId: repoInfo.id });
     const escapedBody = "Created through API.\\n\\nDetails:\\n- item";
     const created = await server.invoke("POST", "/api/issues/:repoId", {
       params: { repoId: repoInfo.name },
@@ -964,7 +965,7 @@ describe("ledger issue routes", () => {
     registerIssueRoutes(server, fakeWorkScanner([repoInfo]) as never);
     setMarkdownBodyEscapePolicy("reject");
 
-    resolveProjectForCheckout(db, { root: repoInfo.root, name: repoInfo.name, workRepoId: repoInfo.id });
+    createLedgerProject(db, repoInfo.root, { name: repoInfo.name, workRepoId: repoInfo.id });
     const realMarkdown = "Created through API.\n\nDetails:\n- item";
     const created = await server.invoke("POST", "/api/issues/:repoId", {
       params: { repoId: repoInfo.name },

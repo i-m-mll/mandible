@@ -5,6 +5,37 @@
 
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
+// --- Base URL resolution (issue 70dffb8) ---
+
+describe("channel-server base URL", () => {
+  it("defaults to the historical loopback daemon", async () => {
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
+    expect(resolveBaseUrl({})).toBe("http://localhost:19420");
+  });
+
+  it("honors MANDIBLE_PORT for non-default daemons", async () => {
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
+    expect(resolveBaseUrl({ MANDIBLE_PORT: "31337" })).toBe("http://localhost:31337");
+  });
+
+  it("prefers an explicit MANDIBLE_BASE over MANDIBLE_PORT and trims it", async () => {
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
+    expect(resolveBaseUrl({
+      MANDIBLE_BASE: " http://127.0.0.1:12345/ ",
+      MANDIBLE_PORT: "31337",
+    })).toBe("http://127.0.0.1:12345");
+  });
+
+  it("falls back to the port default for transports it cannot speak", async () => {
+    const { resolveBaseUrl } = await import("../channel-server/base-url.js");
+    // No file:// spool transport here, and the SSE bridge drives node:http.
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "file:///tmp/spool", MANDIBLE_PORT: "31337" }))
+      .toBe("http://localhost:31337");
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "not a url" })).toBe("http://localhost:19420");
+    expect(resolveBaseUrl({ MANDIBLE_BASE: "   " })).toBe("http://localhost:19420");
+  });
+});
+
 // --- Client tests (mocked fetch) ---
 
 describe("channel-server client", () => {
@@ -33,9 +64,32 @@ describe("channel-server client", () => {
     );
   }
 
+  const originalBase = process.env.MANDIBLE_BASE;
+  const originalPort = process.env.MANDIBLE_PORT;
+
   afterEach(() => {
     globalThis.fetch = originalFetch;
     delete process.env.MANDIBLE_TOKEN;
+    originalBase === undefined
+      ? delete process.env.MANDIBLE_BASE
+      : (process.env.MANDIBLE_BASE = originalBase);
+    originalPort === undefined
+      ? delete process.env.MANDIBLE_PORT
+      : (process.env.MANDIBLE_PORT = originalPort);
+  });
+
+  // Issue 70dffb8 — the client used to hardcode http://localhost:19420.
+  it("sends requests to the resolved daemon base URL", async () => {
+    delete process.env.MANDIBLE_BASE;
+    process.env.MANDIBLE_PORT = "31337";
+    mockFetch(200, {
+      continuations: [], auth_results: [], open_issues: [], work_units: [],
+      work_unit_continuations: [], total: 0,
+    });
+    const { checkInboxGlobal } = await import("../channel-server/client.js");
+    await checkInboxGlobal();
+    const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(url).toBe("http://localhost:31337/api/inbox/global");
   });
 
   it("authenticates every daemon request with its injected agent token", async () => {

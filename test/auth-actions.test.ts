@@ -6,17 +6,21 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { AuthQueue, AuthQueueError } from "../src/auth-queue.js";
 import { AuthAutoApproveManager } from "../src/auth-auto-approve.js";
-import { CURRENT_SCHEMA_VERSION, migrate, setDb, type Db } from "../src/db.js";
+import { CURRENT_SCHEMA_VERSION, migrate, type Db } from "../src/db.js";
 import { getLedgerIssueHead } from "../src/ledger/issue-heads.js";
 import { systemAction } from "../src/identity/resolver.js";
-import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { LedgerStore } from "../src/ledger/store.js";
 import { registerAuthRoutes } from "../src/routes/auth.js";
 import { Router } from "../src/server.js";
-import { addBinding, createUser, setupOperator } from "../src/users/store.js";
+import { addBinding } from "../src/users/store.js";
+import {
+  SYSTEM_ACTOR,
+  createLedgerIssue as createSharedLedgerIssue,
+  createLedgerProject,
+  createMigratedDb as createSharedMigratedDb,
+} from "./helpers/ledger-fixtures.js";
 
 const tempDirs: string[] = [];
-const SYSTEM_ACTOR = { attribution: systemAction() };
 
 afterEach(() => {
   for (const dir of tempDirs.splice(0)) {
@@ -25,15 +29,16 @@ afterEach(() => {
 });
 
 function createMigratedDb(): Db {
-  const db = new Database(":memory:");
-  migrate(db);
-  setDb(db);
-  setupOperator(db, { slug: "auth-action-test", display_name: "Auth Action Test" }, 1);
-  // Issue a64d2de: provider-session bindings resolve to session_claim attribution
-  // only for agent principals. The auth-request requester is an agent session, so
-  // bind the route session env to an agent rather than the human operator.
-  createUser(db, { slug: "auth-action-agent", kind: "agent", display_name: "Auth Action Agent" }, 1);
-  return db;
+  return createSharedMigratedDb({
+    // Route handlers in this file resolve state through the getDb() singleton.
+    setGlobal: true,
+    operator: { slug: "auth-action-test", display_name: "Auth Action Test" },
+    // Issue a64d2de: provider-session bindings resolve to session_claim attribution
+    // only for agent principals. The auth-request requester is an agent session, so
+    // bind the route session env to an agent rather than the human operator.
+    agent: { slug: "auth-action-agent", display_name: "Auth Action Agent" },
+    now: 1,
+  });
 }
 
 function tableColumns(db: Db, table: string): string[] {
@@ -44,22 +49,15 @@ function tableColumns(db: Db, table: string): string[] {
 function createLedgerIssue(db: Db, alias = "act123") {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-actions-repo-"));
   tempDirs.push(repoRoot);
-  const project = resolveProjectForCheckout(db, {
-    root: repoRoot,
-    name: path.basename(repoRoot),
-    defaultBranch: "main",
-    remoteUrl: "",
-  });
-  const issue = new LedgerStore(db).createIssue({
-    ...SYSTEM_ACTOR,
+  const project = createLedgerProject(db, repoRoot, { defaultBranch: "main", remoteUrl: "" });
+  const issue = createSharedLedgerIssue(db, {
     project_id: project.project.id,
     title: "Auth action target",
-    body: "Body",
     kind: "feature",
     priority: "normal",
     actor_type: "agent",
     author_display: "Codex",
-    aliases: [{ alias_kind: "git_bug_short", alias }],
+    alias,
   });
   return { repoRoot, issue };
 }

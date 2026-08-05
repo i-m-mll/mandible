@@ -4,22 +4,21 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import {
+  startFileRpcResponder,
+  type FileRpcHandler,
+  type FileRpcRequest,
+} from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let spoolDir = "";
-
-interface RpcRequest {
-  id?: string;
-  method?: string;
-  path?: string;
-  body?: Record<string, unknown>;
-}
 
 interface RpcResult {
   status: number | null;
   stdout: string;
   stderr: string;
-  seen: RpcRequest[];
+  seen: FileRpcRequest[];
 }
 
 /**
@@ -30,36 +29,10 @@ interface RpcResult {
  */
 function runWithResponder(
   args: string[],
-  handler: (request: RpcRequest) => { status: number; body: unknown },
+  handler: FileRpcHandler,
 ): Promise<RpcResult> {
-  const seen: RpcRequest[] = [];
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      let request: RpcRequest;
-      try {
-        request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as RpcRequest;
-      } catch {
-        continue;
-      }
-      seen.push(request);
-      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
-      let response: { status: number; body: unknown };
-      try {
-        response = handler(request);
-      } catch (error) {
-        response = { status: 500, body: { error: String(error) } };
-      }
-      fs.writeFileSync(
-        path.join(spoolDir, `${id}.response.json`),
-        JSON.stringify({ id, ...response }),
-        "utf8",
-      );
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
+  const responder = startFileRpcResponder(spoolDir, handler);
+  const seen = responder.requests;
 
   return new Promise((resolve) => {
     const child = spawn(CLI, args, {
@@ -80,7 +53,7 @@ function runWithResponder(
       stderr += chunk;
     });
     child.on("close", (status) => {
-      clearInterval(timer);
+      responder.stop();
       resolve({ status, stdout, stderr, seen });
     });
   });

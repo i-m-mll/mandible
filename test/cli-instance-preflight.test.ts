@@ -5,6 +5,14 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import {
+  evaluateInstanceMutation,
+  OPERATIONAL_MUTATION_EXEMPT_ROUTES,
+  OPERATIONAL_ROUTE_CATEGORIES,
+  UNSAFE_MUTATION_METHODS,
+} from "../src/instance-policy.js";
+import type { InstanceInfo } from "../src/types.js";
+
 type RecordedRequest = {
   method: string;
   url: string;
@@ -232,6 +240,77 @@ function writeRouteMutationCategories(payload: unknown): string {
   const file = path.join(root, "route-mutation-categories.json");
   fs.writeFileSync(file, `${JSON.stringify(payload)}\n`, "utf8");
   return file;
+}
+
+// --- Route mutation-category drift check (issue c81e101) ---
+
+// Any instance that refuses operational mutations makes evaluateInstanceMutation
+// report the category it derived, which is the authoritative answer cli/api.sh
+// has to reproduce. It keeps the private categorizer private.
+const CATEGORY_PROBE_INSTANCE: InstanceInfo = {
+  role: "preview",
+  operational_mutations: "reject",
+  operational_mutations_overridden: false,
+  db_path: null,
+  db_path_source: "default",
+};
+
+function authoritativeCategory(method: string, pathname: string): string | null {
+  const decision = evaluateInstanceMutation(CATEGORY_PROBE_INSTANCE, method, pathname);
+  if (decision.allowed) {
+    return null;
+  }
+  const category = decision.body.category;
+  return typeof category === "string" ? category : null;
+}
+
+// Issue 97cf613 exported these tables so both TypeScript gates share one copy;
+// the probe set reads them directly instead of scraping the module text, so a
+// rename or literal reshape is a compile error here rather than a silently
+// empty probe set. The drift-catching property is unchanged: probes still
+// enumerate every route family the authoritative tables declare, and every
+// answer is compared against evaluateInstanceMutation.
+function operationalPrefixes(): string[] {
+  return OPERATIONAL_ROUTE_CATEGORIES.map((route) => route.prefix);
+}
+
+function exemptRoutes(): Array<{ method: string; path: string }> {
+  return [...OPERATIONAL_MUTATION_EXEMPT_ROUTES].map((entry) => {
+    const separator = entry.indexOf(" ");
+    return { method: entry.slice(0, separator), path: entry.slice(separator + 1) };
+  });
+}
+
+function buildCategoryProbes(
+  prefixes: string[],
+  exceptions: Array<{ method: string; path: string }>,
+): Array<{ method: string; path: string }> {
+  const unsafeMethods = [...UNSAFE_MUTATION_METHODS];
+  const paths: string[] = [];
+  for (const prefix of prefixes) {
+    paths.push(prefix, `${prefix}/child`, `${prefix}/child/grandchild`);
+  }
+  for (const exception of exceptions) {
+    paths.push(exception.path, `${exception.path}/child`);
+  }
+  // Prefix-table misses, the /api catch-all, and non-API paths.
+  paths.push("/api", "/api/unregistered-surface", "/api/work", "/api/work-units", "/health");
+  // Query strings must be stripped before matching.
+  paths.push("/api/projects?scope=all");
+
+  const probes: Array<{ method: string; path: string }> = [];
+  const seen = new Set<string>();
+  for (const path of paths) {
+    for (const method of [...unsafeMethods, "GET", "HEAD", "OPTIONS"]) {
+      const key = `${method}|${path}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      probes.push({ method, path });
+    }
+  }
+  return probes;
 }
 
 function writeRestartAvailability(port: number, payload: Record<string, unknown>): string {
@@ -474,6 +553,92 @@ describe("CLI instance mutation preflight", () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toBe("bypass");
+  });
+
+  // Issue c81e101 — cli/api.sh carries a hand-maintained copy of the route
+  // mutation-category table for the case where the generated JSON is missing or
+  // malformed, and it had drifted from src/instance-policy.ts. This is a
+  // behavioral drift check: it runs the shell categorizer over every route
+  // family the TypeScript source declares and compares each answer with the
+  // authoritative decision, so a future edit to one side without the other
+  // fails here instead of silently gating (or silently exempting) a route.
+  it("keeps the api.sh fallback category table in sync with instance-policy", async () => {
+    const prefixes = operationalPrefixes();
+    const exceptions = exemptRoutes();
+    // If either table is emptied or narrowed, fail loudly rather than
+    // comparing a degenerate probe set.
+    expect(prefixes.length).toBeGreaterThanOrEqual(20);
+    expect(exceptions.length).toBeGreaterThanOrEqual(2);
+
+    const probes = buildCategoryProbes(prefixes, exceptions);
+    const missingCategoryFile = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "mandible-route-categories-")),
+      "route-mutation-categories.json",
+    );
+    tempRoots.push(path.dirname(missingCategoryFile));
+
+    const result = await runBash([
+      "set -uo pipefail",
+      "source cli/api.sh",
+      "while IFS='|' read -r probe_method probe_path; do",
+      '  [[ -n "$probe_method" ]] || continue',
+      '  if probe_category="$(api_operational_mutation_category "$probe_method" "$probe_path")"; then',
+      `    printf '%s|%s|%s\\n' "$probe_method" "$probe_path" "$probe_category"`,
+      "  else",
+      `    printf '%s|%s|-\\n' "$probe_method" "$probe_path"`,
+      "  fi",
+      'done <<< "$MANDIBLE_TEST_CATEGORY_PROBES"',
+    ].join("\n"), 1, {
+      MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: missingCategoryFile,
+      MANDIBLE_TEST_CATEGORY_PROBES: probes
+        .map((probe) => `${probe.method}|${probe.path}`)
+        .join("\n"),
+    });
+
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(result.stdout.trimEnd().split("\n")).toEqual(
+      probes.map((probe) => {
+        // api.sh takes a request path and strips the query itself; the
+        // TypeScript categorizer is always handed a parsed URL pathname.
+        const pathname = probe.path.split("?")[0];
+        return `${probe.method}|${probe.path}|${authoritativeCategory(probe.method, pathname) ?? "-"}`;
+      }),
+    );
+  });
+
+  it("keeps exempt routes exempt when the generated table is present", async () => {
+    // The generator only emits routes that have a category, so an exempt route
+    // is absent from the JSON and looks exactly like an unknown route. The
+    // exemption therefore has to be applied before the fallback prefix table.
+    const categoryFile = writeRouteMutationCategories({
+      schema: 1,
+      source: "Router.listRoutePolicies",
+      routes: [
+        { method: "POST", path: "/api/timeline/:id/rows", category: "timeline" },
+      ],
+      fallbackCategory: "api",
+    });
+    const result = await runBash([
+      "set -uo pipefail",
+      "source cli/api.sh",
+      "for probe in 'POST /api/timeline/project' 'POST /api/auth/check' 'PUT /api/timeline/project'; do",
+      "  set -- $probe",
+      '  if category="$(api_operational_mutation_category "$1" "$2")"; then',
+      `    printf '%s %s=%s\\n' "$1" "$2" "$category"`,
+      "  else",
+      `    printf '%s %s=exempt\\n' "$1" "$2"`,
+      "  fi",
+      "done",
+    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: categoryFile });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trimEnd().split("\n")).toEqual([
+      "POST /api/timeline/project=exempt",
+      "POST /api/auth/check=exempt",
+      // Only the exact method/path pair is exempt, matching the TypeScript set.
+      "PUT /api/timeline/project=timeline",
+    ]);
   });
 
   it("refuses operational mutations against preview instances before sending POST", async () => {

@@ -1,4 +1,10 @@
-// Tests for the SpaceCanvas EDGE layer (umbrella de56ffa, child e16520d / C9b).
+// Tests for the SpaceCanvas EDGE model (umbrella de56ffa, child e16520d / C9b).
+//
+// The `SpaceEdgeLayer` component these tests once also exercised was retired
+// (its bottom edge panel was folded into the integrated canvas inspector) and
+// has been deleted; `test/spaces-canvas-mount-reachability.test.tsx` guards the
+// mount composition. What remains here is the still-live pure edge model and
+// promote-to-ledger logic.
 //
 // Covers the load-bearing acceptance criteria:
 //   - `space_edges` are created/edited with FREE labels via the C2 edge client;
@@ -9,9 +15,8 @@
 //   - SSE `space:edge:created` reconciles the edge list WITHOUT resetting the
 //     local selection / in-flight label edit.
 
-import { render, screen, cleanup, fireEvent, act, waitFor } from '@testing-library/preact';
+import { cleanup } from '@testing-library/preact';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { h } from 'preact';
 
 import type { SpaceEdge, SpaceItem, SpaceOccurrence } from '../ui/src/api';
 import {
@@ -28,11 +33,6 @@ import {
   applyOptimisticLabel,
 } from '../ui/src/views/spaces/edgeModel';
 import { promoteEdgeToLedger } from '../ui/src/views/spaces/edgePromote';
-import {
-  SpaceEdgeLayer,
-  type SpaceEdgeModel,
-} from '../ui/src/views/spaces/SpaceEdgeLayer';
-import type { SSEClient, SSEHandler } from '../ui/src/sse-client';
 
 afterEach(() => {
   cleanup();
@@ -92,38 +92,6 @@ function edge(id: string, source: string, target: string, label: string | null =
   };
 }
 
-function makeFakeSse(): { client: SSEClient; emit: (type: string, data: unknown) => void } {
-  const handlers = new Map<string, Set<SSEHandler>>();
-  const client = {
-    connect: () => {},
-    close: () => {},
-    on: (type: string, handler: SSEHandler) => {
-      const bucket = handlers.get(type) ?? new Set<SSEHandler>();
-      bucket.add(handler);
-      handlers.set(type, bucket);
-      return () => bucket.delete(handler);
-    },
-    off: () => {},
-  } as unknown as SSEClient;
-  const emit = (type: string, data: unknown) => {
-    handlers.get(type)?.forEach((handler) => handler({ type, data } as never));
-  };
-  return { client, emit };
-}
-
-// Drive a controlled preact `<select>` the way its `onChange` binding expects.
-// `fireEvent.change` alone sets the DOM value but does NOT dispatch the `input`
-// event preact's controlled inputs listen on, so the component's state never
-// updates and `handleCreate` / the link-type override early-return. Dispatching
-// both `input` and `change` (the established repo pattern, cf.
-// `test/timeline-ui.test.tsx`) updates the controlled value.
-function changeSelect(select: HTMLElement, value: string): void {
-  act(() => {
-    (select as HTMLSelectElement).value = value;
-    select.dispatchEvent(new Event('input', { bubbles: true }));
-    select.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
 
 // ============================================================================
 // Pure model: link-type mapping + promotability (C4 promote-edge semantics)
@@ -290,184 +258,5 @@ describe('promoteEdgeToLedger', () => {
     await expect(
       promoteEdgeToLedger({ sourceRef: 'a', targetRef: 'b', linkType: 'references' }, { fetchImpl }),
     ).rejects.toThrow('invalid relationship type');
-  });
-});
-
-// ============================================================================
-// Component behavior
-// ============================================================================
-
-function baseModel(over: Partial<SpaceEdgeModel> = {}): SpaceEdgeModel {
-  return {
-    occurrences: [occ('a'), occ('b'), occ('x')],
-    items: [item('a'), item('b'), item('x', { ref_type: 'artifact', ref_id: 'sha256:zzz' })],
-    edges: [edge('e1', 'a', 'b', 'blocks')],
-    ...over,
-  };
-}
-
-describe('SpaceEdgeLayer create edge with free label', () => {
-  it('creates a space_edge via the C2 client with the free label', async () => {
-    const model = baseModel({ edges: [] });
-    const createEdge = vi.fn().mockResolvedValue(edge('new', 'a', 'b', 'depends on'));
-    render(
-      h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, createEdge }),
-    );
-
-    changeSelect(screen.getByTestId('space-edge-create-source'), 'a');
-    changeSelect(screen.getByTestId('space-edge-create-target'), 'b');
-    fireEvent.input(screen.getByTestId('space-edge-create-label'), {
-      target: { value: 'depends on' },
-    });
-
-    await act(async () => {
-      fireEvent.submit(screen.getByTestId('space-edge-create-form'));
-    });
-
-    expect(createEdge).toHaveBeenCalledWith('sp1', {
-      source: 'a',
-      target: 'b',
-      label: 'depends on',
-    });
-    await waitFor(() => expect(screen.getAllByTestId('space-edge-item')).toHaveLength(1));
-  });
-});
-
-describe('SpaceEdgeLayer edit label', () => {
-  it('persists a free-label edit through the C2 update client on blur', async () => {
-    const model = baseModel();
-    const updateEdge = vi.fn().mockResolvedValue(edge('e1', 'a', 'b', 'now blocks'));
-    render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, updateEdge }));
-
-    const input = screen.getByTestId('space-edge-label-input') as HTMLInputElement;
-    // Focus the input first: jsdom only routes a `blur` to the element's
-    // listener when it is the active element, so a bare `fireEvent.blur` on an
-    // unfocused input never fires the component's `onBlur` handler.
-    input.focus();
-    fireEvent.input(input, { target: { value: 'now blocks' } });
-    await act(async () => {
-      input.blur();
-    });
-    expect(updateEdge).toHaveBeenCalledWith('sp1', 'e1', { label: 'now blocks' });
-  });
-});
-
-describe('SpaceEdgeLayer promote-to-ledger', () => {
-  it('promotes an issue→issue edge with the label-derived link type', async () => {
-    const model = baseModel();
-    const promote = vi.fn().mockResolvedValue({ action_id: 'act-1' });
-    render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, promote }));
-
-    // The link-type select is seeded from the label ("blocks").
-    const select = screen.getByTestId('space-edge-link-type') as HTMLSelectElement;
-    expect(select.value).toBe('blocks');
-
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('space-edge-promote-btn'));
-    });
-
-    expect(promote).toHaveBeenCalledWith({
-      sourceRef: 'a',
-      targetRef: 'b',
-      linkType: 'blocks',
-      note: 'blocks',
-    });
-    await waitFor(() =>
-      expect(screen.getByTestId('space-edge-layer-status').textContent).toMatch(/blocks/),
-    );
-  });
-
-  it('honors an explicit link-type override before promoting', async () => {
-    const model = baseModel();
-    const promote = vi.fn().mockResolvedValue({});
-    render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, promote }));
-
-    changeSelect(screen.getByTestId('space-edge-link-type'), 'related');
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('space-edge-promote-btn'));
-    });
-    expect(promote).toHaveBeenCalledWith(expect.objectContaining({ linkType: 'related' }));
-  });
-
-  it('shows "Not promotable" and offers no promote control for an artifact endpoint', () => {
-    const model = baseModel({ edges: [edge('e9', 'a', 'x', 'see also')] });
-    render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model }));
-    expect(screen.getByTestId('space-edge-not-promotable')).toBeTruthy();
-    expect(screen.queryByTestId('space-edge-promote-btn')).toBeNull();
-  });
-});
-
-describe('SpaceEdgeLayer delete edge', () => {
-  it('removes the edge via the C2 delete client', async () => {
-    const model = baseModel();
-    const removeEdge = vi.fn().mockResolvedValue(undefined);
-    render(h(SpaceEdgeLayer, { spaceId: 'sp1', initialModel: model, removeEdge }));
-    await act(async () => {
-      fireEvent.click(screen.getByTestId('space-edge-delete-btn'));
-    });
-    expect(removeEdge).toHaveBeenCalledWith('sp1', 'e1');
-    await waitFor(() => expect(screen.queryByTestId('space-edge-item')).toBeNull());
-  });
-});
-
-describe('SpaceEdgeLayer SSE reconciliation', () => {
-  it('reconciles a created edge WITHOUT resetting selection', async () => {
-    const model = baseModel();
-    const { client, emit } = makeFakeSse();
-    const updated: SpaceEdgeModel = {
-      ...model,
-      edges: [edge('e1', 'a', 'b', 'blocks'), edge('e2', 'b', 'a', 'related')],
-    };
-    const loadModel = vi.fn().mockResolvedValue(updated);
-
-    render(
-      h(SpaceEdgeLayer, {
-        spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
-
-    // Select the existing edge.
-    fireEvent.click(screen.getByTestId('space-edge-select'));
-    await waitFor(() =>
-      expect(screen.getByTestId('space-edge-item').getAttribute('data-selected')).toBe('true'),
-    );
-
-    // An SSE created event triggers a refetch + reconcile.
-    await act(async () => {
-      emit('space:edge:created', { space_id: 'sp1' });
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    await waitFor(() => expect(loadModel).toHaveBeenCalledWith('sp1'));
-    // The new edge appears...
-    await waitFor(() => expect(screen.getAllByTestId('space-edge-item')).toHaveLength(2));
-    // ...and the original selection is preserved.
-    const selected = screen
-      .getAllByTestId('space-edge-item')
-      .find((el) => el.getAttribute('data-edge-id') === 'e1');
-    expect(selected!.getAttribute('data-selected')).toBe('true');
-  });
-
-  it('ignores edge events for a different space', async () => {
-    const model = baseModel();
-    const { client, emit } = makeFakeSse();
-    const loadModel = vi.fn().mockResolvedValue(model);
-    render(
-      h(SpaceEdgeLayer, {
-        spaceId: 'sp1',
-        initialModel: model,
-        loadModel,
-        createSse: () => client,
-      }),
-    );
-    await act(async () => {
-      emit('space:edge:created', { space_id: 'other' });
-      await Promise.resolve();
-    });
-    expect(loadModel).not.toHaveBeenCalled();
   });
 });

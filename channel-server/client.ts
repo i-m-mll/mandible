@@ -1,8 +1,8 @@
 // Bug: 1d652d5 — typed HTTP client for Mandible API
 //
-// Stateless adapter: all state lives in the Mandible daemon at localhost:19420.
-// Every function is a thin wrapper around a single HTTP call with typed
-// request/response shapes.
+// Stateless adapter: all state lives in the Mandible daemon, whose base URL is
+// resolved per call by resolveBaseUrl() (issue 70dffb8). Every function is a
+// thin wrapper around a single HTTP call with typed request/response shapes.
 
 import type {
   InboxResponse,
@@ -14,8 +14,8 @@ import type {
   UndeliveredResponse,
   UndeliveredAuthResult,
 } from "./types.js";
+import { resolveBaseUrl } from "./base-url.js";
 
-const BASE_URL = "http://localhost:19420";
 const TIMEOUT_MS = 10_000;
 
 export class MandibleClientError extends Error {
@@ -52,7 +52,7 @@ async function request<T>(
       opts.body = JSON.stringify(body);
     }
 
-    const res = await fetch(`${BASE_URL}${path}`, opts);
+    const res = await fetch(`${resolveBaseUrl()}${path}`, opts);
 
     if (!res.ok) {
       let detail = "";

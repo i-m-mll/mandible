@@ -36,6 +36,11 @@ import {
   snapshotArtifactBytes,
 } from "../src/provider-artifacts.js";
 import { discoverRepoArtifacts, scanRepoArtifacts } from "../src/repo-artifact-scanner.js";
+import {
+  insertRawLedgerCheckout,
+  insertRawLedgerIssue,
+  insertRawLedgerProject,
+} from "./helpers/ledger-fixtures.js";
 
 let tempDir = "";
 let db: Database.Database;
@@ -364,30 +369,33 @@ function createSchema(database: Database.Database): void {
 }
 
 function createLedgerIssue(projectName: string, alias: string, title = `Issue ${alias}`): string {
-  const projectId = `prj_${projectName}`;
-  const issueId = `${alias}_${projectName}`;
-  db.prepare(
-    `INSERT OR IGNORE INTO ledger_projects (
-      id, project_key, display_name, remote_identity, upstream_identity, namespace_policy, created_at, updated_at
-    ) VALUES (?, ?, ?, '', '', 'remote', 1, 1)`,
-  ).run(projectId, projectName, projectName);
-  db.prepare(
-    `INSERT OR IGNORE INTO ledger_project_checkouts (
-      id, project_id, work_repo_id, root, name, default_branch, remote_url, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, 'main', '', 1, 1)`,
-  ).run(`checkout_${projectName}`, projectId, projectName, `/tmp/${projectName}`, projectName);
-  db.prepare(
-    `INSERT INTO ledger_issues (
-      id, short_id, project_id, title, body, status, kind, priority,
-      author_actor_type, author_display, source, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, '', 'open', 'feature', 'normal', 'agent', 'Codex', 'mandible', 1, 1)`,
-  ).run(issueId, alias, projectId, title);
-  db.prepare(
-    `INSERT INTO ledger_issue_aliases (
-      issue_id, alias_kind, project_id, alias, external_id, source, is_primary, created_at
-    ) VALUES (?, 'git_bug_short', ?, ?, ?, 'git_bug', 1, 1)`,
-  ).run(issueId, projectId, alias, alias);
-  return issueId;
+  const projectId = insertRawLedgerProject(db, {
+    name: projectName,
+    projectKey: projectName,
+    remoteIdentity: "",
+    upstreamIdentity: "",
+    namespacePolicy: "remote",
+  });
+  insertRawLedgerCheckout(db, {
+    projectId,
+    name: projectName,
+    root: `/tmp/${projectName}`,
+    defaultBranch: "main",
+    remoteUrl: "",
+  });
+  return insertRawLedgerIssue(db, {
+    id: `${alias}_${projectName}`,
+    projectId,
+    shortId: alias,
+    title,
+    body: "",
+    kind: "feature",
+    priority: "normal",
+    authorActorType: "agent",
+    authorDisplay: "Codex",
+    source: "mandible",
+    alias: { alias },
+  });
 }
 
 function createLedgerCheckout(repoId: string, root: string, options: {

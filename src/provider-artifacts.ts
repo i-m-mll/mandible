@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { Db } from "./db.js";
 import { columnExists, tableExists } from "./db-introspection.js";
+import { mediaTypeForPath } from "./artifact-media-type.js";
 import {
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
@@ -1832,36 +1833,6 @@ function repoInfoForRoot(db: Db, root: string): { repo_id: string | null; name: 
   const canonical = resolveCanonicalArtifactRepoForRoot(db, realRoot);
   if (canonical.ok) return { repo_id: canonical.project_key, name: canonical.checkout_name };
   return { repo_id: null, name: null };
-}
-
-function mediaTypeForPath(filePath: string): string {
-  switch (path.extname(filePath).toLowerCase()) {
-    case ".csv":
-      return "text/csv";
-    case ".htm":
-    case ".html":
-      return "text/html";
-    case ".json":
-    case ".jsonl":
-      return "application/json";
-    case ".md":
-    case ".markdown":
-      return "text/markdown";
-    case ".pdf":
-      return "application/pdf";
-    case ".toml":
-      return "application/toml";
-    case ".tsv":
-      return "text/tab-separated-values";
-    case ".txt":
-    case ".log":
-      return "text/plain";
-    case ".yaml":
-    case ".yml":
-      return "application/yaml";
-    default:
-      return "application/octet-stream";
-  }
 }
 
 function classifyLocalArtifactPath(db: Db, filePath: string): ArtifactGitState {

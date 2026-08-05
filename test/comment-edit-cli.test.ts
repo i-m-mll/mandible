@@ -6,6 +6,8 @@ import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 import { Router } from "../src/server.js";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
@@ -63,24 +65,6 @@ function run(
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
-}
-
-function startFileRpcResponder(
-  spoolDir: string,
-  handler: (request: Record<string, unknown>) => { status: number; body: unknown },
-): NodeJS.Timeout {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  return setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
-      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
-      const response = handler(request);
-      fs.writeFileSync(path.join(spoolDir, `${id}.response.json`), JSON.stringify({ id, ...response }), "utf8");
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
 }
 
 function listen(opts: { staleConflict?: boolean } = {}): Promise<number> {
@@ -274,7 +258,7 @@ describe("comment edit CLI", () => {
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
 
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       if (request.method === "PATCH" && request.path === "/api/ledger/comments/raw-comment-id") {
         return { status: 200, body: editedIssue };
@@ -291,7 +275,7 @@ describe("comment edit CLI", () => {
       expect(result.status).toBe(0);
       expect(seen.some((r) => r.method === "PATCH" && r.path === "/api/ledger/comments/raw-comment-id")).toBe(true);
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 });
