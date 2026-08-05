@@ -587,6 +587,140 @@ export function registerSessionRoutes(
     });
   }, { fileRpc: "deny" });
 
+  // Issue 037fa85 (follow-up) — provider-scoped overview for a Codex session
+  // Mandible knows only through ingestion (a conversations row keyed on the
+  // provider UUID) with no sessions row. Mirrors the /:id/overview shape so the
+  // UI can render the same sections; session-row-dependent sections are marked
+  // unavailable with explicit reasons. Read-only: rendering this view never
+  // creates a session row — registration is a separate deliberate POST.
+  server.get("/api/sessions/overview/by-provider", (req, res) => {
+    const query = req.query ?? {};
+    const provider = (query.provider ?? "").trim();
+    const providerSessionId = (query.provider_session_id ?? "").trim();
+    if (provider !== "codex") {
+      sendJson(res, 400, { error: "Unsupported provider — expected provider=codex" });
+      return;
+    }
+    if (!providerSessionId) {
+      sendJson(res, 400, { error: "Missing provider_session_id" });
+      return;
+    }
+
+    const db = getDb();
+    const asOf = Date.now();
+
+    // Same alias set the resolver and the bound overview use: the provider
+    // UUID itself plus any console-session ids that alias it. (A bindable
+    // mandible session id would normally route the client to /:id/overview
+    // instead, but including it keeps this endpoint honest either way.)
+    const aliases = new Set<string>([providerSessionId]);
+    for (const match of resolveCodexSessionMatches(providerSessionId)) {
+      if (match.console_session_id) aliases.add(match.console_session_id);
+      if (match.mandible_session_id) aliases.add(match.mandible_session_id);
+    }
+    const aliasList = Array.from(aliases);
+    const aliasPlaceholders = aliasList.map(() => "?").join(", ");
+
+    const workUnits = db.prepare(`
+      SELECT id, issue_id, ledger_issue_id, repo_id, branch, parent_branch, kind,
+             state, assigned_session_id, provider, provider_session_id,
+             created_at, activated_at, last_commit_at, resolved_at, auth_request_id
+      FROM work_units
+      WHERE provider_session_id IN (${aliasPlaceholders})
+         OR assigned_session_id IN (${aliasPlaceholders})
+      ORDER BY created_at DESC
+    `).all(...aliasList, ...aliasList) as Array<
+      { id: string; issue_id: string; ledger_issue_id: string | null; repo_id: string } & Record<string, unknown>
+    >;
+
+    // Linked issues derived from the matched work units' issue refs. Without a
+    // session row there are no ledger_session_issue_links, so this derivation
+    // (and its provenance note) is the honest best available.
+    const issueWorkUnits = new Map<string, string[]>();
+    for (const unit of workUnits) {
+      let ledgerId = unit.ledger_issue_id;
+      if (!ledgerId && unit.issue_id) {
+        try {
+          const resolved = resolveOperationalIssueRef(db, unit.issue_id, unit.repo_id);
+          if (resolved.ok) ledgerId = resolved.issue_id;
+        } catch {
+          // Derivation convenience only — an unresolvable ref just drops out.
+        }
+      }
+      if (!ledgerId) continue;
+      const list = issueWorkUnits.get(ledgerId) ?? [];
+      list.push(unit.id);
+      issueWorkUnits.set(ledgerId, list);
+    }
+    let linkedIssueItems: Array<Record<string, unknown>> = [];
+    if (issueWorkUnits.size > 0) {
+      const issueIds = Array.from(issueWorkUnits.keys());
+      const issuePlaceholders = issueIds.map(() => "?").join(", ");
+      const rows = db.prepare(`
+        SELECT id, short_id, title, status, worker_status, kind, updated_at
+        FROM ledger_issues
+        WHERE id IN (${issuePlaceholders})
+        ORDER BY updated_at DESC
+      `).all(...issueIds) as Array<Record<string, unknown>>;
+      linkedIssueItems = rows.map((row) => ({
+        issue_id: row.id,
+        short_id: row.short_id,
+        title: row.title,
+        status: row.status,
+        worker_status: row.worker_status,
+        kind: row.kind,
+        work_unit_ids: issueWorkUnits.get(String(row.id)) ?? [],
+      }));
+    }
+
+    const conversations = db.prepare(`
+      SELECT id, source, title, session_id, started_at, ended_at, block_count,
+             model, branch, cwd, updated_at
+      FROM conversations
+      WHERE session_id IN (${aliasPlaceholders})
+      ORDER BY started_at DESC
+      LIMIT ${OVERVIEW_CONVERSATIONS_LIMIT}
+    `).all(...aliasList) as Array<Record<string, unknown>>;
+
+    sendJson(res, 200, {
+      as_of: asOf,
+      binding: {
+        kind: "provider-scoped",
+        provider: "codex",
+        provider_session_id: providerSessionId,
+      },
+      session: {
+        available: false,
+        reason: "no Mandible session row for this provider session id",
+      },
+      children: {
+        available: false,
+        reason: "child-session tracking requires a Mandible session row",
+        items: [],
+        truncated: false,
+        depth_limit: OVERVIEW_DESCENDANT_DEPTH_LIMIT,
+        count_limit: OVERVIEW_DESCENDANT_COUNT_LIMIT,
+      },
+      linked_issues: {
+        available: true,
+        source: "work_units",
+        note: "derived from provider-matched work units; ledger_session_issue_links requires a Mandible session row",
+        items: linkedIssueItems,
+      },
+      work_units: {
+        available: true,
+        includes_descendants: false,
+        matched_provider_aliases: aliasList,
+        items: workUnits,
+      },
+      conversations: {
+        available: true,
+        limit: OVERVIEW_CONVERSATIONS_LIMIT,
+        items: conversations,
+      },
+    });
+  }, { fileRpc: "deny" });
+
   server.get("/api/sessions/by-pid/:pid", (req, res) => {
     const pidStr = req.params.pid;
     const pid = Number(pidStr);
