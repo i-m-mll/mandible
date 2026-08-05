@@ -4,6 +4,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let tempRoots: string[] = [];
@@ -34,25 +36,6 @@ function run(
       resolve({ status, stdout, stderr });
     });
   });
-}
-
-function startFileRpcResponder(
-  spoolDir: string,
-  handler: (request: Record<string, unknown>) => { status: number; body: unknown },
-): NodeJS.Timeout {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
-      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
-      const response = handler(request);
-      fs.writeFileSync(path.join(spoolDir, `${id}.response.json`), JSON.stringify({ id, ...response }), "utf8");
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
-  return timer;
 }
 
 afterEach(() => {
@@ -93,7 +76,7 @@ describe("conversations CLI file RPC", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-file-rpc-"));
     tempRoots.push(spoolDir);
     const seenPaths: string[] = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       const requestPath = String(request.path ?? "");
       seenPaths.push(requestPath);
       if (requestPath.startsWith("/api/conversations?")) {
@@ -120,7 +103,7 @@ describe("conversations CLI file RPC", () => {
       expect(seenPaths.some((item) => item.startsWith("/api/conversations?"))).toBe(true);
       expect(seenPaths.some((item) => item.startsWith("/api/conversations/conv-1/blocks"))).toBe(true);
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -129,7 +112,7 @@ describe("conversations CLI file RPC", () => {
     tempRoots.push(spoolDir);
     const seenPaths: string[] = [];
     const laterBlock = { ...block, id: "block-501", position: 501, content: "Later block" };
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       const requestPath = String(request.path ?? "");
       seenPaths.push(requestPath);
       if (requestPath.startsWith("/api/conversations?")) {
@@ -167,7 +150,7 @@ describe("conversations CLI file RPC", () => {
       expect(result.stderr).toContain("--offset 501");
       expect(seenPaths).toContain("/api/conversations/conv-1/blocks?limit=999&offset=500");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -190,7 +173,7 @@ describe("conversations CLI file RPC", () => {
     tempRoots.push(spoolDir);
     const seenPaths: string[] = [];
     const laterBlock = { ...block, id: "block-251", position: 251, content: "Later log block" };
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       const requestPath = String(request.path ?? "");
       seenPaths.push(requestPath);
       if (requestPath.startsWith("/api/conversations?")) {
@@ -227,7 +210,7 @@ describe("conversations CLI file RPC", () => {
       expect(result.stderr).toContain("--offset 251");
       expect(seenPaths).toContain("/api/conversations/conv-1/blocks?limit=50&offset=250");
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
@@ -235,7 +218,7 @@ describe("conversations CLI file RPC", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-conversations-search-file-rpc-"));
     tempRoots.push(spoolDir);
     const seenPaths: string[] = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       const requestPath = String(request.path ?? "");
       seenPaths.push(requestPath);
       if (requestPath.startsWith("/api/conversations/search?")) {
@@ -261,7 +244,7 @@ describe("conversations CLI file RPC", () => {
       expect(result.stdout).toContain("[codex] 2026-06-12 | \"Sandbox session\" | assistant: file RPC route is readable");
       expect(seenPaths.some((item) => item.startsWith("/api/conversations/search?"))).toBe(true);
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 });

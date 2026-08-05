@@ -4,6 +4,8 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 function run(
@@ -35,30 +37,6 @@ function run(
   });
 }
 
-function startFileRpcRecorder(spoolDir: string): { timer: NodeJS.Timeout; requests: Array<Record<string, unknown>> } {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const requests: Array<Record<string, unknown>> = [];
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
-      requests.push(request);
-      const id = String(request.id ?? file.replace(/\.request\.json$/, ""));
-      const body = request.method === "GET"
-        ? { actions: [{ id: "act1", ordinal: 1, kind: "comment_add", target_issue_ref: "abc", state: "staged" }] }
-        : { action: { id: "act1" }, action_id: "act1", deleted: true };
-      fs.writeFileSync(
-        path.join(spoolDir, `${id}.response.json`),
-        JSON.stringify({ id, status: 200, body }),
-        "utf8",
-      );
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
-  return { timer, requests };
-}
-
 let tempDirs: string[] = [];
 
 afterEach(() => {
@@ -71,7 +49,12 @@ describe("auth action CLI", () => {
   it("lists and mutates staged actions through file RPC", async () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-action-cli-"));
     tempDirs.push(spoolDir);
-    const recorder = startFileRpcRecorder(spoolDir);
+    const recorder = startFileRpcResponder(spoolDir, (request) => ({
+      status: 200,
+      body: request.method === "GET"
+        ? { actions: [{ id: "act1", ordinal: 1, kind: "comment_add", target_issue_ref: "abc", state: "staged" }] }
+        : { action: { id: "act1" }, action_id: "act1", deleted: true },
+    }));
     const env = {
       MANDIBLE_BASE: `file://${spoolDir}`,
       MANDIBLE_FILE_RPC_TIMEOUT: "5",
@@ -131,7 +114,7 @@ describe("auth action CLI", () => {
         payload: { label: "ready" },
       });
     } finally {
-      clearInterval(recorder.timer);
+      recorder.stop();
     }
   });
 });

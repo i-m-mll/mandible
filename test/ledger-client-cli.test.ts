@@ -5,6 +5,8 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { startFileRpcResponder } from "./helpers/file-rpc-responder.js";
+
 const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let server: http.Server | null = null;
@@ -81,25 +83,6 @@ function runBash(
       resolve({ status, stdout, stderr });
     });
   });
-}
-
-function startFileRpcResponder(
-  spoolDir: string,
-  handler: (request: Record<string, unknown>) => { status: number; body: unknown },
-): NodeJS.Timeout {
-  fs.mkdirSync(spoolDir, { recursive: true });
-  const timer = setInterval(() => {
-    for (const file of fs.readdirSync(spoolDir)) {
-      if (!file.endsWith(".request.json")) continue;
-      const requestPath = path.join(spoolDir, file);
-      const request = JSON.parse(fs.readFileSync(requestPath, "utf8")) as Record<string, unknown>;
-      const id = typeof request.id === "string" ? request.id : file.replace(/\.request\.json$/, "");
-      const response = handler(request);
-      fs.writeFileSync(path.join(spoolDir, `${id}.response.json`), JSON.stringify({ id, ...response }), "utf8");
-      fs.rmSync(requestPath, { force: true });
-    }
-  }, 10);
-  return timer;
 }
 
 function git(args: string[], cwd: string): void {
@@ -320,7 +303,7 @@ describe("ledger mechanism CLI client", () => {
     const spoolDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-ledger-client-rpc-"));
     tempRoots.push(spoolDir);
     const seen: Array<Record<string, unknown>> = [];
-    const timer = startFileRpcResponder(spoolDir, (request) => {
+    const responder = startFileRpcResponder(spoolDir, (request) => {
       seen.push(request);
       if (request.method === "GET") {
         return { status: 200, body: { work_units: [{ id: "wu-rpc", state: "open" }] } };
@@ -364,7 +347,7 @@ describe("ledger mechanism CLI client", () => {
         ambient_identity: { provider: "codex", provider_session_id: "thread-file-release" },
       });
     } finally {
-      clearInterval(timer);
+      responder.stop();
     }
   });
 
