@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { Db } from "./db.js";
 import { tableExists } from "./db-introspection.js";
+import { mediaTypeForPath } from "./artifact-media-type.js";
 import {
   resolveCanonicalArtifactRepoForRoot,
   resolveCanonicalArtifactRepoRef,
@@ -239,36 +240,6 @@ function inferRole(relativePath: string): string {
   if (lower.includes("report")) return "report";
   if (lower.includes("result") || lower.includes("metric") || lower.includes("eval")) return "result";
   return "document";
-}
-
-function mediaTypeForPath(filePath: string): string {
-  switch (path.extname(filePath).toLowerCase()) {
-    case ".csv":
-      return "text/csv";
-    case ".htm":
-    case ".html":
-      return "text/html";
-    case ".ipynb":
-      return "application/x-ipynb+json";
-    case ".json":
-    case ".jsonl":
-      return "application/json";
-    case ".md":
-      return "text/markdown";
-    case ".pdf":
-      return "application/pdf";
-    case ".toml":
-      return "application/toml";
-    case ".tsv":
-      return "text/tab-separated-values";
-    case ".txt":
-      return "text/plain";
-    case ".yaml":
-    case ".yml":
-      return "application/yaml";
-    default:
-      return "application/octet-stream";
-  }
 }
 
 function hashFile(filePath: string): string {
