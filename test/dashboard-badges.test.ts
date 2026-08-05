@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb } from "../src/db.js";
 import { readDashboardBadgeCounts, registerDashboardRoutes } from "../src/routes/dashboard.js";
@@ -8,7 +8,12 @@ import { Router } from "../src/server.js";
 describe("dashboard badge aggregate", () => {
   const db = new Database(":memory:");
   migrate(db);
-  setDb(db);
+
+  // Issue c4f456c: the singleton binding is dropped after every test, so it is
+  // installed per test rather than once for the whole describe block.
+  beforeEach(() => {
+    setDb(db);
+  });
 
   afterEach(() => {
     db.exec("DELETE FROM sessions; DELETE FROM auth_requests; DELETE FROM branches; DELETE FROM work_repos;");

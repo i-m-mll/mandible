@@ -181,17 +181,83 @@ export function applyColdStartTuning(db: Db): void {
 
 // --- Singleton accessor for partition code ---
 
+/**
+ * How the current singleton binding was installed.
+ * - `"opened"`: `getDb()` lazily opened the real database (the production path).
+ * - `"set"`: a caller injected a database with `setDb()` (in practice, a test).
+ */
+export type DbBindingSource = "opened" | "set";
+
+export interface DbBinding {
+  db: Db | null;
+  source: DbBindingSource | null;
+  /** Non-null when the singleton was reset and any further `getDb()` must fail. */
+  poisonReason: string | null;
+}
+
 let _db: Db | null = null;
+let _dbSource: DbBindingSource | null = null;
+let _dbPoisonReason: string | null = null;
 
 export function getDb(dbPath?: string): Db {
+  if (_dbPoisonReason) {
+    throw new Error(
+      `Mandible database singleton is unavailable: ${_dbPoisonReason}. ` +
+        "A test reached the database after its lifecycle scope ended. Install a database " +
+        "for this test with setDb()/withTestDb() instead of relying on a previous test's binding.",
+    );
+  }
   if (!_db) {
     _db = openDb(dbPath);
+    _dbSource = "opened";
   }
   return _db;
 }
 
 export function setDb(db: Db): void {
   _db = db;
+  _dbSource = "set";
+  _dbPoisonReason = null;
+}
+
+/** Read the current singleton binding without installing or opening anything. */
+export function inspectDbBinding(): DbBinding {
+  return { db: _db, source: _dbSource, poisonReason: _dbPoisonReason };
+}
+
+/**
+ * Test-only. Drop the singleton binding and, by default, leave a poisoned
+ * sentinel behind so a later `getDb()` fails loudly instead of silently
+ * opening the real database. `setDb()` clears the sentinel.
+ *
+ * This never closes the database — connection ownership stays with whoever
+ * created it.
+ */
+export function resetDb(
+  options: { reason?: string; poison?: boolean } = {},
+): { cleared: boolean; source: DbBindingSource | null } {
+  const cleared = _db !== null;
+  const source = _dbSource;
+  _db = null;
+  _dbSource = null;
+  _dbPoisonReason = options.poison === false
+    ? null
+    : options.reason ?? "the singleton was reset by the test harness";
+  return { cleared, source };
+}
+
+/**
+ * Test harness bridge. Vitest's setup file needs to reset the singleton after
+ * every test without importing this module (and its native SQLite binding)
+ * into test files that never touch a database. Publishing the hooks on
+ * `globalThis` under VITEST keeps that backstop free for pure UI test files.
+ */
+if (process.env.VITEST) {
+  (globalThis as Record<string, unknown>).__mandibleDbTestHooks = {
+    inspectDbBinding,
+    resetDb,
+    setDb,
+  };
 }
 
 function ensureDir(dir: string): void {
