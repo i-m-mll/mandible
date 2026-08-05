@@ -5,7 +5,12 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { evaluateInstanceMutation } from "../src/instance-policy.js";
+import {
+  evaluateInstanceMutation,
+  OPERATIONAL_MUTATION_EXEMPT_ROUTES,
+  OPERATIONAL_ROUTE_CATEGORIES,
+  UNSAFE_MUTATION_METHODS,
+} from "../src/instance-policy.js";
 import type { InstanceInfo } from "../src/types.js";
 
 type RecordedRequest = {
@@ -259,32 +264,28 @@ function authoritativeCategory(method: string, pathname: string): string | null 
   return typeof category === "string" ? category : null;
 }
 
-function readInstancePolicySource(): string {
-  return fs.readFileSync(path.join(process.cwd(), "src", "instance-policy.ts"), "utf8");
+// Issue 97cf613 exported these tables so both TypeScript gates share one copy;
+// the probe set reads them directly instead of scraping the module text, so a
+// rename or literal reshape is a compile error here rather than a silently
+// empty probe set. The drift-catching property is unchanged: probes still
+// enumerate every route family the authoritative tables declare, and every
+// answer is compared against evaluateInstanceMutation.
+function operationalPrefixes(): string[] {
+  return OPERATIONAL_ROUTE_CATEGORIES.map((route) => route.prefix);
 }
 
-function parseOperationalPrefixes(source: string): string[] {
-  const block = source.match(/OPERATIONAL_ROUTE_CATEGORIES[^=]*=\s*\[([\s\S]*?)\n\];/);
-  if (!block) {
-    return [];
-  }
-  return [...block[1].matchAll(/prefix:\s*"([^"]+)"/g)].map((match) => match[1]);
-}
-
-function parseSafeUnsafeExceptions(source: string): Array<{ method: string; path: string }> {
-  const block = source.match(/SAFE_UNSAFE_ROUTE_EXCEPTIONS[^=]*=\s*new Set\(\[([\s\S]*?)\]\)/);
-  if (!block) {
-    return [];
-  }
-  return [...block[1].matchAll(/"([A-Z]+) (\/[^"]+)"/g)]
-    .map((match) => ({ method: match[1], path: match[2] }));
+function exemptRoutes(): Array<{ method: string; path: string }> {
+  return [...OPERATIONAL_MUTATION_EXEMPT_ROUTES].map((entry) => {
+    const separator = entry.indexOf(" ");
+    return { method: entry.slice(0, separator), path: entry.slice(separator + 1) };
+  });
 }
 
 function buildCategoryProbes(
   prefixes: string[],
   exceptions: Array<{ method: string; path: string }>,
 ): Array<{ method: string; path: string }> {
-  const unsafeMethods = ["POST", "PUT", "PATCH", "DELETE"];
+  const unsafeMethods = [...UNSAFE_MUTATION_METHODS];
   const paths: string[] = [];
   for (const prefix of prefixes) {
     paths.push(prefix, `${prefix}/child`, `${prefix}/child/grandchild`);
@@ -562,11 +563,10 @@ describe("CLI instance mutation preflight", () => {
   // authoritative decision, so a future edit to one side without the other
   // fails here instead of silently gating (or silently exempting) a route.
   it("keeps the api.sh fallback category table in sync with instance-policy", async () => {
-    const source = readInstancePolicySource();
-    const prefixes = parseOperationalPrefixes(source);
-    const exceptions = parseSafeUnsafeExceptions(source);
-    // If either literal is refactored into a shape these patterns no longer
-    // read, fail loudly rather than comparing an empty probe set.
+    const prefixes = operationalPrefixes();
+    const exceptions = exemptRoutes();
+    // If either table is emptied or narrowed, fail loudly rather than
+    // comparing a degenerate probe set.
     expect(prefixes.length).toBeGreaterThanOrEqual(20);
     expect(exceptions.length).toBeGreaterThanOrEqual(2);
 
