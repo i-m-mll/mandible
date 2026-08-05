@@ -832,3 +832,18 @@ a {
 :root[data-theme='light'] .dialog-backdrop {
   background: var(--scrim-modal);
 }
+
+/* ── Screen reader only ──
+ * App-wide accessibility utility (LoadingSkeleton, timeline row labels).
+ * Moved here from presets.css when the Presets tab was retired. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}

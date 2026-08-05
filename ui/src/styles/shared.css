@@ -24,12 +24,6 @@
   font-size: 14px;
 }
 
-.text-warning {
-  color: var(--accent-yellow);
-  font-size: 12px;
-}
-
-.table-card,
 .repo-card,
 .auth-card {
   background: var(--bg-card);
@@ -39,7 +33,6 @@
   border: 1px solid var(--neutral-alpha-04);
 }
 
-.table-card table,
 .repo-card table {
   width: 100%;
   border-collapse: collapse;
@@ -57,135 +50,10 @@ tr:last-child td {
   border-bottom: none;
 }
 
-.cell-flex {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
 .cell-stack {
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-
-.cell-actions {
-  display: flex;
-  gap: 8px;
-}
-
-.status-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-
-.status-dot--green {
-  background: var(--accent-green);
-}
-
-.status-dot--yellow {
-  background: var(--accent-yellow);
-}
-
-.status-dot--red {
-  background: var(--accent-red);
-}
-
-.app-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  font-size: 12px;
-  font-weight: 600;
-  background: rgba(77, 163, 255, 0.2);
-  color: var(--accent-blue);
-}
-
-.app-badge--claude {
-  background: rgba(245, 194, 92, 0.2);
-  color: var(--accent-yellow);
-}
-
-.app-badge--codex {
-  background: rgba(50, 210, 150, 0.2);
-  color: var(--accent-green);
-}
-
-.row-dead {
-  opacity: 0.5;
-}
-
-.row-dead td {
-  color: var(--text-muted);
-}
-
-/* Reaped session: distinct from user-killed (strikethrough + muted purple) */
-.row-reaped {
-  opacity: 0.45;
-}
-
-.row-reaped td {
-  color: #b48ead;
-}
-
-/* Warning highlight for sessions approaching reap threshold */
-.row-reap-warning {
-  background: rgba(242, 107, 107, 0.06);
-}
-
-.row-reap-warning td .session-inactive--warning {
-  color: var(--accent-red);
-  font-weight: 600;
-}
-
-/* Reaped status dot: distinct purple */
-.status-dot--reaped {
-  background: #b48ead;
-}
-
-/* Inactive time display */
-.session-inactive {
-  font-size: 13px;
-  font-family: var(--font-mono);
-  color: var(--text-muted);
-}
-
-.session-inactive--warning {
-  color: var(--accent-red);
-  font-weight: 600;
-}
-
-/* Reaped badge (distinct from dead) */
-.session-reaped-badge {
-  display: inline-block;
-  background: rgba(180, 142, 173, 0.2);
-  color: #b48ead;
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
-
-@keyframes pulseRow {
-  0% {
-    box-shadow: inset 0 0 0 rgba(77, 163, 255, 0.6);
-  }
-  50% {
-    box-shadow: inset 0 0 12px rgba(77, 163, 255, 0.4);
-  }
-  100% {
-    box-shadow: inset 0 0 0 rgba(77, 163, 255, 0.6);
-  }
-}
-
-.row-new {
-  animation: pulseRow 2s ease-in-out 2;
 }
 
 .tree-toggle {
@@ -195,97 +63,6 @@ tr:last-child td {
   cursor: pointer;
   font-size: 14px;
   width: 18px;
-}
-
-.tree-toggle--empty {
-  cursor: default;
-}
-
-/* ── Session tree hierarchy connectors ── */
-
-.session-row > td:first-child {
-  position: relative;
-}
-
-.session-row--child > td:first-child {
-  padding-left: calc(var(--depth, 0) * 24px + 12px);
-}
-
-/* Vertical connector line: runs full height of the cell */
-.session-row--child > td:first-child::before {
-  content: '';
-  position: absolute;
-  left: calc((var(--depth, 1) - 1) * 24px + 16px);
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--neutral-alpha-08);
-}
-
-/* Horizontal connector line: branch from vertical to content */
-.session-row--child > td:first-child::after {
-  content: '';
-  position: absolute;
-  left: calc((var(--depth, 1) - 1) * 24px + 16px);
-  top: 50%;
-  width: 12px;
-  height: 1px;
-  background: var(--neutral-alpha-08);
-}
-
-/* Last child: vertical line stops at the horizontal connector */
-.session-row--last-child > td:first-child::before {
-  bottom: 50%;
-}
-
-/* Subtle left border for nested rows */
-.session-row--child {
-  background: var(--neutral-alpha-01);
-}
-
-/* Sub-agent count badge next to collapse toggle */
-.subagent-count {
-  font-size: 11px;
-  color: var(--text-muted);
-  margin-left: 2px;
-  white-space: nowrap;
-}
-
-/* ── Ended sessions collapsible section ── */
-
-.ended-section {
-  margin-top: 8px;
-  border-top: 1px solid var(--neutral-alpha-06);
-}
-
-.ended-section__header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  background: none;
-  border: none;
-  color: var(--text-muted);
-  font-family: var(--font-sans);
-  font-size: 14px;
-  padding: 12px 10px;
-  user-select: none;
-  transition: color 0.2s ease;
-  width: 100%;
-}
-
-.ended-section__header:hover {
-  color: var(--text-primary);
-}
-
-.ended-section__chevron {
-  display: inline-block;
-  transition: transform 0.2s ease;
-  font-size: 12px;
-}
-
-.ended-section__chevron--open {
-  transform: rotate(90deg);
 }
 
 .btn {
@@ -345,9 +122,6 @@ tr:last-child td {
 
 /* LIGHT-THEME OVERRIDE — candidate for token remap */
 :root[data-theme='light'] .channel-events-pane__card-json,
-:root[data-theme='light'] .session-event__payload,
-:root[data-theme='light'] .code-preview,
-:root[data-theme='light'] .diff-preview,
 :root[data-theme='light'] pre {
   background: var(--surface-code);
 }
