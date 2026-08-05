@@ -54,10 +54,12 @@ function insertConversation(input: {
   source?: string;
   title?: string;
   started_at?: string;
+  cwd?: string | null;
+  branch?: string | null;
 }): void {
   db.prepare(`
-    INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, session_id, block_count)
-    VALUES (?, ?, ?, 'hash', 0, ?, ?, ?, 3)
+    INSERT INTO conversations (id, source, source_path, source_hash, source_mtime, title, started_at, session_id, block_count, cwd, branch)
+    VALUES (?, ?, ?, 'hash', 0, ?, ?, ?, 3, ?, ?)
   `).run(
     input.id,
     input.source ?? "codex",
@@ -65,7 +67,24 @@ function insertConversation(input: {
     input.title ?? `conv ${input.id}`,
     input.started_at ?? "2026-08-01T10:00:00Z",
     input.session_id,
+    input.cwd ?? null,
+    input.branch ?? null,
   );
+}
+
+function insertLedgerIssue(input: {
+  issue_id: string;
+  title: string;
+  status?: string;
+}): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO ledger_projects (id, display_name, created_at, updated_at)
+    VALUES ('prj-test', 'Test Project', 1, 1)
+  `).run();
+  db.prepare(`
+    INSERT INTO ledger_issues (id, short_id, project_id, title, status, created_at, updated_at)
+    VALUES (?, ?, 'prj-test', ?, ?, 10, 10)
+  `).run(input.issue_id, input.issue_id.slice(0, 7), input.title, input.status ?? "open");
 }
 
 function insertLedgerIssueWithLink(input: {
@@ -93,17 +112,19 @@ function insertLedgerIssueWithLink(input: {
 function insertWorkUnit(input: {
   id: string;
   issue_id?: string;
+  ledger_issue_id?: string | null;
   assigned_session_id?: string | null;
   provider?: string | null;
   provider_session_id?: string | null;
   state?: string;
 }): void {
   db.prepare(`
-    INSERT INTO work_units (id, issue_id, repo_id, state, assigned_session_id, provider, provider_session_id, created_at)
-    VALUES (?, ?, 'mandible', ?, ?, ?, ?, 1000)
+    INSERT INTO work_units (id, issue_id, ledger_issue_id, repo_id, state, assigned_session_id, provider, provider_session_id, created_at)
+    VALUES (?, ?, ?, 'mandible', ?, ?, ?, ?, 1000)
   `).run(
     input.id,
     input.issue_id ?? "abc1234",
+    input.ledger_issue_id ?? null,
     input.state ?? "open",
     input.assigned_session_id ?? null,
     input.provider ?? null,
@@ -381,5 +402,181 @@ describe("GET /api/sessions/:id/overview", () => {
     const withParam = await getOverview("root-1", `?provider_session_id=${CODEX_UUID}`);
     const withIds = withParam.body.conversations.items.map((c: { id: string }) => c.id);
     expect(withIds).toEqual(["conv-codex", "conv-direct", "conv-provider"]);
+  });
+});
+
+// Issue 037fa85 (follow-up) — provider-scoped overview for a Codex session
+// with an ingested transcript but no sessions row.
+describe("GET /api/sessions/overview/by-provider", () => {
+  async function getByProvider(query: string): Promise<{ status: number; body: any }> {
+    const result = await router.invoke({
+      method: "GET",
+      url: `/api/sessions/overview/by-provider${query}`,
+    });
+    return { status: result.status, body: result.body };
+  }
+
+  it("rejects unsupported providers and missing provider_session_id", async () => {
+    expect((await getByProvider(`?provider_session_id=${CODEX_UUID}`)).status).toBe(400);
+    expect((await getByProvider(`?provider=claude&provider_session_id=${CODEX_UUID}`)).status).toBe(400);
+    expect((await getByProvider("?provider=codex")).status).toBe(400);
+  });
+
+  it("returns the provider-scoped shape with unavailable session/children sections", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { status, body } = await getByProvider(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    expect(status).toBe(200);
+    expect(typeof body.as_of).toBe("number");
+    expect(body.binding).toEqual({
+      kind: "provider-scoped",
+      provider: "codex",
+      provider_session_id: CODEX_UUID,
+    });
+    expect(body.session.available).toBe(false);
+    expect(body.session.reason).toContain("no Mandible session row");
+    expect(body.children.available).toBe(false);
+    expect(body.children.reason).toContain("session row");
+    expect(body.children.items).toEqual([]);
+    expect(body.linked_issues).toMatchObject({ available: true, source: "work_units", items: [] });
+    expect(body.linked_issues.note).toContain("ledger_session_issue_links");
+    expect(body.work_units).toMatchObject({ available: true, items: [] });
+    expect(body.work_units.matched_provider_aliases).toContain(CODEX_UUID);
+    expect(body.conversations.available).toBe(true);
+    expect(body.conversations.items.map((c: { id: string }) => c.id)).toEqual(["conv-1"]);
+  });
+
+  it("matches work units on provider id and console aliases and derives linked issues", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+    // Console session aliasing the codex UUID, without a mandible session.
+    insertConsoleSession({ id: "cs-alias", provider_session_id: CODEX_UUID });
+    insertLedgerIssue({ issue_id: "ledgerissue001", title: "Provider-scoped issue" });
+    insertWorkUnit({
+      id: "wu-provider",
+      provider: "codex",
+      provider_session_id: CODEX_UUID,
+      ledger_issue_id: "ledgerissue001",
+    });
+    insertWorkUnit({ id: "wu-console-alias", assigned_session_id: "cs-alias" });
+    insertWorkUnit({ id: "wu-unrelated", assigned_session_id: "someone-else" });
+
+    const { body } = await getByProvider(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    const ids = body.work_units.items.map((w: { id: string }) => w.id);
+    expect(ids).toEqual(expect.arrayContaining(["wu-provider", "wu-console-alias"]));
+    expect(ids).not.toContain("wu-unrelated");
+    expect(body.work_units.matched_provider_aliases).toEqual(
+      expect.arrayContaining([CODEX_UUID, "cs-alias"]),
+    );
+
+    const issueIds = body.linked_issues.items.map((i: { issue_id: string }) => i.issue_id);
+    expect(issueIds).toContain("ledgerissue001");
+    const derived = body.linked_issues.items.find(
+      (i: { issue_id: string }) => i.issue_id === "ledgerissue001",
+    );
+    expect(derived).toMatchObject({
+      short_id: "ledgeri",
+      title: "Provider-scoped issue",
+      status: "open",
+      work_unit_ids: ["wu-provider"],
+    });
+  });
+
+  it("derives linked issues through issue-ref resolution when ledger_issue_id is unset", async () => {
+    insertLedgerIssue({ issue_id: "deadbeef1234", title: "Ref-resolved issue" });
+    insertWorkUnit({
+      id: "wu-ref",
+      issue_id: "deadbee",
+      provider: "codex",
+      provider_session_id: CODEX_UUID,
+    });
+
+    const { body } = await getByProvider(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    const issueIds = body.linked_issues.items.map((i: { issue_id: string }) => i.issue_id);
+    expect(issueIds).toContain("deadbeef1234");
+  });
+
+  it("is read-only: it never creates a session row", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+    await getByProvider(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    const count = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+});
+
+// Issue 037fa85 (follow-up) — explicit registration upgrade path: a deliberate
+// POST to the existing registration surface creates the session row with the
+// provider linkage on sessions.conversation_id, after which the resolver
+// returns a bindable match for the same UUID.
+describe("provider session registration upgrade", () => {
+  const REGISTERED_ID = `codex-${CODEX_UUID}`;
+
+  async function registerViaRoute(): Promise<{ status: number; body: any }> {
+    // Exact payload shape the UI's "Register as Mandible session" action sends.
+    const result = await router.invoke({
+      method: "POST",
+      url: "/api/sessions/register",
+      body: {
+        id: REGISTERED_ID,
+        app: "codex",
+        conversation_id: CODEX_UUID,
+        cwd: "/tmp/repo",
+        branch: "feature/x",
+      },
+    });
+    return { status: result.status, body: result.body };
+  }
+
+  it("conversation-only resolution is unchanged before registration", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { body } = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      mandible_session_id: null,
+      console_session_id: null,
+      conversation_id: "conv-1",
+      sources: ["conversations"],
+    });
+  });
+
+  it("resolver returns a bindable match after registration", async () => {
+    insertConversation({
+      id: "conv-1",
+      session_id: CODEX_UUID,
+      source: "codex",
+      cwd: "/tmp/repo",
+      branch: "feature/x",
+    });
+
+    const { status, body: registered } = await registerViaRoute();
+    expect(status).toBe(200);
+    expect(registered.id).toBe(REGISTERED_ID);
+    expect(registered.app).toBe("codex");
+    expect(registered.cwd).toBe("/tmp/repo");
+    expect(registered.branch).toBe("feature/x");
+    expect(registered.conversation_id).toBe(CODEX_UUID);
+
+    const { body } = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      mandible_session_id: REGISTERED_ID,
+      conversation_id: "conv-1",
+    });
+    expect(body.matches[0].sources).toContain("sessions");
+  });
+
+  it("registration is idempotent and the bound overview picks up the codex conversation", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    await registerViaRoute();
+    await registerViaRoute();
+    const count = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    expect(count.n).toBe(1);
+
+    const { status, body } = await getOverview(REGISTERED_ID);
+    expect(status).toBe(200);
+    expect(body.session.id).toBe(REGISTERED_ID);
+    // conversations.session_id = codex UUID reached via sessions.conversation_id.
+    expect(body.conversations.items.map((c: { id: string }) => c.id)).toContain("conv-1");
   });
 });
