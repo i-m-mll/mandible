@@ -163,7 +163,7 @@ function parseArgs(argv) {
     else if (arg === "--report") parsed.report = argv[++i];
     else if (arg === "--backup") parsed.backup = argv[++i];
     else if (arg === "--help" || arg === "-h") {
-      console.log("Usage: node scripts/audit-ledger-issue-migration.mjs [--dry-run|--apply] [--db path] [--report path] [--backup path]");
+      console.log("Usage: node scripts/archive/audit-ledger-issue-migration.mjs [--dry-run|--apply] [--db path] [--report path] [--backup path]");
       process.exit(0);
     } else {
       die(`Unknown argument: ${arg}`);
