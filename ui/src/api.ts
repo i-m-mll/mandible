@@ -537,6 +537,117 @@ export async function getSessionsPage<T>(params?: {
   };
 }
 
+// Issue 037fa85 — Session Overview: provider-session alias resolution with
+// explicit zero/one/many semantics, and the aggregate per-session payload.
+export type SessionResolveMatch = {
+  mandible_session_id: string | null;
+  console_session_id: string | null;
+  conversation_id: string | null;
+  sources: string[];
+};
+
+export type SessionResolveResult = {
+  provider: string;
+  provider_session_id: string;
+  matches: SessionResolveMatch[];
+};
+
+export async function resolveProviderSession(
+  provider: string,
+  providerSessionId: string,
+): Promise<SessionResolveResult> {
+  const query = buildQuery({ provider, provider_session_id: providerSessionId });
+  const response = await apiGet(`/api/sessions/resolve${query}`);
+  return await response.json() as SessionResolveResult;
+}
+
+export type SessionOverviewSection<T> = {
+  available: boolean;
+  reason?: string;
+  items: T[];
+};
+
+export type SessionOverviewChild = {
+  id: string;
+  parent_id: string | null;
+  app: string;
+  status: string;
+  branch: string | null;
+  cwd: string | null;
+  task: string | null;
+  agent_type: string | null;
+  created_at: string;
+  ended_at: string | null;
+  last_active: string | null;
+  depth: number;
+};
+
+export type SessionOverviewLinkedIssue = {
+  issue_id: string;
+  short_id: string;
+  title: string;
+  status: string;
+  worker_status: string;
+  kind: string;
+  link_type: string;
+  source: string;
+  created_at: number;
+  last_seen_at: number | null;
+};
+
+export type SessionOverviewWorkUnit = {
+  id: string;
+  issue_id: string;
+  ledger_issue_id: string | null;
+  repo_id: string;
+  branch: string | null;
+  kind: string;
+  state: string;
+  assigned_session_id: string | null;
+  provider: string | null;
+  provider_session_id: string | null;
+  created_at: number;
+  resolved_at: number | null;
+};
+
+export type SessionOverviewConversation = {
+  id: string;
+  source: string;
+  title: string;
+  session_id: string;
+  started_at: string;
+  ended_at: string | null;
+  block_count: number;
+  model: string | null;
+  branch: string | null;
+  cwd: string | null;
+};
+
+export type SessionOverview = {
+  as_of: number;
+  session: Record<string, unknown>;
+  children: SessionOverviewSection<SessionOverviewChild> & {
+    truncated: boolean;
+    depth_limit: number;
+    count_limit: number;
+  };
+  linked_issues: SessionOverviewSection<SessionOverviewLinkedIssue> & { source: string };
+  work_units: SessionOverviewSection<SessionOverviewWorkUnit> & {
+    includes_descendants: boolean;
+    matched_provider_aliases: string[];
+  };
+  conversations: SessionOverviewSection<SessionOverviewConversation> & { limit: number };
+};
+
+export async function getSessionOverview(
+  sessionId: string,
+  providerSessionId?: string | null,
+): Promise<SessionOverview> {
+  const query = buildQuery({ provider_session_id: providerSessionId ?? undefined });
+  const response = await apiGet(`/api/sessions/${encodeURIComponent(sessionId)}/overview${query}`);
+  return await response.json() as SessionOverview;
+}
+
 export async function navigateSession(sessionId: string): Promise<void> {
   const path = `/api/sessions/${encodeURIComponent(sessionId)}/navigate`;
   const response = await fetch(path, {

@@ -95,7 +95,13 @@ import {
   TimelineIcon,
   LogsIcon,
   ProjectsIcon,
+  SessionOverviewIcon,
 } from './components/icons/TabIcons';
+import {
+  consumeCodexSessionFragment,
+  detectCodexIab,
+  getCodexPageBinding,
+} from './codex-page-binding';
 import { LoadingSkeleton } from './components/LoadingSkeleton';
 
 import '@xterm/xterm/css/xterm.css';
@@ -136,6 +142,7 @@ const APP_THEME_MODE_CYCLE: AppThemeMode[] = ['system', 'light', 'dark'];
 type RenderableTab = Exclude<Route['tab'], 'chat-history'>;
 
 const RENDERABLE_TABS: RenderableTab[] = [
+  'overview',
   'auth',
   'artifacts',
   'work',
@@ -171,6 +178,8 @@ const loadTimelineView = () =>
   import('./views/timeline').then((module) => ({ default: module.TimelineView }));
 const loadSpacesTab = () =>
   import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab }));
+const loadSessionOverviewView = () =>
+  import('./views/session-overview').then((module) => ({ default: module.SessionOverviewView }));
 
 const LazyAuthQueueView = lazy(loadAuthQueueView);
 const LazyArtifactsView = lazy(loadArtifactsView);
@@ -183,6 +192,7 @@ const LazyLogsView = lazy(loadLogsView);
 const LazyGraphView = lazy(loadGraphView);
 const LazyTimelineView = lazy(loadTimelineView);
 const LazySpacesTab = lazy(loadSpacesTab);
+const LazySessionOverviewView = lazy(loadSessionOverviewView);
 
 const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>> = {
   auth: loadAuthQueueView,
@@ -196,6 +206,7 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
   graph: loadGraphView,
   timeline: loadTimelineView,
   spaces: loadSpacesTab,
+  overview: loadSessionOverviewView,
 };
 
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
@@ -562,6 +573,12 @@ function App(): JSX.Element {
     window.location.reload();
   }, []);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
+  // Issue 037fa85 — page-local Codex IAB detection and binding, computed once
+  // per page load. The binding was consumed from the hash fragment at boot and
+  // lives only in this tab's memory (never localStorage): concurrent tabs from
+  // different Codex sessions must never share a binding. Display-only.
+  const [codexIabDetected] = useState<boolean>(() => detectCodexIab());
+  const [codexPageBinding] = useState<string | null>(() => getCodexPageBinding());
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
@@ -1616,7 +1633,21 @@ function App(): JSX.Element {
     }
   }, [navigateToHash]);
 
+  // Issue 037fa85 — first conditional nav item: the Session Overview shortcut
+  // appears only when the page runs inside a session-bound browser (Codex IAB
+  // WebMCP probe) or a page-local codex_session binding was delivered at boot.
+  // The view itself stays reachable for any session via #/overview deep links.
+  const sessionOverviewNavItem: NavItem = {
+    tab: 'overview',
+    href: '#/overview',
+    label: 'Session',
+    title: 'Session Overview',
+    icon: SessionOverviewIcon,
+  };
+  const showSessionOverviewNav = codexIabDetected || codexPageBinding !== null;
+
   const primaryNavItems: NavItem[] = [
+    ...(showSessionOverviewNav ? [sessionOverviewNavItem] : []),
     {
       tab: 'console',
       href: '#/console',
@@ -1734,7 +1765,7 @@ function App(): JSX.Element {
   };
 
   const currentRouteTitle = (
-    [...primaryNavItems, ...secondaryNavItems, {
+    [...primaryNavItems, ...secondaryNavItems, sessionOverviewNavItem, {
       tab: 'settings' as const,
       href: '#/settings',
       label: 'Settings',
@@ -2063,6 +2094,16 @@ function App(): JSX.Element {
             />
           );
         })())}
+        {renderTabPanel('overview', (() => {
+          const tabRoute = routeForTab('overview', route, tabRouteSnapshots);
+          return (
+            <LazySessionOverviewView
+              initialSessionId={tabRoute.params.session ?? null}
+              codexBinding={codexPageBinding}
+              iabDetected={codexIabDetected}
+            />
+          );
+        })())}
         {renderTabPanel('spaces', (() => {
           const tabRoute = routeForTab('spaces', route, tabRouteSnapshots);
           return (
@@ -2107,6 +2148,10 @@ if (mountNode) {
   // acquire one via the handshake before first render so operator mutations
   // authenticate (in strict mode too, using a token persisted during compat).
   installClientAuthFetch();
+  // Issue 037fa85 — consume and strip the page-local codex_session fragment
+  // before the initial route parse so it never leaks into route params,
+  // history, or shared URLs.
+  consumeCodexSessionFragment();
   const initialRoute = parseHashRoute();
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();

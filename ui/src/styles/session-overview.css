@@ -1,0 +1,221 @@
+/* Session Overview view — Issue 037fa85 */
+
+.session-overview {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.session-overview__header {
+  gap: 16px;
+  align-items: flex-start;
+}
+
+.session-overview__toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.session-overview__toolbar button {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--neutral-alpha-12);
+  border-radius: 4px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.session-overview__binding {
+  padding: 8px 12px;
+  border: 1px solid var(--neutral-alpha-12);
+  border-radius: 6px;
+  background: var(--neutral-alpha-06);
+  font-size: 13px;
+}
+
+.session-overview__binding code {
+  font-size: 12px;
+}
+
+.session-overview__body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.session-overview__section h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.session-overview__count {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.session-overview__facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.session-overview__facts dt {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.session-overview__facts dd {
+  margin: 2px 0 0;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.session-overview__facts-wide {
+  grid-column: 1 / -1;
+}
+
+.session-overview__path {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.session-overview__as-of {
+  margin: 8px 0 0;
+  font-size: 12px;
+}
+
+.session-overview__table-wrap {
+  overflow-x: auto;
+}
+
+.session-overview__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.session-overview__table th {
+  text-align: left;
+  padding: 4px 10px 4px 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--neutral-alpha-12);
+}
+
+.session-overview__table td {
+  padding: 6px 10px 6px 0;
+  border-bottom: 1px solid var(--neutral-alpha-06);
+  vertical-align: top;
+}
+
+.session-overview__cell-grow {
+  width: 40%;
+  overflow-wrap: anywhere;
+}
+
+.session-overview-badge {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--neutral-alpha-12);
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+.session-overview-badge--active,
+.session-overview-badge--open {
+  color: var(--accent-success, #2da44e);
+  border-color: currentColor;
+}
+
+.session-overview-badge--resolved,
+.session-overview-badge--closed,
+.session-overview-badge--ended {
+  color: var(--text-muted);
+}
+
+.session-overview-badge--dead,
+.session-overview-badge--abandoned {
+  color: var(--accent-danger, #cf222e);
+  border-color: currentColor;
+}
+
+.session-overview__unavailable {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.session-overview__error {
+  color: var(--accent-danger, #cf222e);
+}
+
+.session-overview__picker {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-width: 720px;
+}
+
+.session-overview__picker button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--neutral-alpha-06);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.session-overview__picker button:hover:not(:disabled) {
+  border-color: var(--neutral-alpha-12);
+  background: var(--neutral-alpha-06);
+}
+
+.session-overview__picker button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.session-overview__picker-id {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+}
+
+.session-overview__picker-app {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.session-overview__picker-task {
+  color: var(--text-muted);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
