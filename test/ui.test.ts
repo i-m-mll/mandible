@@ -27,10 +27,15 @@ import {
   routeHashFromMandibleDeepLink,
 } from '../ui/src/deep-links';
 import {
+  __resetAgentPageBindingForTests,
+  getAgentPageBinding,
+} from '../ui/src/agent-page-binding';
+import {
   hashWithViewSidebarHidden,
   hashWithViewSidebarVisible,
   isViewSidebarHidden,
   parseRouteFromHash,
+  shortRouteId,
 } from '../ui/src/routing';
 import {
   AppShellProvider,
@@ -444,6 +449,41 @@ describe('App routing', () => {
     ).toBe('#/artifacts?series=artifact-series%3Areport');
   });
 
+  // Issue f59b5bd — deep links compose: extra params (notably agent_session)
+  // carry through into the hash route, but route-owned params always win.
+  it('carries extra query params through mandible deep links', () => {
+    expect(
+      routeHashFromMandibleDeepLink('mandible:///auth?request=abc&agent_session=0198c0de'),
+    ).toBe('#/auth?request=abc&agent_session=0198c0de');
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///issues?repo=mandible&issue=dfc924a&agent_session=0198c0de',
+      ),
+    ).toBe('#/issues?issue=dfc924a&repo=mandible&agent_session=0198c0de');
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///artifacts?ref=artifact-blob%3Aabc&agent_session=0198c0de',
+      ),
+    ).toBe('#/artifacts?ref=artifact-blob%3Aabc&agent_session=0198c0de');
+    // The artifact normalizer's dropped identity params stay dropped.
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///artifacts?series=artifact-series%3Areport&version=oops&agent_session=0198c0de',
+      ),
+    ).toBe('#/artifacts?series=artifact-series%3Areport&agent_session=0198c0de');
+  });
+
+  // Issue f59b5bd — deterministically emitted links shorten full UUIDs to the
+  // 8-char short form; anything else passes through untouched.
+  it('shortens only full UUIDs in shortRouteId', () => {
+    expect(shortRouteId('e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe('e4c52737');
+    expect(shortRouteId('e4c52737')).toBe('e4c52737');
+    expect(shortRouteId('req-active-1')).toBe('req-active-1');
+    expect(shortRouteId('codex-e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe(
+      'codex-e4c52737-40e4-472a-8367-fbdbe97801a2',
+    );
+  });
+
   it('navigates only for supported mandible deep links', () => {
     const navigate = vi.fn();
 
@@ -452,6 +492,42 @@ describe('App routing', () => {
 
     expect(navigateToMandibleDeepLink('mandible:///issues', navigate)).toBe(false);
     expect(navigate).toHaveBeenCalledTimes(1);
+  });
+
+  // Review R1 (issue f59b5bd) — the Tauri handoff (getCurrent()/onOpenUrl())
+  // arrives after boot consumption: navigateToMandibleDeepLink must adopt the
+  // agent_session binding (replace semantics) and strip it from the routed
+  // hash exactly like boot consumption.
+  it('adopts and strips agent_session from Tauri deep-link navigation after boot', () => {
+    __resetAgentPageBindingForTests();
+    try {
+      const navigate = vi.fn();
+
+      expect(
+        navigateToMandibleDeepLink(
+          'mandible:///auth?request=e4c52737&agent_session=0198c0de',
+          navigate,
+        ),
+      ).toBe(true);
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=e4c52737');
+      expect(getAgentPageBinding()).toBe('0198c0de');
+
+      // A later deep link's binding replaces the current one (display-only).
+      expect(
+        navigateToMandibleDeepLink(
+          'mandible:///issues?issue=dfc924a&agent_session=aaaabbbb',
+          navigate,
+        ),
+      ).toBe(true);
+      expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a');
+      expect(getAgentPageBinding()).toBe('aaaabbbb');
+
+      // A deep link without the param never clears the binding.
+      expect(navigateToMandibleDeepLink('mandible:///issues?issue=dfc924a', navigate)).toBe(true);
+      expect(getAgentPageBinding()).toBe('aaaabbbb');
+    } finally {
+      __resetAgentPageBindingForTests();
+    }
   });
 
   it('enables Tauri deep-link APIs for the daemon-served loopback dashboard', () => {
@@ -496,6 +572,36 @@ describe('App routing', () => {
 
     removeListener();
     expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  // Review R1 (issue f59b5bd) — agent_session adoption works on BOTH Tauri
+  // handoff paths: the cold-start getCurrent() read and the warm onOpenUrl()
+  // listener, each stripping the param from the routed hash.
+  it('adopts agent_session bindings from both cold and warm Tauri handoff paths', async () => {
+    __resetAgentPageBindingForTests();
+    try {
+      let warmHandler: ((urls: string[]) => void) | undefined;
+      const onOpenUrl = vi.fn(async (handler: (urls: string[]) => void) => {
+        warmHandler = handler;
+        return () => undefined;
+      });
+      const getCurrent = vi.fn(async () => [
+        'mandible:///auth?request=cold-req&agent_session=cold-binding',
+      ]);
+      (window as Window & { __TAURI__?: unknown }).__TAURI__ = {};
+
+      const navigate = vi.fn();
+      await installTauriDeepLinkHandler(navigate, { getCurrent, onOpenUrl });
+
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=cold-req');
+      expect(getAgentPageBinding()).toBe('cold-binding');
+
+      warmHandler?.(['mandible:///auth?request=warm-req&agent_session=warm-binding']);
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=warm-req');
+      expect(getAgentPageBinding()).toBe('warm-binding');
+    } finally {
+      __resetAgentPageBindingForTests();
+    }
   });
 });
 

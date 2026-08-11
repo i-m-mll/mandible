@@ -14,6 +14,7 @@ import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerIssueDetail } from '../components/ledger/IssueDetail';
 import { SidebarSearchFilterHeader } from '../components/shared/SidebarSearchFilterHeader';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
+import { shortRouteId } from '../routing';
 import { renderInlineMarkdown } from '../lib/markdown';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
 import { useSidebarListNavigation } from '../hooks/useSidebarListNavigation';
@@ -943,7 +944,8 @@ export function IssuesView({
       return;
     }
     if (type === 'auth_request') {
-      window.location.hash = `#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`;
+      // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
+      window.location.hash = `#/auth?request=${encodeURIComponent(shortRouteId(id.replace(/^auth_request:/, '')))}`;
     }
   }, [selectedRepoId, selectIssue]);
 

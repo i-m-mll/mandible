@@ -44,6 +44,69 @@ describe("redirect routes", () => {
     expect(String(artifact.body)).toContain("mandible:///artifacts?ref=abcdef123456");
   });
 
+  // Issue f59b5bd (review R2) — inbound refs pass through untouched: /r/ never
+  // discards a caller's full UUID, so an 8-char collision stays
+  // disambiguatable via /r/. Shortening happens only at emission sites.
+  it("preserves a caller-supplied full auth-request UUID", async () => {
+    const router = new Router();
+    registerRedirectRoutes(router);
+
+    const auth = await router.invoke({
+      method: "GET",
+      url: "/r/auth/e4c52737-40e4-472a-8367-fbdbe97801a2",
+    });
+
+    expect(String(auth.body)).toContain(
+      "mandible:///auth?request=e4c52737-40e4-472a-8367-fbdbe97801a2",
+    );
+  });
+
+  // Issue f59b5bd — /r/ redirects preserve extra query params (notably
+  // agent_session) so session-bound links compose.
+  it("carries extra query params through auth and artifact redirects", async () => {
+    const router = new Router();
+    registerRedirectRoutes(router);
+
+    const auth = await router.invoke({
+      method: "GET",
+      url: "/r/auth/auth-1?agent_session=0198c0de&sidebar=hidden",
+    });
+    const artifact = await router.invoke({
+      method: "GET",
+      url: "/r/artifact/abcdef123456?agent_session=0198c0de",
+    });
+
+    const authBody = String(auth.body);
+    expect(authBody).toContain("mandible:///auth?");
+    expect(authBody).toContain("agent_session=0198c0de");
+    expect(authBody).toContain("sidebar=hidden");
+    expect(authBody).toContain("request=auth-1");
+    expect(String(artifact.body)).toContain("agent_session=0198c0de");
+    expect(String(artifact.body)).toContain("ref=abcdef123456");
+  });
+
+  it("carries extra query params through issue redirects and keeps its own params authoritative", async () => {
+    const router = new Router();
+    registerRedirectRoutes(router, {
+      resolveIssueLink: () => ({
+        ok: true,
+        repoId: "mandible",
+        issueId: "089fe42",
+      }),
+    });
+
+    const response = await router.invoke({
+      method: "GET",
+      url: "/r/issue/089fe42?agent_session=0198c0de&issue=spoofed&repo=spoofed",
+    });
+
+    const body = String(response.body);
+    expect(body).toContain("agent_session=0198c0de");
+    expect(body).toContain("repo=mandible");
+    expect(body).toContain("issue=089fe42");
+    expect(body).not.toContain("spoofed");
+  });
+
   it("URL-encodes deep-link targets and escapes fallback HTML", async () => {
     const router = new Router();
     registerRedirectRoutes(router, {

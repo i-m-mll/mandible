@@ -17,6 +17,7 @@ import {
 } from '../../api';
 import { LedgerIssueDetail } from '../../components/ledger/IssueDetail';
 import { parseResourceRef, type ParsedResourceRef } from '../../resource-refs';
+import { shortRouteId } from '../../routing';
 import { ArtifactDetail } from '../artifacts';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import { detailRequestKey } from '../../detail-cache';
@@ -86,7 +87,7 @@ export function IssueReferenceDetail({ issueRef }: { issueRef: string }): JSX.El
           if (repoId) params.set('repo', repoId);
           window.location.hash = `#/issues?${params.toString()}`;
         } else if (type === 'auth_request') {
-          window.location.hash = `#/auth?request=${encodeURIComponent(id)}`;
+          window.location.hash = `#/auth?request=${encodeURIComponent(shortRouteId(id))}`;
         } else if (type === 'session') {
           window.location.hash = `#/console?session=${encodeURIComponent(id)}`;
         }

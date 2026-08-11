@@ -114,38 +114,187 @@ function ledgerIssueStatusForSessionLink(repoId: string, issueId: string): "open
   return row?.status === "closed" ? "closed" : row?.status === "open" ? "open" : null;
 }
 
-// Issue 037fa85 — provider-session alias resolution for the Session Overview
-// view. One provider UUID (e.g. a Codex thread id) may surface in several
-// stores: console_sessions (id / provider_session_id / mandible_session_id),
-// the sessions registry (id / conversation_id), and the normalized
-// conversations index (conversations.session_id holds the Codex rollout UUID
-// for source='codex' rows). The resolver reports every distinct match with
-// explicit zero/one/many semantics; it never silently picks among candidates.
+// Issue 037fa85 / f59b5bd — provider-neutral session alias resolution for the
+// Session Overview view. One provider session UUID (a Codex thread id, a
+// Claude Code session id, ...) may surface in several stores: console_sessions
+// (id / provider_session_id / mandible_session_id), the sessions registry
+// (id / conversation_id), and the normalized conversations index
+// (conversations.session_id holds the provider-native session UUID). The
+// resolver reports every distinct match with explicit zero/one/many semantics;
+// it never silently picks among candidates. Refs may be full identifiers or
+// short prefixes (min 8 chars); a prefix matching multiple distinct
+// identities yields one match per identity, keyed by (provider, matched_ref).
 export type SessionResolveMatch = {
+  // The full identity string the (possibly short) ref resolved to. Clients
+  // must use this — not the raw ref — for follow-up provider-scoped calls.
+  matched_ref: string;
+  // Provider derived from the identity's ingested conversations rows via the
+  // canonical provider↔conversations.source mapping. null means no ingested
+  // transcript attests a provider (or several providers claim the same ref).
+  provider: string | null;
   mandible_session_id: string | null;
   console_session_id: string | null;
   conversation_id: string | null;
   sources: string[];
 };
 
-export function resolveCodexSessionMatches(ref: string): SessionResolveMatch[] {
+export type SessionResolveResult = {
+  matches: SessionResolveMatch[];
+  // True when a prefix scan hit a candidate cap: additional identities may
+  // exist, so a single returned match must NOT be treated as unique.
+  truncated: boolean;
+};
+
+// Issue f59b5bd (review C2/C3) — the one canonical provider↔conversations.source
+// vocabulary mapping. `provider` is the client-facing vocabulary (codex,
+// claude, gemini); conversations.source is the ingestion vocabulary
+// (codex, claude_code, gemini). Every store narrowing and every provider
+// derivation goes through this mapping.
+export const PROVIDER_TO_CONVERSATION_SOURCE: Record<string, string> = {
+  codex: "codex",
+  claude: "claude_code",
+  gemini: "gemini",
+};
+export const CONVERSATION_SOURCE_TO_PROVIDER: Record<string, string> = Object.fromEntries(
+  Object.entries(PROVIDER_TO_CONVERSATION_SOURCE).map(([provider, source]) => [source, provider]),
+);
+
+// Minimum prefix length for expansion, matching the 8-char short-ID
+// convention. Shorter refs still resolve by exact match (console session ids
+// can legitimately be short strings) but are never expanded, so a degenerate
+// 1-char "prefix" cannot fan out across the whole identity space.
+export const AGENT_SESSION_MIN_PREFIX_LENGTH = 8;
+const PREFIX_CANDIDATE_LIMIT = 20;
+// Review C5 — full-identity detection goes by UUID shape, not length: a
+// 36-char ref that is not a UUID can still be a prefix of a longer id.
+const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function escapeLikePrefix(prefix: string): string {
+  return prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+// Expand a short ref into the full identity strings it prefixes across the
+// identity spaces. Indexed prefix range scans: conversations.session_id
+// (idx_conv_session), sessions.id (PK), sessions.conversation_id
+// (idx_sessions_conversation_id), console_sessions.id (PK). The two console
+// alias columns are unindexed, matching the existing exact-match predicate on
+// that small table (same access pattern src/routes/hooks.ts already uses).
+// Review C4 — every scan fetches one row past the candidate cap; hitting the
+// cap sets `truncated`, so a capped scan can never masquerade as exhaustive
+// and hide a second distinct identity behind a false unique.
+function expandAgentSessionRefPrefix(
+  ref: string,
+  provider?: string,
+): { candidates: string[]; truncated: boolean } {
+  if (ref.length < AGENT_SESSION_MIN_PREFIX_LENGTH || FULL_UUID_RE.test(ref)) {
+    return { candidates: [], truncated: false };
+  }
+  const db = getDb();
+  const like = `${escapeLikePrefix(ref)}%`;
+  const fetchLimit = PREFIX_CANDIDATE_LIMIT + 1;
+  const candidates = new Set<string>();
+  let truncated = false;
+  const collect = (rows: Array<Record<string, unknown>>, column: string): void => {
+    if (rows.length > PREFIX_CANDIDATE_LIMIT) truncated = true;
+    for (const row of rows) {
+      const value = row[column];
+      if (typeof value === "string" && value && value !== ref) candidates.add(value);
+    }
+  };
+
+  const source = provider ? PROVIDER_TO_CONVERSATION_SOURCE[provider] : undefined;
+  if (provider) {
+    // Review C3 — narrowing uses the canonical source vocabulary; an unmapped
+    // provider matches nothing rather than silently matching everything.
+    collect(source
+      ? db.prepare(`
+          SELECT DISTINCT session_id FROM conversations
+          WHERE session_id LIKE ? ESCAPE '\\' AND source = ?
+          LIMIT ${fetchLimit}
+        `).all(like, source) as Array<Record<string, unknown>>
+      : [], "session_id");
+  } else {
+    collect(db.prepare(`
+      SELECT DISTINCT session_id FROM conversations
+      WHERE session_id LIKE ? ESCAPE '\\'
+      LIMIT ${fetchLimit}
+    `).all(like) as Array<Record<string, unknown>>, "session_id");
+  }
+  collect(db.prepare(`
+    SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' LIMIT ${fetchLimit}
+  `).all(like) as Array<Record<string, unknown>>, "id");
+  collect(db.prepare(`
+    SELECT DISTINCT conversation_id FROM sessions
+    WHERE conversation_id LIKE ? ESCAPE '\\'
+    LIMIT ${fetchLimit}
+  `).all(like) as Array<Record<string, unknown>>, "conversation_id");
+  const consoleRows = db.prepare(`
+    SELECT id, provider_session_id, mandible_session_id
+    FROM console_sessions
+    WHERE id LIKE ? ESCAPE '\\'
+       OR provider_session_id LIKE ? ESCAPE '\\'
+       OR mandible_session_id LIKE ? ESCAPE '\\'
+    LIMIT ${fetchLimit}
+  `).all(like, like, like) as Array<{
+    id: string;
+    provider_session_id: string | null;
+    mandible_session_id: string | null;
+  }>;
+  if (consoleRows.length > PREFIX_CANDIDATE_LIMIT) truncated = true;
+  for (const row of consoleRows) {
+    for (const value of [row.id, row.provider_session_id, row.mandible_session_id]) {
+      if (value && value !== ref && value.startsWith(ref)) candidates.add(value);
+    }
+  }
+
+  return { candidates: Array.from(candidates), truncated };
+}
+
+function resolveExactAgentSessionMatches(ref: string, provider?: string): SessionResolveMatch[] {
   const db = getDb();
 
-  // conversations.session_id holds the Codex rollout UUID for source='codex'.
-  const conversationRow = db.prepare(`
-    SELECT id
-    FROM conversations
-    WHERE session_id = ? AND source = 'codex'
-    ORDER BY updated_at DESC
-    LIMIT 1
-  `).get(ref) as { id: string } | undefined;
-  const conversationId = conversationRow?.id ?? null;
+  // conversations.session_id holds the provider-native session UUID. All rows
+  // are read (no LIMIT 1 — review C2): the same raw id can be claimed by
+  // multiple providers, and each source keeps its own latest conversation.
+  const source = provider ? PROVIDER_TO_CONVERSATION_SOURCE[provider] : undefined;
+  if (provider && !source) return [];
+  const conversationRows = (source
+    ? db.prepare(`
+        SELECT id, source
+        FROM conversations
+        WHERE session_id = ? AND source = ?
+        ORDER BY updated_at DESC
+      `).all(ref, source)
+    : db.prepare(`
+        SELECT id, source
+        FROM conversations
+        WHERE session_id = ?
+        ORDER BY updated_at DESC
+      `).all(ref)) as Array<{ id: string; source: string }>;
+  const conversationBySource = new Map<string, string>();
+  for (const row of conversationRows) {
+    if (!conversationBySource.has(row.source)) conversationBySource.set(row.source, row.id);
+  }
+  // Provider/conversation attach to alias-store matches only when exactly one
+  // source attests this ref; a multi-provider claim is surfaced as null
+  // (unknown) rather than a silent pick.
+  const soleSource = conversationBySource.size === 1
+    ? Array.from(conversationBySource.keys())[0]
+    : null;
+  const soleProvider = soleSource ? (CONVERSATION_SOURCE_TO_PROVIDER[soleSource] ?? null) : null;
+  const soleConversationId = soleSource ? conversationBySource.get(soleSource) ?? null : null;
+
+  // Review C3 — the registry and console stores carry no provider provenance
+  // of their own. Under provider narrowing, their rows qualify only when an
+  // ingested conversation attests the requested provider for this ref;
+  // otherwise presenting them as provider-filtered would be dishonest.
+  const attested = !provider || conversationBySource.size > 0;
 
   const matches = new Map<string, SessionResolveMatch>();
   const add = (
     mandibleSessionId: string | null,
     consoleSessionId: string | null,
-    source: string,
+    source_: string,
   ): void => {
     const key = mandibleSessionId ?? (consoleSessionId ? `console:${consoleSessionId}` : "conversation");
     const existing = matches.get(key);
@@ -153,50 +302,101 @@ export function resolveCodexSessionMatches(ref: string): SessionResolveMatch[] {
       if (!existing.console_session_id && consoleSessionId) {
         existing.console_session_id = consoleSessionId;
       }
-      if (!existing.sources.includes(source)) existing.sources.push(source);
+      if (!existing.sources.includes(source_)) existing.sources.push(source_);
       return;
     }
     matches.set(key, {
+      matched_ref: ref,
+      provider: soleProvider,
       mandible_session_id: mandibleSessionId,
       console_session_id: consoleSessionId,
-      conversation_id: conversationId,
-      sources: [source],
+      conversation_id: soleConversationId,
+      sources: [source_],
     });
   };
 
-  // Same alias predicate the hook telemetry path uses (src/routes/hooks.ts),
-  // but without LIMIT 1: many-match honesty is the point here.
-  const consoleRows = db.prepare(`
-    SELECT id, provider_session_id, mandible_session_id
-    FROM console_sessions
-    WHERE id = ? OR provider_session_id = ? OR mandible_session_id = ?
-    ORDER BY updated_at DESC
-  `).all(ref, ref, ref) as Array<{
-    id: string;
-    provider_session_id: string | null;
-    mandible_session_id: string | null;
-  }>;
-  for (const row of consoleRows) {
-    add(row.mandible_session_id, row.id, "console_sessions");
+  if (attested) {
+    // Same alias predicate the hook telemetry path uses (src/routes/hooks.ts),
+    // but without LIMIT 1: many-match honesty is the point here.
+    const consoleRows = db.prepare(`
+      SELECT id, provider_session_id, mandible_session_id
+      FROM console_sessions
+      WHERE id = ? OR provider_session_id = ? OR mandible_session_id = ?
+      ORDER BY updated_at DESC
+    `).all(ref, ref, ref) as Array<{
+      id: string;
+      provider_session_id: string | null;
+      mandible_session_id: string | null;
+    }>;
+    for (const row of consoleRows) {
+      add(row.mandible_session_id, row.id, "console_sessions");
+    }
+
+    const registryRows = db.prepare(`
+      SELECT id
+      FROM sessions
+      WHERE id = ? OR conversation_id = ?
+      ORDER BY updated_at DESC
+    `).all(ref, ref) as Array<{ id: string }>;
+    for (const row of registryRows) {
+      add(row.id, null, "sessions");
+    }
   }
 
-  const registryRows = db.prepare(`
-    SELECT id
-    FROM sessions
-    WHERE id = ? OR conversation_id = ?
-    ORDER BY updated_at DESC
-  `).all(ref, ref) as Array<{ id: string }>;
-  for (const row of registryRows) {
-    add(row.id, null, "sessions");
-  }
-
-  // A conversation-only hit is still an honest (unbindable) match: the client
-  // can link to the transcript even though no registry session exists.
-  if (matches.size === 0 && conversationId) {
-    add(null, null, "conversations");
+  // Conversation-only hits are still honest (unbindable) matches: the client
+  // can link to the transcript even though no registry session exists. One
+  // match per attesting source keeps cross-provider claims distinct (C2).
+  if (matches.size === 0) {
+    for (const [convSource, conversationId] of conversationBySource) {
+      const convProvider = CONVERSATION_SOURCE_TO_PROVIDER[convSource] ?? null;
+      matches.set(`conversation:${convProvider ?? convSource}`, {
+        matched_ref: ref,
+        provider: convProvider,
+        mandible_session_id: null,
+        console_session_id: null,
+        conversation_id: conversationId,
+        sources: ["conversations"],
+      });
+    }
   }
 
   return Array.from(matches.values());
+}
+
+export function resolveAgentSessionMatches(ref: string, provider?: string): SessionResolveResult {
+  const merged = new Map<string, SessionResolveMatch>();
+  const mergeAll = (candidateRef: string): void => {
+    for (const match of resolveExactAgentSessionMatches(candidateRef, provider)) {
+      const key = match.mandible_session_id
+        ?? (match.console_session_id
+          ? `console:${match.console_session_id}`
+          : `conversation:${match.provider ?? "unknown"}:${match.matched_ref}`);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, match);
+        continue;
+      }
+      if (!existing.console_session_id && match.console_session_id) {
+        existing.console_session_id = match.console_session_id;
+      }
+      if (!existing.conversation_id && match.conversation_id) {
+        existing.conversation_id = match.conversation_id;
+      }
+      if (!existing.provider && match.provider) {
+        existing.provider = match.provider;
+      }
+      for (const source of match.sources) {
+        if (!existing.sources.includes(source)) existing.sources.push(source);
+      }
+    }
+  };
+
+  mergeAll(ref);
+  const expansion = expandAgentSessionRefPrefix(ref, provider);
+  for (const candidate of expansion.candidates) {
+    mergeAll(candidate);
+  }
+  return { matches: Array.from(merged.values()), truncated: expansion.truncated };
 }
 
 // Issue 037fa85 — bounded, cycle-safe descendant walk over sessions.parent_id.
@@ -326,6 +526,62 @@ export function registerSessionRoutes(
     const identityWarning = checkSessionIdentity(getDb(), session.id, req.client_identity);
     sendJson(res, 200, { ...session, identity_warning: identityWarning });
   }, { fileRpc: "allow" });
+
+  // Issue f59b5bd (review S1) — deliberate, user-initiated registration of a
+  // provider-known session as a Mandible session row. The client supplies ONLY
+  // the full provider session id it received from the resolver; provider, cwd,
+  // and branch are derived server-side from the validated conversations
+  // row(s), so a forgeable page binding can never steer the registered
+  // identity's provider. Identities with no ingested conversation are
+  // rejected outright.
+  server.post("/api/sessions/register-provider", (req, res) => {
+    const payload = readBody<{ provider_session_id?: string }>(req);
+    const providerSessionId = (payload.provider_session_id ?? "").trim();
+    if (!providerSessionId) {
+      sendJson(res, 400, { error: "Missing provider_session_id" });
+      return;
+    }
+    const db = getDb();
+    const rows = db.prepare(`
+      SELECT id, source, cwd, branch
+      FROM conversations
+      WHERE session_id = ?
+      ORDER BY updated_at DESC
+    `).all(providerSessionId) as Array<{
+      id: string;
+      source: string;
+      cwd: string | null;
+      branch: string | null;
+    }>;
+    if (rows.length === 0) {
+      sendJson(res, 404, {
+        error: "No ingested conversation for this provider session id — registration requires a validated transcript record.",
+      });
+      return;
+    }
+    const sources = new Set(rows.map((row) => row.source));
+    if (sources.size > 1) {
+      sendJson(res, 409, {
+        error: "Provider session id is claimed by conversations from multiple providers — cannot derive a single provider.",
+      });
+      return;
+    }
+    const provider = CONVERSATION_SOURCE_TO_PROVIDER[rows[0].source];
+    if (!provider) {
+      sendJson(res, 422, { error: `No provider mapping for conversation source '${rows[0].source}'` });
+      return;
+    }
+    const meta = rows.find((row) => row.cwd || row.branch) ?? rows[0];
+    // Deterministic id keeps repeat clicks idempotent (registerSession upserts).
+    const session = registry.registerSession({
+      id: `${provider}-${providerSessionId}`,
+      app: provider,
+      conversation_id: providerSessionId,
+      ...(meta.cwd ? { cwd: meta.cwd } : {}),
+      ...(meta.branch ? { branch: meta.branch } : {}),
+    });
+    sendJson(res, 200, { ...session, provider });
+  }, { fileRpc: "deny" });
 
   server.patch("/api/sessions/:id", (req, res) => {
     const rawId = req.params.id;
@@ -563,26 +819,32 @@ export function registerSessionRoutes(
     sendJson(res, 200, { ok: true, identity_warning: identityWarning });
   }, { fileRpc: "deny" });
 
-  // Issue 037fa85 — provider-session alias resolution with explicit
-  // zero/one/many semantics. Registered before /api/sessions/:id so the static
-  // segment wins route matching. Read-only: the binding a client derives from
-  // this endpoint is display/navigation-only and must never gate mutations.
+  // Issue 037fa85 / f59b5bd — provider-neutral session alias resolution with
+  // explicit zero/one/many semantics. Registered before /api/sessions/:id so
+  // the static segment wins route matching. `provider` is an optional
+  // narrowing filter; `provider_session_id` accepts a full id or a short
+  // prefix (min 8 chars for expansion). Read-only: the binding a client
+  // derives from this endpoint is display/navigation-only and must never gate
+  // mutations.
   server.get("/api/sessions/resolve", (req, res) => {
     const query = req.query ?? {};
     const provider = (query.provider ?? "").trim();
     const providerSessionId = (query.provider_session_id ?? "").trim();
-    if (provider !== "codex") {
-      sendJson(res, 400, { error: "Unsupported provider — expected provider=codex" });
-      return;
-    }
     if (!providerSessionId) {
       sendJson(res, 400, { error: "Missing provider_session_id" });
       return;
     }
-    const matches = resolveCodexSessionMatches(providerSessionId);
+    if (provider && !PROVIDER_TO_CONVERSATION_SOURCE[provider]) {
+      sendJson(res, 400, {
+        error: `Unknown provider '${provider}' — expected one of: ${Object.keys(PROVIDER_TO_CONVERSATION_SOURCE).join(", ")}`,
+      });
+      return;
+    }
+    const { matches, truncated } = resolveAgentSessionMatches(providerSessionId, provider || undefined);
     sendJson(res, 200, {
-      provider: "codex",
+      provider: provider || null,
       provider_session_id: providerSessionId,
+      truncated,
       matches,
     });
   }, { fileRpc: "deny" });
@@ -614,7 +876,8 @@ export function registerSessionRoutes(
     // mandible session id would normally route the client to /:id/overview
     // instead, but including it keeps this endpoint honest either way.)
     const aliases = new Set<string>([providerSessionId]);
-    for (const match of resolveCodexSessionMatches(providerSessionId)) {
+    for (const match of resolveAgentSessionMatches(providerSessionId).matches) {
+      aliases.add(match.matched_ref);
       if (match.console_session_id) aliases.add(match.console_session_id);
       if (match.mandible_session_id) aliases.add(match.mandible_session_id);
     }
@@ -813,7 +1076,8 @@ export function registerSessionRoutes(
     const providerAliases = new Set<string>();
     if (providerSessionId) {
       providerAliases.add(providerSessionId);
-      for (const match of resolveCodexSessionMatches(providerSessionId)) {
+      for (const match of resolveAgentSessionMatches(providerSessionId).matches) {
+        providerAliases.add(match.matched_ref);
         if (match.console_session_id) providerAliases.add(match.console_session_id);
         if (match.mandible_session_id) providerAliases.add(match.mandible_session_id);
       }

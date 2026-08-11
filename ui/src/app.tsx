@@ -58,6 +58,7 @@ import {
   isViewSidebarHidden,
   parseArtifactVersionParam,
   parseRouteFromHash,
+  shortRouteId,
   type Route,
 } from './routing';
 import {
@@ -98,10 +99,11 @@ import {
   SessionOverviewIcon,
 } from './components/icons/TabIcons';
 import {
-  consumeCodexSessionFragment,
+  consumeAgentSessionFragment,
   detectCodexIab,
-  getCodexPageBinding,
-} from './codex-page-binding';
+  getAgentPageBinding,
+  subscribeAgentPageBinding,
+} from './agent-page-binding';
 import { LoadingSkeleton } from './components/LoadingSkeleton';
 
 import '@xterm/xterm/css/xterm.css';
@@ -572,12 +574,14 @@ function App(): JSX.Element {
     window.location.reload();
   }, []);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
-  // Issue 037fa85 — page-local Codex IAB detection and binding, computed once
-  // per page load. The binding was consumed from the hash fragment at boot and
-  // lives only in this tab's memory (never localStorage): concurrent tabs from
-  // different Codex sessions must never share a binding. Display-only.
+  // Issue 037fa85 — page-local Codex IAB detection and agent session binding.
+  // The binding was consumed from the hash fragment at boot (or adopted from a
+  // later Tauri deep-link handoff — review R1, replace semantics) and lives
+  // only in this tab's memory (never localStorage): concurrent tabs from
+  // different agent sessions must never share a binding. Display-only.
   const [codexIabDetected] = useState<boolean>(() => detectCodexIab());
-  const [codexPageBinding] = useState<string | null>(() => getCodexPageBinding());
+  const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
+  useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
@@ -1617,7 +1621,8 @@ function App(): JSX.Element {
         navigateToHash(`#/console?session=${encodeURIComponent(id.replace(/^session:/, ''))}`);
         break;
       case 'auth_request':
-        navigateToHash(`#/auth?request=${encodeURIComponent(id.replace(/^auth_request:/, ''))}`);
+        // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
+        navigateToHash(`#/auth?request=${encodeURIComponent(shortRouteId(id.replace(/^auth_request:/, '')))}`);
         break;
       case 'artifact':
       case 'report': {
@@ -1634,7 +1639,7 @@ function App(): JSX.Element {
 
   // Issue 037fa85 — first conditional nav item: the Session Overview shortcut
   // appears only when the page runs inside a session-bound browser (Codex IAB
-  // WebMCP probe) or a page-local codex_session binding was delivered at boot.
+  // WebMCP probe) or a page-local agent_session binding was delivered at boot.
   // The view itself stays reachable for any session via #/overview deep links.
   const sessionOverviewNavItem: NavItem = {
     tab: 'overview',
@@ -1643,7 +1648,7 @@ function App(): JSX.Element {
     title: 'Session Overview',
     icon: SessionOverviewIcon,
   };
-  const showSessionOverviewNav = codexIabDetected || codexPageBinding !== null;
+  const showSessionOverviewNav = codexIabDetected || agentPageBinding !== null;
 
   const primaryNavItems: NavItem[] = [
     ...(showSessionOverviewNav ? [sessionOverviewNavItem] : []),
@@ -2098,7 +2103,7 @@ function App(): JSX.Element {
           return (
             <LazySessionOverviewView
               initialSessionId={tabRoute.params.session ?? null}
-              codexBinding={codexPageBinding}
+              agentBinding={agentPageBinding}
               iabDetected={codexIabDetected}
             />
           );
@@ -2147,10 +2152,10 @@ if (mountNode) {
   // acquire one via the handshake before first render so operator mutations
   // authenticate (in strict mode too, using a token persisted during compat).
   installClientAuthFetch();
-  // Issue 037fa85 — consume and strip the page-local codex_session fragment
+  // Issue 037fa85 — consume and strip the page-local agent_session fragment
   // before the initial route parse so it never leaks into route params,
   // history, or shared URLs.
-  consumeCodexSessionFragment();
+  consumeAgentSessionFragment();
   const initialRoute = parseHashRoute();
   if (isRenderableTab(initialRoute.tab)) {
     void ROUTE_CHUNK_LOADERS[initialRoute.tab]?.();

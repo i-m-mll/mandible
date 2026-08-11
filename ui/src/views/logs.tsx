@@ -4,6 +4,7 @@ import { getLogs, type LogEntry, type LogEntityFacetValue, type LogsResponse } f
 import { type SSEPayload } from '../sse-client';
 import { acquireSharedSse, type SseHandle } from '../sse-shared';
 import { artifactDetailHref, parseResourceRef, resourceRefHref } from '../resource-refs';
+import { shortRouteId } from '../routing';
 
 type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -141,7 +142,7 @@ function entityHref(type: LogEntityFacetValue['type'], id: string, repoId?: stri
     if (repoId) params.set('repo', repoId);
     return `#/issues?${params.toString()}`;
   }
-  if (type === 'auth_request') return `#/auth?request=${encodeURIComponent(id)}`;
+  if (type === 'auth_request') return `#/auth?request=${encodeURIComponent(shortRouteId(id))}`;
   if (type === 'artifact') return artifactDetailHref(id);
   if (type === 'session') return `#/sessions?session=${encodeURIComponent(id)}`;
   return `#/graph?focus=${encodeURIComponent(id)}`;

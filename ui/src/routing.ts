@@ -8,6 +8,17 @@ export const VIEW_SIDEBAR_HIDDEN_VALUE = 'hidden';
 export const ARTIFACT_SERIES_QUERY_PARAM = 'series';
 export const ARTIFACT_VERSION_QUERY_PARAM = 'version';
 
+// Issue f59b5bd — short-form IDs in generated URLs. Deterministically emitted
+// in-app links carry the ambiguity-safe 8-char short form instead of a full
+// UUID; consumers resolve prefixes with honest zero/one/many handling. Only
+// full UUIDs are shortened — short non-UUID identifiers pass through intact.
+export const SHORT_ROUTE_ID_LENGTH = 8;
+const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export function shortRouteId(id: string): string {
+  return FULL_UUID_RE.test(id) ? id.slice(0, SHORT_ROUTE_ID_LENGTH) : id;
+}
+
 export function parseArtifactVersionParam(value: string | undefined): number | null {
   if (!value) return null;
   const parsed = Number(value);

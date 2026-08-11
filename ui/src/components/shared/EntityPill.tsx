@@ -1,4 +1,5 @@
 // Bug: 84cd5ae — shared cross-tab entity link component
+import { shortRouteId } from '../../routing';
 
 // Bug: f3dbb3e — removed 'work-unit' type (navigated to wrong URL using
 // work-unit UUID as issue ID; not used anywhere yet).
@@ -18,7 +19,8 @@ const TYPE_HREF_MAP: Record<EntityPillType, (id: string, repoId?: string) => str
       ? `#/issues?repo=${encodeURIComponent(repoId)}&issue=${encodeURIComponent(id)}`
       : `#/issues?issue=${encodeURIComponent(id)}`,
   session: (id) => `#/sessions?session=${encodeURIComponent(id)}`,
-  auth: (id) => `#/auth?request=${encodeURIComponent(id)}`,
+  // Issue f59b5bd — emit the short form; the auth view resolves prefixes.
+  auth: (id) => `#/auth?request=${encodeURIComponent(shortRouteId(id))}`,
   branch: (id, repoId) =>
     repoId
       ? `#/work?repo=${encodeURIComponent(repoId)}&branch=${encodeURIComponent(id)}`
