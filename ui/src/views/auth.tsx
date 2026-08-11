@@ -25,6 +25,7 @@ import {
   getAuthAutoApproveStatus,
   getAuthRequestActions,
   getAuthRequestDetail,
+  isApiErrorStatus,
   createAuthHook,
   setAuthRequestActionVeto,
   updateAuthHook,
@@ -2207,7 +2208,14 @@ export function AuthQueueView({
   type AuthRequestBody = { diff_summary: string; spec_content: string; output: string };
   const [hydratedBodies, setHydratedBodies] = useState<Record<string, AuthRequestBody>>({});
 
+  // Bug: 2cddba2 — the deep-linked selection propagates through a state update
+  // that lands after the first effect pass, and may reference a request outside
+  // the loaded lists. While set, sidebar reconciliation holds that selection;
+  // cleared when the user picks another row.
+  const pendingDeepLinkRef = useRef<string | null>(null);
+
   const handleSelect = useCallback((id: string) => {
+    pendingDeepLinkRef.current = null;
     setLocalSelectedId(id);
     onSelectAuth?.(id);
   }, [onSelectAuth]);
@@ -2215,6 +2223,7 @@ export function AuthQueueView({
   // Bug: bdcc1f5 — deep-link from graph node click: select and scroll to initial request
   useEffect(() => {
     if (!initialRequestId) return;
+    pendingDeepLinkRef.current = initialRequestId;
     setLocalSelectedId(initialRequestId);
     onSelectAuth?.(initialRequestId);
     setTimeout(() => {
@@ -2841,7 +2850,7 @@ export function AuthQueueView({
   }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
   // Find the selected request from whichever list contains it
-  const selectedRequestRaw = useMemo((): AuthRequest | null => {
+  const selectedListRequest = useMemo((): AuthRequest | null => {
     if (!selectedId) return null;
     return (
       queue.find((r) => getAuthId(r) === selectedId) ??
@@ -2849,6 +2858,40 @@ export function AuthQueueView({
       null
     );
   }, [selectedId, queue, historyQueue]);
+
+  // Bug: 2cddba2 — a deep-linked request (`#/auth?request=<id>`) that resolved
+  // outside the loaded history slice matches neither list. Fetch it from the
+  // detail route so the pane can render it; a 404 is cached as 'not_found' so
+  // the pane shows an honest missing-request state instead of the placeholder.
+  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found'>>({});
+  useEffect(() => {
+    if (!selectedId || selectedListRequest || fetchedRequests[selectedId]) return;
+    const id = selectedId;
+    let active = true;
+    getAuthRequestDetail(id)
+      .then((detail) => {
+        if (!active) return;
+        const record = detail as AuthRequest | null;
+        setFetchedRequests((prev) => ({
+          ...prev,
+          [id]: record && getAuthId(record) ? record : 'not_found',
+        }));
+      })
+      .catch((error) => {
+        if (!active || !isApiErrorStatus(error, 404)) return;
+        setFetchedRequests((prev) => ({ ...prev, [id]: 'not_found' }));
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedId, selectedListRequest, fetchedRequests]);
+
+  const selectedFetched = selectedId ? fetchedRequests[selectedId] : undefined;
+  const selectedNotFound = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'not_found';
+  const selectedRequestRaw = useMemo((): AuthRequest | null => {
+    if (selectedListRequest) return selectedListRequest;
+    return selectedFetched && selectedFetched !== 'not_found' ? selectedFetched : null;
+  }, [selectedListRequest, selectedFetched]);
 
   // Bug: 0de95bf — a list row from the history projection carries no body
   // blobs (diff_summary/spec_content/output are undefined, not null). Fetch the
@@ -2915,6 +2958,16 @@ export function AuthQueueView({
   // present in the sidebar (e.g. all items completed/dismissed and queue empties),
   // so the orphaned detail card does not remain visible with an empty sidebar.
   useEffect(() => {
+    // Bug: 2cddba2 — a deep-linked selection may still be propagating through
+    // state (selectedId is null on the mount pass), or may reference a request
+    // outside both loaded lists (rendered from the by-id fetch above). Until
+    // the user picks another row, don't clear it or promote another row over
+    // it. Once the selection has moved elsewhere, release the hold.
+    const pendingDeepLink = pendingDeepLinkRef.current;
+    if (pendingDeepLink) {
+      if (selectedId === null || selectedId === pendingDeepLink) return;
+      pendingDeepLinkRef.current = null;
+    }
     if (
       selectedId &&
       filteredSidebarItems.length === 0
@@ -3343,7 +3396,13 @@ export function AuthQueueView({
         {previewNotice}
         {!selectedRequest ? (
           <div className="auth-detail__empty">
-            <p className="text-muted">Select a request to view details</p>
+            <p className="text-muted">
+              {selectedId && selectedNotFound
+                ? `Auth request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
+                : selectedId && !selectedListRequest
+                  ? 'Loading request…'
+                  : 'Select a request to view details'}
+            </p>
           </div>
         ) : (() => {
           const request = selectedRequest;

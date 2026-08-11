@@ -1,0 +1,169 @@
+// Bug: 2cddba2 — a deep-link (`#/auth?request=<id>`) to a resolved/archived
+// request outside the loaded queue/history lists must fetch the request from
+// the by-id detail route and render the detail pane from that record, with an
+// honest not-found state for invalid ids, instead of falling through to the
+// "Select a request to view details" placeholder (or having the sidebar
+// reconciliation effect steal the selection).
+import { render, screen, cleanup } from '@testing-library/preact';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
+
+// jsdom in this build ships a localStorage stub whose setItem throws; install a
+// working in-memory localStorage so the sidebar-width persistence round-trips.
+function installMemoryLocalStorage(): void {
+  const store = new Map<string, string>();
+  const mem: Storage = {
+    get length() {
+      return store.size;
+    },
+    clear: () => store.clear(),
+    getItem: (key: string) => (store.has(key) ? store.get(key)! : null),
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value));
+    },
+  };
+  Object.defineProperty(globalThis, 'localStorage', { value: mem, configurable: true, writable: true });
+}
+
+const REMOTE_ID = 'req-remote-0123456789abcdef';
+
+// Shape of the GET /api/auth/request/:id payload (src/routes/auth.ts) for a
+// completed merge that is no longer in the loaded history slice.
+const remoteDetailPayload = {
+  request_id: REMOTE_ID,
+  type: 'merge',
+  status: 'completed',
+  output: 'merge output',
+  exit_code: 0,
+  error: null,
+  title: 'Archived merge: feature/old-branch',
+  created_at: 1_700_000_000_000,
+  last_executed_at: 1_700_000_100_000,
+  resolved_at: 1_700_000_100_000,
+  repo: 'mandible',
+  base_branch: 'main',
+  head_branch: 'feature/old-branch',
+  files_changed: 1,
+  additions: 2,
+  deletions: 1,
+  diff_summary: null,
+  commit_message: 'Merge feature/old-branch',
+  spec_content: null,
+  action_count: 0,
+  actions: [],
+};
+
+const pendingRequest: AuthRequest = {
+  id: 'req-active-1',
+  type: 'merge',
+  title: 'Self-merge: feature/x',
+  repo: 'mandible',
+  head_branch: 'feature/x',
+  base_branch: 'main',
+  status: 'pending',
+  commit_message: 'Merge feature/x',
+  created_at: 1,
+  updated_at: 1,
+  actions: [],
+};
+
+function stubFetchWithDetailRoute(handler: (id: string) => Response | null): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    const match = url.match(/^\/api\/auth\/request\/([^/]+)$/);
+    if (match) {
+      const response = handler(decodeURIComponent(match[1]));
+      if (response) return Promise.resolve(response);
+    }
+    // Everything else (auto-approve status probe, etc.) stays offline.
+    return Promise.reject(new Error(`unexpected fetch ${url}`));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  return fetchMock;
+}
+
+function renderDeepLinkedView(queue: AuthRequest[], initialRequestId: string) {
+  return render(
+    <AuthQueueView
+      queue={queue}
+      historyQueue={[]}
+      outputs={{}}
+      initialRequestId={initialRequestId}
+      daemonReady={true}
+      onApprove={() => undefined}
+      onReject={() => undefined}
+      onRetry={() => undefined}
+      onDismiss={() => undefined}
+    />,
+  );
+}
+
+beforeEach(() => {
+  installMemoryLocalStorage();
+  Element.prototype.scrollIntoView = vi.fn();
+});
+
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
+
+describe('AuthQueueView deep-linked request outside loaded lists', () => {
+  it('fetches the request from the detail route and renders the detail pane', async () => {
+    const fetchMock = stubFetchWithDetailRoute((id) =>
+      id === REMOTE_ID
+        ? new Response(JSON.stringify(remoteDetailPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : null,
+    );
+
+    renderDeepLinkedView([], REMOTE_ID);
+
+    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
+    expect(screen.queryByText('Select a request to view details')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/auth/request/${encodeURIComponent(REMOTE_ID)}`,
+      expect.anything(),
+    );
+  });
+
+  it('keeps the deep-linked selection when the sidebar has other rows', async () => {
+    stubFetchWithDetailRoute((id) =>
+      id === REMOTE_ID
+        ? new Response(JSON.stringify(remoteDetailPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : null,
+    );
+
+    renderDeepLinkedView([pendingRequest], REMOTE_ID);
+
+    // The fetched request renders in the detail pane; the sidebar row is not
+    // promoted over the deep-linked selection.
+    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
+  });
+
+  it('shows an honest not-found state for an invalid deep-linked id', async () => {
+    stubFetchWithDetailRoute(() =>
+      new Response(JSON.stringify({ error: 'Auth request not found.' }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    renderDeepLinkedView([], 'req-nonexistent');
+
+    expect(await screen.findByText(/Auth request req-none was not found/)).toBeTruthy();
+    expect(screen.queryByText('Select a request to view details')).toBeNull();
+  });
+});

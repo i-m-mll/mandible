@@ -181,6 +181,13 @@ export function registerAuthRoutes(
       request_id: request.id,
       type: request.type,
       status: request.status,
+      // Bug: 2cddba2 — deep-linked requests outside the loaded queue/history
+      // lists render the detail pane from this payload, so it carries the
+      // header title and lifecycle timestamps too.
+      title: request.title,
+      created_at: request.created_at,
+      last_executed_at: request.last_executed_at,
+      resolved_at: request.resolved_at,
       output: request.output,
       exit_code: request.exit_code,
       error: request.error,
