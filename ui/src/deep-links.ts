@@ -26,6 +26,16 @@ function isTauriWindow(): boolean {
   return Boolean(tauriWindow.__TAURI__ || tauriWindow.__TAURI_INTERNALS__);
 }
 
+// Issue f59b5bd — deep links compose with extra query params (notably
+// agent_session appended by session-bound agents). Params the route builder
+// itself owns always win; everything else carries through untouched.
+function appendExtraParams(params: URLSearchParams, url: URL): URLSearchParams {
+  url.searchParams.forEach((value, key) => {
+    if (!params.has(key)) params.set(key, value);
+  });
+  return params;
+}
+
 function issueRouteFromUrl(url: URL): string | null {
   const route = firstRouteSegment(url);
   if (route !== 'issues') return null;
@@ -38,7 +48,7 @@ function issueRouteFromUrl(url: URL): string | null {
   const comment = url.searchParams.get('comment')?.trim();
   if (repo) params.set('repo', repo);
   if (comment) params.set('comment', comment);
-  return `#/issues?${params.toString()}`;
+  return `#/issues?${appendExtraParams(params, url).toString()}`;
 }
 
 function authRouteFromUrl(url: URL): string | null {
@@ -49,7 +59,7 @@ function authRouteFromUrl(url: URL): string | null {
   if (!request) return null;
 
   const params = new URLSearchParams({ request });
-  return `#/auth?${params.toString()}`;
+  return `#/auth?${appendExtraParams(params, url).toString()}`;
 }
 
 function artifactRouteFromUrl(url: URL): string | null {
@@ -72,6 +82,12 @@ function artifactRouteFromUrl(url: URL): string | null {
   for (const key of ['series', 'version', 'ref', 'artifact']) {
     if (normalized[key]) params.set(key, normalized[key]);
   }
+  // Carry extra params through, but never re-add the artifact identity params
+  // the normalizer deliberately dropped.
+  url.searchParams.forEach((value, key) => {
+    if (['series', 'version', 'ref', 'artifact'].includes(key)) return;
+    if (!params.has(key)) params.set(key, value);
+  });
   return `#/artifacts?${params.toString()}`;
 }
 

@@ -18,6 +18,7 @@ import typescript from 'highlight.js/lib/languages/typescript';
 import xml from 'highlight.js/lib/languages/xml';
 import yaml from 'highlight.js/lib/languages/yaml';
 import { detailRequestKey, readPersistedDetail, writePersistedDetail } from '../detail-cache';
+import { shortRouteId } from '../routing';
 import { LoadingSkeleton } from '../components/LoadingSkeleton';
 import {
   deleteArtifactDraft,
@@ -2567,7 +2568,7 @@ function entityHref(type: string, id: string, repoId: string | null): string {
     if (repoId) params.set('repo', repoId);
     return `#/issues?${params.toString()}`;
   }
-  if (type === 'auth_request') return `#/auth?request=${encodeURIComponent(id)}`;
+  if (type === 'auth_request') return `#/auth?request=${encodeURIComponent(shortRouteId(id))}`;
   if (type === 'session') return `#/sessions?session=${encodeURIComponent(id)}`;
   if (type === 'provider_manifest') return `#/graph?mode=provider-lineage&focus=${encodeURIComponent(id)}`;
   return `#/graph?focus=${encodeURIComponent(id)}`;

@@ -537,9 +537,12 @@ export async function getSessionsPage<T>(params?: {
   };
 }
 
-// Issue 037fa85 — Session Overview: provider-session alias resolution with
-// explicit zero/one/many semantics, and the aggregate per-session payload.
+// Issue 037fa85 / f59b5bd — Session Overview: provider-neutral session alias
+// resolution with explicit zero/one/many semantics, and the aggregate
+// per-session payload. The ref may be a full id or a short prefix (min 8
+// chars); `matched_ref` carries the full identity each match resolved to.
 export type SessionResolveMatch = {
+  matched_ref: string;
   mandible_session_id: string | null;
   console_session_id: string | null;
   conversation_id: string | null;
@@ -547,16 +550,16 @@ export type SessionResolveMatch = {
 };
 
 export type SessionResolveResult = {
-  provider: string;
+  provider: string | null;
   provider_session_id: string;
   matches: SessionResolveMatch[];
 };
 
-export async function resolveProviderSession(
-  provider: string,
-  providerSessionId: string,
+export async function resolveAgentSession(
+  ref: string,
+  provider?: string,
 ): Promise<SessionResolveResult> {
-  const query = buildQuery({ provider, provider_session_id: providerSessionId });
+  const query = buildQuery({ provider_session_id: ref, provider });
   const response = await apiGet(`/api/sessions/resolve${query}`);
   return await response.json() as SessionResolveResult;
 }

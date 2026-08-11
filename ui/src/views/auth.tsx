@@ -2849,21 +2849,34 @@ export function AuthQueueView({
     return items;
   }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
-  // Find the selected request from whichever list contains it
+  // Find the selected request from whichever list contains it. Issue f59b5bd —
+  // deep links carry the 8-char short form, so an unambiguous prefix match
+  // (min 8 chars) also selects; an ambiguous prefix never silently picks and
+  // falls through to the by-id fetch, which reports the ambiguity honestly.
   const selectedListRequest = useMemo((): AuthRequest | null => {
     if (!selectedId) return null;
-    return (
+    const exact =
       queue.find((r) => getAuthId(r) === selectedId) ??
       (historyQueue ?? []).find((r) => getAuthId(r) === selectedId) ??
-      null
-    );
+      null;
+    if (exact || selectedId.length < 8) return exact;
+    const prefixMatches = new Map<string, AuthRequest>();
+    for (const request of [...queue, ...(historyQueue ?? [])]) {
+      const id = getAuthId(request);
+      if (id.length > selectedId.length && id.startsWith(selectedId)) {
+        if (!prefixMatches.has(id)) prefixMatches.set(id, request);
+      }
+    }
+    return prefixMatches.size === 1 ? prefixMatches.values().next().value ?? null : null;
   }, [selectedId, queue, historyQueue]);
 
   // Bug: 2cddba2 — a deep-linked request (`#/auth?request=<id>`) that resolved
   // outside the loaded history slice matches neither list. Fetch it from the
   // detail route so the pane can render it; a 404 is cached as 'not_found' so
   // the pane shows an honest missing-request state instead of the placeholder.
-  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found'>>({});
+  // Issue f59b5bd — the detail route also resolves unambiguous short prefixes;
+  // a 409 (ambiguous prefix) is cached as 'ambiguous' and surfaced honestly.
+  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'ambiguous'>>({});
   useEffect(() => {
     if (!selectedId || selectedListRequest || fetchedRequests[selectedId]) return;
     const id = selectedId;
@@ -2878,8 +2891,12 @@ export function AuthQueueView({
         }));
       })
       .catch((error) => {
-        if (!active || !isApiErrorStatus(error, 404)) return;
-        setFetchedRequests((prev) => ({ ...prev, [id]: 'not_found' }));
+        if (!active) return;
+        if (isApiErrorStatus(error, 404)) {
+          setFetchedRequests((prev) => ({ ...prev, [id]: 'not_found' }));
+        } else if (isApiErrorStatus(error, 409)) {
+          setFetchedRequests((prev) => ({ ...prev, [id]: 'ambiguous' }));
+        }
       });
     return () => {
       active = false;
@@ -2888,10 +2905,29 @@ export function AuthQueueView({
 
   const selectedFetched = selectedId ? fetchedRequests[selectedId] : undefined;
   const selectedNotFound = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'not_found';
+  const selectedAmbiguous = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'ambiguous';
   const selectedRequestRaw = useMemo((): AuthRequest | null => {
     if (selectedListRequest) return selectedListRequest;
-    return selectedFetched && selectedFetched !== 'not_found' ? selectedFetched : null;
+    return selectedFetched && selectedFetched !== 'not_found' && selectedFetched !== 'ambiguous'
+      ? selectedFetched
+      : null;
   }, [selectedListRequest, selectedFetched]);
+
+  // Issue f59b5bd — once a short-prefix selection resolves to a concrete
+  // record, upgrade the selection to the full id so sidebar highlighting,
+  // action lookups, and caches all key on the canonical id. The deep-link hold
+  // moves with it so sidebar reconciliation cannot steal the selection.
+  useEffect(() => {
+    if (!selectedId || !selectedRequestRaw) return;
+    const fullId = getAuthId(selectedRequestRaw);
+    if (!fullId || fullId === selectedId || !fullId.startsWith(selectedId)) return;
+    if (pendingDeepLinkRef.current === selectedId) pendingDeepLinkRef.current = fullId;
+    setFetchedRequests((prev) => (
+      prev[selectedId] && !prev[fullId] ? { ...prev, [fullId]: prev[selectedId] } : prev
+    ));
+    setLocalSelectedId(fullId);
+    onSelectAuth?.(fullId);
+  }, [selectedId, selectedRequestRaw, onSelectAuth]);
 
   // Bug: 0de95bf — a list row from the history projection carries no body
   // blobs (diff_summary/spec_content/output are undefined, not null). Fetch the
@@ -3399,9 +3435,11 @@ export function AuthQueueView({
             <p className="text-muted">
               {selectedId && selectedNotFound
                 ? `Auth request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
-                : selectedId && !selectedListRequest
-                  ? 'Loading request…'
-                  : 'Select a request to view details'}
+                : selectedId && selectedAmbiguous
+                  ? `Auth request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
+                  : selectedId && !selectedListRequest
+                    ? 'Loading request…'
+                    : 'Select a request to view details'}
             </p>
           </div>
         ) : (() => {

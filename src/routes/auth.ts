@@ -151,6 +151,8 @@ export function registerAuthRoutes(
   }, { fileRpc: "allow" });
 
   app.get("/api/auth/request/:id", (req, res) => {
+    // Issue f59b5bd — getRequest already resolves unambiguous short prefixes
+    // (Bug: caa157e), so short-form deep links land here directly.
     const request = authQueue.getRequest(req.params.id);
     if (!request) {
       // Bug: caa157e — distinguish ambiguous prefix from not-found

@@ -31,6 +31,7 @@ import {
   hashWithViewSidebarVisible,
   isViewSidebarHidden,
   parseRouteFromHash,
+  shortRouteId,
 } from '../ui/src/routing';
 import {
   AppShellProvider,
@@ -442,6 +443,41 @@ describe('App routing', () => {
         'mandible:///artifacts?artifact=legacy&ref=artifact-blob%3Aabc&series=artifact-series%3Areport&version=oops',
       ),
     ).toBe('#/artifacts?series=artifact-series%3Areport');
+  });
+
+  // Issue f59b5bd — deep links compose: extra params (notably agent_session)
+  // carry through into the hash route, but route-owned params always win.
+  it('carries extra query params through mandible deep links', () => {
+    expect(
+      routeHashFromMandibleDeepLink('mandible:///auth?request=abc&agent_session=0198c0de'),
+    ).toBe('#/auth?request=abc&agent_session=0198c0de');
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///issues?repo=mandible&issue=dfc924a&agent_session=0198c0de',
+      ),
+    ).toBe('#/issues?issue=dfc924a&repo=mandible&agent_session=0198c0de');
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///artifacts?ref=artifact-blob%3Aabc&agent_session=0198c0de',
+      ),
+    ).toBe('#/artifacts?ref=artifact-blob%3Aabc&agent_session=0198c0de');
+    // The artifact normalizer's dropped identity params stay dropped.
+    expect(
+      routeHashFromMandibleDeepLink(
+        'mandible:///artifacts?series=artifact-series%3Areport&version=oops&agent_session=0198c0de',
+      ),
+    ).toBe('#/artifacts?series=artifact-series%3Areport&agent_session=0198c0de');
+  });
+
+  // Issue f59b5bd — deterministically emitted links shorten full UUIDs to the
+  // 8-char short form; anything else passes through untouched.
+  it('shortens only full UUIDs in shortRouteId', () => {
+    expect(shortRouteId('e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe('e4c52737');
+    expect(shortRouteId('e4c52737')).toBe('e4c52737');
+    expect(shortRouteId('req-active-1')).toBe('req-active-1');
+    expect(shortRouteId('codex-e4c52737-40e4-472a-8367-fbdbe97801a2')).toBe(
+      'codex-e4c52737-40e4-472a-8367-fbdbe97801a2',
+    );
   });
 
   it('navigates only for supported mandible deep links', () => {

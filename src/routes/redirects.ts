@@ -61,7 +61,7 @@ export function registerRedirectRoutes(
           });
           return;
         }
-        const query = new URLSearchParams({
+        const query = buildTargetQuery(req.query, {
           repo: resolved.repoId,
           issue: resolved.issueId,
         });
@@ -73,10 +73,40 @@ export function registerRedirectRoutes(
       }
       sendRedirectPage(res, {
         label: config.label,
-        target: buildMandibleTarget(config.targetPath, config.targetParam, ref),
+        target: buildMandibleTarget(config.targetPath, config.targetParam, {
+          // Issue f59b5bd — /r/ targets emit the ambiguity-safe short form for
+          // full auth-request UUIDs; the auth route resolves prefixes honestly.
+          ref: kind === "auth" ? shortRedirectRef(ref) : ref,
+          extraQuery: req.query,
+        }),
       });
     }, { fileRpc: "deny" });
   }
+}
+
+// Issue f59b5bd — /r/ redirects preserve extra query params (notably
+// agent_session) so session-bound links compose: the caller's params carry
+// through into the deep-link target, but the params the redirect itself owns
+// always win.
+function buildTargetQuery(
+  extraQuery: Record<string, string> | undefined,
+  ownParams: Record<string, string>,
+): URLSearchParams {
+  const query = new URLSearchParams();
+  for (const [key, value] of Object.entries(extraQuery ?? {})) {
+    if (key in ownParams) continue;
+    query.set(key, value);
+  }
+  for (const [key, value] of Object.entries(ownParams)) {
+    query.set(key, value);
+  }
+  return query;
+}
+
+const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function shortRedirectRef(ref: string): string {
+  return FULL_UUID_RE.test(ref) ? ref.slice(0, 8) : ref;
 }
 
 function resolveLedgerIssueLink(ref: string): IssueRedirectResolution {
@@ -149,8 +179,12 @@ export function resolveLedgerIssueLinkFromDb(db: Db, ref: string): IssueRedirect
   };
 }
 
-function buildMandibleTarget(path: string, param: string, ref: string): string {
-  const query = new URLSearchParams({ [param]: ref });
+function buildMandibleTarget(
+  path: string,
+  param: string,
+  input: { ref: string; extraQuery?: Record<string, string> },
+): string {
+  const query = buildTargetQuery(input.extraQuery, { [param]: input.ref });
   return `mandible:///${path}?${query.toString()}`;
 }
 

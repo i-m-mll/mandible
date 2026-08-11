@@ -143,10 +143,32 @@ async function getOverview(id: string, query = ""): Promise<{ status: number; bo
 }
 
 describe("GET /api/sessions/resolve", () => {
-  it("rejects unsupported providers and missing provider_session_id", async () => {
-    expect((await getResolve(`?provider_session_id=${CODEX_UUID}`)).status).toBe(400);
-    expect((await getResolve(`?provider=claude&provider_session_id=${CODEX_UUID}`)).status).toBe(400);
+  it("rejects a missing provider_session_id", async () => {
     expect((await getResolve("?provider=codex")).status).toBe(400);
+    expect((await getResolve("")).status).toBe(400);
+  });
+
+  // Issue f59b5bd — provider is an optional narrowing filter, not a gate.
+  it("resolves without a provider param", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { status, body } = await getResolve(`?provider_session_id=${CODEX_UUID}`);
+    expect(status).toBe(200);
+    expect(body.provider).toBeNull();
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      matched_ref: CODEX_UUID,
+      conversation_id: "conv-1",
+      sources: ["conversations"],
+    });
+  });
+
+  it("resolves non-codex conversation sources provider-neutrally", async () => {
+    insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
+
+    const { body } = await getResolve(`?provider_session_id=${CODEX_UUID}`);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0].conversation_id).toBe("conv-cc");
   });
 
   it("returns zero matches without inventing one", async () => {
@@ -240,6 +262,91 @@ describe("GET /api/sessions/resolve", () => {
       conversation_id: "conv-1",
       sources: ["conversations"],
     });
+  });
+});
+
+// Issue f59b5bd — short-prefix resolution with explicit zero/one/many honesty
+// and a minimum prefix length matching the 8-char short-ID convention.
+describe("GET /api/sessions/resolve with short prefixes", () => {
+  const SHORT = CODEX_UUID.slice(0, 8);
+
+  it("resolves an unambiguous 8-char prefix to the full identity", async () => {
+    registry.registerSession({ id: "sess-1", app: "codex", conversation_id: CODEX_UUID });
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { status, body } = await getResolve(`?provider_session_id=${SHORT}`);
+    expect(status).toBe(200);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      matched_ref: CODEX_UUID,
+      mandible_session_id: "sess-1",
+      conversation_id: "conv-1",
+    });
+  });
+
+  it("resolves a mandible session id prefix through the sessions registry", async () => {
+    registry.registerSession({ id: "sessionabcdef-1", app: "claude" });
+
+    const { body } = await getResolve("?provider_session_id=sessiona");
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      matched_ref: "sessionabcdef-1",
+      mandible_session_id: "sessionabcdef-1",
+      sources: ["sessions"],
+    });
+  });
+
+  it("returns every identity a prefix matches instead of silently picking", async () => {
+    const other = `${SHORT}-9999-8888-7777-666655554444`;
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+    insertConversation({ id: "conv-2", session_id: other, source: "codex" });
+
+    const { body } = await getResolve(`?provider_session_id=${SHORT}`);
+    expect(body.matches).toHaveLength(2);
+    const refs = body.matches.map((m: { matched_ref: string }) => m.matched_ref).sort();
+    expect(refs).toEqual([CODEX_UUID, other].sort());
+  });
+
+  it("returns zero matches for a prefix that matches nothing", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { body } = await getResolve("?provider_session_id=ffffffff");
+    expect(body.matches).toEqual([]);
+  });
+
+  it("never expands a prefix shorter than 8 chars", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { body } = await getResolve(`?provider_session_id=${CODEX_UUID.slice(0, 7)}`);
+    expect(body.matches).toEqual([]);
+  });
+
+  it("still resolves short non-UUID identifiers by exact match", async () => {
+    registry.registerSession({ id: "sess-1", app: "codex" });
+    insertConsoleSession({
+      id: "cs-1",
+      provider_session_id: CODEX_UUID,
+      mandible_session_id: "sess-1",
+    });
+
+    const { body } = await getResolve("?provider_session_id=cs-1");
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      matched_ref: "cs-1",
+      console_session_id: "cs-1",
+      mandible_session_id: "sess-1",
+    });
+  });
+
+  it("applies the provider filter to prefix expansion over conversations", async () => {
+    insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
+
+    const narrowed = await getResolve(`?provider=codex&provider_session_id=${SHORT}`);
+    expect(narrowed.body.matches).toEqual([]);
+
+    const open = await getResolve(`?provider_session_id=${SHORT}`);
+    expect(open.body.matches).toHaveLength(1);
+    expect(open.body.matches[0].conversation_id).toBe("conv-cc");
   });
 });
 

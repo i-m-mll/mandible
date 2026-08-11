@@ -1,29 +1,29 @@
-// Issue 037fa85 — page-level Codex IAB session binding.
+// Issue 037fa85 / f59b5bd — page-level agent session binding.
 //
-// The Codex agent that opens Mandible in its in-app browser knows its own
-// CODEX_THREAD_ID and includes it as a hash-fragment query param
-// (#/overview?codex_session=<uuid>). The page consumes and strips it at boot —
-// the same pattern as the mandible_auth fragment token in client-auth-token.ts
-// — and keeps it in tab-local in-memory state ONLY. It is deliberately never
-// written to localStorage: two concurrent Codex sessions can each have an IAB
-// tab open on the same daemon, and their bindings must never bleed into each
-// other.
+// An agent that opens Mandible in a session-bound browser (e.g. the Codex IAB)
+// knows its own provider session id and includes it as a hash-fragment query
+// param (#/overview?agent_session=<id-or-short-prefix>). The page consumes and
+// strips it at boot — the same pattern as the mandible_auth fragment token in
+// client-auth-token.ts — and keeps it in tab-local in-memory state ONLY. It is
+// deliberately never written to localStorage: two concurrent agent sessions
+// can each have a tab open on the same daemon, and their bindings must never
+// bleed into each other.
 //
 // The binding is self-asserted and forgeable. It is display/navigation-only
 // and must never be attached to any mutation request, authn/authz decision,
 // attribution, or lifecycle action.
 
-const CODEX_SESSION_PARAM = 'codex_session';
+const AGENT_SESSION_PARAM = 'agent_session';
 
 let consumed = false;
 let binding: string | null = null;
 
 /**
- * Consume the codex_session param from the hash-fragment query at boot,
+ * Consume the agent_session param from the hash-fragment query at boot,
  * stripping it from the URL via history.replaceState. Idempotent; fails
  * silently — a broken URL or restricted history API must never block boot.
  */
-export function consumeCodexSessionFragment(): void {
+export function consumeAgentSessionFragment(): void {
   if (consumed) return;
   consumed = true;
   if (typeof window === 'undefined') return;
@@ -33,10 +33,10 @@ export function consumeCodexSessionFragment(): void {
     if (queryIndex < 0) return;
     const route = hash.slice(0, queryIndex);
     const params = new URLSearchParams(hash.slice(queryIndex + 1));
-    const value = params.get(CODEX_SESSION_PARAM);
+    const value = params.get(AGENT_SESSION_PARAM);
     if (!value) return;
     binding = value.trim() || null;
-    params.delete(CODEX_SESSION_PARAM);
+    params.delete(AGENT_SESSION_PARAM);
     const remaining = params.toString();
     const nextHash = `${route}${remaining ? `?${remaining}` : ''}`;
     window.history.replaceState(
@@ -49,8 +49,8 @@ export function consumeCodexSessionFragment(): void {
   }
 }
 
-/** The tab-local Codex session binding consumed at boot, if any. */
-export function getCodexPageBinding(): string | null {
+/** The tab-local agent session binding consumed at boot, if any. */
+export function getAgentPageBinding(): string | null {
   return binding;
 }
 
@@ -74,7 +74,7 @@ export function detectCodexIab(): boolean {
 }
 
 /** Test-only reset so vitest cases can exercise consumption repeatedly. */
-export function __resetCodexPageBindingForTests(): void {
+export function __resetAgentPageBindingForTests(): void {
   consumed = false;
   binding = null;
 }

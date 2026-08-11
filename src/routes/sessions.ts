@@ -114,31 +114,122 @@ function ledgerIssueStatusForSessionLink(repoId: string, issueId: string): "open
   return row?.status === "closed" ? "closed" : row?.status === "open" ? "open" : null;
 }
 
-// Issue 037fa85 — provider-session alias resolution for the Session Overview
-// view. One provider UUID (e.g. a Codex thread id) may surface in several
-// stores: console_sessions (id / provider_session_id / mandible_session_id),
-// the sessions registry (id / conversation_id), and the normalized
-// conversations index (conversations.session_id holds the Codex rollout UUID
-// for source='codex' rows). The resolver reports every distinct match with
-// explicit zero/one/many semantics; it never silently picks among candidates.
+// Issue 037fa85 / f59b5bd — provider-neutral session alias resolution for the
+// Session Overview view. One provider session UUID (a Codex thread id, a
+// Claude Code session id, ...) may surface in several stores: console_sessions
+// (id / provider_session_id / mandible_session_id), the sessions registry
+// (id / conversation_id), and the normalized conversations index
+// (conversations.session_id holds the provider-native session UUID). The
+// resolver reports every distinct match with explicit zero/one/many semantics;
+// it never silently picks among candidates. Refs may be full identifiers or
+// short prefixes (min 8 chars); a prefix matching multiple distinct
+// identities yields one match per identity.
 export type SessionResolveMatch = {
+  // The full identity string the (possibly short) ref resolved to. Clients
+  // must use this — not the raw ref — for follow-up provider-scoped calls.
+  matched_ref: string;
   mandible_session_id: string | null;
   console_session_id: string | null;
   conversation_id: string | null;
   sources: string[];
 };
 
-export function resolveCodexSessionMatches(ref: string): SessionResolveMatch[] {
+// Minimum prefix length for expansion, matching the 8-char short-ID
+// convention. Shorter refs still resolve by exact match (console session ids
+// can legitimately be short strings) but are never expanded, so a degenerate
+// 1-char "prefix" cannot fan out across the whole identity space.
+export const AGENT_SESSION_MIN_PREFIX_LENGTH = 8;
+const FULL_UUID_LENGTH = 36;
+const PREFIX_CANDIDATE_LIMIT = 20;
+
+function escapeLikePrefix(prefix: string): string {
+  return prefix.replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+// Expand a short ref into the full identity strings it prefixes across the
+// identity spaces. Indexed prefix range scans: conversations.session_id
+// (idx_conv_session), sessions.id (PK), sessions.conversation_id
+// (idx_sessions_conversation_id), console_sessions.id (PK). The two console
+// alias columns are unindexed, matching the existing exact-match predicate on
+// that small table (same access pattern src/routes/hooks.ts already uses).
+function expandAgentSessionRefPrefix(ref: string, provider?: string): string[] {
+  if (ref.length < AGENT_SESSION_MIN_PREFIX_LENGTH || ref.length >= FULL_UUID_LENGTH) {
+    return [];
+  }
+  const db = getDb();
+  const like = `${escapeLikePrefix(ref)}%`;
+  const candidates = new Set<string>();
+  const collect = (rows: Array<Record<string, unknown>>, column: string): void => {
+    for (const row of rows) {
+      const value = row[column];
+      if (typeof value === "string" && value && value !== ref) candidates.add(value);
+    }
+  };
+
+  if (provider) {
+    collect(db.prepare(`
+      SELECT DISTINCT session_id FROM conversations
+      WHERE session_id LIKE ? ESCAPE '\\' AND source = ?
+      LIMIT ${PREFIX_CANDIDATE_LIMIT}
+    `).all(like, provider) as Array<Record<string, unknown>>, "session_id");
+  } else {
+    collect(db.prepare(`
+      SELECT DISTINCT session_id FROM conversations
+      WHERE session_id LIKE ? ESCAPE '\\'
+      LIMIT ${PREFIX_CANDIDATE_LIMIT}
+    `).all(like) as Array<Record<string, unknown>>, "session_id");
+  }
+  collect(db.prepare(`
+    SELECT id FROM sessions WHERE id LIKE ? ESCAPE '\\' LIMIT ${PREFIX_CANDIDATE_LIMIT}
+  `).all(like) as Array<Record<string, unknown>>, "id");
+  collect(db.prepare(`
+    SELECT DISTINCT conversation_id FROM sessions
+    WHERE conversation_id LIKE ? ESCAPE '\\'
+    LIMIT ${PREFIX_CANDIDATE_LIMIT}
+  `).all(like) as Array<Record<string, unknown>>, "conversation_id");
+  const consoleRows = db.prepare(`
+    SELECT id, provider_session_id, mandible_session_id
+    FROM console_sessions
+    WHERE id LIKE ? ESCAPE '\\'
+       OR provider_session_id LIKE ? ESCAPE '\\'
+       OR mandible_session_id LIKE ? ESCAPE '\\'
+    LIMIT ${PREFIX_CANDIDATE_LIMIT}
+  `).all(like, like, like) as Array<{
+    id: string;
+    provider_session_id: string | null;
+    mandible_session_id: string | null;
+  }>;
+  for (const row of consoleRows) {
+    for (const value of [row.id, row.provider_session_id, row.mandible_session_id]) {
+      if (value && value !== ref && value.startsWith(ref)) candidates.add(value);
+    }
+  }
+
+  return Array.from(candidates);
+}
+
+function resolveExactAgentSessionMatches(ref: string, provider?: string): SessionResolveMatch[] {
   const db = getDb();
 
-  // conversations.session_id holds the Codex rollout UUID for source='codex'.
-  const conversationRow = db.prepare(`
-    SELECT id
-    FROM conversations
-    WHERE session_id = ? AND source = 'codex'
-    ORDER BY updated_at DESC
-    LIMIT 1
-  `).get(ref) as { id: string } | undefined;
+  // conversations.session_id holds the provider-native session UUID; when a
+  // provider is supplied it narrows this identity space (conversations.source
+  // uses the same provider vocabulary). The id-keyed stores below are
+  // provider-agnostic alias lookups.
+  const conversationRow = (provider
+    ? db.prepare(`
+        SELECT id
+        FROM conversations
+        WHERE session_id = ? AND source = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `).get(ref, provider)
+    : db.prepare(`
+        SELECT id
+        FROM conversations
+        WHERE session_id = ?
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `).get(ref)) as { id: string } | undefined;
   const conversationId = conversationRow?.id ?? null;
 
   const matches = new Map<string, SessionResolveMatch>();
@@ -157,6 +248,7 @@ export function resolveCodexSessionMatches(ref: string): SessionResolveMatch[] {
       return;
     }
     matches.set(key, {
+      matched_ref: ref,
       mandible_session_id: mandibleSessionId,
       console_session_id: consoleSessionId,
       conversation_id: conversationId,
@@ -197,6 +289,36 @@ export function resolveCodexSessionMatches(ref: string): SessionResolveMatch[] {
   }
 
   return Array.from(matches.values());
+}
+
+export function resolveAgentSessionMatches(ref: string, provider?: string): SessionResolveMatch[] {
+  const merged = new Map<string, SessionResolveMatch>();
+  const mergeAll = (candidateRef: string): void => {
+    for (const match of resolveExactAgentSessionMatches(candidateRef, provider)) {
+      const key = match.mandible_session_id
+        ?? (match.console_session_id ? `console:${match.console_session_id}` : `conversation:${match.matched_ref}`);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, match);
+        continue;
+      }
+      if (!existing.console_session_id && match.console_session_id) {
+        existing.console_session_id = match.console_session_id;
+      }
+      if (!existing.conversation_id && match.conversation_id) {
+        existing.conversation_id = match.conversation_id;
+      }
+      for (const source of match.sources) {
+        if (!existing.sources.includes(source)) existing.sources.push(source);
+      }
+    }
+  };
+
+  mergeAll(ref);
+  for (const candidate of expandAgentSessionRefPrefix(ref, provider)) {
+    mergeAll(candidate);
+  }
+  return Array.from(merged.values());
 }
 
 // Issue 037fa85 — bounded, cycle-safe descendant walk over sessions.parent_id.
@@ -563,25 +685,24 @@ export function registerSessionRoutes(
     sendJson(res, 200, { ok: true, identity_warning: identityWarning });
   }, { fileRpc: "deny" });
 
-  // Issue 037fa85 — provider-session alias resolution with explicit
-  // zero/one/many semantics. Registered before /api/sessions/:id so the static
-  // segment wins route matching. Read-only: the binding a client derives from
-  // this endpoint is display/navigation-only and must never gate mutations.
+  // Issue 037fa85 / f59b5bd — provider-neutral session alias resolution with
+  // explicit zero/one/many semantics. Registered before /api/sessions/:id so
+  // the static segment wins route matching. `provider` is an optional
+  // narrowing filter; `provider_session_id` accepts a full id or a short
+  // prefix (min 8 chars for expansion). Read-only: the binding a client
+  // derives from this endpoint is display/navigation-only and must never gate
+  // mutations.
   server.get("/api/sessions/resolve", (req, res) => {
     const query = req.query ?? {};
     const provider = (query.provider ?? "").trim();
     const providerSessionId = (query.provider_session_id ?? "").trim();
-    if (provider !== "codex") {
-      sendJson(res, 400, { error: "Unsupported provider — expected provider=codex" });
-      return;
-    }
     if (!providerSessionId) {
       sendJson(res, 400, { error: "Missing provider_session_id" });
       return;
     }
-    const matches = resolveCodexSessionMatches(providerSessionId);
+    const matches = resolveAgentSessionMatches(providerSessionId, provider || undefined);
     sendJson(res, 200, {
-      provider: "codex",
+      provider: provider || null,
       provider_session_id: providerSessionId,
       matches,
     });
@@ -614,7 +735,8 @@ export function registerSessionRoutes(
     // mandible session id would normally route the client to /:id/overview
     // instead, but including it keeps this endpoint honest either way.)
     const aliases = new Set<string>([providerSessionId]);
-    for (const match of resolveCodexSessionMatches(providerSessionId)) {
+    for (const match of resolveAgentSessionMatches(providerSessionId)) {
+      aliases.add(match.matched_ref);
       if (match.console_session_id) aliases.add(match.console_session_id);
       if (match.mandible_session_id) aliases.add(match.mandible_session_id);
     }
@@ -813,7 +935,8 @@ export function registerSessionRoutes(
     const providerAliases = new Set<string>();
     if (providerSessionId) {
       providerAliases.add(providerSessionId);
-      for (const match of resolveCodexSessionMatches(providerSessionId)) {
+      for (const match of resolveAgentSessionMatches(providerSessionId)) {
+        providerAliases.add(match.matched_ref);
         if (match.console_session_id) providerAliases.add(match.console_session_id);
         if (match.mandible_session_id) providerAliases.add(match.mandible_session_id);
       }

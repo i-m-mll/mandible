@@ -1,9 +1,9 @@
-// Issue 037fa85 — Session Overview view: per-session page with Codex IAB
-// page-level auto-binding.
+// Issue 037fa85 — Session Overview view: per-session page with page-level
+// agent session auto-binding.
 //
 // The view is generic first: it renders for any session id (from the picker or
 // a #/overview?session=<id> deep link). When the page consumed a tab-local
-// codex_session fragment at boot, the resolver decides the binding with
+// agent_session fragment at boot, the resolver decides the binding with
 // explicit zero/one/many semantics — exactly one match auto-binds, anything
 // else is shown honestly with the session picker as fallback. The binding is
 // display/navigation-only: it is never attached to a mutation request.
@@ -14,7 +14,7 @@ import {
   getSessionOverview,
   getSessions,
   registerProviderSession,
-  resolveProviderSession,
+  resolveAgentSession,
   type ProviderScopedLinkedIssue,
   type ProviderScopedOverview,
   type SessionOverview,
@@ -24,6 +24,7 @@ import {
   type SessionOverviewWorkUnit,
   type SessionResolveMatch,
 } from '../api';
+import { shortRouteId } from '../routing';
 import type { SessionRecord } from '../types/session';
 
 type BindingState =
@@ -39,7 +40,7 @@ type BindingState =
 
 export type SessionOverviewViewProps = {
   initialSessionId: string | null;
-  codexBinding: string | null;
+  agentBinding: string | null;
   iabDetected: boolean;
 };
 
@@ -65,7 +66,11 @@ function sessionText(session: Record<string, unknown>, key: string): string | nu
   return typeof value === 'string' && value ? value : null;
 }
 
-/** Update the #/overview session param in place so refreshes keep the selection. */
+/**
+ * Update the #/overview session param in place so refreshes keep the
+ * selection. Issue f59b5bd — the shareable URL carries the 8-char short form;
+ * the overview endpoints resolve prefixes with honest ambiguity handling.
+ */
 function writeSessionParamToHash(sessionId: string | null): void {
   if (typeof window === 'undefined') return;
   try {
@@ -73,7 +78,7 @@ function writeSessionParamToHash(sessionId: string | null): void {
     const [pathPart, queryPart] = hash.replace(/^#/, '').split('?');
     if (pathPart.replace(/^\//, '') !== 'overview') return;
     const params = new URLSearchParams(queryPart ?? '');
-    if (sessionId) params.set('session', sessionId);
+    if (sessionId) params.set('session', shortRouteId(sessionId));
     else params.delete('session');
     const query = params.toString();
     window.history.replaceState(
@@ -126,7 +131,7 @@ function ChildRow({ child }: { child: SessionOverviewChild }): JSX.Element {
   return (
     <tr>
       <td>
-        <a href={`#/overview?session=${encodeURIComponent(child.id)}`}>{shortUuid(child.id)}</a>
+        <a href={`#/overview?session=${encodeURIComponent(shortRouteId(child.id))}`}>{shortUuid(child.id)}</a>
       </td>
       <td>{child.app}</td>
       <td>
@@ -268,7 +273,7 @@ function SessionPicker({
 
 export function SessionOverviewView({
   initialSessionId,
-  codexBinding,
+  agentBinding,
   iabDetected,
 }: SessionOverviewViewProps): JSX.Element {
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(initialSessionId);
@@ -291,14 +296,15 @@ export function SessionOverviewView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialSessionId]);
 
-  // Resolve the page-local Codex binding once, only when no explicit session
-  // selection exists. Zero/one/many are surfaced honestly — only exactly one
+  // Resolve the page-local agent binding once, only when no explicit session
+  // selection exists. Provider-neutral, and the binding may be a full id or a
+  // short prefix. Zero/one/many are surfaced honestly — only exactly one
   // bindable match auto-selects.
   useEffect(() => {
-    if (!codexBinding || initialSessionId) return;
+    if (!agentBinding || initialSessionId) return;
     let cancelled = false;
     setBinding({ kind: 'resolving' });
-    resolveProviderSession('codex', codexBinding)
+    resolveAgentSession(agentBinding)
       .then((result) => {
         if (cancelled) return;
         const bindable = result.matches.filter((match) => match.mandible_session_id);
@@ -332,7 +338,7 @@ export function SessionOverviewView({
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [codexBinding]);
+  }, [agentBinding]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -343,7 +349,7 @@ export function SessionOverviewView({
     let cancelled = false;
     setOverviewLoading(true);
     setOverviewError(null);
-    getSessionOverview(selectedSessionId, codexBinding)
+    getSessionOverview(selectedSessionId, agentBinding)
       .then((payload) => {
         if (cancelled) return;
         setOverview(payload);
@@ -359,19 +365,22 @@ export function SessionOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, codexBinding, refreshToken]);
+  }, [selectedSessionId, agentBinding, refreshToken]);
 
   // Provider-scoped overview: loaded only for the conversation-only binding
-  // state, keyed on the page-local Codex UUID. Read-only rendering.
+  // state, keyed on the full identity the (possibly short) binding resolved
+  // to. Read-only rendering.
+  const providerScopedRef =
+    binding.kind === 'provider-scoped' ? binding.match.matched_ref || agentBinding : null;
   useEffect(() => {
-    if (binding.kind !== 'provider-scoped' || !codexBinding || selectedSessionId) {
+    if (binding.kind !== 'provider-scoped' || !providerScopedRef || selectedSessionId) {
       setProviderOverview(null);
       setProviderOverviewError(null);
       return;
     }
     let cancelled = false;
     setProviderOverviewError(null);
-    getProviderScopedOverview('codex', codexBinding)
+    getProviderScopedOverview('codex', providerScopedRef)
       .then((payload) => {
         if (!cancelled) setProviderOverview(payload);
       })
@@ -385,13 +394,15 @@ export function SessionOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [binding.kind, codexBinding, selectedSessionId, refreshToken]);
+  }, [binding.kind, providerScopedRef, selectedSessionId, refreshToken]);
 
   // Explicit, deliberate registration: creates a Mandible session row for the
-  // provider-known Codex session, then re-resolves so the view upgrades in
-  // place to the fully bound state. Never automatic.
+  // provider-known session, then re-resolves so the view upgrades in place to
+  // the fully bound state. Never automatic. Uses the resolved full identity,
+  // not the (possibly short) page binding.
   const handleRegister = useCallback(async () => {
-    if (!codexBinding || registering) return;
+    const registerRef = providerScopedRef ?? agentBinding;
+    if (!registerRef || registering) return;
     setRegistering(true);
     setRegisterError(null);
     try {
@@ -402,11 +413,11 @@ export function SessionOverviewView({
         null;
       await registerProviderSession({
         provider: 'codex',
-        provider_session_id: codexBinding,
+        provider_session_id: registerRef,
         cwd: meta?.cwd ?? null,
         branch: meta?.branch ?? null,
       });
-      const result = await resolveProviderSession('codex', codexBinding);
+      const result = await resolveAgentSession(registerRef);
       const bindable = result.matches.filter((match) => match.mandible_session_id);
       if (result.matches.length === 1 && bindable.length === 1) {
         setBinding({ kind: 'bound', match: bindable[0] });
@@ -422,7 +433,7 @@ export function SessionOverviewView({
     } finally {
       setRegistering(false);
     }
-  }, [codexBinding, providerOverview, registering]);
+  }, [agentBinding, providerScopedRef, providerOverview, registering]);
 
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);
@@ -464,28 +475,28 @@ export function SessionOverviewView({
         </div>
       </div>
 
-      {codexBinding ? (
+      {agentBinding ? (
         <div className="session-overview__binding" role="status">
           {binding.kind === 'resolving' && (
-            <span>Resolving Codex session {shortUuid(codexBinding)}…</span>
+            <span>Resolving agent session {shortUuid(agentBinding)}…</span>
           )}
           {binding.kind === 'bound' && (
             <span>
-              Bound to Codex session <code>{shortUuid(codexBinding)}</code> (page-local,
+              Bound to agent session <code>{shortUuid(agentBinding)}</code> (page-local,
               display-only).
             </span>
           )}
           {binding.kind === 'zero' && (
             <span>
-              No Mandible session matches Codex session <code>{shortUuid(codexBinding)}</code>.
+              No Mandible session matches agent session <code>{shortUuid(agentBinding)}</code>.
               Pick a session below.
             </span>
           )}
           {binding.kind === 'provider-scoped' && !selectedSessionId && (
             <span className="session-overview__provider-scoped-banner">
-              Codex session <code>{shortUuid(codexBinding)}</code> is known via its ingested
-              transcript but is not registered as a Mandible session. Showing provider-scoped
-              data (display-only).{' '}
+              Agent session <code>{shortUuid(providerScopedRef ?? agentBinding)}</code> is known
+              via its ingested transcript but is not registered as a Mandible session. Showing
+              provider-scoped data (display-only).{' '}
               <button
                 type="button"
                 disabled={registering}
@@ -502,12 +513,12 @@ export function SessionOverviewView({
           )}
           {binding.kind === 'many' && (
             <span>
-              Codex session <code>{shortUuid(codexBinding)}</code> matches multiple Mandible
+              Agent session <code>{shortUuid(agentBinding)}</code> matches multiple Mandible
               sessions — pick one explicitly.
             </span>
           )}
           {binding.kind === 'error' && (
-            <span>Codex session resolution failed: {binding.message}</span>
+            <span>Agent session resolution failed: {binding.message}</span>
           )}
         </div>
       ) : iabDetected && !selectedSessionId ? (
@@ -519,7 +530,7 @@ export function SessionOverviewView({
       ) : null}
 
       {binding.kind === 'many' && !selectedSessionId ? (
-        <ul className="session-overview__picker" aria-label="Codex session matches">
+        <ul className="session-overview__picker" aria-label="Agent session matches">
           {binding.matches.map((match, index) => (
             <li key={`${match.mandible_session_id ?? match.console_session_id ?? index}`}>
               <button
@@ -585,7 +596,7 @@ export function SessionOverviewView({
                 label="Work units"
                 columns={['Issue', 'Repo', 'Branch', 'State', 'Kind', 'Created']}
                 count={providerOverview.work_units.items.length}
-                emptyText="No work units matched this Codex session id."
+                emptyText="No work units matched this agent session id."
               >
                 {providerOverview.work_units.items.map((unit) => (
                   <WorkUnitRow key={unit.id} unit={unit} />
@@ -604,7 +615,7 @@ export function SessionOverviewView({
                 label="Conversations"
                 columns={['Conversation', 'Source', 'Blocks', 'Started', 'Ended']}
                 count={providerOverview.conversations.items.length}
-                emptyText="No indexed conversations for this Codex session."
+                emptyText="No indexed conversations for this agent session."
               >
                 {providerOverview.conversations.items.map((conversation) => (
                   <ConversationRow key={conversation.id} conversation={conversation} />

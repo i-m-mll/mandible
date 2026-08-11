@@ -167,3 +167,66 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
     expect(screen.queryByText('Select a request to view details')).toBeNull();
   });
 });
+
+// Issue f59b5bd — deep links carry the 8-char short form; the view resolves
+// prefixes against the loaded lists or via the detail route, with honest
+// ambiguity handling.
+describe('AuthQueueView short-form request params', () => {
+  it('selects the unique prefix match from the loaded queue without fetching', async () => {
+    const fetchMock = stubFetchWithDetailRoute(() => null);
+    const fullId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
+    const uuidRequest: AuthRequest = {
+      ...pendingRequest,
+      id: fullId,
+      // Carry the body fields so selection does not trigger body hydration.
+      diff_summary: '',
+      spec_content: '',
+      output: '',
+    };
+
+    renderDeepLinkedView([uuidRequest], fullId.slice(0, 8));
+
+    // Title renders in the sidebar row AND the detail pane once selected.
+    const occurrences = await screen.findAllByText(/Self-merge: feature\/x/);
+    expect(occurrences.length).toBeGreaterThan(1);
+    expect(screen.queryByText('Select a request to view details')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining('/api/auth/request/'),
+      expect.anything(),
+    );
+  });
+
+  it('fetches a short id outside the loaded lists from the detail route', async () => {
+    const shortId = REMOTE_ID.slice(0, 8);
+    const fetchMock = stubFetchWithDetailRoute((id) =>
+      REMOTE_ID.startsWith(id)
+        ? new Response(JSON.stringify(remoteDetailPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : null,
+    );
+
+    renderDeepLinkedView([], shortId);
+
+    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/auth/request/${encodeURIComponent(shortId)}`,
+      expect.anything(),
+    );
+  });
+
+  it('shows an honest ambiguity state for a prefix matching multiple requests', async () => {
+    stubFetchWithDetailRoute(() =>
+      new Response(JSON.stringify({ error: "Ambiguous prefix 'req-ambi' — matches 2 requests." }), {
+        status: 409,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    renderDeepLinkedView([], 'req-ambiguous-prefix');
+
+    expect(await screen.findByText(/is ambiguous — it matches multiple requests/)).toBeTruthy();
+    expect(screen.queryByText('Select a request to view details')).toBeNull();
+  });
+});
