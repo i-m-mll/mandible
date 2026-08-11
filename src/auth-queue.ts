@@ -10,6 +10,7 @@ import {
   authorizedMergeSignerLines,
   extractSuccessfulMergeCommitSha,
   verifyAuthorizedMergeCommitSignature,
+  verifyMergeCommitSignature,
   verifySuccessfulMergeCommitSignature,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
@@ -370,6 +371,17 @@ export interface AuthQueueOptions {
 
 const GIT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const REFS_HEADS_PREFIX = "refs/heads/";
+
+// Issue 08a5f04 (review F2) — hierarchical/multi-source merge commands. The
+// daemon cannot bind a single reviewed head to every source such a command
+// merges, so they are excluded from atomic execution and from candidate
+// auto-recompute (full execution-descriptor redesign tracked as issue fff66b9).
+const HIERARCHICAL_MERGE_COMMAND_RE = /(^|\s)--hierarchical(?:\s|$)/;
+
+// Issue 08a5f04 (review F1) — upper bound on the number of first-parent
+// commits a base transition may contain and still qualify for provenance
+// verification. Longer transitions fail closed to the strict requeue error.
+const MAX_BASE_TRANSITION_COMMITS = 32;
 
 /**
  * Issue 93d978e — batches merge-side work-unit ancestry checks.
@@ -2046,7 +2058,10 @@ export class AuthQueue {
         values.push(payload[field]);
       }
     }
-    const invalidatesMergeCandidate = ["repo", "base_branch", "head_branch", "merge_head_sha", "cwd"]
+    // Issue 08a5f04 (review F2) — `command` is part of the reviewed merge
+    // inputs: a mutated command (e.g. hierarchical source injection) must drop
+    // the retained candidate exactly like a branch or SHA change.
+    const invalidatesMergeCandidate = ["repo", "base_branch", "head_branch", "merge_head_sha", "cwd", "command"]
       .some((field) => field in payload);
     if (invalidatesMergeCandidate) {
       updates.push("merge_preflight_base_sha = NULL");
@@ -2441,7 +2456,7 @@ export class AuthQueue {
       request.execution_mode !== "remote" &&
       isAuthMergeCommand(request) &&
       candidateExact &&
-      !/(^|\s)--hierarchical(?:\s|$)/.test(request.command) &&
+      !HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) &&
       !this.hasNativeMergeHooks(request.cwd) &&
       signerLines.length > 0
     );
@@ -2511,6 +2526,16 @@ export class AuthQueue {
 
   private approveTimePreflightEnv(request: AuthRequest): NodeJS.ProcessEnv {
     const env: NodeJS.ProcessEnv = {};
+    // Issue 08a5f04 (review F3) — every daemon-started merge carries the
+    // reviewed head SHA. cli/auth-merge.sh refuses to merge a source ref that
+    // is not exactly at this commit (and merges the exact reviewed object on
+    // the non-atomic path), closing the verify-then-merge TOCTOU window on
+    // every execution path, not just atomic mode. merge_head_sha is always
+    // populated for local merges before approval (see
+    // resolveExecutionContextBeforeApproval).
+    if (isAuthMergeCommand(request) && request.merge_head_sha) {
+      env.MANDIBLE_AUTH_EXPECTED_HEAD_SHA = request.merge_head_sha;
+    }
     if (
       request.merge_candidate_tree_sha &&
       request.merge_candidate_pin_sha &&
@@ -2744,21 +2769,37 @@ export class AuthQueue {
   /**
    * Issue 08a5f04 — approve-time recompute for pure base drift. Returns the
    * refreshed request after a clean re-preflight and re-pin; returns null when
-   * the request is ineligible (head drift, remote mode, busy repo execution
-   * chain, strict pin, or a non-clean-non-conflict preflight) so the caller
-   * falls back to the strict blocking error; throws merge_check_failed with
-   * conflict context when the recomputed candidate no longer merges cleanly.
+   * the request is ineligible (head drift, unaccounted base transition,
+   * corrupted retained pin, hierarchical command, remote mode, busy repo
+   * execution chain, strict pin, or a non-clean-non-conflict preflight) so the
+   * caller falls back to the strict blocking error; throws merge_check_failed
+   * with conflict context when the recomputed candidate no longer merges
+   * cleanly, and with the strict requeue message when a fresh pin cannot be
+   * obtained (review F4 — never proceed unpinned).
    */
   private recomputeStaleCandidateForApproval(request: AuthRequest): AuthRequest | null {
     if (this.strictPinRequested(request)) return null;
     if (
       request.execution_mode === "remote" ||
       !isAuthMergeCommand(request) ||
+      // Review F2 — a hierarchical/multi-source command has no single reviewed
+      // head the recompute could re-attest; it keeps strict behavior.
+      HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) ||
       !request.cwd ||
       !request.base_branch ||
       !request.head_branch ||
-      !request.merge_head_sha
+      !request.merge_head_sha ||
+      !request.merge_preflight_base_sha ||
+      !request.merge_candidate_pin_sha
     ) {
+      return null;
+    }
+    // Review F5 — recompute rescues *pure base drift* only: the retained pin
+    // must still be exactly the reviewed candidate (intact commit, tree, both
+    // parents, and candidate ref). A deleted, corrupted, or re-pointed pin is
+    // tamper evidence, not drift, and stays strictly blocked even when the
+    // base also moved.
+    if (!this.mergeCandidatePinIsValid(request)) {
       return null;
     }
     // Head drift stays strict: recompute applies only while the head branch
@@ -2771,6 +2812,15 @@ export class AuthQueue {
     // Re-entrancy guard: never run a preflight against a repo whose execution
     // chain is busy (a merge executing, or a revalidation pass in flight).
     if (this.executionChains.has(this.chainKeyForRequest(request))) {
+      return null;
+    }
+    // Review F1 — the base transition must be fully accounted for by
+    // signature-verified, queue-recorded merges before any recompute.
+    const currentBase = this.resolveBranchHeadForCheck(request.cwd, request.base_branch);
+    if (!currentBase || currentBase === request.merge_preflight_base_sha) {
+      return null;
+    }
+    if (!this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha, currentBase)) {
       return null;
     }
     const report = this.checkMergeIndependence({
@@ -2793,13 +2843,21 @@ export class AuthQueue {
     if (report.status !== "clean" || !report.target_head_sha) {
       return null;
     }
-    const refreshed = this.repinMergeCandidate(request, report.target_head_sha, report.queue_fingerprint ?? null);
+    // Review F1/F6 — the preflight must have run against exactly the base
+    // whose transition provenance was just verified; a ref that moved again
+    // in between falls back to the strict error.
+    if (report.target_head_sha !== currentBase) {
+      return null;
+    }
+    const refreshed = this.repinMergeCandidate(request, currentBase, report.queue_fingerprint ?? null, {
+      failClosed: true,
+    });
     if (refreshed) {
       authLog("info", "auth_merge_candidate_recomputed", {
         subsystem: "auth",
         auth_request_id: request.id,
         trigger: "approve",
-        base_sha: report.target_head_sha,
+        base_sha: currentBase,
         pin_sha: refreshed.merge_candidate_pin_sha,
       });
     }
@@ -2807,35 +2865,207 @@ export class AuthQueue {
   }
 
   /**
+   * Issue 08a5f04 (review F1) — is the protected-base transition
+   * `oldBase..newBase` fully accounted for by authorized queue merges?
+   *
+   * Verified, all of:
+   *  1. `newBase` is reachable from `oldBase` along first parents only: the
+   *     first-parent chain from `newBase` ends exactly at `oldBase`, with at
+   *     most MAX_BASE_TRANSITION_COMMITS commits (this subsumes the ancestor
+   *     check and refuses history rewrites and merged-away bases).
+   *  2. Every commit on that chain is the recorded merge commit of a distinct
+   *     successfully completed auth merge request for this repo and base
+   *     branch — matched against the `MANDIBLE_MERGE_RESULT` merge SHA the
+   *     merge script persisted into the completed request's output — and the
+   *     commit's second parent is exactly that request's reviewed
+   *     `merge_head_sha`.
+   *  3. Every commit on that chain carries a trusted SSH signature from an
+   *     active registered signing credential (`git verify-commit` against the
+   *     user registry via verifyMergeCommitSignature — the same verifier used
+   *     for post-merge signature evidence).
+   *
+   * Anything else — non-descendant rewrites, direct commits to the protected
+   * branch, unsigned or unrecorded merges, hierarchical-merge transitions
+   * (whose intermediate commits have no per-commit record), or transitions
+   * longer than the cap — returns false and keeps the strict requeue error.
+   */
+  private baseTransitionAccountedFor(
+    request: AuthRequest,
+    oldBase: string,
+    newBase: string,
+  ): boolean {
+    const cwd = request.cwd;
+    const baseBranch = request.base_branch;
+    const refuse = (reason: string, extra: Record<string, unknown> = {}): false => {
+      authLog("warn", "auth_merge_base_transition_unaccounted", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        old_base: oldBase,
+        new_base: newBase,
+        reason,
+        ...extra,
+      });
+      return false;
+    };
+    if (!cwd || !baseBranch) {
+      return refuse("missing_repo_context");
+    }
+    const git = (args: string[]): string => execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    }).trim();
+    let chain: string[];
+    try {
+      chain = git(["rev-list", "--first-parent", newBase, "--not", oldBase])
+        .split(/\s+/)
+        .filter(Boolean);
+    } catch {
+      return refuse("first_parent_chain_unresolvable");
+    }
+    if (chain.length === 0) {
+      return refuse("empty_transition");
+    }
+    if (chain.length > MAX_BASE_TRANSITION_COMMITS) {
+      return refuse("transition_too_long", { commits: chain.length });
+    }
+    if (chain[0] !== newBase) {
+      return refuse("first_parent_chain_mismatch");
+    }
+    // Recorded evidence: completed successful queue merges for this repo and
+    // base branch, keyed by the merge commit their execution recorded.
+    const completedRows = this.db.prepare(
+      "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' " +
+        "AND exit_code = 0 AND base_branch = ? AND id != ?",
+    ).all(baseBranch, request.id) as Record<string, unknown>[];
+    const repoKeys = request.repo ? canonicalRepoKeysForRef(this.db, request.repo) : null;
+    const recorded = new Map<string, AuthRequest>();
+    for (const row of completedRows.map((raw) => mapRow(raw))) {
+      if (request.repo) {
+        if (!this.repoRefsMatch(request.repo, repoKeys!, row.repo ?? null)) continue;
+      } else if (row.cwd !== request.cwd && row.target_repo_root !== request.cwd) {
+        continue;
+      }
+      const mergeSha = extractSuccessfulMergeCommitSha(row.output);
+      if (mergeSha) recorded.set(mergeSha, row);
+    }
+    for (let index = 0; index < chain.length; index += 1) {
+      const commit = chain[index]!;
+      const expectedFirstParent = chain[index + 1] ?? oldBase;
+      let firstParent: string;
+      try {
+        firstParent = git(["rev-parse", "--verify", `${commit}^1`]);
+      } catch {
+        return refuse("first_parent_unresolvable", { commit });
+      }
+      if (firstParent !== expectedFirstParent) {
+        return refuse("first_parent_chain_broken", { commit });
+      }
+      const record = recorded.get(commit);
+      if (!record) {
+        return refuse("commit_not_a_recorded_queue_merge", { commit });
+      }
+      if (!record.merge_head_sha) {
+        return refuse("recorded_merge_missing_reviewed_head", {
+          commit,
+          recorded_request_id: record.id,
+        });
+      }
+      let secondParent: string | null;
+      try {
+        secondParent = git(["rev-parse", "--verify", `${commit}^2`]);
+      } catch {
+        secondParent = null;
+      }
+      if (secondParent !== record.merge_head_sha) {
+        return refuse("merge_second_parent_not_reviewed_head", {
+          commit,
+          recorded_request_id: record.id,
+        });
+      }
+      const signature = verifyMergeCommitSignature(this.db, cwd, commit);
+      if (!signature.verified) {
+        return refuse("signature_not_trusted", {
+          commit,
+          signature_reason: signature.reason,
+        });
+      }
+    }
+    return true;
+  }
+
+  /**
    * Issue 08a5f04 — recompute and re-pin a merge candidate against the current
-   * base. Fully synchronous (no awaits): callers rely on the drop → update →
-   * re-pin sequence being atomic with respect to the event loop. Returns the
-   * refreshed request row, or null when the candidate could not be recomputed
-   * cleanly; a partial refresh fails closed through the exactness guard
-   * (an old pin never validates against a new preflight base).
+   * base. Fully synchronous (no awaits): callers rely on the sequence being
+   * atomic with respect to the event loop.
+   *
+   * Fail-closed ordering (review F4): the replacement pin commit is created
+   * *before* any recorded state changes, the retained candidate ref is then
+   * swapped old → new with a compare-and-swap, and only then are the preflight
+   * fields and pin updated in a single statement. Any failure leaves the
+   * previous (strictly blocking) pin state fully intact. With
+   * `failClosed: true` a failure throws the strict requeue error so a
+   * previously-pinned request can never proceed unpinned; with
+   * `failClosed: false` (background sibling refresh) a failure returns null
+   * and the stale pin keeps blocking approval.
    */
   private repinMergeCandidate(
     request: AuthRequest,
     targetHeadSha: string,
     queueFingerprint: string | null,
+    options: { failClosed: boolean },
   ): AuthRequest | null {
-    if (!request.cwd || !request.merge_head_sha) return null;
+    const fail = (reason: string): null => {
+      authLog("warn", "auth_merge_candidate_repin_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        base_sha: targetHeadSha,
+        reason,
+      });
+      if (options.failClosed) {
+        throw new AuthQueueError(
+          "merge_check_failed",
+          "Reviewed merge inputs or retained candidate changed; requeue and reapprove this request.",
+        );
+      }
+      return null;
+    };
+    if (!request.cwd || !request.merge_head_sha || !request.merge_candidate_pin_sha) {
+      return fail("missing_repin_inputs");
+    }
     const candidate = this.mergeTree(request.cwd, targetHeadSha, request.merge_head_sha);
-    if (candidate.status !== "clean") return null;
-    this.dropMergeCandidate(request);
+    if (candidate.status !== "clean" || !candidate.tree) {
+      return fail(`merge_tree_${candidate.status}`);
+    }
+    let pinSha: string;
+    try {
+      pinSha = this.createMergeCandidatePin({
+        ...request,
+        merge_preflight_base_sha: targetHeadSha,
+        merge_candidate_tree_sha: candidate.tree,
+      });
+    } catch (error) {
+      return fail(errorMessage(error) ?? "pin_commit_creation_failed");
+    }
+    try {
+      execFileSync(
+        "git",
+        ["update-ref", this.mergeCandidateRef(request.id), pinSha, request.merge_candidate_pin_sha],
+        {
+          cwd: request.cwd,
+          env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+          stdio: "ignore",
+        },
+      );
+    } catch (error) {
+      return fail(errorMessage(error) ?? "candidate_ref_swap_failed");
+    }
     this.db.prepare(
       `UPDATE auth_requests SET merge_preflight_base_sha = ?,
         merge_preflight_queue_fingerprint = ?, merge_candidate_tree_sha = ?,
+        merge_candidate_pin_sha = ?, merge_atomic_enabled = 0,
         updated_at = ? WHERE id = ?`,
-    ).run(targetHeadSha, queueFingerprint, candidate.tree, this.now(), request.id);
-    const staged = this.readRequestByExactId(request.id);
-    if (!staged) return null;
-    const pinSha = this.cacheMergeCandidate(staged);
-    if (pinSha) {
-      this.db.prepare(
-        "UPDATE auth_requests SET merge_candidate_pin_sha = ?, updated_at = ? WHERE id = ?",
-      ).run(pinSha, this.now(), request.id);
-    }
+    ).run(targetHeadSha, queueFingerprint, candidate.tree, pinSha, this.now(), request.id);
     return this.readRequestByExactId(request.id);
   }
 
@@ -4252,25 +4482,40 @@ export class AuthQueue {
     if (
       request.execution_mode === "remote" ||
       !isAuthMergeCommand(request) ||
+      // Review F2 — hierarchical/multi-source commands are never re-attested.
+      HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) ||
       !request.cwd ||
       !request.head_branch ||
       !request.merge_head_sha ||
-      !report.target_head_sha
+      !report.target_head_sha ||
+      !request.merge_preflight_base_sha ||
+      !request.merge_candidate_pin_sha
     ) {
       return null;
     }
     if (this.resolveBranchHeadForCheck(request.cwd, request.head_branch) !== request.merge_head_sha) {
       return null;
     }
-    const queueFingerprint = report.queue_fingerprint ?? null;
-    const alreadyFresh =
-      request.merge_preflight_base_sha === report.target_head_sha &&
-      request.merge_preflight_queue_fingerprint === queueFingerprint &&
-      (!request.merge_candidate_pin_sha || this.mergeCandidatePinIsValid(request));
-    if (alreadyFresh) {
+    // Review F5 — same pure-base-drift rule as the approve-time recompute: a
+    // deleted/corrupted/re-pointed retained pin is never silently repaired.
+    if (!this.mergeCandidatePinIsValid(request)) {
       return null;
     }
-    const refreshed = this.repinMergeCandidate(request, report.target_head_sha, queueFingerprint);
+    const queueFingerprint = report.queue_fingerprint ?? null;
+    if (request.merge_preflight_base_sha === report.target_head_sha) {
+      // Base unmoved: the retained pin is still exact. A stale queue
+      // fingerprint alone only disables shell preflight reuse, which is safe.
+      return null;
+    }
+    // Review F1 — the base advance must be fully accounted for by authorized
+    // queue merges (the sibling merge that triggered this pass, in the normal
+    // case) before the candidate is proactively re-attested.
+    if (!this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha, report.target_head_sha)) {
+      return null;
+    }
+    const refreshed = this.repinMergeCandidate(request, report.target_head_sha, queueFingerprint, {
+      failClosed: false,
+    });
     if (refreshed) {
       authLog("info", "auth_merge_candidate_recomputed", {
         subsystem: "auth",

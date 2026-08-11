@@ -160,6 +160,67 @@ function configureSigningCredential(
   return { credentialId: credential.id, keyPath, operatorId: operator.id };
 }
 
+// Issue 08a5f04 (review F1) — helpers that advance main through a *genuine*
+// authorized queue merge: a signed merge commit recorded by a successfully
+// completed auth request (MANDIBLE_MERGE_RESULT marker + reviewed
+// merge_head_sha), which is exactly what base-transition provenance
+// verification demands. Requires configureSigningCredential on the repo first.
+function insertSiblingMergeRequest(
+  db: InstanceType<typeof Database>,
+  repo: string,
+  requestId: string,
+  sourceBranch: string,
+  status: "executing" | "completed" = "executing",
+): void {
+  const now = 100;
+  db.prepare(
+    `INSERT INTO auth_requests (
+      id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
+      merge_head_sha, status, created_at, updated_at, expires_at, output, execution_mode,
+      files_changed, additions, deletions, approval_source
+    ) VALUES (?, NULL, 'merge', ?, ?, ?, ?, 'main', ?, ?, ?, ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual')`
+  ).run(
+    requestId,
+    `mandible auth merge ${sourceBranch} --into main`,
+    `Merge ${sourceBranch}`,
+    repo,
+    path.basename(repo),
+    sourceBranch,
+    git(repo, ["rev-parse", sourceBranch]),
+    status,
+    now,
+    now,
+    now + 100_000,
+  );
+}
+
+function signedMergeIntoMain(repo: string, sourceBranch: string): string {
+  git(repo, ["checkout", "main"]);
+  git(repo, ["merge", "--no-ff", "--no-edit", "-S", sourceBranch]);
+  return git(repo, ["rev-parse", "main"]);
+}
+
+function mergeResultOutput(mergeSha: string): string {
+  return `MANDIBLE_MERGE_RESULT {"merge_sha":"${mergeSha}"}\n`;
+}
+
+// Authorized base advance recorded directly as a finalized completed request
+// (no live finalizer involvement) — for approve-time recompute tests.
+function advanceMainViaAuthorizedMerge(
+  db: InstanceType<typeof Database>,
+  repo: string,
+  sourceBranch: string,
+  requestId: string,
+): string {
+  insertSiblingMergeRequest(db, repo, requestId, sourceBranch, "completed");
+  const mergeSha = signedMergeIntoMain(repo, sourceBranch);
+  const now = 100;
+  db.prepare(
+    "UPDATE auth_requests SET exit_code = 0, resolved_at = ?, merge_finalized_at = ?, output = ? WHERE id = ?",
+  ).run(now, now, mergeResultOutput(mergeSha), requestId);
+  return mergeSha;
+}
+
 function createAuthCheckRepo(): string {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-check-"));
   git(repo, ["init", "-b", "main"]);
@@ -2200,15 +2261,17 @@ describe("auth queue", () => {
     }
   });
 
-  // Issue 08a5f04 — pure base drift no longer blocks approval: the stale
+  // Issue 08a5f04 — pure base drift no longer blocks approval when the base
+  // transition is fully accounted for by an authorized queue merge: the stale
   // candidate is recomputed against the current base within the same approval
   // action, re-pinned, and atomic mode is re-evaluated with the fresh pin.
-  it("recomputes a stale pinned candidate on approve after pure base drift", async () => {
+  it("recomputes a stale pinned candidate on approve after an authorized sibling merge", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
     try {
       commitOnBranch(repo, "feature/base-drift", { "feature.txt": "feature\n" });
+      commitOnBranch(repo, "feature/sibling", { "sibling.txt": "sibling\n" });
       registerWorkRepo(db, repo);
       git(repo, ["config", "core.hooksPath", ".git/hooks"]);
       configureSigningCredential(db, repo, "ssh_key");
@@ -2243,10 +2306,9 @@ describe("auth queue", () => {
       const originalPin = request.merge_candidate_pin_sha;
       const originalBase = request.merge_preflight_base_sha;
       expect(originalPin).toMatch(/^[0-9a-f]{40,64}$/);
-      writeFile(repo, "main-only.txt", "main\n");
-      git(repo, ["add", "."]);
-      git(repo, ["commit", "-m", "move main"]);
-      const newBase = git(repo, ["rev-parse", "main"]);
+      // Genuine authorized queue merge: signed merge commit + completed
+      // request recording it (review F1 — raw SHA movement is refused now).
+      const newBase = advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-sibling");
       expect(newBase).not.toBe(originalBase);
 
       const approved = queue.approve(request.id);
@@ -2265,6 +2327,8 @@ describe("auth queue", () => {
       expect(git(repo, ["rev-parse", `${env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA}^1`])).toBe(newBase);
       expect(git(repo, ["rev-parse", `${env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA}^2`]))
         .toBe(request.merge_head_sha);
+      // Review F3 — the reviewed head accompanies every daemon-started merge.
+      expect(env.MANDIBLE_AUTH_EXPECTED_HEAD_SHA).toBe(request.merge_head_sha);
       // Atomic mode re-evaluated with the fresh pin.
       expect(env.MANDIBLE_AUTH_ATOMIC).toBe("1");
       queue.dispose();
@@ -2280,7 +2344,9 @@ describe("auth queue", () => {
     const calls: string[] = [];
     try {
       commitOnBranch(repo, "feature/base-conflict", { "shared.txt": "feature\n" });
+      commitOnBranch(repo, "feature/conflicting-sibling", { "shared.txt": "conflicting main change\n" });
       registerWorkRepo(db, repo);
+      configureSigningCredential(db, repo, "ssh_key");
 
       const queue = new AuthQueue({
         db,
@@ -2310,9 +2376,9 @@ describe("auth queue", () => {
         cwd: repo,
       });
       expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
-      writeFile(repo, "shared.txt", "conflicting main change\n");
-      git(repo, ["add", "."]);
-      git(repo, ["commit", "-m", "conflicting move of main"]);
+      // Authorized queue merge whose content conflicts with the reviewed head:
+      // provenance passes, the recomputed candidate does not merge cleanly.
+      advanceMainViaAuthorizedMerge(db, repo, "feature/conflicting-sibling", "merge-conflicting");
 
       let thrown: unknown;
       try {
@@ -3460,6 +3526,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
       commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
       registerWorkRepo(db, repo);
+      configureSigningCredential(db, repo, "ssh_key");
       const repoName = path.basename(repo);
 
       const pendingB = queue.submit({
@@ -3475,21 +3542,11 @@ describe("auth queue", () => {
       const originalPin = pendingB.merge_candidate_pin_sha;
       expect(originalPin).toMatch(/^[0-9a-f]{40,64}$/);
 
-      const now = 100;
-      db.prepare(
-        `INSERT INTO auth_requests (
-          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
-          status, created_at, updated_at, expires_at, output, execution_mode,
-          files_changed, additions, deletions, approval_source
-        ) VALUES (
-          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
-          'Merge feature/a', ?, ?, 'main', 'feature/a',
-          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
-        )`
-      ).run(repo, repoName, now, now, now + 1000);
-      git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
-      queue.setResult("merge-a", 0, "ok");
+      // Review F1 — the sibling merge is a genuine authorized queue merge:
+      // signed, and recorded with its merge SHA by the completed request.
+      insertSiblingMergeRequest(db, repo, "merge-a", "feature/a");
+      const siblingMergeSha = signedMergeIntoMain(repo, "feature/a");
+      queue.setResult("merge-a", 0, mergeResultOutput(siblingMergeSha));
       await queue.drainFinalizers();
 
       const newBase = git(repo, ["rev-parse", "main"]);
@@ -3533,20 +3590,10 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/other", { "other.txt": "other\n" });
       commitOnBranch(repo, "feature/dep", { "dep.txt": "dep\n" });
       registerWorkRepo(db, repo);
+      configureSigningCredential(db, repo, "ssh_key");
       const repoName = path.basename(repo);
 
-      const now = 100;
-      db.prepare(
-        `INSERT INTO auth_requests (
-          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
-          status, created_at, updated_at, expires_at, output, execution_mode,
-          files_changed, additions, deletions, approval_source
-        ) VALUES (
-          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
-          'Merge feature/a', ?, ?, 'main', 'feature/a',
-          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
-        )`
-      ).run(repo, repoName, now, now, now + 1000);
+      insertSiblingMergeRequest(db, repo, "merge-a", "feature/a");
 
       // Submitted first: without prioritization this request would be
       // revalidated first (created_at order).
@@ -3574,9 +3621,8 @@ describe("auth queue", () => {
       expect(other.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
       expect(dep.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
 
-      git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
-      queue.setResult("merge-a", 0, "ok");
+      const siblingMergeSha = signedMergeIntoMain(repo, "feature/a");
+      queue.setResult("merge-a", 0, mergeResultOutput(siblingMergeSha));
       await queue.drainFinalizers();
 
       const newBase = git(repo, ["rev-parse", "main"]);
@@ -3695,6 +3741,7 @@ describe("auth queue", () => {
       commitOnBranch(repo, "feature/c", { "c.txt": "c\n" });
       commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
       registerWorkRepo(db, repo);
+      configureSigningCredential(db, repo, "ssh_key");
       const repoName = path.basename(repo);
 
       const execRequest = queue.submit({
@@ -3720,21 +3767,9 @@ describe("auth queue", () => {
       const staleBase = pendingC.merge_preflight_base_sha;
       queue.approve(execRequest.id);
 
-      const now = 100;
-      db.prepare(
-        `INSERT INTO auth_requests (
-          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
-          status, created_at, updated_at, expires_at, output, execution_mode,
-          files_changed, additions, deletions, approval_source
-        ) VALUES (
-          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
-          'Merge feature/a', ?, ?, 'main', 'feature/a',
-          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
-        )`
-      ).run(repo, repoName, now, now, now + 1000);
-      git(repo, ["checkout", "main"]);
-      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
-      queue.setResult("merge-a", 0, "ok");
+      insertSiblingMergeRequest(db, repo, "merge-a", "feature/a");
+      const siblingMergeSha = signedMergeIntoMain(repo, "feature/a");
+      queue.setResult("merge-a", 0, mergeResultOutput(siblingMergeSha));
 
       await new Promise((resolve) => setTimeout(resolve, 150));
       // The revalidation pass is parked behind the executing same-repo merge:
@@ -3756,6 +3791,352 @@ describe("auth queue", () => {
       db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
+  });
+
+  // Issue 08a5f04 (review F5/F6) — fail-closed guards around candidate
+  // recompute: pin corruption, unaccounted or rewritten base transitions,
+  // command mutation, pin-cache failure, remote requests, and races between
+  // provenance verification and re-pinning.
+  describe("candidate recompute fail-closed guards", () => {
+    const STRICT_MESSAGE = /Reviewed merge inputs or retained candidate changed; requeue and reapprove/;
+
+    function createGuardQueue(db: Db, calls: Array<NodeJS.ProcessEnv | undefined>): AuthQueue {
+      return new AuthQueue({
+        db,
+        executor: async (options) => {
+          calls.push(options.env);
+          return {
+            exit_code: 1,
+            signal: null,
+            stdout: "",
+            stderr: "fixture stop\n",
+            output: "fixture stop\n",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+    }
+
+    function submitPinnedRequest(
+      queue: AuthQueue,
+      repo: string,
+      headBranch: string,
+      command = `mandible auth merge ${headBranch} --into main`,
+    ) {
+      const request = queue.submit({
+        type: "merge",
+        command,
+        title: `Merge ${headBranch}`,
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: headBranch,
+        merge_head_sha: git(repo, ["rev-parse", headBranch]),
+        cwd: repo,
+      });
+      expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+      return request;
+    }
+
+    // Review F5 — a corrupted or deleted retained candidate at an UNMOVED base
+    // is tamper evidence: approval refuses with the original strict message.
+    it("refuses approval when the retained candidate is corrupted at a stable base", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/ref-corrupt", { "rc.txt": "rc\n" });
+        commitOnBranch(repo, "feature/pin-corrupt", { "pc.txt": "pc\n" });
+        registerWorkRepo(db, repo);
+
+        // Deleted candidate ref.
+        const refCorrupt = submitPinnedRequest(queue, repo, "feature/ref-corrupt");
+        git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${refCorrupt.id}`]);
+        expect(() => queue.approve(refCorrupt.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(refCorrupt.id)?.status).toBe("pending");
+
+        // Re-pointed pin (recorded pin no longer the reviewed candidate).
+        const pinCorrupt = submitPinnedRequest(queue, repo, "feature/pin-corrupt");
+        db.prepare("UPDATE auth_requests SET merge_candidate_pin_sha = ? WHERE id = ?")
+          .run(git(repo, ["rev-parse", "main"]), pinCorrupt.id);
+        expect(() => queue.approve(pinCorrupt.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(pinCorrupt.id)?.status).toBe("pending");
+
+        expect(calls).toHaveLength(0);
+      } finally {
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F6 — a base rewritten to a non-descendant is never treated as
+    // sibling drift.
+    it("refuses recompute when the base was rewritten to a non-descendant", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/rewrite", { "rw.txt": "rw\n" });
+        registerWorkRepo(db, repo);
+        const request = submitPinnedRequest(queue, repo, "feature/rewrite");
+
+        git(repo, ["commit", "--amend", "-m", "rewritten history"]);
+        expect(git(repo, ["rev-parse", "main"])).not.toBe(request.merge_preflight_base_sha);
+
+        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect(calls).toHaveLength(0);
+      } finally {
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F6 — a descendant base advance that is not accounted for by a
+    // recorded, signature-verified queue merge is refused: raw commits and
+    // even signed merges without a completed queue record.
+    it("refuses recompute when the base advanced without a recorded authorized merge", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/unaccounted-a", { "ua.txt": "ua\n" });
+        commitOnBranch(repo, "feature/unaccounted-b", { "ub.txt": "ub\n" });
+        commitOnBranch(repo, "feature/rogue", { "rogue.txt": "rogue\n" });
+        registerWorkRepo(db, repo);
+        configureSigningCredential(db, repo, "ssh_key");
+
+        // Plain descendant commit on the protected base.
+        const first = submitPinnedRequest(queue, repo, "feature/unaccounted-a");
+        writeFile(repo, "raw.txt", "raw\n");
+        git(repo, ["add", "."]);
+        git(repo, ["commit", "-m", "raw direct commit"]);
+        expect(() => queue.approve(first.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(first.id)?.status).toBe("pending");
+
+        // Signed merge with no completed queue record backing it.
+        const second = submitPinnedRequest(queue, repo, "feature/unaccounted-b");
+        signedMergeIntoMain(repo, "feature/rogue");
+        expect(() => queue.approve(second.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(second.id)?.status).toBe("pending");
+
+        expect(calls).toHaveLength(0);
+      } finally {
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F2 — a PUT that mutates `command` drops the retained candidate,
+    // and hierarchical/multi-source commands are excluded from auto-recompute
+    // even across an authorized base advance.
+    it("invalidates the pin on command mutation and refuses hierarchical recompute", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/mutated", { "mu.txt": "mu\n" });
+        commitOnBranch(repo, "feature/hier", { "hi.txt": "hi\n" });
+        commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+        registerWorkRepo(db, repo);
+        configureSigningCredential(db, repo, "ssh_key");
+
+        // PUT command mutation invalidates the retained candidate.
+        const mutated = submitPinnedRequest(queue, repo, "feature/mutated");
+        const updated = queue.update(mutated.id, {
+          command: "mandible auth merge --hierarchical feature/mutated feature/evil --into main",
+        });
+        expect(updated.merge_candidate_pin_sha).toBeNull();
+        expect(updated.merge_candidate_tree_sha).toBeNull();
+        expect(updated.merge_preflight_base_sha).toBeNull();
+        expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${mutated.id}`])).toThrow();
+
+        // Hierarchical command: recompute refused even for an authorized advance.
+        const hier = submitPinnedRequest(
+          queue,
+          repo,
+          "feature/hier",
+          "mandible auth merge --hierarchical feature/hier feature/evil --into main",
+        );
+        advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-hier-sibling");
+        expect(() => queue.approve(hier.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(hier.id)?.status).toBe("pending");
+        expect(calls).toHaveLength(0);
+      } finally {
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F4 — when the fresh pin cannot be obtained during recompute, the
+    // approval fails closed with the strict error and the previous pin state
+    // is left fully intact (never proceeds unpinned with skip-preflight).
+    it("fails closed when a previously-pinned request cannot obtain a fresh pin", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/pin-fail", { "pf.txt": "pf\n" });
+        commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+        registerWorkRepo(db, repo);
+        configureSigningCredential(db, repo, "ssh_key");
+
+        const request = submitPinnedRequest(queue, repo, "feature/pin-fail");
+        const originalPin = request.merge_candidate_pin_sha!;
+        const originalBase = request.merge_preflight_base_sha!;
+        advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-pin-fail-sibling");
+
+        vi.spyOn(
+          queue as unknown as { createMergeCandidatePin: (request: unknown) => string },
+          "createMergeCandidatePin",
+        ).mockImplementation(() => {
+          throw new Error("injected pin cache failure");
+        });
+
+        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        const after = queue.getRequest(request.id);
+        expect(after?.status).toBe("pending");
+        // Prior strictly-blocking state fully intact.
+        expect(after?.merge_candidate_pin_sha).toBe(originalPin);
+        expect(after?.merge_preflight_base_sha).toBe(originalBase);
+        expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${request.id}`])).toBe(originalPin);
+        expect(calls).toHaveLength(0);
+      } finally {
+        vi.restoreAllMocks();
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F6 — remote requests never auto-recompute: a stale pin stays
+    // strictly blocked even when the base advance is fully authorized.
+    it("keeps remote requests strictly blocked on base drift", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/remote", { "rm.txt": "rm\n" });
+        commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+        registerWorkRepo(db, repo);
+        configureSigningCredential(db, repo, "ssh_key");
+
+        const request = submitPinnedRequest(queue, repo, "feature/remote");
+        db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?").run(request.id);
+        advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-remote-sibling");
+
+        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        expect(queue.getRequest(request.id)?.status).toBe("pending");
+        expect(calls).toHaveLength(0);
+      } finally {
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F6 — the preflight must run against exactly the base whose
+    // transition provenance was verified; a base that moves again in between
+    // falls back to the strict error.
+    it("refuses recompute when the base moves again between provenance verification and preflight", () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/base-race", { "br.txt": "br\n" });
+        commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+        registerWorkRepo(db, repo);
+        configureSigningCredential(db, repo, "ssh_key");
+
+        const request = submitPinnedRequest(queue, repo, "feature/base-race");
+        const originalPin = request.merge_candidate_pin_sha!;
+        advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-race-sibling");
+
+        const realCheck = queue.checkMergeIndependence.bind(queue);
+        vi.spyOn(queue, "checkMergeIndependence").mockImplementation((input) => {
+          // The base moves again after provenance verification but before the
+          // recompute preflight resolves it.
+          writeFile(repo, "race.txt", "race\n");
+          git(repo, ["add", "."]);
+          git(repo, ["commit", "-m", "raced base move"]);
+          return realCheck(input);
+        });
+
+        expect(() => queue.approve(request.id)).toThrow(STRICT_MESSAGE);
+        const after = queue.getRequest(request.id);
+        expect(after?.status).toBe("pending");
+        expect(after?.merge_candidate_pin_sha).toBe(originalPin);
+        expect(calls).toHaveLength(0);
+      } finally {
+        vi.restoreAllMocks();
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
+
+    // Review F6/F3 — when the head ref moves during recompute (after the head
+    // check, before re-pinning), the fresh pin still binds the *reviewed* head
+    // commit and the execution env still carries the reviewed head SHA, so the
+    // shell layer merges (or refuses) against the reviewed object — never the
+    // moved live ref.
+    it("pins the reviewed head even when the head ref moves during recompute", async () => {
+      const repo = createAuthCheckRepo();
+      const db = createMigratedDb();
+      const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+      const queue = createGuardQueue(db, calls);
+      try {
+        commitOnBranch(repo, "feature/head-race", { "hr.txt": "hr\n" });
+        commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+        registerWorkRepo(db, repo);
+        git(repo, ["config", "core.hooksPath", ".git/hooks"]);
+        configureSigningCredential(db, repo, "ssh_key");
+
+        const request = submitPinnedRequest(queue, repo, "feature/head-race");
+        const reviewedHead = request.merge_head_sha!;
+        advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-head-race-sibling");
+
+        const realCheck = queue.checkMergeIndependence.bind(queue);
+        vi.spyOn(queue, "checkMergeIndependence").mockImplementation((input) => {
+          const report = realCheck(input);
+          // The head ref moves after recompute verification.
+          git(repo, ["checkout", "feature/head-race"]);
+          writeFile(repo, "late.txt", "late\n");
+          git(repo, ["add", "."]);
+          git(repo, ["commit", "-m", "late head move"]);
+          git(repo, ["checkout", "main"]);
+          return report;
+        });
+
+        queue.approve(request.id);
+        await waitForStatus(queue, request.id, "completed");
+        expect(calls).toHaveLength(1);
+        const env = calls[0]!;
+        const liveHead = git(repo, ["rev-parse", "feature/head-race"]);
+        expect(liveHead).not.toBe(reviewedHead);
+        // The pin and the execution env are bound to the reviewed commit.
+        expect(env.MANDIBLE_AUTH_CANDIDATE_HEAD_SHA).toBe(reviewedHead);
+        expect(env.MANDIBLE_AUTH_EXPECTED_HEAD_SHA).toBe(reviewedHead);
+        expect(git(repo, ["rev-parse", `${env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA}^2`])).toBe(reviewedHead);
+      } finally {
+        vi.restoreAllMocks();
+        queue.dispose();
+        db.close();
+        fs.rmSync(repo, { recursive: true, force: true });
+      }
+    });
   });
 
   it("expires stale requests", () => {
