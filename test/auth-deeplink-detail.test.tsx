@@ -4,7 +4,7 @@
 // honest not-found state for invalid ids, instead of falling through to the
 // "Select a request to view details" placeholder (or having the sidebar
 // reconciliation effect steal the selection).
-import { render, screen, cleanup } from '@testing-library/preact';
+import { render, screen, cleanup, fireEvent, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthQueueView, type AuthRequest } from '../ui/src/views/auth';
@@ -168,32 +168,114 @@ describe('AuthQueueView deep-linked request outside loaded lists', () => {
   });
 });
 
-// Issue f59b5bd — deep links carry the 8-char short form; the view resolves
-// prefixes against the loaded lists or via the detail route, with honest
-// ambiguity handling.
+// Issue f59b5bd — deep links carry the 8-char short form; the view
+// canonicalizes every shortened id through the detail route (which resolves
+// unambiguous prefixes and 409s ambiguous ones) and only then uses loaded
+// records, keyed by the canonical full id.
 describe('AuthQueueView short-form request params', () => {
-  it('selects the unique prefix match from the loaded queue without fetching', async () => {
-    const fetchMock = stubFetchWithDetailRoute(() => null);
-    const fullId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
-    const uuidRequest: AuthRequest = {
-      ...pendingRequest,
-      id: fullId,
-      // Carry the body fields so selection does not trigger body hydration.
-      diff_summary: '',
-      spec_content: '',
-      output: '',
-    };
+  const fullId = 'e4c52737-40e4-472a-8367-fbdbe97801a2';
+  const uuidRequest: AuthRequest = {
+    ...pendingRequest,
+    id: fullId,
+    // Carry the body fields so selection does not trigger body hydration.
+    diff_summary: '',
+    spec_content: '',
+    output: '',
+  };
+
+  // Review C1 — a loaded-list prefix match must NOT bypass the server
+  // uniqueness check: the short id always canonicalizes via the detail route.
+  it('canonicalizes a short id through the detail route even when a loaded row matches', async () => {
+    const fetchMock = stubFetchWithDetailRoute((id) =>
+      fullId.startsWith(id)
+        ? new Response(
+            JSON.stringify({ ...remoteDetailPayload, request_id: fullId, title: uuidRequest.title }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        : null,
+    );
 
     renderDeepLinkedView([uuidRequest], fullId.slice(0, 8));
 
-    // Title renders in the sidebar row AND the detail pane once selected.
-    const occurrences = await screen.findAllByText(/Self-merge: feature\/x/);
-    expect(occurrences.length).toBeGreaterThan(1);
+    // Title renders in the sidebar row AND the detail pane once the fetched
+    // canonical id upgrades the selection.
+    await waitFor(() => {
+      expect(screen.getAllByText(/Self-merge: feature\/x/).length).toBeGreaterThan(1);
+    });
     expect(screen.queryByText('Select a request to view details')).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalledWith(
-      expect.stringContaining('/api/auth/request/'),
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/auth/request/${encodeURIComponent(fullId.slice(0, 8))}`,
       expect.anything(),
     );
+  });
+
+  // Review C1 (named failure scenario) — one loaded request matches the
+  // prefix, but a second request outside the loaded slice collides: the
+  // server 409 must win and no silent wrong selection may happen.
+  it('honors a server 409 over a loaded-list prefix match (one loaded, one unloaded)', async () => {
+    stubFetchWithDetailRoute(() =>
+      new Response(
+        JSON.stringify({ error: "Ambiguous prefix 'e4c52737' — matches 2 requests." }),
+        { status: 409, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    renderDeepLinkedView([uuidRequest], fullId.slice(0, 8));
+
+    expect(await screen.findByText(/is ambiguous — it matches multiple requests/)).toBeTruthy();
+    // The loaded row was NOT silently selected into the detail pane: its
+    // title appears only once (the sidebar row), never in the detail header.
+    expect(screen.getAllByText(/Self-merge: feature\/x/)).toHaveLength(1);
+  });
+
+  // Review D2 — the deep-linked row scrolls into view only after the short
+  // selection upgrades to the canonical full id the rows are keyed by.
+  it('scrolls the sidebar row into view after the canonical-id upgrade', async () => {
+    const scrollSpy = vi.fn();
+    Element.prototype.scrollIntoView = scrollSpy;
+    stubFetchWithDetailRoute((id) =>
+      fullId.startsWith(id)
+        ? new Response(
+            JSON.stringify({ ...remoteDetailPayload, request_id: fullId, title: uuidRequest.title }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        : null,
+    );
+
+    renderDeepLinkedView([uuidRequest], fullId.slice(0, 8));
+
+    await waitFor(() => {
+      expect(scrollSpy).toHaveBeenCalled();
+    }, { timeout: 3000 });
+    const scrolled = scrollSpy.mock.instances[0] as Element;
+    expect(scrolled.getAttribute('data-request-id')).toBe(fullId);
+  });
+
+  // Review D1 — a non-404/409 failure renders an explicit error state with a
+  // retry affordance instead of an eternal "Loading request…".
+  it('shows an error state with retry for a failed detail fetch', async () => {
+    let failing = true;
+    stubFetchWithDetailRoute(() =>
+      failing
+        ? new Response(JSON.stringify({ error: 'daemon rebuilding' }), {
+            status: 503,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        : new Response(JSON.stringify(remoteDetailPayload), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+    );
+
+    renderDeepLinkedView([], REMOTE_ID);
+
+    expect(await screen.findByText(/Failed to load auth request/)).toBeTruthy();
+    expect(screen.queryByText('Loading request…')).toBeNull();
+
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+
+    expect(await screen.findByText(/Archived merge: feature\/old-branch/)).toBeTruthy();
   });
 
   it('fetches a short id outside the loaded lists from the detail route', async () => {

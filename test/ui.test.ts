@@ -27,6 +27,10 @@ import {
   routeHashFromMandibleDeepLink,
 } from '../ui/src/deep-links';
 import {
+  __resetAgentPageBindingForTests,
+  getAgentPageBinding,
+} from '../ui/src/agent-page-binding';
+import {
   hashWithViewSidebarHidden,
   hashWithViewSidebarVisible,
   isViewSidebarHidden,
@@ -490,6 +494,42 @@ describe('App routing', () => {
     expect(navigate).toHaveBeenCalledTimes(1);
   });
 
+  // Review R1 (issue f59b5bd) — the Tauri handoff (getCurrent()/onOpenUrl())
+  // arrives after boot consumption: navigateToMandibleDeepLink must adopt the
+  // agent_session binding (replace semantics) and strip it from the routed
+  // hash exactly like boot consumption.
+  it('adopts and strips agent_session from Tauri deep-link navigation after boot', () => {
+    __resetAgentPageBindingForTests();
+    try {
+      const navigate = vi.fn();
+
+      expect(
+        navigateToMandibleDeepLink(
+          'mandible:///auth?request=e4c52737&agent_session=0198c0de',
+          navigate,
+        ),
+      ).toBe(true);
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=e4c52737');
+      expect(getAgentPageBinding()).toBe('0198c0de');
+
+      // A later deep link's binding replaces the current one (display-only).
+      expect(
+        navigateToMandibleDeepLink(
+          'mandible:///issues?issue=dfc924a&agent_session=aaaabbbb',
+          navigate,
+        ),
+      ).toBe(true);
+      expect(navigate).toHaveBeenCalledWith('#/issues?issue=dfc924a');
+      expect(getAgentPageBinding()).toBe('aaaabbbb');
+
+      // A deep link without the param never clears the binding.
+      expect(navigateToMandibleDeepLink('mandible:///issues?issue=dfc924a', navigate)).toBe(true);
+      expect(getAgentPageBinding()).toBe('aaaabbbb');
+    } finally {
+      __resetAgentPageBindingForTests();
+    }
+  });
+
   it('enables Tauri deep-link APIs for the daemon-served loopback dashboard', () => {
     const capability = JSON.parse(
       readFileSync('src-tauri/capabilities/default.json', 'utf8'),
@@ -532,6 +572,36 @@ describe('App routing', () => {
 
     removeListener();
     expect(cleanup).toHaveBeenCalledOnce();
+  });
+
+  // Review R1 (issue f59b5bd) — agent_session adoption works on BOTH Tauri
+  // handoff paths: the cold-start getCurrent() read and the warm onOpenUrl()
+  // listener, each stripping the param from the routed hash.
+  it('adopts agent_session bindings from both cold and warm Tauri handoff paths', async () => {
+    __resetAgentPageBindingForTests();
+    try {
+      let warmHandler: ((urls: string[]) => void) | undefined;
+      const onOpenUrl = vi.fn(async (handler: (urls: string[]) => void) => {
+        warmHandler = handler;
+        return () => undefined;
+      });
+      const getCurrent = vi.fn(async () => [
+        'mandible:///auth?request=cold-req&agent_session=cold-binding',
+      ]);
+      (window as Window & { __TAURI__?: unknown }).__TAURI__ = {};
+
+      const navigate = vi.fn();
+      await installTauriDeepLinkHandler(navigate, { getCurrent, onOpenUrl });
+
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=cold-req');
+      expect(getAgentPageBinding()).toBe('cold-binding');
+
+      warmHandler?.(['mandible:///auth?request=warm-req&agent_session=warm-binding']);
+      expect(navigate).toHaveBeenCalledWith('#/auth?request=warm-req');
+      expect(getAgentPageBinding()).toBe('warm-binding');
+    } finally {
+      __resetAgentPageBindingForTests();
+    }
   });
 });
 

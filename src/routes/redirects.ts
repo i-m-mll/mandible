@@ -74,9 +74,10 @@ export function registerRedirectRoutes(
       sendRedirectPage(res, {
         label: config.label,
         target: buildMandibleTarget(config.targetPath, config.targetParam, {
-          // Issue f59b5bd — /r/ targets emit the ambiguity-safe short form for
-          // full auth-request UUIDs; the auth route resolves prefixes honestly.
-          ref: kind === "auth" ? shortRedirectRef(ref) : ref,
+          // Issue f59b5bd (review R2) — inbound refs pass through untouched:
+          // shortening happens only at emission sites, so a caller supplying a
+          // full UUID keeps its power to disambiguate 8-char collisions.
+          ref,
           extraQuery: req.query,
         }),
       });
@@ -101,12 +102,6 @@ function buildTargetQuery(
     query.set(key, value);
   }
   return query;
-}
-
-const FULL_UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
-
-function shortRedirectRef(ref: string): string {
-  return FULL_UUID_RE.test(ref) ? ref.slice(0, 8) : ref;
 }
 
 function resolveLedgerIssueLink(ref: string): IssueRedirectResolution {

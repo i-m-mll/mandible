@@ -179,52 +179,22 @@ export function registerAuthRoutes(
       ? tailLines(request.output, 20)
       : null;
 
+    // Issue f59b5bd (review R3) — serve the canonical full request record
+    // (same projection the queue list spreads) instead of a hand-maintained
+    // field allowlist that silently dropped session_id and every future
+    // column. Computed fields ride on top of the spread.
     res.json({
+      ...request,
       request_id: request.id,
-      type: request.type,
-      status: request.status,
-      // Bug: 2cddba2 — deep-linked requests outside the loaded queue/history
-      // lists render the detail pane from this payload, so it carries the
-      // header title and lifecycle timestamps too.
-      title: request.title,
-      created_at: request.created_at,
-      last_executed_at: request.last_executed_at,
-      resolved_at: request.resolved_at,
-      output: request.output,
-      exit_code: request.exit_code,
-      error: request.error,
-      error_output: errorOutput,
-      repo: request.repo ?? null,
-      base_branch: request.base_branch ?? null,
-      head_branch: request.head_branch ?? null,
-      merge_preflight_base_sha: request.merge_preflight_base_sha ?? null,
-      merge_preflight_queue_fingerprint: request.merge_preflight_queue_fingerprint ?? null,
       files_changed: request.files_changed ?? 0,
       additions: request.additions ?? 0,
       deletions: request.deletions ?? 0,
-      diff_summary: request.diff_summary ?? null,
-      commit_message: request.commit_message ?? null,
-      spec_content: request.spec_content ?? null,
-      post_merge_handoff: request.post_merge_handoff ?? null,
-      issue_references: request.issue_references ?? null,
-      issue_closures: request.issue_closures ?? null,
-      issue_ids: request.issue_ids ?? null,
-      issues: request.issues ?? null,
-      depends_on_id: request.depends_on_id ?? null,
       depends_on_status: dependsOnStatus,
-      execution_mode: request.execution_mode,
-      approval_source: request.approval_source,
-      approval_lease_id: request.approval_lease_id,
-      requested_by_user_id: request.requested_by_user_id,
-      approved_by_user_id: request.approved_by_user_id,
-      execution_evidence_id: request.execution_evidence_id,
+      error_output: errorOutput,
       signature_verification: authQueue.getSignatureVerification(request.id),
       ...authAttributionReadFields(new AttributionReadResolver(getDb()), request),
       action_count: authQueue.countActions(request.id),
-      actions: authQueue.listActions(request.id),
-      // Bug: 4e32923 — include scoping fields omitted from the original response literal
-      target_session_id: request.target_session_id ?? null,
-      delivered_at: request.delivered_at ?? null
+      actions: authQueue.listActions(request.id)
     });
   }, { fileRpc: "allow" });
 

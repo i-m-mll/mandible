@@ -2220,21 +2220,31 @@ export function AuthQueueView({
     onSelectAuth?.(id);
   }, [onSelectAuth]);
 
-  // Bug: bdcc1f5 — deep-link from graph node click: select and scroll to initial request
+  // Bug: bdcc1f5 — deep-link from graph node click: select the initial request
   useEffect(() => {
     if (!initialRequestId) return;
     pendingDeepLinkRef.current = initialRequestId;
     setLocalSelectedId(initialRequestId);
     onSelectAuth?.(initialRequestId);
-    setTimeout(() => {
-      const el = document.querySelector(`[data-request-id="${initialRequestId}"]`);
+  // Only run on mount / when initialRequestId changes
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialRequestId]);
+
+  // Bug: bdcc1f5 / review D2 (issue f59b5bd) — scroll the deep-linked row into
+  // view keyed on the CURRENT selection: a short-form deep link only matches a
+  // sidebar row (keyed by full id) after the canonical-id upgrade below, so
+  // this re-arms when the selection upgrades, and each re-run cancels the
+  // stale timer so a superseded selection can never scroll.
+  useEffect(() => {
+    if (!selectedId || pendingDeepLinkRef.current !== selectedId) return;
+    const timer = setTimeout(() => {
+      const el = document.querySelector(`[data-request-id="${selectedId}"]`);
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       }
     }, 200);
-  // Only run on mount / when initialRequestId changes
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [initialRequestId]);
+    return () => clearTimeout(timer);
+  }, [selectedId]);
 
   // Track recently resolved requests: Map<requestId, {status, resolvedAt}>
   const [recentlyResolved, setRecentlyResolved] = useState<
@@ -2849,25 +2859,20 @@ export function AuthQueueView({
     return items;
   }, [sidebarItems, authSearch, typeFilter, repoFilter, branchFilter]);
 
-  // Find the selected request from whichever list contains it. Issue f59b5bd —
-  // deep links carry the 8-char short form, so an unambiguous prefix match
-  // (min 8 chars) also selects; an ambiguous prefix never silently picks and
-  // falls through to the by-id fetch, which reports the ambiguity honestly.
+  // Find the selected request from whichever loaded list contains it — exact
+  // id matches ONLY. Review C1 (issue f59b5bd): a short prefix must never be
+  // resolved against the loaded lists, because a second matching request can
+  // exist outside the loaded slice and the loaded lists cannot prove global
+  // uniqueness. Every shortened route id canonicalizes through
+  // GET /api/auth/request/:id below, which resolves unambiguous prefixes and
+  // reports ambiguity honestly as 409.
   const selectedListRequest = useMemo((): AuthRequest | null => {
     if (!selectedId) return null;
-    const exact =
+    return (
       queue.find((r) => getAuthId(r) === selectedId) ??
       (historyQueue ?? []).find((r) => getAuthId(r) === selectedId) ??
-      null;
-    if (exact || selectedId.length < 8) return exact;
-    const prefixMatches = new Map<string, AuthRequest>();
-    for (const request of [...queue, ...(historyQueue ?? [])]) {
-      const id = getAuthId(request);
-      if (id.length > selectedId.length && id.startsWith(selectedId)) {
-        if (!prefixMatches.has(id)) prefixMatches.set(id, request);
-      }
-    }
-    return prefixMatches.size === 1 ? prefixMatches.values().next().value ?? null : null;
+      null
+    );
   }, [selectedId, queue, historyQueue]);
 
   // Bug: 2cddba2 — a deep-linked request (`#/auth?request=<id>`) that resolved
@@ -2876,7 +2881,9 @@ export function AuthQueueView({
   // the pane shows an honest missing-request state instead of the placeholder.
   // Issue f59b5bd — the detail route also resolves unambiguous short prefixes;
   // a 409 (ambiguous prefix) is cached as 'ambiguous' and surfaced honestly.
-  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'ambiguous'>>({});
+  // Review D1 — any other failure is cached as 'error' and rendered with an
+  // explicit retry affordance instead of an eternal "Loading request…".
+  const [fetchedRequests, setFetchedRequests] = useState<Record<string, AuthRequest | 'not_found' | 'ambiguous' | 'error'>>({});
   useEffect(() => {
     if (!selectedId || selectedListRequest || fetchedRequests[selectedId]) return;
     const id = selectedId;
@@ -2896,6 +2903,8 @@ export function AuthQueueView({
           setFetchedRequests((prev) => ({ ...prev, [id]: 'not_found' }));
         } else if (isApiErrorStatus(error, 409)) {
           setFetchedRequests((prev) => ({ ...prev, [id]: 'ambiguous' }));
+        } else {
+          setFetchedRequests((prev) => ({ ...prev, [id]: 'error' }));
         }
       });
     return () => {
@@ -2903,14 +2912,24 @@ export function AuthQueueView({
     };
   }, [selectedId, selectedListRequest, fetchedRequests]);
 
+  // Review D1 — clear the cached failure so the fetch effect retries.
+  const retrySelectedFetch = useCallback(() => {
+    if (!selectedId) return;
+    setFetchedRequests((prev) => {
+      if (!(selectedId in prev)) return prev;
+      const next = { ...prev };
+      delete next[selectedId];
+      return next;
+    });
+  }, [selectedId]);
+
   const selectedFetched = selectedId ? fetchedRequests[selectedId] : undefined;
   const selectedNotFound = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'not_found';
   const selectedAmbiguous = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'ambiguous';
+  const selectedFetchFailed = Boolean(selectedId) && !selectedListRequest && selectedFetched === 'error';
   const selectedRequestRaw = useMemo((): AuthRequest | null => {
     if (selectedListRequest) return selectedListRequest;
-    return selectedFetched && selectedFetched !== 'not_found' && selectedFetched !== 'ambiguous'
-      ? selectedFetched
-      : null;
+    return selectedFetched && typeof selectedFetched === 'object' ? selectedFetched : null;
   }, [selectedListRequest, selectedFetched]);
 
   // Issue f59b5bd — once a short-prefix selection resolves to a concrete
@@ -3437,10 +3456,17 @@ export function AuthQueueView({
                 ? `Auth request ${selectedId.slice(0, 8)} was not found — it may have been deleted or expired.`
                 : selectedId && selectedAmbiguous
                   ? `Auth request reference ${selectedId.slice(0, 8)} is ambiguous — it matches multiple requests. Use a longer id.`
-                  : selectedId && !selectedListRequest
-                    ? 'Loading request…'
-                    : 'Select a request to view details'}
+                  : selectedId && selectedFetchFailed
+                    ? `Failed to load auth request ${selectedId.slice(0, 8)} — the daemon may be unavailable.`
+                    : selectedId && !selectedListRequest
+                      ? 'Loading request…'
+                      : 'Select a request to view details'}
             </p>
+            {selectedId && selectedFetchFailed ? (
+              <button type="button" onClick={retrySelectedFetch}>
+                Retry
+              </button>
+            ) : null}
           </div>
         ) : (() => {
           const request = selectedRequest;

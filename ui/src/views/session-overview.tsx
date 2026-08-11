@@ -35,7 +35,9 @@ type BindingState =
   // Issue 037fa85 (follow-up) — exactly one match with a transcript but no
   // Mandible session row: render the provider-scoped overview, not the picker.
   | { kind: 'provider-scoped'; match: SessionResolveMatch }
-  | { kind: 'many'; matches: SessionResolveMatch[] }
+  // Review C4 — truncated marks a capped prefix scan: even a single returned
+  // match must not be presented (or auto-bound) as unique.
+  | { kind: 'many'; matches: SessionResolveMatch[]; truncated?: boolean }
   | { kind: 'error'; message: string };
 
 export type SessionOverviewViewProps = {
@@ -308,7 +310,11 @@ export function SessionOverviewView({
       .then((result) => {
         if (cancelled) return;
         const bindable = result.matches.filter((match) => match.mandible_session_id);
-        if (result.matches.length === 0) {
+        if (result.truncated) {
+          // Review C4 — a capped scan may hide further identities; never
+          // auto-bind (or render a single provider-scoped view) from it.
+          setBinding({ kind: 'many', matches: result.matches, truncated: true });
+        } else if (result.matches.length === 0) {
           setBinding({ kind: 'zero' });
         } else if (result.matches.length === 1 && bindable.length === 1) {
           setBinding({ kind: 'bound', match: bindable[0] });
@@ -368,19 +374,32 @@ export function SessionOverviewView({
   }, [selectedSessionId, agentBinding, refreshToken]);
 
   // Provider-scoped overview: loaded only for the conversation-only binding
-  // state, keyed on the full identity the (possibly short) binding resolved
-  // to. Read-only rendering.
+  // state, keyed on the full identity and provider the (possibly short)
+  // binding resolved to server-side (review C2 — no hard-coded provider).
+  // Read-only rendering.
   const providerScopedRef =
-    binding.kind === 'provider-scoped' ? binding.match.matched_ref || agentBinding : null;
+    binding.kind === 'provider-scoped' ? binding.match.matched_ref : null;
+  const providerScopedProvider =
+    binding.kind === 'provider-scoped' ? binding.match.provider : null;
   useEffect(() => {
     if (binding.kind !== 'provider-scoped' || !providerScopedRef || selectedSessionId) {
       setProviderOverview(null);
       setProviderOverviewError(null);
       return;
     }
+    if (providerScopedProvider !== 'codex') {
+      // The by-provider overview endpoint is codex-only today. Render the
+      // honest unavailable state for other providers instead of presenting
+      // their data as codex-scoped.
+      setProviderOverview(null);
+      setProviderOverviewError(
+        `Provider-scoped overview is not available for provider ${providerScopedProvider ?? 'unknown'} yet.`,
+      );
+      return;
+    }
     let cancelled = false;
     setProviderOverviewError(null);
-    getProviderScopedOverview('codex', providerScopedRef)
+    getProviderScopedOverview(providerScopedProvider, providerScopedRef)
       .then((payload) => {
         if (!cancelled) setProviderOverview(payload);
       })
@@ -394,37 +413,31 @@ export function SessionOverviewView({
     return () => {
       cancelled = true;
     };
-  }, [binding.kind, providerScopedRef, selectedSessionId, refreshToken]);
+  }, [binding.kind, providerScopedRef, providerScopedProvider, selectedSessionId, refreshToken]);
 
   // Explicit, deliberate registration: creates a Mandible session row for the
   // provider-known session, then re-resolves so the view upgrades in place to
-  // the fully bound state. Never automatic. Uses the resolved full identity,
-  // not the (possibly short) page binding.
+  // the fully bound state. Never automatic. Review S1 — the request carries
+  // ONLY the server-resolved full identity from the match record; the
+  // page-supplied binding is display-only and never becomes mutation input.
+  // Provider, cwd, and branch are derived server-side from the validated
+  // conversations record.
   const handleRegister = useCallback(async () => {
-    const registerRef = providerScopedRef ?? agentBinding;
-    if (!registerRef || registering) return;
+    if (binding.kind !== 'provider-scoped' || registering) return;
+    const registerRef = binding.match.matched_ref;
+    if (!registerRef) return;
     setRegistering(true);
     setRegisterError(null);
     try {
-      const conversations = providerOverview?.conversations.items ?? [];
-      const meta =
-        conversations.find((c) => c.source === 'codex' && (c.cwd || c.branch)) ??
-        conversations[0] ??
-        null;
-      await registerProviderSession({
-        provider: 'codex',
-        provider_session_id: registerRef,
-        cwd: meta?.cwd ?? null,
-        branch: meta?.branch ?? null,
-      });
+      await registerProviderSession({ provider_session_id: registerRef });
       const result = await resolveAgentSession(registerRef);
       const bindable = result.matches.filter((match) => match.mandible_session_id);
-      if (result.matches.length === 1 && bindable.length === 1) {
+      if (!result.truncated && result.matches.length === 1 && bindable.length === 1) {
         setBinding({ kind: 'bound', match: bindable[0] });
         setSelectedSessionId(bindable[0].mandible_session_id);
         writeSessionParamToHash(bindable[0].mandible_session_id);
-      } else if (result.matches.length > 1) {
-        setBinding({ kind: 'many', matches: result.matches });
+      } else if (result.matches.length > 1 || result.truncated) {
+        setBinding({ kind: 'many', matches: result.matches, truncated: result.truncated });
       } else {
         setRegisterError('Registration succeeded but the session did not resolve as bindable.');
       }
@@ -433,7 +446,7 @@ export function SessionOverviewView({
     } finally {
       setRegistering(false);
     }
-  }, [agentBinding, providerScopedRef, providerOverview, registering]);
+  }, [binding, registering]);
 
   const handleSelect = useCallback((sessionId: string) => {
     setSelectedSessionId(sessionId);
@@ -513,8 +526,17 @@ export function SessionOverviewView({
           )}
           {binding.kind === 'many' && (
             <span>
-              Agent session <code>{shortUuid(agentBinding)}</code> matches multiple Mandible
-              sessions — pick one explicitly.
+              {binding.truncated ? (
+                <>
+                  Agent session <code>{shortUuid(agentBinding)}</code> matches too many
+                  identities to resolve uniquely — use a longer id or pick one explicitly.
+                </>
+              ) : (
+                <>
+                  Agent session <code>{shortUuid(agentBinding)}</code> matches multiple Mandible
+                  sessions — pick one explicitly.
+                </>
+              )}
             </span>
           )}
           {binding.kind === 'error' && (

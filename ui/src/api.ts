@@ -540,9 +540,11 @@ export async function getSessionsPage<T>(params?: {
 // Issue 037fa85 / f59b5bd — Session Overview: provider-neutral session alias
 // resolution with explicit zero/one/many semantics, and the aggregate
 // per-session payload. The ref may be a full id or a short prefix (min 8
-// chars); `matched_ref` carries the full identity each match resolved to.
+// chars); `matched_ref` carries the full identity each match resolved to and
+// `provider` its transcript-attested provider (null when unattested).
 export type SessionResolveMatch = {
   matched_ref: string;
+  provider: string | null;
   mandible_session_id: string | null;
   console_session_id: string | null;
   conversation_id: string | null;
@@ -552,6 +554,9 @@ export type SessionResolveMatch = {
 export type SessionResolveResult = {
   provider: string | null;
   provider_session_id: string;
+  // Review C4 — true when a prefix scan hit a candidate cap: a single match
+  // must not be treated as unique.
+  truncated: boolean;
   matches: SessionResolveMatch[];
 };
 
@@ -695,27 +700,20 @@ export async function getProviderScopedOverview(
   return await response.json() as ProviderScopedOverview;
 }
 
-// Issue 037fa85 (follow-up) — explicit, user-initiated registration of a
-// provider-known Codex session as a Mandible session row. Uses the existing
-// session-registration surface; the provider linkage rides the existing
-// sessions.conversation_id column (provider-native conversation id), which the
-// resolver already matches, so the session becomes bindable afterward. The
-// deterministic id keeps repeat clicks idempotent (registerSession upserts).
+// Issue 037fa85 / f59b5bd (review S1) — explicit, user-initiated registration
+// of a provider-known session as a Mandible session row. The client sends
+// ONLY the server-resolved full identity; the daemon derives provider, cwd,
+// and branch from the validated conversations record and rejects identities
+// with no ingested transcript, so the forgeable page binding can never steer
+// the registered identity. The deterministic server-side id keeps repeat
+// clicks idempotent.
 export async function registerProviderSession(input: {
-  provider: 'codex';
   provider_session_id: string;
-  cwd?: string | null;
-  branch?: string | null;
-}): Promise<{ id: string }> {
-  const payload: Record<string, unknown> = {
-    id: `codex-${input.provider_session_id}`,
-    app: 'codex',
-    conversation_id: input.provider_session_id,
-  };
-  if (input.cwd) payload.cwd = input.cwd;
-  if (input.branch) payload.branch = input.branch;
-  const response = await apiPost('/api/sessions/register', payload);
-  return await response.json() as { id: string };
+}): Promise<{ id: string; provider: string }> {
+  const response = await apiPost('/api/sessions/register-provider', {
+    provider_session_id: input.provider_session_id,
+  });
+  return await response.json() as { id: string; provider: string };
 }
 
 export async function navigateSession(sessionId: string): Promise<void> {

@@ -86,4 +86,29 @@ describe("GET /api/auth/request/:id short-form ids", () => {
 
     expect(response.status).toBe(404);
   });
+
+  // Review R3 (issue f59b5bd) — the detail route serves the canonical full
+  // request projection, so session linkage (session_id) and future columns
+  // survive deep-linked/archived rendering instead of being dropped by a
+  // hand-maintained field allowlist.
+  it("includes session_id and the full record in the detail projection", async () => {
+    const { router, queue } = setup();
+    const request = queue.submit({
+      command: "mandible auth merge feature/linked --into main",
+      title: "Session-linked request",
+      session_id: "sess-deep-link-1",
+    });
+
+    const response = await router.invoke({
+      method: "GET",
+      url: `/api/auth/request/${request.id}`,
+    });
+
+    expect(response.status).toBe(200);
+    const body = response.body as Record<string, unknown>;
+    expect(body.request_id).toBe(request.id);
+    expect(body.session_id).toBe("sess-deep-link-1");
+    expect(body.title).toBe("Session-linked request");
+    expect(body.status).toBe(request.status);
+  });
 });

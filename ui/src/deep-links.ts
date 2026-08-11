@@ -3,6 +3,10 @@ import {
   onOpenUrl as onOpenDeepLinks,
 } from '@tauri-apps/plugin-deep-link';
 
+import {
+  adoptAgentSessionBinding,
+  consumeAgentSessionFromHash,
+} from './agent-page-binding';
 import { normalizeArtifactRouteParams } from './routing';
 
 type DeepLinkModule = {
@@ -116,7 +120,14 @@ export function navigateToMandibleDeepLink(
 ): boolean {
   const hash = routeHashFromMandibleDeepLink(rawUrl);
   if (!hash) return false;
-  navigateToHash(hash);
+  // Review R1 (issue f59b5bd) — the Tauri handoff (getCurrent()/onOpenUrl())
+  // delivers deep links after boot consumption already ran. Adopt the
+  // agent_session binding here with replace semantics and strip it from the
+  // routed hash exactly like boot consumption, so /r/…?agent_session= links
+  // bind in the desktop shell both cold and warm.
+  const consumed = consumeAgentSessionFromHash(hash);
+  if (consumed.value) adoptAgentSessionBinding(consumed.value);
+  navigateToHash(consumed.hash);
   return true;
 }
 

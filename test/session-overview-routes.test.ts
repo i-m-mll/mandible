@@ -158,6 +158,7 @@ describe("GET /api/sessions/resolve", () => {
     expect(body.matches).toHaveLength(1);
     expect(body.matches[0]).toMatchObject({
       matched_ref: CODEX_UUID,
+      provider: "codex",
       conversation_id: "conv-1",
       sources: ["conversations"],
     });
@@ -169,6 +170,27 @@ describe("GET /api/sessions/resolve", () => {
     const { body } = await getResolve(`?provider_session_id=${CODEX_UUID}`);
     expect(body.matches).toHaveLength(1);
     expect(body.matches[0].conversation_id).toBe("conv-cc");
+    expect(body.matches[0].provider).toBe("claude");
+  });
+
+  // Review C3 — the client vocabulary `claude` maps to conversations.source
+  // `claude_code`; legit Claude rows must resolve under provider=claude.
+  it("maps provider=claude to conversations.source claude_code", async () => {
+    insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
+
+    const { status, body } = await getResolve(`?provider=claude&provider_session_id=${CODEX_UUID}`);
+    expect(status).toBe(200);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      matched_ref: CODEX_UUID,
+      provider: "claude",
+      conversation_id: "conv-cc",
+    });
+  });
+
+  it("rejects an unknown provider vocabulary instead of silently matching nothing", async () => {
+    const { status } = await getResolve(`?provider=cortex&provider_session_id=${CODEX_UUID}`);
+    expect(status).toBe(400);
   });
 
   it("returns zero matches without inventing one", async () => {
@@ -177,6 +199,7 @@ describe("GET /api/sessions/resolve", () => {
     expect(body).toEqual({
       provider: "codex",
       provider_session_id: CODEX_UUID,
+      truncated: false,
       matches: [],
     });
   });
@@ -194,13 +217,17 @@ describe("GET /api/sessions/resolve", () => {
     expect(status).toBe(200);
     expect(body.matches).toHaveLength(1);
     expect(body.matches[0]).toMatchObject({
+      provider: "codex",
       mandible_session_id: "sess-1",
       console_session_id: "cs-1",
       conversation_id: "conv-1",
     });
   });
 
-  it("does not attach conversations from other providers", async () => {
+  // Review C3 — the registry/console stores carry no provider provenance, so
+  // a codex narrowing must NOT return a session attested to another provider
+  // (or pretend those stores were provider-filtered).
+  it("excludes claude-attested sessions from a codex-narrowed resolution", async () => {
     registry.registerSession({ id: "sess-1", app: "codex" });
     insertConsoleSession({
       id: "cs-1",
@@ -209,8 +236,38 @@ describe("GET /api/sessions/resolve", () => {
     });
     insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
 
-    const { body } = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
-    expect(body.matches[0].conversation_id).toBeNull();
+    const narrowed = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    expect(narrowed.body.matches).toEqual([]);
+
+    const open = await getResolve(`?provider_session_id=${CODEX_UUID}`);
+    expect(open.body.matches).toHaveLength(1);
+    expect(open.body.matches[0]).toMatchObject({
+      provider: "claude",
+      mandible_session_id: "sess-1",
+      conversation_id: "conv-cc",
+    });
+  });
+
+  // Review C2 — the same raw session id claimed by two providers yields one
+  // match per (provider, matched_ref) identity, never a LIMIT 1 pick.
+  it("keeps cross-provider claims of the same raw id distinct", async () => {
+    insertConversation({ id: "conv-codex", session_id: CODEX_UUID, source: "codex" });
+    insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
+
+    const { body } = await getResolve(`?provider_session_id=${CODEX_UUID}`);
+    expect(body.matches).toHaveLength(2);
+    const byProvider = new Map(
+      body.matches.map((m: { provider: string | null; conversation_id: string | null }) => [m.provider, m.conversation_id]),
+    );
+    expect(byProvider.get("codex")).toBe("conv-codex");
+    expect(byProvider.get("claude")).toBe("conv-cc");
+
+    const narrowed = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    expect(narrowed.body.matches).toHaveLength(1);
+    expect(narrowed.body.matches[0]).toMatchObject({
+      provider: "codex",
+      conversation_id: "conv-codex",
+    });
   });
 
   it("deduplicates the same mandible session found via multiple stores", async () => {
@@ -221,7 +278,7 @@ describe("GET /api/sessions/resolve", () => {
       mandible_session_id: "sess-1",
     });
 
-    const { body } = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    const { body } = await getResolve(`?provider_session_id=${CODEX_UUID}`);
     expect(body.matches).toHaveLength(1);
     expect(body.matches[0].mandible_session_id).toBe("sess-1");
     expect(body.matches[0].sources).toEqual(
@@ -245,7 +302,7 @@ describe("GET /api/sessions/resolve", () => {
       updated_at: 1_000,
     });
 
-    const { body } = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
+    const { body } = await getResolve(`?provider_session_id=${CODEX_UUID}`);
     expect(body.matches).toHaveLength(2);
     const ids = body.matches.map((m: { mandible_session_id: string | null }) => m.mandible_session_id);
     expect(ids).toEqual(expect.arrayContaining(["sess-1", "sess-2"]));
@@ -257,6 +314,7 @@ describe("GET /api/sessions/resolve", () => {
     const { body } = await getResolve(`?provider=codex&provider_session_id=${CODEX_UUID}`);
     expect(body.matches).toHaveLength(1);
     expect(body.matches[0]).toMatchObject({
+      provider: "codex",
       mandible_session_id: null,
       console_session_id: null,
       conversation_id: "conv-1",
@@ -344,9 +402,73 @@ describe("GET /api/sessions/resolve with short prefixes", () => {
     const narrowed = await getResolve(`?provider=codex&provider_session_id=${SHORT}`);
     expect(narrowed.body.matches).toEqual([]);
 
+    // Review C3 — the claude vocabulary maps to source claude_code in the
+    // prefix scan too.
+    const claudeNarrowed = await getResolve(`?provider=claude&provider_session_id=${SHORT}`);
+    expect(claudeNarrowed.body.matches).toHaveLength(1);
+    expect(claudeNarrowed.body.matches[0].provider).toBe("claude");
+
     const open = await getResolve(`?provider_session_id=${SHORT}`);
     expect(open.body.matches).toHaveLength(1);
     expect(open.body.matches[0].conversation_id).toBe("conv-cc");
+  });
+
+  // Review C5 — full-identity detection goes by UUID shape, not length: a
+  // 36-char non-UUID ref still expands as a prefix of a longer id.
+  it("expands a 36-char non-UUID ref as a prefix of longer ids", async () => {
+    const longId = `${"a".repeat(40)}`;
+    registry.registerSession({ id: longId, app: "claude" });
+
+    const { body } = await getResolve(`?provider_session_id=${"a".repeat(36)}`);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0]).toMatchObject({
+      matched_ref: longId,
+      mandible_session_id: longId,
+    });
+  });
+
+  // Review C4 — a capped candidate scan must set `truncated` so a client can
+  // never treat the (possibly incomplete) result as a proven unique.
+  it("flags truncation when a prefix scan hits the candidate cap", async () => {
+    for (let i = 0; i < 25; i += 1) {
+      const suffix = String(i).padStart(12, "0");
+      insertConversation({
+        id: `conv-${i}`,
+        session_id: `${SHORT}-0000-0000-0000-${suffix}`,
+        source: "codex",
+      });
+    }
+
+    const { body } = await getResolve(`?provider_session_id=${SHORT}`);
+    expect(body.truncated).toBe(true);
+    expect(body.matches.length).toBeGreaterThan(1);
+  });
+
+  it("does not flag truncation for a small unambiguous scan", async () => {
+    insertConversation({ id: "conv-1", session_id: CODEX_UUID, source: "codex" });
+
+    const { body } = await getResolve(`?provider_session_id=${SHORT}`);
+    expect(body.truncated).toBe(false);
+    expect(body.matches).toHaveLength(1);
+  });
+
+  // Review C4 (named failure scenario) — many raw rows that all dedupe to ONE
+  // canonical identity still hit the per-scan cap: the result must carry
+  // truncated=true, because a second distinct identity could hide past the
+  // cap. "One match" after truncation is never presented as a proven unique.
+  it("never reports a clean unique when the scan was truncated", async () => {
+    registry.registerSession({ id: "sess-x", app: "codex" });
+    for (let i = 0; i < 21; i += 1) {
+      insertConsoleSession({
+        id: `${SHORT}-console-${String(i).padStart(2, "0")}`,
+        mandible_session_id: "sess-x",
+      });
+    }
+
+    const { body } = await getResolve(`?provider_session_id=${SHORT}`);
+    expect(body.matches).toHaveLength(1);
+    expect(body.matches[0].mandible_session_id).toBe("sess-x");
+    expect(body.truncated).toBe(true);
   });
 });
 
@@ -610,25 +732,24 @@ describe("GET /api/sessions/overview/by-provider", () => {
   });
 });
 
-// Issue 037fa85 (follow-up) — explicit registration upgrade path: a deliberate
-// POST to the existing registration surface creates the session row with the
-// provider linkage on sessions.conversation_id, after which the resolver
-// returns a bindable match for the same UUID.
+// Issue 037fa85 / f59b5bd (review S1) — explicit registration upgrade path:
+// a deliberate POST to /api/sessions/register-provider creates the session row
+// with provider, cwd, and branch derived server-side from the validated
+// conversations record, after which the resolver returns a bindable match.
+// The client can never pick the provider (or any other identity field): the
+// page binding is display-only and stays out of mutation input.
 describe("provider session registration upgrade", () => {
   const REGISTERED_ID = `codex-${CODEX_UUID}`;
 
-  async function registerViaRoute(): Promise<{ status: number; body: any }> {
-    // Exact payload shape the UI's "Register as Mandible session" action sends.
+  async function registerViaRoute(
+    extraBody: Record<string, unknown> = {},
+  ): Promise<{ status: number; body: any }> {
+    // Exact payload shape the UI's "Register as Mandible session" action
+    // sends: only the server-resolved full identity.
     const result = await router.invoke({
       method: "POST",
-      url: "/api/sessions/register",
-      body: {
-        id: REGISTERED_ID,
-        app: "codex",
-        conversation_id: CODEX_UUID,
-        cwd: "/tmp/repo",
-        branch: "feature/x",
-      },
+      url: "/api/sessions/register-provider",
+      body: { provider_session_id: CODEX_UUID, ...extraBody },
     });
     return { status: result.status, body: result.body };
   }
@@ -646,6 +767,51 @@ describe("provider session registration upgrade", () => {
     });
   });
 
+  it("rejects registration when no ingested conversation validates the identity", async () => {
+    const { status } = await registerViaRoute();
+    expect(status).toBe(404);
+    const count = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
+  it("rejects a missing provider_session_id", async () => {
+    const result = await router.invoke({
+      method: "POST",
+      url: "/api/sessions/register-provider",
+      body: {},
+    });
+    expect(result.status).toBe(400);
+  });
+
+  it("derives the provider from conversations.source, not from the client", async () => {
+    insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
+
+    // Review S1 — client-supplied provider/app/cwd/branch must be ignored: a
+    // forged page binding cannot register a Claude identity as codex.
+    const { status, body } = await registerViaRoute({
+      provider: "codex",
+      app: "codex",
+      cwd: "/evil",
+      branch: "evil-branch",
+    });
+    expect(status).toBe(200);
+    expect(body.id).toBe(`claude-${CODEX_UUID}`);
+    expect(body.app).toBe("claude");
+    expect(body.provider).toBe("claude");
+    expect(body.cwd ?? null).toBeNull();
+    expect(body.branch ?? null).toBeNull();
+  });
+
+  it("rejects registration when multiple providers claim the identity", async () => {
+    insertConversation({ id: "conv-codex", session_id: CODEX_UUID, source: "codex" });
+    insertConversation({ id: "conv-cc", session_id: CODEX_UUID, source: "claude_code" });
+
+    const { status } = await registerViaRoute();
+    expect(status).toBe(409);
+    const count = db.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number };
+    expect(count.n).toBe(0);
+  });
+
   it("resolver returns a bindable match after registration", async () => {
     insertConversation({
       id: "conv-1",
@@ -659,6 +825,7 @@ describe("provider session registration upgrade", () => {
     expect(status).toBe(200);
     expect(registered.id).toBe(REGISTERED_ID);
     expect(registered.app).toBe("codex");
+    // cwd/branch come from the ingested conversation, not the client.
     expect(registered.cwd).toBe("/tmp/repo");
     expect(registered.branch).toBe("feature/x");
     expect(registered.conversation_id).toBe(CODEX_UUID);

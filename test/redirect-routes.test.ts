@@ -44,9 +44,10 @@ describe("redirect routes", () => {
     expect(String(artifact.body)).toContain("mandible:///artifacts?ref=abcdef123456");
   });
 
-  // Issue f59b5bd — /r/ targets emit the ambiguity-safe 8-char short form for
-  // full auth-request UUIDs; short refs pass through untouched.
-  it("shortens a full auth-request UUID to its 8-char short form", async () => {
+  // Issue f59b5bd (review R2) — inbound refs pass through untouched: /r/ never
+  // discards a caller's full UUID, so an 8-char collision stays
+  // disambiguatable via /r/. Shortening happens only at emission sites.
+  it("preserves a caller-supplied full auth-request UUID", async () => {
     const router = new Router();
     registerRedirectRoutes(router);
 
@@ -55,8 +56,9 @@ describe("redirect routes", () => {
       url: "/r/auth/e4c52737-40e4-472a-8367-fbdbe97801a2",
     });
 
-    expect(String(auth.body)).toContain("mandible:///auth?request=e4c52737");
-    expect(String(auth.body)).not.toContain("e4c52737-40e4");
+    expect(String(auth.body)).toContain(
+      "mandible:///auth?request=e4c52737-40e4-472a-8367-fbdbe97801a2",
+    );
   });
 
   // Issue f59b5bd — /r/ redirects preserve extra query params (notably

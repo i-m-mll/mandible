@@ -102,6 +102,7 @@ import {
   consumeAgentSessionFragment,
   detectCodexIab,
   getAgentPageBinding,
+  subscribeAgentPageBinding,
 } from './agent-page-binding';
 import { LoadingSkeleton } from './components/LoadingSkeleton';
 
@@ -573,13 +574,14 @@ function App(): JSX.Element {
     window.location.reload();
   }, []);
   const [instanceInfo, setInstanceInfo] = useState<InstanceInfo | null>(() => readBootInstanceInfo());
-  // Issue 037fa85 — page-local Codex IAB detection and agent session binding,
-  // computed once per page load. The binding was consumed from the hash
-  // fragment at boot and lives only in this tab's memory (never localStorage):
-  // concurrent tabs from different agent sessions must never share a binding.
-  // Display-only.
+  // Issue 037fa85 — page-local Codex IAB detection and agent session binding.
+  // The binding was consumed from the hash fragment at boot (or adopted from a
+  // later Tauri deep-link handoff — review R1, replace semantics) and lives
+  // only in this tab's memory (never localStorage): concurrent tabs from
+  // different agent sessions must never share a binding. Display-only.
   const [codexIabDetected] = useState<boolean>(() => detectCodexIab());
-  const [agentPageBinding] = useState<string | null>(() => getAgentPageBinding());
+  const [agentPageBinding, setAgentPageBinding] = useState<string | null>(() => getAgentPageBinding());
+  useEffect(() => subscribeAgentPageBinding(setAgentPageBinding), []);
   const [graphRefreshToken, setGraphRefreshToken] = useState(0);
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const [themeModeSaving, setThemeModeSaving] = useState(false);
