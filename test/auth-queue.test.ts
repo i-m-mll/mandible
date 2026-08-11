@@ -2200,24 +2200,29 @@ describe("auth queue", () => {
     }
   });
 
-  it("requires requeue and reapproval after the target branch moves", async () => {
+  // Issue 08a5f04 — pure base drift no longer blocks approval: the stale
+  // candidate is recomputed against the current base within the same approval
+  // action, re-pinned, and atomic mode is re-evaluated with the fresh pin.
+  it("recomputes a stale pinned candidate on approve after pure base drift", async () => {
     const repo = createAuthCheckRepo();
     const db = createMigratedDb();
     const calls: Array<NodeJS.ProcessEnv | undefined> = [];
     try {
-      commitOnBranch(repo, "feature/target-moved", { "feature.txt": "feature\n" });
+      commitOnBranch(repo, "feature/base-drift", { "feature.txt": "feature\n" });
       registerWorkRepo(db, repo);
+      git(repo, ["config", "core.hooksPath", ".git/hooks"]);
+      configureSigningCredential(db, repo, "ssh_key");
 
       const queue = new AuthQueue({
         db,
         executor: async (options) => {
           calls.push(options.env);
           return {
-            exit_code: 0,
+            exit_code: 1,
             signal: null,
-            stdout: "ok\n",
-            stderr: "",
-            output: "ok\n",
+            stdout: "",
+            stderr: "fixture stop\n",
+            output: "fixture stop\n",
             started_at: Date.now(),
             finished_at: Date.now(),
           };
@@ -2227,20 +2232,157 @@ describe("auth queue", () => {
 
       const request = queue.submit({
         type: "merge",
-        command: "mandible auth merge feature/target-moved --into main",
-        title: "Merge feature/target-moved",
+        command: "mandible auth merge feature/base-drift --into main",
+        title: "Merge feature/base-drift",
         repo: path.basename(repo),
         base_branch: "main",
-        head_branch: "feature/target-moved",
-        merge_head_sha: git(repo, ["rev-parse", "feature/target-moved"]),
+        head_branch: "feature/base-drift",
+        merge_head_sha: git(repo, ["rev-parse", "feature/base-drift"]),
+        cwd: repo,
+      });
+      const originalPin = request.merge_candidate_pin_sha;
+      const originalBase = request.merge_preflight_base_sha;
+      expect(originalPin).toMatch(/^[0-9a-f]{40,64}$/);
+      writeFile(repo, "main-only.txt", "main\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "move main"]);
+      const newBase = git(repo, ["rev-parse", "main"]);
+      expect(newBase).not.toBe(originalBase);
+
+      const approved = queue.approve(request.id);
+      expect(approved.status).toBe("executing");
+      await waitForStatus(queue, request.id, "completed");
+
+      expect(calls).toHaveLength(1);
+      const env = calls[0]!;
+      // Fresh preflight reuse against the recomputed base.
+      expect(env.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBe("1");
+      expect(env.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(newBase);
+      // Fresh candidate pin: base parent moved, pin sha replaced.
+      expect(env.MANDIBLE_AUTH_CANDIDATE_BASE_SHA).toBe(newBase);
+      expect(env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA).toMatch(/^[0-9a-f]{40,64}$/);
+      expect(env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA).not.toBe(originalPin);
+      expect(git(repo, ["rev-parse", `${env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA}^1`])).toBe(newBase);
+      expect(git(repo, ["rev-parse", `${env.MANDIBLE_AUTH_CANDIDATE_PIN_SHA}^2`]))
+        .toBe(request.merge_head_sha);
+      // Atomic mode re-evaluated with the fresh pin.
+      expect(env.MANDIBLE_AUTH_ATOMIC).toBe("1");
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails approval with conflict context when the recomputed candidate conflicts", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: string[] = [];
+    try {
+      commitOnBranch(repo, "feature/base-conflict", { "shared.txt": "feature\n" });
+      registerWorkRepo(db, repo);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async () => {
+          calls.push("called");
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            output: "",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/base-conflict --into main",
+        title: "Merge feature/base-conflict",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/base-conflict",
+        merge_head_sha: git(repo, ["rev-parse", "feature/base-conflict"]),
         cwd: repo,
       });
       expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+      writeFile(repo, "shared.txt", "conflicting main change\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "conflicting move of main"]);
+
+      let thrown: unknown;
+      try {
+        queue.approve(request.id);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(AuthQueueError);
+      const authError = thrown as AuthQueueError;
+      expect(authError.code).toBe("merge_check_failed");
+      expect(authError.message).toContain("conflicts with the target branch");
+      expect(authError.message).toContain("shared.txt");
+      expect(authError.details).toBeDefined();
+      expect(queue.getRequest(request.id)?.status).toBe("pending");
+      expect(calls).toHaveLength(0);
+      queue.dispose();
+    } finally {
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("still blocks approval when the head branch moved from the reviewed commit", () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const calls: string[] = [];
+    try {
+      commitOnBranch(repo, "feature/head-drift", { "feature.txt": "feature\n" });
+      registerWorkRepo(db, repo);
+
+      const queue = new AuthQueue({
+        db,
+        executor: async () => {
+          calls.push("called");
+          return {
+            exit_code: 0,
+            signal: null,
+            stdout: "",
+            stderr: "",
+            output: "",
+            started_at: Date.now(),
+            finished_at: Date.now(),
+          };
+        },
+        hookManager: createNoopHookManager(),
+      });
+
+      const request = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/head-drift --into main",
+        title: "Merge feature/head-drift",
+        repo: path.basename(repo),
+        base_branch: "main",
+        head_branch: "feature/head-drift",
+        merge_head_sha: git(repo, ["rev-parse", "feature/head-drift"]),
+        cwd: repo,
+      });
+      expect(request.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+      // Head drift: the reviewed content itself changed.
+      git(repo, ["checkout", "feature/head-drift"]);
+      writeFile(repo, "feature.txt", "revised feature\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "revise head"]);
+      git(repo, ["checkout", "main"]);
+      // Base drift on top of head drift must not unlock recompute either.
       writeFile(repo, "main-only.txt", "main\n");
       git(repo, ["add", "."]);
       git(repo, ["commit", "-m", "move main"]);
 
-      expect(() => queue.approve(request.id)).toThrow(/requeue and reapprove/);
+      expect(() => queue.approve(request.id)).toThrow(/moved from reviewed commit/);
       expect(queue.getRequest(request.id)?.status).toBe("pending");
       expect(calls).toHaveLength(0);
       queue.dispose();
@@ -3285,6 +3427,333 @@ describe("auth queue", () => {
         return event.event === "auth:resolved" && data.request_id === pending.id;
       })).toBe(true);
     } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // Issue 08a5f04 — after a sibling merge advances the base, clean pending
+  // candidates are proactively re-preflighted, re-pinned, and broadcast so
+  // approval hits the exact-candidate fast path.
+  it("re-pins pending siblings after a sibling merge and broadcasts auth:updated", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    const envs: Array<NodeJS.ProcessEnv | undefined> = [];
+    const queue = new AuthQueue({
+      db,
+      broadcast: (event) => events.push(event),
+      executor: async (options) => {
+        envs.push(options.env);
+        return {
+          exit_code: 1,
+          signal: null,
+          stdout: "",
+          stderr: "fixture stop\n",
+          output: "fixture stop\n",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        };
+      },
+      hookManager: createNoopHookManager(),
+    });
+    try {
+      commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
+      commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
+      registerWorkRepo(db, repo);
+      const repoName = path.basename(repo);
+
+      const pendingB = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/b --into main",
+        title: "Merge feature/b",
+        repo: repoName,
+        base_branch: "main",
+        head_branch: "feature/b",
+        merge_head_sha: git(repo, ["rev-parse", "feature/b"]),
+        cwd: repo,
+      });
+      const originalPin = pendingB.merge_candidate_pin_sha;
+      expect(originalPin).toMatch(/^[0-9a-f]{40,64}$/);
+
+      const now = 100;
+      db.prepare(
+        `INSERT INTO auth_requests (
+          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
+          status, created_at, updated_at, expires_at, output, execution_mode,
+          files_changed, additions, deletions, approval_source
+        ) VALUES (
+          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
+          'Merge feature/a', ?, ?, 'main', 'feature/a',
+          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
+        )`
+      ).run(repo, repoName, now, now, now + 1000);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
+      queue.setResult("merge-a", 0, "ok");
+      await queue.drainFinalizers();
+
+      const newBase = git(repo, ["rev-parse", "main"]);
+      const refreshed = queue.getRequest(pendingB.id);
+      expect(refreshed?.status).toBe("pending");
+      expect(refreshed?.merge_preflight_base_sha).toBe(newBase);
+      expect(refreshed?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+      expect(refreshed?.merge_candidate_pin_sha).not.toBe(originalPin);
+      expect(git(repo, ["rev-parse", `refs/mandible/auth-candidates/${pendingB.id}`]))
+        .toBe(refreshed!.merge_candidate_pin_sha);
+      expect(git(repo, ["rev-parse", `${refreshed!.merge_candidate_pin_sha}^1`])).toBe(newBase);
+      expect(git(repo, ["rev-parse", `${refreshed!.merge_candidate_pin_sha}^2`]))
+        .toBe(pendingB.merge_head_sha);
+      expect(events.some((event) => {
+        const data = event.data as Record<string, unknown>;
+        const request = data.request as Record<string, unknown> | undefined;
+        return event.event === "auth:updated" && request?.id === pendingB.id;
+      })).toBe(true);
+
+      // Approval now hits the exact-candidate fast path.
+      queue.approve(pendingB.id);
+      await waitForStatus(queue, pendingB.id, "completed");
+      expect(envs).toHaveLength(1);
+      expect(envs[0]?.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT).toBe("1");
+      expect(envs[0]?.MANDIBLE_AUTH_PREFLIGHT_BASE_SHA).toBe(newBase);
+      expect(envs[0]?.MANDIBLE_AUTH_CANDIDATE_PIN_SHA).toBe(refreshed!.merge_candidate_pin_sha);
+    } finally {
+      queue.dispose();
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("revalidates and re-pins dependents of the merged request first", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
+    try {
+      commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
+      commitOnBranch(repo, "feature/other", { "other.txt": "other\n" });
+      commitOnBranch(repo, "feature/dep", { "dep.txt": "dep\n" });
+      registerWorkRepo(db, repo);
+      const repoName = path.basename(repo);
+
+      const now = 100;
+      db.prepare(
+        `INSERT INTO auth_requests (
+          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
+          status, created_at, updated_at, expires_at, output, execution_mode,
+          files_changed, additions, deletions, approval_source
+        ) VALUES (
+          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
+          'Merge feature/a', ?, ?, 'main', 'feature/a',
+          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
+        )`
+      ).run(repo, repoName, now, now, now + 1000);
+
+      // Submitted first: without prioritization this request would be
+      // revalidated first (created_at order).
+      const other = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/other --into main",
+        title: "Merge feature/other",
+        repo: repoName,
+        base_branch: "main",
+        head_branch: "feature/other",
+        merge_head_sha: git(repo, ["rev-parse", "feature/other"]),
+        cwd: repo,
+      });
+      const dep = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/dep --into main",
+        title: "Merge feature/dep",
+        repo: repoName,
+        base_branch: "main",
+        head_branch: "feature/dep",
+        merge_head_sha: git(repo, ["rev-parse", "feature/dep"]),
+        cwd: repo,
+        depends_on_id: "merge-a",
+      });
+      expect(other.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+      expect(dep.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
+      queue.setResult("merge-a", 0, "ok");
+      await queue.drainFinalizers();
+
+      const newBase = git(repo, ["rev-parse", "main"]);
+      expect(queue.getRequest(dep.id)?.merge_preflight_base_sha).toBe(newBase);
+      expect(queue.getRequest(other.id)?.merge_preflight_base_sha).toBe(newBase);
+      const updatedIds = events
+        .filter((event) => event.event === "auth:updated")
+        .map((event) => {
+          const data = event.data as Record<string, unknown>;
+          return (data.request as Record<string, unknown> | undefined)?.id;
+        });
+      const depIndex = updatedIds.indexOf(dep.id);
+      const otherIndex = updatedIds.indexOf(other.id);
+      expect(depIndex).toBeGreaterThanOrEqual(0);
+      expect(otherIndex).toBeGreaterThanOrEqual(0);
+      expect(depIndex).toBeLessThan(otherIndex);
+    } finally {
+      queue.dispose();
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves a sibling whose head moved after review un-repinned", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    const events: SseEvent[] = [];
+    const queue = new AuthQueue({ db, broadcast: (event) => events.push(event) });
+    try {
+      commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
+      commitOnBranch(repo, "feature/b", { "b.txt": "b\n" });
+      registerWorkRepo(db, repo);
+      const repoName = path.basename(repo);
+
+      const pendingB = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/b --into main",
+        title: "Merge feature/b",
+        repo: repoName,
+        base_branch: "main",
+        head_branch: "feature/b",
+        merge_head_sha: git(repo, ["rev-parse", "feature/b"]),
+        cwd: repo,
+      });
+      const originalPin = pendingB.merge_candidate_pin_sha;
+      const originalBase = pendingB.merge_preflight_base_sha;
+      expect(originalPin).toMatch(/^[0-9a-f]{40,64}$/);
+
+      // Head drift: the reviewed content changed after submission.
+      git(repo, ["checkout", "feature/b"]);
+      writeFile(repo, "b2.txt", "b2\n");
+      git(repo, ["add", "."]);
+      git(repo, ["commit", "-m", "revise feature/b"]);
+      git(repo, ["checkout", "main"]);
+
+      const now = 100;
+      db.prepare(
+        `INSERT INTO auth_requests (
+          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
+          status, created_at, updated_at, expires_at, output, execution_mode,
+          files_changed, additions, deletions, approval_source
+        ) VALUES (
+          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
+          'Merge feature/a', ?, ?, 'main', 'feature/a',
+          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
+        )`
+      ).run(repo, repoName, now, now, now + 1000);
+      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
+      queue.setResult("merge-a", 0, "ok");
+      await queue.drainFinalizers();
+
+      // Head drift stays strict: the stale candidate is never re-attested.
+      const untouched = queue.getRequest(pendingB.id);
+      expect(untouched?.status).toBe("pending");
+      expect(untouched?.merge_preflight_base_sha).toBe(originalBase);
+      expect(untouched?.merge_candidate_pin_sha).toBe(originalPin);
+      expect(events.some((event) => {
+        const data = event.data as Record<string, unknown>;
+        const request = data.request as Record<string, unknown> | undefined;
+        return event.event === "auth:updated" && request?.id === pendingB.id;
+      })).toBe(false);
+    } finally {
+      queue.dispose();
+      db.close();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("defers sibling revalidation until a same-repo merge execution finishes", async () => {
+    const repo = createAuthCheckRepo();
+    const db = createMigratedDb();
+    let releaseExec!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseExec = resolve;
+    });
+    const queue = new AuthQueue({
+      db,
+      executor: async (options) => {
+        if (options.command.includes("feature/exec")) {
+          await gate;
+        }
+        return {
+          exit_code: 1,
+          signal: null,
+          stdout: "",
+          stderr: "fixture stop\n",
+          output: "fixture stop\n",
+          started_at: Date.now(),
+          finished_at: Date.now(),
+        };
+      },
+      hookManager: createNoopHookManager(),
+    });
+    try {
+      commitOnBranch(repo, "feature/exec", { "exec.txt": "exec\n" });
+      commitOnBranch(repo, "feature/c", { "c.txt": "c\n" });
+      commitOnBranch(repo, "feature/a", { "a.txt": "a\n" });
+      registerWorkRepo(db, repo);
+      const repoName = path.basename(repo);
+
+      const execRequest = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/exec --into main",
+        title: "Merge feature/exec",
+        repo: repoName,
+        base_branch: "main",
+        head_branch: "feature/exec",
+        merge_head_sha: git(repo, ["rev-parse", "feature/exec"]),
+        cwd: repo,
+      });
+      const pendingC = queue.submit({
+        type: "merge",
+        command: "mandible auth merge feature/c --into main",
+        title: "Merge feature/c",
+        repo: repoName,
+        base_branch: "main",
+        head_branch: "feature/c",
+        merge_head_sha: git(repo, ["rev-parse", "feature/c"]),
+        cwd: repo,
+      });
+      const staleBase = pendingC.merge_preflight_base_sha;
+      queue.approve(execRequest.id);
+
+      const now = 100;
+      db.prepare(
+        `INSERT INTO auth_requests (
+          id, session_id, type, command, title, cwd, repo, base_branch, head_branch,
+          status, created_at, updated_at, expires_at, output, execution_mode,
+          files_changed, additions, deletions, approval_source
+        ) VALUES (
+          'merge-a', NULL, 'merge', 'mandible auth merge feature/a --into main',
+          'Merge feature/a', ?, ?, 'main', 'feature/a',
+          'executing', ?, ?, ?, '', 'daemon', 0, 0, 0, 'manual'
+        )`
+      ).run(repo, repoName, now, now, now + 1000);
+      git(repo, ["checkout", "main"]);
+      git(repo, ["merge", "--no-ff", "feature/a", "-m", "merge feature/a"]);
+      queue.setResult("merge-a", 0, "ok");
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      // The revalidation pass is parked behind the executing same-repo merge:
+      // no preflight ran, so the sibling still carries its stale pin.
+      expect(queue.getRequest(pendingC.id)?.merge_preflight_base_sha).toBe(staleBase);
+      // And an approve-time recompute never runs against a busy repo chain:
+      // the stale candidate stays strictly blocked.
+      expect(() => queue.approve(pendingC.id)).toThrow(/requeue and reapprove/);
+
+      releaseExec();
+      await waitForStatus(queue, execRequest.id, "completed");
+      await queue.drainFinalizers();
+      const refreshed = queue.getRequest(pendingC.id);
+      expect(refreshed?.status).toBe("pending");
+      expect(refreshed?.merge_preflight_base_sha).toBe(git(repo, ["rev-parse", "main"]));
+      expect(refreshed?.merge_candidate_pin_sha).toMatch(/^[0-9a-f]{40,64}$/);
+    } finally {
+      queue.dispose();
+      db.close();
       fs.rmSync(repo, { recursive: true, force: true });
     }
   });
