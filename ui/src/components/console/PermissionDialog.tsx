@@ -4,6 +4,7 @@ import type {
   ConsolePermissionDecision,
   ConsolePermissionRequest,
 } from '../../api';
+import { useAppShell } from '../../app-shell';
 
 type PermissionDialogProps = {
   request: ConsolePermissionRequest | null;
@@ -25,6 +26,7 @@ export function PermissionDialog({
   request,
   onRespond,
 }: PermissionDialogProps): JSX.Element | null {
+  const { active } = useAppShell();
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
 
@@ -43,7 +45,7 @@ export function PermissionDialog({
   }, [request]);
 
   useEffect(() => {
-    if (!request) {
+    if (!request || !active) {
       return undefined;
     }
     const optionDecisions = (request.options ?? []).map((option) => option.decision ?? `option:${option.key}`);
@@ -75,7 +77,7 @@ export function PermissionDialog({
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [onRespond, request]);
+  }, [active, onRespond, request]);
 
   const formattedInput = useMemo(() => {
     if (!request) {

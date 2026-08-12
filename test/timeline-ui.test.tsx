@@ -320,16 +320,17 @@ function stubTimelineFetchResolver(
   return fetchMock;
 }
 
-function TimelineView(props: TimelineViewProps): JSX.Element {
+function TimelineView({ active = true, ...props }: TimelineViewProps & { active?: boolean }): JSX.Element {
   const [bottomPanel, setBottomPanel] = useState<AppBottomPanelDescriptor | null>(null);
   const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
     setBottomPanel(descriptor);
     return () => setBottomPanel((current) => (current?.id === descriptor.id ? null : current));
   }, []);
   const shell = useMemo<AppShellContextValue>(() => ({
+    active,
     bottomPanel,
     registerBottomPanel,
-  }), [bottomPanel, registerBottomPanel]);
+  }), [active, bottomPanel, registerBottomPanel]);
   const toggleLabel = bottomPanel?.open ? `Collapse ${bottomPanel.title}` : `Show ${bottomPanel?.title ?? 'inspector'}`;
 
   return (
@@ -842,6 +843,45 @@ describe('Timeline route', () => {
 });
 
 describe('TimelineView', () => {
+  it('stops global arrow-key navigation when its keep-alive view becomes inactive', async () => {
+    stubTimelineFetch(nearTimeProjection());
+
+    const result = render(h(TimelineView, {
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+
+    const firstEvent = await screen.findByText('Near event A');
+    fireEvent.click(firstEvent.closest('button') as HTMLButtonElement);
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      expect(JSON.parse(String(stored)).selectedEventId).toBe('event-near-a');
+    });
+    const activeKey = new KeyboardEvent('keydown', { key: 'ArrowRight', cancelable: true });
+    window.dispatchEvent(activeKey);
+    expect(activeKey.defaultPrevented).toBe(true);
+    await waitFor(() => {
+      const stored = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+      expect(stored).toBeTruthy();
+      expect(JSON.parse(String(stored)).selectedEventId).toBe('event-near-b');
+    });
+
+    result.rerender(h(TimelineView, {
+      active: false,
+      repos: [{ id: 'mandible', name: 'mandible' }],
+      params: { project: 'mandible' },
+    }));
+    const inactiveState = window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible');
+    const inactiveEventKey = new KeyboardEvent('keydown', { key: 'ArrowRight', cancelable: true });
+    const inactiveRowKey = new KeyboardEvent('keydown', { key: 'ArrowDown', cancelable: true });
+    window.dispatchEvent(inactiveEventKey);
+    window.dispatchEvent(inactiveRowKey);
+    expect(inactiveEventKey.defaultPrevented).toBe(false);
+    expect(inactiveRowKey.defaultPrevented).toBe(false);
+    expect(window.localStorage.getItem('mandible_timeline_view_state:v1:prj_mandible')).toBe(inactiveState);
+  });
+
   it('loads initial coordination roots without a transient verified-empty state', async () => {
     let resolveInitial: (value: ProjectTimelineProjection) => void = () => undefined;
     const initial = new Promise<ProjectTimelineProjection>((resolve) => {
