@@ -122,8 +122,25 @@ export function resolveWatchEventPath(base: string, filename: unknown): string |
   return path.join(base, ...name.split("/"));
 }
 
-/** How a watch root is currently delivering (or failing to deliver) events. */
-export type WatchRootMode = "recursive" | "per-file" | "degraded-poll";
+/**
+ * How a watch root is currently delivering (or failing to deliver) events.
+ *
+ * `recursive` and `per-file` are the two live event-driven modes. `reattaching`
+ * and `degraded-poll` both mean "no live watcher, events are being missed":
+ * the first is the bounded retry gap after a watcher failed, the second is the
+ * platform fallback the ladder ends in.
+ *
+ * Bug: 4f7e45e (re-review nit) — `reattaching` exists because a runtime error
+ * closes the watcher but the root kept reporting `recursive` for the whole
+ * retry interval, so `rootCount` claimed a live watcher that no longer existed
+ * exactly while events were being lost.
+ */
+export type WatchRootMode = "recursive" | "per-file" | "reattaching" | "degraded-poll";
+
+/** True for the modes that actually have a watcher delivering events. */
+export function isLiveWatchMode(mode: WatchRootMode): boolean {
+  return mode === "recursive" || mode === "per-file";
+}
 
 /**
  * Bounded retry ladder for a root whose recursive watch failed at startup or
@@ -176,7 +193,11 @@ export type PerFileWatchFactory = (
 export interface ConversationWatchHandle {
   /** Roots with a live event-driven watcher — the fd budget of the watcher. */
   readonly rootCount: number;
-  /** Roots with no live watcher, ingesting through bounded polling reconciles. */
+  /**
+   * Roots with no live watcher: polling, or inside the retry gap after a
+   * watcher error. Both are windows where events are missed and the caller is
+   * asked to reconcile, so both are counted here rather than as live roots.
+   */
   readonly degradedRootCount: number;
   /** Current delivery mode per watched base. */
   readonly rootModes: ReadonlyMap<string, WatchRootMode>;
@@ -286,7 +307,9 @@ interface RootSupervisor {
  */
 function superviseWatchRoot(root: WatchRoot, ctx: WatchSupervisorContext): RootSupervisor {
   const matches = makeWatchRootMatcher(root.base, root.globs);
-  let mode: WatchRootMode = "degraded-poll";
+  // Until the startup attach below resolves, the root has no watcher and no
+  // poll timer; every attach/fallback path overwrites this.
+  let mode: WatchRootMode = "reattaching";
   let watcher: fs.FSWatcher | null = null;
   let perFileWatchers: PerFileWatcher[] = [];
   let retryIndex = 0;
@@ -317,6 +340,11 @@ function superviseWatchRoot(root: WatchRoot, ctx: WatchSupervisorContext): RootS
     }
     if (closed || watcher !== source) return;
     watcher = null;
+    // Bug: 4f7e45e — the root has no watcher from here until a retry attaches
+    // one (or the ladder ends in a fallback). Reporting `recursive` through
+    // that window overstated the live-root count precisely when events were
+    // being lost.
+    mode = "reattaching";
     ctx.log("warn", "ingestion_watcher_error", {
       base: root.base,
       error: describeError(error),
@@ -532,10 +560,10 @@ export function watchConversationRoots(options: ConversationWatchOptions): Conve
 
   return {
     get rootCount() {
-      return countModes((mode) => mode !== "degraded-poll");
+      return countModes(isLiveWatchMode);
     },
     get degradedRootCount() {
-      return countModes((mode) => mode === "degraded-poll");
+      return countModes((mode) => !isLiveWatchMode(mode));
     },
     get rootModes() {
       const modes = new Map<string, WatchRootMode>();
