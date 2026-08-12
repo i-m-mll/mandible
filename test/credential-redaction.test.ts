@@ -38,6 +38,7 @@ import {
   setupOperator,
 } from "../src/users/store.js";
 import {
+  backfillCredentialLeakScan,
   CREDENTIAL_LEAK_EVENT_TYPE,
   credentialMaskFor,
   MAX_CANDIDATES_PER_TEXT,
@@ -330,6 +331,142 @@ describe("ingest-time credential redaction", () => {
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
+  it("masks a credential pasted into the Codex thread name", async () => {
+    // Re-review finding 1: the unchanged-mtime path syncs the thread name from
+    // Codex's session index straight into the conversations row and the SSE
+    // payload. It never went through the masker, so a PAT in a thread name was
+    // stored and broadcast in the clear.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const transcript = await writeCodexTranscript(codexTranscript("hello", "on it"));
+    await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
+
+    await fsp.writeFile(
+      path.join(tempDir, "home", ".codex", "session_index.jsonl"),
+      `${JSON.stringify({ id: "leaktest", thread_name: `deploy ${LEAKED_TOKEN}` })}\n`,
+      "utf8",
+    );
+
+    const events: unknown[] = [];
+    configureIngestionWorker(() => {}, (event, data) => events.push({ event, data }));
+    try {
+      // Same bytes, same mtime: the title-sync path, not a re-parse.
+      await triggerTargetedIngest({ transcriptPath: transcript, now: 2_000 });
+    } finally {
+      configureIngestionWorker(() => {}, () => {});
+    }
+
+    const mask = credentialMaskFor(credential.id);
+    const conversation = db
+      .prepare("SELECT title FROM conversations WHERE source_path = ?")
+      .get(transcript) as { title: string };
+    expect(conversation.title).toBe(`deploy ${mask}`);
+    expect(JSON.stringify(events)).not.toContain(LEAKED_TOKEN);
+    expect(JSON.stringify(events)).toContain(mask);
+    expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
+  });
+
+  it("masks derived text on the identical-source-hash update path", async () => {
+    // Re-review finding 1: when a re-parse produces the same source hash,
+    // ingestion still rewrites and broadcasts the title and summary — and did
+    // so from the raw parse. A credential that became known after the first
+    // ingest was therefore written back in the clear on the next touch.
+    makeAgent();
+    const transcript = await writeCodexTranscript(
+      codexTranscript(`token: ${LEAKED_TOKEN}`, "acknowledged"),
+    );
+    // Ingested before the credential exists, so nothing can be matched yet.
+    await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
+    expect(
+      (db.prepare("SELECT title FROM conversations WHERE source_path = ?")
+        .get(transcript) as { title: string }).title,
+    ).toContain(LEAKED_TOKEN);
+
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    // Touched, not modified: the mtime moves, the parse hashes identically.
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(transcript, future, future);
+
+    const events: unknown[] = [];
+    configureIngestionWorker(() => {}, (event, data) => events.push({ event, data }));
+    try {
+      await ingestBatchForWorker([transcript], true);
+    } finally {
+      configureIngestionWorker(() => {}, () => {});
+    }
+
+    const mask = credentialMaskFor(credential.id);
+    expect(
+      (db.prepare("SELECT title FROM conversations WHERE source_path = ?")
+        .get(transcript) as { title: string }).title,
+    ).toBe(`token: ${mask}`);
+    expect(JSON.stringify(events)).not.toContain(LEAKED_TOKEN);
+    // The already-indexed blocks are untouched by this path by design; clearing
+    // those is what `mandible credential redact` is for.
+  });
+
+  it("never deletes another conversation's block while recovering from an id clash", async () => {
+    // Re-review finding 2, the data-loss half: unique-conflict recovery deleted
+    // every row whose id matched one of the incoming ids, with no conversation
+    // scope. A block id collision across conversations therefore destroyed an
+    // unrelated conversation's block. Recovery must purge only this
+    // conversation and let the insert fail loudly otherwise.
+    makeAgent();
+    const transcript = await writeCodexTranscript(codexTranscript("hello", "on it"));
+    await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
+    const indexed = storedBlocks();
+    expect(indexed).toHaveLength(2);
+    const collidingId = indexed[1].id;
+
+    // Free the id and hand it to an unrelated conversation. This stands in for
+    // the truncated-hash collision that is the only way a foreign row can hold
+    // an id this file will derive.
+    db.prepare("DELETE FROM conversation_blocks WHERE id = ?").run(collidingId);
+    seedConversation("conv-bystander", { blocks: ["someone else's work"] });
+    db.prepare("UPDATE conversation_blocks SET id = ? WHERE id = 'conv-bystander-b0'")
+      .run(collidingId);
+
+    // Grow the transcript so the re-parse is a real full re-ingest rather than
+    // the identical-source-hash update, then force the full path. Positions 0
+    // and 1 re-derive the same ids, so position 1 collides.
+    await fsp.appendFile(
+      transcript,
+      codexRow({
+        type: "response_item",
+        timestamp: "2026-08-12T00:00:03.000Z",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "one more" }],
+        },
+      }),
+    );
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(transcript, future, future);
+    const logs: string[] = [];
+    configureIngestionWorker((_level, event) => logs.push(event), () => {});
+    try {
+      await ingestBatchForWorker([transcript], true);
+    } finally {
+      configureIngestionWorker(() => {}, () => {});
+    }
+    const survivor = db
+      .prepare("SELECT conversation_id, content, compressed FROM conversation_blocks WHERE id = ?")
+      .get(collidingId) as
+        { conversation_id: string; content: Buffer | string; compressed: number } | undefined;
+    expect(survivor).toBeDefined();
+    expect(survivor?.conversation_id).toBe("conv-bystander");
+    expect(decompressContent(survivor!.content, survivor!.compressed === 1))
+      .toBe("someone else's work");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM conversations WHERE id = 'conv-bystander'").get())
+      .toEqual({ n: 1 });
+
+    // The clash really did drive the unique-conflict recovery path, and that
+    // path refused to resolve it by deleting a row it does not own.
+    expect(logs).toContain("ingestion_block_id_collision_foreign");
+    expect(logs).toContain("ingestion_db_error");
+  });
+
   it("leaves text that only looks like a token alone", async () => {
     makeAgent();
     registerToken("mandible-agent-codex", LEAKED_TOKEN);
@@ -551,6 +688,74 @@ describe("mandible credential redact", () => {
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
+  it("repoints an existing leak alert at the renumbered block", () => {
+    // Re-review finding 2: the alert payload deep-links the block a credential
+    // was found in, and renumbering left every alert pointing at an id that no
+    // longer existed — a dead link on the one record an operator opens because
+    // of the leak.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    seedConversation("conv-a", { blocks: [`token: ${LEAKED_TOKEN}`] });
+    backfillCredentialLeakScan(db);
+    const before = leakAlerts();
+    expect(before).toHaveLength(1);
+    expect(JSON.parse(before[0].data_json)).toMatchObject({ block_id: "conv-a-b0" });
+
+    const report = redactCredential(db, credential.id);
+
+    expect(report).toMatchObject({ renumbered_blocks: 1, remapped_leak_alerts: 1 });
+    const after = leakAlerts();
+    expect(after).toHaveLength(1);
+    const blockId = JSON.parse(after[0].data_json).block_id as string;
+    expect(blockId).toBe(storedBlocks()[0].id);
+    expect(blockId).not.toBe("conv-a-b0");
+    // The alert now resolves to a row that is actually there.
+    expect(db.prepare("SELECT 1 FROM conversation_blocks WHERE id = ?").get(blockId))
+      .toBeTruthy();
+    // Everything else about the historical detection is untouched.
+    expect(JSON.parse(after[0].data_json)).toMatchObject({
+      credential_id: credential.id,
+      conversation_id: "conv-a",
+    });
+  });
+
+  it("renumbers identical blocks without a conflict, because ids hash position", () => {
+    // Re-review residual on finding 7: "on conflict the old id is kept" is a
+    // branch that cannot fire for two well-formed rows. conversation_blocks
+    // carries UNIQUE(conversation_id, position) and conversationBlockId hashes
+    // both fields — the same disambiguation ingestion itself relies on (bug
+    // 7b47c6c) — so distinct rows always differ in a hashed input. Assert the
+    // schema fact and the behaviour that rests on it.
+    const ddl = db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get("conversation_blocks") as { sql: string };
+    expect(ddl.sql.replace(/\s+/g, " ")).toContain("UNIQUE(conversation_id, position)");
+
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const identical = `token: ${LEAKED_TOKEN}`;
+    // Byte-identical content, same type and timestamp, in one conversation and
+    // repeated in another: the only differences are position and conversation.
+    seedConversation("conv-a", { blocks: [identical, identical, identical] });
+    seedConversation("conv-b", { blocks: [identical] });
+
+    const report = redactCredential(db, credential.id);
+
+    expect(report).toMatchObject({ renumbered_blocks: 4, id_conflicts: 0 });
+    const blocks = storedBlocks();
+    expect(new Set(blocks.map((block) => block.id)).size).toBe(4);
+    for (const block of blocks) {
+      expect(block.id).toBe(conversationBlockId({
+        conversation_id: block.conversation_id,
+        type: block.type,
+        timestamp: block.timestamp,
+        content: block.content,
+        position: block.position,
+      }));
+    }
+    expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
+  });
+
   it("keeps the id when the redacted span is past the hashed content prefix", () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
@@ -578,6 +783,22 @@ describe("mandible credential redact", () => {
 });
 
 // --- Source patching ---------------------------------------------------------
+
+/**
+ * Run `onOpen` each time the redaction opens its temp replacement file — the
+ * point where the snapshot has been read but nothing has been renamed yet.
+ * That is the window a live transcript writer appends into.
+ */
+function spyOnTempFileOpen(onOpen: () => void) {
+  const realOpenSync = fs.openSync.bind(fs);
+  return vi.spyOn(fs, "openSync").mockImplementation(((
+    target: Parameters<typeof fs.openSync>[0],
+    ...rest: unknown[]
+  ) => {
+    if (typeof target === "string" && target.includes("mandible-redact")) onOpen();
+    return (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
+  }) as typeof fs.openSync);
+}
 
 describe("credential redact --patch-sources", () => {
   function writeSourceFile(name: string, body: Buffer): string {
@@ -671,22 +892,15 @@ describe("credential redact --patch-sources", () => {
       "latin1",
     );
 
-    // Simulate the agent appending an event between the read and the rename:
-    // the first read of this file returns the old bytes and the file grows
-    // immediately afterwards.
-    const realReadFileSync = fs.readFileSync.bind(fs);
+    // Simulate the agent appending an event while the replacement is being
+    // written: the source grows after its snapshot was taken and before the
+    // rename, which the pre-rename re-verification must catch.
     let injected = false;
-    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((
-      target: Parameters<typeof fs.readFileSync>[0],
-      options: Parameters<typeof fs.readFileSync>[1],
-    ) => {
-      const bytes = realReadFileSync(target, options);
-      if (target === file && !injected) {
-        injected = true;
-        fs.appendFileSync(file, appended);
-      }
-      return bytes;
-    }) as typeof fs.readFileSync);
+    const spy = spyOnTempFileOpen(() => {
+      if (injected) return;
+      injected = true;
+      fs.appendFileSync(file, appended);
+    });
 
     let report;
     try {
@@ -706,6 +920,121 @@ describe("credential redact --patch-sources", () => {
     expect(fs.readdirSync(tempDir).filter((entry) => entry.includes("mandible-redact"))).toEqual([]);
   });
 
+  it("recovers bytes appended to the replaced inode during the rename", () => {
+    // Re-review residual on finding 4: the pre-rename check closed the stale-
+    // snapshot hole, but the descriptor was released before renameSync, so a
+    // writer appending inside that window wrote into a file the rename then
+    // unlinked. Those bytes were reachable only through the descriptor the
+    // redaction had just closed. It now holds the descriptor across the rename
+    // and copies the tail onto the patched file.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-tail.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"written inside the rename window ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const realRenameSync = fs.renameSync.bind(fs);
+    let injected = false;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation(((
+      from: Parameters<typeof fs.renameSync>[0],
+      to: Parameters<typeof fs.renameSync>[1],
+    ) => {
+      // Still the pre-rename inode at this instant, so this lands exactly where
+      // the old code lost it: in the file the next statement unlinks.
+      if (!injected && to === file) {
+        injected = true;
+        fs.appendFileSync(file, appended);
+      }
+      return realRenameSync(from, to);
+    }) as typeof fs.renameSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(injected).toBe(true);
+    const mask = credentialMaskFor(credential.id);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      failed_files: 0,
+      // Two spans in the snapshot plus the one in the recovered tail.
+      patched_spans: 3,
+      recovered_tail_bytes: appended.length,
+      abandoned_tail_bytes: 0,
+    });
+    const expected = Buffer.concat([original, appended])
+      .toString("latin1")
+      .split(LEAKED_TOKEN)
+      .join(mask);
+    // Nothing dropped, and the recovered tail is masked rather than copied
+    // verbatim — it was never scanned before it was written.
+    expect(fs.readFileSync(file).toString("latin1")).toBe(expected);
+    expect(fs.readFileSync(file).toString("latin1")).not.toContain(LEAKED_TOKEN);
+  });
+
+  it("reports the bytes it could not drain from a writer that never stops", () => {
+    // Tail recovery is bounded, and the bound is reported rather than hidden:
+    // a writer appending faster than the loop drains leaves bytes in the
+    // unlinked inode, and the operator is told to re-run once it exits.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-flood.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+
+    // A descriptor opened before the rename keeps writing to the old inode
+    // afterwards — exactly what a running agent's transcript writer does.
+    const writerFd = fs.openSync(file, "a");
+    let written = 0;
+    const burst = (): void => {
+      written += 1;
+      fs.writeSync(writerFd, Buffer.from(`{"burst":${written},"t":"${LEAKED_TOKEN}"}\n`, "latin1"));
+    };
+
+    const realRenameSync = fs.renameSync.bind(fs);
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(((
+      from: Parameters<typeof fs.renameSync>[0],
+      to: Parameters<typeof fs.renameSync>[1],
+    ) => {
+      if (to === file) burst();
+      return realRenameSync(from, to);
+    }) as typeof fs.renameSync);
+    // Every recovery append provokes another write into the old inode.
+    const openSpy = (() => {
+      const realOpenSync = fs.openSync.bind(fs);
+      return vi.spyOn(fs, "openSync").mockImplementation(((
+        target: Parameters<typeof fs.openSync>[0],
+        ...rest: unknown[]
+      ) => {
+        if (target === file && rest[0] === "a") burst();
+        return (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
+      }) as typeof fs.openSync);
+    })();
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      renameSpy.mockRestore();
+      openSpy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(report.sources?.patched_files).toBe(1);
+    expect(report.sources?.recovered_tail_bytes ?? 0).toBeGreaterThan(0);
+    expect(report.sources?.abandoned_tail_bytes ?? 0).toBeGreaterThan(0);
+    // Whatever was recovered is masked; the abandoned remainder never reached
+    // the patched file at all.
+    expect(fs.readFileSync(file).toString("latin1")).not.toContain(LEAKED_TOKEN);
+  });
+
   it("refuses a source that never stops changing", () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
@@ -713,19 +1042,11 @@ describe("credential redact --patch-sources", () => {
     const file = writeSourceFile("rollout-busy.jsonl", original);
     seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
 
-    const realReadFileSync = fs.readFileSync.bind(fs);
     let appends = 0;
-    const spy = vi.spyOn(fs, "readFileSync").mockImplementation(((
-      target: Parameters<typeof fs.readFileSync>[0],
-      options: Parameters<typeof fs.readFileSync>[1],
-    ) => {
-      const bytes = realReadFileSync(target, options);
-      if (target === file) {
-        appends += 1;
-        fs.appendFileSync(file, Buffer.from(`{"n":${appends}}\n`, "latin1"));
-      }
-      return bytes;
-    }) as typeof fs.readFileSync);
+    const spy = spyOnTempFileOpen(() => {
+      appends += 1;
+      fs.appendFileSync(file, Buffer.from(`{"n":${appends}}\n`, "latin1"));
+    });
 
     let report;
     try {

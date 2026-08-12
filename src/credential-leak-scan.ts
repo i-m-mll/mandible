@@ -245,10 +245,26 @@ export function credentialMaskFor(credentialId: string): string {
  * (so the span was never hashed), or verification itself failed — a locked
  * database, an unreadable pepper. Both are fail-closed: the span is masked
  * without knowing whether it is a live credential, because the alternative is
- * persisting and broadcasting what might be a working token. The mask is a
- * constant, so it does not disturb ingest determinism.
+ * persisting and broadcasting what might be a working token.
+ *
+ * The mask carries a discriminator (issue b3e4a09, re-review finding 3). A
+ * single constant collapsed every unverified span in a text onto one string,
+ * which is fail-closed for secrecy but lossy for structure: attacker-controlled
+ * metadata using several token-shaped strings as distinct object keys reparsed
+ * into a single JSON property, silently dropping the other values. `occurrence`
+ * is the span's 1-based index in scan order within the one text being masked,
+ * so distinct spans stay distinct.
+ *
+ * The discriminator is deliberately positional and carries nothing derived from
+ * the plaintext. Even a short hash of the masked bytes would turn every stored
+ * transcript into an offline confirmation oracle — an attacker holding a
+ * guessed token could check it against the mask without touching Mandible.
+ * Position is a pure function of the surrounding text, so re-ingesting the same
+ * source reproduces byte-identical output and block ids stay stable.
  */
-export const UNVERIFIED_CREDENTIAL_MASK = "[mandible-credential:unverified]";
+export function unverifiedCredentialMask(occurrence: number): string {
+  return `[mandible-credential:unverified#${occurrence}]`;
+}
 
 /**
  * Replace every token-shaped span that is not known clean.
@@ -256,6 +272,11 @@ export const UNVERIFIED_CREDENTIAL_MASK = "[mandible-credential:unverified]";
  * `isKnownClean` is how a caller keeps spans it *did* verify as non-credentials:
  * those were hashed and positively cleared, so over-masking them would destroy
  * legitimate transcript text for no security gain.
+ *
+ * Numbering restarts at 1 for each call, so a block's `content` and its
+ * serialized `metadata` are numbered independently. That is still deterministic
+ * — each is a fixed function of its own text — and it keeps the two fields from
+ * depending on each other's scan order.
  */
 export function maskUnverifiedCandidates(
   text: string,
@@ -266,7 +287,7 @@ export function maskUnverifiedCandidates(
   const next = text.replace(credentialCandidatePattern(), (match) => {
     if (isKnownClean(match)) return match;
     replacements += 1;
-    return UNVERIFIED_CREDENTIAL_MASK;
+    return unverifiedCredentialMask(replacements);
   });
   return { text: next, replacements };
 }
@@ -374,6 +395,60 @@ export function recordCredentialLeak(
     revoked,
     new_event: result.changes > 0,
   };
+}
+
+/**
+ * Follow renumbered blocks in the leak alerts that point at them.
+ *
+ * The alert payload carries `block_id` so the dashboard can deep-link the
+ * exact block a credential leaked in. Retroactive redaction recomputes that id
+ * (the id is a content hash, so masking inside the hashed prefix changes it),
+ * which left every existing alert pointing at a row that no longer exists —
+ * the link 404s, and it does so on the one record an operator opens *because*
+ * a credential leaked (issue b3e4a09, re-review finding 2).
+ *
+ * Only `credential_leak` events are touched, and only their `block_id`: the
+ * rest of the payload, including the credential id and the detection time, is
+ * historical fact and stays as recorded. Payloads that fail to parse are left
+ * alone rather than rewritten from a guess.
+ */
+export function remapCredentialLeakAlertBlockIds(
+  db: Db,
+  renames: ReadonlyMap<string, string>,
+): number {
+  if (renames.size === 0) return 0;
+  const rows = db
+    .prepare(
+      `SELECT id, data_json FROM webhook_events
+       WHERE source = ? AND event_type = ?`,
+    )
+    .all(CREDENTIAL_LEAK_EVENT_SOURCE, CREDENTIAL_LEAK_EVENT_TYPE) as Array<{
+      id: string;
+      data_json: string | null;
+    }>;
+  if (rows.length === 0) return 0;
+
+  const update = db.prepare("UPDATE webhook_events SET data_json = ? WHERE id = ?");
+  let updated = 0;
+  for (const row of rows) {
+    if (!row.data_json) continue;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(row.data_json);
+    } catch {
+      continue;
+    }
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) continue;
+    const record = payload as Record<string, unknown>;
+    const blockId = record.block_id;
+    if (typeof blockId !== "string") continue;
+    const next = renames.get(blockId);
+    if (next === undefined || next === blockId) continue;
+    record.block_id = next;
+    update.run(JSON.stringify(record), row.id);
+    updated += 1;
+  }
+  return updated;
 }
 
 // --- Pepper access -----------------------------------------------------------

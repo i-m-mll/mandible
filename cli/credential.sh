@@ -45,9 +45,13 @@ source transcripts the affected conversations came from, so a later full
 re-ingest cannot resurrect the plaintext. Every other byte of those files is
 preserved; each file is replaced atomically, and a file that changed while its
 replacement was being prepared is re-read rather than overwritten from the
-stale snapshot. Files that are no longer on disk are reported as missing, and
-files that kept changing (or whose scan could not check every candidate) are
-reported as refused — never partially rewritten.
+stale snapshot. Bytes a live agent appends during the swap itself are read back
+off the replaced file and carried onto the patched one, masked, and counted as
+recovered; if a writer appends faster than that drains, the remainder is
+reported so the redaction can be re-run once the agent exits. Files that are no
+longer on disk are reported as missing, and files that kept changing (or whose
+scan could not check every candidate) are reported as refused — never partially
+rewritten.
 
 Requires the local operator's credential (MANDIBLE_TOKEN or
 `mandible user dashboard-link`).
@@ -96,6 +100,9 @@ cmd_redact() {
     + (if (.renumbered_blocks // 0) > 0 then
          "\n  renumbered blocks: \(.renumbered_blocks)"
          + (if (.id_conflicts // 0) > 0 then ", \(.id_conflicts) kept (id already in use)" else "" end)
+         + (if (.remapped_leak_alerts // 0) > 0 then
+              "\n  repointed alerts:  \(.remapped_leak_alerts)"
+            else "" end)
        else "" end)
     + (if .truncated then
          "\n  warning: a scanned text exceeded the per-text candidate budget; the"
@@ -111,6 +118,15 @@ cmd_redact() {
          + "\(.sources.refused_files) refused, "
          + "\(.sources.failed_files) failed (of \(.sources.candidate_files))"
          + "\n  source spans:      \(.sources.patched_spans)"
+         + (if (.sources.recovered_tail_bytes // 0) > 0 then
+              "\n  recovered tail:    \(.sources.recovered_tail_bytes) bytes appended during"
+              + "\n                     the rewrite were carried onto the patched file"
+            else "" end)
+         + (if (.sources.abandoned_tail_bytes // 0) > 0 then
+              "\n  WARNING:           \(.sources.abandoned_tail_bytes) bytes were still being"
+              + "\n                     appended to the replaced file when recovery stopped;"
+              + "\n                     re-run redact once the writing agent has exited"
+            else "" end)
        end)'
 }
 

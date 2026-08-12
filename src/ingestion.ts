@@ -1632,6 +1632,41 @@ function insertedBlockPayload(
   };
 }
 
+/**
+ * Mask live credential plaintext in one derived conversation field.
+ *
+ * Titles and summaries are cut from transcript text, so a PAT pasted into a
+ * first user message — or into a Codex thread name — reaches the conversations
+ * row and the `conversation:updated` SSE payload through them. Every write of a
+ * derived field has to go through this, not just the ones on the main ingest
+ * path: the unchanged-mtime title sync and the identical-source-hash update
+ * both write and broadcast the same kind of text and were doing it in the clear
+ * (issue b3e4a09, re-review finding 1).
+ *
+ * Fail-closed, matching the scanner's own contract: if verification is
+ * unavailable the token-shaped spans are masked unverified rather than written
+ * through, because this string is about to be persisted and pushed to every
+ * connected client.
+ */
+function maskDerivedConversationText(
+  db: ReturnType<typeof getDb>,
+  value: string,
+  context: { file: string; stage: string },
+): string {
+  try {
+    return maskActiveCredentialsInText(db, value).text;
+  } catch (error) {
+    const masked = maskUnverifiedCandidates(value);
+    logger("error", "credential_leak_scan_failed", {
+      file: context.file,
+      error: String(error),
+      stage: context.stage,
+      unverified_spans: masked.replacements,
+    });
+    return masked.text;
+  }
+}
+
 async function syncCodexIndexedTitle(
   filePath: string,
   existing: {
@@ -1644,14 +1679,20 @@ async function syncCodexIndexedTitle(
   if (!existing.session_id) {
     return false;
   }
-  const title = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
+  const db = getDb();
+  const indexed = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
     ?.slice(0, 100)
     .trim();
+  // Masked before the comparison, not after: the stored title is already
+  // masked, so comparing the raw index title against it would report a
+  // difference on every pass and rewrite the row with the plaintext.
+  const title = indexed
+    ? maskDerivedConversationText(db, indexed, { file: filePath, stage: "codex_title_sync" })
+    : indexed;
   if (!title || title === existing.title) {
     return false;
   }
 
-  const db = getDb();
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
     .run(title, existing.id);
   eventPublisher("conversation:updated", {
@@ -2006,6 +2047,23 @@ async function ingestFile(
 
   // Check hash — if same content, just update mtime
   if (existing && existing.source_hash === result.conversation.source_hash) {
+    // Issue b3e4a09, re-review finding 1: identical parsed bytes still rewrite
+    // and broadcast the derived title and summary here, so this path needs the
+    // same masking as the main one below. A source touched without a byte
+    // change (or re-parsed after the credential became known) otherwise puts
+    // the plaintext back on the conversations row and on the SSE payload.
+    result.conversation.title = maskDerivedConversationText(
+      db,
+      result.conversation.title,
+      { file: filePath, stage: "unchanged_source_hash" },
+    );
+    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+      result.conversation.summary = maskDerivedConversationText(
+        db,
+        result.conversation.summary,
+        { file: filePath, stage: "unchanged_source_hash" },
+      );
+    }
     db.prepare(`
       UPDATE conversations SET
         source_mtime = ?,
@@ -2083,22 +2141,17 @@ async function ingestFile(
     // Issue b3e4a09: this early return still writes derived text, so it needs
     // the same masking as the main path below — a token pasted into the first
     // user message reaches the conversations row through here too.
-    try {
-      result.conversation.title = maskActiveCredentialsInText(db, result.conversation.title).text;
-      if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
-        result.conversation.summary =
-          maskActiveCredentialsInText(db, result.conversation.summary).text;
-      }
-    } catch (error) {
-      result.conversation.title = maskUnverifiedCandidates(result.conversation.title ?? "").text;
-      if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
-        result.conversation.summary = maskUnverifiedCandidates(result.conversation.summary).text;
-      }
-      logger("error", "credential_leak_scan_failed", {
-        file: filePath,
-        error: String(error),
-        stage: "metadata_only_update",
-      });
+    result.conversation.title = maskDerivedConversationText(
+      db,
+      result.conversation.title,
+      { file: filePath, stage: "metadata_only_update" },
+    );
+    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+      result.conversation.summary = maskDerivedConversationText(
+        db,
+        result.conversation.summary,
+        { file: filePath, stage: "metadata_only_update" },
+      );
     }
     db.prepare(`
       UPDATE conversations SET
@@ -2414,18 +2467,39 @@ async function ingestFile(
               db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
               db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
             }
-            // Also purge any blocks that share IDs with the blocks we're about to insert
-            // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
-            const newIds = result.blocks.map((block) => conversationBlockId({
-              conversation_id: conversationId,
-              type: block.type,
-              timestamp: block.timestamp,
-              content: block.content,
-              position: block.position,
-            }));
-            if (newIds.length > 0) {
-              const placeholders = newIds.map(() => "?").join(",");
-              db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
+            // Also purge any blocks still attached to this conversation id
+            // (orphaned rows from a prior failed transaction that the
+            // FK-disabled DB did not cascade). Scoped to this conversation —
+            // the previous form deleted every row whose id matched one of the
+            // incoming ids regardless of which conversation it belonged to, so
+            // a block id collision across conversations silently destroyed an
+            // unrelated conversation's block (issue b3e4a09, re-review finding
+            // 2). The orphans this is aimed at always carry this conversation
+            // id, because the id being re-derived hashes it.
+            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
+              .run(conversationId);
+            // A row of some *other* conversation holding one of the incoming
+            // ids can only be a truncated-hash collision. Recovery refuses to
+            // delete it: the insert below fails loudly instead of quietly
+            // taking data that does not belong to this file.
+            const foreign = foreignBlockIdHolders(
+              db,
+              conversationId,
+              result.blocks.map((block) => conversationBlockId({
+                conversation_id: conversationId,
+                type: block.type,
+                timestamp: block.timestamp,
+                content: block.content,
+                position: block.position,
+              })),
+            );
+            if (foreign.length > 0) {
+              logger("error", "ingestion_block_id_collision_foreign", {
+                file: filePath,
+                conversation_id: conversationId,
+                colliding_ids: foreign.length,
+                other_conversations: [...new Set(foreign.map((row) => row.conversation_id))],
+              });
             }
             // Re-insert conversation
             db.prepare(`
@@ -2575,6 +2649,39 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+/**
+ * Rows outside `conversationId` that already hold one of these block ids.
+ *
+ * Block ids hash the conversation id and the block position, and
+ * `conversation_blocks` carries UNIQUE(conversation_id, position), so a
+ * foreign holder is only possible through a truncated-hash collision. This
+ * exists so that case is reported rather than resolved by deletion.
+ *
+ * Queried in chunks: a long conversation can carry more blocks than SQLite
+ * allows bound parameters in one statement.
+ */
+function foreignBlockIdHolders(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  ids: readonly string[],
+): Array<{ id: string; conversation_id: string }> {
+  const found: Array<{ id: string; conversation_id: string }> = [];
+  const chunkSize = 400;
+  for (let start = 0; start < ids.length; start += chunkSize) {
+    const chunk = ids.slice(start, start + chunkSize);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT id, conversation_id FROM conversation_blocks
+         WHERE conversation_id != ? AND id IN (${placeholders})`,
+      )
+      .all(conversationId, ...chunk) as Array<{ id: string; conversation_id: string }>;
+    found.push(...rows);
+  }
+  return found;
 }
 
 function isSqliteBusy(error: unknown): boolean {
