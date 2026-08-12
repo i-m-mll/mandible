@@ -2,7 +2,7 @@ import { Fragment } from 'preact';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import { getProjectTimeline } from '../api';
-import { useRegisterAppBottomPanel } from '../app-shell';
+import { useAppShell, useRegisterAppBottomPanel } from '../app-shell';
 import { ViewSidebar } from '../components/ViewSidebar';
 import { LedgerRenderedBody } from '../components/ledger/LedgerRenderedBody';
 import { AttributionIdentity } from '../components/shared/DetailHeaderIdentity';
@@ -796,6 +796,7 @@ function AddTimelineRowIcon(): JSX.Element {
 }
 
 export function TimelineView({ repos, params = {}, sidebarHidden = false }: TimelineViewProps): JSX.Element {
+  const { active } = useAppShell();
   const urlState = useMemo(() => parseUrlState(params), [params]);
   const initialProjectRef = defaultProjectRef(repos, urlState.projectRef);
   const [projectRef, setProjectRef] = useState(initialProjectRef);
@@ -1657,6 +1658,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
   }, [selectRow, viewState.selectedRowOccurrenceId, visibleRows]);
 
   useEffect(() => {
+    if (!active) return undefined;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isInputElement(event.target)) return;
       if (event.key === 'ArrowRight') {
@@ -1675,7 +1677,7 @@ export function TimelineView({ repos, params = {}, sidebarHidden = false }: Time
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [navigateEvent, navigateRow]);
+  }, [active, navigateEvent, navigateRow]);
 
   const axisTicks = useMemo(() => {
     return generateTimelineTicks(viewport, timeViewportWidthPx, {
