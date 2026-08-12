@@ -45,6 +45,7 @@ import {
   type AppShellContextValue,
 } from '../ui/src/app-shell';
 import { AuthQueueView } from '../ui/src/views/auth';
+import { GraphView } from '../ui/src/views/graph';
 import { SettingsView } from '../ui/src/views/settings';
 import { WorkOverviewView } from '../ui/src/views/work';
 import { ArtifactsView } from '../ui/src/views/artifacts';
@@ -813,6 +814,66 @@ describe('app shell', () => {
     expect(screen.getAllByText('mandible').length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith('/api/graph?')).length)
       .toBeLessThan(5);
+  });
+
+  // Issue 80ced49 regression guard. GraphView used to build its pending-payload
+  // placeholder as a fresh object literal on every render, so `payload.nodes` and
+  // `payload.edges` changed identity each pass. That invalidated the memoized
+  // bottom-panel descriptor, re-ran the registration effect, wrote app shell
+  // state, and re-rendered the view — an unbounded synchronous render loop that
+  // hung the whole test file. This probe re-renders GraphView while the graph
+  // request is still pending and records every registration, so a regression
+  // fails on the count instead of spinning forever (the shell probe deliberately
+  // holds no state, so the loop cannot self-sustain here).
+  it('registers one stable Graph bottom panel descriptor while the payload is pending', async () => {
+    stubEventSource();
+    // The pending-payload path is only exercised when no cached graph detail is
+    // available, so drop anything an earlier test persisted.
+    if (typeof window.localStorage.clear === 'function') window.localStorage.clear();
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.startsWith('/api/graph?')) {
+        return new Promise<Response>(() => undefined);
+      }
+      return Promise.resolve(new Response(JSON.stringify([]), {
+        headers: { 'content-type': 'application/json' },
+      }));
+    }));
+
+    const registrations: AppBottomPanelDescriptor[] = [];
+    const navigate = (): void => undefined;
+    let rerenderProbe: (() => void) | null = null;
+
+    function PendingGraphProbe(): JSX.Element {
+      const [, setTick] = useState(0);
+      rerenderProbe = () => setTick((value) => value + 1);
+      const registerBottomPanel = useCallback((descriptor: AppBottomPanelDescriptor) => {
+        registrations.push(descriptor);
+        return () => undefined;
+      }, []);
+      const shell = useMemo<AppShellContextValue>(() => ({
+        bottomPanel: null,
+        registerBottomPanel,
+      }), [registerBottomPanel]);
+
+      return h(AppShellProvider, { value: shell }, h(GraphView, {
+        onNavigate: navigate,
+        refreshToken: 0,
+      }));
+    }
+
+    render(h(PendingGraphProbe, {}));
+
+    await waitFor(() => expect(registrations.length).toBeGreaterThan(0));
+
+    for (let pass = 0; pass < 5; pass += 1) {
+      // eslint-disable-next-line no-await-in-loop
+      await act(async () => {
+        rerenderProbe?.();
+      });
+    }
+
+    expect(registrations).toHaveLength(1);
   });
 
   it('updates Graph selection without remounting the flow canvas', async () => {
