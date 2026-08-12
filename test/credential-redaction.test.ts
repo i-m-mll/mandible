@@ -874,9 +874,9 @@ describe("mandible credential redact", () => {
  * point where the snapshot has been read but nothing has been renamed yet.
  * That is the window a live transcript writer appends into.
  *
- * Matched on the exclusive-create flag, not just the path: the redaction opens
- * the same temp file a second time, in append mode, to hold the descriptor tail
- * recovery writes through, and that open is not another attempt.
+ * Matched on the exclusive-create flag, not just the path: the temp file is
+ * created exactly once per attempt and never reopened, so one match is one
+ * attempt.
  */
 function spyOnTempFileOpen(onOpen: () => void) {
   const realOpenSync = fs.openSync.bind(fs);
@@ -884,7 +884,7 @@ function spyOnTempFileOpen(onOpen: () => void) {
     target: Parameters<typeof fs.openSync>[0],
     ...rest: unknown[]
   ) => {
-    if (typeof target === "string" && target.includes("mandible-redact") && rest[0] === "wx") {
+    if (typeof target === "string" && target.includes("mandible-redact") && rest[0] === "ax") {
       onOpen();
     }
     return (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
@@ -892,8 +892,9 @@ function spyOnTempFileOpen(onOpen: () => void) {
 }
 
 /**
- * Spy that identifies the descriptor tail recovery appends through: the temp
- * replacement opened in append mode and held across the rename.
+ * Spy that identifies the descriptor tail recovery appends through: the one
+ * descriptor the temp replacement is created with and kept on until the patch
+ * is complete.
  */
 function spyOnRecoveryAppendFd(): { spy: ReturnType<typeof vi.spyOn>; fd: () => number | null } {
   const realOpenSync = fs.openSync.bind(fs);
@@ -903,7 +904,7 @@ function spyOnRecoveryAppendFd(): { spy: ReturnType<typeof vi.spyOn>; fd: () => 
     ...rest: unknown[]
   ) => {
     const fd = (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
-    if (typeof target === "string" && target.includes("mandible-redact") && rest[0] === "a") {
+    if (typeof target === "string" && target.includes("mandible-redact") && rest[0] === "ax") {
       recoveryFd = fd;
     }
     return fd;
@@ -1110,23 +1111,30 @@ describe("credential redact --patch-sources", () => {
     };
 
     const realRenameSync = fs.renameSync.bind(fs);
+    let renamed = false;
     const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(((
       from: Parameters<typeof fs.renameSync>[0],
       to: Parameters<typeof fs.renameSync>[1],
     ) => {
-      if (to === file) burst();
+      if (to === file) {
+        burst();
+        renamed = true;
+      }
       return realRenameSync(from, to);
     }) as typeof fs.renameSync);
     // Every recovery append provokes another write into the old inode. The
     // append goes through the descriptor the redaction holds on the replacement,
-    // so the burst hangs off writes to that descriptor.
+    // so the burst hangs off writes to that descriptor — but only after the
+    // rename: that same descriptor carries the pre-rename write of the
+    // replacement itself, and bursting there would just be the ordinary
+    // changed-source race the pre-rename check already refuses.
     const recovery = spyOnRecoveryAppendFd();
     const realWriteSync = fs.writeSync.bind(fs);
     const writeSpy = vi.spyOn(fs, "writeSync").mockImplementation(((
       fd: number,
       ...rest: unknown[]
     ) => {
-      if (recovery.fd() !== null && fd === recovery.fd()) burst();
+      if (renamed && recovery.fd() !== null && fd === recovery.fd()) burst();
       return (realWriteSync as (...args: unknown[]) => number)(fd, ...rest);
     }) as typeof fs.writeSync);
 
@@ -1174,10 +1182,16 @@ describe("credential redact --patch-sources", () => {
   }
 
   /**
-   * Interfere with the writes tail recovery makes. `mode` either truncates the
-   * first matching write in half (a short write) or fails it outright.
+   * Interfere with the writes tail recovery makes. `mode` truncates the first
+   * matching write in half (a short write), fails every matching write
+   * outright, or does both in sequence: a partial first write followed by a
+   * failing second one, which is the state a rewind has to undo.
    */
-  function spyOnTailWrite(marker: string, mode: "short" | "fail", exemptFd: number) {
+  function spyOnTailWrite(
+    marker: string,
+    mode: "short" | "fail" | "short-then-fail",
+    exemptFd: number,
+  ) {
     const realWriteSync = fs.writeSync.bind(fs);
     let hits = 0;
     const spy = vi.spyOn(fs, "writeSync").mockImplementation(((
@@ -1194,6 +1208,9 @@ describe("credential redact --patch-sources", () => {
       if (isTail) {
         hits += 1;
         if (mode === "fail") throw Object.assign(new Error("EIO"), { code: "EIO" });
+        if (mode === "short-then-fail" && hits > 1) {
+          throw Object.assign(new Error("EIO"), { code: "EIO" });
+        }
         if (hits === 1) {
           return realWriteSync(fd, buffer, offset, Math.max(1, Math.floor(length / 2)));
         }
@@ -1419,6 +1436,221 @@ describe("credential redact --patch-sources", () => {
       recovered_tail_bytes: 0,
       abandoned_tail_bytes: appended.length,
     });
+  });
+
+  it("rewinds a partially written append instead of publishing the fragment", () => {
+    // Fourth-pass item 2. `writeAll` can put part of a chunk on disk and then
+    // throw — a short write followed by a failing one is exactly that. The old
+    // code left the fragment in the published file while reporting the whole
+    // chunk abandoned, so the operator's transcript grew a truncated record
+    // that no writer ever wrote. Each append is now checkpointed and rewound.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-partial.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"partial-marker padded out so the halves differ ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnTailWrite("partial-marker", "short-then-fail", writerFd);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    // Both halves of the interference actually happened.
+    expect(write.hits()).toBeGreaterThan(1);
+    const mask = credentialMaskFor(credential.id);
+    // Byte-verbatim the patched snapshot: no fragment of the failed append.
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length,
+    });
+  });
+
+  it("rewinds a partially written seam splice without duplicating the open line", () => {
+    // Fourth-pass item 3, the seam half of the same defect. The splice
+    // truncates the snapshot's open final line off the replacement and
+    // rewrites it as the head of the joined chunk. When that write failed
+    // half-way, the old failure handler appended the saved open line *after*
+    // the fragment it never removed, publishing a duplicated, corrupted line.
+    // The rewind restores the checkpoint first, so there is nothing to
+    // duplicate.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const head = LEAKED_TOKEN.slice(0, 20);
+    const rest = LEAKED_TOKEN.slice(20);
+    const original = Buffer.from(
+      `{"text":"first ${LEAKED_TOKEN}"}\n{"text":"split ${head}`,
+      "latin1",
+    );
+    const file = writeSourceFile("rollout-seam-partial.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `${rest}","note":"seam-partial-marker padded out so the halves differ"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnTailWrite("seam-partial-marker", "short-then-fail", writerFd);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(write.hits()).toBeGreaterThan(1);
+    const mask = credentialMaskFor(credential.id);
+    const patched = fs.readFileSync(file).toString("latin1");
+    // Exactly the patched snapshot: the open final line appears once, whole.
+    expect(patched).toBe(original.toString("latin1").split(LEAKED_TOKEN).join(mask));
+    expect(patched.split(`{"text":"split `).length - 1).toBe(1);
+    expect(patched).not.toContain(LEAKED_TOKEN);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length,
+    });
+  });
+
+  it("never publishes an empty file when the temp path is unlinked under it", () => {
+    // Fourth-pass item 1, behaviourally. The replacement used to be closed
+    // after it was written and reopened by path in append mode; the mode was
+    // set by path in between. Anything that unlinked the temp path in that
+    // window — a stray cleaner, another process in a shared directory — made
+    // the reopen *create* an empty file, which the rename then published over
+    // the operator's transcript. The unlink is injected at the mode step,
+    // which is the last path operation before the rename in the old shape and
+    // a descriptor operation after it in this one.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-unlinked-temp.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+
+    let unlinked = 0;
+    const dropTemp = (): void => {
+      for (const entry of fs.readdirSync(tempDir)) {
+        if (!entry.includes("mandible-redact")) continue;
+        try {
+          fs.unlinkSync(path.join(tempDir, entry));
+          unlinked += 1;
+        } catch {
+          // Already gone; nothing to take away.
+        }
+      }
+    };
+    const realChmodSync = fs.chmodSync.bind(fs);
+    const chmodSpy = vi.spyOn(fs, "chmodSync").mockImplementation(((
+      target: Parameters<typeof fs.chmodSync>[0],
+      mode: Parameters<typeof fs.chmodSync>[1],
+    ) => {
+      const result = realChmodSync(target, mode);
+      if (typeof target === "string" && target.includes("mandible-redact")) dropTemp();
+      return result;
+    }) as typeof fs.chmodSync);
+    const realFchmodSync = fs.fchmodSync.bind(fs);
+    const fchmodSpy = vi.spyOn(fs, "fchmodSync").mockImplementation(((
+      fd: number,
+      mode: Parameters<typeof fs.fchmodSync>[1],
+    ) => {
+      const result = realFchmodSync(fd, mode);
+      dropTemp();
+      return result;
+    }) as typeof fs.fchmodSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      chmodSpy.mockRestore();
+      fchmodSpy.mockRestore();
+    }
+
+    const mask = credentialMaskFor(credential.id);
+    const onDisk = fs.readFileSync(file).toString("latin1");
+    // Either outcome is honest — the patch landed, or it did not and the
+    // original is still there. An empty file is neither.
+    expect([
+      original.toString("latin1"),
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    ]).toContain(onDisk);
+    expect(onDisk.length).toBeGreaterThan(0);
+    expect(report.sources?.candidate_files).toBe(1);
+  });
+
+  it("keeps one descriptor on the replacement instead of reopening it by path", () => {
+    // The structural half of fourth-pass item 1: the reason the behaviour
+    // above holds is that nothing in this module reopens a file it already
+    // holds. A future edit that adds a reopen would restore the window
+    // silently, so the file's own open/chmod surface is asserted here — a
+    // deliberately brittle check, because every entry on it needs review.
+    const modulePath = path.join(process.cwd(), "src", "credential-redaction.ts");
+    expect(fs.existsSync(modulePath)).toBe(true);
+    const source = fs.readFileSync(modulePath, "utf8");
+    expect(source.match(/fs\.openSync\([^)]*\)/g)).toEqual([
+      // The source, opened once and held across the whole cycle.
+      'fs.openSync(filePath, "r")',
+      // The replacement, created once and held through rename, tail appends,
+      // and the mode restore.
+      'fs.openSync(tempPath, "ax", finalMode)',
+    ]);
+    // Mode changes go through the held descriptor, never through a path that
+    // may name a different file by then.
+    expect(source).not.toMatch(/fs\.chmodSync\(/);
+    expect(source).toMatch(/fs\.fchmodSync\(outFd, finalMode\)/);
+  });
+
+  it("reports a mode it could not restore instead of swallowing the failure", () => {
+    // Fourth-pass item 1, third clause: the original permissions used to be
+    // restored inside a bare try/catch, so a file left owner-writable by a
+    // security command was reported as cleanly patched. The bytes are still
+    // the right outcome, so the file stays patched — but the operator is told.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-mode-fail.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+
+    let attempts = 0;
+    const fchmodSpy = vi.spyOn(fs, "fchmodSync").mockImplementation((() => {
+      attempts += 1;
+      throw Object.assign(new Error("EPERM"), { code: "EPERM" });
+    }) as typeof fs.fchmodSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      fchmodSpy.mockRestore();
+    }
+
+    expect(attempts).toBe(1);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      failed_files: 0,
+      mode_restore_failed_files: 1,
+    });
+    const mask = credentialMaskFor(credential.id);
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
   });
 
   it("refuses a source that never stops changing", () => {

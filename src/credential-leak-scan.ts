@@ -262,7 +262,7 @@ export function credentialMaskFor(credentialId: string): string {
  * Position is a pure function of the surrounding text, so re-ingesting the same
  * source reproduces byte-identical output and block ids stay stable.
  */
-export function unverifiedCredentialMask(occurrence: number): string {
+export function unverifiedCredentialMask(occurrence: number | bigint): string {
   return `[mandible-credential:unverified#${occurrence}]`;
 }
 
@@ -275,13 +275,26 @@ function unverifiedMaskPattern(): RegExp {
 }
 
 interface UnverifiedMaskNamespace {
-  /** Highest safe-integer occurrence already present as literal text. */
-  floor: number;
-  /** Every occurrence string already present, including unsafe-integer ones. */
+  /** Highest occurrence already present as literal text. */
+  floor: bigint;
+  /** Every occurrence string already present, exactly as it is spelled. */
   taken: ReadonlySet<string>;
 }
 
-const EMPTY_UNVERIFIED_NAMESPACE: UnverifiedMaskNamespace = { floor: 0, taken: new Set() };
+const EMPTY_UNVERIFIED_NAMESPACE: UnverifiedMaskNamespace = { floor: 0n, taken: new Set() };
+
+/**
+ * Digit runs longer than this do not raise the floor.
+ *
+ * A literal is attacker-supplied text, and parsing a million-digit run as a
+ * BigInt is superlinear — a transcript could otherwise stall ingestion by
+ * spelling one out. Ignoring it for ordering is safe: fresh numbering then
+ * starts low, and `taken` still holds the literal verbatim, so nothing this
+ * function emits can collide with it. 32 digits is far above any occurrence
+ * count a real text can reach (the per-text candidate budget is in the
+ * hundreds).
+ */
+const MAX_UNVERIFIED_OCCURRENCE_DIGITS = 32;
 
 /**
  * What unverified-mask occurrence numbers this text already spells out.
@@ -295,19 +308,29 @@ const EMPTY_UNVERIFIED_NAMESPACE: UnverifiedMaskNamespace = { floor: 0, taken: n
  * the exact structural loss the discriminator was added to prevent.
  *
  * Both halves of the namespace are recorded. `floor` is where fresh numbering
- * starts, and `taken` catches literals whose digits are outside safe-integer
- * range, which `floor` alone cannot order. Both are pure functions of the text,
- * so re-ingesting the same source still reproduces byte-identical output and
- * block ids stay stable.
+ * starts, and `taken` catches every literal verbatim, including forms this
+ * function never emits (leading zeros, digit runs too long to order). Both are
+ * pure functions of the text, so re-ingesting the same source still reproduces
+ * byte-identical output and block ids stay stable.
+ *
+ * Ordering is in BigInt, not in `number` (issue b3e4a09, fourth-pass finding
+ * 4). Counting in doubles gave an attacker two wins by planting one literal:
+ * `#9007199254740991` pushed the counter to where `+ 1` stops advancing, so
+ * every subsequent span masked to the *same* string — the duplicate-key loss
+ * the discriminator exists to prevent — and adding `#9007199254740992` on top
+ * of it made the skip loop increment forever, hanging the ingest. BigInt has
+ * neither ceiling, so `+ 1n` always advances and the skip loop always
+ * terminates.
  */
 function unverifiedMaskNamespace(text: string): UnverifiedMaskNamespace {
   if (!text.includes(UNVERIFIED_MASK_MARKER)) return EMPTY_UNVERIFIED_NAMESPACE;
   const taken = new Set<string>();
-  let floor = 0;
+  let floor = 0n;
   for (const match of text.matchAll(unverifiedMaskPattern())) {
     taken.add(match[1]);
-    const value = Number(match[1]);
-    if (Number.isSafeInteger(value) && value > floor) floor = value;
+    if (match[1].length > MAX_UNVERIFIED_OCCURRENCE_DIGITS) continue;
+    const value = BigInt(match[1]);
+    if (value > floor) floor = value;
   }
   return { floor, taken };
 }
@@ -339,7 +362,7 @@ export function maskUnverifiedCandidates(
     if (isKnownClean(match)) return match;
     replacements += 1;
     do {
-      occurrence += 1;
+      occurrence += 1n;
     } while (namespace.taken.has(String(occurrence)));
     return unverifiedCredentialMask(occurrence);
   });
