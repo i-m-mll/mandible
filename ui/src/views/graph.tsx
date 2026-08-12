@@ -223,6 +223,13 @@ const DEFAULT_GRAPH_DETAIL_PANEL_HEIGHT = 340;
 const MIN_GRAPH_DETAIL_PANEL_HEIGHT = 240;
 const MAX_GRAPH_DETAIL_PANEL_HEIGHT = 520;
 
+// Shared empty collections for the pending-payload placeholder. Reusing these
+// keeps `payload.nodes` / `payload.edges` referentially stable while a graph
+// request is in flight, which the memoized layout and bottom-panel descriptor
+// depend on (issue 80ced49).
+const EMPTY_GRAPH_NODES: GraphNode[] = [];
+const EMPTY_GRAPH_EDGES: GraphEdge[] = [];
+
 const MODE_LABELS: Record<GraphMode, string> = {
   activity: 'Activity',
   issue: 'Issues',
@@ -969,9 +976,19 @@ export function GraphView({
     () => detailRequestKey('graph', graphRequest),
     [graphRequest],
   );
+  // Issue 80ced49: the pending-payload placeholder must keep a stable identity
+  // across renders. A fresh object literal here gave `payload.nodes` and
+  // `payload.edges` new identities on every render, which invalidated the
+  // memoized bottom-panel descriptor, re-ran the registration effect, set app
+  // shell state, and re-rendered this view — an unbounded synchronous render
+  // loop that pinned a core whenever the graph request had not resolved yet.
+  const pendingPayload = useMemo<GraphPayload>(
+    () => ({ nodes: EMPTY_GRAPH_NODES, edges: EMPTY_GRAPH_EDGES, mode: spec.preset }),
+    [spec.preset],
+  );
   const payload = payloadState.requestKey === graphRequestKey
     ? payloadState.value
-    : { nodes: [], edges: [], mode: spec.preset };
+    : pendingPayload;
 
   useEffect(() => {
     setSpec((current) => ({ ...current, preset: routeMode, nodeTypes: undefined, edgeTypes: undefined }));

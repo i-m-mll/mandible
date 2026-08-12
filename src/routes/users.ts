@@ -1,4 +1,5 @@
 import { getDb } from "../db.js";
+import { redactCredential } from "../credential-redaction.js";
 import type { ClientAuthenticator } from "../client-auth/authenticator.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import {
@@ -149,6 +150,33 @@ export function registerUserRoutes(
       requireSelfOrOperator(db, req, owner.user_id);
       const credential = revokeCredential(db, req.params.id);
       sendJson(res, 200, { credential });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  // Issue b3e4a09 — retroactive credential redaction.
+  //
+  // Operator-only, like every other credential-administration route here: this
+  // rewrites stored conversation text and, with patch_sources, the operator's
+  // own transcript files. It deliberately accepts revoked credentials, because
+  // the recommended remediation order is rotate (revoke) and then redact.
+  //
+  // The response carries counts and ids only. The matched plaintext is never
+  // returned, logged, or echoed — the daemon holds the token pepper and does all
+  // verification internally, which is also why this cannot be a client-side
+  // command. fileRpc is "allow" for the same reason the sibling
+  // /api/conversations/scan-credentials sweep is: the work is daemon-side in
+  // every transport, and requireOperator — not the transport — is the gate that
+  // keeps agents out.
+  router.post("/api/users/credentials/:id/redact", (req, res) => {
+    try {
+      const db = getDb();
+      requireOperator(db, req);
+      const body = bodyRecord(req);
+      sendJson(res, 200, redactCredential(db, req.params.id, {
+        patchSources: body.patch_sources === true,
+      }));
     } catch (error) {
       handleError(res, error);
     }

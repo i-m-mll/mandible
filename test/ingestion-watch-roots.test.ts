@@ -1,0 +1,587 @@
+// Bug: 4f7e45e — the chokidar v4 watcher opened one fs.watch fd per matched
+// conversation file (11,675 against the real corpus), exhausting the daemon's
+// fd limit so every subsequent spawn failed with EMFILE. The watcher now uses
+// one recursive watch per root directory; these tests pin the path
+// classification that replaced chokidar's add/change/unlink events.
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import {
+  allowsPerFileFallback,
+  groupWatchConfigs,
+  isLiveWatchMode,
+  makeWatchRootMatcher,
+  resolveWatchEventPath,
+  watchConversationRoots,
+  type ConversationWatchHandle,
+  type PerFileWatchFactory,
+  type RecursiveWatchFactory,
+} from "../src/ingestion.js";
+
+let tempDir = "";
+let handle: ConversationWatchHandle | null = null;
+
+afterEach(async () => {
+  await handle?.close();
+  handle = null;
+  if (tempDir) {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+    tempDir = "";
+  }
+});
+
+async function waitFor(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for watch event");
+}
+
+describe("groupWatchConfigs", () => {
+  it("collapses configs that share a base into one root", () => {
+    const roots = groupWatchConfigs([
+      { base: "/home/.claude/projects", glob: "**/*.jsonl" },
+      { base: "/home/.claude/projects", glob: "**/workflows/wf_*.json" },
+      { base: "/home/.codex/sessions", glob: "**/*.jsonl" },
+      { base: "/home/.codex/archived_sessions", glob: "**/*.jsonl" },
+      { base: "/home/.gemini/tmp", glob: "**/chats/*.json" },
+      { base: "/home/.gemini/tmp", glob: "**/chats/*.jsonl" },
+    ]);
+
+    expect(roots).toEqual([
+      { base: "/home/.claude/projects", globs: ["**/*.jsonl", "**/workflows/wf_*.json"] },
+      { base: "/home/.codex/sessions", globs: ["**/*.jsonl"] },
+      { base: "/home/.codex/archived_sessions", globs: ["**/*.jsonl"] },
+      { base: "/home/.gemini/tmp", globs: ["**/chats/*.json", "**/chats/*.jsonl"] },
+    ]);
+  });
+
+  it("does not duplicate a glob repeated on the same base", () => {
+    const roots = groupWatchConfigs([
+      { base: "/home/.codex/sessions", glob: "**/*.jsonl" },
+      { base: "/home/.codex/sessions", glob: "**/*.jsonl" },
+    ]);
+    expect(roots).toEqual([{ base: "/home/.codex/sessions", globs: ["**/*.jsonl"] }]);
+  });
+});
+
+describe("resolveWatchEventPath", () => {
+  const base = "/home/.codex/sessions";
+
+  it("joins a base-relative posix name reported by recursive fs.watch", () => {
+    expect(resolveWatchEventPath(base, "2026/07/02/rollout-a.jsonl"))
+      .toBe(path.join(base, "2026", "07", "02", "rollout-a.jsonl"));
+  });
+
+  it("resolves a flat name at the watch root", () => {
+    expect(resolveWatchEventPath("/home/.codex/archived_sessions", "rollout-a.jsonl"))
+      .toBe(path.join("/home/.codex/archived_sessions", "rollout-a.jsonl"));
+  });
+
+  it("decodes a Buffer filename", () => {
+    expect(resolveWatchEventPath(base, Buffer.from("a/b.jsonl", "utf8")))
+      .toBe(path.join(base, "a", "b.jsonl"));
+  });
+
+  it("passes through an absolute filename", () => {
+    expect(resolveWatchEventPath(base, "/elsewhere/c.jsonl")).toBe("/elsewhere/c.jsonl");
+  });
+
+  it("returns null when the platform omits the filename", () => {
+    expect(resolveWatchEventPath(base, null)).toBeNull();
+    expect(resolveWatchEventPath(base, undefined)).toBeNull();
+    expect(resolveWatchEventPath(base, "")).toBeNull();
+  });
+});
+
+describe("makeWatchRootMatcher", () => {
+  const base = "/home/.claude/projects";
+  const matches = makeWatchRootMatcher(base, ["**/*.jsonl", "**/workflows/wf_*.json"]);
+
+  it("matches any glob configured for the root", () => {
+    expect(matches(path.join(base, "proj", "a.jsonl"))).toBe(true);
+    expect(matches(path.join(base, "proj", "workflows", "wf_1.json"))).toBe(true);
+  });
+
+  it("matches a file directly at a flat root (`**/` spans zero directories)", () => {
+    const flat = "/home/.codex/archived_sessions";
+    expect(makeWatchRootMatcher(flat, ["**/*.jsonl"])(path.join(flat, "rollout.jsonl"))).toBe(true);
+  });
+
+  it("rejects non-matching names, the root directory itself, and paths outside the root", () => {
+    expect(matches(path.join(base, "proj", "notes.md"))).toBe(false);
+    expect(matches(path.join(base, "proj", "workflows", "other.json"))).toBe(false);
+    expect(matches(base)).toBe(false);
+    expect(matches("/home/.claude/projects-other/a.jsonl")).toBe(false);
+  });
+});
+
+describe("watchConversationRoots", () => {
+  it("reports create, modify, and delete of matching files across nested and flat roots", async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-watch-roots-"));
+    const sessions = path.join(tempDir, ".codex", "sessions");
+    const archived = path.join(tempDir, ".codex", "archived_sessions");
+    fs.mkdirSync(path.join(sessions, "2026", "07", "02"), { recursive: true });
+    fs.mkdirSync(archived, { recursive: true });
+
+    const seen: string[] = [];
+    handle = watchConversationRoots({
+      configs: [
+        { base: sessions, glob: "**/*.jsonl" },
+        { base: archived, glob: "**/*.jsonl" },
+      ],
+      onFile: (filePath) => seen.push(filePath),
+    });
+
+    // Two bases, one recursive watch each — the fd budget is O(roots).
+    expect(handle.rootCount).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    // add, in a directory that existed when the watch started
+    const nested = path.join(sessions, "2026", "07", "02", "rollout-a.jsonl");
+    await fsp.writeFile(nested, "one\n", "utf8");
+    await waitFor(() => seen.includes(nested));
+
+    // change
+    seen.length = 0;
+    await fsp.appendFile(nested, "two\n", "utf8");
+    await waitFor(() => seen.includes(nested));
+
+    // add, in a directory created after the watch started
+    seen.length = 0;
+    const deep = path.join(sessions, "2026", "08", "12");
+    await fsp.mkdir(deep, { recursive: true });
+    const deepFile = path.join(deep, "rollout-b.jsonl");
+    await fsp.writeFile(deepFile, "one\n", "utf8");
+    await waitFor(() => seen.includes(deepFile));
+
+    // add, directly at the flat archive root (`codex archive` destination)
+    seen.length = 0;
+    const archivedFile = path.join(archived, "rollout-a.jsonl");
+    await fsp.rename(nested, archivedFile);
+    await waitFor(() => seen.includes(archivedFile));
+    // the source side of the move reports too, so ingestion can probe relocation
+    expect(seen).toContain(nested);
+
+    // unlink
+    seen.length = 0;
+    await fsp.rm(archivedFile);
+    await waitFor(() => seen.includes(archivedFile));
+  });
+
+  it("ignores non-matching files and directory events", async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-watch-roots-"));
+    const sessions = path.join(tempDir, ".codex", "sessions");
+    fs.mkdirSync(sessions, { recursive: true });
+
+    const seen: string[] = [];
+    handle = watchConversationRoots({
+      configs: [{ base: sessions, glob: "**/*.jsonl" }],
+      onFile: (filePath) => seen.push(filePath),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    await fsp.mkdir(path.join(sessions, "2026"), { recursive: true });
+    await fsp.writeFile(path.join(sessions, "2026", "notes.md"), "x\n", "utf8");
+    await fsp.writeFile(path.join(sessions, "2026", "index.json"), "{}\n", "utf8");
+
+    const marker = path.join(sessions, "2026", "rollout-marker.jsonl");
+    await fsp.writeFile(marker, "x\n", "utf8");
+    await waitFor(() => seen.includes(marker));
+
+    expect(seen.every((filePath) => filePath.endsWith(".jsonl"))).toBe(true);
+  });
+
+  it("skips missing bases and reports one root per surviving base", async () => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-watch-roots-"));
+    const present = path.join(tempDir, ".claude", "projects");
+    fs.mkdirSync(present, { recursive: true });
+
+    const skipped: string[] = [];
+    handle = watchConversationRoots({
+      configs: [
+        { base: present, glob: "**/*.jsonl" },
+        { base: present, glob: "**/workflows/wf_*.json" },
+        { base: path.join(tempDir, ".gemini", "tmp"), glob: "**/chats/*.json" },
+      ],
+      onFile: () => undefined,
+      log: (_level, message, details) => {
+        if (message === "ingestion_skip_missing_dir") {
+          skipped.push(String((details as { path?: string } | undefined)?.path));
+        }
+      },
+    });
+
+    expect(handle.rootCount).toBe(1);
+    expect(skipped).toEqual([path.join(tempDir, ".gemini", "tmp")]);
+  });
+});
+
+// --- Bug: 4f7e45e finding 6 -------------------------------------------------
+// The first fix fell straight back to per-file chokidar whenever the recursive
+// watch failed synchronously — on darwin too, which is exactly the descriptor
+// explosion the fix exists to prevent — and a live watcher that emitted `error`
+// was only logged, leaving that root permanently unwatched until the hourly
+// reconcile. These tests pin the platform fallback policy and the runtime
+// restart/degrade behavior.
+//
+// Measured on darwin with a 2,000-file corpus and a watch factory that always
+// throws (the simulated FSEvents failure): the darwin path grew the process fd
+// count by 0 (40 -> 40), while the per-file fallback grew it by exactly one fd
+// per file (40 -> 2,040). That per-file slope is the 11,675-fd explosion at
+// real corpus size, which is why darwin must never reach it.
+
+class FakeFsWatcher extends EventEmitter {
+  closeCount = 0;
+  close(): void {
+    this.closeCount += 1;
+  }
+  ref(): this {
+    return this;
+  }
+  unref(): this {
+    return this;
+  }
+}
+
+function asFsWatcher(watcher: FakeFsWatcher): fs.FSWatcher {
+  return watcher as unknown as fs.FSWatcher;
+}
+
+function makeRoot(): string {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-watch-policy-"));
+  const base = path.join(tempDir, ".codex", "sessions");
+  fs.mkdirSync(base, { recursive: true });
+  return base;
+}
+
+/** A per-file factory that records every construction and never opens fds. */
+function recordingPerFileFactory(calls: Array<{ base: string; glob: string }>): PerFileWatchFactory {
+  return (base, glob, handlers) => {
+    calls.push({ base, glob });
+    return {
+      close: async () => {
+        void handlers;
+      },
+    };
+  };
+}
+
+describe("isLiveWatchMode", () => {
+  it("counts only the modes that actually have a watcher attached", () => {
+    expect(isLiveWatchMode("recursive")).toBe(true);
+    expect(isLiveWatchMode("per-file")).toBe(true);
+    // Both of these mean "no watcher, events are being missed".
+    expect(isLiveWatchMode("reattaching")).toBe(false);
+    expect(isLiveWatchMode("degraded-poll")).toBe(false);
+  });
+});
+
+describe("allowsPerFileFallback", () => {
+  it("refuses per-file watching on darwin and allows it elsewhere", () => {
+    expect(allowsPerFileFallback("darwin")).toBe(false);
+    for (const platform of ["linux", "win32", "freebsd", "openbsd", "aix"] as NodeJS.Platform[]) {
+      expect(allowsPerFileFallback(platform)).toBe(true);
+    }
+  });
+
+  it("defaults to the running platform", () => {
+    expect(allowsPerFileFallback()).toBe(process.platform !== "darwin");
+  });
+});
+
+describe("watchConversationRoots darwin fallback policy", () => {
+  it("degrades a failed root to bounded polling instead of per-file watching", async () => {
+    const base = makeRoot();
+    const perFileCalls: Array<{ base: string; glob: string }> = [];
+    const degraded: Array<{ base: string; reason: string }> = [];
+    const refusals: unknown[] = [];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }, { base, glob: "**/*.json" }],
+      onFile: () => undefined,
+      onDegraded: (degradedBase, reason) => degraded.push({ base: degradedBase, reason }),
+      platform: "darwin",
+      watchFactory: () => {
+        throw Object.assign(new Error("ENOTSUP: recursive watch unsupported"), { code: "ENOTSUP" });
+      },
+      perFileWatchFactory: recordingPerFileFactory(perFileCalls),
+      degradedPollIntervalMs: 25,
+      log: (_level, message, details) => {
+        if (message === "ingestion_watcher_per_file_fallback_refused") refusals.push(details);
+      },
+    });
+
+    // The per-file watcher — the descriptor explosion — is never constructed.
+    expect(perFileCalls).toEqual([]);
+    expect(refusals).toHaveLength(1);
+    expect(handle.rootCount).toBe(0);
+    expect(handle.degradedRootCount).toBe(1);
+    expect(handle.rootModes.get(base)).toBe("degraded-poll");
+    expect(degraded[0]).toEqual({ base, reason: "recursive_unavailable" });
+
+    // Polling keeps asking for reconciles at a bounded cadence.
+    await waitFor(() => degraded.filter((entry) => entry.reason === "degraded_poll").length >= 2);
+    expect(perFileCalls).toEqual([]);
+  });
+
+  it("never constructs a per-file watcher after a runtime error exhausts retries", async () => {
+    const base = makeRoot();
+    const perFileCalls: Array<{ base: string; glob: string }> = [];
+    const degraded: string[] = [];
+    const live = new FakeFsWatcher();
+    let attempts = 0;
+
+    const watchFactory: RecursiveWatchFactory = () => {
+      attempts += 1;
+      if (attempts === 1) return asFsWatcher(live);
+      throw new Error("FSEvents init failed");
+    };
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      onDegraded: (_base, reason) => degraded.push(reason),
+      platform: "darwin",
+      watchFactory,
+      perFileWatchFactory: recordingPerFileFactory(perFileCalls),
+      retryDelaysMs: [5, 5],
+      degradedPollIntervalMs: 10_000,
+    });
+
+    expect(handle.rootModes.get(base)).toBe("recursive");
+    live.emit("error", new Error("watcher died"));
+
+    // The errored watcher is closed (Node documents it as unusable) and the
+    // lost-event window is reported so the caller reconciles.
+    expect(live.closeCount).toBe(1);
+    expect(degraded[0]).toBe("watcher_error");
+    // ...and the root stops claiming a live recursive watcher the moment it
+    // loses one, rather than at the end of the ladder.
+    expect(handle.rootModes.get(base)).toBe("reattaching");
+
+    await waitFor(() => handle?.rootModes.get(base) === "degraded-poll");
+    expect(attempts).toBe(3); // initial attach + two bounded retries
+    expect(degraded).toContain("retries_exhausted");
+    expect(perFileCalls).toEqual([]);
+    expect(handle.rootCount).toBe(0);
+    expect(handle.degradedRootCount).toBe(1);
+  });
+
+  // Bug: 4f7e45e (re-review nit) — a runtime error closes the watcher, but the
+  // root used to keep reporting mode "recursive" for the whole retry interval,
+  // so `rootCount` counted a live watcher that no longer existed exactly while
+  // events were being lost. Status must describe the gap, not the last good
+  // state.
+  it("reports a root with a closed watcher as reattaching, never as a live root", async () => {
+    const base = makeRoot();
+    const live = new FakeFsWatcher();
+    let attempts = 0;
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      platform: "darwin",
+      watchFactory: () => {
+        attempts += 1;
+        return asFsWatcher(live);
+      },
+      perFileWatchFactory: () => {
+        throw new Error("per-file fallback must not be reachable on darwin");
+      },
+      // Long enough that the assertions below run inside the retry gap.
+      retryDelaysMs: [60_000],
+      degradedPollIntervalMs: 60_000,
+    });
+
+    expect(handle.rootCount).toBe(1);
+    expect(handle.degradedRootCount).toBe(0);
+
+    live.emit("error", new Error("watcher died"));
+
+    // No watcher exists, and no retry has run yet.
+    expect(attempts).toBe(1);
+    expect(handle.rootModes.get(base)).toBe("reattaching");
+    expect(handle.rootCount).toBe(0);
+    expect(handle.degradedRootCount).toBe(1);
+    // The counts still partition the watched roots.
+    expect(handle.rootCount + handle.degradedRootCount).toBe(handle.rootModes.size);
+  });
+
+  it("re-establishes a recursive watcher after a runtime error and resumes events", async () => {
+    const base = makeRoot();
+    const seen: string[] = [];
+    const first = new FakeFsWatcher();
+    const listeners: Array<(eventType: string, filename: string | Buffer | null) => void> = [];
+    const watchers = [first, new FakeFsWatcher()];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: (filePath) => seen.push(filePath),
+      platform: "darwin",
+      watchFactory: (_base, listener) => {
+        listeners.push(listener);
+        return asFsWatcher(watchers[listeners.length - 1]);
+      },
+      perFileWatchFactory: () => {
+        throw new Error("per-file fallback must not be reachable on darwin");
+      },
+      retryDelaysMs: [5],
+      degradedPollIntervalMs: 10_000,
+    });
+
+    first.emit("error", new Error("watcher died"));
+    expect(handle.rootModes.get(base)).toBe("reattaching");
+    await waitFor(() => listeners.length === 2);
+    expect(handle.rootModes.get(base)).toBe("recursive");
+    expect(handle.rootCount).toBe(1);
+    expect(handle.degradedRootCount).toBe(0);
+
+    listeners[1]("change", "2026/08/12/rollout.jsonl");
+    expect(seen).toEqual([path.join(base, "2026", "08", "12", "rollout.jsonl")]);
+  });
+
+  it("self-heals a degraded root when recursive watching becomes available again", async () => {
+    const base = makeRoot();
+    const recovered: unknown[] = [];
+    let attempts = 0;
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      platform: "darwin",
+      watchFactory: (_base, listener) => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("FSEvents unavailable");
+        void listener;
+        return asFsWatcher(new FakeFsWatcher());
+      },
+      perFileWatchFactory: () => {
+        throw new Error("per-file fallback must not be reachable on darwin");
+      },
+      degradedPollIntervalMs: 20,
+      log: (_level, message, details) => {
+        if (message === "ingestion_watcher_recovered") recovered.push(details);
+      },
+    });
+
+    expect(handle.rootModes.get(base)).toBe("degraded-poll");
+    await waitFor(() => handle?.rootModes.get(base) === "recursive");
+    expect(recovered).toHaveLength(1);
+    expect(handle.degradedRootCount).toBe(0);
+  });
+});
+
+describe("watchConversationRoots non-darwin fallback", () => {
+  it("keeps the per-file fallback when recursive watching is unavailable", async () => {
+    const base = makeRoot();
+    const perFileCalls: Array<{ base: string; glob: string }> = [];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }, { base, glob: "**/workflows/wf_*.json" }],
+      onFile: () => undefined,
+      platform: "linux",
+      watchFactory: () => {
+        throw new Error("recursive watch unsupported");
+      },
+      perFileWatchFactory: recordingPerFileFactory(perFileCalls),
+      degradedPollIntervalMs: 10_000,
+    });
+
+    expect(perFileCalls).toEqual([
+      { base, glob: "**/*.jsonl" },
+      { base, glob: "**/workflows/wf_*.json" },
+    ]);
+    expect(handle.rootModes.get(base)).toBe("per-file");
+    expect(handle.rootCount).toBe(1);
+    expect(handle.degradedRootCount).toBe(0);
+  });
+
+  it("routes events through the per-file fallback and closes it", async () => {
+    const base = makeRoot();
+    const seen: string[] = [];
+    const close = vi.fn(async () => undefined);
+    let emit: ((filePath: string) => void) | null = null;
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: (filePath) => seen.push(filePath),
+      platform: "linux",
+      watchFactory: () => {
+        throw new Error("recursive watch unsupported");
+      },
+      perFileWatchFactory: (_base, _glob, handlers) => {
+        emit = handlers.onFile;
+        return { close };
+      },
+    });
+
+    const target = path.join(base, "rollout.jsonl");
+    emit?.(target);
+    expect(seen).toEqual([target]);
+
+    await handle.close();
+    handle = null;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("degrades to polling when the per-file fallback itself cannot start", async () => {
+    const base = makeRoot();
+    const degraded: string[] = [];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      onDegraded: (_base, reason) => degraded.push(reason),
+      platform: "linux",
+      watchFactory: () => {
+        throw new Error("recursive watch unsupported");
+      },
+      perFileWatchFactory: () => {
+        throw new Error("chokidar unavailable");
+      },
+      degradedPollIntervalMs: 10_000,
+    });
+
+    expect(handle.rootModes.get(base)).toBe("degraded-poll");
+    expect(degraded).toEqual(["recursive_unavailable"]);
+  });
+});
+
+describe("per-file watcher construction is structurally confined", () => {
+  it("constructs chokidar in exactly one helper, and only behind the darwin guard", async () => {
+    const source = await fsp.readFile(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "ingestion.ts"),
+      "utf8",
+    );
+
+    // One chokidar construction in the whole module.
+    const constructions = source.match(/chokidar\.watch\(/g) ?? [];
+    expect(constructions).toHaveLength(1);
+
+    // ...and it lives inside createChokidarPerFileWatcher.
+    const start = source.indexOf("function createChokidarPerFileWatcher(");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("\n}\n", start);
+    const helper = source.slice(start, end);
+    expect(helper).toContain("chokidar.watch(");
+
+    // The helper is only ever reached through the perFileWatchFactory seam,
+    // and every call to that seam is guarded by perFileFallbackAllowed.
+    expect(source.match(/createChokidarPerFileWatcher\b/g) ?? []).toHaveLength(2);
+    const callSites = source.match(/ctx\.perFileWatchFactory\(/g) ?? [];
+    expect(callSites).toHaveLength(1);
+    const guard = source.indexOf("if (ctx.perFileFallbackAllowed) {");
+    const startPerFile = source.indexOf("if (startPerFileFallback(reason)) return;");
+    expect(guard).toBeGreaterThan(-1);
+    expect(startPerFile).toBeGreaterThan(guard);
+  });
+});

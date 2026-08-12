@@ -168,6 +168,16 @@ open http://localhost:19420
 
 The daemon creates a SQLite database at `~/.cache/mandible/mandible.db` on first run and applies all schema migrations automatically.
 
+### Operator setup and the signing credential
+
+```bash
+mandible user setup
+```
+
+This creates the local human operator (the only path that does) and, when **global** `git config user.signingkey` is set, registers that key as the operator's `ssh_key` credential. Registration matters: the auth queue only attests a protected-branch merge whose commit signature verifies against an *active registered* credential, so an unregistered signing key makes later approvals refuse with no visible cause. `user setup` is idempotent and never adds a duplicate.
+
+Auto-registration reads global config only, and deliberately so: an operator credential is the identity every protected merge is attested against, in every repository. Running setup inside a repository that sets its own `user.signingkey` (a per-project or agent key) therefore registers nothing — it prints the key it found and the command that would register it. Register or rotate a key by hand with `mandible user credential add <operator> --from-git-signingkey`, which reads the effective configuration of the current repository and prints which config scope the key came from. The daemon warns at startup if the configured key has no matching active credential.
+
 ### Integrating with Claude Code
 
 Mandible discovers running agent sessions by scanning processes. For full lifecycle tracking:

@@ -3799,8 +3799,10 @@ describe("auth queue", () => {
       // no preflight ran, so the sibling still carries its stale pin.
       expect(queue.getRequest(pendingC.id)?.merge_preflight_base_sha).toBe(staleBase);
       // And an approve-time recompute never runs against a busy repo chain:
-      // the stale candidate stays strictly blocked.
+      // the stale candidate stays strictly blocked — and issue 2205073 says
+      // the approver is told that waiting, not requeueing, is the fix.
       expect(() => queue.approve(pendingC.id)).toThrow(/requeue and reapprove/);
+      expect(() => queue.approve(pendingC.id)).toThrow(/Refusal: execution_chain_busy/);
 
       releaseExec();
       await waitForStatus(queue, execRequest.id, "completed");
@@ -4570,6 +4572,193 @@ describe("auth queue", () => {
         fs.rmSync(repo, { recursive: true, force: true });
       }
     }, 60_000);
+
+    // Issue 2205073 — the guards above all keep failing closed, but the
+    // approver must now be told WHICH guard refused and what fixes it. Before
+    // this, every one of them produced the same generic sentence and the real
+    // reason reached daemon_log only.
+    describe("refusal reasons reach the approver", () => {
+      it("names the missing signing credential and its fingerprint", () => {
+        const repo = createAuthCheckRepo();
+        const db = createMigratedDb();
+        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+        const queue = createGuardQueue(db, calls);
+        try {
+          commitOnBranch(repo, "feature/unregistered-target", { "ut.txt": "ut\n" });
+          commitOnBranch(repo, "feature/unregistered-sib", { "us.txt": "us\n" });
+          registerWorkRepo(db, repo);
+
+          // The operator has *some* registered credential (so the allowed
+          // signers file is non-empty) but the key that actually signs the
+          // protected merge was never registered — the exact 2026-08-12
+          // production shape.
+          configureSigningCredential(db, repo, "ssh_key");
+          const unregisteredKeyPath = path.join(repo, ".unregistered-signing-key");
+          execFileSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", unregisteredKeyPath]);
+          const unregisteredFingerprint = execFileSync(
+            "ssh-keygen", ["-lf", `${unregisteredKeyPath}.pub`, "-E", "sha256"], { encoding: "utf8" },
+          ).trim().split(/\s+/)[1]!;
+
+          const request = submitPinnedRequest(queue, repo, "feature/unregistered-target");
+          git(repo, ["config", "user.signingkey", unregisteredKeyPath]);
+          advanceMainViaAuthorizedMerge(db, repo, "feature/unregistered-sib", "merge-unregistered");
+
+          let message = "";
+          try {
+            queue.approve(request.id);
+            throw new Error("expected approval to be refused");
+          } catch (error) {
+            message = error instanceof Error ? error.message : String(error);
+          }
+          expect(message).toContain("Refusal: base_transition_unaccounted");
+          expect(message).toContain("signature");
+          expect(message).toContain(unregisteredFingerprint);
+          expect(message).toContain(
+            `mandible user credential add ${getOperator(db)!.slug} --from-git-signingkey`,
+          );
+          expect(queue.getRequest(request.id)?.status).toBe("pending");
+          expect(calls).toHaveLength(0);
+        } finally {
+          queue.dispose();
+          db.close();
+          fs.rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      // Head drift never reaches the recompute guard: the earlier execution
+      // context resolution already reports it specifically. Pinned here so the
+      // one already-honest approval error on this path stays honest.
+      it("keeps head drift reported with both commits, before recompute runs", () => {
+        const repo = createAuthCheckRepo();
+        const db = createMigratedDb();
+        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+        const queue = createGuardQueue(db, calls);
+        try {
+          commitOnBranch(repo, "feature/drifted", { "df.txt": "df\n" });
+          commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+          registerWorkRepo(db, repo);
+          configureSigningCredential(db, repo, "ssh_key");
+
+          const request = submitPinnedRequest(queue, repo, "feature/drifted");
+          const reviewedHead = request.merge_head_sha!;
+          advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-drift-sib");
+          git(repo, ["checkout", "feature/drifted"]);
+          writeFile(repo, "df2.txt", "df2\n");
+          git(repo, ["add", "df2.txt"]);
+          git(repo, ["commit", "-m", "revise"]);
+          const newHead = git(repo, ["rev-parse", "feature/drifted"]);
+          git(repo, ["checkout", "main"]);
+
+          let message = "";
+          try {
+            queue.approve(request.id);
+            throw new Error("expected approval to be refused");
+          } catch (error) {
+            message = error instanceof Error ? error.message : String(error);
+          }
+          expect(message).toContain("Head branch feature/drifted moved");
+          expect(message).toContain(reviewedHead);
+          expect(message).toContain(newHead);
+          expect(calls).toHaveLength(0);
+        } finally {
+          queue.dispose();
+          db.close();
+          fs.rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it("names a corrupted retained candidate rather than blaming the inputs", () => {
+        const repo = createAuthCheckRepo();
+        const db = createMigratedDb();
+        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+        const queue = createGuardQueue(db, calls);
+        try {
+          commitOnBranch(repo, "feature/corrupt-reason", { "cr.txt": "cr\n" });
+          registerWorkRepo(db, repo);
+
+          const request = submitPinnedRequest(queue, repo, "feature/corrupt-reason");
+          git(repo, ["update-ref", "-d", `refs/mandible/auth-candidates/${request.id}`]);
+
+          expect(() => queue.approve(request.id))
+            .toThrow(/Refusal: retained_candidate_invalid/);
+          expect(() => queue.approve(request.id)).toThrow(/tamper evidence/);
+          expect(calls).toHaveLength(0);
+        } finally {
+          queue.dispose();
+          db.close();
+          fs.rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it("names a remote request as structurally non-recomputable", () => {
+        const repo = createAuthCheckRepo();
+        const db = createMigratedDb();
+        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+        const queue = createGuardQueue(db, calls);
+        try {
+          commitOnBranch(repo, "feature/remote-reason", { "rr.txt": "rr\n" });
+          commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+          registerWorkRepo(db, repo);
+          configureSigningCredential(db, repo, "ssh_key");
+
+          const request = submitPinnedRequest(queue, repo, "feature/remote-reason");
+          db.prepare("UPDATE auth_requests SET execution_mode = 'remote' WHERE id = ?")
+            .run(request.id);
+          advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-remote-reason");
+
+          let message = "";
+          try {
+            queue.approve(request.id);
+          } catch (error) {
+            message = error instanceof Error ? error.message : String(error);
+          }
+          expect(message).toContain("Refusal: not_recomputable_request");
+          expect(message).toContain("execution_mode=remote");
+          expect(calls).toHaveLength(0);
+        } finally {
+          queue.dispose();
+          db.close();
+          fs.rmSync(repo, { recursive: true, force: true });
+        }
+      });
+
+      it("names the pin failure when a fresh pin cannot be obtained", () => {
+        const repo = createAuthCheckRepo();
+        const db = createMigratedDb();
+        const calls: Array<NodeJS.ProcessEnv | undefined> = [];
+        const queue = createGuardQueue(db, calls);
+        try {
+          commitOnBranch(repo, "feature/pin-reason", { "pr.txt": "pr\n" });
+          commitOnBranch(repo, "feature/sibling", { "sib.txt": "sib\n" });
+          registerWorkRepo(db, repo);
+          configureSigningCredential(db, repo, "ssh_key");
+
+          const request = submitPinnedRequest(queue, repo, "feature/pin-reason");
+          advanceMainViaAuthorizedMerge(db, repo, "feature/sibling", "merge-pin-reason");
+          vi.spyOn(
+            queue as unknown as { createMergeCandidatePin: (request: unknown) => string },
+            "createMergeCandidatePin",
+          ).mockImplementation(() => {
+            throw new Error("injected pin cache failure");
+          });
+
+          let message = "";
+          try {
+            queue.approve(request.id);
+          } catch (error) {
+            message = error instanceof Error ? error.message : String(error);
+          }
+          expect(message).toContain("Refusal: repin_failed");
+          expect(message).toContain("injected pin cache failure");
+          expect(calls).toHaveLength(0);
+        } finally {
+          vi.restoreAllMocks();
+          queue.dispose();
+          db.close();
+          fs.rmSync(repo, { recursive: true, force: true });
+        }
+      });
+    });
   });
 
   it("expires stale requests", () => {

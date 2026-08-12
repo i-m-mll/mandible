@@ -20,7 +20,13 @@ import {
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
-import { scanBlocksForCredentialLeaks } from "./credential-leak-scan.js";
+import {
+  maskActiveCredentialsInText,
+  maskAllCandidatesInBlocks,
+  maskUnverifiedCandidates,
+  redactCredentialLeaksInBlocks,
+} from "./credential-leak-scan.js";
+import { assignConversationBlockIds, conversationBlockId } from "./conversation-block-id.js";
 import {
   ingestClaudeWorkflowArtifact,
   isClaudeWorkflowJournalPath,
@@ -47,11 +53,531 @@ const WATCH_CONFIGS = [
 ];
 
 const DEBOUNCE_MS = 200;
+/** Floor between reconciles triggered by path-less watch events. */
+const UNNAMED_EVENT_RECONCILE_MIN_INTERVAL_MS = 60_000;
 export const RECONCILE_INTERVAL_MS = 60 * 60_000;
 export const DIRTY_INGEST_BATCH_SIZE = 16;
 export const MAX_DIRTY_INGEST_PATHS = 4096;
 const INGEST_TAIL_HASH_BYTES = 4096;
 export const INGEST_COMPRESSION_CONCURRENCY = 4;
+
+/** One recursive watch root: every glob that shares a base directory. */
+export interface WatchRoot {
+  base: string;
+  globs: string[];
+}
+
+/**
+ * Collapse watch configs that share a base directory into a single watch root.
+ *
+ * Bug: 4f7e45e — chokidar v4 dropped FSEvents, so watching these bases opened
+ * one `fs.watch` fd per matched file (11,675 fds against the real corpus) and
+ * pushed the daemon past its fd limit, making every subsequent spawn fail with
+ * EMFILE. Watch cost is now O(number of roots) instead of O(number of files),
+ * and grouping keeps it O(roots) rather than O(configs).
+ */
+export function groupWatchConfigs(
+  configs: ReadonlyArray<{ base: string; glob: string }>,
+): WatchRoot[] {
+  const roots = new Map<string, WatchRoot>();
+  for (const config of configs) {
+    const existing = roots.get(config.base);
+    if (!existing) {
+      roots.set(config.base, { base: config.base, globs: [config.glob] });
+      continue;
+    }
+    if (!existing.globs.includes(config.glob)) {
+      existing.globs.push(config.glob);
+    }
+  }
+  return Array.from(roots.values());
+}
+
+/** True when an absolute path under `base` matches any of the root's globs. */
+export function makeWatchRootMatcher(
+  base: string,
+  globs: readonly string[],
+): (filePath: string) => boolean {
+  const matchers = globs.map((glob) => makeWatchFileMatcher(base, glob));
+  return (filePath: string) => matchers.some((match) => match(filePath));
+}
+
+/**
+ * Resolve the absolute path carried by a recursive `fs.watch` event.
+ *
+ * Node reports `filename` relative to the watched base using "/" separators,
+ * including on macOS where the FSEvents backend strips the watched prefix even
+ * when the base itself resolves through a symlink. The watched directory emits
+ * its own basename for self-events; that never matches a file glob, so the
+ * caller's matcher filters it. Returns null when the platform omits the name.
+ */
+export function resolveWatchEventPath(base: string, filename: unknown): string | null {
+  const name = typeof filename === "string"
+    ? filename
+    : Buffer.isBuffer(filename)
+      ? filename.toString("utf8")
+      : null;
+  if (!name) return null;
+  if (path.isAbsolute(name)) return path.normalize(name);
+  return path.join(base, ...name.split("/"));
+}
+
+/**
+ * How a watch root is currently delivering (or failing to deliver) events.
+ *
+ * `recursive` and `per-file` are the two live event-driven modes. `reattaching`
+ * and `degraded-poll` both mean "no live watcher, events are being missed":
+ * the first is the bounded retry gap after a watcher failed, the second is the
+ * platform fallback the ladder ends in.
+ *
+ * Bug: 4f7e45e (re-review nit) — `reattaching` exists because a runtime error
+ * closes the watcher but the root kept reporting `recursive` for the whole
+ * retry interval, so `rootCount` claimed a live watcher that no longer existed
+ * exactly while events were being lost.
+ */
+export type WatchRootMode = "recursive" | "per-file" | "reattaching" | "degraded-poll";
+
+/** True for the modes that actually have a watcher delivering events. */
+export function isLiveWatchMode(mode: WatchRootMode): boolean {
+  return mode === "recursive" || mode === "per-file";
+}
+
+/**
+ * Bounded retry ladder for a root whose recursive watch failed at startup or
+ * died at runtime. Exhausting the ladder moves the root to its platform
+ * fallback; the ladder is per-root and resets on every successful attach.
+ */
+export const WATCH_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 30_000];
+
+/**
+ * Cadence for a root that has degraded to reconcile-only ingestion. Each tick
+ * costs one re-attach attempt plus at most one throttled reconcile — bounded
+ * work that never scales with the number of conversation files, and 12x more
+ * responsive than waiting for the hourly reconcile.
+ */
+export const DEGRADED_ROOT_POLL_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Whether this platform may fall back to per-file watching.
+ *
+ * Bug: 4f7e45e — chokidar v4 dropped FSEvents, so on darwin its fallback opens
+ * roughly one descriptor per matched file (11,675 against the real corpus). A
+ * daemon holding more than 10,240 descriptors cannot spawn *any* subprocess:
+ * macOS `posix_spawn` rejects stdio descriptor numbers >= OPEN_MAX regardless
+ * of rlimit, which broke every protected-branch merge approval. Darwin
+ * therefore never falls back to per-file watching, at startup or at runtime;
+ * it degrades to bounded polling instead. Other platforms keep chokidar, where
+ * it watches directories through inotify rather than one fd per file.
+ */
+export function allowsPerFileFallback(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "darwin";
+}
+
+/** Injection seam: constructs one recursive watcher for a root. */
+export type RecursiveWatchFactory = (
+  base: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+) => fs.FSWatcher;
+
+export interface PerFileWatcher {
+  close(): Promise<void>;
+}
+
+/** Injection seam: constructs the per-file fallback watcher for one glob. */
+export type PerFileWatchFactory = (
+  base: string,
+  glob: string,
+  handlers: { onFile: (filePath: string) => void; onError: (error: unknown) => void },
+) => PerFileWatcher;
+
+export interface ConversationWatchHandle {
+  /** Roots with a live event-driven watcher — the fd budget of the watcher. */
+  readonly rootCount: number;
+  /**
+   * Roots with no live watcher: polling, or inside the retry gap after a
+   * watcher error. Both are windows where events are missed and the caller is
+   * asked to reconcile, so both are counted here rather than as live roots.
+   */
+  readonly degradedRootCount: number;
+  /** Current delivery mode per watched base. */
+  readonly rootModes: ReadonlyMap<string, WatchRootMode>;
+  close(): Promise<void>;
+}
+
+export interface ConversationWatchOptions {
+  configs?: ReadonlyArray<{ base: string; glob: string }>;
+  /** Called with the absolute path of every event on a glob-matching file. */
+  onFile: (filePath: string) => void;
+  /** Called when a platform delivers an event without a path (events may be lost). */
+  onUnnamedEvent?: (base: string) => void;
+  /**
+   * Called when a root cannot deliver reliable events — its watcher failed, is
+   * being re-established, or the root is polling. The caller is expected to
+   * reconcile (throttled), because events for that root are being missed.
+   */
+  onDegraded?: (base: string, reason: string) => void;
+  log?: Logger;
+  /** Platform override; tests use it to pin the darwin fallback policy. */
+  platform?: NodeJS.Platform;
+  /** Recursive watch constructor override (tests inject failures). */
+  watchFactory?: RecursiveWatchFactory;
+  /** Per-file fallback constructor override (tests assert it is never called). */
+  perFileWatchFactory?: PerFileWatchFactory;
+  retryDelaysMs?: readonly number[];
+  degradedPollIntervalMs?: number;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  if (typeof timer === "object" && timer && "unref" in timer) {
+    (timer as { unref: () => void }).unref();
+  }
+}
+
+function defaultRecursiveWatchFactory(
+  base: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+): fs.FSWatcher {
+  return fs.watch(base, { recursive: true, persistent: true }, listener);
+}
+
+/**
+ * The per-file fallback, and the only chokidar construction in the watcher.
+ * `allowsPerFileFallback` gates every call site, so darwin can never reach it.
+ */
+function createChokidarPerFileWatcher(
+  base: string,
+  glob: string,
+  handlers: { onFile: (filePath: string) => void; onError: (error: unknown) => void },
+): PerFileWatcher {
+  const matchesGlob = makeWatchFileMatcher(base, glob);
+  const fallback = chokidar.watch(base, {
+    ignoreInitial: true,
+    ignorePermissionErrors: true,
+    ignored: (watchedPath, stats) => {
+      if (!stats?.isFile()) {
+        return false;
+      }
+      return !matchesGlob(watchedPath);
+    },
+  });
+  const onWatchedFileEvent = (filePath: string) => {
+    if (matchesGlob(filePath)) {
+      handlers.onFile(filePath);
+    }
+  };
+  fallback.on("add", onWatchedFileEvent);
+  fallback.on("change", onWatchedFileEvent);
+  fallback.on("unlink", onWatchedFileEvent);
+  fallback.on("error", handlers.onError);
+  return { close: () => fallback.close() };
+}
+
+interface WatchSupervisorContext {
+  log: Logger;
+  platform: NodeJS.Platform;
+  perFileFallbackAllowed: boolean;
+  onFile: (filePath: string) => void;
+  onUnnamedEvent: (base: string) => void;
+  onDegraded: (base: string, reason: string) => void;
+  watchFactory: RecursiveWatchFactory;
+  perFileWatchFactory: PerFileWatchFactory;
+  retryDelaysMs: readonly number[];
+  degradedPollIntervalMs: number;
+}
+
+interface RootSupervisor {
+  readonly mode: WatchRootMode;
+  close(): Promise<void>;
+}
+
+/**
+ * Keep one watch root alive.
+ *
+ * Node documents an `FSWatcher` that emitted `error` as no longer usable, so a
+ * runtime failure closes the watcher, asks the caller to reconcile (events
+ * during the gap are lost), and re-attaches on a bounded retry ladder. When the
+ * ladder is exhausted the root takes its platform fallback: per-file watching
+ * off darwin, bounded polling on darwin. A polling root keeps making one cheap
+ * re-attach attempt per tick, so a transient FSEvents failure self-heals back
+ * to low-latency ingestion instead of waiting for a daemon restart.
+ */
+function superviseWatchRoot(root: WatchRoot, ctx: WatchSupervisorContext): RootSupervisor {
+  const matches = makeWatchRootMatcher(root.base, root.globs);
+  // Until the startup attach below resolves, the root has no watcher and no
+  // poll timer; every attach/fallback path overwrites this.
+  let mode: WatchRootMode = "reattaching";
+  let watcher: fs.FSWatcher | null = null;
+  let perFileWatchers: PerFileWatcher[] = [];
+  let retryIndex = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** False only during the initial attach, so later attaches log as recoveries. */
+  let startupAttachDone = false;
+  let closed = false;
+
+  const clearRetry = () => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+  const stopPolling = () => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  };
+
+  const handleRuntimeError = (source: fs.FSWatcher, error: unknown) => {
+    try {
+      source.close();
+    } catch {
+      // An errored FSWatcher may already be torn down; closing is best effort.
+    }
+    if (closed || watcher !== source) return;
+    watcher = null;
+    // Bug: 4f7e45e — the root has no watcher from here until a retry attaches
+    // one (or the ladder ends in a fallback). Reporting `recursive` through
+    // that window overstated the live-root count precisely when events were
+    // being lost.
+    mode = "reattaching";
+    ctx.log("warn", "ingestion_watcher_error", {
+      base: root.base,
+      error: describeError(error),
+      action: "restart",
+    });
+    // Events between the failure and re-establishment are lost.
+    ctx.onDegraded(root.base, "watcher_error");
+    scheduleRetryOrFallback();
+  };
+
+  const attach = (): boolean => {
+    if (closed) return false;
+    let active: fs.FSWatcher;
+    try {
+      active = ctx.watchFactory(root.base, (_eventType, filename) => {
+        const filePath = resolveWatchEventPath(root.base, filename);
+        if (!filePath) {
+          ctx.onUnnamedEvent(root.base);
+          return;
+        }
+        if (matches(filePath)) {
+          ctx.onFile(filePath);
+        }
+      });
+    } catch (error) {
+      ctx.log("warn", "ingestion_watcher_recursive_unavailable", {
+        base: root.base,
+        error: describeError(error),
+      });
+      return false;
+    }
+    active.on("error", (error: unknown) => handleRuntimeError(active, error));
+    watcher = active;
+    mode = "recursive";
+    retryIndex = 0;
+    clearRetry();
+    stopPolling();
+    ctx.log("info", startupAttachDone ? "ingestion_watcher_recovered" : "ingestion_watcher_started", {
+      base: root.base,
+      globs: root.globs,
+      mode: "recursive",
+    });
+    return true;
+  };
+
+  const startPerFileFallback = (reason: string): boolean => {
+    const started: PerFileWatcher[] = [];
+    try {
+      for (const glob of root.globs) {
+        started.push(
+          ctx.perFileWatchFactory(root.base, glob, {
+            onFile: ctx.onFile,
+            onError: (error) => {
+              ctx.log("warn", "ingestion_watcher_error", {
+                base: root.base,
+                glob,
+                error: describeError(error),
+                mode: "per-file",
+              });
+            },
+          }),
+        );
+      }
+    } catch (error) {
+      void Promise.allSettled(started.map((entry) => entry.close()));
+      ctx.log("warn", "ingestion_watcher_per_file_unavailable", {
+        base: root.base,
+        error: describeError(error),
+      });
+      return false;
+    }
+    perFileWatchers = started;
+    mode = "per-file";
+    stopPolling();
+    ctx.log("warn", "ingestion_watcher_started", {
+      base: root.base,
+      globs: root.globs,
+      mode: "per-file",
+      reason,
+    });
+    return true;
+  };
+
+  const degradeToPolling = (reason: string) => {
+    if (closed || pollTimer) return;
+    mode = "degraded-poll";
+    ctx.log("error", "ingestion_watcher_degraded", {
+      base: root.base,
+      reason,
+      mode: "degraded-poll",
+      poll_interval_ms: ctx.degradedPollIntervalMs,
+      platform: ctx.platform,
+    });
+    ctx.onDegraded(root.base, reason);
+    pollTimer = setInterval(() => {
+      if (closed) return;
+      // One cheap re-attach attempt per tick; if it fails, keep ingestion alive
+      // at a bounded cadence by asking the caller to reconcile.
+      if (attach()) return;
+      ctx.onDegraded(root.base, "degraded_poll");
+    }, ctx.degradedPollIntervalMs);
+    unrefTimer(pollTimer);
+  };
+
+  const takeFallback = (reason: string) => {
+    if (closed) return;
+    if (ctx.perFileFallbackAllowed) {
+      if (startPerFileFallback(reason)) return;
+    } else {
+      ctx.log("warn", "ingestion_watcher_per_file_fallback_refused", {
+        base: root.base,
+        reason,
+        platform: ctx.platform,
+      });
+    }
+    degradeToPolling(reason);
+  };
+
+  function scheduleRetryOrFallback(): void {
+    if (closed) return;
+    if (retryIndex >= ctx.retryDelaysMs.length) {
+      takeFallback("retries_exhausted");
+      return;
+    }
+    const delay = ctx.retryDelaysMs[retryIndex];
+    retryIndex += 1;
+    clearRetry();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (closed) return;
+      if (!attach()) scheduleRetryOrFallback();
+    }, delay);
+    unrefTimer(retryTimer);
+  }
+
+  const attachedAtStartup = attach();
+  startupAttachDone = true;
+  if (!attachedAtStartup) {
+    takeFallback("recursive_unavailable");
+  }
+
+  return {
+    get mode() {
+      return mode;
+    },
+    async close(): Promise<void> {
+      closed = true;
+      clearRetry();
+      stopPolling();
+      if (watcher) {
+        try {
+          watcher.close();
+        } catch {
+          // Best effort: a watcher that already failed may throw on close.
+        }
+        watcher = null;
+      }
+      const pending = perFileWatchers;
+      perFileWatchers = [];
+      await Promise.allSettled(pending.map((entry) => entry.close()));
+    },
+  };
+}
+
+/**
+ * Watch every conversation-source root recursively.
+ *
+ * Semantics match the previous chokidar wiring exactly: create, modify, and
+ * delete of a glob-matching file all funnel into the same `onFile` callback
+ * (the old code bound `add`, `change`, and `unlink` to one handler), so no
+ * event-type classification or existence stat is needed. Downstream ingestion
+ * already distinguishes present from missing sources, including the Codex
+ * archive relocation probe.
+ *
+ * Each root is supervised: a startup failure or a runtime `error` retries on a
+ * bounded ladder and then takes the platform fallback — per-glob chokidar
+ * watchers off darwin, bounded polling reconciles on darwin, where per-file
+ * watching is the descriptor explosion this watcher exists to prevent.
+ */
+export function watchConversationRoots(options: ConversationWatchOptions): ConversationWatchHandle {
+  const log = options.log ?? (() => {});
+  const configs = options.configs ?? WATCH_CONFIGS;
+  const platform = options.platform ?? process.platform;
+  const ctx: WatchSupervisorContext = {
+    log,
+    platform,
+    perFileFallbackAllowed: allowsPerFileFallback(platform),
+    onFile: options.onFile,
+    onUnnamedEvent: (base) => options.onUnnamedEvent?.(base),
+    onDegraded: (base, reason) => options.onDegraded?.(base, reason),
+    watchFactory: options.watchFactory ?? defaultRecursiveWatchFactory,
+    perFileWatchFactory: options.perFileWatchFactory ?? createChokidarPerFileWatcher,
+    retryDelaysMs: options.retryDelaysMs ?? WATCH_RETRY_DELAYS_MS,
+    degradedPollIntervalMs: options.degradedPollIntervalMs ?? DEGRADED_ROOT_POLL_INTERVAL_MS,
+  };
+
+  const supervisors = new Map<string, RootSupervisor>();
+  for (const root of groupWatchConfigs(configs)) {
+    if (!fs.existsSync(root.base)) {
+      log("debug", "ingestion_skip_missing_dir", { path: root.base });
+      continue;
+    }
+    supervisors.set(root.base, superviseWatchRoot(root, ctx));
+  }
+
+  const countModes = (predicate: (mode: WatchRootMode) => boolean): number => {
+    let total = 0;
+    for (const supervisor of supervisors.values()) {
+      if (predicate(supervisor.mode)) total += 1;
+    }
+    return total;
+  };
+
+  return {
+    get rootCount() {
+      return countModes(isLiveWatchMode);
+    },
+    get degradedRootCount() {
+      return countModes((mode) => !isLiveWatchMode(mode));
+    },
+    get rootModes() {
+      const modes = new Map<string, WatchRootMode>();
+      for (const [base, supervisor] of supervisors) {
+        modes.set(base, supervisor.mode);
+      }
+      return modes;
+    },
+    async close(): Promise<void> {
+      await Promise.allSettled(Array.from(supervisors.values(), (supervisor) => supervisor.close()));
+      supervisors.clear();
+    },
+  };
+}
 
 interface StagedCompressedContents {
   readonly length: number;
@@ -132,8 +658,8 @@ export async function stageCompressedBlockContents(
 
 // --- State ---
 
-type ChokidarWatcher = ReturnType<typeof chokidar.watch>;
-let watchers: ChokidarWatcher[] = [];
+let conversationWatch: ConversationWatchHandle | null = null;
+let lastUnnamedEventReconcileAt = 0;
 let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 let logger: Logger = () => {};
 let eventPublisher: (event: string, data: unknown) => void = broadcast;
@@ -309,6 +835,22 @@ export interface StartIngestionOptions {
   getBackgroundBackoffMs?: () => number;
 }
 
+/**
+ * Ingest without a path: either the platform coalesced or dropped the event
+ * name, or a root lost its watcher and is polling. In both cases the changed
+ * file is unknown, so ingestion falls back to a throttled full reconcile rather
+ * than silently skipping the change.
+ */
+function requestWatchFallbackReconcile(base: string, reason: string): void {
+  const now = Date.now();
+  if (now - lastUnnamedEventReconcileAt < UNNAMED_EVENT_RECONCILE_MIN_INTERVAL_MS) {
+    return;
+  }
+  lastUnnamedEventReconcileAt = now;
+  logger("debug", "ingestion_watch_reconcile_fallback", { base, reason });
+  scheduleReconcile();
+}
+
 export function startIngestion(log: Logger, options: StartIngestionOptions = {}): void {
   logger = log;
   eventPublisher = broadcast;
@@ -328,42 +870,13 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
     watch_paths: WATCH_CONFIGS.map((c) => c.base),
   });
 
-  for (const config of WATCH_CONFIGS) {
-    if (!fs.existsSync(config.base)) {
-      logger("debug", "ingestion_skip_missing_dir", { path: config.base });
-      continue;
-    }
-
-    const matchWatchedFile = makeWatchFileMatcher(config.base, config.glob);
-    const watcher = chokidar.watch(config.base, {
-      ignoreInitial: true,
-      ignorePermissionErrors: true,
-      ignored: (watchedPath, stats) => {
-        if (!stats?.isFile()) {
-          return false;
-        }
-        return !matchWatchedFile(watchedPath);
-      },
-    });
-
-    const onWatchedFileEvent = (filePath: string) => {
-      if (matchWatchedFile(filePath)) {
-        debouncedIngest(filePath);
-      }
-    };
-    watcher.on("add", onWatchedFileEvent);
-    watcher.on("change", onWatchedFileEvent);
-    watcher.on("unlink", onWatchedFileEvent);
-    watcher.on("error", (error: unknown) => {
-      logger("warn", "ingestion_watcher_error", {
-        error: error instanceof Error ? error.message : String(error),
-        base: config.base,
-      });
-    });
-
-    watchers.push(watcher);
-    logger("info", "ingestion_watcher_started", { base: config.base, glob: config.glob });
-  }
+  lastUnnamedEventReconcileAt = 0;
+  conversationWatch = watchConversationRoots({
+    log: logger,
+    onFile: (filePath) => debouncedIngest(filePath),
+    onUnnamedEvent: (base) => requestWatchFallbackReconcile(base, "event_without_path"),
+    onDegraded: (base, reason) => requestWatchFallbackReconcile(base, reason),
+  });
 
   // Run initial reconciliation to pick up files that already exist
   scheduleReconcile(true);
@@ -387,8 +900,8 @@ export async function stopIngestionGracefully(): Promise<void> {
   logger("info", "ingestion_stopping");
   ingestionActive = false;
   ingestionRunToken++;
-  const closingWatchers = watchers.map((watcher) => watcher.close());
-  watchers = [];
+  const closingWatch = conversationWatch?.close() ?? Promise.resolve();
+  conversationWatch = null;
 
   if (reconcileTimer) {
     clearInterval(reconcileTimer);
@@ -407,7 +920,7 @@ export async function stopIngestionGracefully(): Promise<void> {
   ingestionActor = null;
   const pendingDrain = ingestDrainPromise;
   const pendingReconcile = reconcilePromise;
-  await Promise.allSettled(closingWatchers);
+  await Promise.allSettled([closingWatch]);
   await actor?.close();
   await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
 }
@@ -1097,11 +1610,13 @@ function insertedBlockPayload(
   conversationId: string,
   block: Omit<ConversationBlock, "id" | "conversation_id">,
 ): Omit<ConversationBlock, "metadata"> & { metadata_json: string } {
-  const id = crypto
-    .createHash("sha256")
-    .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-    .digest("hex")
-    .slice(0, 16);
+  const id = conversationBlockId({
+    conversation_id: conversationId,
+    type: block.type,
+    timestamp: block.timestamp,
+    content: block.content,
+    position: block.position,
+  });
   return {
     id,
     conversation_id: conversationId,
@@ -1117,6 +1632,41 @@ function insertedBlockPayload(
   };
 }
 
+/**
+ * Mask live credential plaintext in one derived conversation field.
+ *
+ * Titles and summaries are cut from transcript text, so a PAT pasted into a
+ * first user message — or into a Codex thread name — reaches the conversations
+ * row and the `conversation:updated` SSE payload through them. Every write of a
+ * derived field has to go through this, not just the ones on the main ingest
+ * path: the unchanged-mtime title sync and the identical-source-hash update
+ * both write and broadcast the same kind of text and were doing it in the clear
+ * (issue b3e4a09, re-review finding 1).
+ *
+ * Fail-closed, matching the scanner's own contract: if verification is
+ * unavailable the token-shaped spans are masked unverified rather than written
+ * through, because this string is about to be persisted and pushed to every
+ * connected client.
+ */
+function maskDerivedConversationText(
+  db: ReturnType<typeof getDb>,
+  value: string,
+  context: { file: string; stage: string },
+): string {
+  try {
+    return maskActiveCredentialsInText(db, value).text;
+  } catch (error) {
+    const masked = maskUnverifiedCandidates(value);
+    logger("error", "credential_leak_scan_failed", {
+      file: context.file,
+      error: String(error),
+      stage: context.stage,
+      unverified_spans: masked.replacements,
+    });
+    return masked.text;
+  }
+}
+
 async function syncCodexIndexedTitle(
   filePath: string,
   existing: {
@@ -1129,14 +1679,20 @@ async function syncCodexIndexedTitle(
   if (!existing.session_id) {
     return false;
   }
-  const title = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
+  const db = getDb();
+  const indexed = (await loadCodexSessionIndexTitle(filePath, existing.session_id))
     ?.slice(0, 100)
     .trim();
+  // Masked before the comparison, not after: the stored title is already
+  // masked, so comparing the raw index title against it would report a
+  // difference on every pass and rewrite the row with the plaintext.
+  const title = indexed
+    ? maskDerivedConversationText(db, indexed, { file: filePath, stage: "codex_title_sync" })
+    : indexed;
   if (!title || title === existing.title) {
     return false;
   }
 
-  const db = getDb();
   db.prepare("UPDATE conversations SET title = ?, updated_at = datetime('now') WHERE id = ?")
     .run(title, existing.id);
   eventPublisher("conversation:updated", {
@@ -1491,6 +2047,23 @@ async function ingestFile(
 
   // Check hash — if same content, just update mtime
   if (existing && existing.source_hash === result.conversation.source_hash) {
+    // Issue b3e4a09, re-review finding 1: identical parsed bytes still rewrite
+    // and broadcast the derived title and summary here, so this path needs the
+    // same masking as the main one below. A source touched without a byte
+    // change (or re-parsed after the credential became known) otherwise puts
+    // the plaintext back on the conversations row and on the SSE payload.
+    result.conversation.title = maskDerivedConversationText(
+      db,
+      result.conversation.title,
+      { file: filePath, stage: "unchanged_source_hash" },
+    );
+    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+      result.conversation.summary = maskDerivedConversationText(
+        db,
+        result.conversation.summary,
+        { file: filePath, stage: "unchanged_source_hash" },
+      );
+    }
     db.prepare(`
       UPDATE conversations SET
         source_mtime = ?,
@@ -1564,6 +2137,22 @@ async function ingestFile(
   if (isDeltaAppend && newBlocks.length === 0) {
     // Hash changed but no new blocks — metadata-only change (title, timestamps, etc.)
     // Update conversation metadata and return.
+    //
+    // Issue b3e4a09: this early return still writes derived text, so it needs
+    // the same masking as the main path below — a token pasted into the first
+    // user message reaches the conversations row through here too.
+    result.conversation.title = maskDerivedConversationText(
+      db,
+      result.conversation.title,
+      { file: filePath, stage: "metadata_only_update" },
+    );
+    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+      result.conversation.summary = maskDerivedConversationText(
+        db,
+        result.conversation.summary,
+        { file: filePath, stage: "metadata_only_update" },
+      );
+    }
     db.prepare(`
       UPDATE conversations SET
         source_hash = ?, source_mtime = ?,
@@ -1605,6 +2194,94 @@ async function ingestFile(
       await ingestWorkflowArtifact(filePath);
     }
     return;
+  }
+
+  // Issues 71a287e / b3e4a09 — detect leaked Mandible credentials and mask them
+  // before anything about these blocks is persisted, compressed, hashed into a
+  // block id, or broadcast over SSE. The index must never hold a working token;
+  // the source transcript is not modified and stays the only copy of the
+  // original. Masking is a pure function of the credential id, so a re-ingest of
+  // the same file against the same credential table reproduces identical block
+  // content and identical block ids.
+  //
+  // Masking covers block.metadata as well as block.content: the parsers copy
+  // tool arguments and short tool results into metadata (tool_input,
+  // tool_output), and that object is serialized into metadata_json below and
+  // into the append SSE payload further down, so content-only masking left the
+  // plaintext in both (review finding 1).
+  //
+  // This runs before persistence rather than after (where the scan-only call
+  // used to live): a rolled-back insert can now leave an alert whose block never
+  // landed, which is the safe direction — the leak is real in the source file
+  // either way. The matched token still never leaves the scanner.
+  try {
+    // Derived metadata first: the title is cut from the first user message, so a
+    // token pasted there would otherwise survive in the conversations row and be
+    // quoted into the leak alert. Masking it here also means the alert payload
+    // built below carries the masked title.
+    const maskedTitle = maskActiveCredentialsInText(db, result.conversation.title);
+    result.conversation.title = maskedTitle.text;
+    const maskedSummary = maskActiveCredentialsInText(db, result.conversation.summary);
+    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+      result.conversation.summary = maskedSummary.text;
+    }
+
+    const redaction = redactCredentialLeaksInBlocks(
+      db,
+      newBlocks,
+      {
+        conversation_id: conversationId,
+        conversation_title: result.conversation.title,
+        session_id: result.conversation.session_id,
+        source: result.conversation.source,
+        branch: result.conversation.branch,
+      },
+    );
+    const metadataSpans = maskedTitle.replacements + maskedSummary.replacements;
+    const unverifiedSpans = redaction.unverified_spans
+      + maskedTitle.unverified_replacements
+      + maskedSummary.unverified_replacements;
+    if (redaction.redacted_spans > 0 || metadataSpans > 0 || unverifiedSpans > 0) {
+      logger("warn", "credential_leak_redacted_at_ingest", {
+        file: filePath,
+        conversation: conversationId,
+        redacted_blocks: redaction.redacted_blocks,
+        redacted_spans: redaction.redacted_spans,
+        redacted_metadata_spans: metadataSpans,
+        // Fail-closed masking: spans the scan could not verify (budget exhausted
+        // or verification unavailable) are masked rather than stored.
+        unverified_spans: unverifiedSpans,
+        verification_failed: redaction.verification_failed
+          || maskedTitle.verification_failed
+          || maskedSummary.verification_failed,
+        alert_failures: redaction.alert_failures,
+      });
+    }
+    for (const leak of redaction.detections) {
+      if (!leak.new_event) continue;
+      logger("warn", "credential_leak_detected", {
+        conversation: conversationId,
+        credential_id: leak.credential.credential_id,
+        session_scoped: leak.credential.session_scoped,
+        auto_revoked: leak.revoked,
+      });
+    }
+  } catch (error) {
+    // The scanner already fails closed internally, so reaching here means
+    // something upstream of it broke. Persisting the parsed text as-is would
+    // still be the one outcome that must never happen, so every token-shaped
+    // span goes in masked and unverified (review finding 3).
+    const masked = maskAllCandidatesInBlocks(newBlocks);
+    const maskedTitle = maskUnverifiedCandidates(result.conversation.title ?? "");
+    if (maskedTitle.replacements > 0) result.conversation.title = maskedTitle.text;
+    const maskedSummary = maskUnverifiedCandidates(result.conversation.summary ?? "");
+    if (maskedSummary.replacements > 0) result.conversation.summary = maskedSummary.text;
+    logger("error", "credential_leak_scan_failed", {
+      file: filePath,
+      error: String(error),
+      masked_blocks: masked.blocks,
+      unverified_spans: masked.spans + maskedTitle.replacements + maskedSummary.replacements,
+    });
   }
 
   // Pre-compress outside the transaction in bounded batches. Compressed bytes
@@ -1711,11 +2388,13 @@ async function ingestFile(
       // them → UNIQUE constraint fails → entire transaction rolls back → file stuck
       // in perpetual re-ingest loop. Position is stable: it's the block's index within
       // the conversation and never changes for already-ingested blocks.
-      const blockHash = crypto
-        .createHash("sha256")
-        .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-        .digest("hex")
-        .slice(0, 16);
+      const blockHash = conversationBlockId({
+        conversation_id: conversationId,
+        type: block.type,
+        timestamp: block.timestamp,
+        content: block.content,
+        position: block.position,
+      });
 
       insertBlock.run(
         blockHash,
@@ -1752,9 +2431,50 @@ async function ingestFile(
         return;
       }
       try {
+        // Recovery re-inserts every block of this fresh parse, including the
+        // ones the masking pass above skipped as already indexed. Mask the full
+        // set first — the mask is idempotent, so this is a no-op for blocks
+        // already handled, and it stops recovery from reintroducing plaintext
+        // an earlier ingest had masked (issue b3e4a09).
+        try {
+          redactCredentialLeaksInBlocks(db, result.blocks, {
+            conversation_id: conversationId,
+            conversation_title: result.conversation.title,
+            session_id: result.conversation.session_id,
+            source: result.conversation.source,
+            branch: result.conversation.branch,
+          });
+        } catch (maskError) {
+          const masked = maskAllCandidatesInBlocks(result.blocks);
+          logger("error", "credential_leak_scan_failed", {
+            file: filePath,
+            error: String(maskError),
+            stage: "unique_recovery",
+            unverified_spans: masked.spans,
+          });
+        }
         // Re-stage every block for the clean recovery transaction.
         const recoveryCompressedContents = await stageCompressedBlockContents(
           result.blocks.map((block) => block.content),
+        );
+        // Ids for the recovery insert are assigned over the whole parse at once
+        // so two blocks that derive the same id get different rows instead of
+        // failing the transaction a second time (issue b3e4a09, third-pass
+        // finding 3). `conversationBlockId` concatenates its inputs unframed,
+        // so content "payload1" at position 2 and content "payload" at position
+        // 12 hash identical bytes without any hash collision; the plain
+        // derivation therefore has no fixed point for such a conversation and
+        // recovery used to rethrow the same UNIQUE failure and leave the file
+        // unindexed forever. The first block in position order still keeps the
+        // plain id, so no existing block is renumbered by this.
+        const recoveryBlockIds = assignConversationBlockIds(
+          result.blocks.map((block) => ({
+            conversation_id: conversationId,
+            type: block.type,
+            timestamp: block.timestamp,
+            content: block.content,
+            position: block.position,
+          })),
         );
         try {
           const recoveryUpsert = db.transaction(() => {
@@ -1766,16 +2486,29 @@ async function ingestFile(
               db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(row.id);
               db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
             }
-            // Also purge any blocks that share IDs with the blocks we're about to insert
-            // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
-            const newIds = result.blocks.map((block) =>
-              crypto.createHash("sha256")
-                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-                .digest("hex").slice(0, 16)
-            );
-            if (newIds.length > 0) {
-              const placeholders = newIds.map(() => "?").join(",");
-              db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
+            // Also purge any blocks still attached to this conversation id
+            // (orphaned rows from a prior failed transaction that the
+            // FK-disabled DB did not cascade). Scoped to this conversation —
+            // the previous form deleted every row whose id matched one of the
+            // incoming ids regardless of which conversation it belonged to, so
+            // a block id collision across conversations silently destroyed an
+            // unrelated conversation's block (issue b3e4a09, re-review finding
+            // 2). The orphans this is aimed at always carry this conversation
+            // id, because the id being re-derived hashes it.
+            db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?")
+              .run(conversationId);
+            // A row of some *other* conversation holding one of the incoming
+            // ids can only be a truncated-hash collision. Recovery refuses to
+            // delete it: the insert below fails loudly instead of quietly
+            // taking data that does not belong to this file.
+            const foreign = foreignBlockIdHolders(db, conversationId, recoveryBlockIds);
+            if (foreign.length > 0) {
+              logger("error", "ingestion_block_id_collision_foreign", {
+                file: filePath,
+                conversation_id: conversationId,
+                colliding_ids: foreign.length,
+                other_conversations: [...new Set(foreign.map((row) => row.conversation_id))],
+              });
             }
             // Re-insert conversation
             db.prepare(`
@@ -1823,13 +2556,8 @@ async function ingestFile(
             `);
             for (let i = 0; i < result.blocks.length; i++) {
               const block = result.blocks[i];
-              const blockHash = crypto
-                .createHash("sha256")
-                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-                .digest("hex")
-                .slice(0, 16);
               insertBlock2.run(
-                blockHash, conversationId, block.type, block.role,
+                recoveryBlockIds[i], conversationId, block.type, block.role,
                 recoveryCompressedContents.read(i), block.position,
                 block.timestamp, block.parent_id, JSON.stringify(block.metadata),
                 block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
@@ -1891,38 +2619,6 @@ async function ingestFile(
     linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
   }
 
-  // Issue 71a287e — scan the newly indexed text for leaked Mandible credentials.
-  // Runs after the blocks are durably persisted so an alert always points at
-  // content that is actually in the index. Never fatal to ingestion, and the
-  // matched token itself never leaves the scanner.
-  try {
-    const scan = scanBlocksForCredentialLeaks(
-      db,
-      newBlocks.map((block) => ({ content: block.content, position: block.position })),
-      {
-        conversation_id: conversationId,
-        conversation_title: result.conversation.title,
-        session_id: result.conversation.session_id,
-        source: result.conversation.source,
-        branch: result.conversation.branch,
-      },
-    );
-    for (const leak of scan.detections) {
-      if (!leak.new_event) continue;
-      logger("warn", "credential_leak_detected", {
-        conversation: conversationId,
-        credential_id: leak.credential.credential_id,
-        session_scoped: leak.credential.session_scoped,
-        auto_revoked: leak.revoked,
-      });
-    }
-  } catch (error) {
-    logger("warn", "credential_leak_scan_failed", {
-      file: filePath,
-      error: String(error),
-    });
-  }
-
   // Broadcast SSE event
   const eventType = isNew ? "conversation:new" : "conversation:updated";
   const insertedBlocks = newBlocks.map((block) => insertedBlockPayload(conversationId, block));
@@ -1955,6 +2651,39 @@ async function ingestFile(
     fallback_reason: options.fallbackReason ?? null,
     event: eventType,
   });
+}
+
+/**
+ * Rows outside `conversationId` that already hold one of these block ids.
+ *
+ * Block ids hash the conversation id and the block position, and
+ * `conversation_blocks` carries UNIQUE(conversation_id, position), so a
+ * foreign holder is only possible through a truncated-hash collision. This
+ * exists so that case is reported rather than resolved by deletion.
+ *
+ * Queried in chunks: a long conversation can carry more blocks than SQLite
+ * allows bound parameters in one statement.
+ */
+function foreignBlockIdHolders(
+  db: ReturnType<typeof getDb>,
+  conversationId: string,
+  ids: readonly string[],
+): Array<{ id: string; conversation_id: string }> {
+  const found: Array<{ id: string; conversation_id: string }> = [];
+  const chunkSize = 400;
+  for (let start = 0; start < ids.length; start += chunkSize) {
+    const chunk = ids.slice(start, start + chunkSize);
+    if (chunk.length === 0) continue;
+    const placeholders = chunk.map(() => "?").join(",");
+    const rows = db
+      .prepare(
+        `SELECT id, conversation_id FROM conversation_blocks
+         WHERE conversation_id != ? AND id IN (${placeholders})`,
+      )
+      .all(conversationId, ...chunk) as Array<{ id: string; conversation_id: string }>;
+    found.push(...rows);
+  }
+  return found;
 }
 
 function isSqliteBusy(error: unknown): boolean {

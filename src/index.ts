@@ -78,6 +78,7 @@ import { materializeCoworkCliCache } from "./cowork-cli-cache.js";
 import type { Logger, StartupCommitInfo } from "./types.js";
 import { DaemonMemoryDiagnostics, memoryWarningFractionFromEnv } from "./daemon-memory.js";
 import { EventLoopLagDiagnostics } from "./daemon-event-loop.js";
+import { auditOperatorSigningCredential } from "./signing-credential-audit.js";
 import {
   RestartAvailabilityStore,
   restartAvailabilityInstanceKey,
@@ -459,6 +460,35 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     } catch (error) {
       logger("warn", "channel_startup_cleanup_failed", { error: String(error) });
     }
+  }
+
+  // Issue 2205073 — audit the protected-merge signing credential at startup.
+  // An unregistered `git user.signingkey` is invisible until base-transition
+  // provenance verification refuses an approval with no visible cause, so the
+  // misconfiguration is surfaced here instead. Read-only; never blocks startup.
+  try {
+    const signingAudit = auditOperatorSigningCredential(db);
+    if (signingAudit.status === "missing_credential") {
+      logger("warn", "signing_credential_unregistered", {
+        subsystem: "auth",
+        operator: signingAudit.operator_slug,
+        fingerprint: signingAudit.fingerprint,
+        detail:
+          "The configured git user.signingkey is not an active registered signing credential. " +
+          "Protected-branch merges signed with it cannot be attested when a later approval " +
+          "recomputes a stale merge candidate.",
+        fix: signingAudit.hint,
+      });
+    } else if (signingAudit.status === "unresolvable") {
+      logger("warn", "signing_credential_unresolvable", {
+        subsystem: "auth",
+        operator: signingAudit.operator_slug,
+        configured_key: signingAudit.configured_key,
+        reason: signingAudit.reason,
+      });
+    }
+  } catch (error) {
+    logger("warn", "signing_credential_audit_failed", { error: String(error) });
   }
 
   // Bug: 1a85d82 — Auto-import global CLAUDE.md into presets on startup.
