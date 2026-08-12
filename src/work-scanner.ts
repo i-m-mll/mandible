@@ -270,9 +270,10 @@ function normalizeRoots(roots: string[]): string[] {
   return Array.from(unique.values());
 }
 
-// Bug: b81c3e4 — scan one extra level of nesting so repos under ~/Main/subdir/repo
-// are discovered. The depth-2 scan only applies to the ~/Main tree (which uses
-// category subdirectories); ~/dev and ~/projects remain depth-1 as before.
+// Bug: b81c3e4 — scan roots carry their own depth so a category-organised
+// monorepo (root/category/repo) is discovered without forcing every flat repo
+// directory to the same nesting. See `defaultScanRoots` below for how depth is
+// chosen when nothing is configured.
 // Only adds entries where .git is a directory (not a worktree gitfile).
 function isGitDirectory(candidate: string): boolean {
   const gitPath = path.join(candidate, ".git");
@@ -306,8 +307,8 @@ function scanDirForRepos(dir: string, depth: number, roots: string[]): void {
   }
 }
 
-// Bug: 7ed20d0 — read repos.toml to discover repos nested deeper than depth-2
-// (e.g. ~/Main/10 Projects/10 PhD/20 Feedbax/feedbax) that the directory scan misses.
+// Bug: 7ed20d0 — read repos.toml to discover repos nested deeper than the
+// directory scan reaches (a monorepo root whose categories nest several levels).
 function readReposToml(monorepoRoot: string): string[] {
   const tomlPath = path.join(monorepoRoot, ".projects", "repos.toml");
   try {
@@ -335,9 +336,160 @@ function readReposToml(monorepoRoot: string): string[] {
   }
 }
 
+/**
+ * Issue 8aadf70 — repo scan roots are configuration, not hard-coded paths.
+ *
+ * `work_scanner_scan_roots` (settings table) or `MANDIBLE_WORK_SCANNER_ROOTS`
+ * (environment) hold a JSON array of `{ path, depth }` entries, or a
+ * newline/`:`-separated list of paths using the default depth. When neither is
+ * set, Mandible falls back to the generic developer layouts below plus any
+ * monorepo root discovered under `$HOME` by its `.projects/repos.toml`
+ * manifest — which is what makes a category-organised monorepo keep working
+ * without its owner's path being written into the source.
+ */
+const WORK_SCANNER_ROOTS_SETTING_KEY = "work_scanner_scan_roots";
+const WORK_SCANNER_ROOTS_ENV_KEY = "MANDIBLE_WORK_SCANNER_ROOTS";
+const DEFAULT_SCAN_DEPTH = 1;
+const MONOREPO_MANIFEST_RELATIVE_PATH = path.join(".projects", "repos.toml");
+
+/** Generic, layout-neutral places developers keep checkouts. */
+const DEFAULT_FLAT_REPO_DIR_NAMES = [
+  "dev",
+  "code",
+  "Code",
+  "src",
+  "git",
+  "repos",
+  "projects",
+  "Projects",
+  "Developer",
+  "workspace",
+];
+
+export interface WorkScannerScanRoot {
+  path: string;
+  depth: number;
+}
+
+function coerceScanRoot(value: unknown): WorkScannerScanRoot | null {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? { path: path.resolve(trimmed), depth: DEFAULT_SCAN_DEPTH } : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const rawPath = typeof record.path === "string" ? record.path.trim() : "";
+  if (!rawPath) return null;
+  const rawDepth = record.depth;
+  const depth = typeof rawDepth === "number" && Number.isInteger(rawDepth) && rawDepth > 0
+    ? rawDepth
+    : DEFAULT_SCAN_DEPTH;
+  return { path: path.resolve(rawPath), depth };
+}
+
+export function parseWorkScannerScanRoots(raw: string | null | undefined): WorkScannerScanRoot[] {
+  if (!raw || !raw.trim()) return [];
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed.map(coerceScanRoot).filter((r): r is WorkScannerScanRoot => r !== null);
+      }
+    } catch {
+      // Fall through to the plain-list form below.
+    }
+    return [];
+  }
+  return trimmed
+    .split(/[\n:,]/)
+    .map((entry) => coerceScanRoot(entry))
+    .filter((r): r is WorkScannerScanRoot => r !== null);
+}
+
+function configuredScanRoots(): WorkScannerScanRoot[] {
+  const fromEnv = parseWorkScannerScanRoots(process.env[WORK_SCANNER_ROOTS_ENV_KEY]);
+  if (fromEnv.length > 0) return fromEnv;
+  try {
+    const row = getDb()
+      .prepare("SELECT value FROM settings WHERE key = ?")
+      .get(WORK_SCANNER_ROOTS_SETTING_KEY) as { value: string } | undefined;
+    return parseWorkScannerScanRoots(row?.value);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Immediate `$HOME` subdirectories carrying a `.projects/repos.toml` manifest.
+ * Treated as monorepo roots: scanned two levels deep for category layouts, and
+ * supplemented by the manifest for repos nested deeper than the scan reaches.
+ */
+function discoverMonorepoRoots(home: string): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(home, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const roots: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    const candidate = path.join(home, entry.name);
+    if (fs.existsSync(path.join(candidate, MONOREPO_MANIFEST_RELATIVE_PATH))) {
+      roots.push(candidate);
+    }
+  }
+  return roots;
+}
+
+/**
+ * Collapse scan roots that name the same directory. Two default names can be the
+ * same directory on a case-insensitive filesystem (`~/code` and `~/Code`), and a
+ * configured root may be a symlink to another; identity comes from the inode, so
+ * neither case produces a duplicate scan.
+ */
+export function dedupeScanRoots(roots: WorkScannerScanRoot[]): WorkScannerScanRoot[] {
+  const byIdentity = new Map<string, WorkScannerScanRoot>();
+  const unresolved: WorkScannerScanRoot[] = [];
+  for (const root of roots) {
+    let identity: string | null = null;
+    try {
+      const stat = fs.statSync(root.path);
+      if (stat.isDirectory()) {
+        identity = `${stat.dev}:${stat.ino}`;
+      }
+    } catch {
+      identity = null;
+    }
+    if (identity === null) {
+      unresolved.push(root);
+      continue;
+    }
+    const existing = byIdentity.get(identity);
+    // Keep the deepest scan requested for a directory named more than once.
+    if (!existing || root.depth > existing.depth) {
+      byIdentity.set(identity, root);
+    }
+  }
+  return [...byIdentity.values(), ...unresolved];
+}
+
+function defaultScanRoots(home: string): WorkScannerScanRoot[] {
+  const roots: WorkScannerScanRoot[] = DEFAULT_FLAT_REPO_DIR_NAMES.map((name) => ({
+    path: path.join(home, name),
+    depth: DEFAULT_SCAN_DEPTH,
+  }));
+  for (const monorepo of discoverMonorepoRoots(home)) {
+    roots.push({ path: monorepo, depth: 2 });
+  }
+  return roots;
+}
+
 function discoverRepos(defaultRepoRoot?: string): string[] {
   const roots: string[] = [];
-  const dotfiles = path.join(os.homedir(), ".dotfiles");
+  const home = os.homedir();
+  const dotfiles = path.join(home, ".dotfiles");
   if (isGitDirectory(dotfiles)) {
     roots.push(dotfiles);
   }
@@ -350,28 +502,21 @@ function discoverRepos(defaultRepoRoot?: string): string[] {
       roots.push(resolvedDefault);
     }
   }
-  // Depth-1 scan for flat repo directories
-  const depth1Dirs = [
-    path.join(os.homedir(), "dev"),
-    path.join(os.homedir(), "projects"),
-  ];
-  for (const dir of depth1Dirs) {
-    scanDirForRepos(dir, 1, roots);
+
+  const configured = configuredScanRoots();
+  const scanRoots = dedupeScanRoots(
+    configured.length > 0 ? configured : defaultScanRoots(home),
+  );
+  for (const root of scanRoots) {
+    scanDirForRepos(root.path, root.depth, roots);
   }
-  // Depth-2 scan for category-organised directories (e.g. ~/Main/15 WWW/mll.bio)
-  const depth2Dirs = [
-    path.join(os.homedir(), "Main"),
-  ];
-  for (const dir of depth2Dirs) {
-    scanDirForRepos(dir, 2, roots);
-  }
-  // Supplement depth-2 scan with repos registered in repos.toml, which captures
-  // repos nested deeper than 2 levels (e.g. ~/Main/10 Projects/10 PhD/20 Feedbax/feedbax).
-  const mainDir = path.join(os.homedir(), "Main");
-  if (fs.existsSync(mainDir)) {
-    const tomlRepos = readReposToml(mainDir);
-    for (const r of tomlRepos) {
-      if (!roots.includes(r)) roots.push(r);
+
+  // Supplement the directory scan with repos registered in a `.projects/repos.toml`
+  // manifest, which captures repos nested deeper than the configured depth.
+  for (const root of scanRoots) {
+    if (!fs.existsSync(path.join(root.path, MONOREPO_MANIFEST_RELATIVE_PATH))) continue;
+    for (const repo of readReposToml(root.path)) {
+      if (!roots.includes(repo)) roots.push(repo);
     }
   }
   return roots;

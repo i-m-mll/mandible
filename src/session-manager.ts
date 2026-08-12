@@ -14,6 +14,13 @@ import type {
   UsageAwareBackend,
 } from "./agentic-backend.js";
 import { getDb, type Db } from "./db.js";
+import {
+  assertClaudeLaneAllowed,
+  ClaudeLaneDisabledError,
+  DEFAULT_CLAUDE_BACKEND_TYPE,
+  describeAnthropicBilling,
+  isClaudeCommand,
+} from "./claude-lane-policy.js";
 import { SessionRegistry } from "./registry.js";
 import { broadcast } from "./sse.js";
 import { PTYBackend } from "./backends/pty-backend.js";
@@ -93,9 +100,14 @@ interface ConsoleSessionUsageRow {
   errors_json: string;
 }
 
+// Issue 8aadf70 — the operator console runs on the SDK lane with the default
+// permission posture. `--dangerously-skip-permissions` is no longer a shipped
+// default: SDK sessions gate through `canUseTool` and Mandible's permission
+// cards, and an operator who wants to bypass sets `permissionMode` explicitly
+// on the session via `PATCH /api/console/sessions/:id/options`.
 const OPERATOR_DEFAULTS: Omit<ConsoleSessionInput, "label"> = {
   command: "claude",
-  args: ["--dangerously-skip-permissions"],
+  args: [],
   cwd: process.env.HOME ?? "/tmp",
   env: {},
   cols: 220,
@@ -190,7 +202,10 @@ function computeAgentType(
 }
 
 function defaultBackendType(command: string): BackendType {
-  if (command === "claude") return "pty";
+  // Issue 8aadf70 — Claude defaults to the Agent SDK lane, the documented
+  // embedding surface. The Mandible-owned Claude PTY lane is local-only and
+  // gated behind `claude_pty_lane_enabled`; it is never a default.
+  if (command === "claude") return DEFAULT_CLAUDE_BACKEND_TYPE;
   if (command === "gemini" || command === "codex") return "acp";
   // Shell and unknown commands need interactive terminal (SpawnBackend can't
   // execute arbitrary commands — buildPromptInvocation returns null for them)
@@ -298,6 +313,7 @@ function rowToSession(
   const transport_lane = isTransportLane(row.transport_lane)
     ? row.transport_lane
     : deriveTransportLane(row.command, backend_type, Boolean(row.channel_enabled));
+  const sessionEnv = JSON.parse(row.env_json) as Record<string, string>;
   return {
     id: row.id,
     label: row.label,
@@ -305,7 +321,7 @@ function rowToSession(
     args: JSON.parse(row.args_json) as string[],
     provider_session_id: row.provider_session_id ?? null,
     cwd: row.cwd,
-    env: JSON.parse(row.env_json) as Record<string, string>,
+    env: sessionEnv,
     cols: row.cols,
     rows: row.rows,
     status: row.status as ConsoleSessionStatus,
@@ -326,6 +342,12 @@ function rowToSession(
     resume_at_message: row.resume_at_message ?? null,
     channel_enabled: transport_lane === "channel" || Boolean(row.channel_enabled),
     agent_type: computeAgentType(row.command, is_operator),
+    // Issue 8aadf70 — never let API-key vs subscription billing be a silent
+    // inheritance of the daemon environment. Derived at read time (the daemon
+    // env can change between restarts), not persisted.
+    anthropic_billing: isClaudeCommand(row.command)
+      ? describeAnthropicBilling({ ...process.env, ...sessionEnv })
+      : null,
     owner_user_id: row.owner_user_id ?? null,
     owner: attributionResolver.user(row.owner_user_id),
   };
@@ -468,7 +490,22 @@ export class SessionManager {
       const backend = this.sessions.get(operatorRow.id);
       if (backend) {
         this.logger("info", "operator_auto_start", { id: operatorRow.id });
-        backend.start();
+        try {
+          backend.start();
+        } catch (error) {
+          // Issue 8aadf70 — an operator console recorded on the old Claude PTY
+          // default must not take daemon startup down when the lane is off. Leave
+          // it stopped and say why; the operator can recreate it on the SDK lane.
+          if (error instanceof ClaudeLaneDisabledError) {
+            this.logger("warn", "operator_auto_start_skipped", {
+              id: operatorRow.id,
+              reason: error.code,
+              message: error.message,
+            });
+          } else {
+            throw error;
+          }
+        }
       }
     }
   }
@@ -495,6 +532,10 @@ export class SessionManager {
     const is_operator = input.is_operator ? 1 : 0;
     const interaction_mode = input.interaction_mode ?? "both";
     const selection = normalizeTransportSelection(input);
+    // Issue 8aadf70 — the Claude PTY/Channel lane is local-only and off by
+    // default. Reject before anything is persisted so a disabled lane never
+    // leaves a half-created session row behind.
+    assertClaudeLaneAllowed(input.command, selection.backend_type, db);
     const backend_type = selection.backend_type;
     const transport_lane = selection.transport_lane;
     const allowed_tools = input.allowed_tools ?? null;
@@ -886,6 +927,20 @@ export class SessionManager {
     // Remove it before constructing any non-operator backend so an agent under
     // the same OS uid can never read or race that credential directly.
     if (!session.is_operator) this.clientAuth?.revokeOperatorBootstrap?.();
+    // Issue 8aadf70 — surface, never silently inherit, the Anthropic billing
+    // path a Claude session will run on. `warn` for the API-key case because it
+    // spends money outside the operator's subscription.
+    if (isClaudeCommand(session.command)) {
+      const billing = session.anthropic_billing
+        ?? describeAnthropicBilling({ ...process.env, ...session.env });
+      this.logger(billing.mode === "api_key" ? "warn" : "info", "claude_session_billing", {
+        id: session.id,
+        backend_type: type,
+        billing_mode: billing.mode,
+        billing_source: billing.source,
+        note: billing.note,
+      });
+    }
     const token = () => this.clientTokenFor(session, options);
     if (type === "sdk") {
       return new SDKBackend(session, this.logger, this.sessionRegistry ?? undefined, token);

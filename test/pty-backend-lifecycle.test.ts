@@ -17,6 +17,7 @@ vi.mock("node-pty", () => ({
 }));
 
 const { PTYBackend, formatPtyPromptInput } = await import("../src/backends/pty-backend.js");
+const { CLAUDE_PTY_LANE_ENV_KEY } = await import("../src/claude-lane-policy.js");
 
 function makeMeta(overrides: Partial<ConsoleSession> = {}): ConsoleSession {
   return {
@@ -116,12 +117,17 @@ describe("PTYBackend lifecycle", () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    // Issue 8aadf70 — this suite is the unit test for the Claude terminal-driving
+    // lane itself, which ships disabled. Opt into it explicitly here; the gate's
+    // own behaviour is covered in claude-lane-policy.test.ts.
+    process.env[CLAUDE_PTY_LANE_ENV_KEY] = "1";
     ptyMock.spawn.mockReset();
     ptyMock.exitHandlers = [];
     ptyMock.spawn.mockImplementation(() => makePtyProcess());
   });
 
   afterEach(() => {
+    delete process.env[CLAUDE_PTY_LANE_ENV_KEY];
     vi.restoreAllMocks();
     vi.useRealTimers();
     if (tempHome) {

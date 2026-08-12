@@ -19,6 +19,12 @@ import {
 } from "../claude-hook-settings.js";
 import { detectClaudePermissionPrompt } from "../claude-permission-patterns.js";
 import {
+  CLAUDE_PTY_LANE_DISABLED_CODE,
+  ClaudeLaneDisabledError,
+  isClaudeCommand,
+  isClaudePtyLaneEnabled,
+} from "../claude-lane-policy.js";
+import {
   PtyScreenObserver,
   shouldEnablePtyScreenModel,
   type ScreenClassification,
@@ -114,6 +120,15 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
     if (this.ptyProc) {
       this.logger("warn", "pty_already_running", { id: this.id });
       return;
+    }
+    // Issue 8aadf70 — a Claude PTY session recorded while the local-only lane
+    // was enabled must not resurrect after the lane is turned off.
+    if (isClaudeCommand(this.meta.command) && !isClaudePtyLaneEnabled()) {
+      this.logger("warn", "pty_claude_lane_disabled", {
+        id: this.id,
+        reason: CLAUDE_PTY_LANE_DISABLED_CODE,
+      });
+      throw new ClaudeLaneDisabledError();
     }
     this.clearRestartTimer();
 
@@ -518,7 +533,14 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
         this.restartTimer = null;
         if (this.meta.auto_restart && !this.destroyed) {
           this.logger("info", "pty_auto_restart", { id: this.id, attempt: this.restartAttempts });
-          this.start();
+          try {
+            this.start();
+          } catch (error) {
+            // Issue 8aadf70 — a gated Claude lane must stop the restart loop, not
+            // throw out of a timer callback and take the daemon with it.
+            if (error instanceof ClaudeLaneDisabledError) return;
+            throw error;
+          }
         }
       }, delay);
       if (this.restartTimer && typeof this.restartTimer === "object" && "unref" in this.restartTimer) {
@@ -671,6 +693,13 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
   }
 
   private currentClaudePermissionPrompt() {
+    // Issue 8aadf70 — parsing Claude Code's permission menus belongs to the
+    // gated local-only lane. The screen observer is already absent when the
+    // lane is off; this second check keeps the gate total even if a session was
+    // constructed while the lane was enabled and it was turned off since.
+    if (isClaudeCommand(this.meta.command) && !isClaudePtyLaneEnabled()) {
+      return null;
+    }
     const snapshot = this.screenObserver?.snapshot();
     if (!snapshot) {
       return null;
@@ -727,9 +756,20 @@ export class PTYBackend extends EventEmitter implements AgenticBackend, Permissi
       if (this.meta.provider_session_id) {
         sanitized.push("--resume", this.meta.provider_session_id);
       }
-      // Bug: b5aba0e — channel-enabled PTY: inject MCP channel server flag
+      // Bug: b5aba0e — channel-enabled PTY: inject MCP channel server flag.
+      // Issue 8aadf70 — `--dangerously-load-development-channels` is an
+      // undocumented development-only channel used to inject synthetic messages
+      // into a running CLI. It is only ever appended when the local-only Claude
+      // PTY lane is explicitly enabled; release builds never reach this line.
       if (this.meta.channel_enabled) {
-        sanitized.push("--dangerously-load-development-channels", "server:mandible");
+        if (isClaudePtyLaneEnabled()) {
+          sanitized.push("--dangerously-load-development-channels", "server:mandible");
+        } else {
+          this.logger("warn", "pty_claude_channel_flag_suppressed", {
+            id: this.id,
+            reason: CLAUDE_PTY_LANE_DISABLED_CODE,
+          });
+        }
       }
       // Bug: 790433d — Append preset union as system prompt for PTY sessions
       if (this.presetIds.length > 0) {

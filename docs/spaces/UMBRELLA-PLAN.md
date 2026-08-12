@@ -18,9 +18,9 @@ views fail this role: the auto-generated **Graph** (a derived node-link diagram 
 everything, "a big mess") and the **Timeline** (events on a global time axis).
 Full analysis, including the candidate-feature decomposition and the
 Mandible-authors / HumbleB-associates boundary, is in
-[`PROBLEM-AND-OPTIONS.md`](./PROBLEM-AND-OPTIONS.md). An external GPT‑5.5‑pro
-review of that analysis is in `/Users/mll/Downloads/gpt-5.5-pro/review.md`; we
-adopt most of it, especially its schema critique.
+[`PROBLEM-AND-OPTIONS.md`](./PROBLEM-AND-OPTIONS.md). That analysis also went
+through an external GPT‑5.5‑pro review (held outside this repo); we adopt most
+of it, especially its schema critique.
 
 The central thesis (kept): **canvas, document, board/kanban, and
 collection/list are four renderers over one missing primitive — an authored

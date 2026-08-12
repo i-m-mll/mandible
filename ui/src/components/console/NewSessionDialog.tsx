@@ -4,7 +4,13 @@
 import type { JSX } from 'preact/jsx-runtime';
 import { useEffect, useState } from 'preact/hooks';
 import type { Preset, SessionValidationWarning } from '../../api';
-import { getPresets, getDefaultPresetIds, getSettings, validatePresetIds } from '../../api';
+import {
+  getConsoleLanePolicy,
+  getPresets,
+  getDefaultPresetIds,
+  getSettings,
+  validatePresetIds,
+} from '../../api';
 import { PresetPillSelector } from '../presets/PresetPillSelector';
 
 type AgentKind = 'agent' | 'operator';
@@ -76,8 +82,12 @@ const BACKEND_OPTIONS: Array<{
   },
 ];
 
+// Issue 8aadf70 — Claude's default lane is the Agent SDK, the documented
+// embedding surface. Claude PTY/Channel drive the interactive CLI terminal and
+// are local-only developer lanes, hidden unless the daemon reports them
+// enabled.
 function defaultTransportLaneForBackend(backend: Backend): TransportLane {
-  if (backend === 'claude') return 'pty';
+  if (backend === 'claude') return 'sdk';
   if (backend === 'gemini' || backend === 'codex') return 'acp';
   return 'pty';
 }
@@ -90,28 +100,39 @@ function backendTypeForLane(lane: TransportLane): Transport {
 function availableTransportLanes(
   backend: Backend,
   hasApiKey: boolean | null = null,
+  claudePtyLaneEnabled = false,
 ): TransportLaneOption[] {
   if (backend === 'claude') {
-    return [
-      {
-        value: 'pty',
-        title: 'Claude PTY',
-        description: 'Runs your local Claude Code CLI in a Mandible-owned terminal.',
-        note: 'Uses Claude subscription interactive limits.',
-      },
+    const lanes: TransportLaneOption[] = [
       {
         value: 'sdk',
         title: 'Claude SDK',
         description: 'Structured SDK session with Mandible-native control and permissions.',
-        note: hasApiKey === false ? 'Requires Agent SDK credit or API configuration.' : 'Uses Agent SDK credit or API billing.',
-      },
-      {
-        value: 'channel',
-        title: 'Claude Channel',
-        description: 'Runs Claude Code in a PTY with Mandible channel integration enabled.',
-        note: 'Uses Claude subscription interactive limits.',
+        note: hasApiKey
+          ? 'ANTHROPIC_API_KEY is set: this session bills to the Anthropic API.'
+          : 'Uses your local Claude Code credentials and their subscription limits.',
       },
     ];
+    // Issue 8aadf70 — the terminal-driving Claude lanes are only offered when
+    // the daemon reports them enabled; otherwise creating one is rejected
+    // server-side, so showing the option would be a dead end.
+    if (claudePtyLaneEnabled) {
+      lanes.push(
+        {
+          value: 'pty',
+          title: 'Claude PTY (local only)',
+          description: 'Runs your local Claude Code CLI in a Mandible-owned terminal.',
+          note: 'Developer lane, not part of a released build. Uses Claude subscription interactive limits.',
+        },
+        {
+          value: 'channel',
+          title: 'Claude Channel (local only)',
+          description: 'Runs Claude Code in a PTY with Mandible channel integration enabled.',
+          note: 'Developer lane, not part of a released build. Uses Claude subscription interactive limits.',
+        },
+      );
+    }
+    return lanes;
   }
   const provider = backend === 'codex' ? 'Codex' : 'Gemini';
   return [
@@ -168,8 +189,10 @@ export function NewSessionDialog({
   const [label, setLabel] = useState('');
   const [kind, setKind] = useState<AgentKind>('agent');
   const [backend, setBackend] = useState<Backend>('claude');
-  const [transportLane, setTransportLane] = useState<TransportLane>('pty');
+  const [transportLane, setTransportLane] = useState<TransportLane>('sdk');
   const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
+  // Issue 8aadf70 — daemon-reported gate for the local-only Claude PTY lanes.
+  const [claudePtyLaneEnabled, setClaudePtyLaneEnabled] = useState(false);
   const [presetIds, setPresetIds] = useState<string[]>([]);
   const [allPresets, setAllPresets] = useState<Preset[]>([]);
   const [presetsLoaded, setPresetsLoaded] = useState(false);
@@ -241,6 +264,18 @@ export function NewSessionDialog({
     return () => { cancelled = true; };
   }, [open]);
 
+  // Issue 8aadf70 — ask the daemon which Claude lanes it ships before offering them.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void getConsoleLanePolicy().then((policy) => {
+      if (!cancelled) setClaudePtyLaneEnabled(policy.claude_pty_lane_enabled);
+    }).catch(() => {
+      if (!cancelled) setClaudePtyLaneEnabled(false);
+    });
+    return () => { cancelled = true; };
+  }, [open]);
+
   // Bug: 8baedeb — validate selected presets for unsatisfied setting requirements
   useEffect(() => {
     if (!presetsLoaded || presetIds.length === 0 || backend !== 'claude') {
@@ -266,18 +301,19 @@ export function NewSessionDialog({
   }, [backend, kind]);
 
   useEffect(() => {
-    const allowed = availableTransportLanes(backend, hasApiKey).some((option) => option.value === transportLane);
+    const allowed = availableTransportLanes(backend, hasApiKey, claudePtyLaneEnabled)
+      .some((option) => option.value === transportLane);
     if (!allowed) {
       setTransportLane(defaultTransportLaneForBackend(backend));
     }
-  }, [backend, hasApiKey, transportLane]);
+  }, [backend, claudePtyLaneEnabled, hasApiKey, transportLane]);
 
   if (!open) return null;
 
   const isSDK = transportLane === 'sdk';
   // Issue 2181ffd — instruction artifacts are supported for both SDK and PTY Claude sessions.
   const supportsPresets = backend === 'claude';
-  const transportOptions = availableTransportLanes(backend, hasApiKey);
+  const transportOptions = availableTransportLanes(backend, hasApiKey, claudePtyLaneEnabled);
 
   const handleSubmit = (e: Event) => {
     e.preventDefault();
