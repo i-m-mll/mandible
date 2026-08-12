@@ -3371,6 +3371,53 @@ export const MIGRATIONS: readonly Migration[] = [
     // expansion). Fresh databases and full replays get the expanded CHECK
     // directly from the spaces_core DDL above, so the rebuild is a no-op there.
     statements: []
+  },
+  {
+    version: 122,
+    name: "agent_dispatch_events",
+    // Umbrella 99b74d6 / issue ce83a84 — the handling-event ledger for
+    // human-initiated agent dispatch. One row is one dispatch attempt. The row
+    // is written BEFORE the external session is spawned (status `dispatching`)
+    // and settles exactly once into `dispatched` or `failed`, so a daemon that
+    // dies mid-spawn leaves an honest unsettled row rather than a silent gap.
+    // Rows are never deleted or re-purposed: this table IS the audit chain
+    // comment -> handling event -> session handle.
+    //
+    // A finding dispatch carries candidate/revision/comment ids (the comment is
+    // the immutable owner instruction, stored first); an issue dispatch carries
+    // the ledger issue id. `instruction` keeps the verbatim human task text on
+    // the event so the audit record does not depend on the prompt file
+    // surviving on disk.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS agent_dispatch_events (
+        id             TEXT PRIMARY KEY,
+        subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
+        candidate_id   TEXT REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id    TEXT REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        comment_id     TEXT REFERENCES candidate_comments(id) ON DELETE SET NULL,
+        issue_id       TEXT,
+        actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        provider       TEXT NOT NULL DEFAULT 'claude',
+        instruction    TEXT NOT NULL,
+        cwd            TEXT NOT NULL,
+        prompt_path    TEXT,
+        prompt_sha256  TEXT,
+        status         TEXT NOT NULL
+                         CHECK(status IN ('dispatching','dispatched','failed')),
+        session_handle TEXT,
+        session_id     TEXT,
+        attach_command TEXT,
+        error          TEXT,
+        created_at     INTEGER NOT NULL,
+        settled_at     INTEGER
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_agent_dispatch_events_candidate
+         ON agent_dispatch_events(candidate_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_agent_dispatch_events_issue
+         ON agent_dispatch_events(issue_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_agent_dispatch_events_comment
+         ON agent_dispatch_events(comment_id)`
+    ]
   }
 ];
 

@@ -316,10 +316,13 @@ describe("finding resolution: latest vs pinned", () => {
   it("reports an unresolved reference when the candidate store is absent", () => {
     // Since the v120 briefing migration, a freshly migrated database always
     // carries the store; absence means a pre-v120 database, modelled here by
-    // dropping the tables the resolver probes for.
+    // dropping the tables the resolver probes for. The v122 dispatch-event
+    // table references candidate_comments/candidate_revisions, so it goes
+    // first: a pre-v120 database predates it too.
     const fresh = new Database(":memory:") as unknown as Db;
     migrate(fresh);
     fresh.exec(`
+      DROP TABLE IF EXISTS agent_dispatch_events;
       DROP TABLE IF EXISTS decision_events;
       DROP TABLE IF EXISTS candidate_comments;
       DROP TABLE IF EXISTS candidate_occurrences;

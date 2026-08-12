@@ -1,0 +1,107 @@
+/* Agent dispatch confirmation dialog — umbrella 99b74d6, issue ce83a84.
+ *
+ * The dialog is a centered overlay rather than an inline panel: starting an
+ * agent must interrupt, not blend into the surface that offered it. The prompt
+ * preview is a scrollable <pre> so a long untrusted payload cannot push the
+ * Cancel/Start buttons off screen. */
+
+.agent-dispatch-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-6);
+  background: rgb(0 0 0 / 45%);
+}
+
+.agent-dispatch-dialog__panel {
+  background: var(--surface-popover);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-soft);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-height: min(80vh, 720px);
+  max-width: min(92vw, 640px);
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-5);
+  width: 100%;
+}
+
+.agent-dispatch-dialog__title {
+  font-size: var(--text-base);
+  margin: 0;
+}
+
+.agent-dispatch-dialog__section h4 {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  letter-spacing: 0.04em;
+  margin: 0 0 var(--space-1);
+  text-transform: uppercase;
+}
+
+.agent-dispatch-dialog__instruction {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.agent-dispatch-dialog__cwd,
+.agent-dispatch-dialog__handle {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.agent-dispatch-dialog__capabilities {
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--text-sm);
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+}
+
+.agent-dispatch-dialog__prompt summary {
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--text-sm);
+}
+
+.agent-dispatch-dialog__prompt pre,
+.agent-dispatch-dialog__attach {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  margin: var(--space-2) 0 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: var(--space-2);
+  white-space: pre-wrap;
+}
+
+.agent-dispatch-dialog__note {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0 0;
+}
+
+.agent-dispatch-dialog__error {
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+  margin: 0;
+}
+
+.agent-dispatch-dialog__actions {
+  display: flex;
+  gap: var(--space-2);
+  justify-content: flex-end;
+  margin-top: var(--space-2);
+}
