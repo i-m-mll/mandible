@@ -24,6 +24,7 @@ import {
   isSessionScopedCredential,
   MAX_CANDIDATES_PER_TEXT,
   maskActiveCredentialsInText,
+  maskUnverifiedCandidates,
   matchActiveCredential,
   recordCredentialLeak,
   redactCredentialLeaksInBlocks,
@@ -749,6 +750,53 @@ describe("fail-closed masking", () => {
     );
     expect(again[0].content).toBe(blocks[0].content);
     expect(again[0].metadata).toEqual(blocks[0].metadata);
+  });
+
+  it("keeps numbering distinct past a planted double-precision ceiling", () => {
+    // Fourth-pass finding 4. The occurrence counter was a JS number, and the
+    // namespace it counts in is attacker-supplied text. A literal
+    // `[mandible-credential:unverified#9007199254740991]` pushed it to
+    // Number.MAX_SAFE_INTEGER, where `+ 1` stops advancing: every later span
+    // masked to the same string, which is exactly the duplicate-key loss the
+    // discriminator exists to prevent. Adding the next literal on top of it
+    // turned the "skip what is already taken" loop into an infinite one — an
+    // ingest that hangs on a planted transcript. Counting in BigInt has
+    // neither ceiling.
+    const ceiling = unverifiedCredentialMask(9007199254740991n);
+    const beyond = unverifiedCredentialMask(9007199254740992n);
+    const [first, second] = decoyTokens(2);
+
+    const masked = maskUnverifiedCandidates(`${ceiling} ${beyond} ${first} ${second}`);
+
+    expect(masked.replacements).toBe(2);
+    expect(masked.text).toBe(
+      `${ceiling} ${beyond} ${unverifiedCredentialMask(9007199254740993n)} `
+        + `${unverifiedCredentialMask(9007199254740994n)}`,
+    );
+    // The property that matters, independent of the exact numbers: the planted
+    // literals survive untouched and every mask in the text is unique.
+    const occurrences = [...masked.text.matchAll(/unverified#(\d+)]/g)].map((m) => m[1]);
+    expect(new Set(occurrences).size).toBe(occurrences.length);
+  });
+
+  it("advances past the ceiling from a literal just below it", () => {
+    // The boundary case one step down: the first two masks are representable
+    // as doubles and the third is not, so a number-based counter reproduces
+    // its predecessor and emits a duplicate exactly here.
+    const literal = unverifiedCredentialMask(9007199254740990n);
+    const decoys = decoyTokens(3);
+
+    const masked = maskUnverifiedCandidates(`${literal} ${decoys.join(" ")}`);
+
+    expect(masked.replacements).toBe(3);
+    expect(masked.text).toBe(
+      `${literal} ${unverifiedCredentialMask(9007199254740991n)} `
+        + `${unverifiedCredentialMask(9007199254740992n)} `
+        + `${unverifiedCredentialMask(9007199254740993n)}`,
+    );
+    // Deterministic, so re-ingesting the same text reproduces the same bytes.
+    expect(maskUnverifiedCandidates(`${literal} ${decoys.join(" ")}`).text)
+      .toBe(masked.text);
   });
 
   it("numbers unverified spans deterministically across repeats", () => {

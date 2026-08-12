@@ -54,7 +54,8 @@ recovered; if a writer appends faster than that drains, the remainder is
 reported so the redaction can be re-run once the agent exits. Files that are no
 longer on disk are reported as missing, and files that kept changing (or whose
 scan could not check every candidate) are reported as refused — never partially
-rewritten.
+rewritten. A patched file whose original permissions could not be put back is
+reported too, rather than left quietly readable by more accounts than before.
 
 Requires the local operator's credential (MANDIBLE_TOKEN or
 `mandible user dashboard-link`).
@@ -137,6 +138,11 @@ cmd_redact() {
               "\n  WARNING:           \(.sources.abandoned_tail_bytes) bytes were still being"
               + "\n                     appended to the replaced file when recovery stopped;"
               + "\n                     re-run redact once the writing agent has exited"
+            else "" end)
+         + (if (.sources.mode_restore_failed_files // 0) > 0 then
+              "\n  WARNING:           \(.sources.mode_restore_failed_files) patched file(s) kept"
+              + "\n                     the replacement's permissions; the original mode could"
+              + "\n                     not be restored, so check and set it yourself"
             else "" end)
        end)'
 }
