@@ -3569,3 +3569,83 @@ export async function getSpaceExportDrift(
   const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/exports/drift`);
   return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
 }
+
+// --- finding (briefing review candidate) references -------------------------
+// Appended trailing section (briefing umbrella 99b74d6, lane d7e51a1). Every
+// call here is READ-ONLY: Spaces displays a finding's review state and never
+// mutates it. Saving a finding to a Space goes through the ordinary
+// `addSpaceItem` / occurrence writes above — a placement fact that creates no
+// decision event.
+
+import type {
+  SpaceFindingCandidateSummary as ContractSpaceFindingCandidateSummary,
+  SpaceFindingListResponse,
+  SpaceFindingRefMetadata as ContractSpaceFindingRefMetadata,
+  SpaceFindingResolution as ContractSpaceFindingResolution,
+  SpaceFindingResolveResponse,
+} from '../../src/contracts';
+
+export type {
+  FindingReviewState,
+  SpaceFindingCandidateSummary,
+  SpaceFindingListResponse,
+  SpaceFindingRefMetadata,
+  SpaceFindingResolution,
+  SpaceFindingResolveResponse,
+  SpaceFindingRevisionMode,
+  SpaceFindingRevisionState,
+  SpaceFindingRevisionSummary,
+} from '../../src/contracts';
+
+export {
+  SPACE_FINDING_REVISION_MODES,
+  SPACE_FINDING_WARNING_LATEST_NOT_PINNED,
+  SPACE_FINDING_WARNING_PINNED_MISSING,
+  SPACE_FINDING_WARNING_PINNED_SUPERSEDED,
+  SPACE_FINDING_WARNING_STORE_UNAVAILABLE,
+} from '../../src/contracts';
+
+/** Pickable review candidates for the Space item picker. */
+export async function listSpaceFindings(
+  options: { limit?: number; query?: string } = {},
+): Promise<ContractSpaceFindingCandidateSummary[]> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  if (options.query) params.set('q', options.query);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const response = await apiGet(`/api/spaces/findings${suffix}`);
+  const payload = (await parseMaybeJson(response)) as SpaceFindingListResponse;
+  return payload.findings ?? [];
+}
+
+/**
+ * Resolve a candidate under caller-supplied revision semantics (preview before a
+ * placement exists). Pass the same metadata the placement will carry so the
+ * preview and the placed reference agree.
+ */
+export async function resolveSpaceFinding(
+  candidateId: string,
+  metadata: ContractSpaceFindingRefMetadata = { revision_mode: 'latest' },
+): Promise<ContractSpaceFindingResolution> {
+  const params = new URLSearchParams({ revision_mode: metadata.revision_mode });
+  if (metadata.revision_mode === 'pinned' && metadata.pinned_revision_id) {
+    params.set('pinned_revision_id', metadata.pinned_revision_id);
+  }
+  const response = await apiGet(
+    `/api/spaces/findings/${encodeURIComponent(candidateId)}/resolve?${params.toString()}`,
+  );
+  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
+  return payload.resolution;
+}
+
+/** Resolve one PLACED finding reference under the semantics stored on the item. */
+export async function resolveSpaceItemFinding(
+  spaceId: string,
+  itemId: string,
+): Promise<ContractSpaceFindingResolution> {
+  const response = await apiGet(
+    `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/finding`,
+  );
+  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
+  return payload.resolution;
+}
