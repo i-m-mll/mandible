@@ -30,7 +30,7 @@ import {
   remediationFor,
   resetCredentialLeakScanCache,
   scanBlocksForCredentialLeaks,
-  UNVERIFIED_CREDENTIAL_MASK,
+  unverifiedCredentialMask,
 } from "../src/credential-leak-scan.js";
 
 let tempDir = "";
@@ -572,7 +572,7 @@ describe("fail-closed masking", () => {
     expect(result.truncated).toBe(true);
     expect(result.unverified_spans).toBe(1);
     expect(blocks[0].content).not.toContain(REAL_TOKEN);
-    expect(blocks[0].content).toBe(`${decoys.join(" ")} ${UNVERIFIED_CREDENTIAL_MASK}`);
+    expect(blocks[0].content).toBe(`${decoys.join(" ")} ${unverifiedCredentialMask(1)}`);
     // Honest limitation: the overflow span was never verified, so it is masked
     // but cannot be attributed to a credential and raises no alert.
     expect(result.detections).toEqual([]);
@@ -629,9 +629,9 @@ describe("fail-closed masking", () => {
 
     expect(result.verification_failed).toBe(true);
     expect(result.unverified_spans).toBe(2);
-    expect(blocks[0].content).toBe(`oops ${UNVERIFIED_CREDENTIAL_MASK}`);
+    expect(blocks[0].content).toBe(`oops ${unverifiedCredentialMask(1)}`);
     expect(JSON.stringify(blocks[0].metadata))
-      .toBe(JSON.stringify({ tool_input: UNVERIFIED_CREDENTIAL_MASK }));
+      .toBe(JSON.stringify({ tool_input: unverifiedCredentialMask(1) }));
     expect(webhookRows()).toEqual([]);
   });
 
@@ -648,7 +648,7 @@ describe("fail-closed masking", () => {
     );
 
     expect(result.verification_failed).toBe(true);
-    expect(blocks[0].content).toBe(`oops ${UNVERIFIED_CREDENTIAL_MASK}`);
+    expect(blocks[0].content).toBe(`oops ${unverifiedCredentialMask(1)}`);
   });
 
   it("masks derived text when its verification throws", () => {
@@ -662,7 +662,71 @@ describe("fail-closed masking", () => {
     );
 
     expect(masked.verification_failed).toBe(true);
-    expect(masked.text).toBe(`title: ${UNVERIFIED_CREDENTIAL_MASK}`);
+    expect(masked.text).toBe(`title: ${unverifiedCredentialMask(1)}`);
+  });
+
+  it("keeps distinct unverified spans distinct instead of collapsing them", () => {
+    // Re-review finding 3: every unverified span used to become one constant,
+    // so token-shaped strings used as distinct object keys reparsed into a
+    // single JSON property and the other values were silently dropped. Masking
+    // has to fail closed for secrecy without being lossy for structure.
+    makeUser();
+    registerToken("mandible-agent-claude", REAL_TOKEN);
+    const keys = decoyTokens(3);
+    const blocks = [{
+      content: `${keys[0]} then ${keys[1]} then ${keys[2]}`,
+      position: 0,
+      metadata: { [keys[0]]: "one", [keys[1]]: "two", [keys[2]]: "three" },
+    }];
+
+    const result = redactCredentialLeaksInBlocks(
+      dbFailingOn("fingerprint = ?"),
+      blocks,
+      { conversation_id: "conv-distinct" },
+      { pepper },
+    );
+
+    expect(result.verification_failed).toBe(true);
+    expect(blocks[0].content).toBe(
+      `${unverifiedCredentialMask(1)} then ${unverifiedCredentialMask(2)} `
+        + `then ${unverifiedCredentialMask(3)}`,
+    );
+    // All three properties survive, with their values still paired correctly.
+    expect(blocks[0].metadata).toEqual({
+      [unverifiedCredentialMask(1)]: "one",
+      [unverifiedCredentialMask(2)]: "two",
+      [unverifiedCredentialMask(3)]: "three",
+    });
+    // The discriminator is positional, never derived from the plaintext: a hash
+    // of the secret in the mask would be an offline confirmation oracle.
+    for (const key of keys) {
+      expect(JSON.stringify(blocks[0].metadata)).not.toContain(key.slice(API_TOKEN_PREFIX.length));
+    }
+  });
+
+  it("numbers unverified spans deterministically across repeats", () => {
+    // Masking must stay a pure function of the text: block ids are content
+    // hashes, so a mask that varied between passes would churn ids forever.
+    makeUser();
+    registerToken("mandible-agent-claude", REAL_TOKEN);
+    const decoys = decoyTokens(3);
+    const text = `${decoys.join(" ")} tail`;
+    const run = (): string => {
+      const blocks = [{ content: text, position: 0 }];
+      redactCredentialLeaksInBlocks(
+        dbFailingOn("fingerprint = ?"),
+        blocks,
+        { conversation_id: "conv-repeat" },
+        { pepper },
+      );
+      return blocks[0].content;
+    };
+
+    expect(run()).toBe(run());
+    expect(run()).toBe(
+      `${unverifiedCredentialMask(1)} ${unverifiedCredentialMask(2)} `
+        + `${unverifiedCredentialMask(3)} tail`,
+    );
   });
 
   it("still masks when the alert insert fails, and reports the lost alert", () => {

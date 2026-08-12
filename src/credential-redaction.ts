@@ -29,6 +29,7 @@ import {
   credentialScanPepper,
   extractTokenCandidatesWithStatus,
   maskUnverifiedCandidates,
+  remapCredentialLeakAlertBlockIds,
   replaceAllCounted,
 } from "./credential-leak-scan.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "./client-auth/tokens.js";
@@ -82,6 +83,17 @@ export interface CredentialRedactionSourceReport {
    */
   refused_files: number;
   patched_spans: number;
+  /**
+   * Bytes a writer appended to the old inode during or after the rename and
+   * that were copied onto the patched file rather than lost with it.
+   */
+  recovered_tail_bytes: number;
+  /**
+   * Bytes still sitting in the unlinked inode when bounded tail recovery gave
+   * up. Non-zero means a writer is appending faster than recovery drains it and
+   * those events exist only in that writer's descriptor.
+   */
+  abandoned_tail_bytes: number;
 }
 
 export interface CredentialRedactionReport {
@@ -103,6 +115,8 @@ export interface CredentialRedactionReport {
   renumbered_blocks: number;
   /** Blocks whose recomputed id was already taken, so the old id was kept. */
   id_conflicts: number;
+  /** Leak alerts repointed from a renumbered block id to its new id. */
+  remapped_leak_alerts: number;
   truncated: boolean;
   sources: CredentialRedactionSourceReport | null;
 }
@@ -214,44 +228,152 @@ function maskCredentialInText(
 
 type PatchStatus = "patched" | "unchanged" | "missing" | "failed" | "refused";
 
+interface PatchOutcome {
+  status: PatchStatus;
+  replacements: number;
+  /** Bytes appended to the old inode after the rename and carried over. */
+  recoveredBytes: number;
+  /** Bytes still in the unlinked inode when tail recovery gave up. */
+  abandonedBytes: number;
+}
+
+function patchOutcome(status: PatchStatus, replacements = 0): PatchOutcome {
+  return { status, replacements, recoveredBytes: 0, abandonedBytes: 0 };
+}
+
 /**
- * Is the file still byte-identical to the snapshot the replacement was built
- * from?
+ * How many times tail recovery re-checks the old inode after the rename.
  *
- * Opened once and inspected through that descriptor, so the inode being
- * checked is the inode being compared: a file replaced by a different one at
- * the same path fails the `ino`/`dev` test, and an appended-to file fails the
- * size or content test. Content equality is the authority; mtime is not
+ * A writer that appended once during the rename window is very likely to append
+ * again while the recovery append is running, so one pass is not enough; a
+ * writer that never stops is not something a bounded loop can win against, and
+ * each round is reported.
+ */
+const MAX_TAIL_RECOVERY_ROUNDS = 8;
+
+/** Read `length` bytes from `fd` starting at `offset`, or null if short. */
+function readExactly(fd: number, offset: number, length: number): Buffer | null {
+  const buffer = Buffer.alloc(length);
+  let read = 0;
+  while (read < length) {
+    const chunk = fs.readSync(fd, buffer, read, length - read, offset + read);
+    if (chunk <= 0) break;
+    read += chunk;
+  }
+  return read === length ? buffer : null;
+}
+
+/**
+ * Does `filePath` still resolve to the inode behind `fd`, with exactly the
+ * snapshot bytes the replacement was built from?
+ *
+ * `fd` was opened before the snapshot was taken and is still open, so the inode
+ * being inspected cannot have been swapped underneath the check. Comparing the
+ * held descriptor's `ino`/`dev` against a fresh path stat is what proves the
+ * *path* still points at that same inode — a file replaced at the same path
+ * fails here. Content equality is the authority for "unchanged"; mtime is not
  * consulted, because a same-bytes touch is not a reason to refuse.
  */
-function sourceUnchanged(filePath: string, baseline: fs.Stats, snapshot: Buffer): boolean {
-  let handle: number;
+function sourceUnchanged(fd: number, filePath: string, snapshot: Buffer): boolean {
   try {
-    handle = fs.openSync(filePath, "r");
+    const held = fs.fstatSync(fd);
+    const atPath = fs.statSync(filePath);
+    if (held.ino !== atPath.ino || held.dev !== atPath.dev) return false;
+    if (held.size !== snapshot.length) return false;
+    const buffer = readExactly(fd, 0, snapshot.length);
+    return buffer !== null && buffer.equals(snapshot);
   } catch {
     return false;
   }
-  try {
-    const current = fs.fstatSync(handle);
-    if (current.ino !== baseline.ino || current.dev !== baseline.dev) return false;
-    if (current.size !== snapshot.length) return false;
-    const buffer = Buffer.alloc(snapshot.length);
-    let read = 0;
-    while (read < snapshot.length) {
-      const chunk = fs.readSync(handle, buffer, read, snapshot.length - read, read);
-      if (chunk <= 0) break;
-      read += chunk;
-    }
-    return read === snapshot.length && buffer.equals(snapshot);
-  } catch {
-    return false;
-  } finally {
+}
+
+/**
+ * Carry bytes appended to the old inode after the rename onto the new file.
+ *
+ * `fd` still refers to the inode the rename unlinked. A transcript writer that
+ * held that file open when the rename happened keeps appending to it, and those
+ * bytes are unreachable through the path — they exist only behind this
+ * descriptor. Reading them here and appending them to the patched file is what
+ * turns the post-rename window from silent data loss into a copy.
+ *
+ * Recovered bytes are masked before they are appended: they were never scanned,
+ * and appending them verbatim would put the plaintext straight back into the
+ * file the redaction just cleaned. Masking is fail-closed, so a recovered tail
+ * that exhausts the candidate budget has its unchecked spans masked rather than
+ * written through — the opposite of the whole-file rule, because refusing here
+ * means discarding bytes that exist nowhere else.
+ *
+ * Appends stop at a line boundary and the partial remainder is carried into the
+ * next round, so a token split across two reads is never half-masked. JSONL
+ * records cannot contain a raw newline, so a line boundary is a safe cut.
+ */
+function recoverAppendedTail(
+  fd: number,
+  filePath: string,
+  fromOffset: number,
+  pepper: string,
+  fingerprint: string,
+  mask: string,
+): { bytes: number; replacements: number; abandoned: number } {
+  let offset = fromOffset;
+  let carried = "";
+  let bytes = 0;
+  let replacements = 0;
+
+  const appendMasked = (chunk: string): boolean => {
+    if (chunk.length === 0) return true;
+    const masked = maskCredentialInText(chunk, pepper, fingerprint, mask, {
+      conservative: true,
+    });
+    replacements += masked.replacements;
     try {
-      fs.closeSync(handle);
+      const out = fs.openSync(filePath, "a");
+      try {
+        fs.writeSync(out, Buffer.from(masked.text, "latin1"));
+        fs.fsyncSync(out);
+      } finally {
+        fs.closeSync(out);
+      }
     } catch {
-      // Nothing useful to do with a close failure on a read-only descriptor.
+      return false;
     }
+    bytes += chunk.length;
+    return true;
+  };
+
+  for (let round = 0; round < MAX_TAIL_RECOVERY_ROUNDS; round += 1) {
+    let size: number;
+    try {
+      size = fs.fstatSync(fd).size;
+    } catch {
+      break;
+    }
+    if (size <= offset) break;
+    const chunk = readExactly(fd, offset, size - offset);
+    if (chunk === null) break;
+    offset = size;
+    const buffered = carried + chunk.toString("latin1");
+    const cut = buffered.lastIndexOf("\n");
+    if (cut < 0) {
+      carried = buffered;
+      continue;
+    }
+    carried = buffered.slice(cut + 1);
+    if (!appendMasked(buffered.slice(0, cut + 1))) break;
   }
+
+  // Whatever is still buffered is a partial final line. It is flushed rather
+  // than dropped: a transcript that ends mid-line is the normal state of a file
+  // being written to, while a dropped remainder is bytes gone for good.
+  if (carried.length > 0) appendMasked(carried);
+
+  let abandoned = 0;
+  try {
+    abandoned = Math.max(0, fs.fstatSync(fd).size - offset);
+  } catch {
+    abandoned = 0;
+  }
+  return { bytes, replacements, abandoned };
 }
 
 /**
@@ -270,96 +392,163 @@ function sourceUnchanged(filePath: string, baseline: fs.Stats, snapshot: Buffer)
  * Transcripts are appended to while an agent is running, so the snapshot the
  * replacement was built from can be stale by the time it would be renamed into
  * place — which would silently drop every event written in between (issue
- * b3e4a09, review finding 4). The file is therefore re-verified against that
- * snapshot immediately before the rename, and a mismatch restarts the whole
- * read-mask-write cycle on the newer bytes rather than publishing the stale
- * one. After MAX_PATCH_ATTEMPTS the file is refused and reported.
+ * b3e4a09, review finding 4). Three mechanisms cover that:
  *
- * Two residual limits are deliberate. The check-to-rename window is not zero,
- * only sub-millisecond: closing it entirely needs a lock the transcript writers
- * do not take. And a writer holding an open descriptor keeps writing to the old
- * inode after the rename, so bytes appended after the last verification land in
- * the unlinked file; the next full ingest of the patched path is what
- * reconciles the index. Both are properties of rewriting a file someone else
- * owns, and the alternative — rewriting in place to keep the inode — trades
- * them for a non-atomic write that can corrupt the transcript outright.
+ *   1. One read-only descriptor is opened before the snapshot and held until
+ *      after the rename. The snapshot is read through it, the pre-rename
+ *      re-verification is read through it, and the post-rename tail recovery is
+ *      read through it — so every check inspects the same inode rather than
+ *      whatever the path happens to name at that instant.
+ *   2. A file that changed before the rename restarts the whole
+ *      read-mask-write cycle on the newer bytes; after MAX_PATCH_ATTEMPTS it is
+ *      refused and reported rather than rewritten from a stale snapshot.
+ *   3. A file that grew *during* the rename window, or afterwards through a
+ *      descriptor the writer still holds, is reconciled by copying the appended
+ *      tail off the unlinked inode onto the patched file (see
+ *      recoverAppendedTail). This is what closes the residual the previous
+ *      round left open: the window is still not zero, but bytes written into it
+ *      are recovered rather than lost.
+ *
+ * Two limits remain, honestly. Tail recovery is bounded: a writer that keeps
+ * appending faster than the recovery loop drains it eventually exhausts
+ * MAX_TAIL_RECOVERY_ROUNDS, and the bytes still in the unlinked inode at that
+ * point are reported as abandoned rather than silently dropped. And a writer
+ * that keeps the old descriptor open indefinitely keeps writing into a file
+ * nothing can see; only that writer closing and reopening the path ends it.
+ *
+ * The in-place alternative — rewriting the verified spans through the
+ * descriptor and keeping the inode, which would make concurrent appends a
+ * non-issue — was examined and rejected. It only works if the replacement is
+ * exactly as long as the plaintext, and it is not: a mask is 32-34 bytes
+ * against a 56-byte token, so an in-place rewrite has to shift every following
+ * byte and truncate, which is both non-atomic and a race with the very appends
+ * it was meant to tolerate. Padding masks to token length to make them
+ * length-preserving would work mechanically, but the mask is a cross-path
+ * reproducibility contract — ingest-time masking, index redaction, and source
+ * patching must all emit the same bytes or block ids diverge — so it would mean
+ * padding every mask everywhere, permanently, to buy a rarer race than the one
+ * tail recovery already handles.
  */
 function patchSourceFile(
   filePath: string,
   pepper: string,
   fingerprint: string,
   mask: string,
-): { status: PatchStatus; replacements: number } {
+): PatchOutcome {
   for (let attempt = 1; attempt <= MAX_PATCH_ATTEMPTS; attempt += 1) {
-    let stat: fs.Stats;
+    let fd: number;
     try {
-      stat = fs.statSync(filePath);
-    } catch {
-      return { status: "missing", replacements: 0 };
+      fd = fs.openSync(filePath, "r");
+    } catch (error) {
+      const code = (error as { code?: unknown } | null)?.code;
+      return patchOutcome(code === "ENOENT" || code === "ENOTDIR" ? "missing" : "failed");
     }
-    if (!stat.isFile()) return { status: "missing", replacements: 0 };
-
-    let original: Buffer;
     try {
-      original = fs.readFileSync(filePath);
-    } catch {
-      return { status: "failed", replacements: 0 };
-    }
-
-    const masked = maskCredentialInText(
-      original.toString("latin1"),
-      pepper,
-      fingerprint,
-      mask,
-    );
-    // An incomplete scan cannot justify overwriting the operator's transcript.
-    if (masked.truncated) return { status: "refused", replacements: 0 };
-    if (masked.replacements === 0) return { status: "unchanged", replacements: 0 };
-
-    const tempPath = path.join(
-      path.dirname(filePath),
-      `.${path.basename(filePath)}.mandible-redact.${process.pid}.${attempt}.tmp`,
-    );
-    const discardTemp = (): void => {
+      const outcome = patchThroughDescriptor(fd, filePath, pepper, fingerprint, mask, attempt);
+      if (outcome !== null) return outcome;
+    } finally {
       try {
-        fs.unlinkSync(tempPath);
+        fs.closeSync(fd);
       } catch {
-        // Best effort: a leftover temp file is not worth failing the report over.
+        // Nothing useful to do with a close failure on a read-only descriptor.
       }
-    };
-    try {
-      const handle = fs.openSync(tempPath, "wx", stat.mode & 0o777);
-      try {
-        fs.writeFileSync(handle, Buffer.from(masked.text, "latin1"));
-        fs.fsyncSync(handle);
-      } finally {
-        fs.closeSync(handle);
-      }
-      // openSync's mode argument is masked by umask; chmod is not.
-      fs.chmodSync(tempPath, stat.mode & 0o777);
-    } catch {
-      discardTemp();
-      return { status: "failed", replacements: 0 };
     }
-
-    if (!sourceUnchanged(filePath, stat, original)) {
-      discardTemp();
-      redactionLog("warn", "credential_redaction_source_changed", {
-        file: filePath,
-        attempt,
-      });
-      continue;
-    }
-
-    try {
-      fs.renameSync(tempPath, filePath);
-    } catch {
-      discardTemp();
-      return { status: "failed", replacements: 0 };
-    }
-    return { status: "patched", replacements: masked.replacements };
   }
-  return { status: "refused", replacements: 0 };
+  return patchOutcome("refused");
+}
+
+/** One attempt of the read-mask-verify-rename-recover cycle. `null` = retry. */
+function patchThroughDescriptor(
+  fd: number,
+  filePath: string,
+  pepper: string,
+  fingerprint: string,
+  mask: string,
+  attempt: number,
+): PatchOutcome | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.fstatSync(fd);
+  } catch {
+    return patchOutcome("failed");
+  }
+  if (!stat.isFile()) return patchOutcome("missing");
+
+  const original = readExactly(fd, 0, stat.size);
+  if (original === null) {
+    // The file shrank or errored mid-read; re-open and look again.
+    return null;
+  }
+
+  const masked = maskCredentialInText(
+    original.toString("latin1"),
+    pepper,
+    fingerprint,
+    mask,
+  );
+  // An incomplete scan cannot justify overwriting the operator's transcript.
+  if (masked.truncated) return patchOutcome("refused");
+  if (masked.replacements === 0) return patchOutcome("unchanged");
+
+  const tempPath = path.join(
+    path.dirname(filePath),
+    `.${path.basename(filePath)}.mandible-redact.${process.pid}.${attempt}.tmp`,
+  );
+  const discardTemp = (): void => {
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Best effort: a leftover temp file is not worth failing the report over.
+    }
+  };
+  try {
+    const handle = fs.openSync(tempPath, "wx", stat.mode & 0o777);
+    try {
+      fs.writeFileSync(handle, Buffer.from(masked.text, "latin1"));
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+    // openSync's mode argument is masked by umask; chmod is not.
+    fs.chmodSync(tempPath, stat.mode & 0o777);
+  } catch {
+    discardTemp();
+    return patchOutcome("failed");
+  }
+
+  if (!sourceUnchanged(fd, filePath, original)) {
+    discardTemp();
+    redactionLog("warn", "credential_redaction_source_changed", {
+      file: filePath,
+      attempt,
+    });
+    return null;
+  }
+
+  try {
+    fs.renameSync(tempPath, filePath);
+  } catch {
+    discardTemp();
+    return patchOutcome("failed");
+  }
+
+  // The descriptor is still open on the now-unlinked inode, which is the only
+  // way to see anything a writer appended inside the verify-to-rename window.
+  const tail = recoverAppendedTail(fd, filePath, original.length, pepper, fingerprint, mask);
+  if (tail.bytes > 0 || tail.abandoned > 0) {
+    redactionLog("warn", "credential_redaction_source_tail_recovered", {
+      file: filePath,
+      recovered_bytes: tail.bytes,
+      recovered_spans: tail.replacements,
+      abandoned_bytes: tail.abandoned,
+    });
+  }
+  return {
+    status: "patched",
+    replacements: masked.replacements + tail.replacements,
+    recoveredBytes: tail.bytes,
+    abandonedBytes: tail.abandoned,
+  };
 }
 
 interface BlockRow {
@@ -390,9 +579,27 @@ interface BlockRow {
  * Keeping the plaintext-derived id would leave a link that works now and breaks
  * silently at the next full re-ingest; recomputing moves that change to the
  * moment the operator ran the redaction and makes every link captured
- * afterwards survive re-ingest. If the recomputed id is already taken, the old
- * id is kept and the conflict is reported rather than colliding the primary
- * key. Redacting a source that cannot be patched (`--patch-sources` refused or
+ * afterwards survive re-ingest. Leak alerts that pointed at the old id are
+ * repointed in the same pass, so the deep link on the record an operator opens
+ * *because* of the leak keeps resolving (re-review finding 2).
+ *
+ * The recomputed id cannot already belong to a different well-formed row, and
+ * that is a schema property rather than an assumption (re-review finding 5 /
+ * original finding 7). `conversation_blocks` carries `UNIQUE(conversation_id,
+ * position)`, and `conversationBlockId` hashes both — which is exactly the
+ * disambiguation ingestion itself relies on (bug 7b47c6c added `position` to
+ * the hash after identical empty tool_result blocks collided). Two distinct
+ * rows therefore always differ in at least one hashed input: same conversation
+ * means different position, different conversation means different
+ * conversation_id. Reaching the conflict branch requires a 64-bit truncated
+ * SHA-256 collision between two rows that are otherwise unrelated. The branch
+ * is kept anyway — a redaction must never take down the primary key — and it
+ * now logs the affected row so an unreachable case that somehow fires is
+ * diagnosable rather than a bare counter. In that case the old id is kept and
+ * the next full ingest resolves it through ingestion's own unique-conflict
+ * recovery, which re-inserts the conversation from the parse.
+ *
+ * Redacting a source that cannot be patched (`--patch-sources` refused or
  * omitted) still diverges at the next re-ingest, because that ingest sees the
  * unredacted bytes again — patching the source is what makes redaction durable.
  */
@@ -434,6 +641,8 @@ export function redactCredential(
   let idConflicts = 0;
   let offset = 0;
   let truncated = false;
+  /** Old id → new id, for every block whose id this run recomputed. */
+  const renamedBlockIds = new Map<string, string>();
 
   for (;;) {
     const rows = select.all(batchSize, offset) as BlockRow[];
@@ -443,6 +652,8 @@ export function redactCredential(
     const pending: Array<{
       id: string;
       newId: string;
+      conversationId: string;
+      position: number;
       content: Buffer;
       metadataJson: string | null;
     }> = [];
@@ -494,6 +705,8 @@ export function redactCredential(
       pending.push({
         id: row.id,
         newId,
+        conversationId: row.conversation_id,
+        position: row.position,
         content: compressContent(maskedContent.text),
         metadataJson: maskedMetadata && maskedMetadata.text !== row.metadata_json
           ? maskedMetadata.text
@@ -512,10 +725,18 @@ export function redactCredential(
           let targetId = entry.id;
           if (entry.newId !== entry.id) {
             if (idTaken.get(entry.newId)) {
+              // Unreachable without a truncated-hash collision (see above), so
+              // if it fires it is worth a row-level record, not just a count.
               idConflicts += 1;
+              redactionLog("error", "credential_redaction_block_id_conflict", {
+                conversation_id: entry.conversationId,
+                position: entry.position,
+                kept_block_id: entry.id,
+              });
             } else {
               targetId = entry.newId;
               renumberedBlocks += 1;
+              renamedBlockIds.set(entry.id, entry.newId);
             }
           }
           update.run(entry.content, entry.metadataJson, targetId, entry.id);
@@ -524,6 +745,10 @@ export function redactCredential(
     }
     if (rows.length < batchSize) break;
   }
+
+  // Leak alerts deep-link the block a credential was found in, so renumbering
+  // without following them leaves the alert pointing at a deleted id.
+  const remappedAlerts = remapCredentialLeakAlertBlockIds(db, renamedBlockIds);
 
   const metadata = redactConversationMetadata(
     db,
@@ -552,11 +777,14 @@ export function redactCredential(
     redacted_conversations: conversations.size,
     renumbered_blocks: renumberedBlocks,
     id_conflicts: idConflicts,
+    remapped_leak_alerts: remappedAlerts,
     truncated,
     patched_files: sources?.patched_files ?? null,
     missing_files: sources?.missing_files ?? null,
     failed_files: sources?.failed_files ?? null,
     refused_files: sources?.refused_files ?? null,
+    recovered_tail_bytes: sources?.recovered_tail_bytes ?? null,
+    abandoned_tail_bytes: sources?.abandoned_tail_bytes ?? null,
   });
 
   return {
@@ -570,6 +798,7 @@ export function redactCredential(
     redacted_conversations: conversations.size,
     renumbered_blocks: renumberedBlocks,
     id_conflicts: idConflicts,
+    remapped_leak_alerts: remappedAlerts,
     truncated,
     sources,
   };
@@ -655,6 +884,8 @@ function patchSourcesForConversations(
     failed_files: 0,
     refused_files: 0,
     patched_spans: 0,
+    recovered_tail_bytes: 0,
+    abandoned_tail_bytes: 0,
   };
   if (conversationIds.length === 0) return report;
 
@@ -668,6 +899,8 @@ function patchSourcesForConversations(
 
   for (const file of files) {
     const outcome = patchSourceFile(file, pepper, fingerprint, mask);
+    report.recovered_tail_bytes += outcome.recoveredBytes;
+    report.abandoned_tail_bytes += outcome.abandonedBytes;
     switch (outcome.status) {
       case "patched":
         report.patched_files += 1;
