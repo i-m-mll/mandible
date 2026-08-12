@@ -473,22 +473,31 @@ describe("atomic auth merge", () => {
     expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
   });
 
-  it("hierarchical path refuses a first source that moved from the reviewed commit", () => {
+  // Issue 060c9c8 — hierarchical merge support was removed from the executor:
+  // the historical `--hierarchical` invocation is now an unknown option and
+  // must exit before any merge work touches the repo.
+  it("refuses the removed --hierarchical flag as an unknown option", () => {
     const base = git(["rev-parse", "main"]);
-    const reviewedHead = git(["rev-parse", "feature/atomic"]);
-    git(["checkout", "feature/atomic"]);
-    write("moved.txt", "moved\n");
-    commit("moved head");
-    git(["checkout", "main"]);
 
-    const result = runNonAtomic(
-      { MANDIBLE_AUTH_EXPECTED_HEAD_SHA: reviewedHead },
-      "--hierarchical feature/atomic --into main",
-    );
+    const result = runNonAtomic({}, "--hierarchical feature/atomic --into main");
 
-    expect(result.status).not.toBe(0);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Unknown option: --hierarchical");
     expect(git(["rev-parse", "main"])).toBe(base);
-    expect(result.stderr).toContain("not the reviewed commit");
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
+  });
+
+  // Issue 060c9c8 — multiple positional sources are likewise no longer a
+  // supported shape; the executor exits with usage before any merge work.
+  it("refuses multiple source branches with a usage error", () => {
+    const base = git(["rev-parse", "main"]);
+
+    const result = runNonAtomic({}, "feature/atomic feature/other --into main");
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("Usage:");
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
   });
 
   it("resume path refuses when MERGE_HEAD is not the reviewed commit", () => {

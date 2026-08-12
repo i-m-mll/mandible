@@ -2528,9 +2528,9 @@ describe("auth queue", () => {
       expect(envs.at(-1)?.MANDIBLE_AUTH_ATOMIC).toBeUndefined();
       fs.rmSync(hook);
 
-      // Issue 08a5f04 (review F2) — hierarchical commands are no longer
-      // approvable at all: canonical-command verification refuses them before
-      // any execution (previously they executed non-atomically).
+      // Issue 060c9c8 — hierarchical merge support is removed; a
+      // hierarchical-shaped command is refused by canonical-command
+      // verification at approval and the request stays pending.
       const hierarchical = submit("hierarchical", " --hierarchical");
       expect(() => queue.approve(hierarchical.id))
         .toThrow(/Hierarchical merge commands cannot be verified/);
@@ -3958,9 +3958,10 @@ describe("auth queue", () => {
     });
 
     // Review F2 — a PUT that mutates `command` drops the retained candidate,
-    // and hierarchical/multi-source commands are excluded from auto-recompute
-    // even across an authorized base advance.
-    it("invalidates the pin on command mutation and refuses hierarchical recompute", () => {
+    // and a hierarchical-shaped command is refused at approval (issue 060c9c8
+    // removed hierarchical merge support) even across an authorized base
+    // advance.
+    it("invalidates the pin on command mutation and refuses hierarchical-shaped approval", () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
       const calls: Array<NodeJS.ProcessEnv | undefined> = [];
@@ -3982,8 +3983,8 @@ describe("auth queue", () => {
         expect(updated.merge_preflight_base_sha).toBeNull();
         expect(() => git(repo, ["rev-parse", `refs/mandible/auth-candidates/${mutated.id}`])).toThrow();
 
-        // Hierarchical command: refused outright by canonical-command
-        // verification (review F2 pass 2), before recompute or execution.
+        // Hierarchical-shaped command: refused outright by canonical-command
+        // verification, before recompute or execution.
         const hier = submitPinnedRequest(
           queue,
           repo,
@@ -4406,9 +4407,9 @@ describe("auth queue", () => {
       }
     });
 
-    // Issue 08a5f04 (review F2 pass 2) — shell-expansion evasion of the
-    // hierarchical regex dies with canonicalization: only the canonical byte
-    // form is executable, so `$X`-style smuggling never reaches bash.
+    // Issue 08a5f04 (review F2 pass 2) — shell-expansion evasion dies with
+    // canonicalization: only the canonical byte form is executable, so
+    // `$X`-style smuggling never reaches bash.
     it("refuses a hierarchical-via-expansion command at approval", () => {
       const repo = createAuthCheckRepo();
       const db = createMigratedDb();
