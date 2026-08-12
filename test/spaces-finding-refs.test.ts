@@ -136,10 +136,9 @@ function seedDecision(
 
 /**
  * Whether the live `space_items.ref_type` CHECK accepts 'finding'. That
- * constraint is a migration owned by the briefing schema lane (contract §7
- * assumed no schema change was needed for this lane, which is true of the item
- * METADATA but not of the ref type itself). Persistence assertions below are
- * gated on it and light up automatically once the migration lands.
+ * constraint is a migration owned by the briefing schema lane: integration
+ * contract v1 §7 assumed this lane needed no schema change, which is true of the
+ * item METADATA but not of the ref type itself.
  */
 function spaceItemsAcceptFindingRefType(database: Db): boolean {
   const row = database
@@ -148,13 +147,49 @@ function spaceItemsAcceptFindingRefType(database: Db): boolean {
   return !!row && row.sql.includes("'finding'");
 }
 
-const PERSISTENCE_SUPPORTED = (() => {
-  const probe = new Database(":memory:") as unknown as Db;
-  migrate(probe);
-  const supported = spaceItemsAcceptFindingRefType(probe);
-  probe.close();
-  return supported;
-})();
+/**
+ * Apply the pending CHECK-constraint rebuild IN THE TEST DATABASE ONLY, so the
+ * placement behavior this lane implements is exercised for real today. It is a
+ * faithful copy of the v90 `space_items` rebuild with 'finding' added, and it is
+ * a no-op once the schema lane ships the real migration — at which point these
+ * tests run against the live schema with no change here.
+ *
+ * This is deliberately NOT a migration: appending to `src/db-migrations.ts` is
+ * reserved to the schema lane this wave (contract §7).
+ */
+function applyPendingFindingRefTypeCheck(database: Db): void {
+  if (spaceItemsAcceptFindingRefType(database)) return;
+  database.pragma("foreign_keys = OFF");
+  database.exec(`
+    CREATE TABLE space_items_finding_probe (
+      id            TEXT NOT NULL,
+      space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+      ref_type      TEXT NOT NULL
+                      CHECK(ref_type IN ('issue','comment','artifact','external_ref','space','finding')),
+      ref_id        TEXT NOT NULL CHECK(ref_id != ''),
+      ref_uri       TEXT,
+      title         TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}'
+                      CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL,
+      PRIMARY KEY (id),
+      UNIQUE (space_id, id),
+      UNIQUE (space_id, ref_type, ref_id),
+      CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
+    );
+    INSERT INTO space_items_finding_probe (
+      id, space_id, ref_type, ref_id, ref_uri, title, metadata_json, created_at, updated_at
+    )
+    SELECT id, space_id, ref_type, ref_id, ref_uri, title, metadata_json, created_at, updated_at
+      FROM space_items;
+    DROP TABLE space_items;
+    ALTER TABLE space_items_finding_probe RENAME TO space_items;
+    CREATE INDEX IF NOT EXISTS idx_space_items_lookup ON space_items(space_id, ref_type, ref_id);
+    CREATE INDEX IF NOT EXISTS idx_space_items_by_ref ON space_items(ref_type, ref_id, space_id);
+  `);
+  database.pragma("foreign_keys = ON");
+}
 
 async function call(method: string, url: string, body?: unknown) {
   return router.invoke({ method, url, body });
@@ -485,61 +520,58 @@ describe("finding routes", () => {
   // The remaining route assertions need `space_items.ref_type` to accept
   // 'finding'. That CHECK-constraint rebuild is a migration owned by the
   // briefing schema lane; these light up as soon as it lands.
-  it.skipIf(!PERSISTENCE_SUPPORTED)(
-    "saves a finding to a Space as a placement fact and normalizes its metadata",
-    async () => {
-      const spaceId = await makeSpace();
-      const created = await call("POST", `/api/spaces/${spaceId}/items`, {
-        ref_type: "finding",
-        ref_id: "cand-1",
-        title: "Interesting thing",
-      });
-      expect(created.status).toBe(201);
-      const item = (created.body as { item: { id: string; metadata: Record<string, unknown> } }).item;
-      expect(item.metadata).toEqual({ revision_mode: "latest" });
+  it("saves a finding to a Space as a placement fact and normalizes its metadata", async () => {
+    applyPendingFindingRefTypeCheck(db);
+    const spaceId = await makeSpace();
+    const created = await call("POST", `/api/spaces/${spaceId}/items`, {
+      ref_type: "finding",
+      ref_id: "cand-1",
+      title: "Interesting thing",
+    });
+    expect(created.status).toBe(201);
+    const item = (created.body as { item: { id: string; metadata: Record<string, unknown> } }).item;
+    expect(item.metadata).toEqual({ revision_mode: "latest" });
 
-      // A placement creates NO decision event.
-      const decisions = db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number };
-      expect(decisions.n).toBe(0);
+    // A placement creates NO decision event.
+    const decisions = db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number };
+    expect(decisions.n).toBe(0);
 
-      const resolved = await call("GET", `/api/spaces/${spaceId}/items/${item.id}/finding`);
-      expect(resolved.status).toBe(200);
-      expect(
-        (resolved.body as { resolution: { revision_state: string; effective_revision: { id: string } } })
-          .resolution,
-      ).toMatchObject({ revision_state: "latest" });
-    },
-  );
+    const resolved = await call("GET", `/api/spaces/${spaceId}/items/${item.id}/finding`);
+    expect(resolved.status).toBe(200);
+    expect(
+      (resolved.body as { resolution: { revision_state: string; effective_revision: { id: string } } })
+        .resolution,
+    ).toMatchObject({ revision_state: "latest" });
+  });
 
-  it.skipIf(!PERSISTENCE_SUPPORTED)(
-    "pins a placed reference so a newer revision does not move it",
-    async () => {
-      const spaceId = await makeSpace();
-      const created = await call("POST", `/api/spaces/${spaceId}/items`, {
-        ref_type: "finding",
-        ref_id: "cand-1",
-        metadata: { revision_mode: "pinned", pinned_revision_id: "rev-1" },
-      });
-      expect(created.status).toBe(201);
-      const itemId = (created.body as { item: { id: string } }).item.id;
+  it("pins a placed reference so a newer revision does not move it", async () => {
+    applyPendingFindingRefTypeCheck(db);
+    const spaceId = await makeSpace();
+    const created = await call("POST", `/api/spaces/${spaceId}/items`, {
+      ref_type: "finding",
+      ref_id: "cand-1",
+      metadata: { revision_mode: "pinned", pinned_revision_id: "rev-1" },
+    });
+    expect(created.status).toBe(201);
+    const itemId = (created.body as { item: { id: string } }).item.id;
 
-      seedRevision(db, "cand-1", "rev-2", { title: "Second revision" });
+    seedRevision(db, "cand-1", "rev-2", { title: "Second revision" });
 
-      const resolved = await call("GET", `/api/spaces/${spaceId}/items/${itemId}/finding`);
-      const resolution = (resolved.body as {
-        resolution: {
-          revision_state: string;
-          effective_revision: { id: string };
-          current_revision: { id: string };
-        };
-      }).resolution;
-      expect(resolution.effective_revision.id).toBe("rev-1");
-      expect(resolution.current_revision.id).toBe("rev-2");
-      expect(resolution.revision_state).toBe("pinned_superseded");
-    },
-  );
+    const resolved = await call("GET", `/api/spaces/${spaceId}/items/${itemId}/finding`);
+    const resolution = (resolved.body as {
+      resolution: {
+        revision_state: string;
+        effective_revision: { id: string };
+        current_revision: { id: string };
+      };
+    }).resolution;
+    expect(resolution.effective_revision.id).toBe("rev-1");
+    expect(resolution.current_revision.id).toBe("rev-2");
+    expect(resolution.revision_state).toBe("pinned_superseded");
+  });
 
-  it.skipIf(!PERSISTENCE_SUPPORTED)("validates metadata on a placement update", async () => {
+  it("validates metadata on a placement update", async () => {
+    applyPendingFindingRefTypeCheck(db);
     const spaceId = await makeSpace();
     const created = await call("POST", `/api/spaces/${spaceId}/items`, {
       ref_type: "finding",
