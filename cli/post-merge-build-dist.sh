@@ -22,15 +22,17 @@ build_needed=false
 instruction_install_needed=false
 if git rev-parse --verify --quiet HEAD^1 >/dev/null \
   && git rev-parse --verify --quiet HEAD^2 >/dev/null; then
-  if [[ -n "$(git diff --name-only HEAD^1 HEAD -- \
-      package.json package-lock.json tsconfig.json \
-      src channel-server ui/src ui/index.html ui/esbuild.config.js)" ]]; then
+  build_changes="$(git diff --name-only HEAD^1 HEAD -- \
+    package.json package-lock.json tsconfig.json \
+    src channel-server ui/src ui/index.html ui/esbuild.config.js)"
+  if [[ -n "$build_changes" ]]; then
     build_needed=true
   fi
-  if [[ -n "$(git diff --name-only HEAD^1 HEAD -- \
-      package.json package-lock.json tsconfig.json \
-      src channel-server ui/src ui/index.html ui/esbuild.config.js \
-      cli/instructions.sh cli/instructions-contract.json)" ]]; then
+  instruction_install_changes="$(git diff --name-only HEAD^1 HEAD -- \
+    package.json package-lock.json tsconfig.json \
+    src channel-server ui/src ui/index.html ui/esbuild.config.js \
+    cli/instructions.sh cli/instructions-contract.json)"
+  if [[ -n "$instruction_install_changes" ]]; then
     instruction_install_needed=true
   fi
 else

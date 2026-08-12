@@ -26,7 +26,7 @@ function runGit(repo: string, args: string[]): void {
   expect(result.status, result.stderr).toBe(0);
 }
 
-function runHookAfterMerge(changedPath: string): HookResult {
+function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
   tempRoots.push(tempDir);
 
@@ -60,11 +60,31 @@ function runHookAfterMerge(changedPath: string): HookResult {
   runGit(repo, ["checkout", "main"]);
   runGit(repo, ["merge", "--no-ff", "topic", "-m", "merge topic"]);
 
+  const hookEnv = { ...process.env };
+  if (failGitDiff) {
+    const gitBin = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+    const shimDir = path.join(tempDir, "bin");
+    fs.mkdirSync(shimDir);
+    fs.writeFileSync(
+      path.join(shimDir, "git"),
+      `#!/usr/bin/env bash
+if [[ "$1" == "diff" ]]; then
+  printf '%s\\n' 'injected git diff failure' >&2
+  exit 42
+fi
+exec "$REAL_GIT" "$@"
+`,
+      { mode: 0o755 },
+    );
+    hookEnv.PATH = `${shimDir}${path.delimiter}${hookEnv.PATH}`;
+    hookEnv.REAL_GIT = gitBin;
+  }
+
   const result = spawnSync("bash", ["cli/post-merge-build-dist.sh"], {
     cwd: repo,
     encoding: "utf8",
     env: {
-      ...process.env,
+      ...hookEnv,
       HOME: home,
       MANDIBLE_POST_MERGE_BUILD_COMMAND: 'printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
@@ -127,5 +147,15 @@ describe("post-merge build hook", () => {
     expect(result.stderr).not.toContain("[post-merge-build] installed managed instruction fragments");
     expect(fs.existsSync(result.tracePath)).toBe(false);
     expect(fs.existsSync(path.join(result.home, ".claude", "CLAUDE.md"))).toBe(false);
+  });
+
+  it("exits nonzero when git diff fails", () => {
+    const result = runHookAfterMerge("docs/note.md", true);
+
+    expect(result.status).toBe(42);
+    expect(result.stderr).toContain("injected git diff failure");
+    expect(result.stderr).not.toContain("skipping build");
+    expect(result.stderr).not.toContain("installed managed instruction fragments");
+    expect(fs.existsSync(result.tracePath)).toBe(false);
   });
 });
