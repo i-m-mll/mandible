@@ -1488,6 +1488,14 @@ describe("credential redact --patch-sources", () => {
     // the fragment it never removed, publishing a duplicated, corrupted line.
     // The rewind restores the checkpoint first, so there is nothing to
     // duplicate.
+    //
+    // This is the restoration-*succeeds* case, deliberately: the marker the
+    // fault keys on lives only in the writer's appended bytes, so the saved
+    // seam is written back through an undisturbed descriptor. The splice write
+    // is faulted after its truncate has already removed the open final line, so
+    // finding that line whole in the file at the end is what proves restoration
+    // ran rather than proving nothing was ever touched. The two tests below
+    // fault the restoration itself.
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
     const head = LEAKED_TOKEN.slice(0, 20);
@@ -1527,6 +1535,268 @@ describe("credential redact --patch-sources", () => {
       recovered_tail_bytes: 0,
       abandoned_tail_bytes: appended.length,
     });
+  });
+
+  /**
+   * Fault the two writes a failing seam splice makes, told apart by which
+   * marker their payload carries.
+   *
+   * `tailMarker` lives only in the writer's appended bytes, so it identifies
+   * the joined chunk the splice writes. `seamMarker` lives in the snapshot's
+   * open final line, so it identifies the saved seam the failure path writes
+   * back — the payload the fourth-pass seam test never touched, which is why
+   * restoration failure went untested. The joined chunk carries both markers
+   * and is matched first.
+   *
+   * `armed` gates everything: the pre-rename write of the replacement contains
+   * the whole masked snapshot and therefore both markers, and faulting that
+   * would abort the patch long before there is a seam to restore.
+   */
+  function spyOnSeamWrites(options: {
+    tailMarker: string;
+    seamMarker: string;
+    exemptFd: number;
+    armed: () => boolean;
+    restore: "short-then-fail" | "pass";
+  }) {
+    const realWriteSync = fs.writeSync.bind(fs);
+    let spliceHits = 0;
+    let restoreHits = 0;
+    const spy = vi.spyOn(fs, "writeSync").mockImplementation(((
+      fd: number,
+      buffer: NodeJS.ArrayBufferView,
+      ...rest: unknown[]
+    ) => {
+      const offset = typeof rest[0] === "number" ? rest[0] : 0;
+      const fullLength = Buffer.isBuffer(buffer) ? buffer.length : 0;
+      const length = typeof rest[1] === "number" ? rest[1] : fullLength - offset;
+      if (options.armed() && fd !== options.exemptFd && Buffer.isBuffer(buffer)) {
+        if (buffer.includes(options.tailMarker)) {
+          spliceHits += 1;
+          throw Object.assign(new Error("EIO"), { code: "EIO" });
+        }
+        if (buffer.includes(options.seamMarker)) {
+          restoreHits += 1;
+          if (options.restore === "short-then-fail") {
+            if (restoreHits > 1) throw Object.assign(new Error("EIO"), { code: "EIO" });
+            return realWriteSync(fd, buffer, offset, Math.max(1, Math.floor(length / 2)));
+          }
+        }
+      }
+      return realWriteSync(fd, buffer, offset, length);
+    }) as typeof fs.writeSync);
+    return { spy, spliceHits: () => spliceHits, restoreHits: () => restoreHits };
+  }
+
+  /** A snapshot whose open final line carries `marker` and half a token. */
+  function seamFixture(marker: string): { body: Buffer; seam: string; rest: string } {
+    const head = LEAKED_TOKEN.slice(0, 20);
+    const seam = `{"text":"${marker} split ${head}`;
+    return {
+      body: Buffer.from(`{"text":"first ${LEAKED_TOKEN}"}\n${seam}`, "latin1"),
+      seam,
+      rest: LEAKED_TOKEN.slice(20),
+    };
+  }
+
+  it("publishes no fragment when the seam restoration itself writes partially", () => {
+    // Fifth-pass item 1. Restoration used to be a bespoke `writeAll` inside the
+    // splice's failure handler, and a partial write there threw into a catch
+    // that swallowed it: the replacement kept whichever half of the open final
+    // line had landed, and the file was still reported patched. Both writes now
+    // go through the same checkpointed primitive, so a restoration that cannot
+    // complete leaves the file exactly at the rewind point instead.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const fixture = seamFixture("seam-restore-marker");
+    const file = writeSourceFile("rollout-seam-restore-partial.jsonl", fixture.body);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(`${fixture.rest}","note":"tail-write-marker"}\n`, "latin1");
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnSeamWrites({
+      tailMarker: "tail-write-marker",
+      seamMarker: "seam-restore-marker",
+      exemptFd: writerFd,
+      armed: rename.injected,
+      restore: "short-then-fail",
+    });
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    // The splice failed and the restoration then wrote half and threw: both
+    // halves of the scenario actually happened.
+    expect(write.spliceHits()).toBeGreaterThan(0);
+    expect(write.restoreHits()).toBeGreaterThan(1);
+    const mask = credentialMaskFor(credential.id);
+    const patched = fs.readFileSync(file).toString("latin1");
+    // Byte-verbatim the checkpoint the restoration started from: the completed
+    // records, and not one byte of the seam it could not put back.
+    expect(patched).toBe(`{"text":"first ${mask}"}\n`);
+    expect(patched).not.toContain(LEAKED_TOKEN);
+    expect(patched).not.toContain("seam-restore-marker");
+    // Honest accounting: the seam is no longer on the replacement, so it is
+    // counted with the tail as bytes that live only in the unlinked inode.
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length + fixture.seam.length,
+    });
+  });
+
+  it("counts a seam whose restoration fsync failed as abandoned, not as committed", () => {
+    // Fifth-pass item 1, the accounting half: the old handler advanced
+    // `committed` back over the seam as soon as the restoration write returned,
+    // before its fsync. An fsync that then failed left the file reported as
+    // holding bytes nothing had made durable, so the abandoned count came out
+    // short by exactly the open final line. Offsets now move only after the
+    // primitive's fsync returns.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const fixture = seamFixture("seam-fsync-marker");
+    const file = writeSourceFile("rollout-seam-restore-fsync.jsonl", fixture.body);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(`${fixture.rest}","note":"tail-fsync-marker"}\n`, "latin1");
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnSeamWrites({
+      tailMarker: "tail-fsync-marker",
+      seamMarker: "seam-fsync-marker",
+      exemptFd: writerFd,
+      armed: rename.injected,
+      restore: "pass",
+    });
+    // Armed by the splice failure, so the only fsyncs it sees are the ones the
+    // rollback and the restoration make.
+    const realFsyncSync = fs.fsyncSync.bind(fs);
+    let fsyncFailures = 0;
+    const fsyncSpy = vi.spyOn(fs, "fsyncSync").mockImplementation(((fd: number) => {
+      if (write.spliceHits() > 0) {
+        fsyncFailures += 1;
+        throw Object.assign(new Error("EIO"), { code: "EIO" });
+      }
+      return realFsyncSync(fd);
+    }) as typeof fs.fsyncSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fsyncSpy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(write.restoreHits()).toBe(1);
+    expect(fsyncFailures).toBeGreaterThan(0);
+    // The seam is counted with the tail, not written off as committed on the
+    // strength of a write whose fsync never returned.
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length + fixture.seam.length,
+    });
+    // The write landed but was never made durable, so it is rolled back like
+    // any other failed append rather than kept and called committed.
+    const mask = credentialMaskFor(credential.id);
+    expect(fs.readFileSync(file).toString("latin1")).toBe(`{"text":"first ${mask}"}\n`);
+  });
+
+  it("still closes the replacement and accounts for the tail when the old inode read fails", () => {
+    // Fifth-pass item 2. `readExactly` lets `fs.readSync` throw, and tail
+    // recovery calls it after the rename. An EIO there used to travel straight
+    // out of the command: past the mode restore, past the close of the
+    // descriptor the replacement was created with, and past every line of the
+    // report — so the operator got a stack trace while a published file sat
+    // there with its creation mode, a leaked descriptor, and no statement about
+    // the bytes that never made it across. One outer try/finally owns the
+    // descriptor from the open to the close, and the recovery accounting lives
+    // with the caller so it settles into a report either way.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-tail-eio.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"tail nobody can read ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const recovery = spyOnRecoveryAppendFd();
+    const rename = injectDuringRename(file, appended, writerFd);
+    // Armed by the rename, so the snapshot read and the pre-rename
+    // re-verification are untouched and the only read left is recovery's.
+    const realReadSync = fs.readSync.bind(fs);
+    let failedReads = 0;
+    const readSpy = vi.spyOn(fs, "readSync").mockImplementation(((
+      fd: number,
+      ...rest: unknown[]
+    ) => {
+      if (rename.injected() && failedReads === 0) {
+        failedReads += 1;
+        throw Object.assign(new Error("EIO"), { code: "EIO" });
+      }
+      return (realReadSync as (...args: unknown[]) => number)(fd, ...rest);
+    }) as typeof fs.readSync);
+    const realFchmodSync = fs.fchmodSync.bind(fs);
+    let modeAttempts = 0;
+    const fchmodSpy = vi.spyOn(fs, "fchmodSync").mockImplementation(((
+      fd: number,
+      mode: Parameters<typeof fs.fchmodSync>[1],
+    ) => {
+      modeAttempts += 1;
+      return realFchmodSync(fd, mode);
+    }) as typeof fs.fchmodSync);
+    const realCloseSync = fs.closeSync.bind(fs);
+    const closed: number[] = [];
+    const closeSpy = vi.spyOn(fs, "closeSync").mockImplementation(((fd: number) => {
+      closed.push(fd);
+      return realCloseSync(fd);
+    }) as typeof fs.closeSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      recovery.spy.mockRestore();
+      rename.spy.mockRestore();
+      readSpy.mockRestore();
+      fchmodSpy.mockRestore();
+      closeSpy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    // The read really did fail, and the command still returned a report.
+    expect(failedReads).toBe(1);
+    // The descriptor the replacement was created with is closed, and the mode
+    // restore was attempted rather than skipped.
+    expect(recovery.fd()).not.toBeNull();
+    expect(closed).toContain(recovery.fd());
+    expect(modeAttempts).toBe(1);
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    // Structured accounting instead of a bare throw: nothing was recovered, and
+    // the tail is reported as still living only in the unlinked inode.
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      failed_files: 0,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length,
+    });
+    // No partial garbage: byte-verbatim the patched snapshot.
+    const mask = credentialMaskFor(credential.id);
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
   });
 
   it("never publishes an empty file when the temp path is unlinked under it", () => {
