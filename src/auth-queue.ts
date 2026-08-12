@@ -377,11 +377,15 @@ const REFS_HEADS_PREFIX = "refs/heads/";
 // from the auth queue path entirely (cli/auth-merge.sh no longer accepts
 // `--hierarchical`). Approve-time canonical-command verification
 // (enforceCanonicalMergeCommand) refuses any such command shape — canonical
-// forms are single-source only — so nothing hierarchical-shaped can ever
-// execute. This regex survives for two narrow uses: a targeted refusal
-// message at approval, and the sibling-revalidation candidate refresh, which
-// runs without approve-time canonical enforcement on its path and must never
-// re-attest a hierarchical-shaped pending row stored by a raw submitter.
+// forms are single-source only — so every local daemon approval/execution
+// path refuses hierarchical-shaped commands. That guarantee is local-only:
+// remote-mode requests are executed by external runners outside this
+// enforcement, and update() still allows `command` edits after approval
+// (execution-field freezing is future work, issue fff66b9). This regex
+// survives for two narrow uses: a targeted refusal message at approval, and
+// the sibling-revalidation candidate refresh, which runs without approve-time
+// canonical enforcement on its path and must never re-attest a
+// hierarchical-shaped pending row stored by a raw submitter.
 const HIERARCHICAL_MERGE_COMMAND_RE = /(^|\s)--hierarchical(?:\s|$)/;
 
 // Issue 08a5f04 (review F1) — upper bound on the number of first-parent
