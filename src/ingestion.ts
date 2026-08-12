@@ -47,11 +47,191 @@ const WATCH_CONFIGS = [
 ];
 
 const DEBOUNCE_MS = 200;
+/** Floor between reconciles triggered by path-less watch events. */
+const UNNAMED_EVENT_RECONCILE_MIN_INTERVAL_MS = 60_000;
 export const RECONCILE_INTERVAL_MS = 60 * 60_000;
 export const DIRTY_INGEST_BATCH_SIZE = 16;
 export const MAX_DIRTY_INGEST_PATHS = 4096;
 const INGEST_TAIL_HASH_BYTES = 4096;
 export const INGEST_COMPRESSION_CONCURRENCY = 4;
+
+/** One recursive watch root: every glob that shares a base directory. */
+export interface WatchRoot {
+  base: string;
+  globs: string[];
+}
+
+/**
+ * Collapse watch configs that share a base directory into a single watch root.
+ *
+ * Bug: 4f7e45e — chokidar v4 dropped FSEvents, so watching these bases opened
+ * one `fs.watch` fd per matched file (11,675 fds against the real corpus) and
+ * pushed the daemon past its fd limit, making every subsequent spawn fail with
+ * EMFILE. Watch cost is now O(number of roots) instead of O(number of files),
+ * and grouping keeps it O(roots) rather than O(configs).
+ */
+export function groupWatchConfigs(
+  configs: ReadonlyArray<{ base: string; glob: string }>,
+): WatchRoot[] {
+  const roots = new Map<string, WatchRoot>();
+  for (const config of configs) {
+    const existing = roots.get(config.base);
+    if (!existing) {
+      roots.set(config.base, { base: config.base, globs: [config.glob] });
+      continue;
+    }
+    if (!existing.globs.includes(config.glob)) {
+      existing.globs.push(config.glob);
+    }
+  }
+  return Array.from(roots.values());
+}
+
+/** True when an absolute path under `base` matches any of the root's globs. */
+export function makeWatchRootMatcher(
+  base: string,
+  globs: readonly string[],
+): (filePath: string) => boolean {
+  const matchers = globs.map((glob) => makeWatchFileMatcher(base, glob));
+  return (filePath: string) => matchers.some((match) => match(filePath));
+}
+
+/**
+ * Resolve the absolute path carried by a recursive `fs.watch` event.
+ *
+ * Node reports `filename` relative to the watched base using "/" separators,
+ * including on macOS where the FSEvents backend strips the watched prefix even
+ * when the base itself resolves through a symlink. The watched directory emits
+ * its own basename for self-events; that never matches a file glob, so the
+ * caller's matcher filters it. Returns null when the platform omits the name.
+ */
+export function resolveWatchEventPath(base: string, filename: unknown): string | null {
+  const name = typeof filename === "string"
+    ? filename
+    : Buffer.isBuffer(filename)
+      ? filename.toString("utf8")
+      : null;
+  if (!name) return null;
+  if (path.isAbsolute(name)) return path.normalize(name);
+  return path.join(base, ...name.split("/"));
+}
+
+export interface ConversationWatchHandle {
+  /** Number of live watch roots — the fd budget of the watcher. */
+  readonly rootCount: number;
+  close(): Promise<void>;
+}
+
+export interface ConversationWatchOptions {
+  configs?: ReadonlyArray<{ base: string; glob: string }>;
+  /** Called with the absolute path of every event on a glob-matching file. */
+  onFile: (filePath: string) => void;
+  /** Called when a platform delivers an event without a path (events may be lost). */
+  onUnnamedEvent?: (base: string) => void;
+  log?: Logger;
+}
+
+/**
+ * Watch every conversation-source root recursively.
+ *
+ * Semantics match the previous chokidar wiring exactly: create, modify, and
+ * delete of a glob-matching file all funnel into the same `onFile` callback
+ * (the old code bound `add`, `change`, and `unlink` to one handler), so no
+ * event-type classification or existence stat is needed. Downstream ingestion
+ * already distinguishes present from missing sources, including the Codex
+ * archive relocation probe.
+ *
+ * Falls back to the previous per-glob chokidar watchers on platforms where
+ * recursive `fs.watch` is unavailable.
+ */
+export function watchConversationRoots(options: ConversationWatchOptions): ConversationWatchHandle {
+  const log = options.log ?? (() => {});
+  const configs = options.configs ?? WATCH_CONFIGS;
+  const closers: Array<() => Promise<void>> = [];
+  let rootCount = 0;
+
+  for (const root of groupWatchConfigs(configs)) {
+    if (!fs.existsSync(root.base)) {
+      log("debug", "ingestion_skip_missing_dir", { path: root.base });
+      continue;
+    }
+
+    const matches = makeWatchRootMatcher(root.base, root.globs);
+    const onError = (error: unknown) => {
+      log("warn", "ingestion_watcher_error", {
+        error: error instanceof Error ? error.message : String(error),
+        base: root.base,
+      });
+    };
+
+    let watcher: fs.FSWatcher | null = null;
+    try {
+      watcher = fs.watch(root.base, { recursive: true, persistent: true }, (_eventType, filename) => {
+        const filePath = resolveWatchEventPath(root.base, filename);
+        if (!filePath) {
+          options.onUnnamedEvent?.(root.base);
+          return;
+        }
+        if (matches(filePath)) {
+          options.onFile(filePath);
+        }
+      });
+    } catch (error) {
+      log("warn", "ingestion_watcher_recursive_unavailable", {
+        base: root.base,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (watcher) {
+      const active = watcher;
+      active.on("error", onError);
+      closers.push(async () => {
+        active.close();
+      });
+      rootCount += 1;
+      log("info", "ingestion_watcher_started", {
+        base: root.base,
+        globs: root.globs,
+        mode: "recursive",
+      });
+      continue;
+    }
+
+    for (const glob of root.globs) {
+      const matchesGlob = makeWatchFileMatcher(root.base, glob);
+      const fallback = chokidar.watch(root.base, {
+        ignoreInitial: true,
+        ignorePermissionErrors: true,
+        ignored: (watchedPath, stats) => {
+          if (!stats?.isFile()) {
+            return false;
+          }
+          return !matchesGlob(watchedPath);
+        },
+      });
+      const onWatchedFileEvent = (filePath: string) => {
+        if (matchesGlob(filePath)) {
+          options.onFile(filePath);
+        }
+      };
+      fallback.on("add", onWatchedFileEvent);
+      fallback.on("change", onWatchedFileEvent);
+      fallback.on("unlink", onWatchedFileEvent);
+      fallback.on("error", onError);
+      closers.push(() => fallback.close());
+      rootCount += 1;
+      log("info", "ingestion_watcher_started", { base: root.base, glob, mode: "chokidar" });
+    }
+  }
+
+  return {
+    rootCount,
+    async close(): Promise<void> {
+      await Promise.allSettled(closers.map((close) => close()));
+    },
+  };
+}
 
 interface StagedCompressedContents {
   readonly length: number;
@@ -132,8 +312,8 @@ export async function stageCompressedBlockContents(
 
 // --- State ---
 
-type ChokidarWatcher = ReturnType<typeof chokidar.watch>;
-let watchers: ChokidarWatcher[] = [];
+let conversationWatch: ConversationWatchHandle | null = null;
+let lastUnnamedEventReconcileAt = 0;
 let reconcileTimer: ReturnType<typeof setInterval> | null = null;
 let logger: Logger = () => {};
 let eventPublisher: (event: string, data: unknown) => void = broadcast;
@@ -328,42 +508,23 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
     watch_paths: WATCH_CONFIGS.map((c) => c.base),
   });
 
-  for (const config of WATCH_CONFIGS) {
-    if (!fs.existsSync(config.base)) {
-      logger("debug", "ingestion_skip_missing_dir", { path: config.base });
-      continue;
-    }
-
-    const matchWatchedFile = makeWatchFileMatcher(config.base, config.glob);
-    const watcher = chokidar.watch(config.base, {
-      ignoreInitial: true,
-      ignorePermissionErrors: true,
-      ignored: (watchedPath, stats) => {
-        if (!stats?.isFile()) {
-          return false;
-        }
-        return !matchWatchedFile(watchedPath);
-      },
-    });
-
-    const onWatchedFileEvent = (filePath: string) => {
-      if (matchWatchedFile(filePath)) {
-        debouncedIngest(filePath);
+  lastUnnamedEventReconcileAt = 0;
+  conversationWatch = watchConversationRoots({
+    log: logger,
+    onFile: (filePath) => debouncedIngest(filePath),
+    onUnnamedEvent: (base) => {
+      // A path-less event means the platform coalesced or dropped the name, so
+      // the changed file is unknown; fall back to a throttled full reconcile
+      // rather than silently skipping the change.
+      const now = Date.now();
+      if (now - lastUnnamedEventReconcileAt < UNNAMED_EVENT_RECONCILE_MIN_INTERVAL_MS) {
+        return;
       }
-    };
-    watcher.on("add", onWatchedFileEvent);
-    watcher.on("change", onWatchedFileEvent);
-    watcher.on("unlink", onWatchedFileEvent);
-    watcher.on("error", (error: unknown) => {
-      logger("warn", "ingestion_watcher_error", {
-        error: error instanceof Error ? error.message : String(error),
-        base: config.base,
-      });
-    });
-
-    watchers.push(watcher);
-    logger("info", "ingestion_watcher_started", { base: config.base, glob: config.glob });
-  }
+      lastUnnamedEventReconcileAt = now;
+      logger("debug", "ingestion_watch_event_without_path", { base });
+      scheduleReconcile();
+    },
+  });
 
   // Run initial reconciliation to pick up files that already exist
   scheduleReconcile(true);
@@ -387,8 +548,8 @@ export async function stopIngestionGracefully(): Promise<void> {
   logger("info", "ingestion_stopping");
   ingestionActive = false;
   ingestionRunToken++;
-  const closingWatchers = watchers.map((watcher) => watcher.close());
-  watchers = [];
+  const closingWatch = conversationWatch?.close() ?? Promise.resolve();
+  conversationWatch = null;
 
   if (reconcileTimer) {
     clearInterval(reconcileTimer);
@@ -407,7 +568,7 @@ export async function stopIngestionGracefully(): Promise<void> {
   ingestionActor = null;
   const pendingDrain = ingestDrainPromise;
   const pendingReconcile = reconcilePromise;
-  await Promise.allSettled(closingWatchers);
+  await Promise.allSettled([closingWatch]);
   await actor?.close();
   await Promise.allSettled([pendingDrain, pendingReconcile].filter((pending): pending is Promise<void> => Boolean(pending)));
 }
