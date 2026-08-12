@@ -155,6 +155,7 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'graph',
   'timeline',
   'spaces',
+  'briefing',
 ];
 
 const loadAuthQueueView = () =>
@@ -181,6 +182,8 @@ const loadSpacesTab = () =>
   import('./views/spaces/SpacesTab').then((module) => ({ default: module.SpacesTab }));
 const loadSessionOverviewView = () =>
   import('./views/session-overview').then((module) => ({ default: module.SessionOverviewView }));
+const loadBriefingView = () =>
+  import('./views/briefing').then((module) => ({ default: module.BriefingView }));
 
 const LazyAuthQueueView = lazy(loadAuthQueueView);
 const LazyArtifactsView = lazy(loadArtifactsView);
@@ -194,6 +197,7 @@ const LazyGraphView = lazy(loadGraphView);
 const LazyTimelineView = lazy(loadTimelineView);
 const LazySpacesTab = lazy(loadSpacesTab);
 const LazySessionOverviewView = lazy(loadSessionOverviewView);
+const LazyBriefingView = lazy(loadBriefingView);
 
 const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>> = {
   auth: loadAuthQueueView,
@@ -208,11 +212,13 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
   timeline: loadTimelineView,
   spaces: loadSpacesTab,
   overview: loadSessionOverviewView,
+  briefing: loadBriefingView,
 };
 
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
   bottomPanel: null,
   registerBottomPanel: () => () => undefined,
+  active: false,
 };
 
 type SpacesLastView = {
@@ -399,6 +405,18 @@ function SpacesIcon({ size = 18 }: { size?: number }): JSX.Element {
       <rect x="14" y="3" width="7" height="7" rx="1" />
       <rect x="3" y="14" width="7" height="7" rx="1" />
       <rect x="14" y="14" width="7" height="7" rx="1" />
+    </svg>
+  );
+}
+
+function BriefingIcon({ size = 18 }: { size?: number }): JSX.Element {
+  // Lucide-style "newspaper": the Briefing is a reviewed daily report.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 4h13a1 1 0 0 1 1 1v13a2 2 0 0 0 2 2H5a2 2 0 0 1-2-2V5a1 1 0 0 1 1-1z" />
+      <path d="M7 8h7" />
+      <path d="M7 12h7" />
+      <path d="M7 16h4" />
     </svg>
   );
 }
@@ -609,6 +627,7 @@ function App(): JSX.Element {
   const appShellContext = useMemo<AppShellContextValue>(() => ({
     bottomPanel,
     registerBottomPanel,
+    active: true,
   }), [bottomPanel, registerBottomPanel]);
 
   useEffect(() => updateRootAppTheme(state.settings.app_theme), [state.settings.app_theme]);
@@ -1698,6 +1717,18 @@ function App(): JSX.Element {
       icon: SpacesIcon,
     },
     {
+      tab: 'briefing',
+      href: '#/briefing',
+      label: 'Briefing',
+      title: 'Briefing',
+      // Umbrella 99b74d6 — the pending-candidate count is server-authoritative
+      // (contract v1 §4). There is no client-derived fallback, so an absent
+      // count renders no badge rather than a fabricated zero.
+      badge: badges.briefing,
+      badgeClass: 'tab-badge--briefing',
+      icon: BriefingIcon,
+    },
+    {
       tab: 'inbox',
       href: '#/inbox',
       label: 'Inbox',
@@ -2105,6 +2136,16 @@ function App(): JSX.Element {
               initialSessionId={tabRoute.params.session ?? null}
               agentBinding={agentPageBinding}
               iabDetected={codexIabDetected}
+            />
+          );
+        })())}
+        {renderTabPanel('briefing', (() => {
+          const tabRoute = routeForTab('briefing', route, tabRouteSnapshots);
+          return (
+            <LazyBriefingView
+              instance={instanceInfo}
+              initialFilter={tabRoute.params.filter}
+              initialCandidateId={tabRoute.params.candidate ?? null}
             />
           );
         })())}
