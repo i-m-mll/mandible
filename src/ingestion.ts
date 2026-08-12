@@ -22,8 +22,11 @@ import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
 import {
   maskActiveCredentialsInText,
+  maskAllCandidatesInBlocks,
+  maskUnverifiedCandidates,
   redactCredentialLeaksInBlocks,
 } from "./credential-leak-scan.js";
+import { conversationBlockId } from "./conversation-block-id.js";
 import {
   ingestClaudeWorkflowArtifact,
   isClaudeWorkflowJournalPath,
@@ -1261,11 +1264,13 @@ function insertedBlockPayload(
   conversationId: string,
   block: Omit<ConversationBlock, "id" | "conversation_id">,
 ): Omit<ConversationBlock, "metadata"> & { metadata_json: string } {
-  const id = crypto
-    .createHash("sha256")
-    .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-    .digest("hex")
-    .slice(0, 16);
+  const id = conversationBlockId({
+    conversation_id: conversationId,
+    type: block.type,
+    timestamp: block.timestamp,
+    content: block.content,
+    position: block.position,
+  });
   return {
     id,
     conversation_id: conversationId,
@@ -1728,6 +1733,27 @@ async function ingestFile(
   if (isDeltaAppend && newBlocks.length === 0) {
     // Hash changed but no new blocks — metadata-only change (title, timestamps, etc.)
     // Update conversation metadata and return.
+    //
+    // Issue b3e4a09: this early return still writes derived text, so it needs
+    // the same masking as the main path below — a token pasted into the first
+    // user message reaches the conversations row through here too.
+    try {
+      result.conversation.title = maskActiveCredentialsInText(db, result.conversation.title).text;
+      if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+        result.conversation.summary =
+          maskActiveCredentialsInText(db, result.conversation.summary).text;
+      }
+    } catch (error) {
+      result.conversation.title = maskUnverifiedCandidates(result.conversation.title ?? "").text;
+      if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+        result.conversation.summary = maskUnverifiedCandidates(result.conversation.summary).text;
+      }
+      logger("error", "credential_leak_scan_failed", {
+        file: filePath,
+        error: String(error),
+        stage: "metadata_only_update",
+      });
+    }
     db.prepare(`
       UPDATE conversations SET
         source_hash = ?, source_mtime = ?,
@@ -1779,6 +1805,12 @@ async function ingestFile(
   // the same file against the same credential table reproduces identical block
   // content and identical block ids.
   //
+  // Masking covers block.metadata as well as block.content: the parsers copy
+  // tool arguments and short tool results into metadata (tool_input,
+  // tool_output), and that object is serialized into metadata_json below and
+  // into the append SSE payload further down, so content-only masking left the
+  // plaintext in both (review finding 1).
+  //
   // This runs before persistence rather than after (where the scan-only call
   // used to live): a rolled-back insert can now leave an alert whose block never
   // landed, which is the safe direction — the leak is real in the source file
@@ -1807,13 +1839,23 @@ async function ingestFile(
       },
     );
     const metadataSpans = maskedTitle.replacements + maskedSummary.replacements;
-    if (redaction.redacted_spans > 0 || metadataSpans > 0) {
+    const unverifiedSpans = redaction.unverified_spans
+      + maskedTitle.unverified_replacements
+      + maskedSummary.unverified_replacements;
+    if (redaction.redacted_spans > 0 || metadataSpans > 0 || unverifiedSpans > 0) {
       logger("warn", "credential_leak_redacted_at_ingest", {
         file: filePath,
         conversation: conversationId,
         redacted_blocks: redaction.redacted_blocks,
         redacted_spans: redaction.redacted_spans,
         redacted_metadata_spans: metadataSpans,
+        // Fail-closed masking: spans the scan could not verify (budget exhausted
+        // or verification unavailable) are masked rather than stored.
+        unverified_spans: unverifiedSpans,
+        verification_failed: redaction.verification_failed
+          || maskedTitle.verification_failed
+          || maskedSummary.verification_failed,
+        alert_failures: redaction.alert_failures,
       });
     }
     for (const leak of redaction.detections) {
@@ -1826,9 +1868,20 @@ async function ingestFile(
       });
     }
   } catch (error) {
-    logger("warn", "credential_leak_scan_failed", {
+    // The scanner already fails closed internally, so reaching here means
+    // something upstream of it broke. Persisting the parsed text as-is would
+    // still be the one outcome that must never happen, so every token-shaped
+    // span goes in masked and unverified (review finding 3).
+    const masked = maskAllCandidatesInBlocks(newBlocks);
+    const maskedTitle = maskUnverifiedCandidates(result.conversation.title ?? "");
+    if (maskedTitle.replacements > 0) result.conversation.title = maskedTitle.text;
+    const maskedSummary = maskUnverifiedCandidates(result.conversation.summary ?? "");
+    if (maskedSummary.replacements > 0) result.conversation.summary = maskedSummary.text;
+    logger("error", "credential_leak_scan_failed", {
       file: filePath,
       error: String(error),
+      masked_blocks: masked.blocks,
+      unverified_spans: masked.spans + maskedTitle.replacements + maskedSummary.replacements,
     });
   }
 
@@ -1936,11 +1989,13 @@ async function ingestFile(
       // them → UNIQUE constraint fails → entire transaction rolls back → file stuck
       // in perpetual re-ingest loop. Position is stable: it's the block's index within
       // the conversation and never changes for already-ingested blocks.
-      const blockHash = crypto
-        .createHash("sha256")
-        .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-        .digest("hex")
-        .slice(0, 16);
+      const blockHash = conversationBlockId({
+        conversation_id: conversationId,
+        type: block.type,
+        timestamp: block.timestamp,
+        content: block.content,
+        position: block.position,
+      });
 
       insertBlock.run(
         blockHash,
@@ -1977,6 +2032,28 @@ async function ingestFile(
         return;
       }
       try {
+        // Recovery re-inserts every block of this fresh parse, including the
+        // ones the masking pass above skipped as already indexed. Mask the full
+        // set first — the mask is idempotent, so this is a no-op for blocks
+        // already handled, and it stops recovery from reintroducing plaintext
+        // an earlier ingest had masked (issue b3e4a09).
+        try {
+          redactCredentialLeaksInBlocks(db, result.blocks, {
+            conversation_id: conversationId,
+            conversation_title: result.conversation.title,
+            session_id: result.conversation.session_id,
+            source: result.conversation.source,
+            branch: result.conversation.branch,
+          });
+        } catch (maskError) {
+          const masked = maskAllCandidatesInBlocks(result.blocks);
+          logger("error", "credential_leak_scan_failed", {
+            file: filePath,
+            error: String(maskError),
+            stage: "unique_recovery",
+            unverified_spans: masked.spans,
+          });
+        }
         // Re-stage every block for the clean recovery transaction.
         const recoveryCompressedContents = await stageCompressedBlockContents(
           result.blocks.map((block) => block.content),
@@ -1993,11 +2070,13 @@ async function ingestFile(
             }
             // Also purge any blocks that share IDs with the blocks we're about to insert
             // (orphaned blocks from a prior failed transaction that FK-disabled DB didn't cascade)
-            const newIds = result.blocks.map((block) =>
-              crypto.createHash("sha256")
-                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-                .digest("hex").slice(0, 16)
-            );
+            const newIds = result.blocks.map((block) => conversationBlockId({
+              conversation_id: conversationId,
+              type: block.type,
+              timestamp: block.timestamp,
+              content: block.content,
+              position: block.position,
+            }));
             if (newIds.length > 0) {
               const placeholders = newIds.map(() => "?").join(",");
               db.prepare(`DELETE FROM conversation_blocks WHERE id IN (${placeholders})`).run(...newIds);
@@ -2048,11 +2127,13 @@ async function ingestFile(
             `);
             for (let i = 0; i < result.blocks.length; i++) {
               const block = result.blocks[i];
-              const blockHash = crypto
-                .createHash("sha256")
-                .update(conversationId + block.type + (block.timestamp || "") + (block.content || "").slice(0, 100) + String(block.position))
-                .digest("hex")
-                .slice(0, 16);
+              const blockHash = conversationBlockId({
+                conversation_id: conversationId,
+                type: block.type,
+                timestamp: block.timestamp,
+                content: block.content,
+                position: block.position,
+              });
               insertBlock2.run(
                 blockHash, conversationId, block.type, block.role,
                 recoveryCompressedContents.read(i), block.position,
