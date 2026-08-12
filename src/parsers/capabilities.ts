@@ -38,6 +38,7 @@ export const PARSER_CAPABILITIES: ParserCapability[] = [
       "Tool names are stored in metadata.tool_name.",
       "Incremental ingestion parses complete appended JSONL records and falls back on cross-chunk tool links.",
       "Hidden token_count event blocks may carry exact metadata.context_usage from total_token_usage and model_context_window.",
+      "Archived rollouts under archived_sessions are watched and parsed; `codex archive`/`codex unarchive` is tracked as a source move, not a deletion.",
     ],
   },
   {
