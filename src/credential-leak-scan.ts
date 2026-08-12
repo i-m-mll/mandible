@@ -266,6 +266,52 @@ export function unverifiedCredentialMask(occurrence: number): string {
   return `[mandible-credential:unverified#${occurrence}]`;
 }
 
+/** Literal prefix of an unverified mask, used to skip the scan on most texts. */
+const UNVERIFIED_MASK_MARKER = "[mandible-credential:unverified#";
+
+/** Matches an unverified mask already sitting in the text as literal bytes. */
+function unverifiedMaskPattern(): RegExp {
+  return /\[mandible-credential:unverified#(\d+)\]/g;
+}
+
+interface UnverifiedMaskNamespace {
+  /** Highest safe-integer occurrence already present as literal text. */
+  floor: number;
+  /** Every occurrence string already present, including unsafe-integer ones. */
+  taken: ReadonlySet<string>;
+}
+
+const EMPTY_UNVERIFIED_NAMESPACE: UnverifiedMaskNamespace = { floor: 0, taken: new Set() };
+
+/**
+ * What unverified-mask occurrence numbers this text already spells out.
+ *
+ * The mask is plain text, so a transcript can contain the literal bytes of one
+ * — including one an attacker typed. Numbering that always restarted at 1
+ * collided with those literals (issue b3e4a09, third-pass finding 4): metadata
+ * carrying both a literal `[mandible-credential:unverified#1]` key and one
+ * token-shaped key masked the latter to the same string, and `JSON.parse` keeps
+ * only the last of two identical keys, so one property was silently dropped —
+ * the exact structural loss the discriminator was added to prevent.
+ *
+ * Both halves of the namespace are recorded. `floor` is where fresh numbering
+ * starts, and `taken` catches literals whose digits are outside safe-integer
+ * range, which `floor` alone cannot order. Both are pure functions of the text,
+ * so re-ingesting the same source still reproduces byte-identical output and
+ * block ids stay stable.
+ */
+function unverifiedMaskNamespace(text: string): UnverifiedMaskNamespace {
+  if (!text.includes(UNVERIFIED_MASK_MARKER)) return EMPTY_UNVERIFIED_NAMESPACE;
+  const taken = new Set<string>();
+  let floor = 0;
+  for (const match of text.matchAll(unverifiedMaskPattern())) {
+    taken.add(match[1]);
+    const value = Number(match[1]);
+    if (Number.isSafeInteger(value) && value > floor) floor = value;
+  }
+  return { floor, taken };
+}
+
 /**
  * Replace every token-shaped span that is not known clean.
  *
@@ -273,21 +319,29 @@ export function unverifiedCredentialMask(occurrence: number): string {
  * those were hashed and positively cleared, so over-masking them would destroy
  * legitimate transcript text for no security gain.
  *
- * Numbering restarts at 1 for each call, so a block's `content` and its
- * serialized `metadata` are numbered independently. That is still deterministic
- * — each is a fixed function of its own text — and it keeps the two fields from
- * depending on each other's scan order.
+ * Numbering restarts for each call, so a block's `content` and its serialized
+ * `metadata` are numbered independently. That is still deterministic — each is a
+ * fixed function of its own text — and it keeps the two fields from depending on
+ * each other's scan order. Within one text, numbering starts above any literal
+ * unverified mask the text already contains and skips occurrence strings it
+ * already spells out, so a freshly masked span can never land on a key that was
+ * already there.
  */
 export function maskUnverifiedCandidates(
   text: string,
   isKnownClean: (candidate: string) => boolean = () => false,
 ): { text: string; replacements: number } {
   if (!text.includes(API_TOKEN_PREFIX)) return { text, replacements: 0 };
+  const namespace = unverifiedMaskNamespace(text);
+  let occurrence = namespace.floor;
   let replacements = 0;
   const next = text.replace(credentialCandidatePattern(), (match) => {
     if (isKnownClean(match)) return match;
     replacements += 1;
-    return unverifiedCredentialMask(replacements);
+    do {
+      occurrence += 1;
+    } while (namespace.taken.has(String(occurrence)));
+    return unverifiedCredentialMask(occurrence);
   });
   return { text: next, replacements };
 }

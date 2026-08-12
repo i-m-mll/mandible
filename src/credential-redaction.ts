@@ -34,7 +34,7 @@ import {
 } from "./credential-leak-scan.js";
 import { API_TOKEN_PREFIX, fingerprintForToken } from "./client-auth/tokens.js";
 import { compressContent, decompressContent } from "./compression.js";
-import { conversationBlockId } from "./conversation-block-id.js";
+import { assignConversationBlockIds, conversationBlockId } from "./conversation-block-id.js";
 import { getDaemonLogger } from "./daemon-log.js";
 import type { Db } from "./db.js";
 import { UserRegistryError } from "./users/store.js";
@@ -113,8 +113,18 @@ export interface CredentialRedactionReport {
   redacted_conversations: number;
   /** Blocks whose id was recomputed from the masked content (see below). */
   renumbered_blocks: number;
-  /** Blocks whose recomputed id was already taken, so the old id was kept. */
+  /**
+   * Blocks whose recomputed id was already taken. The affected conversation's
+   * ids are then re-derived as a whole, the way the next full ingest derives
+   * them, so a conflict is a resolved event rather than a kept-stale id.
+   */
   id_conflicts: number;
+  /**
+   * Blocks a conflict left on an id no ingest can re-derive, because the
+   * conversation-wide re-derivation could not be applied. Non-zero means the
+   * index and a future re-ingest will disagree about those ids.
+   */
+  unresolved_id_conflicts: number;
   /** Leak alerts repointed from a renumbered block id to its new id. */
   remapped_leak_alerts: number;
   truncated: boolean;
@@ -287,6 +297,67 @@ function sourceUnchanged(fd: number, filePath: string, snapshot: Buffer): boolea
   }
 }
 
+/** Write every byte of `buffer` to `fd`, or throw. */
+function writeAll(fd: number, buffer: Buffer): void {
+  let written = 0;
+  while (written < buffer.length) {
+    const chunk = fs.writeSync(fd, buffer, written, buffer.length - written);
+    // A zero-length write is not progress; treating it as one would spin
+    // forever, and treating a short write as complete is how the old code lost
+    // the remainder of a tail while reporting it recovered.
+    if (chunk <= 0) throw new Error("short write");
+    written += chunk;
+  }
+}
+
+interface TailRecoveryInput {
+  /** Read-only descriptor on the inode the rename unlinked. */
+  fd: number;
+  /** Append descriptor on the replacement file, held across the rename. */
+  outFd: number;
+  /** Old-inode offset the snapshot ended at. */
+  fromOffset: number;
+  /**
+   * The snapshot's bytes after its last newline, unmasked. Empty when the
+   * snapshot ended on a line boundary.
+   */
+  openTail: string;
+  /** Byte length that same region occupies in the already-written replacement. */
+  writtenOpenTailLength: number;
+  /** Exactly the bytes occupying that region, for restoring a failed splice. */
+  writtenOpenTail: string;
+  pepper: string;
+  fingerprint: string;
+  mask: string;
+}
+
+/**
+ * Why the post-rename tail is spliced rather than refused.
+ *
+ * The simpler shape — notice after the rename that the old inode grew, declare
+ * an active writer, refuse the file, and tell the operator to re-run when idle
+ * — was evaluated and rejected, because at that point refusal is not deferral.
+ * The rename unlinked the old inode: it has no path any more. Its tail is
+ * reachable only through the descriptor this code is holding, and when that
+ * descriptor closes the bytes are gone for good. A later re-run reads the
+ * patched file, which never contained them. So "refuse and re-run" converges on
+ * a transcript that is permanently missing every event the writer produced
+ * during the window — the opposite of this command's stated contract that every
+ * byte outside a verified span survives.
+ *
+ * Putting the file back is worse still. There is no path to rename the old
+ * inode to, so restoring means writing the snapshot to the path again — and the
+ * snapshot is the version containing the live credential. A redaction tool
+ * cannot answer a race by rewriting the secret it was asked to remove.
+ *
+ * Refusal before the rename is a different question and is already the policy:
+ * a file that changed between the snapshot and the pre-rename re-verification
+ * restarts the cycle, and after MAX_PATCH_ATTEMPTS it is refused untouched.
+ * That is where "the writer is hot, come back later" belongs, because there the
+ * original is still intact at its path. Everything below deals only with the
+ * residue that no pre-rename check can cover.
+ */
+
 /**
  * Carry bytes appended to the old inode after the rename onto the new file.
  *
@@ -306,18 +377,42 @@ function sourceUnchanged(fd: number, filePath: string, snapshot: Buffer): boolea
  * Appends stop at a line boundary and the partial remainder is carried into the
  * next round, so a token split across two reads is never half-masked. JSONL
  * records cannot contain a raw newline, so a line boundary is a safe cut.
+ *
+ * The same cut argument extends backwards across the splice (issue b3e4a09,
+ * third-pass finding 2). A snapshot that does not end in a newline ends mid
+ * record, and the writer's next bytes continue *that* record: a token can be
+ * split with its first characters in the snapshot and the rest in the tail, and
+ * scanning the two halves separately matches neither, so a direct join
+ * reassembles working plaintext. Recovery therefore treats the snapshot's open
+ * final line as part of the first recovered chunk — it truncates that region
+ * back off the replacement and rewrites the joined region as one masked text.
+ *
+ * The join itself stays byte-faithful: nothing is inserted at the seam. That is
+ * not a convenience, it is what the old inode actually holds. The writer's
+ * descriptor was positioned at end-of-file, so its bytes land immediately after
+ * the snapshot's last byte with no separator; the concatenation this function
+ * writes is exactly the byte sequence a reader of the unlinked inode would see.
+ * Inserting a newline to "terminate" the open record would fabricate a record
+ * boundary that never existed and split one JSON object into two invalid ones.
+ *
+ * Offsets advance only after an append is proven complete. `committed` is the
+ * old-inode offset of the first byte not yet durably on the replacement, so a
+ * failed open, a failed write, a short write, or a failed fsync leaves those
+ * bytes counted as abandoned instead of vanishing behind a zero report.
  */
 function recoverAppendedTail(
-  fd: number,
-  filePath: string,
-  fromOffset: number,
-  pepper: string,
-  fingerprint: string,
-  mask: string,
+  input: TailRecoveryInput,
 ): { bytes: number; replacements: number; abandoned: number } {
-  let offset = fromOffset;
-  let carried = "";
-  let bytes = 0;
+  const { fd, outFd, fromOffset, openTail, pepper, fingerprint, mask } = input;
+  // `carried` is always the contiguous uncommitted region starting at
+  // `committed`, so `committed + carried.length === readCursor` holds
+  // throughout. It is seeded with the snapshot's open final line so the seam is
+  // masked as one text.
+  let committed = fromOffset - openTail.length;
+  let readCursor = fromOffset;
+  let carried = openTail;
+  let joined = false;
+  let failed = false;
   let replacements = 0;
 
   const appendMasked = (chunk: string): boolean => {
@@ -325,19 +420,40 @@ function recoverAppendedTail(
     const masked = maskCredentialInText(chunk, pepper, fingerprint, mask, {
       conservative: true,
     });
-    replacements += masked.replacements;
+    let truncatedNow = false;
     try {
-      const out = fs.openSync(filePath, "a");
-      try {
-        fs.writeSync(out, Buffer.from(masked.text, "latin1"));
-        fs.fsyncSync(out);
-      } finally {
-        fs.closeSync(out);
+      if (!joined) {
+        // Drop the open final line from the replacement; the masked join below
+        // rewrites it. Masking is done first, so the only work left after the
+        // truncate is the write itself.
+        if (input.writtenOpenTailLength > 0) {
+          const size = fs.fstatSync(outFd).size;
+          fs.ftruncateSync(outFd, Math.max(0, size - input.writtenOpenTailLength));
+          truncatedNow = true;
+        }
+        joined = true;
       }
+      writeAll(outFd, Buffer.from(masked.text, "latin1"));
+      fs.fsyncSync(outFd);
     } catch {
+      if (truncatedNow) {
+        // The splice attempt must not cost bytes that were already safely on
+        // the replacement. Put the open final line back exactly as it was
+        // written; if even that fails, `committed` still sits below the
+        // snapshot's end, so those bytes are counted as abandoned rather than
+        // quietly dropped.
+        try {
+          writeAll(outFd, Buffer.from(input.writtenOpenTail, "latin1"));
+          fs.fsyncSync(outFd);
+          committed += input.openTail.length;
+        } catch {
+          // Reported through the abandoned count below.
+        }
+      }
       return false;
     }
-    bytes += chunk.length;
+    replacements += masked.replacements;
+    committed += chunk.length;
     return true;
   };
 
@@ -348,32 +464,43 @@ function recoverAppendedTail(
     } catch {
       break;
     }
-    if (size <= offset) break;
-    const chunk = readExactly(fd, offset, size - offset);
+    if (size <= readCursor) break;
+    const chunk = readExactly(fd, readCursor, size - readCursor);
     if (chunk === null) break;
-    offset = size;
+    readCursor = size;
     const buffered = carried + chunk.toString("latin1");
     const cut = buffered.lastIndexOf("\n");
     if (cut < 0) {
       carried = buffered;
       continue;
     }
+    if (!appendMasked(buffered.slice(0, cut + 1))) {
+      failed = true;
+      break;
+    }
     carried = buffered.slice(cut + 1);
-    if (!appendMasked(buffered.slice(0, cut + 1))) break;
   }
 
   // Whatever is still buffered is a partial final line. It is flushed rather
   // than dropped: a transcript that ends mid-line is the normal state of a file
   // being written to, while a dropped remainder is bytes gone for good.
-  if (carried.length > 0) appendMasked(carried);
+  //
+  // Not after a failed append, though: `carried` still holds the region that
+  // append was carrying, so flushing it here would write those bytes a second
+  // time. Once a write to the replacement has failed, recovery is over and the
+  // remainder is reported.
+  if (!failed && carried.length > 0 && !appendMasked(carried)) failed = true;
 
+  // Nothing was ever appended, so the snapshot's open final line is still on
+  // the replacement untouched and is not an abandoned byte.
+  const accountedFrom = joined ? committed : Math.max(committed, fromOffset);
   let abandoned = 0;
   try {
-    abandoned = Math.max(0, fs.fstatSync(fd).size - offset);
+    abandoned = Math.max(0, fs.fstatSync(fd).size - accountedFrom);
   } catch {
     abandoned = 0;
   }
-  return { bytes, replacements, abandoned };
+  return { bytes: Math.max(0, committed - fromOffset), replacements, abandoned };
 }
 
 /**
@@ -386,8 +513,10 @@ function recoverAppendedTail(
  *
  * The write is temp-plus-rename within the same directory, so a reader either
  * sees the whole old file or the whole new one, and the original mode is
- * carried over. mtime is deliberately NOT preserved: the next ingest should see
- * the file as changed and re-index the redacted content.
+ * carried over — restored at the end, because tail recovery has to be able to
+ * append to a replacement whose source was read-only. mtime is deliberately NOT
+ * preserved: the next ingest should see the file as changed and re-index the
+ * redacted content.
  *
  * Transcripts are appended to while an agent is running, so the snapshot the
  * replacement was built from can be stale by the time it would be renamed into
@@ -501,8 +630,28 @@ function patchThroughDescriptor(
       // Best effort: a leftover temp file is not worth failing the report over.
     }
   };
+  const finalMode = stat.mode & 0o777;
+  // The replacement is created owner-writable regardless of the original mode,
+  // and the append descriptor for tail recovery is opened on it *before* the
+  // rename (issue b3e4a09, third-pass finding 1). A 0400 source in a writable
+  // directory used to defeat recovery outright: temp creation and rename both
+  // succeeded, then reopening the replacement to append failed, so the old
+  // inode's tail was dropped while the report said recovered=0, abandoned=0.
+  // Holding the descriptor also means recovery appends onto the file this run
+  // produced even if some other process replaces the path in between.
+  const writableMode = finalMode | 0o200;
+  let outFd: number | null = null;
+  const closeOut = (): void => {
+    if (outFd === null) return;
+    try {
+      fs.closeSync(outFd);
+    } catch {
+      // A close failure on an already-fsynced descriptor changes nothing.
+    }
+    outFd = null;
+  };
   try {
-    const handle = fs.openSync(tempPath, "wx", stat.mode & 0o777);
+    const handle = fs.openSync(tempPath, "wx", writableMode);
     try {
       fs.writeFileSync(handle, Buffer.from(masked.text, "latin1"));
       fs.fsyncSync(handle);
@@ -510,13 +659,16 @@ function patchThroughDescriptor(
       fs.closeSync(handle);
     }
     // openSync's mode argument is masked by umask; chmod is not.
-    fs.chmodSync(tempPath, stat.mode & 0o777);
+    fs.chmodSync(tempPath, writableMode);
+    outFd = fs.openSync(tempPath, "a");
   } catch {
+    closeOut();
     discardTemp();
     return patchOutcome("failed");
   }
 
   if (!sourceUnchanged(fd, filePath, original)) {
+    closeOut();
     discardTemp();
     redactionLog("warn", "credential_redaction_source_changed", {
       file: filePath,
@@ -528,13 +680,35 @@ function patchThroughDescriptor(
   try {
     fs.renameSync(tempPath, filePath);
   } catch {
+    closeOut();
     discardTemp();
     return patchOutcome("failed");
   }
 
-  // The descriptor is still open on the now-unlinked inode, which is the only
-  // way to see anything a writer appended inside the verify-to-rename window.
-  const tail = recoverAppendedTail(fd, filePath, original.length, pepper, fingerprint, mask);
+  // The read descriptor is still open on the now-unlinked inode, which is the
+  // only way to see anything a writer appended inside the verify-to-rename
+  // window; `outFd` is the replacement, opened before its mode was restored.
+  const lastNewline = original.lastIndexOf(0x0a);
+  const openTail = original.toString("latin1").slice(lastNewline + 1);
+  const maskedLastNewline = masked.text.lastIndexOf("\n");
+  const tail = recoverAppendedTail({
+    fd,
+    outFd,
+    fromOffset: original.length,
+    openTail,
+    writtenOpenTail: masked.text.slice(maskedLastNewline + 1),
+    writtenOpenTailLength: masked.text.length - (maskedLastNewline + 1),
+    pepper,
+    fingerprint,
+    mask,
+  });
+  closeOut();
+  try {
+    fs.chmodSync(filePath, finalMode);
+  } catch {
+    // The bytes are already in place; a mode that could not be restored is
+    // reported through the file's own metadata, not by discarding the patch.
+  }
   if (tail.bytes > 0 || tail.abandoned > 0) {
     redactionLog("warn", "credential_redaction_source_tail_recovered", {
       file: filePath,
@@ -563,6 +737,107 @@ interface BlockRow {
 }
 
 /**
+ * Prefix for the intermediate ids a convergence pass parks rows on.
+ *
+ * Ids are 16 hex characters, so nothing derived can ever equal one of these.
+ */
+const CONVERGENCE_TEMP_PREFIX = "mandible-redact-tmp:";
+
+interface BlockIdConvergence {
+  /** Current id → converged id, for every row this pass moved. */
+  renames: Map<string, string>;
+  /** Rows left on a non-reproducible id because the pass could not apply. */
+  unresolved: number;
+}
+
+/**
+ * Re-derive one conversation's block ids the way the next full ingest will.
+ *
+ * Called only when a per-row recomputation found its target id already taken.
+ * Row-at-a-time recomputation cannot settle that case: which of two blocks that
+ * derive the same id keeps it is a property of the conversation, not of either
+ * row, so the answer has to be computed over the whole conversation in position
+ * order — exactly what `assignConversationBlockIds` does for ingestion's
+ * recovery insert. Running the same function over the same blocks in the same
+ * order is what makes redact-then-re-ingest land on identical ids.
+ *
+ * Content is read back from the rows rather than from the redaction's in-memory
+ * batch so the derivation sees precisely the bytes stored, including blocks this
+ * run never touched. A row whose content cannot be decompressed makes the fixed
+ * point unknowable, so the pass declines rather than guessing.
+ *
+ * Ids are the primary key, so the moves are applied in two phases through
+ * unused placeholder ids: a direct update would collide with the very row it is
+ * trying to displace. A target held by some *other* conversation — a real
+ * truncated-hash collision — makes the transaction fail, and the conversation is
+ * reported as unresolved rather than having another conversation's row taken
+ * from it.
+ */
+function convergeConversationBlockIds(db: Db, conversationId: string): BlockIdConvergence {
+  const rows = db
+    .prepare(
+      `SELECT id, type, timestamp, content, compressed, position
+       FROM conversation_blocks WHERE conversation_id = ? ORDER BY position`,
+    )
+    .all(conversationId) as Array<{
+      id: string;
+      type: string;
+      timestamp: string | null;
+      content: Buffer | string;
+      compressed: number;
+      position: number;
+    }>;
+  const inputs = [];
+  for (const row of rows) {
+    let text: string;
+    try {
+      text = decompressContent(row.content, row.compressed === 1);
+    } catch {
+      redactionLog("error", "credential_redaction_block_id_convergence_failed", {
+        conversation_id: conversationId,
+        reason: "unreadable_block_content",
+        position: row.position,
+      });
+      return { renames: new Map(), unresolved: 1 };
+    }
+    inputs.push({
+      conversation_id: conversationId,
+      type: row.type,
+      timestamp: row.timestamp,
+      content: text,
+      position: row.position,
+    });
+  }
+
+  const targets = assignConversationBlockIds(inputs);
+  const moves = rows
+    .map((row, index) => ({
+      from: row.id,
+      to: targets[index],
+      temp: `${CONVERGENCE_TEMP_PREFIX}${conversationId}:${index}`,
+    }))
+    .filter((move) => move.from !== move.to);
+  if (moves.length === 0) return { renames: new Map(), unresolved: 0 };
+
+  try {
+    const update = db.prepare("UPDATE conversation_blocks SET id = ? WHERE id = ?");
+    db.transaction(() => {
+      for (const move of moves) update.run(move.temp, move.from);
+      for (const move of moves) update.run(move.to, move.temp);
+    })();
+  } catch (error) {
+    redactionLog("error", "credential_redaction_block_id_convergence_failed", {
+      conversation_id: conversationId,
+      reason: "id_held_by_another_conversation",
+      moves: moves.length,
+      error: String(error),
+    });
+    return { renames: new Map(), unresolved: moves.length };
+  }
+  return { renames: new Map(moves.map((move) => [move.from, move.to])), unresolved: 0 };
+}
+
+/**
  * Sweep the normalized index for one credential's plaintext and mask it.
  *
  * Search covers every stored block, in `content` and in `metadata_json`: the
@@ -583,21 +858,29 @@ interface BlockRow {
  * repointed in the same pass, so the deep link on the record an operator opens
  * *because* of the leak keeps resolving (re-review finding 2).
  *
- * The recomputed id cannot already belong to a different well-formed row, and
- * that is a schema property rather than an assumption (re-review finding 5 /
- * original finding 7). `conversation_blocks` carries `UNIQUE(conversation_id,
- * position)`, and `conversationBlockId` hashes both — which is exactly the
- * disambiguation ingestion itself relies on (bug 7b47c6c added `position` to
- * the hash after identical empty tool_result blocks collided). Two distinct
- * rows therefore always differ in at least one hashed input: same conversation
- * means different position, different conversation means different
- * conversation_id. Reaching the conflict branch requires a 64-bit truncated
- * SHA-256 collision between two rows that are otherwise unrelated. The branch
- * is kept anyway — a redaction must never take down the primary key — and it
- * now logs the affected row so an unreachable case that somehow fires is
- * diagnosable rather than a bare counter. In that case the old id is kept and
- * the next full ingest resolves it through ingestion's own unique-conflict
- * recovery, which re-inserts the conversation from the parse.
+ * The recomputed id CAN already belong to another well-formed row, and an
+ * earlier round of this file argued otherwise from `UNIQUE(conversation_id,
+ * position)` — that argument was wrong (issue b3e4a09, third-pass finding 3).
+ * `conversationBlockId` concatenates its inputs with no delimiters and no
+ * length framing, so two rows that differ in a hashed input can still hash
+ * identical bytes: for one conversation, type, and timestamp, content
+ * "payload1" at position 2 and content "payload" at position 12 both serialize
+ * to `…payload12`. Positions stay unique and no SHA-256 collision occurs; the
+ * ambiguity is in the serialization. Redaction reaches it the moment a mask
+ * rewrites a content prefix into the other row's prefix-plus-digits.
+ *
+ * Keeping the old id in that case was the remaining defect: it left a row on an
+ * id nothing can re-derive, so the next full ingest could not reproduce the
+ * index. The conflict branch now converges instead — it re-derives the whole
+ * conversation's ids with `assignConversationBlockIds`, the same function and
+ * the same position order ingestion's unique-conflict recovery uses, so a
+ * redact-then-force-re-ingest round trip lands on identical ids. Blocks that
+ * are not part of an ambiguous set keep exactly the id the plain derivation
+ * gives them, so nothing else is renumbered.
+ *
+ * Delimiter framing would remove the ambiguity at the root and is deliberately
+ * left for a dedicated migration-bearing change: it would alter the id of every
+ * block in every existing database at once.
  *
  * Redacting a source that cannot be patched (`--patch-sources` refused or
  * omitted) still diverges at the next re-ingest, because that ingest sees the
@@ -637,12 +920,14 @@ export function redactCredential(
   let redactedBlocks = 0;
   let redactedSpans = 0;
   let unverifiedSpans = 0;
-  let renumberedBlocks = 0;
   let idConflicts = 0;
+  let unresolvedIdConflicts = 0;
   let offset = 0;
   let truncated = false;
   /** Old id → new id, for every block whose id this run recomputed. */
   const renamedBlockIds = new Map<string, string>();
+  /** Conversations whose ids need re-deriving over the whole conversation. */
+  const conflictedConversations = new Set<string>();
 
   for (;;) {
     const rows = select.all(batchSize, offset) as BlockRow[];
@@ -725,17 +1010,19 @@ export function redactCredential(
           let targetId = entry.id;
           if (entry.newId !== entry.id) {
             if (idTaken.get(entry.newId)) {
-              // Unreachable without a truncated-hash collision (see above), so
-              // if it fires it is worth a row-level record, not just a count.
+              // Reachable through the unframed id serialization (see above).
+              // The row keeps its old id here and the conversation is re-derived
+              // as a whole once the content edits are in, because which row wins
+              // the contested id is not a per-row fact.
               idConflicts += 1;
-              redactionLog("error", "credential_redaction_block_id_conflict", {
+              conflictedConversations.add(entry.conversationId);
+              redactionLog("warn", "credential_redaction_block_id_conflict", {
                 conversation_id: entry.conversationId,
                 position: entry.position,
-                kept_block_id: entry.id,
+                deferred_block_id: entry.id,
               });
             } else {
               targetId = entry.newId;
-              renumberedBlocks += 1;
               renamedBlockIds.set(entry.id, entry.newId);
             }
           }
@@ -745,6 +1032,26 @@ export function redactCredential(
     }
     if (rows.length < batchSize) break;
   }
+
+  // Contested ids are settled over the whole conversation, from the content now
+  // stored, so the result is the id assignment the next full ingest derives.
+  for (const conversationId of conflictedConversations) {
+    const converged = convergeConversationBlockIds(db, conversationId);
+    unresolvedIdConflicts += converged.unresolved;
+    // Compose with this run's earlier renames so a block moved twice is still
+    // followed from the id its leak alert recorded.
+    for (const [from, to] of renamedBlockIds) {
+      const final = converged.renames.get(to);
+      if (final === undefined) continue;
+      renamedBlockIds.set(from, final);
+      converged.renames.delete(to);
+    }
+    for (const [from, to] of converged.renames) renamedBlockIds.set(from, to);
+  }
+  for (const [from, to] of renamedBlockIds) {
+    if (from === to) renamedBlockIds.delete(from);
+  }
+  const renumberedBlocks = renamedBlockIds.size;
 
   // Leak alerts deep-link the block a credential was found in, so renumbering
   // without following them leaves the alert pointing at a deleted id.
@@ -777,6 +1084,7 @@ export function redactCredential(
     redacted_conversations: conversations.size,
     renumbered_blocks: renumberedBlocks,
     id_conflicts: idConflicts,
+    unresolved_id_conflicts: unresolvedIdConflicts,
     remapped_leak_alerts: remappedAlerts,
     truncated,
     patched_files: sources?.patched_files ?? null,
@@ -798,6 +1106,7 @@ export function redactCredential(
     redacted_conversations: conversations.size,
     renumbered_blocks: renumberedBlocks,
     id_conflicts: idConflicts,
+    unresolved_id_conflicts: unresolvedIdConflicts,
     remapped_leak_alerts: remappedAlerts,
     truncated,
     sources,

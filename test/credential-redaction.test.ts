@@ -20,7 +20,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { migrate, openDb, setDb, type Db } from "../src/db.js";
 import { compressContent, decompressContent } from "../src/compression.js";
-import { conversationBlockId } from "../src/conversation-block-id.js";
+import {
+  assignConversationBlockIds,
+  conversationBlockId,
+} from "../src/conversation-block-id.js";
 import {
   configureIngestionWorker,
   ingestBatchForWorker,
@@ -189,6 +192,26 @@ function codexTranscript(userText: string, assistantText: string): string {
         content: [{ type: "output_text", text: assistantText }],
       },
     }),
+  ].join("");
+}
+
+/** A transcript of assistant messages sharing one timestamp, one per block. */
+function codexAssistantTranscript(texts: readonly string[]): string {
+  return [
+    codexRow({
+      type: "session_meta",
+      timestamp: "2026-08-12T00:00:00.000Z",
+      payload: { id: "leaktest", cwd: "/tmp/project", model_provider: "openai" },
+    }),
+    ...texts.map((text) => codexRow({
+      type: "response_item",
+      timestamp: "2026-08-12T00:00:01.000Z",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text }],
+      },
+    })),
   ].join("");
 }
 
@@ -756,6 +779,68 @@ describe("mandible credential redact", () => {
     expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
   });
 
+  it("converges a contested block id on the assignment a re-ingest derives", async () => {
+    // Third-pass finding 3. The previous round argued the conflict branch was
+    // unreachable because `UNIQUE(conversation_id, position)` guarantees two
+    // rows differ in a hashed input. That argument is wrong: the derivation
+    // concatenates its inputs unframed, so differing inputs can still produce
+    // identical bytes. Assert the ambiguity itself with the reviewer's values
+    // before relying on it — no hash collision is involved.
+    const shared = { conversation_id: "conv-a", type: "text", timestamp: "2026-08-12T00:00:01Z" };
+    expect(conversationBlockId({ ...shared, content: "payload1", position: 2 }))
+      .toBe(conversationBlockId({ ...shared, content: "payload", position: 12 }));
+
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    // Revoked, so ingest-time masking does not fire and the plaintext lands in
+    // the index — the state retroactive redaction exists for.
+    revokeCredential(db, credential.id);
+    const mask = credentialMaskFor(credential.id);
+    const texts = Array.from({ length: 13 }, (_, index) => `filler ${index}`);
+    // Same conversation, same type, same timestamp: after the mask rewrites
+    // position 12's content to `payload<mask>`, it serializes to exactly what
+    // position 2 already serializes to.
+    texts[2] = `payload${mask}1`;
+    texts[12] = `payload${LEAKED_TOKEN}`;
+    const transcript = await writeCodexTranscript(codexAssistantTranscript(texts));
+    await triggerTargetedIngest({ transcriptPath: transcript, now: 1_000 });
+    expect(storedBlocks()).toHaveLength(13);
+
+    const report = redactCredential(db, credential.id, { patchSources: true });
+
+    const after = storedBlocks();
+    expect(after[12].content).toBe(`payload${mask}`);
+    expect(new Set(after.map((block) => block.id)).size).toBe(13);
+    // The contested id went to the block a fresh parse reaches first, and the
+    // later one took the deterministic fallback — the whole-conversation
+    // assignment, not a per-row guess. Keeping the plaintext-derived id here
+    // was the defect: it is an id nothing can re-derive.
+    expect(after.map((block) => block.id)).toEqual(assignConversationBlockIds(after.map((block) => ({
+      conversation_id: block.conversation_id,
+      type: block.type,
+      timestamp: block.timestamp,
+      content: block.content,
+      position: block.position,
+    }))));
+    expect(report).toMatchObject({ id_conflicts: 1, unresolved_id_conflicts: 0 });
+
+    // Tampering with a block proves the forced re-ingest below actually ran:
+    // before this fix it aborted on the same UNIQUE conflict and left the
+    // conversation exactly as it was, which would have made the id comparison
+    // pass vacuously.
+    db.prepare("UPDATE conversation_blocks SET content = ? WHERE conversation_id = ? AND position = 0")
+      .run(compressContent("tampered"), after[0].conversation_id);
+
+    // Ingestion short-circuits on an mtime that moved less than 100ms, which a
+    // rewrite inside one test always does.
+    const future = new Date(Date.now() + 5_000);
+    fs.utimesSync(transcript, future, future);
+    await ingestBatchForWorker([transcript], true);
+
+    expect(storedBlocks()).toEqual(after);
+    expect(databaseMentionsToken(LEAKED_TOKEN)).toBe(false);
+  });
+
   it("keeps the id when the redacted span is past the hashed content prefix", () => {
     makeAgent();
     const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
@@ -785,9 +870,13 @@ describe("mandible credential redact", () => {
 // --- Source patching ---------------------------------------------------------
 
 /**
- * Run `onOpen` each time the redaction opens its temp replacement file — the
+ * Run `onOpen` each time the redaction creates its temp replacement file — the
  * point where the snapshot has been read but nothing has been renamed yet.
  * That is the window a live transcript writer appends into.
+ *
+ * Matched on the exclusive-create flag, not just the path: the redaction opens
+ * the same temp file a second time, in append mode, to hold the descriptor tail
+ * recovery writes through, and that open is not another attempt.
  */
 function spyOnTempFileOpen(onOpen: () => void) {
   const realOpenSync = fs.openSync.bind(fs);
@@ -795,9 +884,31 @@ function spyOnTempFileOpen(onOpen: () => void) {
     target: Parameters<typeof fs.openSync>[0],
     ...rest: unknown[]
   ) => {
-    if (typeof target === "string" && target.includes("mandible-redact")) onOpen();
+    if (typeof target === "string" && target.includes("mandible-redact") && rest[0] === "wx") {
+      onOpen();
+    }
     return (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
   }) as typeof fs.openSync);
+}
+
+/**
+ * Spy that identifies the descriptor tail recovery appends through: the temp
+ * replacement opened in append mode and held across the rename.
+ */
+function spyOnRecoveryAppendFd(): { spy: ReturnType<typeof vi.spyOn>; fd: () => number | null } {
+  const realOpenSync = fs.openSync.bind(fs);
+  let recoveryFd: number | null = null;
+  const spy = vi.spyOn(fs, "openSync").mockImplementation(((
+    target: Parameters<typeof fs.openSync>[0],
+    ...rest: unknown[]
+  ) => {
+    const fd = (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
+    if (typeof target === "string" && target.includes("mandible-redact") && rest[0] === "a") {
+      recoveryFd = fd;
+    }
+    return fd;
+  }) as typeof fs.openSync);
+  return { spy, fd: () => recoveryFd };
 }
 
 describe("credential redact --patch-sources", () => {
@@ -1006,24 +1117,26 @@ describe("credential redact --patch-sources", () => {
       if (to === file) burst();
       return realRenameSync(from, to);
     }) as typeof fs.renameSync);
-    // Every recovery append provokes another write into the old inode.
-    const openSpy = (() => {
-      const realOpenSync = fs.openSync.bind(fs);
-      return vi.spyOn(fs, "openSync").mockImplementation(((
-        target: Parameters<typeof fs.openSync>[0],
-        ...rest: unknown[]
-      ) => {
-        if (target === file && rest[0] === "a") burst();
-        return (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
-      }) as typeof fs.openSync);
-    })();
+    // Every recovery append provokes another write into the old inode. The
+    // append goes through the descriptor the redaction holds on the replacement,
+    // so the burst hangs off writes to that descriptor.
+    const recovery = spyOnRecoveryAppendFd();
+    const realWriteSync = fs.writeSync.bind(fs);
+    const writeSpy = vi.spyOn(fs, "writeSync").mockImplementation(((
+      fd: number,
+      ...rest: unknown[]
+    ) => {
+      if (recovery.fd() !== null && fd === recovery.fd()) burst();
+      return (realWriteSync as (...args: unknown[]) => number)(fd, ...rest);
+    }) as typeof fs.writeSync);
 
     let report;
     try {
       report = redactCredential(db, credential.id, { patchSources: true });
     } finally {
       renameSpy.mockRestore();
-      openSpy.mockRestore();
+      recovery.spy.mockRestore();
+      writeSpy.mockRestore();
       fs.closeSync(writerFd);
     }
 
@@ -1033,6 +1146,279 @@ describe("credential redact --patch-sources", () => {
     // Whatever was recovered is masked; the abandoned remainder never reached
     // the patched file at all.
     expect(fs.readFileSync(file).toString("latin1")).not.toContain(LEAKED_TOKEN);
+  });
+
+  /**
+   * Append `appended` to `file` from inside renameSync, i.e. onto the inode the
+   * rename is about to unlink. That is the only window where the tail exists
+   * nowhere but behind the redaction's own descriptor.
+   */
+  function injectDuringRename(file: string, appended: Buffer, writerFd?: number) {
+    const realRenameSync = fs.renameSync.bind(fs);
+    let injected = false;
+    const spy = vi.spyOn(fs, "renameSync").mockImplementation(((
+      from: Parameters<typeof fs.renameSync>[0],
+      to: Parameters<typeof fs.renameSync>[1],
+    ) => {
+      if (!injected && to === file) {
+        injected = true;
+        // A descriptor the writer already held, when one is supplied: that is
+        // the only way to append to a source whose mode now forbids it, and it
+        // is what a running agent actually has.
+        if (writerFd === undefined) fs.appendFileSync(file, appended);
+        else fs.writeSync(writerFd, appended);
+      }
+      return realRenameSync(from, to);
+    }) as typeof fs.renameSync);
+    return { spy, injected: () => injected };
+  }
+
+  /**
+   * Interfere with the writes tail recovery makes. `mode` either truncates the
+   * first matching write in half (a short write) or fails it outright.
+   */
+  function spyOnTailWrite(marker: string, mode: "short" | "fail", exemptFd: number) {
+    const realWriteSync = fs.writeSync.bind(fs);
+    let hits = 0;
+    const spy = vi.spyOn(fs, "writeSync").mockImplementation(((
+      fd: number,
+      buffer: NodeJS.ArrayBufferView,
+      ...rest: unknown[]
+    ) => {
+      const offset = typeof rest[0] === "number" ? rest[0] : 0;
+      const fullLength = Buffer.isBuffer(buffer) ? buffer.length : 0;
+      const length = typeof rest[1] === "number" ? rest[1] : fullLength - offset;
+      // The simulated agent's own append carries the marker too; only the
+      // redaction's recovery writes are interfered with.
+      const isTail = fd !== exemptFd && Buffer.isBuffer(buffer) && buffer.includes(marker);
+      if (isTail) {
+        hits += 1;
+        if (mode === "fail") throw Object.assign(new Error("EIO"), { code: "EIO" });
+        if (hits === 1) {
+          return realWriteSync(fd, buffer, offset, Math.max(1, Math.floor(length / 2)));
+        }
+      }
+      return realWriteSync(fd, buffer, offset, length);
+    }) as typeof fs.writeSync);
+    return { spy, hits: () => hits };
+  }
+
+  it("recovers the tail even when the source is read-only", () => {
+    // Third-pass finding 1: a 0400 source in a writable directory made the
+    // whole recovery path a silent no-op. The replacement inherited 0400, so
+    // reopening it to append failed, the loop broke, and the report said
+    // recovered=0, abandoned=0 while the old inode's tail went with the
+    // unlinked file. The replacement is this code's own file, so it is created
+    // owner-writable and the append descriptor is taken before the rename; the
+    // original mode is restored once recovery is done.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-readonly.jsonl", original);
+    // The writer opened the transcript before it was locked down, exactly as a
+    // running agent does; the mode change only stops *new* openers.
+    const writerFd = fs.openSync(file, "a");
+    fs.chmodSync(file, 0o400);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"appended to a read-only source ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const rename = injectDuringRename(file, appended, writerFd);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(rename.injected()).toBe(true);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      failed_files: 0,
+      recovered_tail_bytes: appended.length,
+      abandoned_tail_bytes: 0,
+    });
+    const mask = credentialMaskFor(credential.id);
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      Buffer.concat([original, appended]).toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
+    // The permissive mode existed only for the append; the file the operator
+    // gets back is the mode the file had.
+    expect(fs.statSync(file).mode & 0o777).toBe(0o400);
+  });
+
+  it("finishes a short write instead of counting the remainder as recovered", () => {
+    // Third-pass finding 1, second half: writeSync may write fewer bytes than
+    // it was given. A single unchecked call left the tail truncated on disk
+    // while the report claimed every byte of it was carried over.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-short-write.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"short-write-marker padded out so the halves differ ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnTailWrite("short-write-marker", "short", writerFd);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    const mask = credentialMaskFor(credential.id);
+    // Every byte of the tail is on disk, not just the first half.
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      Buffer.concat([original, appended]).toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
+    // The remainder was written by a second call, not assumed away.
+    expect(write.hits()).toBeGreaterThan(1);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: appended.length,
+      abandoned_tail_bytes: 0,
+    });
+  });
+
+  it("reports a tail it could not write as abandoned, not as a clean zero", () => {
+    // The accounting half of third-pass finding 1: the read offset used to
+    // advance before the append was proven, so a failed append reported
+    // recovered=0 and abandoned=0 — an operator-visible "nothing to do" over
+    // bytes that had just been lost with the unlinked inode.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-write-fail.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"drain-marker never lands ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnTailWrite("drain-marker", "fail", writerFd);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(rename.injected()).toBe(true);
+    expect(write.hits()).toBeGreaterThan(0);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length,
+    });
+    // The patched snapshot is intact and still carries no plaintext; only the
+    // tail is missing, and the report says so.
+    const mask = credentialMaskFor(credential.id);
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
+  });
+
+  it("masks a token split across the snapshot and the recovered tail", () => {
+    // Third-pass finding 2: the snapshot and the tail were scanned as separate
+    // texts. A transcript that ends mid-record with the first characters of a
+    // token, plus an appended tail carrying the rest, matched the candidate
+    // pattern in neither half — and the byte-faithful join put the working
+    // credential back together in the file the redaction had just cleaned.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const head = LEAKED_TOKEN.slice(0, 20);
+    const rest = LEAKED_TOKEN.slice(20);
+    // No trailing newline: the last record is open, exactly the state of a
+    // transcript a writer is in the middle of a line on.
+    const original = Buffer.from(
+      `{"text":"first ${LEAKED_TOKEN}"}\n{"text":"split ${head}`,
+      "latin1",
+    );
+    const file = writeSourceFile("rollout-seam.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(`${rest}"}\n`, "latin1");
+
+    const rename = injectDuringRename(file, appended);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+    }
+
+    expect(rename.injected()).toBe(true);
+    const mask = credentialMaskFor(credential.id);
+    const patched = fs.readFileSync(file).toString("latin1");
+    // The join must not put the credential back together in the clear.
+    expect(patched).not.toContain(LEAKED_TOKEN);
+    // Nothing is inserted at the seam: the appended bytes continue the open
+    // record exactly as they do on the inode the writer still holds.
+    expect(patched).toBe(`{"text":"first ${mask}"}\n{"text":"split ${mask}"}\n`);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      failed_files: 0,
+      // One span in the snapshot, one reassembled across the seam.
+      patched_spans: 2,
+      recovered_tail_bytes: appended.length,
+      abandoned_tail_bytes: 0,
+    });
+  });
+
+  it("costs nothing when the seam splice itself fails", () => {
+    // Masking across the seam means briefly truncating the snapshot's open
+    // final line off the replacement so the joined region can be rewritten. A
+    // write that fails after that point must not turn a race into the loss of
+    // bytes that were already safely patched: the line goes back exactly as it
+    // was, and only the unreachable tail is reported abandoned.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const head = LEAKED_TOKEN.slice(0, 20);
+    const rest = LEAKED_TOKEN.slice(20);
+    const original = Buffer.from(
+      `{"text":"first ${LEAKED_TOKEN}"}\n{"text":"split ${head}`,
+      "latin1",
+    );
+    const file = writeSourceFile("rollout-seam-fail.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(`${rest}","note":"restore-marker"}\n`, "latin1");
+
+    const writerFd = fs.openSync(file, "a");
+    const rename = injectDuringRename(file, appended, writerFd);
+    const write = spyOnTailWrite("restore-marker", "fail", writerFd);
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(write.hits()).toBeGreaterThan(0);
+    const mask = credentialMaskFor(credential.id);
+    // Exactly the patched snapshot: the open final line survived the attempt.
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length,
+    });
   });
 
   it("refuses a source that never stops changing", () => {

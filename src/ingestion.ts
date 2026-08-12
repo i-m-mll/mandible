@@ -26,7 +26,7 @@ import {
   maskUnverifiedCandidates,
   redactCredentialLeaksInBlocks,
 } from "./credential-leak-scan.js";
-import { conversationBlockId } from "./conversation-block-id.js";
+import { assignConversationBlockIds, conversationBlockId } from "./conversation-block-id.js";
 import {
   ingestClaudeWorkflowArtifact,
   isClaudeWorkflowJournalPath,
@@ -2457,6 +2457,25 @@ async function ingestFile(
         const recoveryCompressedContents = await stageCompressedBlockContents(
           result.blocks.map((block) => block.content),
         );
+        // Ids for the recovery insert are assigned over the whole parse at once
+        // so two blocks that derive the same id get different rows instead of
+        // failing the transaction a second time (issue b3e4a09, third-pass
+        // finding 3). `conversationBlockId` concatenates its inputs unframed,
+        // so content "payload1" at position 2 and content "payload" at position
+        // 12 hash identical bytes without any hash collision; the plain
+        // derivation therefore has no fixed point for such a conversation and
+        // recovery used to rethrow the same UNIQUE failure and leave the file
+        // unindexed forever. The first block in position order still keeps the
+        // plain id, so no existing block is renumbered by this.
+        const recoveryBlockIds = assignConversationBlockIds(
+          result.blocks.map((block) => ({
+            conversation_id: conversationId,
+            type: block.type,
+            timestamp: block.timestamp,
+            content: block.content,
+            position: block.position,
+          })),
+        );
         try {
           const recoveryUpsert = db.transaction(() => {
             // Purge all stale rows for this source_path, then do a clean full insert
@@ -2482,17 +2501,7 @@ async function ingestFile(
             // ids can only be a truncated-hash collision. Recovery refuses to
             // delete it: the insert below fails loudly instead of quietly
             // taking data that does not belong to this file.
-            const foreign = foreignBlockIdHolders(
-              db,
-              conversationId,
-              result.blocks.map((block) => conversationBlockId({
-                conversation_id: conversationId,
-                type: block.type,
-                timestamp: block.timestamp,
-                content: block.content,
-                position: block.position,
-              })),
-            );
+            const foreign = foreignBlockIdHolders(db, conversationId, recoveryBlockIds);
             if (foreign.length > 0) {
               logger("error", "ingestion_block_id_collision_foreign", {
                 file: filePath,
@@ -2547,15 +2556,8 @@ async function ingestFile(
             `);
             for (let i = 0; i < result.blocks.length; i++) {
               const block = result.blocks[i];
-              const blockHash = conversationBlockId({
-                conversation_id: conversationId,
-                type: block.type,
-                timestamp: block.timestamp,
-                content: block.content,
-                position: block.position,
-              });
               insertBlock2.run(
-                blockHash, conversationId, block.type, block.role,
+                recoveryBlockIds[i], conversationId, block.type, block.role,
                 recoveryCompressedContents.read(i), block.position,
                 block.timestamp, block.parent_id, JSON.stringify(block.metadata),
                 block.dag_uuid ?? null, block.dag_parent_uuid ?? null,
