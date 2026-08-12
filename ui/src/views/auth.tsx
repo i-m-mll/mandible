@@ -2437,6 +2437,17 @@ export function AuthQueueView({
     });
   }, []);
 
+  // Install a first-paint action list without overwriting one this session has
+  // already loaded or mutated (issue 80ced49).
+  const seedActionListForRequest = useCallback((requestId: string, actions: AuthRequestAction[]) => {
+    setActionLists((prev) => {
+      if (prev.has(requestId)) return prev;
+      const next = new Map(prev);
+      next.set(requestId, actions);
+      return next;
+    });
+  }, []);
+
   const updateActionForRequest = useCallback((requestId: string, action: AuthRequestAction) => {
     setActionLists((prev) => {
       const current = prev.get(requestId) ?? [];
@@ -2991,7 +3002,13 @@ export function AuthQueueView({
     const requestId = getAuthId(selectedRequest);
     const inlineActions = Array.isArray(selectedRequest.actions) ? selectedRequest.actions : [];
     if (inlineActions.length > 0) {
-      setActionListForRequest(requestId, inlineActions);
+      // Issue 80ced49: the queue prop's inline actions are a first-paint seed,
+      // not an authoritative refresh. This effect re-runs whenever the selected
+      // request object is re-derived (body hydration rewrites its identity), and
+      // an unconditional re-seed replayed the stale prop over a locally applied
+      // veto toggle, silently reverting the user's action. Seed once per request
+      // and let the actions refetch below carry real server updates.
+      seedActionListForRequest(requestId, inlineActions);
     }
     if (getActionCount(selectedRequest) === 0) {
       setActionListForRequest(requestId, []);
@@ -3006,7 +3023,7 @@ export function AuthQueueView({
     return () => {
       active = false;
     };
-  }, [selectedRequest, setActionListForRequest]);
+  }, [selectedRequest, seedActionListForRequest, setActionListForRequest]);
 
   // Auto-select first item when sidebar list changes and nothing is selected.
   // Bug: 2eeadd0 — Also clear selectedId when the selected item is no longer
