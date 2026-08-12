@@ -186,4 +186,16 @@ describe("successful merge result parsing", () => {
     expect(extractSuccessfulMergeCommitSha("MANDIBLE_MERGE_RESULT {\"merge_sha\":\"abc123\"}"))
       .toBeNull();
   });
+
+  // Issue 08a5f04 (review F1) — hardened duplicate handling: consistent
+  // re-emission (atomic recovery) is accepted, any conflicting or malformed
+  // marker voids the whole record.
+  it("accepts consistent duplicate markers and voids conflicting or malformed ones", () => {
+    const marker = `MANDIBLE_MERGE_RESULT {"merge_sha":"${mergeSha}"}`;
+    const forged = `MANDIBLE_MERGE_RESULT {"merge_sha":"${"f".repeat(40)}"}`;
+    expect(extractSuccessfulMergeCommitSha(`${marker}\n${marker}\n`)).toBe(mergeSha);
+    expect(extractSuccessfulMergeCommitSha(`${marker}\n${forged}\n`)).toBeNull();
+    expect(extractSuccessfulMergeCommitSha(`${forged}\n${marker}\n`)).toBeNull();
+    expect(extractSuccessfulMergeCommitSha(`${marker}\nMANDIBLE_MERGE_RESULT not-json\n`)).toBeNull();
+  });
 });

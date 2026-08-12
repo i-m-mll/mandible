@@ -198,6 +198,11 @@ describe("auth request action execution", () => {
         ],
       });
 
+      // Issue 08a5f04 (review F2) — canonical-command verification needs the
+      // structured branches; the fixture cwd is not a git repo, so they are
+      // recorded directly instead of via submit-time preflight.
+      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
+        .run("feature/exec", request.id);
       queue.approve(request.id);
       now = 11_000;
       queue.setResult(
@@ -294,6 +299,11 @@ describe("auth request action execution", () => {
       const actions = queue.listActions(request.id);
       db.prepare("UPDATE auth_request_actions SET state = 'vetoed' WHERE id = ?").run(actions[2].id);
 
+      // Issue 08a5f04 (review F2) — canonical-command verification needs the
+      // structured branches; the fixture cwd is not a git repo, so they are
+      // recorded directly instead of via submit-time preflight.
+      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
+        .run("feature/fail", request.id);
       queue.approve(request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 
@@ -341,6 +351,11 @@ describe("auth request action execution", () => {
 
       new LedgerStore(db).addComment(first.issue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
       new LedgerStore(db).addComment(secondIssue.id, { body: "Moved", source: "mandible", ...SYSTEM_ACTOR });
+      // Issue 08a5f04 (review F2) — canonical-command verification needs the
+      // structured branches; the fixture cwd is not a git repo, so they are
+      // recorded directly instead of via submit-time preflight.
+      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
+        .run("feature/stale", request.id);
       queue.approve(request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 
@@ -371,6 +386,11 @@ describe("auth request action execution", () => {
         issue_closures: [issue.short_id],
       });
 
+      // Issue 08a5f04 (review F2) — canonical-command verification needs the
+      // structured branches; the fixture cwd is not a git repo, so they are
+      // recorded directly instead of via submit-time preflight.
+      db.prepare("UPDATE auth_requests SET base_branch = 'main', head_branch = ? WHERE id = ?")
+        .run("feature/legacy", request.id);
       queue.approve(request.id);
       queue.setResult(request.id, 0, "Merge made by recursive.\n");
 

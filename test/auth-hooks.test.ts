@@ -214,12 +214,13 @@ describe("AuthQueue hook integration", () => {
       hookManager,
     });
 
+    // No merge structure: the stub command takes the generic execution path
+    // (a merge-structured request would be refused by canonical-command
+    // verification, issue 08a5f04 review F2).
     const request = queue.submit({
       command: 'echo "merge-ok"',
       title: "Test merge",
       repo: "test-repo",
-      base_branch: "main",
-      head_branch: "feature/test",
     });
 
     queue.approve(request.id);

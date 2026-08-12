@@ -26,25 +26,47 @@ const COMMIT_SHA_PATTERN = /^[0-9a-f]{40,64}$/i;
 const SSH_FINGERPRINT_PATTERN = /SHA256:[A-Za-z0-9+/=]+/;
 const TRUSTED_SSH_KEYGEN_PATHS = ["/usr/bin/ssh-keygen", "/bin/ssh-keygen"];
 
-/** Extract the actual post-merge commit recorded by the successful merge script. */
+/**
+ * Extract the actual post-merge commit recorded by the successful merge script.
+ *
+ * Issue 08a5f04 (review F1) — hardened marker parse: every
+ * `MANDIBLE_MERGE_RESULT` line in the output must parse to a valid commit SHA
+ * and all occurrences must agree on it, otherwise the whole record is void
+ * (null). One successful execution emits the marker once; the only legitimate
+ * duplicate is the atomic-recovery path re-emitting the same merge SHA with
+ * refreshed issue metadata. A marker appended with a different SHA — or any
+ * malformed marker — is tamper evidence, never something to skip past.
+ */
 export function extractSuccessfulMergeCommitSha(output: string): string | null {
-  const lines = output.split(/\r?\n/);
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    const line = lines[index]?.trim() ?? "";
-    const markerIndex = line.indexOf(MERGE_RESULT_PREFIX);
-    if (markerIndex < 0) continue;
+  const markerLines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes(MERGE_RESULT_PREFIX));
+  if (markerLines.length === 0) return null;
+  let mergeSha: string | null = null;
+  for (const line of markerLines) {
+    let parsedSha: string;
     try {
-      const parsed = JSON.parse(line.slice(markerIndex + MERGE_RESULT_PREFIX.length)) as {
+      const parsed = JSON.parse(line.slice(line.indexOf(MERGE_RESULT_PREFIX) + MERGE_RESULT_PREFIX.length)) as {
         merge_sha?: unknown;
       };
-      if (typeof parsed.merge_sha === "string" && COMMIT_SHA_PATTERN.test(parsed.merge_sha)) {
-        return parsed.merge_sha;
+      if (typeof parsed.merge_sha !== "string" || !COMMIT_SHA_PATTERN.test(parsed.merge_sha)) {
+        return null;
       }
+      parsedSha = parsed.merge_sha;
     } catch {
       // A malformed marker is verification evidence, not a merge failure.
+      return null;
     }
+    if (mergeSha !== null && mergeSha !== parsedSha) return null;
+    mergeSha = parsedSha;
   }
-  return null;
+  return mergeSha;
+}
+
+/** Shared with the provenance matcher so evidence details validate identically. */
+export function isValidCommitSha(value: unknown): value is string {
+  return typeof value === "string" && COMMIT_SHA_PATTERN.test(value);
 }
 
 function activeSigningCredentials(db: Db): SigningCredentialRow[] {

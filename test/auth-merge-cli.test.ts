@@ -380,6 +380,21 @@ describe("auth merge Mandible preflight", () => {
       fs.rmSync(fakeBin, { recursive: true, force: true });
     }
   }, 15_000);
+
+  // Issue 08a5f04 (re-review advisory) — the tracked worktree is re-checked
+  // immediately before the non-atomic signing merge, so state that changed
+  // after the early preflight never merges.
+  it("refuses the signing merge when tracked worktree state changed after preflight", () => {
+    fs.writeFileSync(path.join(tempDir, "tracked.txt"), "dirtied after preflight\n", "utf8");
+    const before = git(["rev-parse", "main"]);
+
+    const result = runCleanupHelper("merge_source_signed feature/demo", tempDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Tracked worktree state changed before the signing merge");
+    expect(git(["rev-parse", "main"])).toBe(before);
+    expect(fs.existsSync(path.join(tempDir, ".git", "MERGE_HEAD"))).toBe(false);
+  });
 });
 
 // Child issue 8921e84: docs-branch promotion via a short-lived proxy branch.

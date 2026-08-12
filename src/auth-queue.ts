@@ -9,8 +9,8 @@ import { executeAuthCommand, type AuthExecutionResult } from "./auth-executor.js
 import {
   authorizedMergeSignerLines,
   extractSuccessfulMergeCommitSha,
+  isValidCommitSha,
   verifyAuthorizedMergeCommitSignature,
-  verifyMergeCommitSignature,
   verifySuccessfulMergeCommitSignature,
   type MergeSignatureVerification,
 } from "./auth-signature-verification.js";
@@ -27,6 +27,7 @@ import {
 import type { AuthApprovalContext, AuthAutoApprover } from "./auth-auto-approve.js";
 import {
   AuthExecutionContextError,
+  canonicalAuthMergeCommands,
   isAuthMergeCommand,
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
@@ -374,8 +375,11 @@ const REFS_HEADS_PREFIX = "refs/heads/";
 
 // Issue 08a5f04 (review F2) — hierarchical/multi-source merge commands. The
 // daemon cannot bind a single reviewed head to every source such a command
-// merges, so they are excluded from atomic execution and from candidate
-// auto-recompute (full execution-descriptor redesign tracked as issue fff66b9).
+// merges. Approve-time canonical-command verification
+// (enforceCanonicalMergeCommand) refuses them outright — canonical forms are
+// single-source only — and this regex remains as defense in depth for the
+// recompute/refresh paths, which must never re-attest a pending hierarchical
+// request (full execution-descriptor redesign tracked as issue fff66b9).
 const HIERARCHICAL_MERGE_COMMAND_RE = /(^|\s)--hierarchical(?:\s|$)/;
 
 // Issue 08a5f04 (review F1) — upper bound on the number of first-parent
@@ -2052,6 +2056,27 @@ export class AuthQueue {
     const values: unknown[] = [];
     const payload = fields as Record<string, unknown>;
 
+    // Issue 08a5f04 (review F2) — a merge request cannot shed its structured
+    // merge identity: clearing head/base branches would move it out of the
+    // approve-time canonical-command enforcement set while keeping type
+    // 'merge'. Branches may be retargeted to other names, never removed.
+    const effectiveType = (payload.type as string | undefined) ?? request.type;
+    if (effectiveType === "merge") {
+      for (const field of ["head_branch", "base_branch"] as const) {
+        if (
+          field in payload &&
+          payload[field] !== undefined &&
+          (payload[field] == null || payload[field] === "") &&
+          request[field] != null
+        ) {
+          throw {
+            status: 400,
+            message: `Cannot clear ${field} on a merge request; submit a new request instead.`,
+          };
+        }
+      }
+    }
+
     for (const field of allowedFields) {
       if (field in payload && payload[field] !== undefined) {
         updates.push(`${field} = ?`);
@@ -2386,6 +2411,13 @@ export class AuthQueue {
       );
     }
 
+    // Issue 08a5f04 (review F2) — the stored command must byte-equal the
+    // canonical form derived from the reviewed structured fields before any
+    // other approval work happens. This closes the mutated-command hole for
+    // pinned and unpinned requests alike, and kills shell-expansion evasion:
+    // no non-canonical byte sequence is executable.
+    this.enforceCanonicalMergeCommand(request);
+
     const now = this.now();
     const executionContextUpdate = this.resolveExecutionContextBeforeApproval(request);
     if (executionContextUpdate) {
@@ -2494,6 +2526,58 @@ export class AuthQueue {
     this.broadcast({ event: "auth:updated", data: { request: executing } });
     this.executeInBackground(executing);
     return executing;
+  }
+
+  /**
+   * Issue 08a5f04 (review F2) — approve-time canonical-command verification.
+   *
+   * Applies to every request that either carries a merge-shaped command or is
+   * a merge-type request carrying merge review structure (head/base branch or
+   * a reviewed head SHA). For those, the stored command must byte-equal one of
+   * the canonical forms derived from the stored structured fields
+   * (canonicalAuthMergeCommands). Anything else — a command mutated after
+   * review (pinned or not), hierarchical/multi-source commands (which have no
+   * single reviewed head), shell-expansion tricks, unknown flags — refuses
+   * approval with invalid_command and requires resubmission.
+   *
+   * Behavior change: hierarchical (`--hierarchical`) merge commands are no
+   * longer approvable through the auth queue at all; submit one request per
+   * source branch (or run the merge manually outside the queue). The
+   * execution-descriptor redesign that could re-admit them is issue fff66b9.
+   *
+   * Residual (documented, issue fff66b9): a merge-type request with no merge
+   * structure and a non-merge command is the generic command path and executes
+   * as reviewed; type mutation away from 'merge' is visible reviewer-facing
+   * state and is likewise out of scope here.
+   */
+  private enforceCanonicalMergeCommand(request: AuthRequest): void {
+    const mergeShaped = isAuthMergeCommand(request);
+    const hasMergeStructure =
+      request.head_branch != null ||
+      request.base_branch != null ||
+      request.merge_head_sha != null;
+    if (!mergeShaped && !(request.type === "merge" && hasMergeStructure)) {
+      return;
+    }
+    if (HIERARCHICAL_MERGE_COMMAND_RE.test(request.command)) {
+      throw new AuthQueueError(
+        "invalid_command",
+        "Hierarchical merge commands cannot be verified against a single reviewed head and are not approvable through the auth queue; submit one auth request per source branch instead.",
+      );
+    }
+    const allowed = canonicalAuthMergeCommands(request.head_branch, request.base_branch);
+    if (allowed.length === 0) {
+      throw new AuthQueueError(
+        "invalid_command",
+        "Auth merge request is missing valid reviewed head/base branches, so its command cannot be canonically verified; resubmit the request.",
+      );
+    }
+    if (!allowed.includes(request.command)) {
+      throw new AuthQueueError(
+        "invalid_command",
+        `Auth merge command does not match the canonical form for the reviewed branches (expected \`mandible auth merge ${request.head_branch} --into ${request.base_branch}\`). The stored command may have been altered after review; resubmit the request.`,
+      );
+    }
   }
 
   private resolveExecutionContextBeforeApproval(
@@ -2873,16 +2957,18 @@ export class AuthQueue {
    *     first-parent chain from `newBase` ends exactly at `oldBase`, with at
    *     most MAX_BASE_TRANSITION_COMMITS commits (this subsumes the ancestor
    *     check and refuses history rewrites and merged-away bases).
-   *  2. Every commit on that chain is the recorded merge commit of a distinct
-   *     successfully completed auth merge request for this repo and base
-   *     branch — matched against the `MANDIBLE_MERGE_RESULT` merge SHA the
-   *     merge script persisted into the completed request's output — and the
+   *  2. Every commit on that chain is a two-parent merge commit recorded by a
+   *     distinct successfully completed auth merge request for this repo and
+   *     base branch — matched against non-forgeable recorded provenance
+   *     (recordedMergeCommitSha: structured signature evidence, or the
+   *     lifecycle-locked single-occurrence output marker for legacy rows),
+   *     with duplicate SHA claims across requests refused as reuse — and the
    *     commit's second parent is exactly that request's reviewed
    *     `merge_head_sha`.
-   *  3. Every commit on that chain carries a trusted SSH signature from an
-   *     active registered signing credential (`git verify-commit` against the
-   *     user registry via verifyMergeCommitSignature — the same verifier used
-   *     for post-merge signature evidence).
+   *  3. Every commit on that chain carries a trusted SSH signature that
+   *     verifies specifically against an active signing credential of that
+   *     request's approving user (`git verify-commit` against the user
+   *     registry via verifyAuthorizedMergeCommitSignature).
    *
    * Anything else — non-descendant rewrites, direct commits to the protected
    * branch, unsigned or unrecorded merges, hierarchical-merge transitions
@@ -2933,33 +3019,52 @@ export class AuthQueue {
       return refuse("first_parent_chain_mismatch");
     }
     // Recorded evidence: completed successful queue merges for this repo and
-    // base branch, keyed by the merge commit their execution recorded.
+    // base branch, keyed by the merge commit their execution recorded
+    // (recordedMergeCommitSha — structured signature evidence preferred, with
+    // the hardened output marker as legacy fallback). A merge SHA claimed by
+    // more than one completed request is reuse/forgery evidence and
+    // disqualifies that SHA entirely (review F1).
     const completedRows = this.db.prepare(
       "SELECT * FROM auth_requests WHERE type = 'merge' AND status = 'completed' " +
         "AND exit_code = 0 AND base_branch = ? AND id != ?",
     ).all(baseBranch, request.id) as Record<string, unknown>[];
     const repoKeys = request.repo ? canonicalRepoKeysForRef(this.db, request.repo) : null;
     const recorded = new Map<string, AuthRequest>();
+    const reused = new Set<string>();
     for (const row of completedRows.map((raw) => mapRow(raw))) {
       if (request.repo) {
         if (!this.repoRefsMatch(request.repo, repoKeys!, row.repo ?? null)) continue;
       } else if (row.cwd !== request.cwd && row.target_repo_root !== request.cwd) {
         continue;
       }
-      const mergeSha = extractSuccessfulMergeCommitSha(row.output);
-      if (mergeSha) recorded.set(mergeSha, row);
+      const mergeSha = this.recordedMergeCommitSha(row);
+      if (!mergeSha) continue;
+      if (recorded.has(mergeSha)) {
+        reused.add(mergeSha);
+        continue;
+      }
+      recorded.set(mergeSha, row);
     }
     for (let index = 0; index < chain.length; index += 1) {
       const commit = chain[index]!;
       const expectedFirstParent = chain[index + 1] ?? oldBase;
-      let firstParent: string;
+      let parents: string[];
       try {
-        firstParent = git(["rev-parse", "--verify", `${commit}^1`]);
+        parents = git(["show", "-s", "--format=%P", commit]).split(/\s+/).filter(Boolean);
       } catch {
-        return refuse("first_parent_unresolvable", { commit });
+        return refuse("parents_unresolvable", { commit });
       }
-      if (firstParent !== expectedFirstParent) {
+      // Review F1 — exactly two parents. The previous ^1/^2 probes would have
+      // accepted an octopus merge whose extra parents smuggle unreviewed
+      // history; a 1-parent commit is a direct commit, never a queue merge.
+      if (parents.length !== 2) {
+        return refuse("not_a_two_parent_merge", { commit, parent_count: parents.length });
+      }
+      if (parents[0] !== expectedFirstParent) {
         return refuse("first_parent_chain_broken", { commit });
+      }
+      if (reused.has(commit)) {
+        return refuse("merge_provenance_reused", { commit });
       }
       const record = recorded.get(commit);
       if (!record) {
@@ -2971,27 +3076,60 @@ export class AuthQueue {
           recorded_request_id: record.id,
         });
       }
-      let secondParent: string | null;
-      try {
-        secondParent = git(["rev-parse", "--verify", `${commit}^2`]);
-      } catch {
-        secondParent = null;
-      }
-      if (secondParent !== record.merge_head_sha) {
+      if (parents[1] !== record.merge_head_sha) {
         return refuse("merge_second_parent_not_reviewed_head", {
           commit,
           recorded_request_id: record.id,
         });
       }
-      const signature = verifyMergeCommitSignature(this.db, cwd, commit);
-      if (!signature.verified) {
-        return refuse("signature_not_trusted", {
+      // Review F1 — the signature must verify specifically against an active
+      // signing credential of the user who approved the matched request, not
+      // any registered credential. A recorded merge without an approving user
+      // cannot qualify.
+      if (!record.approved_by_user_id) {
+        return refuse("recorded_merge_missing_approver", {
           commit,
+          recorded_request_id: record.id,
+        });
+      }
+      const signature = verifyAuthorizedMergeCommitSignature(
+        this.db,
+        cwd,
+        commit,
+        record.approved_by_user_id,
+      );
+      if (!signature.verified) {
+        return refuse("signature_not_authorized", {
+          commit,
+          recorded_request_id: record.id,
           signature_reason: signature.reason,
         });
       }
     }
     return true;
+  }
+
+  /**
+   * Issue 08a5f04 (review F1) — the merge commit a completed successful queue
+   * merge recorded, from non-forgeable sources only. Prefers the immutable
+   * `credential_signature` attribution-evidence row written at finalization
+   * (attachSuccessfulSignatureEvidence stores `details.commit_sha` in the
+   * insert-only attribution_evidence table); when that structured record
+   * exists it is authoritative — an invalid or missing SHA there yields null
+   * rather than falling back. Rows finalized before structured signature
+   * evidence existed fall back to the hardened single-occurrence
+   * MANDIBLE_MERGE_RESULT marker, which is trustworthy because output/result
+   * writes are lifecycle-locked to executing requests.
+   */
+  private recordedMergeCommitSha(row: AuthRequest): string | null {
+    if (row.execution_evidence_id) {
+      const evidence = getAttributionEvidence(this.db, row.execution_evidence_id);
+      if (evidence?.evidence_method === "credential_signature") {
+        const sha = evidence.details.commit_sha;
+        return isValidCommitSha(sha) ? sha : null;
+      }
+    }
+    return extractSuccessfulMergeCommitSha(row.output);
   }
 
   /**
@@ -3324,7 +3462,18 @@ export class AuthQueue {
 
   appendOutput(id: string, chunk: string): AuthRequest {
     this.expireStale();
-    this.requireRequest(id);
+    const request = this.requireRequest(id);
+    // Issue 08a5f04 (review F1) — output is execution evidence: external
+    // appends are accepted only while the executor is actually running.
+    // A marker appended to a resolved request could otherwise be laundered
+    // into merge provenance.
+    if (request.status !== "executing") {
+      throw new AuthQueueError(
+        "invalid_status",
+        `Auth output can only be appended while a request is executing, not ${request.status}.`,
+        request.status,
+      );
+    }
     const timestamp = this.now();
     this.handleOutput({
       request_id: id,
@@ -3338,13 +3487,17 @@ export class AuthQueue {
   setResult(id: string, exitCode: number, output: string, error?: string): AuthRequest {
     this.expireStale();
     const request = this.requireRequest(id);
-    // main: an attributed auth merge result may only be recorded while the
-    // request is actually executing, and a successful attributed merge requires
-    // an approving user. These guards run before any state mutation.
-    if (isAuthMergeCommand(request) && request.requested_by_user_id !== null && request.status !== "executing") {
+    // main: an auth merge result may only be recorded while the request is
+    // actually executing, and a successful attributed merge requires an
+    // approving user. These guards run before any state mutation.
+    // Issue 08a5f04 (review F1) — the executing-only rule covers every merge
+    // command (not just attributed rows): a result posted onto a resolved
+    // merge row would overwrite the recorded output that provenance and
+    // signature evidence are derived from.
+    if (isAuthMergeCommand(request) && request.status !== "executing") {
       throw new AuthQueueError(
         "invalid_status",
-        `Attributed auth merge result cannot be recorded while request is ${request.status}.`,
+        `Auth merge result cannot be recorded while request is ${request.status}.`,
         request.status,
       );
     }

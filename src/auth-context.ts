@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { Db } from "./db.js";
@@ -52,6 +53,48 @@ const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
 export function isAuthMergeCommand(input: AuthMergeContextInput): boolean {
   const command = input.command ?? "";
   return command.includes("auth merge") || command.includes("auth-merge");
+}
+
+/**
+ * Issue 08a5f04 (review F2) — the canonical auth merge command space.
+ *
+ * The submission CLI (cli/auth-request.sh) builds
+ * `${HOME}/.dotfiles/bin/mandible auth merge <head> --into <base>`; a bare
+ * `mandible` prefix is the enumerated PATH-resolved equivalent, and
+ * `--preserve-head-branch` is the one legitimate execution modifier that is
+ * not representable in structured fields. Everything a merge execution does is
+ * derived from these structured fields, so approval refuses any stored command
+ * that does not byte-equal one of these forms: a mutated command can never
+ * execute, and shell-expansion evasion is impossible because only these exact
+ * byte sequences are executable. Hierarchical/multi-source commands have no
+ * canonical form (no per-source reviewed head exists — issue fff66b9) and are
+ * therefore not approvable through the queue.
+ */
+export function canonicalAuthMergeCommands(
+  headBranch: string | null | undefined,
+  baseBranch: string | null | undefined,
+): string[] {
+  if (!headBranch || !baseBranch) return [];
+  if (!isSafeBranchName(headBranch) || !isSafeBranchName(baseBranch)) return [];
+  const core = `auth merge ${headBranch} --into ${baseBranch}`;
+  const prefixes = ["mandible", path.join(os.homedir(), ".dotfiles/bin/mandible")];
+  const commands: string[] = [];
+  for (const prefix of prefixes) {
+    commands.push(`${prefix} ${core}`);
+    commands.push(`${prefix} ${core} --preserve-head-branch`);
+  }
+  return commands;
+}
+
+function isSafeBranchName(value: string): boolean {
+  return (
+    SAFE_BRANCH_NAME.test(value) &&
+    !value.startsWith("-") &&
+    !value.includes("..") &&
+    !value.includes("//") &&
+    !value.endsWith("/") &&
+    !value.endsWith(".")
+  );
 }
 
 export function repoRootFromGitCommonDir(cwd: string): string | null {
@@ -247,14 +290,7 @@ function requireValidBranch(field: "base_branch" | "head_branch", value: string 
       `Auth merge requests require '${field}' so the server can resolve execution context.`
     );
   }
-  if (
-    !SAFE_BRANCH_NAME.test(value) ||
-    value.startsWith("-") ||
-    value.includes("..") ||
-    value.includes("//") ||
-    value.endsWith("/") ||
-    value.endsWith(".")
-  ) {
+  if (!isSafeBranchName(value)) {
     throw new AuthExecutionContextError(
       `Invalid '${field}' for auth merge execution context: ${value}`
     );

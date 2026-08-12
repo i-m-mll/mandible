@@ -202,6 +202,9 @@ describe("atomic auth merge", () => {
     setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
+    // Issue 08a5f04 (review F1) — the output endpoint is lifecycle-locked to
+    // executing requests; the real merge posts its checkpoints mid-execution.
+    db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
     const router = new Router();
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
     const server = createServer({

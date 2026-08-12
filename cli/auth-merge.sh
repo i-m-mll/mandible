@@ -527,6 +527,13 @@ current_branch_sha() {
 merge_source_signed() {
   local source_branch=$1
   local expected=${2:-}
+  # Issue 08a5f04 (re-review advisory) — the preflight cleanliness check ran
+  # earlier in the flow; re-check the tracked worktree immediately before the
+  # non-atomic signing merge so state that changed in between never merges.
+  if ! tracked_worktree_is_clean; then
+    err "${RED}Tracked worktree state changed before the signing merge; refusing to merge. No ref or worktree was changed.${RESET}"
+    return 1
+  fi
   if [[ -z "$expected" ]]; then
     run_signing_git merge --no-ff --no-edit -S "$source_branch"
     return
