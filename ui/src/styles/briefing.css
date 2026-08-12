@@ -1,0 +1,595 @@
+/* Briefing view — umbrella 99b74d6, lane d304a9b.
+ *
+ * Global-view stylesheet convention: imported from ui/src/style.css, tokens
+ * only (no raw hex, no per-file light-theme overrides — light remapping stays
+ * centralized in tokens.css). */
+
+.briefing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6) var(--space-8);
+  max-width: 1080px;
+  margin: 0 auto;
+  width: 100%;
+  color: var(--text-primary);
+}
+
+/* --- health strip --------------------------------------------------------- */
+
+/* Healthy is deliberately near-invisible: it is a background assurance, not a
+ * headline. Degraded and failed states earn contrast. */
+.briefing-health {
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  background: var(--surface-panel);
+  font-size: var(--text-sm);
+}
+
+.briefing-health--loading {
+  color: var(--text-muted);
+}
+
+.briefing-health--degraded {
+  border-color: var(--status-warning-border);
+  background: var(--status-warning-bg-soft);
+}
+
+.briefing-health--failed {
+  border-color: var(--status-danger-border);
+  background: var(--status-danger-bg-soft);
+}
+
+.briefing-health__bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  flex-wrap: wrap;
+}
+
+.briefing-health__toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+
+.briefing-health__toggle:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.briefing-health__caret {
+  color: var(--text-muted);
+}
+
+.briefing-health__counts {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.briefing-health__count {
+  color: var(--text-muted);
+}
+
+.briefing-health__count--stale {
+  color: var(--status-warning-fg);
+}
+
+.briefing-health__count--failed {
+  color: var(--status-danger-fg);
+}
+
+.briefing-health__count--unknown {
+  color: var(--status-warning-fg);
+}
+
+.briefing-health__cost {
+  margin-left: auto;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+.briefing-health__list {
+  list-style: none;
+  margin: 0;
+  padding: 0 var(--space-3) var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.briefing-health__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  padding: var(--space-1) 0;
+  border-top: 1px solid var(--border-faint);
+}
+
+.briefing-health__source {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+}
+
+.briefing-health__meta {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+/* --- digest headline ------------------------------------------------------ */
+
+.briefing-digest {
+  border: 1px solid var(--border-muted);
+  border-left: 3px solid var(--status-purple-border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  padding: var(--space-3) var(--space-4);
+}
+
+.briefing-digest__label {
+  display: inline-block;
+  font-size: var(--text-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--status-purple-fg);
+  margin-bottom: var(--space-2);
+}
+
+.briefing-digest__text {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: var(--leading);
+  color: var(--text-primary);
+}
+
+.briefing-digest__text--absent {
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.briefing-digest__provenance {
+  margin: var(--space-2) 0 0;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+/* --- toolbar -------------------------------------------------------------- */
+
+.briefing-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.briefing-toolbar__filters {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.briefing-toolbar__keys {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.briefing-toolbar__keys kbd {
+  font-family: var(--font-mono);
+  background: var(--surface-muted);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-1);
+}
+
+.briefing-toolbar .briefing-button {
+  margin-left: auto;
+}
+
+.briefing-tab {
+  background: none;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+}
+
+.briefing-tab--active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  color: var(--accent-fg);
+}
+
+.briefing-button {
+  background: var(--surface-muted);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-1) var(--space-3);
+}
+
+.briefing-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text-primary);
+}
+
+.briefing-button:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.briefing-button--keep:hover:not(:disabled) {
+  border-color: var(--status-success-border);
+  color: var(--status-success-fg);
+}
+
+.briefing-button--dismiss:hover:not(:disabled) {
+  border-color: var(--status-danger-border);
+  color: var(--status-danger-fg);
+}
+
+/* --- queue ---------------------------------------------------------------- */
+
+.briefing-queue {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.briefing-group__heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.briefing-group__count {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: 400;
+}
+
+.briefing-group__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.briefing-row {
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+
+.briefing-row--selected {
+  border-color: var(--accent-border);
+  background: var(--surface-selected);
+}
+
+.briefing-row__body {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+.briefing-row__main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  text-align: left;
+}
+
+.briefing-row__main:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: 2px;
+}
+
+.briefing-row__line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.briefing-row__line--secondary {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  line-height: var(--leading);
+}
+
+.briefing-row__title {
+  color: var(--text-primary);
+  font-size: var(--text-lg);
+}
+
+.briefing-row__age {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.briefing-row__actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+/* --- chips ---------------------------------------------------------------- */
+
+.briefing-chip {
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-1);
+  white-space: nowrap;
+}
+
+.briefing-chip--source {
+  border-color: var(--status-info-border);
+  color: var(--status-info-fg);
+}
+
+.briefing-chip--repeat {
+  border-color: var(--status-purple-border);
+  color: var(--status-purple-fg);
+}
+
+.briefing-chip--current,
+.briefing-chip--keep {
+  border-color: var(--status-success-border);
+  color: var(--status-success-fg);
+}
+
+.briefing-chip--stale,
+.briefing-chip--unknown,
+.briefing-chip--expire {
+  border-color: var(--status-warning-border);
+  color: var(--status-warning-fg);
+}
+
+.briefing-chip--failed,
+.briefing-chip--dismiss {
+  border-color: var(--status-danger-border);
+  color: var(--status-danger-fg);
+}
+
+/* --- inline fold-out ------------------------------------------------------ */
+
+/* The detail is a real block in flow, opened by an explicit toggle. It is never
+ * a hover-only affordance: hover state carries no information here. */
+.briefing-detail {
+  border-top: 1px solid var(--border-faint);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3);
+}
+
+.briefing-detail__heading {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.briefing-detail__refs,
+.briefing-detail__occurrences,
+.briefing-detail__decisions,
+.briefing-detail__comments {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  font-size: var(--text-sm);
+}
+
+.briefing-detail__refs li,
+.briefing-detail__occurrences li,
+.briefing-detail__decisions li,
+.briefing-detail__comments li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.briefing-detail__ref-role,
+.briefing-detail__occurrence-when,
+.briefing-detail__actor {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.briefing-detail__provenance {
+  display: flex;
+  gap: var(--space-1);
+  flex-wrap: wrap;
+}
+
+.briefing-detail__empty,
+.briefing-detail__note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.briefing-detail__error {
+  margin: 0;
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+}
+
+.briefing-detail__comment {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.briefing-detail__comment-input {
+  width: 100%;
+  background: var(--surface-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: var(--text-sm);
+  padding: var(--space-2);
+  resize: vertical;
+}
+
+.briefing-ref {
+  color: var(--accent-fg);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  word-break: break-all;
+}
+
+/* An unlinkable ref stays visible and inert — never silently dropped. */
+.briefing-ref--inert {
+  color: var(--text-muted);
+  text-decoration: underline dotted;
+}
+
+/* --- judged / empty / truncation ------------------------------------------ */
+
+.briefing-judged__list {
+  list-style: none;
+  margin: 0 0 var(--space-3);
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.briefing-judged__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-faint);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+}
+
+.briefing-judged__title {
+  flex: 1;
+  font-size: var(--text-md);
+}
+
+.briefing-note,
+.briefing-truncation {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.briefing-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-md);
+}
+
+.briefing-empty h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-lg);
+}
+
+.briefing-empty--healthy {
+  border: 1px dashed var(--border-muted);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  text-align: center;
+}
+
+/* A failed collector plus zero findings is NOT a clean briefing; it reads as a
+ * warning, not as success. */
+.briefing-empty--degraded {
+  border: 1px solid var(--status-warning-border);
+  border-radius: var(--radius-md);
+  background: var(--status-warning-bg-soft);
+  color: var(--status-warning-fg);
+  padding: var(--space-4);
+}
+
+.briefing-error {
+  margin: 0;
+  color: var(--status-danger-fg);
+  font-size: var(--text-sm);
+}
+
+/* --- undo toast ----------------------------------------------------------- */
+
+.briefing-toast {
+  position: fixed;
+  bottom: var(--space-6);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-lg);
+  background: var(--surface-popover);
+  box-shadow: var(--shadow-soft);
+  font-size: var(--text-sm);
+  max-width: min(90vw, 560px);
+}
+
+.briefing-toast__dismiss {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--text-lg);
+  line-height: 1;
+  padding: 0;
+}
+
+/* --- nav rail badge ------------------------------------------------------- */
+
+/* The Briefing badge carries the server-authoritative pending count. It reads
+ * as review work (purple, matching the agent-generated accent above), distinct
+ * from the amber auth badge that means "a human must authenticate something".
+ * Declared here rather than in base.css so the whole view stays in one file;
+ * style.css imports this after base.css, so equal specificity resolves here. */
+.tab-badge--briefing {
+  background: var(--status-purple-bg);
+  color: var(--status-purple-fg);
+}
