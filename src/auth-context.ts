@@ -66,9 +66,10 @@ export function isAuthMergeCommand(input: AuthMergeContextInput): boolean {
  * derived from these structured fields, so approval refuses any stored command
  * that does not byte-equal one of these forms: a mutated command can never
  * execute, and shell-expansion evasion is impossible because only these exact
- * byte sequences are executable. Hierarchical/multi-source commands have no
- * canonical form (no per-source reviewed head exists — issue fff66b9) and are
- * therefore not approvable through the queue.
+ * byte sequences are executable. Multi-source commands have no canonical form
+ * (no per-source reviewed head exists) and are therefore not approvable
+ * through the queue; hierarchical merge execution itself was removed in issue
+ * 060c9c8.
  *
  * The absolute-prefix variants embed os.homedir() and the whole command later
  * runs through `bash -c`, so a daemon launched with a metacharacter-bearing
@@ -127,7 +128,7 @@ function safeCanonicalHomeDir(): string | null {
  * byte-equals the server-resolved head branch, and both resolved branches are
  * safe names, this returns the canonical `mandible auth merge <head> --into
  * <base>` form so the reviewed row is canonical from the start. Anything else
- * — extra flags, a different branch argument, hierarchical shapes — returns
+ * — extra flags, a different branch argument, multi-source shapes — returns
  * null and the command is stored as-is (approval will refuse it, as designed).
  *
  * This normalization runs only at POST submission, never at approval: the

@@ -373,13 +373,19 @@ export interface AuthQueueOptions {
 const GIT_OID_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const REFS_HEADS_PREFIX = "refs/heads/";
 
-// Issue 08a5f04 (review F2) — hierarchical/multi-source merge commands. The
-// daemon cannot bind a single reviewed head to every source such a command
-// merges. Approve-time canonical-command verification
-// (enforceCanonicalMergeCommand) refuses them outright — canonical forms are
-// single-source only — and this regex remains as defense in depth for the
-// recompute/refresh paths, which must never re-attest a pending hierarchical
-// request (full execution-descriptor redesign tracked as issue fff66b9).
+// Issue 060c9c8 — hierarchical/multi-source merge execution has been removed
+// from the auth queue path entirely (cli/auth-merge.sh no longer accepts
+// `--hierarchical`). Approve-time canonical-command verification
+// (enforceCanonicalMergeCommand) refuses any such command shape — canonical
+// forms are single-source only — so every local daemon approval/execution
+// path refuses hierarchical-shaped commands. That guarantee is local-only:
+// remote-mode requests are executed by external runners outside this
+// enforcement, and update() still allows `command` edits after approval
+// (execution-field freezing is future work, issue fff66b9). This regex
+// survives for two narrow uses: a targeted refusal message at approval, and
+// the sibling-revalidation candidate refresh, which runs without approve-time
+// canonical enforcement on its path and must never re-attest a
+// hierarchical-shaped pending row stored by a raw submitter.
 const HIERARCHICAL_MERGE_COMMAND_RE = /(^|\s)--hierarchical(?:\s|$)/;
 
 // Issue 08a5f04 (review F1) — upper bound on the number of first-parent
@@ -2084,8 +2090,8 @@ export class AuthQueue {
       }
     }
     // Issue 08a5f04 (review F2) — `command` is part of the reviewed merge
-    // inputs: a mutated command (e.g. hierarchical source injection) must drop
-    // the retained candidate exactly like a branch or SHA change.
+    // inputs: a mutated command (e.g. source injection) must drop the
+    // retained candidate exactly like a branch or SHA change.
     const invalidatesMergeCandidate = ["repo", "base_branch", "head_branch", "merge_head_sha", "cwd", "command"]
       .some((field) => field in payload);
     if (invalidatesMergeCandidate) {
@@ -2484,11 +2490,13 @@ export class AuthQueue {
         );
       }
     }
+    // Issue 060c9c8 — no hierarchical gate here: enforceCanonicalMergeCommand
+    // already refused every non-canonical (including hierarchical-shaped)
+    // merge command earlier in this same synchronous approval.
     const atomicEnabled = Boolean(
       request.execution_mode !== "remote" &&
       isAuthMergeCommand(request) &&
       candidateExact &&
-      !HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) &&
       !this.hasNativeMergeHooks(request.cwd) &&
       signerLines.length > 0
     );
@@ -2536,14 +2544,14 @@ export class AuthQueue {
    * a reviewed head SHA). For those, the stored command must byte-equal one of
    * the canonical forms derived from the stored structured fields
    * (canonicalAuthMergeCommands). Anything else — a command mutated after
-   * review (pinned or not), hierarchical/multi-source commands (which have no
-   * single reviewed head), shell-expansion tricks, unknown flags — refuses
-   * approval with invalid_command and requires resubmission.
+   * review (pinned or not), multi-source commands (which have no single
+   * reviewed head), shell-expansion tricks, unknown flags — refuses approval
+   * with invalid_command and requires resubmission.
    *
-   * Behavior change: hierarchical (`--hierarchical`) merge commands are no
-   * longer approvable through the auth queue at all; submit one request per
-   * source branch (or run the merge manually outside the queue). The
-   * execution-descriptor redesign that could re-admit them is issue fff66b9.
+   * Issue 060c9c8 — hierarchical merge support has been removed from the auth
+   * queue path entirely (executor included). The historical `--hierarchical`
+   * shape keeps a targeted refusal message below; every other non-canonical
+   * shape gets the generic canonical-mismatch refusal.
    *
    * Residual (documented, issue fff66b9): a merge-type request with no merge
    * structure and a non-merge command is the generic command path and executes
@@ -2854,7 +2862,7 @@ export class AuthQueue {
    * Issue 08a5f04 — approve-time recompute for pure base drift. Returns the
    * refreshed request after a clean re-preflight and re-pin; returns null when
    * the request is ineligible (head drift, unaccounted base transition,
-   * corrupted retained pin, hierarchical command, remote mode, busy repo
+   * corrupted retained pin, remote mode, busy repo
    * execution chain, strict pin, or a non-clean-non-conflict preflight) so the
    * caller falls back to the strict blocking error; throws merge_check_failed
    * with conflict context when the recomputed candidate no longer merges
@@ -2863,12 +2871,13 @@ export class AuthQueue {
    */
   private recomputeStaleCandidateForApproval(request: AuthRequest): AuthRequest | null {
     if (this.strictPinRequested(request)) return null;
+    // Issue 060c9c8 — no hierarchical-shape check here: this recompute runs
+    // only from approve(), strictly after enforceCanonicalMergeCommand refused
+    // every non-canonical (including hierarchical-shaped) merge command in the
+    // same synchronous call.
     if (
       request.execution_mode === "remote" ||
       !isAuthMergeCommand(request) ||
-      // Review F2 — a hierarchical/multi-source command has no single reviewed
-      // head the recompute could re-attest; it keeps strict behavior.
-      HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) ||
       !request.cwd ||
       !request.base_branch ||
       !request.head_branch ||
@@ -2971,9 +2980,10 @@ export class AuthQueue {
    *     registry via verifyAuthorizedMergeCommitSignature).
    *
    * Anything else — non-descendant rewrites, direct commits to the protected
-   * branch, unsigned or unrecorded merges, hierarchical-merge transitions
-   * (whose intermediate commits have no per-commit record), or transitions
-   * longer than the cap — returns false and keeps the strict requeue error.
+   * branch, unsigned or unrecorded merges (including legacy multi-source
+   * merge transitions, whose intermediate commits have no per-commit record),
+   * or transitions longer than the cap — returns false and keeps the strict
+   * requeue error.
    */
   private baseTransitionAccountedFor(
     request: AuthRequest,
@@ -4635,7 +4645,11 @@ export class AuthQueue {
     if (
       request.execution_mode === "remote" ||
       !isAuthMergeCommand(request) ||
-      // Review F2 — hierarchical/multi-source commands are never re-attested.
+      // Issue 060c9c8 — hierarchical merge support is removed and such
+      // commands are refused at approval, but this pass runs outside
+      // approve() with no canonical enforcement on its path, so a
+      // hierarchical-shaped pending row stored by a raw submitter must still
+      // never be re-attested here.
       HIERARCHICAL_MERGE_COMMAND_RE.test(request.command) ||
       !request.cwd ||
       !request.head_branch ||

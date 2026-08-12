@@ -45,11 +45,9 @@ Usage:
   mandible auth merge <source-branch>
   mandible auth merge <source-branch> --into <target>
   mandible auth merge <source-branch> --preserve-head-branch
-  mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 
 Options:
   --into <target>          Target/base branch (default: protected branch)
-  --hierarchical           Merge multiple sources in order into one target
   --preserve-head-branch   Do not tear down the merged source branch/worktree
                            after a successful merge. Used when the source is a
                            long-lived branch (e.g. the Spaces docs branch) that
@@ -1210,7 +1208,6 @@ main() {
     done
   fi
 
-  local hierarchical=false
   local target=""
   local preserve_head=0
   local -a sources=()
@@ -1220,10 +1217,6 @@ main() {
       --help|-h)
         usage
         exit 0
-        ;;
-      --hierarchical)
-        hierarchical=true
-        shift
         ;;
       --preserve-head-branch)
         preserve_head=1
@@ -1370,10 +1363,8 @@ main() {
 
     if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
       verify_merge_not_empty
-      if [[ ${#sources[@]} -gt 0 ]]; then
-        record_auth_merge_result "$pre_merge_head"
-        cleanup_merged_worktrees "${sources[0]}" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-      fi
+      record_auth_merge_result "$pre_merge_head"
+      cleanup_merged_worktrees "$resume_source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
       # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
       exit 0
     else
@@ -1386,31 +1377,24 @@ main() {
     fi
   fi
 
-  if [[ ${#sources[@]} -eq 0 ]]; then
+  if [[ ${#sources[@]} -ne 1 ]]; then
     usage >&2
     exit 2
   fi
-
-  if [[ "$hierarchical" == "false" && ${#sources[@]} -ne 1 ]]; then
-    usage >&2
-    exit 2
-  fi
+  local source=${sources[0]}
 
   if ! branch_exists "$target"; then
     die "Target branch '$target' does not exist." 2
   fi
 
-  local source
-  for source in "${sources[@]}"; do
-    if ! branch_exists "$source"; then
-      die "Source branch '$source' does not exist." 2
-    fi
-  done
+  if ! branch_exists "$source"; then
+    die "Source branch '$source' does not exist." 2
+  fi
 
   # Pre-flight: ensure tracked worktree state and the candidate merge are clean.
   # The definition lives behind `mandible auth check`; this path does not call
   # user dotfiles policy scripts or weaker local fallbacks.
-  if ! run_merge_preflight "$(pwd)" "${sources[0]}" "$target"; then
+  if ! run_merge_preflight "$(pwd)" "$source" "$target"; then
     exit 1
   fi
 
@@ -1421,44 +1405,28 @@ main() {
   lines+=("  ${BOLD_WHITE}Protected Branch Merge${RESET}")
   lines+=("  ")
 
-  local -a commit_counts=()
+  local commit_count
+  commit_count=$(git log --oneline "$target..$source" | wc -l | awk '{print $1}')
+  commit_count=${commit_count:-0}
 
-  for source in "${sources[@]}"; do
-    local commit_count
-    commit_count=$(git log --oneline "$target..$source" | wc -l | awk '{print $1}')
-    commit_count=${commit_count:-0}
-    commit_counts+=("$commit_count")
+  local shortstat
+  shortstat=$(git diff --shortstat "$target..$source")
 
-    local shortstat
-    shortstat=$(git diff --shortstat "$target..$source")
+  local files insertions deletions
+  read -r files insertions deletions <<<"$(parse_shortstat "$shortstat")"
 
-    local files insertions deletions
-    read -r files insertions deletions <<<"$(parse_shortstat "$shortstat")"
-
-    if [[ "$hierarchical" == "false" && "$commit_count" == "0" ]]; then
-      err "Already up to date."
-      exit 0
-    fi
-
-    local IFS_BAK2="$IFS"
-    IFS=$'\n'
-    source_lines=( $(build_lines_for_source "$source" "$target" "$commit_count" "$files" "$insertions" "$deletions") )
-    IFS="$IFS_BAK2"
-
-    lines+=("${source_lines[@]}")
-    lines+=("  ")
-  done
-
-  if [[ "$hierarchical" == "true" ]]; then
-    local total_commits=0
-    for count in "${commit_counts[@]}"; do
-      total_commits=$((total_commits + count))
-    done
-    if (( total_commits == 0 )); then
-      err "Already up to date."
-      exit 0
-    fi
+  if [[ "$commit_count" == "0" ]]; then
+    err "Already up to date."
+    exit 0
   fi
+
+  local IFS_BAK2="$IFS"
+  IFS=$'\n'
+  source_lines=( $(build_lines_for_source "$source" "$target" "$commit_count" "$files" "$insertions" "$deletions") )
+  IFS="$IFS_BAK2"
+
+  lines+=("${source_lines[@]}")
+  lines+=("  ")
 
   preflight_signing_check
 
@@ -1470,7 +1438,7 @@ main() {
   response=$(printf "%s" "$response" | tr '[:upper:]' '[:lower:]')
   case "$response" in
     y|yes)
-      if [[ "${MANDIBLE_AUTH_ATOMIC:-}" != "1" || "$hierarchical" == "true" ]]; then
+      if [[ "${MANDIBLE_AUTH_ATOMIC:-}" != "1" ]]; then
         if ! confirm_checkout_if_needed "$current_branch" "$target"; then
           exit 1
         fi
@@ -1483,9 +1451,9 @@ main() {
   esac
 
   # Atomic execution is deliberately a narrow daemon-selected fast path.
-  # Hierarchical requests, direct/legacy CLI invocations, and repositories with
-  # enabled native merge/commit hooks retain the established git-merge executor.
-  if [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" && "$hierarchical" == "false" ]]; then
+  # Direct/legacy CLI invocations and repositories with enabled native
+  # merge/commit hooks retain the established git-merge executor.
+  if [[ "${MANDIBLE_AUTH_ATOMIC:-}" == "1" ]]; then
     if [[ "$current_branch" != "$target" ]]; then
       die "Atomic auth merge must run in the worktree already tracking target branch '$target'; current branch is '${current_branch:-detached HEAD}'." 1
     fi
@@ -1495,8 +1463,6 @@ main() {
 
     local atomic_base
     atomic_base=$(current_branch_sha "$target")
-    (( ${#sources[@]} == 1 )) || die "Atomic auth merge supports exactly one reviewed source; use the existing hierarchical merge path." 1
-    source=${sources[0]}
     local source_head merge_tree merge_sha
     source_head=$(current_branch_sha "$source")
     # Issue 08a5f04 (review F3) — the reviewed-head context must be internally
@@ -1525,93 +1491,39 @@ main() {
     exit 0
   fi
 
-  if [[ "$hierarchical" == "false" ]]; then
-    source=${sources[0]}
-    local pre_merge_head
-    pre_merge_head=$(git rev-parse HEAD)
-    auth_phase "creating signed merge commit..."
-    # Issue 08a5f04 (review F3) — verify the live source against the reviewed
-    # commit and merge the exact reviewed object on the non-atomic path.
-    if merge_source_signed "$source" "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}"; then
-      auth_phase "signed merge complete; running follow-up actions..."
-      verify_merge_not_empty
-      record_auth_merge_result "$pre_merge_head"
-      cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-      exit 0
-    fi
-    if has_conflicts; then
-      err "Merge conflict detected."
-      if auto_resolve_dist_conflicts; then
-        err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
-        auth_phase "creating signed merge commit after generated-file conflict resolution..."
-        if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
-          auth_phase "signed merge complete; running follow-up actions..."
-          verify_merge_not_empty
-          record_auth_merge_result "$pre_merge_head"
-          cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-          exit 0
-        else
-          err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
-          report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-        fi
-      fi
-    else
-      err "Merge failed."
-      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-    fi
-    exit 1
-  fi
-
   local pre_merge_head
   pre_merge_head=$(git rev-parse HEAD)
-  local -a succeeded=()
-  local hierarchical_source_index=0
-  for source in "${sources[@]}"; do
-    auth_phase "creating signed merge commit for ${source}..."
-    # Issue 08a5f04 (review F3) — the request's reviewed head binds the first
-    # hierarchical source (the request's head branch). Remaining sources have
-    # no per-source reviewed SHA today; that gap is the execution-descriptor
-    # redesign (issue fff66b9), and candidate auto-recompute refuses
-    # hierarchical commands entirely in the meantime.
-    local expected_source_head=""
-    if (( hierarchical_source_index == 0 )); then
-      expected_source_head=${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}
-    fi
-    hierarchical_source_index=$((hierarchical_source_index + 1))
-    if merge_source_signed "$source" "$expected_source_head"; then
-      verify_merge_not_empty
-      succeeded+=("$source")
-      continue
-    fi
-    if has_conflicts; then
-      err "Merge conflict detected while merging $source."
-      if auto_resolve_dist_conflicts; then
-        err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
-        auth_phase "creating signed merge commit after generated-file conflict resolution..."
-        if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
-          verify_merge_not_empty
-          succeeded+=("$source")
-          continue
-        else
-          err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
-          report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-        fi
-      fi
-    else
-      err "Merge failed while merging $source."
-      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
-    fi
-    if (( ${#succeeded[@]} > 0 )); then
-      err "Merges completed before failure: ${succeeded[*]}"
-    fi
-    exit 1
-  done
-
-  record_auth_merge_result "$pre_merge_head"
-  for source in "${succeeded[@]}"; do
+  auth_phase "creating signed merge commit..."
+  # Issue 08a5f04 (review F3) — verify the live source against the reviewed
+  # commit and merge the exact reviewed object on the non-atomic path.
+  if merge_source_signed "$source" "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}"; then
+    auth_phase "signed merge complete; running follow-up actions..."
+    verify_merge_not_empty
+    record_auth_merge_result "$pre_merge_head"
     cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
-  done
-  # Bug: 4afab83 — post-merge hooks now run in the daemon via auth_hooks table
+    exit 0
+  fi
+  if has_conflicts; then
+    err "Merge conflict detected."
+    if auto_resolve_dist_conflicts; then
+      err "${DIM_WHITE}All conflicts were in generated files — continuing merge.${RESET}"
+      auth_phase "creating signed merge commit after generated-file conflict resolution..."
+      if GIT_EDITOR=true run_signing_git -c commit.gpgsign=true merge --continue; then
+        auth_phase "signed merge complete; running follow-up actions..."
+        verify_merge_not_empty
+        record_auth_merge_result "$pre_merge_head"
+        cleanup_merged_worktrees "$source" "$preserve_head" "$target" "$(collect_cleanup_issue_ids "$pre_merge_head")"
+        exit 0
+      else
+        err "${RED}git merge --continue failed after auto-resolving dist conflicts.${RESET}"
+        report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
+      fi
+    fi
+  else
+    err "Merge failed."
+    report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
+  fi
+  exit 1
 }
 
 # Allow tests to source this script for unit-testing individual helpers

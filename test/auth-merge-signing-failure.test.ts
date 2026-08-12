@@ -39,7 +39,9 @@ describe("daemon-context auth merge signing failures", () => {
       .split("\n")
       .filter((line) => /\bmerge --continue\b/.test(line) && /\bif\b/.test(line));
 
-    expect(invocations).toHaveLength(3);
+    // Issue 060c9c8 — the hierarchical execution loop (one call site) was
+    // removed; the resume path and the dist-conflict continuation remain.
+    expect(invocations).toHaveLength(2);
     for (const invocation of invocations) {
       expect(invocation).toContain("GIT_EDITOR=true");
     }

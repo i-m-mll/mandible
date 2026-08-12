@@ -322,7 +322,6 @@ Interactive merge command for protected branches. Requires user authentication v
 ```
 mandible auth merge <source-branch>
 mandible auth merge <source-branch> --into <target>
-mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 ```
 
 **Options:**
@@ -330,14 +329,13 @@ mandible auth merge --hierarchical <b1> <b2> <b3> --into <target>
 | Flag | Description |
 |---|---|
 | `--into <branch>` | Target branch (default: auto-detected protected branch) |
-| `--hierarchical` | Merge multiple branches sequentially |
 
 **Behavior:**
 
 1. Strips agent git config overrides (merges use user's YubiKey, not agent key).
 2. Detects and resumes in-progress merges (`MERGE_HEAD`).
 3. Runs Mandible's shared auth check for tracked dirtiness and conflict detection.
-4. Shows a summary box with diff stats per source branch.
+4. Shows a summary box with diff stats for the source branch.
 5. Prompts for confirmation (reads from `/dev/tty`).
 6. Performs `git merge --no-ff --no-edit -S` (signed merge).
 7. Auto-resolves conflicts in generated dist files (takes `--theirs`).
