@@ -29,8 +29,24 @@ const PROJECT_ID = "prj-finding-test";
 let db: Db;
 let router: Router;
 
-/** Contract v1 §2 DDL for the tables this lane reads (fixture, never a migration). */
+/**
+ * Contract v1 §2 DDL for the tables this lane reads (fixture, never a
+ * migration). Written before the v120 briefing migration existed; now that the
+ * live schema ships these tables, a fresh test DB already has them — in that
+ * case the fixture only clears rows so each test starts empty.
+ */
 function createBriefingStore(database: Db): void {
+  const live = database
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'review_candidates'")
+    .get();
+  if (live) {
+    database.exec(`
+      DELETE FROM decision_events;
+      DELETE FROM candidate_revisions;
+      DELETE FROM review_candidates;
+    `);
+    return;
+  }
   database.exec(`
     CREATE TABLE review_candidates (
       id TEXT PRIMARY KEY,
@@ -298,8 +314,18 @@ describe("finding resolution: latest vs pinned", () => {
   });
 
   it("reports an unresolved reference when the candidate store is absent", () => {
+    // Since the v120 briefing migration, a freshly migrated database always
+    // carries the store; absence means a pre-v120 database, modelled here by
+    // dropping the tables the resolver probes for.
     const fresh = new Database(":memory:") as unknown as Db;
     migrate(fresh);
+    fresh.exec(`
+      DROP TABLE IF EXISTS decision_events;
+      DROP TABLE IF EXISTS candidate_comments;
+      DROP TABLE IF EXISTS candidate_occurrences;
+      DROP TABLE IF EXISTS candidate_revisions;
+      DROP TABLE IF EXISTS review_candidates;
+    `);
     expect(findingStoreAvailable(fresh)).toBe(false);
     const resolution = resolveFindingReference(fresh, "cand-1", { revision_mode: "latest" });
     expect(resolution.resolved).toBe(false);
