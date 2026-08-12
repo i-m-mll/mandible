@@ -17,11 +17,24 @@ export type AppBottomPanelDescriptor = {
 export type AppShellContextValue = {
   bottomPanel: AppBottomPanelDescriptor | null;
   registerBottomPanel(descriptor: AppBottomPanelDescriptor): () => void;
+  /**
+   * Whether the subtree under this provider is the CURRENTLY VISIBLE route.
+   *
+   * Route panels are keep-alive: a view stays mounted (and keeps running its
+   * effects) after the user navigates away, only hidden. Views that poll, hold
+   * a live subscription, or claim keyboard focus must gate that work on this
+   * flag so a hidden instance does not keep fetching or capture key events.
+   *
+   * Outside any provider (standalone render, tests) this is `true`: no shell
+   * means the component is the whole page.
+   */
+  active: boolean;
 };
 
 const noopContext: AppShellContextValue = {
   bottomPanel: null,
   registerBottomPanel: () => () => undefined,
+  active: true,
 };
 
 const AppShellContext = createContext<AppShellContextValue>(noopContext);

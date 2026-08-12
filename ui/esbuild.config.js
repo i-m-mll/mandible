@@ -16,6 +16,7 @@ const routeEntryPoints = {
   graph: 'ui/src/views/graph.tsx',
   timeline: 'ui/src/views/timeline.tsx',
   spaces: 'ui/src/views/spaces/SpacesTab.tsx',
+  briefing: 'ui/src/views/briefing.tsx',
 };
 
 function normalizePath(filePath) {

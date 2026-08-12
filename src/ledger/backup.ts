@@ -134,6 +134,24 @@ export const METADATA_BACKUP_TABLES = [
   "user_groups",
   "user_group_members",
   "permission_grants",
+  // Briefing review store (umbrella 99b74d6 / issue ce22a3a, migration 120).
+  // Candidates and their revisions can only be reconstructed from digest runs
+  // that may no longer exist, and the decision/comment stream is irreplaceable
+  // human judgment, so the whole store is durable metadata rather than
+  // reproducible runtime state. Parent-before-child order: candidates, then
+  // revisions, then occurrences, then the decision and comment streams (which
+  // also reference `users`, already emitted above). `briefing_batches` is the
+  // ingestion idempotency ledger and has no foreign keys, so it comes last.
+  "review_candidates",
+  "candidate_revisions",
+  "candidate_occurrences",
+  "decision_events",
+  "candidate_comments",
+  "briefing_batches",
+  // Agent-dispatch handling events are the audit chain (comment -> handling
+  // event -> session handle) behind human-triggered dispatches; durable
+  // metadata. References candidate_comments and users, both emitted above.
+  "agent_dispatch_events",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

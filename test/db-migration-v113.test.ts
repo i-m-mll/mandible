@@ -7,10 +7,10 @@ import { migrate, openDb, type Db } from "../src/db.js";
 
 // Integration reconciliation (umbrella c16807e): the work-unit merge-scan
 // retirement migration (issue 93d978e) was renumbered to v113 atop main's
-// user-system migrations v107-v111. Migration head is now v118 (issue a64d2de's
-// v115 corrective attribution pass, issue 499c148's v116 session
-// identity-mismatch columns, and issue be2ab49's v117 residual sweep), so a
-// re-migration from a simulated v106 database advances all the way to v118.
+// user-system migrations v107-v111. Migration head has advanced since (through
+// issue 8d12c96's v119 merge-candidate tree and umbrella 99b74d6's v120/v121
+// briefing tables and space_items finding refs), so a re-migration from a
+// simulated v106 database advances all the way to the current head.
 describe("migration v113: work-unit merge-scan retirement", () => {
   let tempDir: string;
   let db: Db;
@@ -40,7 +40,7 @@ describe("migration v113: work-unit merge-scan retirement", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "118",
+      value: "122",
     });
     const columns = db.prepare("PRAGMA table_info(work_units)").all() as Array<{
       name: string;
@@ -57,14 +57,14 @@ describe("migration v113: work-unit merge-scan retirement", () => {
     expect(db.pragma("foreign_key_check")).toEqual([]);
   });
 
-  it("leaves a freshly migrated database at head (v118) with the column present", () => {
+  it("leaves a freshly migrated database at head (v122) with the column present", () => {
     // A fresh baseline (replayed to head) already carries the column.
     const fresh = openDb(path.join(tempDir, "fresh.db"));
     try {
       const columns = fresh.prepare("PRAGMA table_info(work_units)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_scan_retired_at");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "118",
+        value: "122",
       });
     } finally {
       fresh.close();

@@ -52,6 +52,7 @@ import {
   type BlockType,
 } from '../../../../src/spaces/serialize';
 import type { SpaceBlock } from '../../api';
+import { SpaceFindingRef } from './SpaceFindingRef';
 import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
@@ -100,17 +101,28 @@ interface EmbedSnapshot {
   refId: string | null;
   refUri: string | null;
   title: string | null;
+  /**
+   * The embedded item's metadata as captured in the snapshot. Finding embeds
+   * carry their revision semantics here, so a detached embed still renders with
+   * the pinned/latest state it was placed with.
+   */
+  metadata: Record<string, unknown> | null;
 }
 
 function embedSnapshot(block: SpaceBlock | undefined): EmbedSnapshot {
   const snap = (block?.item_snapshot ?? {}) as Record<string, unknown>;
   const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null);
+  const metadata =
+    snap.metadata && typeof snap.metadata === 'object' && !Array.isArray(snap.metadata)
+      ? (snap.metadata as Record<string, unknown>)
+      : null;
   return {
     itemId: block?.item_id ?? str(snap.item_id),
     refType: str(snap.ref_type),
     refId: str(snap.ref_id),
     refUri: str(snap.ref_uri),
     title: str(snap.title),
+    metadata,
   };
 }
 
@@ -332,7 +344,17 @@ function EmbedBlock({
     >
       <figcaption className="spaces-doc-embed__caption">
         <span className="spaces-doc-embed__kind">{kind}</span>
-        {ref ? (
+        {snapshot.refType === 'finding' && snapshot.refId ? (
+          // Read-only finding embed: title, source, revision state, review
+          // state. The document renderer never mutates review state.
+          <SpaceFindingRef
+            source={{
+              ref_id: snapshot.refId,
+              title: snapshot.title,
+              metadata: snapshot.metadata,
+            }}
+          />
+        ) : ref ? (
           <DirectiveRef
             docRef={{
               raw: ref,

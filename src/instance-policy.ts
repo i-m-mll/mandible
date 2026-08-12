@@ -28,9 +28,14 @@ export const OPERATIONAL_MUTATION_EXEMPT_ROUTES: ReadonlySet<string> = new Set([
 
 export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; category: string }> = [
   { prefix: "/api/admin", category: "system" },
+  // Issue ce83a84 — starting an external agent session is an operational
+  // mutation even though it writes little: a read-only instance must not be
+  // able to launch a worker against a real working directory.
+  { prefix: "/api/agent-dispatch", category: "agent_dispatch" },
   { prefix: "/api/artifacts", category: "artifacts" },
   { prefix: "/api/auth", category: "auth" },
   { prefix: "/api/backup", category: "backup" },
+  { prefix: "/api/briefing", category: "briefing" },
   { prefix: "/api/chats", category: "chats" },
   { prefix: "/api/console", category: "console" },
   { prefix: "/api/conversations", category: "conversations" },

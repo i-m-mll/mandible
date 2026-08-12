@@ -28,7 +28,13 @@ import {
 
 export type SpaceRenderer = "canvas" | "document" | "board" | "collection";
 export type SpaceOccurrenceRenderer = "canvas" | "board" | "collection";
-export type SpaceItemRefType = "issue" | "comment" | "artifact" | "external_ref" | "space";
+export type SpaceItemRefType =
+  | "issue"
+  | "comment"
+  | "artifact"
+  | "external_ref"
+  | "space"
+  | "finding";
 
 export const SPACE_RENDERERS: readonly SpaceRenderer[] = [
   "canvas",
@@ -47,6 +53,10 @@ export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = [
   "artifact",
   "external_ref",
   "space",
+  // Briefing review candidates (umbrella 99b74d6). NOTE: the `space_items`
+  // ref_type CHECK constraint must accept 'finding' before these rows persist;
+  // that migration is owned by the briefing schema lane.
+  "finding",
 ];
 
 export interface SpaceRecord {

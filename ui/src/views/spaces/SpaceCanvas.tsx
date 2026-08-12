@@ -61,7 +61,11 @@ import { acquireSharedSse, type SseHandle } from '../../sse-shared';
 import { LoadingSkeleton } from '../../components/LoadingSkeleton';
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import { SpaceItemPicker } from './SpaceItemPicker';
-import { ArtifactReferenceDetail, IssueReferenceDetail } from './SpaceReferenceDetailPanel';
+import {
+  ArtifactReferenceDetail,
+  FindingReferenceDetail,
+  IssueReferenceDetail,
+} from './SpaceReferenceDetailPanel';
 import { SpaceTypeIndicator } from './SpaceTypeIndicator';
 import {
   LEDGER_LINK_TYPES,
@@ -1151,11 +1155,12 @@ export function SpaceCanvas(props: SpaceCanvasProps): JSX.Element {
                 existingItemRefTypes={
                   pickerMode === 'spaces'
                     ? ['space']
-                    : ['issue', 'comment', 'artifact', 'external_ref']
+                    : ['issue', 'comment', 'artifact', 'external_ref', 'finding']
                 }
                 includeIssues={pickerMode === 'items'}
                 includeArtifacts={pickerMode === 'items'}
                 includeSpaces={pickerMode === 'spaces'}
+                includeFindings={pickerMode === 'items'}
                 title={pickerMode === 'spaces' ? 'Link Space' : 'Add items'}
                 searchPlaceholder={
                   pickerMode === 'spaces'
@@ -1642,6 +1647,8 @@ function CanvasNodeInspector({ node }: { node: CanvasNode }): JSX.Element {
         <IssueReferenceDetail issueRef={item.ref_id} />
       ) : item.ref_type === 'artifact' ? (
         <ArtifactReferenceDetail artifactRef={item.ref_uri ?? item.ref_id} />
+      ) : item.ref_type === 'finding' ? (
+        <FindingReferenceDetail item={item} />
       ) : (
         <OccurrenceSummary node={node} />
       )}

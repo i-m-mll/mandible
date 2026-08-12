@@ -53,6 +53,19 @@ import {
   type BlockItemSnapshot,
   type BlockType,
 } from "../ledger/space-blocks.js";
+import {
+  SPACE_FINDING_REVISION_MODES,
+  SPACE_FINDING_WARNING_LATEST_NOT_PINNED,
+  SPACE_FINDING_WARNING_PINNED_MISSING,
+  SPACE_FINDING_WARNING_PINNED_SUPERSEDED,
+  SPACE_FINDING_WARNING_STORE_UNAVAILABLE,
+  type FindingReviewState,
+  type SpaceFindingCandidateSummary,
+  type SpaceFindingRefMetadata,
+  type SpaceFindingResolution,
+  type SpaceFindingRevisionMode,
+  type SpaceFindingRevisionSummary,
+} from "../contracts.js";
 import { SPACE_EVENTS, type SpaceEvent } from "../spaces/events.js";
 import {
   exportAndTrack,
@@ -191,6 +204,15 @@ function validateItemRef(
     }
     return;
   }
+  if (refType === "finding") {
+    if (!findingStoreAvailable(db)) {
+      throw new HttpError(400, `finding ref not found: ${refId} (briefing candidate store unavailable)`);
+    }
+    if (!loadFindingCandidateRow(db, refId)) {
+      throw new HttpError(400, `finding ref not found: ${refId}`);
+    }
+    return;
+  }
   if (refType === "issue") {
     const row = db.prepare("SELECT project_id FROM ledger_issues WHERE id = ?").get(refId) as
       | { project_id: string }
@@ -206,6 +228,341 @@ function validateItemRef(
       WHERE c.id = ?`,
   ).get(refId) as { project_id: string } | undefined;
   if (!row) throw new HttpError(400, `comment ref not found: ${refId}`);
+}
+
+// --- finding references (briefing umbrella 99b74d6) --------------------------
+//
+// A `finding` SpaceItem points at one briefing review candidate
+// (`review_candidates.id`) and carries its revision semantics in the item
+// metadata: `{ revision_mode: 'latest' | 'pinned', pinned_revision_id?: string }`.
+// Everything here is READ-ONLY over the briefing candidate store: Spaces never
+// writes candidates, revisions, or decision events. Placing a finding in a Space
+// is a placement fact and implies NO decision.
+//
+// The candidate store is owned by the briefing server lane. These helpers
+// tolerate its absence (a database that has not yet grown those tables) by
+// reporting an unresolved reference rather than throwing, so the Spaces surface
+// degrades exactly like any other unresolvable ref.
+
+const FINDING_REF_PREFIX = "finding:";
+
+interface FindingCandidateRow {
+  id: string;
+  source: string;
+  candidate_key: string;
+  current_revision_id: string | null;
+  created_at: number | null;
+}
+
+interface FindingRevisionRow {
+  id: string;
+  candidate_id: string;
+  title: string | null;
+  why_notable: string | null;
+  refs_json: string | null;
+  source_ref: string | null;
+  evidence_hash: string | null;
+  evidence_kind: string | null;
+  captured_at: string | null;
+  run_id: string | null;
+  digest_series_ref: string | null;
+  digest_version: number | null;
+  rank: number | null;
+  batch_key: string | null;
+  ingested_at: number | null;
+}
+
+function tableExists(db: Db, name: string): boolean {
+  const row = db
+    .prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = ?")
+    .get(name) as { present: number } | undefined;
+  return !!row;
+}
+
+/** True when the briefing candidate store (contract §2) exists in this database. */
+export function findingStoreAvailable(db: Db): boolean {
+  return tableExists(db, "review_candidates") && tableExists(db, "candidate_revisions");
+}
+
+/** Strip an optional `finding:` prefix from a raw ref; returns the candidate id. */
+export function findingCandidateIdFromRef(ref: string): string {
+  const trimmed = ref.trim();
+  return trimmed.toLowerCase().startsWith(FINDING_REF_PREFIX)
+    ? trimmed.slice(FINDING_REF_PREFIX.length).trim()
+    : trimmed;
+}
+
+function loadFindingCandidateRow(db: Db, candidateId: string): FindingCandidateRow | null {
+  if (!findingStoreAvailable(db)) return null;
+  const row = db
+    .prepare(
+      `SELECT id, source, candidate_key, current_revision_id, created_at
+         FROM review_candidates WHERE id = ?`,
+    )
+    .get(candidateId) as FindingCandidateRow | undefined;
+  return row ?? null;
+}
+
+function projectFindingRevision(row: FindingRevisionRow): SpaceFindingRevisionSummary {
+  let refs: string[] = [];
+  if (row.refs_json) {
+    try {
+      const parsed = JSON.parse(row.refs_json) as unknown;
+      if (Array.isArray(parsed)) refs = parsed.filter((v): v is string => typeof v === "string");
+    } catch {
+      refs = [];
+    }
+  }
+  const evidenceKind =
+    row.evidence_kind === "snapshot-item" || row.evidence_kind === "finding-only"
+      ? row.evidence_kind
+      : null;
+  return {
+    id: row.id,
+    candidate_id: row.candidate_id,
+    title: row.title ?? null,
+    why_notable: row.why_notable ?? null,
+    source_ref: row.source_ref ?? null,
+    evidence_hash: row.evidence_hash ?? null,
+    evidence_kind: evidenceKind,
+    captured_at: row.captured_at ?? null,
+    run_id: row.run_id ?? null,
+    digest_series_ref: row.digest_series_ref ?? null,
+    digest_version: row.digest_version ?? null,
+    rank: row.rank ?? null,
+    batch_key: row.batch_key ?? null,
+    ingested_at: row.ingested_at ?? null,
+    refs,
+  };
+}
+
+function loadFindingRevision(db: Db, revisionId: string): SpaceFindingRevisionSummary | null {
+  if (!findingStoreAvailable(db)) return null;
+  const row = db
+    .prepare("SELECT * FROM candidate_revisions WHERE id = ?")
+    .get(revisionId) as FindingRevisionRow | undefined;
+  return row ? projectFindingRevision(row) : null;
+}
+
+/**
+ * Derived review state of a candidate's CURRENT revision (contract §2): pending
+ * iff there is no effective decision event, where a later `undo` cancels the
+ * preceding decision. Reports `unknown` when the decision store is absent —
+ * never guesses `pending`.
+ */
+function findingReviewState(db: Db, revisionId: string | null): FindingReviewState {
+  if (!revisionId || !tableExists(db, "decision_events")) return "unknown";
+  const rows = db
+    .prepare(
+      `SELECT action FROM decision_events
+        WHERE revision_id = ?
+        ORDER BY created_at ASC, id ASC`,
+    )
+    .all(revisionId) as Array<{ action: string }>;
+  let effective: string | null = null;
+  for (const row of rows) {
+    if (row.action === "undo") effective = null;
+    else if (row.action === "keep" || row.action === "dismiss" || row.action === "expire") {
+      effective = row.action;
+    }
+  }
+  if (effective === "keep") return "kept";
+  if (effective === "dismiss") return "dismissed";
+  if (effective === "expire") return "expired_unreviewed";
+  return "pending";
+}
+
+/**
+ * Read the revision semantics off a `finding` item's metadata. Unknown or
+ * missing values fall back to latest-tracking; validation of authored input is
+ * {@link normalizeFindingMetadata}'s job, not this reader's.
+ */
+export function readFindingRefMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+): SpaceFindingRefMetadata {
+  const raw = metadata ?? {};
+  const mode = raw.revision_mode;
+  const pinned = raw.pinned_revision_id;
+  if (mode === "pinned" && typeof pinned === "string" && pinned.trim()) {
+    return { revision_mode: "pinned", pinned_revision_id: pinned.trim() };
+  }
+  return { revision_mode: "latest" };
+}
+
+/**
+ * Validate + normalize the authored metadata of a `finding` item. `revision_mode`
+ * defaults to `latest` so every stored finding item carries an explicit mode;
+ * `pinned` REQUIRES `pinned_revision_id`, and the pinned revision must belong to
+ * the referenced candidate whenever the candidate store can answer.
+ */
+export function normalizeFindingMetadata(
+  db: Db,
+  candidateId: string,
+  metadata: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const source = metadata ?? {};
+  const rawMode = source.revision_mode;
+  let mode: SpaceFindingRevisionMode = "latest";
+  if (rawMode !== undefined && rawMode !== null) {
+    if (
+      typeof rawMode !== "string" ||
+      !SPACE_FINDING_REVISION_MODES.includes(rawMode as SpaceFindingRevisionMode)
+    ) {
+      throw new HttpError(
+        400,
+        `metadata.revision_mode must be one of: ${SPACE_FINDING_REVISION_MODES.join(", ")}`,
+      );
+    }
+    mode = rawMode as SpaceFindingRevisionMode;
+  }
+
+  const rawPinned = source.pinned_revision_id;
+  if (rawPinned !== undefined && rawPinned !== null && typeof rawPinned !== "string") {
+    throw new HttpError(400, "metadata.pinned_revision_id must be a string");
+  }
+  const pinned = typeof rawPinned === "string" ? rawPinned.trim() : "";
+
+  if (mode === "pinned" && !pinned) {
+    throw new HttpError(400, "metadata.pinned_revision_id is required when revision_mode is 'pinned'");
+  }
+  if (mode === "latest" && pinned) {
+    throw new HttpError(400, "metadata.pinned_revision_id requires revision_mode 'pinned'");
+  }
+  if (mode === "pinned" && findingStoreAvailable(db)) {
+    const row = db
+      .prepare("SELECT candidate_id FROM candidate_revisions WHERE id = ?")
+      .get(pinned) as { candidate_id: string } | undefined;
+    if (!row) throw new HttpError(400, `pinned revision not found: ${pinned}`);
+    if (row.candidate_id !== candidateId) {
+      throw new HttpError(400, `pinned revision ${pinned} does not belong to finding ${candidateId}`);
+    }
+  }
+
+  const normalized: Record<string, unknown> = { ...source, revision_mode: mode };
+  if (mode === "pinned") normalized.pinned_revision_id = pinned;
+  else delete normalized.pinned_revision_id;
+  return normalized;
+}
+
+/**
+ * Resolve one finding reference under its own revision semantics. A pinned
+ * reference always reports the revision it was pinned to — a newer revision
+ * moves `current_revision` and raises `finding_pinned_revision_superseded`, but
+ * never changes what the reference shows. A latest-tracking reference follows
+ * the current revision and always carries `finding_latest_not_pinned`.
+ */
+export function resolveFindingReference(
+  db: Db,
+  rawRef: string,
+  metadata: Record<string, unknown> | null | undefined,
+): SpaceFindingResolution {
+  const candidateId = findingCandidateIdFromRef(rawRef);
+  const meta = readFindingRefMetadata(metadata);
+  const base: SpaceFindingResolution = {
+    ref: `${FINDING_REF_PREFIX}${candidateId}`,
+    candidate_id: candidateId,
+    resolved: false,
+    source: null,
+    candidate_key: null,
+    revision_mode: meta.revision_mode,
+    pinned_revision_id: meta.pinned_revision_id ?? null,
+    effective_revision: null,
+    current_revision: null,
+    revision_state: "unresolved",
+    review_state: "unknown",
+    warnings: [],
+  };
+
+  if (!findingStoreAvailable(db)) {
+    return { ...base, warnings: [SPACE_FINDING_WARNING_STORE_UNAVAILABLE], error: "briefing candidate store unavailable" };
+  }
+  const candidate = loadFindingCandidateRow(db, candidateId);
+  if (!candidate) {
+    return { ...base, error: `finding not found: ${candidateId}` };
+  }
+
+  const currentRevision = candidate.current_revision_id
+    ? loadFindingRevision(db, candidate.current_revision_id)
+    : null;
+  const warnings: string[] = [];
+  let effectiveRevision = currentRevision;
+  let revisionState: SpaceFindingResolution["revision_state"] = "latest";
+
+  if (meta.revision_mode === "pinned") {
+    const pinnedId = meta.pinned_revision_id ?? "";
+    const pinnedRevision = pinnedId ? loadFindingRevision(db, pinnedId) : null;
+    effectiveRevision = pinnedRevision;
+    if (!pinnedRevision) {
+      revisionState = "pinned_missing";
+      warnings.push(SPACE_FINDING_WARNING_PINNED_MISSING);
+    } else if (currentRevision && currentRevision.id !== pinnedRevision.id) {
+      revisionState = "pinned_superseded";
+      warnings.push(SPACE_FINDING_WARNING_PINNED_SUPERSEDED);
+    } else {
+      revisionState = "pinned_current";
+    }
+  } else {
+    warnings.push(SPACE_FINDING_WARNING_LATEST_NOT_PINNED);
+  }
+
+  return {
+    ...base,
+    resolved: true,
+    source: candidate.source,
+    candidate_key: candidate.candidate_key,
+    effective_revision: effectiveRevision,
+    current_revision: currentRevision,
+    revision_state: revisionState,
+    review_state: findingReviewState(db, candidate.current_revision_id),
+    warnings,
+  };
+}
+
+/**
+ * Pickable candidates for the Space item picker. Read-only over the briefing
+ * candidate store; an absent store lists nothing rather than failing, so the
+ * picker keeps working before the briefing lane lands.
+ */
+export function listFindingCandidates(
+  db: Db,
+  options: { limit?: number; query?: string } = {},
+): SpaceFindingCandidateSummary[] {
+  if (!findingStoreAvailable(db)) return [];
+  const limit = Math.max(1, Math.min(options.limit ?? 200, 1000));
+  const rows = db
+    .prepare(
+      `SELECT c.id AS id, c.source AS source, c.candidate_key AS candidate_key,
+              c.current_revision_id AS current_revision_id, c.created_at AS created_at,
+              r.title AS title
+         FROM review_candidates c
+         LEFT JOIN candidate_revisions r ON r.id = c.current_revision_id
+        ORDER BY c.created_at DESC, c.id ASC`,
+    )
+    .all() as Array<FindingCandidateRow & { title: string | null }>;
+
+  const needle = (options.query ?? "").trim().toLowerCase();
+  const out: SpaceFindingCandidateSummary[] = [];
+  for (const row of rows) {
+    if (
+      needle &&
+      !(row.title ?? "").toLowerCase().includes(needle) &&
+      !row.source.toLowerCase().includes(needle) &&
+      !row.id.toLowerCase().includes(needle)
+    ) {
+      continue;
+    }
+    out.push({
+      candidate_id: row.id,
+      source: row.source,
+      candidate_key: row.candidate_key,
+      title: row.title ?? null,
+      current_revision_id: row.current_revision_id ?? null,
+      review_state: findingReviewState(db, row.current_revision_id ?? null),
+      created_at: row.created_at ?? null,
+    });
+    if (out.length >= limit) break;
+  }
+  return out;
 }
 
 // --- unified ref resolver ----------------------------------------------------
@@ -359,6 +716,45 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     }
   };
   router.get("/api/spaces/resolve", resolveHandler, { fileRpc: "allow" });
+
+  // Finding (briefing review candidate) reads. Registered before /api/spaces/:id
+  // for the same literal-path reason. Both are READ-ONLY: Spaces displays review
+  // state but never mutates it — the Briefing view is the single write surface.
+  router.get("/api/spaces/findings", (req, res) => {
+    try {
+      const limitRaw = queryString(req, "limit");
+      const limit = limitRaw ? Number(limitRaw) : undefined;
+      sendJson(res, 200, {
+        findings: listFindingCandidates(getDb(), {
+          limit: Number.isFinite(limit) ? limit : undefined,
+          query: queryString(req, "q"),
+        }),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  // Resolve a candidate under caller-supplied revision semantics (used before a
+  // placement exists, e.g. the item picker preview).
+  router.get("/api/spaces/findings/:candidate_id/resolve", (req, res) => {
+    try {
+      const mode = queryString(req, "revision_mode");
+      if (mode !== undefined && !SPACE_FINDING_REVISION_MODES.includes(mode as SpaceFindingRevisionMode)) {
+        throw new HttpError(400, `revision_mode must be one of: ${SPACE_FINDING_REVISION_MODES.join(", ")}`);
+      }
+      const pinned = queryString(req, "pinned_revision_id");
+      const metadata: Record<string, unknown> = {
+        revision_mode: mode ?? "latest",
+        ...(pinned ? { pinned_revision_id: pinned } : {}),
+      };
+      sendJson(res, 200, {
+        resolution: resolveFindingReference(getDb(), req.params.candidate_id, metadata),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
   router.get("/api/refs/resolve", resolveHandler, { fileRpc: "allow" });
 
   // --- spaces CRUD ---
@@ -476,12 +872,19 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       const refType = requireRefType(body.ref_type);
       const refId = requireString(body, "ref_id");
       validateItemRef(db, space, refType, refId);
+      // A finding placement records revision semantics on the item metadata and
+      // is a placement fact only: no decision event is created here or anywhere
+      // else in the Spaces surface.
+      const metadata =
+        refType === "finding"
+          ? normalizeFindingMetadata(db, refId, optionalMetadata(body))
+          : optionalMetadata(body);
       const result = addSpaceItem(db, space.id, {
         ref_type: refType,
         ref_id: refId,
         ref_uri: optionalString(body, "ref_uri"),
         title: optionalString(body, "title"),
-        metadata: optionalMetadata(body),
+        metadata,
       });
       emit(SPACE_EVENTS.SPACE_ITEM_ADDED, space.id);
       sendJson(res, result.created ? 201 : 200, {
@@ -498,14 +901,23 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
     try {
       const db = getDb();
       loadSpaceOr404(db, req.params.id);
-      if (!getSpaceItem(db, req.params.id, req.params.item_id)) {
+      const existing = getSpaceItem(db, req.params.id, req.params.item_id);
+      if (!existing) {
         throw new HttpError(404, "item not found");
       }
       const body = bodyRecord(req);
+      const rawMetadata = optionalMetadata(body);
+      // Re-pinning or switching a finding reference back to latest-tracking is a
+      // metadata edit on the placement, validated with the same rules as the
+      // original placement. It still records no decision.
+      const metadata =
+        existing.ref_type === "finding" && rawMetadata !== undefined
+          ? normalizeFindingMetadata(db, existing.ref_id, rawMetadata)
+          : rawMetadata;
       const item = updateSpaceItem(db, req.params.id, req.params.item_id, {
         ref_uri: optionalString(body, "ref_uri"),
         title: optionalString(body, "title"),
-        metadata: optionalMetadata(body),
+        metadata,
       });
       emit(SPACE_EVENTS.SPACE_ITEM_UPDATED, req.params.id);
       sendJson(res, 200, { item });
@@ -523,6 +935,23 @@ export function registerSpacesRoutes(router: RouteRegistrar): void {
       }
       emit(SPACE_EVENTS.SPACE_ITEM_REMOVED, req.params.id);
       sendJson(res, 200, { ok: true, id: req.params.item_id });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  // Resolve one PLACED finding reference under the revision semantics stored on
+  // the placement itself. Read-only.
+  router.get("/api/spaces/:id/items/:item_id/finding", (req, res) => {
+    try {
+      const db = getDb();
+      loadSpaceOr404(db, req.params.id);
+      const item = getSpaceItem(db, req.params.id, req.params.item_id);
+      if (!item) throw new HttpError(404, "item not found");
+      if (item.ref_type !== "finding") throw new HttpError(400, "item is not a finding reference");
+      sendJson(res, 200, {
+        resolution: resolveFindingReference(db, item.ref_id, item.metadata),
+      });
     } catch (error) {
       handleError(res, error);
     }

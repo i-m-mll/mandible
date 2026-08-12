@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v119 migration replay.
+ * Schema snapshot generated from a full v1-v122 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 119;
+export const BASELINE_SCHEMA_VERSION = 122;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -84,7 +84,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE space_blocks (\n        id                 TEXT NOT NULL,\n        space_id           TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        parent_id          TEXT,\n        block_type         TEXT NOT NULL\n                             CHECK(block_type IN (\n                               'heading','paragraph','reference','artifact_embed',\n                               'issue_embed','comment_embed','todo'\n                             )),\n        item_id            TEXT,\n        item_snapshot_json TEXT\n                             CHECK(item_snapshot_json IS NULL\n                               OR (json_valid(item_snapshot_json)\n                                   AND json_type(item_snapshot_json)='object')),\n        sort_key           TEXT NOT NULL,\n        markdown           TEXT NOT NULL DEFAULT '',\n        metadata_json      TEXT NOT NULL DEFAULT '{}'\n                             CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at         INTEGER NOT NULL,\n        updated_at         INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        CHECK (item_id IS NULL OR item_snapshot_json IS NOT NULL),\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_blocks(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE RESTRICT\n      )",
   "CREATE TABLE space_edges (\n        id            TEXT PRIMARY KEY,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        source        TEXT NOT NULL,\n        target        TEXT NOT NULL,\n        label         TEXT,\n        style         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        FOREIGN KEY (space_id, source)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, target)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
   "CREATE TABLE space_exports (\n        id                              TEXT PRIMARY KEY,\n        space_id                        TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        repo_id                         TEXT NOT NULL REFERENCES ledger_project_checkouts(id) ON DELETE RESTRICT,\n        branch                          TEXT NOT NULL,\n        path                            TEXT NOT NULL,\n        authority                       TEXT NOT NULL DEFAULT 'mandible'\n                                          CHECK(authority IN ('mandible','repo')),\n        status                          TEXT NOT NULL DEFAULT 'clean'\n                                          CHECK(status IN ('clean','stale','repo_changed','worktree_dirty','conflict')),\n        last_export_artifact_id         TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        pre_export_snapshot_artifact_id TEXT REFERENCES artifacts(id) ON DELETE SET NULL,\n        last_export_commit              TEXT,\n        last_export_blob_sha            TEXT,\n        last_export_content_sha256      TEXT,\n        last_seen_commit                TEXT,\n        last_seen_content_sha256        TEXT,\n        created_at                      INTEGER NOT NULL,\n        updated_at                      INTEGER NOT NULL, last_export_blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL, pre_export_snapshot_blob_id TEXT REFERENCES artifact_blob(id) ON DELETE SET NULL,\n        UNIQUE (repo_id, branch, path)\n      )",
-  "CREATE TABLE space_items (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        ref_type      TEXT NOT NULL\n                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space')),\n        ref_id        TEXT NOT NULL CHECK(ref_id != ''),\n        ref_uri       TEXT,\n        title         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        UNIQUE (space_id, ref_type, ref_id),\n        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)\n      )",
+  "CREATE TABLE space_items (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        ref_type      TEXT NOT NULL\n                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space','finding')),\n        ref_id        TEXT NOT NULL CHECK(ref_id != ''),\n        ref_uri       TEXT,\n        title         TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        UNIQUE (space_id, ref_type, ref_id),\n        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)\n      )",
   "CREATE TABLE space_occurrences (\n        id            TEXT NOT NULL,\n        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,\n        item_id       TEXT,\n        renderer      TEXT NOT NULL DEFAULT 'canvas'\n                        CHECK(renderer IN ('canvas','board','collection')),\n        parent_id     TEXT,\n        x             REAL,\n        y             REAL,\n        width         REAL,\n        height        REAL,\n        z_index       INTEGER,\n        sort_key      TEXT,\n        section_id    TEXT,\n        note          TEXT,\n        metadata_json TEXT NOT NULL DEFAULT '{}'\n                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at    INTEGER NOT NULL,\n        updated_at    INTEGER NOT NULL,\n        PRIMARY KEY (id),\n        UNIQUE (space_id, id),\n        FOREIGN KEY (space_id, item_id)\n          REFERENCES space_items(space_id, id) ON DELETE CASCADE,\n        FOREIGN KEY (space_id, parent_id)\n          REFERENCES space_occurrences(space_id, id) ON DELETE CASCADE\n      )",
   "CREATE TABLE spaces (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        title            TEXT NOT NULL,\n        default_renderer TEXT NOT NULL DEFAULT 'canvas'\n                           CHECK(default_renderer IN ('canvas','document','board','collection')),\n        description      TEXT,\n        metadata_json    TEXT NOT NULL DEFAULT '{}'\n                           CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),\n        created_at       INTEGER NOT NULL,\n        updated_at       INTEGER NOT NULL\n      )",
   "CREATE TABLE starred_chats (\n        id TEXT PRIMARY KEY,\n        session_id TEXT,\n        label TEXT NOT NULL,\n        notes TEXT,\n        transcript_path TEXT,\n        cwd TEXT,\n        branch TEXT,\n        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now') * 1000)\n      )",
@@ -319,6 +319,120 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
   "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
   "CREATE TRIGGER trg_work_units_assigned_session_update_normalize\n     AFTER UPDATE OF assigned_session_id ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
+  // Migration v120 (umbrella 99b74d6 / issue ce22a3a) — briefing review store.
+  // The equivalence test normalizes whitespace, so these read as ordinary DDL
+  // rather than the single-line dump form above.
+  `CREATE TABLE review_candidates (
+        id                  TEXT PRIMARY KEY,
+        source              TEXT NOT NULL,
+        candidate_key       TEXT NOT NULL,
+        current_revision_id TEXT,
+        created_at          INTEGER NOT NULL,
+        UNIQUE(source, candidate_key)
+      )`,
+  `CREATE TABLE candidate_revisions (
+        id                TEXT PRIMARY KEY,
+        candidate_id      TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
+        title             TEXT NOT NULL,
+        why_notable       TEXT,
+        refs_json         TEXT NOT NULL DEFAULT '[]'
+                            CHECK(json_valid(refs_json) AND json_type(refs_json)='array'),
+        source_ref        TEXT,
+        evidence_hash     TEXT NOT NULL,
+        evidence_kind     TEXT NOT NULL
+                            CHECK(evidence_kind IN ('snapshot-item','finding-only')),
+        captured_at       TEXT,
+        run_id            TEXT,
+        digest_series_ref TEXT,
+        digest_version    INTEGER,
+        rank              INTEGER,
+        batch_key         TEXT NOT NULL,
+        ingested_at       INTEGER NOT NULL,
+        UNIQUE(candidate_id, evidence_hash)
+      )`,
+  `CREATE TABLE candidate_occurrences (
+        id             TEXT PRIMARY KEY,
+        revision_id    TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        digest_version INTEGER,
+        batch_key      TEXT NOT NULL,
+        seen_at        INTEGER NOT NULL,
+        UNIQUE(revision_id, batch_key)
+      )`,
+  `CREATE TABLE decision_events (
+        id            TEXT PRIMARY KEY,
+        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        action        TEXT NOT NULL CHECK(action IN ('keep','dismiss','undo','expire')),
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        comment_id    TEXT,
+        created_at    INTEGER NOT NULL
+      )`,
+  `CREATE TABLE candidate_comments (
+        id            TEXT PRIMARY KEY,
+        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        body          TEXT NOT NULL,
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        created_at    INTEGER NOT NULL
+      )`,
+  `CREATE TABLE briefing_batches (
+        batch_key         TEXT PRIMARY KEY,
+        task_identity     TEXT NOT NULL,
+        run_id            TEXT,
+        digest_series_ref TEXT,
+        digest_version    INTEGER,
+        item_count        INTEGER NOT NULL DEFAULT 0,
+        received_at       INTEGER NOT NULL
+      )`,
+  `CREATE INDEX idx_review_candidates_source
+         ON review_candidates(source, created_at DESC)`,
+  `CREATE INDEX idx_candidate_revisions_candidate
+         ON candidate_revisions(candidate_id, ingested_at DESC)`,
+  `CREATE INDEX idx_candidate_revisions_batch
+         ON candidate_revisions(batch_key)`,
+  `CREATE INDEX idx_candidate_occurrences_revision
+         ON candidate_occurrences(revision_id, seen_at DESC)`,
+  `CREATE INDEX idx_candidate_occurrences_batch
+         ON candidate_occurrences(batch_key)`,
+  `CREATE INDEX idx_decision_events_revision
+         ON decision_events(revision_id, created_at)`,
+  `CREATE INDEX idx_decision_events_candidate
+         ON decision_events(candidate_id, created_at)`,
+  `CREATE INDEX idx_candidate_comments_candidate
+         ON candidate_comments(candidate_id, created_at)`,
+  `CREATE INDEX idx_briefing_batches_task
+         ON briefing_batches(task_identity, digest_version)`,
+  // Migration v122 (umbrella 99b74d6 / issue ce83a84) — agent dispatch
+  // handling events: the audit chain comment -> handling event -> session
+  // handle for human-initiated Claude dispatch.
+  `CREATE TABLE agent_dispatch_events (
+        id             TEXT PRIMARY KEY,
+        subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
+        candidate_id   TEXT REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id    TEXT REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        comment_id     TEXT REFERENCES candidate_comments(id) ON DELETE SET NULL,
+        issue_id       TEXT,
+        actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        provider       TEXT NOT NULL DEFAULT 'claude',
+        instruction    TEXT NOT NULL,
+        cwd            TEXT NOT NULL,
+        prompt_path    TEXT,
+        prompt_sha256  TEXT,
+        status         TEXT NOT NULL
+                         CHECK(status IN ('dispatching','dispatched','failed')),
+        session_handle TEXT,
+        session_id     TEXT,
+        attach_command TEXT,
+        error          TEXT,
+        created_at     INTEGER NOT NULL,
+        settled_at     INTEGER
+      )`,
+  `CREATE INDEX idx_agent_dispatch_events_candidate
+         ON agent_dispatch_events(candidate_id, created_at DESC)`,
+  `CREATE INDEX idx_agent_dispatch_events_issue
+         ON agent_dispatch_events(issue_id, created_at DESC)`,
+  `CREATE INDEX idx_agent_dispatch_events_comment
+         ON agent_dispatch_events(comment_id)`,
 ];
 
 const COMPLETED_POST_MIGRATIONS: readonly string[] = [
@@ -341,6 +455,7 @@ const COMPLETED_POST_MIGRATIONS: readonly string[] = [
   "post_migration.v87_backfill_project_keys.complete",
   "post_migration.v89_backfill_orphan_artifact_series.complete",
   "post_migration.v90_space_items_link_space_refs.complete",
+  "post_migration.v121_space_items_finding_refs.complete",
   "post_migration.v91_backfill_artifact_identity.complete",
   "post_migration.v104_artifact_canonical_targets.complete",
   "post_migration.v105_space_export_canonical_artifacts.complete"
