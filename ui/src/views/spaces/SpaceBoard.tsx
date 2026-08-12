@@ -50,6 +50,8 @@ import {
 import type { SpaceRendererMountProps } from './SpacesViewShell';
 import type { SpaceViewModel } from './types';
 import { buildSpaceViewModel } from './collectionModel';
+import { SpaceFindingRef, findingSourceFromItem } from './SpaceFindingRef';
+import { isFindingItem } from './findingModel';
 import {
   projectBoard,
   readBoardMetadata,
@@ -113,6 +115,12 @@ function createBoardShellModel(projectId: string, spaceId: string): SpaceViewMod
 function CardRef({ item }: { item: SpaceItem }): JSX.Element {
   const ref = cardRefString(item);
   const parsed = useMemo(() => parseResourceRef(ref), [ref]);
+
+  // Finding cards render read-only through the shared briefing component; the
+  // board never exposes a review-state control (Briefing is the write surface).
+  if (isFindingItem(item)) {
+    return <SpaceFindingRef source={findingSourceFromItem(item)} compact />;
+  }
 
   const label = cardLabel(item, parsed ? parsed.display : displayResourceRef(ref));
   const href = parsed ? resourceRefHref(parsed.canonical) : undefined;
@@ -860,6 +868,7 @@ export function SpaceBoardRenderer({ projectId, spaceId }: SpaceRendererMountPro
                 spaceId={spaceId}
                 projectId={projectId}
                 existingItems={items}
+                includeFindings
                 isItemInView={isItemOnBoard}
                 alreadyInViewLabel="Already on board"
                 afterAdd={addBoardItem}

@@ -29,6 +29,8 @@ import {
   type SpaceItem,
 } from '../../api';
 import { SpaceItemPicker } from './SpaceItemPicker';
+import { SpaceFindingRef, findingSourceFromItem } from './SpaceFindingRef';
+import { isFindingItem } from './findingModel';
 import { parseResourceRef, resourceRefHref, displayResourceRef } from '../../resource-refs';
 import { acquireSharedSse } from '../../sse-shared';
 import { usePersistedViewState } from '../../hooks/usePersistedViewState';
@@ -72,6 +74,13 @@ function matchesFilter(label: string, ref: string, filter: string): boolean {
 function ItemRef({ item }: { item: SpaceItem }): JSX.Element {
   const ref = itemRefString(item);
   const parsed = useMemo(() => parseResourceRef(ref), [ref]);
+
+  // Finding references render read-only through the shared briefing component
+  // (title + source chip + revision state + review state). Review state is
+  // displayed here and mutated only in the Briefing view.
+  if (isFindingItem(item)) {
+    return <SpaceFindingRef source={findingSourceFromItem(item)} compact />;
+  }
 
   // Prefer the item's human label (title) as the visible text; the ref remains
   // the resolve authority. A ref the C6 grammar does not recognize still renders
@@ -378,6 +387,7 @@ export function SpaceCollectionRenderer({ projectId, spaceId }: SpaceRendererMou
                 spaceId={spaceId}
                 projectId={projectId}
                 existingItems={items}
+                includeFindings
                 isItemInView={() => true}
                 alreadyInViewLabel="In collection"
                 onAdded={onItemsAdded}

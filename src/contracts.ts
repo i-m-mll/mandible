@@ -676,11 +676,11 @@ export type ArtifactDraftPublishResult = {
 export type SpaceRenderer = 'canvas' | 'document' | 'board' | 'collection';
 /** Occurrence-level renderer. `document` is intentionally excluded — document structure lives in {@link SpaceBlock}, not occurrences. */
 export type SpaceOccurrenceRenderer = 'canvas' | 'board' | 'collection';
-export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref' | 'space';
+export type SpaceItemRefType = 'issue' | 'comment' | 'artifact' | 'external_ref' | 'space' | 'finding';
 
 export const SPACE_RENDERERS: readonly SpaceRenderer[] = ['canvas', 'document', 'board', 'collection'];
 export const SPACE_OCCURRENCE_RENDERERS: readonly SpaceOccurrenceRenderer[] = ['canvas', 'board', 'collection'];
-export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref', 'space'];
+export const SPACE_ITEM_REF_TYPES: readonly SpaceItemRefType[] = ['issue', 'comment', 'artifact', 'external_ref', 'space', 'finding'];
 
 export type Space = {
   id: string;
@@ -1146,3 +1146,117 @@ export function isBriefingEvent(value: unknown): value is BriefingEvent {
   return typeof value === 'string'
     && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
 }
+
+// ---------------------------------------------------------------------------
+// Space finding references (briefing umbrella 99b74d6, lane d7e51a1).
+//
+// A `finding` SpaceItem points at ONE briefing review candidate:
+// `ref_id` is the candidate id, and the item `metadata` carries the reference's
+// explicit revision semantics — `revision_mode: 'latest' | 'pinned'`, where
+// `pinned` REQUIRES `pinned_revision_id`. A pinned reference keeps showing the
+// revision it was pinned to when a newer revision arrives; a latest-tracking
+// reference follows the candidate's current revision and says so (the
+// `finding_latest_not_pinned` warning mirrors the artifact-series
+// `series_latest_not_pinned` idiom).
+//
+// Spaces are a READ-ONLY surface for findings: review state is displayed but
+// never mutated from a Space, and adding a finding to a Space is a placement
+// fact only — it implies no decision event.
+// ---------------------------------------------------------------------------
+
+export type SpaceFindingRevisionMode = 'latest' | 'pinned';
+
+export const SPACE_FINDING_REVISION_MODES: readonly SpaceFindingRevisionMode[] = ['latest', 'pinned'];
+
+/** The `metadata` shape stored on a `finding` SpaceItem. */
+export type SpaceFindingRefMetadata = {
+  revision_mode: SpaceFindingRevisionMode;
+  /** Required when (and only when) `revision_mode` is `'pinned'`. */
+  pinned_revision_id?: string;
+};
+
+/**
+ * Derived review state of a candidate's CURRENT revision (contract §2: pending
+ * iff the current revision has no effective decision event). `unknown` is
+ * reported when the decision store is unavailable, never guessed as pending.
+ */
+export type FindingReviewState = 'pending' | 'kept' | 'dismissed' | 'expired_unreviewed' | 'unknown';
+
+export type FindingEvidenceKind = 'snapshot-item' | 'finding-only';
+
+/** One `candidate_revisions` row, projected for display. */
+export type SpaceFindingRevisionSummary = {
+  id: string;
+  candidate_id: string;
+  title: string | null;
+  why_notable: string | null;
+  source_ref: string | null;
+  evidence_hash: string | null;
+  evidence_kind: FindingEvidenceKind | null;
+  captured_at: string | null;
+  run_id: string | null;
+  digest_series_ref: string | null;
+  digest_version: number | null;
+  rank: number | null;
+  batch_key: string | null;
+  ingested_at: number | null;
+  refs: string[];
+};
+
+/** A pickable review candidate (Space item picker rows). */
+export type SpaceFindingCandidateSummary = {
+  candidate_id: string;
+  source: string;
+  candidate_key: string;
+  title: string | null;
+  current_revision_id: string | null;
+  review_state: FindingReviewState;
+  created_at: number | null;
+};
+
+/**
+ * Revision state of one placed reference:
+ * - `latest` — tracking mode, showing the candidate's current revision.
+ * - `pinned_current` — pinned, and the pin is still the current revision.
+ * - `pinned_superseded` — pinned, and a newer revision exists (the reference
+ *   deliberately does NOT move).
+ * - `pinned_missing` — pinned to a revision that is not in the store.
+ * - `unresolved` — the candidate itself could not be resolved.
+ */
+export type SpaceFindingRevisionState =
+  | 'latest'
+  | 'pinned_current'
+  | 'pinned_superseded'
+  | 'pinned_missing'
+  | 'unresolved';
+
+export type SpaceFindingResolution = {
+  /** Canonical `finding:<candidate id>` ref. */
+  ref: string;
+  candidate_id: string;
+  resolved: boolean;
+  source: string | null;
+  candidate_key: string | null;
+  revision_mode: SpaceFindingRevisionMode;
+  pinned_revision_id: string | null;
+  /** The revision this reference displays under its own revision mode. */
+  effective_revision: SpaceFindingRevisionSummary | null;
+  /** The candidate's current (newest) revision, whatever this reference shows. */
+  current_revision: SpaceFindingRevisionSummary | null;
+  revision_state: SpaceFindingRevisionState;
+  review_state: FindingReviewState;
+  warnings: string[];
+  error?: string;
+};
+
+/** Latest-tracking reference: mirrors artifact `series_latest_not_pinned`. */
+export const SPACE_FINDING_WARNING_LATEST_NOT_PINNED = 'finding_latest_not_pinned';
+/** Pinned reference whose candidate has moved on to a newer revision. */
+export const SPACE_FINDING_WARNING_PINNED_SUPERSEDED = 'finding_pinned_revision_superseded';
+/** Pinned reference whose pinned revision is absent from the store. */
+export const SPACE_FINDING_WARNING_PINNED_MISSING = 'finding_pinned_revision_missing';
+/** The briefing candidate store is not present in this database. */
+export const SPACE_FINDING_WARNING_STORE_UNAVAILABLE = 'finding_store_unavailable';
+
+export type SpaceFindingResolveResponse = { resolution: SpaceFindingResolution };
+export type SpaceFindingListResponse = { findings: SpaceFindingCandidateSummary[] };

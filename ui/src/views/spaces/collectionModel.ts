@@ -177,5 +177,7 @@ export function itemDisplayLabel(item: SpaceItem): string {
 export function itemRefString(item: SpaceItem): string {
   if (item.ref_uri && item.ref_uri.trim()) return item.ref_uri.trim();
   if (item.ref_type === 'artifact') return item.ref_id;
+  // Briefing review candidates carry their own canonical ref form.
+  if (item.ref_type === 'finding') return `finding:${item.ref_id}`;
   return `mandible://${item.ref_type}/${item.ref_id}`;
 }
