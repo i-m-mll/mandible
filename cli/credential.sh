@@ -1,0 +1,102 @@
+#!/usr/bin/env zsh
+# mandible credential: credential-material response tooling (issue b3e4a09).
+#
+# Routes:
+#   POST /api/users/credentials/<id>/redact  mask a leaked credential in place
+#
+# Redaction is daemon-side in every transport: only the daemon holds the token
+# pepper needed to prove that a `mandible_pat_...` string in stored text really
+# is this credential. This script only shapes the request and renders counts —
+# no token material is ever sent, printed, or logged.
+
+set -euo pipefail
+
+API_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/api.sh"
+source "$API_HELPER"
+
+RESET=$'\033[0m'
+RED=$'\033[31m'
+
+err() { printf "%b\n" "$*" >&2; }
+die() { err "$1"; exit "${2:-1}"; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  mandible credential redact <credential-id> [--patch-sources] [--json]
+
+redact rescans every stored conversation block — plus the conversation titles
+and summaries derived from them — for the given credential's plaintext,
+verifying each `mandible_pat_...` candidate against that credential's stored
+fingerprint, and replaces every confirmed occurrence with
+`[mandible-credential:<id-prefix>]`. Only counts are reported; the matched
+secret is never printed or logged.
+
+Revoked credentials are accepted deliberately — the recommended order is to
+rotate first (`mandible user token mint <ref> --store`, then
+`mandible user token revoke <credential-id>`) and redact afterwards.
+
+--patch-sources additionally rewrites the same verified spans in the local
+source transcripts the affected conversations came from, so a later full
+re-ingest cannot resurrect the plaintext. Every other byte of those files is
+preserved; each file is replaced atomically. Files that are no longer on disk
+are reported as missing rather than treated as an error.
+
+Requires the local operator's credential (MANDIBLE_TOKEN or
+`mandible user dashboard-link`).
+EOF
+}
+
+require_tools() {
+  api_is_file_rpc || command -v curl >/dev/null 2>&1 || die "curl not found." 1
+  command -v jq >/dev/null 2>&1 || die "jq not found." 1
+}
+
+cmd_redact() {
+  local id="" patch_sources=0 json=0 payload response
+  while (( $# > 0 )); do
+    case "$1" in
+      --patch-sources) patch_sources=1; shift ;;
+      --json) json=1; shift ;;
+      -h|--help) usage; exit 0 ;;
+      -*) die "Unknown option: $1" 2 ;;
+      *) [[ -z "$id" ]] || die "Unexpected argument: $1" 2; id="$1"; shift ;;
+    esac
+  done
+  [[ -n "$id" ]] || die "Usage: mandible credential redact <credential-id> [--patch-sources] [--json]" 2
+  require_tools
+
+  payload=$(jq -nc --argjson patch "$(( patch_sources ? 1 : 0 ))" \
+    '{patch_sources: ($patch == 1)}')
+  response="$(api_send POST "/api/users/credentials/$(urlencode "$id")/redact" "$payload")" \
+    || die "${RED}Redaction failed.${RESET}" 1
+
+  if (( json )); then
+    printf '%s\n' "$response" | jq .
+    return 0
+  fi
+
+  printf '%s\n' "$response" | jq -r '
+    "Credential \(.credential_id) [\(.credential_status)]"
+    + "\n  scanned blocks:    \(.scanned_blocks)"
+    + "\n  redacted blocks:   \(.redacted_blocks)"
+    + "\n  redacted titles:   \(.redacted_metadata_fields)"
+    + "\n  redacted spans:    \(.redacted_spans)"
+    + "\n  conversations:     \(.redacted_conversations)"
+    + (if .truncated then "\n  warning: candidate verification hit the pathological per-text limit" else "" end)
+    + (if .sources == null then
+         "\n  sources:           not patched (re-run with --patch-sources to make this durable)"
+       else
+         "\n  source files:      \(.sources.patched_files) patched, "
+         + "\(.sources.unchanged_files) already clean, "
+         + "\(.sources.missing_files) missing, "
+         + "\(.sources.failed_files) failed (of \(.sources.candidate_files))"
+         + "\n  source spans:      \(.sources.patched_spans)"
+       end)'
+}
+
+case "${1:-}" in
+  redact) shift; cmd_redact "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) echo "Unknown credential subcommand: $1" >&2; usage >&2; exit 1 ;;
+esac

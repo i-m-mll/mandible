@@ -27,9 +27,9 @@ const EXPECTED_DYNAMIC_CLI_API_CALL_SITES = [
   // silently escaping the route-policy coverage lint.
   "cli/artifact.sh:123 api_send POST \"$endpoint\" \"$payload\"",
   "cli/auth-list.sh:67 api_get \"$url\" 2>/dev/null)",
-  "cli/conversations.sh:74 api_get \"$request\")",
-  "cli/conversations.sh:139 api_get \"$request\")",
-  "cli/conversations.sh:190 api_get \"$request\")",
+  "cli/conversations.sh:77 api_get \"$request\")",
+  "cli/conversations.sh:142 api_get \"$request\")",
+  "cli/conversations.sh:193 api_get \"$request\")",
   "cli/inbox.sh:38 api_get \"$url\")",
   "cli/inbox.sh:84 api_get \"$url\")",
   "cli/issue.sh:920 api_get \"$checkpoint_path\") \\",
@@ -114,6 +114,12 @@ describe("CLI API route coverage", () => {
             MANDIBLE_CLI_DIR: path.join(process.cwd(), "cli"),
             MANDIBLE_CONFIG_DIR: tempDir,
             MANDIBLE_BASE: "http://127.0.0.1:19420",
+            // api_client_token prefers an explicit MANDIBLE_TOKEN and then the
+            // durable operator keychain credential over the bootstrap file, so
+            // without these two the assertion compares against — and on failure
+            // prints — the real bearer token of whoever ran the suite.
+            MANDIBLE_TOKEN: "",
+            MANDIBLE_NO_KEYCHAIN_TOKEN: "1",
             CODEX_THREAD_ID: "",
             CLAUDE_SESSION_ID: "",
             MANDIBLE_SESSION_ID: "",

@@ -20,7 +20,10 @@ import {
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
-import { scanBlocksForCredentialLeaks } from "./credential-leak-scan.js";
+import {
+  maskActiveCredentialsInText,
+  redactCredentialLeaksInBlocks,
+} from "./credential-leak-scan.js";
 import {
   ingestClaudeWorkflowArtifact,
   isClaudeWorkflowJournalPath,
@@ -1768,6 +1771,67 @@ async function ingestFile(
     return;
   }
 
+  // Issues 71a287e / b3e4a09 — detect leaked Mandible credentials and mask them
+  // before anything about these blocks is persisted, compressed, hashed into a
+  // block id, or broadcast over SSE. The index must never hold a working token;
+  // the source transcript is not modified and stays the only copy of the
+  // original. Masking is a pure function of the credential id, so a re-ingest of
+  // the same file against the same credential table reproduces identical block
+  // content and identical block ids.
+  //
+  // This runs before persistence rather than after (where the scan-only call
+  // used to live): a rolled-back insert can now leave an alert whose block never
+  // landed, which is the safe direction — the leak is real in the source file
+  // either way. The matched token still never leaves the scanner.
+  try {
+    // Derived metadata first: the title is cut from the first user message, so a
+    // token pasted there would otherwise survive in the conversations row and be
+    // quoted into the leak alert. Masking it here also means the alert payload
+    // built below carries the masked title.
+    const maskedTitle = maskActiveCredentialsInText(db, result.conversation.title);
+    result.conversation.title = maskedTitle.text;
+    const maskedSummary = maskActiveCredentialsInText(db, result.conversation.summary);
+    if (result.conversation.summary !== null && result.conversation.summary !== undefined) {
+      result.conversation.summary = maskedSummary.text;
+    }
+
+    const redaction = redactCredentialLeaksInBlocks(
+      db,
+      newBlocks,
+      {
+        conversation_id: conversationId,
+        conversation_title: result.conversation.title,
+        session_id: result.conversation.session_id,
+        source: result.conversation.source,
+        branch: result.conversation.branch,
+      },
+    );
+    const metadataSpans = maskedTitle.replacements + maskedSummary.replacements;
+    if (redaction.redacted_spans > 0 || metadataSpans > 0) {
+      logger("warn", "credential_leak_redacted_at_ingest", {
+        file: filePath,
+        conversation: conversationId,
+        redacted_blocks: redaction.redacted_blocks,
+        redacted_spans: redaction.redacted_spans,
+        redacted_metadata_spans: metadataSpans,
+      });
+    }
+    for (const leak of redaction.detections) {
+      if (!leak.new_event) continue;
+      logger("warn", "credential_leak_detected", {
+        conversation: conversationId,
+        credential_id: leak.credential.credential_id,
+        session_scoped: leak.credential.session_scoped,
+        auto_revoked: leak.revoked,
+      });
+    }
+  } catch (error) {
+    logger("warn", "credential_leak_scan_failed", {
+      file: filePath,
+      error: String(error),
+    });
+  }
+
   // Pre-compress outside the transaction in bounded batches. Compressed bytes
   // are staged on disk so full re-ingests do not retain every output Buffer.
   const compressedContents = await stageCompressedBlockContents(
@@ -2050,38 +2114,6 @@ async function ingestFile(
 
   if (!isSidechain && result.conversation.source === "claude_code") {
     linkExistingClaudeSubagents(db, result.conversation.session_id, conversationId);
-  }
-
-  // Issue 71a287e — scan the newly indexed text for leaked Mandible credentials.
-  // Runs after the blocks are durably persisted so an alert always points at
-  // content that is actually in the index. Never fatal to ingestion, and the
-  // matched token itself never leaves the scanner.
-  try {
-    const scan = scanBlocksForCredentialLeaks(
-      db,
-      newBlocks.map((block) => ({ content: block.content, position: block.position })),
-      {
-        conversation_id: conversationId,
-        conversation_title: result.conversation.title,
-        session_id: result.conversation.session_id,
-        source: result.conversation.source,
-        branch: result.conversation.branch,
-      },
-    );
-    for (const leak of scan.detections) {
-      if (!leak.new_event) continue;
-      logger("warn", "credential_leak_detected", {
-        conversation: conversationId,
-        credential_id: leak.credential.credential_id,
-        session_scoped: leak.credential.session_scoped,
-        auto_revoked: leak.revoked,
-      });
-    }
-  } catch (error) {
-    logger("warn", "credential_leak_scan_failed", {
-      file: filePath,
-      error: String(error),
-    });
   }
 
   // Broadcast SSE event
