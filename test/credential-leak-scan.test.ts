@@ -704,6 +704,53 @@ describe("fail-closed masking", () => {
     }
   });
 
+  it("numbers around an unverified mask the text already contains", () => {
+    // Third-pass finding 4: the discriminator lived in a namespace an attacker
+    // shares. Metadata carrying a literal `[mandible-credential:unverified#1]`
+    // key plus one token-shaped key masked the latter onto the same string, and
+    // JSON.parse keeps only the last of two identical keys — so the structural
+    // loss the discriminator was added to prevent came straight back.
+    makeUser();
+    registerToken("mandible-agent-claude", REAL_TOKEN);
+    const [decoy] = decoyTokens(1);
+    const literal = unverifiedCredentialMask(1);
+    const blocks = [{
+      content: `${literal} and ${decoy}`,
+      position: 0,
+      metadata: { [literal]: "already there", [decoy]: "masked now" },
+    }];
+
+    const result = redactCredentialLeaksInBlocks(
+      dbFailingOn("fingerprint = ?"),
+      blocks,
+      { conversation_id: "conv-namespace" },
+      { pepper },
+    );
+
+    expect(result.verification_failed).toBe(true);
+    // Numbering starts above the literal instead of colliding with it.
+    expect(blocks[0].content).toBe(`${literal} and ${unverifiedCredentialMask(2)}`);
+    expect(Object.keys(blocks[0].metadata as Record<string, unknown>)).toHaveLength(2);
+    expect(blocks[0].metadata).toEqual({
+      [literal]: "already there",
+      [unverifiedCredentialMask(2)]: "masked now",
+    });
+    // Still a pure function of the text, so a re-ingest reproduces it.
+    const again = [{
+      content: `${literal} and ${decoy}`,
+      position: 0,
+      metadata: { [literal]: "already there", [decoy]: "masked now" },
+    }];
+    redactCredentialLeaksInBlocks(
+      dbFailingOn("fingerprint = ?"),
+      again,
+      { conversation_id: "conv-namespace" },
+      { pepper },
+    );
+    expect(again[0].content).toBe(blocks[0].content);
+    expect(again[0].metadata).toEqual(blocks[0].metadata);
+  });
+
   it("numbers unverified spans deterministically across repeats", () => {
     // Masking must stay a pure function of the text: block ids are content
     // hashes, so a mask that varied between passes would churn ids forever.

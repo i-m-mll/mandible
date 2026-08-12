@@ -34,7 +34,10 @@ the matched secret is never printed or logged.
 
 A redacted block's id is recomputed to the value the next ingest of the
 redacted text derives, so links captured after the redaction keep working
-across re-ingest. Conflicts are reported rather than forced.
+across re-ingest. When two blocks of one conversation derive the same id, the
+whole conversation's ids are re-derived in the order a fresh ingest assigns
+them, so the round trip stays stable; anything that could not be settled that
+way is reported rather than left silently unreproducible.
 
 Revoked credentials are accepted deliberately — the recommended order is to
 rotate first (`mandible user token mint <ref> --store`, then
@@ -99,10 +102,18 @@ cmd_redact() {
        else "" end)
     + (if (.renumbered_blocks // 0) > 0 then
          "\n  renumbered blocks: \(.renumbered_blocks)"
-         + (if (.id_conflicts // 0) > 0 then ", \(.id_conflicts) kept (id already in use)" else "" end)
+         + (if (.id_conflicts // 0) > 0 then
+              ", \(.id_conflicts) contested id\(if .id_conflicts == 1 then "" else "s" end)"
+              + " re-derived across the conversation"
+            else "" end)
          + (if (.remapped_leak_alerts // 0) > 0 then
               "\n  repointed alerts:  \(.remapped_leak_alerts)"
             else "" end)
+       else "" end)
+    + (if (.unresolved_id_conflicts // 0) > 0 then
+         "\n  WARNING:           \(.unresolved_id_conflicts) block(s) were left on an id no"
+         + "\n                     re-ingest can derive; see the daemon log for"
+         + "\n                     credential_redaction_block_id_convergence_failed"
        else "" end)
     + (if .truncated then
          "\n  warning: a scanned text exceeded the per-text candidate budget; the"
