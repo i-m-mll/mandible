@@ -4,18 +4,23 @@
 // one recursive watch per root directory; these tests pin the path
 // classification that replaced chokidar's add/change/unlink events.
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import {
+  allowsPerFileFallback,
   groupWatchConfigs,
   makeWatchRootMatcher,
   resolveWatchEventPath,
   watchConversationRoots,
   type ConversationWatchHandle,
+  type PerFileWatchFactory,
+  type RecursiveWatchFactory,
 } from "../src/ingestion.js";
 
 let tempDir = "";
@@ -216,5 +221,311 @@ describe("watchConversationRoots", () => {
 
     expect(handle.rootCount).toBe(1);
     expect(skipped).toEqual([path.join(tempDir, ".gemini", "tmp")]);
+  });
+});
+
+// --- Bug: 4f7e45e finding 6 -------------------------------------------------
+// The first fix fell straight back to per-file chokidar whenever the recursive
+// watch failed synchronously — on darwin too, which is exactly the descriptor
+// explosion the fix exists to prevent — and a live watcher that emitted `error`
+// was only logged, leaving that root permanently unwatched until the hourly
+// reconcile. These tests pin the platform fallback policy and the runtime
+// restart/degrade behavior.
+//
+// Measured on darwin with a 2,000-file corpus and a watch factory that always
+// throws (the simulated FSEvents failure): the darwin path grew the process fd
+// count by 0 (40 -> 40), while the per-file fallback grew it by exactly one fd
+// per file (40 -> 2,040). That per-file slope is the 11,675-fd explosion at
+// real corpus size, which is why darwin must never reach it.
+
+class FakeFsWatcher extends EventEmitter {
+  closeCount = 0;
+  close(): void {
+    this.closeCount += 1;
+  }
+  ref(): this {
+    return this;
+  }
+  unref(): this {
+    return this;
+  }
+}
+
+function asFsWatcher(watcher: FakeFsWatcher): fs.FSWatcher {
+  return watcher as unknown as fs.FSWatcher;
+}
+
+function makeRoot(): string {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-watch-policy-"));
+  const base = path.join(tempDir, ".codex", "sessions");
+  fs.mkdirSync(base, { recursive: true });
+  return base;
+}
+
+/** A per-file factory that records every construction and never opens fds. */
+function recordingPerFileFactory(calls: Array<{ base: string; glob: string }>): PerFileWatchFactory {
+  return (base, glob, handlers) => {
+    calls.push({ base, glob });
+    return {
+      close: async () => {
+        void handlers;
+      },
+    };
+  };
+}
+
+describe("allowsPerFileFallback", () => {
+  it("refuses per-file watching on darwin and allows it elsewhere", () => {
+    expect(allowsPerFileFallback("darwin")).toBe(false);
+    for (const platform of ["linux", "win32", "freebsd", "openbsd", "aix"] as NodeJS.Platform[]) {
+      expect(allowsPerFileFallback(platform)).toBe(true);
+    }
+  });
+
+  it("defaults to the running platform", () => {
+    expect(allowsPerFileFallback()).toBe(process.platform !== "darwin");
+  });
+});
+
+describe("watchConversationRoots darwin fallback policy", () => {
+  it("degrades a failed root to bounded polling instead of per-file watching", async () => {
+    const base = makeRoot();
+    const perFileCalls: Array<{ base: string; glob: string }> = [];
+    const degraded: Array<{ base: string; reason: string }> = [];
+    const refusals: unknown[] = [];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }, { base, glob: "**/*.json" }],
+      onFile: () => undefined,
+      onDegraded: (degradedBase, reason) => degraded.push({ base: degradedBase, reason }),
+      platform: "darwin",
+      watchFactory: () => {
+        throw Object.assign(new Error("ENOTSUP: recursive watch unsupported"), { code: "ENOTSUP" });
+      },
+      perFileWatchFactory: recordingPerFileFactory(perFileCalls),
+      degradedPollIntervalMs: 25,
+      log: (_level, message, details) => {
+        if (message === "ingestion_watcher_per_file_fallback_refused") refusals.push(details);
+      },
+    });
+
+    // The per-file watcher — the descriptor explosion — is never constructed.
+    expect(perFileCalls).toEqual([]);
+    expect(refusals).toHaveLength(1);
+    expect(handle.rootCount).toBe(0);
+    expect(handle.degradedRootCount).toBe(1);
+    expect(handle.rootModes.get(base)).toBe("degraded-poll");
+    expect(degraded[0]).toEqual({ base, reason: "recursive_unavailable" });
+
+    // Polling keeps asking for reconciles at a bounded cadence.
+    await waitFor(() => degraded.filter((entry) => entry.reason === "degraded_poll").length >= 2);
+    expect(perFileCalls).toEqual([]);
+  });
+
+  it("never constructs a per-file watcher after a runtime error exhausts retries", async () => {
+    const base = makeRoot();
+    const perFileCalls: Array<{ base: string; glob: string }> = [];
+    const degraded: string[] = [];
+    const live = new FakeFsWatcher();
+    let attempts = 0;
+
+    const watchFactory: RecursiveWatchFactory = () => {
+      attempts += 1;
+      if (attempts === 1) return asFsWatcher(live);
+      throw new Error("FSEvents init failed");
+    };
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      onDegraded: (_base, reason) => degraded.push(reason),
+      platform: "darwin",
+      watchFactory,
+      perFileWatchFactory: recordingPerFileFactory(perFileCalls),
+      retryDelaysMs: [5, 5],
+      degradedPollIntervalMs: 10_000,
+    });
+
+    expect(handle.rootModes.get(base)).toBe("recursive");
+    live.emit("error", new Error("watcher died"));
+
+    // The errored watcher is closed (Node documents it as unusable) and the
+    // lost-event window is reported so the caller reconciles.
+    expect(live.closeCount).toBe(1);
+    expect(degraded[0]).toBe("watcher_error");
+
+    await waitFor(() => handle?.rootModes.get(base) === "degraded-poll");
+    expect(attempts).toBe(3); // initial attach + two bounded retries
+    expect(degraded).toContain("retries_exhausted");
+    expect(perFileCalls).toEqual([]);
+    expect(handle.rootCount).toBe(0);
+    expect(handle.degradedRootCount).toBe(1);
+  });
+
+  it("re-establishes a recursive watcher after a runtime error and resumes events", async () => {
+    const base = makeRoot();
+    const seen: string[] = [];
+    const first = new FakeFsWatcher();
+    const listeners: Array<(eventType: string, filename: string | Buffer | null) => void> = [];
+    const watchers = [first, new FakeFsWatcher()];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: (filePath) => seen.push(filePath),
+      platform: "darwin",
+      watchFactory: (_base, listener) => {
+        listeners.push(listener);
+        return asFsWatcher(watchers[listeners.length - 1]);
+      },
+      perFileWatchFactory: () => {
+        throw new Error("per-file fallback must not be reachable on darwin");
+      },
+      retryDelaysMs: [5],
+      degradedPollIntervalMs: 10_000,
+    });
+
+    first.emit("error", new Error("watcher died"));
+    await waitFor(() => listeners.length === 2);
+    expect(handle.rootModes.get(base)).toBe("recursive");
+    expect(handle.rootCount).toBe(1);
+
+    listeners[1]("change", "2026/08/12/rollout.jsonl");
+    expect(seen).toEqual([path.join(base, "2026", "08", "12", "rollout.jsonl")]);
+  });
+
+  it("self-heals a degraded root when recursive watching becomes available again", async () => {
+    const base = makeRoot();
+    const recovered: unknown[] = [];
+    let attempts = 0;
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      platform: "darwin",
+      watchFactory: (_base, listener) => {
+        attempts += 1;
+        if (attempts < 3) throw new Error("FSEvents unavailable");
+        void listener;
+        return asFsWatcher(new FakeFsWatcher());
+      },
+      perFileWatchFactory: () => {
+        throw new Error("per-file fallback must not be reachable on darwin");
+      },
+      degradedPollIntervalMs: 20,
+      log: (_level, message, details) => {
+        if (message === "ingestion_watcher_recovered") recovered.push(details);
+      },
+    });
+
+    expect(handle.rootModes.get(base)).toBe("degraded-poll");
+    await waitFor(() => handle?.rootModes.get(base) === "recursive");
+    expect(recovered).toHaveLength(1);
+    expect(handle.degradedRootCount).toBe(0);
+  });
+});
+
+describe("watchConversationRoots non-darwin fallback", () => {
+  it("keeps the per-file fallback when recursive watching is unavailable", async () => {
+    const base = makeRoot();
+    const perFileCalls: Array<{ base: string; glob: string }> = [];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }, { base, glob: "**/workflows/wf_*.json" }],
+      onFile: () => undefined,
+      platform: "linux",
+      watchFactory: () => {
+        throw new Error("recursive watch unsupported");
+      },
+      perFileWatchFactory: recordingPerFileFactory(perFileCalls),
+      degradedPollIntervalMs: 10_000,
+    });
+
+    expect(perFileCalls).toEqual([
+      { base, glob: "**/*.jsonl" },
+      { base, glob: "**/workflows/wf_*.json" },
+    ]);
+    expect(handle.rootModes.get(base)).toBe("per-file");
+    expect(handle.rootCount).toBe(1);
+    expect(handle.degradedRootCount).toBe(0);
+  });
+
+  it("routes events through the per-file fallback and closes it", async () => {
+    const base = makeRoot();
+    const seen: string[] = [];
+    const close = vi.fn(async () => undefined);
+    let emit: ((filePath: string) => void) | null = null;
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: (filePath) => seen.push(filePath),
+      platform: "linux",
+      watchFactory: () => {
+        throw new Error("recursive watch unsupported");
+      },
+      perFileWatchFactory: (_base, _glob, handlers) => {
+        emit = handlers.onFile;
+        return { close };
+      },
+    });
+
+    const target = path.join(base, "rollout.jsonl");
+    emit?.(target);
+    expect(seen).toEqual([target]);
+
+    await handle.close();
+    handle = null;
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("degrades to polling when the per-file fallback itself cannot start", async () => {
+    const base = makeRoot();
+    const degraded: string[] = [];
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      onDegraded: (_base, reason) => degraded.push(reason),
+      platform: "linux",
+      watchFactory: () => {
+        throw new Error("recursive watch unsupported");
+      },
+      perFileWatchFactory: () => {
+        throw new Error("chokidar unavailable");
+      },
+      degradedPollIntervalMs: 10_000,
+    });
+
+    expect(handle.rootModes.get(base)).toBe("degraded-poll");
+    expect(degraded).toEqual(["recursive_unavailable"]);
+  });
+});
+
+describe("per-file watcher construction is structurally confined", () => {
+  it("constructs chokidar in exactly one helper, and only behind the darwin guard", async () => {
+    const source = await fsp.readFile(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "src", "ingestion.ts"),
+      "utf8",
+    );
+
+    // One chokidar construction in the whole module.
+    const constructions = source.match(/chokidar\.watch\(/g) ?? [];
+    expect(constructions).toHaveLength(1);
+
+    // ...and it lives inside createChokidarPerFileWatcher.
+    const start = source.indexOf("function createChokidarPerFileWatcher(");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("\n}\n", start);
+    const helper = source.slice(start, end);
+    expect(helper).toContain("chokidar.watch(");
+
+    // The helper is only ever reached through the perFileWatchFactory seam,
+    // and every call to that seam is guarded by perFileFallbackAllowed.
+    expect(source.match(/createChokidarPerFileWatcher\b/g) ?? []).toHaveLength(2);
+    const callSites = source.match(/ctx\.perFileWatchFactory\(/g) ?? [];
+    expect(callSites).toHaveLength(1);
+    const guard = source.indexOf("if (ctx.perFileFallbackAllowed) {");
+    const startPerFile = source.indexOf("if (startPerFileFallback(reason)) return;");
+    expect(guard).toBeGreaterThan(-1);
+    expect(startPerFile).toBeGreaterThan(guard);
   });
 });

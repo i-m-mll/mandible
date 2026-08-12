@@ -119,9 +119,64 @@ export function resolveWatchEventPath(base: string, filename: unknown): string |
   return path.join(base, ...name.split("/"));
 }
 
+/** How a watch root is currently delivering (or failing to deliver) events. */
+export type WatchRootMode = "recursive" | "per-file" | "degraded-poll";
+
+/**
+ * Bounded retry ladder for a root whose recursive watch failed at startup or
+ * died at runtime. Exhausting the ladder moves the root to its platform
+ * fallback; the ladder is per-root and resets on every successful attach.
+ */
+export const WATCH_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 30_000];
+
+/**
+ * Cadence for a root that has degraded to reconcile-only ingestion. Each tick
+ * costs one re-attach attempt plus at most one throttled reconcile — bounded
+ * work that never scales with the number of conversation files, and 12x more
+ * responsive than waiting for the hourly reconcile.
+ */
+export const DEGRADED_ROOT_POLL_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Whether this platform may fall back to per-file watching.
+ *
+ * Bug: 4f7e45e — chokidar v4 dropped FSEvents, so on darwin its fallback opens
+ * roughly one descriptor per matched file (11,675 against the real corpus). A
+ * daemon holding more than 10,240 descriptors cannot spawn *any* subprocess:
+ * macOS `posix_spawn` rejects stdio descriptor numbers >= OPEN_MAX regardless
+ * of rlimit, which broke every protected-branch merge approval. Darwin
+ * therefore never falls back to per-file watching, at startup or at runtime;
+ * it degrades to bounded polling instead. Other platforms keep chokidar, where
+ * it watches directories through inotify rather than one fd per file.
+ */
+export function allowsPerFileFallback(platform: NodeJS.Platform = process.platform): boolean {
+  return platform !== "darwin";
+}
+
+/** Injection seam: constructs one recursive watcher for a root. */
+export type RecursiveWatchFactory = (
+  base: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+) => fs.FSWatcher;
+
+export interface PerFileWatcher {
+  close(): Promise<void>;
+}
+
+/** Injection seam: constructs the per-file fallback watcher for one glob. */
+export type PerFileWatchFactory = (
+  base: string,
+  glob: string,
+  handlers: { onFile: (filePath: string) => void; onError: (error: unknown) => void },
+) => PerFileWatcher;
+
 export interface ConversationWatchHandle {
-  /** Number of live watch roots — the fd budget of the watcher. */
+  /** Roots with a live event-driven watcher — the fd budget of the watcher. */
   readonly rootCount: number;
+  /** Roots with no live watcher, ingesting through bounded polling reconciles. */
+  readonly degradedRootCount: number;
+  /** Current delivery mode per watched base. */
+  readonly rootModes: ReadonlyMap<string, WatchRootMode>;
   close(): Promise<void>;
 }
 
@@ -131,7 +186,296 @@ export interface ConversationWatchOptions {
   onFile: (filePath: string) => void;
   /** Called when a platform delivers an event without a path (events may be lost). */
   onUnnamedEvent?: (base: string) => void;
+  /**
+   * Called when a root cannot deliver reliable events — its watcher failed, is
+   * being re-established, or the root is polling. The caller is expected to
+   * reconcile (throttled), because events for that root are being missed.
+   */
+  onDegraded?: (base: string, reason: string) => void;
   log?: Logger;
+  /** Platform override; tests use it to pin the darwin fallback policy. */
+  platform?: NodeJS.Platform;
+  /** Recursive watch constructor override (tests inject failures). */
+  watchFactory?: RecursiveWatchFactory;
+  /** Per-file fallback constructor override (tests assert it is never called). */
+  perFileWatchFactory?: PerFileWatchFactory;
+  retryDelaysMs?: readonly number[];
+  degradedPollIntervalMs?: number;
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
+  if (typeof timer === "object" && timer && "unref" in timer) {
+    (timer as { unref: () => void }).unref();
+  }
+}
+
+function defaultRecursiveWatchFactory(
+  base: string,
+  listener: (eventType: string, filename: string | Buffer | null) => void,
+): fs.FSWatcher {
+  return fs.watch(base, { recursive: true, persistent: true }, listener);
+}
+
+/**
+ * The per-file fallback, and the only chokidar construction in the watcher.
+ * `allowsPerFileFallback` gates every call site, so darwin can never reach it.
+ */
+function createChokidarPerFileWatcher(
+  base: string,
+  glob: string,
+  handlers: { onFile: (filePath: string) => void; onError: (error: unknown) => void },
+): PerFileWatcher {
+  const matchesGlob = makeWatchFileMatcher(base, glob);
+  const fallback = chokidar.watch(base, {
+    ignoreInitial: true,
+    ignorePermissionErrors: true,
+    ignored: (watchedPath, stats) => {
+      if (!stats?.isFile()) {
+        return false;
+      }
+      return !matchesGlob(watchedPath);
+    },
+  });
+  const onWatchedFileEvent = (filePath: string) => {
+    if (matchesGlob(filePath)) {
+      handlers.onFile(filePath);
+    }
+  };
+  fallback.on("add", onWatchedFileEvent);
+  fallback.on("change", onWatchedFileEvent);
+  fallback.on("unlink", onWatchedFileEvent);
+  fallback.on("error", handlers.onError);
+  return { close: () => fallback.close() };
+}
+
+interface WatchSupervisorContext {
+  log: Logger;
+  platform: NodeJS.Platform;
+  perFileFallbackAllowed: boolean;
+  onFile: (filePath: string) => void;
+  onUnnamedEvent: (base: string) => void;
+  onDegraded: (base: string, reason: string) => void;
+  watchFactory: RecursiveWatchFactory;
+  perFileWatchFactory: PerFileWatchFactory;
+  retryDelaysMs: readonly number[];
+  degradedPollIntervalMs: number;
+}
+
+interface RootSupervisor {
+  readonly mode: WatchRootMode;
+  close(): Promise<void>;
+}
+
+/**
+ * Keep one watch root alive.
+ *
+ * Node documents an `FSWatcher` that emitted `error` as no longer usable, so a
+ * runtime failure closes the watcher, asks the caller to reconcile (events
+ * during the gap are lost), and re-attaches on a bounded retry ladder. When the
+ * ladder is exhausted the root takes its platform fallback: per-file watching
+ * off darwin, bounded polling on darwin. A polling root keeps making one cheap
+ * re-attach attempt per tick, so a transient FSEvents failure self-heals back
+ * to low-latency ingestion instead of waiting for a daemon restart.
+ */
+function superviseWatchRoot(root: WatchRoot, ctx: WatchSupervisorContext): RootSupervisor {
+  const matches = makeWatchRootMatcher(root.base, root.globs);
+  let mode: WatchRootMode = "degraded-poll";
+  let watcher: fs.FSWatcher | null = null;
+  let perFileWatchers: PerFileWatcher[] = [];
+  let retryIndex = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  /** False only during the initial attach, so later attaches log as recoveries. */
+  let startupAttachDone = false;
+  let closed = false;
+
+  const clearRetry = () => {
+    if (retryTimer) {
+      clearTimeout(retryTimer);
+      retryTimer = null;
+    }
+  };
+  const stopPolling = () => {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  };
+
+  const handleRuntimeError = (source: fs.FSWatcher, error: unknown) => {
+    try {
+      source.close();
+    } catch {
+      // An errored FSWatcher may already be torn down; closing is best effort.
+    }
+    if (closed || watcher !== source) return;
+    watcher = null;
+    ctx.log("warn", "ingestion_watcher_error", {
+      base: root.base,
+      error: describeError(error),
+      action: "restart",
+    });
+    // Events between the failure and re-establishment are lost.
+    ctx.onDegraded(root.base, "watcher_error");
+    scheduleRetryOrFallback();
+  };
+
+  const attach = (): boolean => {
+    if (closed) return false;
+    let active: fs.FSWatcher;
+    try {
+      active = ctx.watchFactory(root.base, (_eventType, filename) => {
+        const filePath = resolveWatchEventPath(root.base, filename);
+        if (!filePath) {
+          ctx.onUnnamedEvent(root.base);
+          return;
+        }
+        if (matches(filePath)) {
+          ctx.onFile(filePath);
+        }
+      });
+    } catch (error) {
+      ctx.log("warn", "ingestion_watcher_recursive_unavailable", {
+        base: root.base,
+        error: describeError(error),
+      });
+      return false;
+    }
+    active.on("error", (error: unknown) => handleRuntimeError(active, error));
+    watcher = active;
+    mode = "recursive";
+    retryIndex = 0;
+    clearRetry();
+    stopPolling();
+    ctx.log("info", startupAttachDone ? "ingestion_watcher_recovered" : "ingestion_watcher_started", {
+      base: root.base,
+      globs: root.globs,
+      mode: "recursive",
+    });
+    return true;
+  };
+
+  const startPerFileFallback = (reason: string): boolean => {
+    const started: PerFileWatcher[] = [];
+    try {
+      for (const glob of root.globs) {
+        started.push(
+          ctx.perFileWatchFactory(root.base, glob, {
+            onFile: ctx.onFile,
+            onError: (error) => {
+              ctx.log("warn", "ingestion_watcher_error", {
+                base: root.base,
+                glob,
+                error: describeError(error),
+                mode: "per-file",
+              });
+            },
+          }),
+        );
+      }
+    } catch (error) {
+      void Promise.allSettled(started.map((entry) => entry.close()));
+      ctx.log("warn", "ingestion_watcher_per_file_unavailable", {
+        base: root.base,
+        error: describeError(error),
+      });
+      return false;
+    }
+    perFileWatchers = started;
+    mode = "per-file";
+    stopPolling();
+    ctx.log("warn", "ingestion_watcher_started", {
+      base: root.base,
+      globs: root.globs,
+      mode: "per-file",
+      reason,
+    });
+    return true;
+  };
+
+  const degradeToPolling = (reason: string) => {
+    if (closed || pollTimer) return;
+    mode = "degraded-poll";
+    ctx.log("error", "ingestion_watcher_degraded", {
+      base: root.base,
+      reason,
+      mode: "degraded-poll",
+      poll_interval_ms: ctx.degradedPollIntervalMs,
+      platform: ctx.platform,
+    });
+    ctx.onDegraded(root.base, reason);
+    pollTimer = setInterval(() => {
+      if (closed) return;
+      // One cheap re-attach attempt per tick; if it fails, keep ingestion alive
+      // at a bounded cadence by asking the caller to reconcile.
+      if (attach()) return;
+      ctx.onDegraded(root.base, "degraded_poll");
+    }, ctx.degradedPollIntervalMs);
+    unrefTimer(pollTimer);
+  };
+
+  const takeFallback = (reason: string) => {
+    if (closed) return;
+    if (ctx.perFileFallbackAllowed) {
+      if (startPerFileFallback(reason)) return;
+    } else {
+      ctx.log("warn", "ingestion_watcher_per_file_fallback_refused", {
+        base: root.base,
+        reason,
+        platform: ctx.platform,
+      });
+    }
+    degradeToPolling(reason);
+  };
+
+  function scheduleRetryOrFallback(): void {
+    if (closed) return;
+    if (retryIndex >= ctx.retryDelaysMs.length) {
+      takeFallback("retries_exhausted");
+      return;
+    }
+    const delay = ctx.retryDelaysMs[retryIndex];
+    retryIndex += 1;
+    clearRetry();
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (closed) return;
+      if (!attach()) scheduleRetryOrFallback();
+    }, delay);
+    unrefTimer(retryTimer);
+  }
+
+  const attachedAtStartup = attach();
+  startupAttachDone = true;
+  if (!attachedAtStartup) {
+    takeFallback("recursive_unavailable");
+  }
+
+  return {
+    get mode() {
+      return mode;
+    },
+    async close(): Promise<void> {
+      closed = true;
+      clearRetry();
+      stopPolling();
+      if (watcher) {
+        try {
+          watcher.close();
+        } catch {
+          // Best effort: a watcher that already failed may throw on close.
+        }
+        watcher = null;
+      }
+      const pending = perFileWatchers;
+      perFileWatchers = [];
+      await Promise.allSettled(pending.map((entry) => entry.close()));
+    },
+  };
 }
 
 /**
@@ -144,94 +488,62 @@ export interface ConversationWatchOptions {
  * already distinguishes present from missing sources, including the Codex
  * archive relocation probe.
  *
- * Falls back to the previous per-glob chokidar watchers on platforms where
- * recursive `fs.watch` is unavailable.
+ * Each root is supervised: a startup failure or a runtime `error` retries on a
+ * bounded ladder and then takes the platform fallback — per-glob chokidar
+ * watchers off darwin, bounded polling reconciles on darwin, where per-file
+ * watching is the descriptor explosion this watcher exists to prevent.
  */
 export function watchConversationRoots(options: ConversationWatchOptions): ConversationWatchHandle {
   const log = options.log ?? (() => {});
   const configs = options.configs ?? WATCH_CONFIGS;
-  const closers: Array<() => Promise<void>> = [];
-  let rootCount = 0;
+  const platform = options.platform ?? process.platform;
+  const ctx: WatchSupervisorContext = {
+    log,
+    platform,
+    perFileFallbackAllowed: allowsPerFileFallback(platform),
+    onFile: options.onFile,
+    onUnnamedEvent: (base) => options.onUnnamedEvent?.(base),
+    onDegraded: (base, reason) => options.onDegraded?.(base, reason),
+    watchFactory: options.watchFactory ?? defaultRecursiveWatchFactory,
+    perFileWatchFactory: options.perFileWatchFactory ?? createChokidarPerFileWatcher,
+    retryDelaysMs: options.retryDelaysMs ?? WATCH_RETRY_DELAYS_MS,
+    degradedPollIntervalMs: options.degradedPollIntervalMs ?? DEGRADED_ROOT_POLL_INTERVAL_MS,
+  };
 
+  const supervisors = new Map<string, RootSupervisor>();
   for (const root of groupWatchConfigs(configs)) {
     if (!fs.existsSync(root.base)) {
       log("debug", "ingestion_skip_missing_dir", { path: root.base });
       continue;
     }
-
-    const matches = makeWatchRootMatcher(root.base, root.globs);
-    const onError = (error: unknown) => {
-      log("warn", "ingestion_watcher_error", {
-        error: error instanceof Error ? error.message : String(error),
-        base: root.base,
-      });
-    };
-
-    let watcher: fs.FSWatcher | null = null;
-    try {
-      watcher = fs.watch(root.base, { recursive: true, persistent: true }, (_eventType, filename) => {
-        const filePath = resolveWatchEventPath(root.base, filename);
-        if (!filePath) {
-          options.onUnnamedEvent?.(root.base);
-          return;
-        }
-        if (matches(filePath)) {
-          options.onFile(filePath);
-        }
-      });
-    } catch (error) {
-      log("warn", "ingestion_watcher_recursive_unavailable", {
-        base: root.base,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    if (watcher) {
-      const active = watcher;
-      active.on("error", onError);
-      closers.push(async () => {
-        active.close();
-      });
-      rootCount += 1;
-      log("info", "ingestion_watcher_started", {
-        base: root.base,
-        globs: root.globs,
-        mode: "recursive",
-      });
-      continue;
-    }
-
-    for (const glob of root.globs) {
-      const matchesGlob = makeWatchFileMatcher(root.base, glob);
-      const fallback = chokidar.watch(root.base, {
-        ignoreInitial: true,
-        ignorePermissionErrors: true,
-        ignored: (watchedPath, stats) => {
-          if (!stats?.isFile()) {
-            return false;
-          }
-          return !matchesGlob(watchedPath);
-        },
-      });
-      const onWatchedFileEvent = (filePath: string) => {
-        if (matchesGlob(filePath)) {
-          options.onFile(filePath);
-        }
-      };
-      fallback.on("add", onWatchedFileEvent);
-      fallback.on("change", onWatchedFileEvent);
-      fallback.on("unlink", onWatchedFileEvent);
-      fallback.on("error", onError);
-      closers.push(() => fallback.close());
-      rootCount += 1;
-      log("info", "ingestion_watcher_started", { base: root.base, glob, mode: "chokidar" });
-    }
+    supervisors.set(root.base, superviseWatchRoot(root, ctx));
   }
 
+  const countModes = (predicate: (mode: WatchRootMode) => boolean): number => {
+    let total = 0;
+    for (const supervisor of supervisors.values()) {
+      if (predicate(supervisor.mode)) total += 1;
+    }
+    return total;
+  };
+
   return {
-    rootCount,
+    get rootCount() {
+      return countModes((mode) => mode !== "degraded-poll");
+    },
+    get degradedRootCount() {
+      return countModes((mode) => mode === "degraded-poll");
+    },
+    get rootModes() {
+      const modes = new Map<string, WatchRootMode>();
+      for (const [base, supervisor] of supervisors) {
+        modes.set(base, supervisor.mode);
+      }
+      return modes;
+    },
     async close(): Promise<void> {
-      await Promise.allSettled(closers.map((close) => close()));
+      await Promise.allSettled(Array.from(supervisors.values(), (supervisor) => supervisor.close()));
+      supervisors.clear();
     },
   };
 }
@@ -492,6 +804,22 @@ export interface StartIngestionOptions {
   getBackgroundBackoffMs?: () => number;
 }
 
+/**
+ * Ingest without a path: either the platform coalesced or dropped the event
+ * name, or a root lost its watcher and is polling. In both cases the changed
+ * file is unknown, so ingestion falls back to a throttled full reconcile rather
+ * than silently skipping the change.
+ */
+function requestWatchFallbackReconcile(base: string, reason: string): void {
+  const now = Date.now();
+  if (now - lastUnnamedEventReconcileAt < UNNAMED_EVENT_RECONCILE_MIN_INTERVAL_MS) {
+    return;
+  }
+  lastUnnamedEventReconcileAt = now;
+  logger("debug", "ingestion_watch_reconcile_fallback", { base, reason });
+  scheduleReconcile();
+}
+
 export function startIngestion(log: Logger, options: StartIngestionOptions = {}): void {
   logger = log;
   eventPublisher = broadcast;
@@ -515,18 +843,8 @@ export function startIngestion(log: Logger, options: StartIngestionOptions = {})
   conversationWatch = watchConversationRoots({
     log: logger,
     onFile: (filePath) => debouncedIngest(filePath),
-    onUnnamedEvent: (base) => {
-      // A path-less event means the platform coalesced or dropped the name, so
-      // the changed file is unknown; fall back to a throttled full reconcile
-      // rather than silently skipping the change.
-      const now = Date.now();
-      if (now - lastUnnamedEventReconcileAt < UNNAMED_EVENT_RECONCILE_MIN_INTERVAL_MS) {
-        return;
-      }
-      lastUnnamedEventReconcileAt = now;
-      logger("debug", "ingestion_watch_event_without_path", { base });
-      scheduleReconcile();
-    },
+    onUnnamedEvent: (base) => requestWatchFallbackReconcile(base, "event_without_path"),
+    onDegraded: (base, reason) => requestWatchFallbackReconcile(base, reason),
   });
 
   // Run initial reconciliation to pick up files that already exist
