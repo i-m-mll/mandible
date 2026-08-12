@@ -7,7 +7,7 @@ import { migrate, openDb, type Db } from "../src/db.js";
 
 // Issue 499c148: migration v116 adds the two nullable sessions.identity_mismatch_*
 // columns. The head of the migration list has since advanced to v121, so a rewind
-// to 115 replays v116 through v121 and leaves the database at "121".
+// to 115 replays v116 through v122 and leaves the database at "122".
 describe("migration v116: session identity mismatch flag", () => {
   let tempDir: string;
   let db: Db;
@@ -33,7 +33,7 @@ describe("migration v116: session identity mismatch flag", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "121",
+      value: "122",
     });
     const columns = (db.prepare("PRAGMA table_info(sessions)").all() as Array<{
       name: string;
@@ -63,7 +63,7 @@ describe("migration v116: session identity mismatch flag", () => {
     expect(() => migrate(db)).not.toThrow();
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "121",
+      value: "122",
     });
     // A replay must not clear a recorded flag.
     expect(

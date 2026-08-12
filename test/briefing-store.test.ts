@@ -90,7 +90,7 @@ afterEach(() => {
 
 describe("briefing schema", () => {
   it("applies the briefing migrations cleanly from the current head", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(121);
+    expect(CURRENT_SCHEMA_VERSION).toBe(122);
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master

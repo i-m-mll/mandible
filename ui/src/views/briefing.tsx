@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
+  getAgentDispatchEvents,
   getBriefingHistory,
   getBriefingQueue,
   postBriefingComment,
@@ -38,8 +39,10 @@ import {
   type BriefingRevision,
   type BriefingSourceHealth,
   type BriefingSourceStatus,
+  type AgentDispatchEvent,
   type InstanceInfo,
 } from '../api';
+import { AgentDispatchDialog } from '../components/agent-dispatch/AgentDispatchDialog';
 import { useAppShell } from '../app-shell';
 import { useKeyedAsyncDetail } from '../hooks/useKeyedAsyncDetail';
 import { usePersistedViewState } from '../hooks/usePersistedViewState';
@@ -420,6 +423,7 @@ function BriefingRowDetail({
   historyError,
   mutationsAllowed,
   onComment,
+  onDispatched,
 }: {
   item: BriefingQueueItem;
   history: BriefingHistory | null;
@@ -427,11 +431,31 @@ function BriefingRowDetail({
   historyError: string | null;
   mutationsAllowed: boolean;
   onComment(candidateId: string, body: string): Promise<void>;
+  onDispatched(): void;
 }): JSX.Element {
   const [draft, setDraft] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [commentError, setCommentError] = useState<string | null>(null);
+  // Dispatch is deliberately a SEPARATE, non-default action on this editor:
+  // `Save note` stays the form's submit button, so pressing Enter or clicking
+  // through the obvious path can never start an agent.
+  const [dispatchOpen, setDispatchOpen] = useState(false);
+  const [dispatches, setDispatches] = useState<AgentDispatchEvent[]>([]);
   const revision = item.revision;
+
+  // The recorded dispatch chain for this finding, so a reload still shows the
+  // handle (or the failure) rather than only the in-page result.
+  useEffect(() => {
+    const controller = new AbortController();
+    getAgentDispatchEvents({ candidateId: item.candidate_id }, controller.signal)
+      .then((rows) => {
+        if (!controller.signal.aborted) setDispatches(rows);
+      })
+      .catch(() => {
+        // The audit list is supplementary; its absence must not break the row.
+      });
+    return () => controller.abort();
+  }, [item.candidate_id]);
 
   const submitComment = async (event: Event) => {
     event.preventDefault();
@@ -562,15 +586,71 @@ function BriefingRowDetail({
           disabled={!mutationsAllowed || submitting}
           onInput={(event) => setDraft((event.target as HTMLTextAreaElement).value)}
         />
-        <button
-          type="submit"
-          className="briefing-button"
-          disabled={!mutationsAllowed || submitting || draft.trim() === ''}
-        >
-          {submitting ? 'Saving…' : 'Save note'}
-        </button>
+        <div className="briefing-detail__comment-actions">
+          <button
+            type="submit"
+            className="briefing-button"
+            disabled={!mutationsAllowed || submitting || draft.trim() === ''}
+          >
+            {submitting ? 'Saving…' : 'Save note'}
+          </button>
+          <button
+            type="button"
+            className="briefing-button briefing-button--dispatch"
+            disabled={!mutationsAllowed || submitting || draft.trim() === ''}
+            title={
+              mutationsAllowed
+                ? 'Save this note and start an interactive agent on it (asks first)'
+                : 'Read-only instance'
+            }
+            onClick={() => setDispatchOpen(true)}
+          >
+            Save and start agent…
+          </button>
+        </div>
         {commentError ? <p className="briefing-detail__error">{commentError}</p> : null}
       </form>
+
+      {dispatches.length > 0 ? (
+        <div className="briefing-detail__section" data-testid={`briefing-dispatches-${item.candidate_id}`}>
+          <h4 className="briefing-detail__heading">Agent dispatches ({dispatches.length})</h4>
+          <ul className="briefing-detail__dispatches">
+            {dispatches.map((dispatch) => (
+              <li key={dispatch.id}>
+                <span className={`briefing-chip briefing-chip--${dispatch.status}`}>
+                  {dispatch.status}
+                </span>
+                {dispatch.session_handle ? (
+                  <code className="briefing-detail__dispatch-handle">{dispatch.session_handle}</code>
+                ) : (
+                  <span className="briefing-detail__error">
+                    {dispatch.error ?? 'no session handle was reported'}
+                  </span>
+                )}
+                <span className="briefing-detail__occurrence-when">
+                  {formatBriefingAge(dispatch.created_at, Date.now())}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {dispatchOpen ? (
+        <AgentDispatchDialog
+          subject={{ kind: 'finding', candidate_id: item.candidate_id }}
+          instruction={draft.trim()}
+          title="Start an agent on this finding"
+          onClose={() => setDispatchOpen(false)}
+          onDispatched={(dispatchEvent) => {
+            // The server stored the note as part of the dispatch, so the editor
+            // is emptied here rather than by a second comment write.
+            setDraft('');
+            setDispatches((current) => [dispatchEvent, ...current]);
+            onDispatched();
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -953,6 +1033,7 @@ export function BriefingView({
       historyError={history.key === item.candidate_id ? history.error : null}
       mutationsAllowed={operationalMutationsAllowed}
       onComment={comment}
+      onDispatched={history.refresh}
     />
   );
 

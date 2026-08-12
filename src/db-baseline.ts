@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v121 migration replay.
+ * Schema snapshot generated from a full v1-v122 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 121;
+export const BASELINE_SCHEMA_VERSION = 122;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -402,6 +402,37 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON candidate_comments(candidate_id, created_at)`,
   `CREATE INDEX idx_briefing_batches_task
          ON briefing_batches(task_identity, digest_version)`,
+  // Migration v122 (umbrella 99b74d6 / issue ce83a84) — agent dispatch
+  // handling events: the audit chain comment -> handling event -> session
+  // handle for human-initiated Claude dispatch.
+  `CREATE TABLE agent_dispatch_events (
+        id             TEXT PRIMARY KEY,
+        subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
+        candidate_id   TEXT REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id    TEXT REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        comment_id     TEXT REFERENCES candidate_comments(id) ON DELETE SET NULL,
+        issue_id       TEXT,
+        actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        provider       TEXT NOT NULL DEFAULT 'claude',
+        instruction    TEXT NOT NULL,
+        cwd            TEXT NOT NULL,
+        prompt_path    TEXT,
+        prompt_sha256  TEXT,
+        status         TEXT NOT NULL
+                         CHECK(status IN ('dispatching','dispatched','failed')),
+        session_handle TEXT,
+        session_id     TEXT,
+        attach_command TEXT,
+        error          TEXT,
+        created_at     INTEGER NOT NULL,
+        settled_at     INTEGER
+      )`,
+  `CREATE INDEX idx_agent_dispatch_events_candidate
+         ON agent_dispatch_events(candidate_id, created_at DESC)`,
+  `CREATE INDEX idx_agent_dispatch_events_issue
+         ON agent_dispatch_events(issue_id, created_at DESC)`,
+  `CREATE INDEX idx_agent_dispatch_events_comment
+         ON agent_dispatch_events(comment_id)`,
 ];
 
 const COMPLETED_POST_MIGRATIONS: readonly string[] = [

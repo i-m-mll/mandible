@@ -4140,3 +4140,126 @@ export async function postBriefingComment(
     comment_id: briefingOptionalString(payload.comment_id ?? payload.id),
   };
 }
+
+// ===========================================================================
+// Agent dispatch — client section (umbrella 99b74d6, issue ce83a84).
+//
+// APPEND-ONLY SECTION. Server routes live in src/routes/agent-dispatch.ts:
+//
+//   POST /api/agent-dispatch/preview    (human-only; writes NOTHING)
+//   POST /api/agent-dispatch/dispatch   (human-only; the confirmed act)
+//   GET  /api/agent-dispatch/events     (read-only audit chain)
+//
+// The two-call shape is the whole point: `previewAgentDispatch` renders exactly
+// the prompt the worker would receive, so the confirmation dialog shows the
+// real thing rather than a client-side reconstruction of it, and declining
+// costs nothing because nothing has been written.
+//
+// TRUST BOUNDARY: `plan.prompt` embeds LLM- and collector-authored text inside
+// an explicitly untrusted block. The dialog MUST render it as plain text.
+// ===========================================================================
+
+export type AgentDispatchSubject =
+  | { kind: 'finding'; candidate_id: string }
+  | { kind: 'issue'; issue_ref: string };
+
+export type AgentDispatchPlan = {
+  subject_kind: 'finding' | 'issue';
+  subject_label: string;
+  instruction: string;
+  cwd: string;
+  /** The exact seed prompt. Untrusted content inside; render as text only. */
+  prompt: string;
+  capability_surface: string[];
+};
+
+export type AgentDispatchEvent = {
+  id: string;
+  subject_kind: 'finding' | 'issue';
+  candidate_id: string | null;
+  comment_id: string | null;
+  issue_id: string | null;
+  instruction: string;
+  cwd: string;
+  status: 'dispatching' | 'dispatched' | 'failed';
+  session_handle: string | null;
+  attach_command: string | null;
+  error: string | null;
+  created_at: number | null;
+};
+
+export type AgentDispatchResult = {
+  ok: boolean;
+  event: AgentDispatchEvent;
+};
+
+function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
+  const row = briefingRecord(value);
+  const status = briefingOptionalString(row.status);
+  return {
+    id: briefingString(row.id),
+    subject_kind: row.subject_kind === 'issue' ? 'issue' : 'finding',
+    candidate_id: briefingOptionalString(row.candidate_id),
+    comment_id: briefingOptionalString(row.comment_id),
+    issue_id: briefingOptionalString(row.issue_id),
+    instruction: briefingString(row.instruction),
+    cwd: briefingString(row.cwd),
+    // An unrecognized status is reported as unsettled rather than as success.
+    status: status === 'dispatched' || status === 'failed' ? status : 'dispatching',
+    session_handle: briefingOptionalString(row.session_handle),
+    attach_command: briefingOptionalString(row.attach_command),
+    error: briefingOptionalString(row.error),
+    created_at: briefingOptionalNumber(row.created_at),
+  };
+}
+
+/** Render the dispatch plan for confirmation. Writes nothing server-side. */
+export async function previewAgentDispatch(
+  subject: AgentDispatchSubject,
+  instruction: string,
+): Promise<AgentDispatchPlan> {
+  const response = await apiPost('/api/agent-dispatch/preview', { subject, instruction });
+  const plan = briefingRecord(briefingRecord(await parseMaybeJson(response)).plan);
+  return {
+    subject_kind: plan.subject_kind === 'issue' ? 'issue' : 'finding',
+    subject_label: briefingString(plan.subject_label),
+    instruction: briefingString(plan.instruction, instruction),
+    cwd: briefingString(plan.cwd),
+    prompt: briefingString(plan.prompt),
+    capability_surface: briefingStringArray(plan.capability_surface),
+  };
+}
+
+/**
+ * Execute a confirmed dispatch. A spawn failure comes back as `ok: false` with
+ * the recorded event, not as a thrown error: the handling event exists either
+ * way and the UI must show which happened.
+ */
+export async function dispatchAgent(
+  subject: AgentDispatchSubject,
+  instruction: string,
+): Promise<AgentDispatchResult> {
+  const response = await apiPost('/api/agent-dispatch/dispatch', { subject, instruction });
+  const payload = briefingRecord(await parseMaybeJson(response));
+  return {
+    ok: payload.ok === true,
+    event: normalizeAgentDispatchEvent(payload.event),
+  };
+}
+
+/** Read the recorded dispatch chain for one finding or issue. */
+export async function getAgentDispatchEvents(
+  filter: { candidateId?: string; issueId?: string },
+  signal?: AbortSignal,
+): Promise<AgentDispatchEvent[]> {
+  const query = new URLSearchParams();
+  if (filter.candidateId) query.set('candidate_id', filter.candidateId);
+  if (filter.issueId) query.set('issue_id', filter.issueId);
+  const response = await apiGet(
+    `/api/agent-dispatch/events?${query.toString()}`,
+    signal ? { signal } : {},
+  );
+  const payload = briefingRecord(await parseMaybeJson(response));
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  return events.map(normalizeAgentDispatchEvent);
+}

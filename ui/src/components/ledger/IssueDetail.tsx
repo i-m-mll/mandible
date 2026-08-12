@@ -21,6 +21,7 @@ import type {
   LedgerIssueDetailWorkUnit,
   LedgerIssueTimelineEntry,
 } from '../../api';
+import { AgentDispatchDialog } from '../agent-dispatch/AgentDispatchDialog';
 import { LedgerRenderedBody } from './LedgerRenderedBody';
 import { DetailPaneModal } from '../shared/DetailPaneModal';
 import { AttributionIdentity, DetailHeaderIdentity } from '../shared/DetailHeaderIdentity';
@@ -90,6 +91,11 @@ export function LedgerIssueDetail({
   const [actionsOpen, setActionsOpen] = useState(false);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const [authEvidenceOpen, setAuthEvidenceOpen] = useState(false);
+  // Launch-agent (issue ce83a84) is confirm-first: this flag only opens the
+  // confirmation dialog, which previews the exact prompt before anything is
+  // written or spawned. Distinct from `onStartAgent`, which is the
+  // session-manager work-unit path.
+  const [launchAgentOpen, setLaunchAgentOpen] = useState(false);
   const [localBusy, setLocalBusy] = useState(false);
   const actionMenuRef = useRef<HTMLDivElement>(null);
   const headerRef = useRef<HTMLElement>(null);
@@ -183,6 +189,14 @@ export function LedgerIssueDetail({
       >
         <IssueMetadataContent detail={detail} />
       </DetailPaneModal>
+      {launchAgentOpen && (
+        <AgentDispatchDialog
+          subject={{ kind: 'issue', issue_ref: detail.display_id }}
+          instruction={`Work on issue ${detail.display_id}: ${detail.title}`}
+          title="Launch an agent on this issue"
+          onClose={() => setLaunchAgentOpen(false)}
+        />
+      )}
       {authEvidenceOpen && (
         <AuthEvidenceModal
           authRequests={detail.auth_requests}
@@ -229,6 +243,7 @@ export function LedgerIssueDetail({
                 onToggle={() => setActionsOpen((prev) => !prev)}
                 onClose={() => setActionsOpen(false)}
                 onStartAgent={isInitialDetail ? undefined : onStartAgent}
+                onLaunchAgent={isInitialDetail ? undefined : () => setLaunchAgentOpen(true)}
                 onSetStatus={onSetStatus}
                 onAddComment={onAddComment ? () => setShowComposer(true) : undefined}
                 onAddToSpace={onAddToSpace}
@@ -487,6 +502,7 @@ function IssueActionsMenu({
   onToggle,
   onClose,
   onStartAgent,
+  onLaunchAgent,
   onSetStatus,
   onAddComment,
   onAddToSpace,
@@ -503,6 +519,7 @@ function IssueActionsMenu({
   onToggle: () => void;
   onClose: () => void;
   onStartAgent?: () => Promise<void> | void;
+  onLaunchAgent?: () => void;
   onSetStatus?: (status: 'open' | 'closed') => Promise<void> | void;
   onAddComment?: () => void;
   onAddToSpace?: () => void;
@@ -548,6 +565,17 @@ function IssueActionsMenu({
               onClick={() => closeAfter(() => void onStartAgent())}
             >
               {primaryWorkUnit?.continuation ? 'Resume Work' : 'Start Agent'}
+            </button>
+          )}
+          {onLaunchAgent && (
+            <button
+              type="button"
+              className="ledger-issue-actions-menu__item"
+              role="menuitem"
+              disabled={busy}
+              onClick={() => closeAfter(onLaunchAgent)}
+            >
+              Launch agent…
             </button>
           )}
           {onAddComment && (
