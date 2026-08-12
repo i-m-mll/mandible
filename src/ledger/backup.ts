@@ -148,6 +148,10 @@ export const METADATA_BACKUP_TABLES = [
   "decision_events",
   "candidate_comments",
   "briefing_batches",
+  // Agent-dispatch handling events are the audit chain (comment -> handling
+  // event -> session handle) behind human-triggered dispatches; durable
+  // metadata. References candidate_comments and users, both emitted above.
+  "agent_dispatch_events",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];
