@@ -51,11 +51,15 @@ replacement was being prepared is re-read rather than overwritten from the
 stale snapshot. Bytes a live agent appends during the swap itself are read back
 off the replaced file and carried onto the patched one, masked, and counted as
 recovered; if a writer appends faster than that drains, the remainder is
-reported so the redaction can be re-run once the agent exits. Files that are no
-longer on disk are reported as missing, and files that kept changing (or whose
-scan could not check every candidate) are reported as refused — never partially
-rewritten. A patched file whose original permissions could not be put back is
-reported too, rather than left quietly readable by more accounts than before.
+reported so the redaction can be re-run once the agent exits, and a remainder
+that could not even be measured is reported as unknown rather than as zero.
+Files that are no longer on disk are reported as missing, and files that kept
+changing (or whose scan could not check every candidate) are reported as
+refused — never partially rewritten. A file whose write failed in a way that
+could not be rolled back is reported as indeterminate and needs manual
+inspection: it is never counted as patched. A patched file whose original
+permissions could not be put back is reported too, rather than left quietly
+readable by more accounts than before.
 
 Requires the local operator's credential (MANDIBLE_TOKEN or
 `mandible user dashboard-link`).
@@ -126,18 +130,34 @@ cmd_redact() {
        else
          "\n  source files:      \(.sources.patched_files) patched, "
          + "\(.sources.unchanged_files) already clean, "
-         + "\(.sources.missing_files) missing, "
-         + "\(.sources.refused_files) refused, "
-         + "\(.sources.failed_files) failed (of \(.sources.candidate_files))"
+         + "\(.sources.missing_files) missing,"
+         + "\n                     \(.sources.refused_files) refused, "
+         + "\(.sources.failed_files) failed, "
+         + "\(.sources.indeterminate_files // 0) indeterminate"
+         + " (of \(.sources.candidate_files))"
          + "\n  source spans:      \(.sources.patched_spans)"
          + (if (.sources.recovered_tail_bytes // 0) > 0 then
               "\n  recovered tail:    \(.sources.recovered_tail_bytes) bytes appended during"
               + "\n                     the rewrite were carried onto the patched file"
             else "" end)
+         + (if (.sources.indeterminate_files // 0) > 0 then
+              "\n  WARNING:           \(.sources.indeterminate_files) file(s) need manual"
+              + "\n                     inspection; source bytes may be inconsistent. A"
+              + "\n                     write to the replacement failed and its rollback"
+              + "\n                     failed with it, so those files are neither the"
+              + "\n                     original nor a clean patch, and are NOT patched"
+            else "" end)
          + (if (.sources.abandoned_tail_bytes // 0) > 0 then
               "\n  WARNING:           \(.sources.abandoned_tail_bytes) bytes were still being"
               + "\n                     appended to the replaced file when recovery stopped;"
               + "\n                     re-run redact once the writing agent has exited"
+            else "" end)
+         + (if (.sources.unknown_tail_files // 0) > 0 then
+              "\n  WARNING:           \(.sources.unknown_tail_files) file(s) have an unknown"
+              + "\n                     tail: the replaced file could not be sized, so how"
+              + "\n                     much a writer appended and lost with it could not"
+              + "\n                     be determined; unknown is not zero. Re-run redact"
+              + "\n                     once the writing agent has exited"
             else "" end)
          + (if (.sources.mode_restore_failed_files // 0) > 0 then
               "\n  WARNING:           \(.sources.mode_restore_failed_files) patched file(s) kept"

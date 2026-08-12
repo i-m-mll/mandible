@@ -912,6 +912,28 @@ function spyOnRecoveryAppendFd(): { spy: ReturnType<typeof vi.spyOn>; fd: () => 
   return { spy, fd: () => recoveryFd };
 }
 
+/**
+ * Spy that identifies the read-only descriptor the redaction holds on the
+ * source file — the one that still refers to the inode the rename unlinks, and
+ * therefore the only handle the tail accounting can measure against.
+ */
+function spyOnSourceReadFd(file: string): {
+  spy: ReturnType<typeof vi.spyOn>;
+  fd: () => number | null;
+} {
+  const realOpenSync = fs.openSync.bind(fs);
+  let sourceFd: number | null = null;
+  const spy = vi.spyOn(fs, "openSync").mockImplementation(((
+    target: Parameters<typeof fs.openSync>[0],
+    ...rest: unknown[]
+  ) => {
+    const fd = (realOpenSync as (...args: unknown[]) => number)(target, ...rest);
+    if (target === file && rest[0] === "r") sourceFd = fd;
+    return fd;
+  }) as typeof fs.openSync);
+  return { spy, fd: () => sourceFd };
+}
+
 describe("credential redact --patch-sources", () => {
   function writeSourceFile(name: string, body: Buffer): string {
     const file = path.join(tempDir, name);
@@ -1709,6 +1731,212 @@ describe("credential redact --patch-sources", () => {
     // any other failed append rather than kept and called committed.
     const mask = credentialMaskFor(credential.id);
     expect(fs.readFileSync(file).toString("latin1")).toBe(`{"text":"first ${mask}"}\n`);
+  });
+
+  it("leaves the seam alone when the splice never removed it", () => {
+    // Sixth-pass item 1, first half. A checkpointed append starts by sizing the
+    // replacement, and that fstat can fail on its own — an EIO on the
+    // descriptor, nothing to do with the payload. The fifth-pass primitive
+    // answered that with the same `false` it used for a failed-and-rewound
+    // write, so the caller ran its seam restoration over a file whose seam had
+    // never been taken off: the open final line was written a second time and
+    // the duplicate was published as a patched file. The primitive now says
+    // `unchanged`, which is a different instruction: there is nothing to
+    // restore.
+    //
+    // The failure is deliberately transient — exactly one fstat on the
+    // replacement's descriptor fails — so the restoration's own checkpoint
+    // would succeed. That is what makes the duplicate reachable at all, and
+    // what keeps this test from passing for the wrong reason.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const fixture = seamFixture("seam-intact-marker");
+    const file = writeSourceFile("rollout-seam-checkpoint.jsonl", fixture.body);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(`${fixture.rest}","note":"tail-intact-marker"}\n`, "latin1");
+
+    const writerFd = fs.openSync(file, "a");
+    const recovery = spyOnRecoveryAppendFd();
+    const rename = injectDuringRename(file, appended, writerFd);
+    const realFstatSync = fs.fstatSync.bind(fs);
+    let checkpointFailures = 0;
+    const fstatSpy = vi.spyOn(fs, "fstatSync").mockImplementation(((
+      fd: number,
+      ...rest: unknown[]
+    ) => {
+      // Only the replacement's descriptor, only after the rename, and only
+      // once: the splice's checkpoint, and nothing else.
+      if (rename.injected() && fd === recovery.fd() && checkpointFailures === 0) {
+        checkpointFailures += 1;
+        throw Object.assign(new Error("EIO"), { code: "EIO" });
+      }
+      return (realFstatSync as (...args: unknown[]) => fs.Stats)(fd, ...rest);
+    }) as typeof fs.fstatSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      recovery.spy.mockRestore();
+      rename.spy.mockRestore();
+      fstatSpy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(rename.injected()).toBe(true);
+    expect(checkpointFailures).toBe(1);
+    const mask = credentialMaskFor(credential.id);
+    const patched = fs.readFileSync(file).toString("latin1");
+    // Byte-verbatim the patched snapshot: the file was never changed by the
+    // append that could not take its checkpoint.
+    expect(patched).toBe(fixture.body.toString("latin1").split(LEAKED_TOKEN).join(mask));
+    // The open final line appears exactly once — the duplicate is the defect.
+    expect(patched.split("seam-intact-marker").length - 1).toBe(1);
+    expect(patched).not.toContain(LEAKED_TOKEN);
+    // A file with no fragment and no duplicate is honestly patched; the tail
+    // that never made it across is the only loss, and it is reported.
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      indeterminate_files: 0,
+      recovered_tail_bytes: 0,
+      abandoned_tail_bytes: appended.length,
+    });
+  });
+
+  it("reports a file whose rollback failed as indeterminate rather than patched", () => {
+    // Sixth-pass item 1, second half. When a splice writes part of its payload
+    // and then throws, the rollback truncate is what puts the file back at the
+    // checkpoint — and that truncate can fail too. The fifth-pass primitive
+    // returned the same `false` there as for a clean rewind, so the caller
+    // restored the seam on top of the surviving fragment and the file was
+    // reported patched. The state is genuinely unknown, so it is now reported
+    // as such: no restoration, no `patched`, and a bucket that tells the
+    // operator to look at the file.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const fixture = seamFixture("seam-rollback-marker");
+    const file = writeSourceFile("rollout-seam-rollback.jsonl", fixture.body);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `${fixture.rest}","note":"tail-rollback-marker padded out so the halves differ"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const recovery = spyOnRecoveryAppendFd();
+    const rename = injectDuringRename(file, appended, writerFd);
+    // A partial write followed by a failing one: the state a rollback exists to
+    // undo.
+    const write = spyOnTailWrite("tail-rollback-marker", "short-then-fail", writerFd);
+    const realFtruncateSync = fs.ftruncateSync.bind(fs);
+    let truncates = 0;
+    const truncateSpy = vi.spyOn(fs, "ftruncateSync").mockImplementation(((
+      fd: number,
+      length?: number,
+    ) => {
+      if (fd === recovery.fd()) {
+        truncates += 1;
+        // The first truncate is the splice's own rewind, which must succeed or
+        // there is no fragment to be uncertain about. The second is the
+        // rollback, and it is the one that fails.
+        if (truncates > 1) throw Object.assign(new Error("EIO"), { code: "EIO" });
+      }
+      return realFtruncateSync(fd, length);
+    }) as typeof fs.ftruncateSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      recovery.spy.mockRestore();
+      rename.spy.mockRestore();
+      write.spy.mockRestore();
+      truncateSpy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    // Every step of the scenario really happened: a partial write, a failing
+    // second write, and a rollback that could not undo the first.
+    expect(write.hits()).toBeGreaterThan(1);
+    expect(truncates).toBeGreaterThan(1);
+    expect(report.sources).toMatchObject({
+      patched_files: 0,
+      indeterminate_files: 1,
+      failed_files: 0,
+      patched_spans: 0,
+    });
+    const mask = credentialMaskFor(credential.id);
+    const onDisk = fs.readFileSync(file).toString("latin1");
+    // The file really is in neither state a report may claim: not the original,
+    // and not the cleanly patched snapshot. Calling it patched would be false.
+    expect(onDisk).not.toBe(fixture.body.toString("latin1"));
+    expect(onDisk).not.toBe(fixture.body.toString("latin1").split(LEAKED_TOKEN).join(mask));
+    expect(onDisk.startsWith(`{"text":"first ${mask}"}\n`)).toBe(true);
+    // Whatever the fragment is, it is masked bytes: an uncertain file is still
+    // never a file this command put plaintext back into.
+    expect(onDisk).not.toContain(LEAKED_TOKEN);
+  });
+
+  it("reports a tail it could not measure as unknown rather than as zero", () => {
+    // Sixth-pass item 2. Recovery ends when the old inode cannot be sized, and
+    // the settlement then measured "how much never made it across" against the
+    // same unreachable stat. Its catch produced 0, so a persistent EIO over a
+    // writer that had appended bytes rendered as `abandoned: 0` — a clean
+    // "nothing to do" over bytes that went with the unlinked inode. Unknown is
+    // now reported as unknown.
+    makeAgent();
+    const credential = registerToken("mandible-agent-codex", LEAKED_TOKEN);
+    const original = transcriptBytes(LEAKED_TOKEN);
+    const file = writeSourceFile("rollout-tail-unknown.jsonl", original);
+    seedConversation("conv-a", { sourcePath: file, blocks: [`in db: ${LEAKED_TOKEN}`] });
+    const appended = Buffer.from(
+      `{"text":"a tail nobody can measure ${LEAKED_TOKEN}"}\n`,
+      "latin1",
+    );
+
+    const writerFd = fs.openSync(file, "a");
+    const source = spyOnSourceReadFd(file);
+    const rename = injectDuringRename(file, appended, writerFd);
+    // Persistent, on the descriptor that is the only remaining handle on the
+    // replaced inode: neither the recovery loop nor the settlement can size it.
+    const realFstatSync = fs.fstatSync.bind(fs);
+    let statFailures = 0;
+    const fstatSpy = vi.spyOn(fs, "fstatSync").mockImplementation(((
+      fd: number,
+      ...rest: unknown[]
+    ) => {
+      if (rename.injected() && fd === source.fd()) {
+        statFailures += 1;
+        throw Object.assign(new Error("EIO"), { code: "EIO" });
+      }
+      return (realFstatSync as (...args: unknown[]) => fs.Stats)(fd, ...rest);
+    }) as typeof fs.fstatSync);
+
+    let report;
+    try {
+      report = redactCredential(db, credential.id, { patchSources: true });
+    } finally {
+      source.spy.mockRestore();
+      rename.spy.mockRestore();
+      fstatSpy.mockRestore();
+      fs.closeSync(writerFd);
+    }
+
+    expect(rename.injected()).toBe(true);
+    // Both the loop's stat and the settlement's stat failed.
+    expect(statFailures).toBeGreaterThan(1);
+    expect(report.sources).toMatchObject({
+      patched_files: 1,
+      recovered_tail_bytes: 0,
+      // Not a claim that nothing was left behind: a claim that it is unknown.
+      unknown_tail_files: 1,
+      abandoned_tail_bytes: 0,
+    });
+    // The snapshot itself is patched and intact; only the tail is unaccounted.
+    const mask = credentialMaskFor(credential.id);
+    expect(fs.readFileSync(file).toString("latin1")).toBe(
+      original.toString("latin1").split(LEAKED_TOKEN).join(mask),
+    );
   });
 
   it("still closes the replacement and accounts for the tail when the old inode read fails", () => {
