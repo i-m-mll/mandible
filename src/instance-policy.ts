@@ -31,6 +31,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/artifacts", category: "artifacts" },
   { prefix: "/api/auth", category: "auth" },
   { prefix: "/api/backup", category: "backup" },
+  { prefix: "/api/briefing", category: "briefing" },
   { prefix: "/api/chats", category: "chats" },
   { prefix: "/api/console", category: "console" },
   { prefix: "/api/conversations", category: "conversations" },

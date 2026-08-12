@@ -486,6 +486,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/spaces');
   } else if (type.startsWith('artifact:')) {
     invalidateApiGetCache('/api/artifacts');
+  } else if (type.startsWith('briefing:')) {
+    // Ingest, decision, comment, and expiry events all move the review queue.
+    invalidateApiGetCache('/api/briefing');
   }
 }
 
@@ -759,6 +762,8 @@ export type DashboardBadgeCounts = {
   auth: number;
   inbox: number;
   work: number;
+  /** Briefing candidates awaiting review (umbrella 99b74d6 / issue ce22a3a). */
+  briefing: number;
 };
 
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {

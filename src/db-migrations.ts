@@ -3266,6 +3266,100 @@ export const MIGRATIONS: readonly Migration[] = [
     // ref while the request is live, so ordinary object pruning cannot discard
     // the candidate before approval.
     statements: []
+  },
+  {
+    version: 120,
+    name: "briefing_review_candidates",
+    // Umbrella 99b74d6 / issue ce22a3a — the briefing review store. A candidate
+    // is one reviewable finding within a source; a revision is one
+    // (candidate, evidence_hash) pair; an occurrence is one sighting of a
+    // revision in one ingest batch. Review state is DERIVED from the append-only
+    // decision_events stream (no mutable status column): a candidate is pending
+    // iff its current revision's last decision event is absent or `undo`.
+    // `briefing_batches` is the ingestion idempotency ledger — a replayed
+    // batch_key writes nothing and returns the original result.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS review_candidates (
+        id                  TEXT PRIMARY KEY,
+        source              TEXT NOT NULL,
+        candidate_key       TEXT NOT NULL,
+        current_revision_id TEXT,
+        created_at          INTEGER NOT NULL,
+        UNIQUE(source, candidate_key)
+      )`,
+      `CREATE TABLE IF NOT EXISTS candidate_revisions (
+        id                TEXT PRIMARY KEY,
+        candidate_id      TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
+        title             TEXT NOT NULL,
+        why_notable       TEXT,
+        refs_json         TEXT NOT NULL DEFAULT '[]'
+                            CHECK(json_valid(refs_json) AND json_type(refs_json)='array'),
+        source_ref        TEXT,
+        evidence_hash     TEXT NOT NULL,
+        evidence_kind     TEXT NOT NULL
+                            CHECK(evidence_kind IN ('snapshot-item','finding-only')),
+        captured_at       TEXT,
+        run_id            TEXT,
+        digest_series_ref TEXT,
+        digest_version    INTEGER,
+        rank              INTEGER,
+        batch_key         TEXT NOT NULL,
+        ingested_at       INTEGER NOT NULL,
+        UNIQUE(candidate_id, evidence_hash)
+      )`,
+      `CREATE TABLE IF NOT EXISTS candidate_occurrences (
+        id             TEXT PRIMARY KEY,
+        revision_id    TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        digest_version INTEGER,
+        batch_key      TEXT NOT NULL,
+        seen_at        INTEGER NOT NULL,
+        UNIQUE(revision_id, batch_key)
+      )`,
+      `CREATE TABLE IF NOT EXISTS decision_events (
+        id            TEXT PRIMARY KEY,
+        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        action        TEXT NOT NULL CHECK(action IN ('keep','dismiss','undo','expire')),
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        comment_id    TEXT,
+        created_at    INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS candidate_comments (
+        id            TEXT PRIMARY KEY,
+        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
+        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
+        body          TEXT NOT NULL,
+        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        created_at    INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS briefing_batches (
+        batch_key         TEXT PRIMARY KEY,
+        task_identity     TEXT NOT NULL,
+        run_id            TEXT,
+        digest_series_ref TEXT,
+        digest_version    INTEGER,
+        item_count        INTEGER NOT NULL DEFAULT 0,
+        received_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_review_candidates_source
+         ON review_candidates(source, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_candidate_revisions_candidate
+         ON candidate_revisions(candidate_id, ingested_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_candidate_revisions_batch
+         ON candidate_revisions(batch_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_candidate_occurrences_revision
+         ON candidate_occurrences(revision_id, seen_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_candidate_occurrences_batch
+         ON candidate_occurrences(batch_key)`,
+      `CREATE INDEX IF NOT EXISTS idx_decision_events_revision
+         ON decision_events(revision_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_decision_events_candidate
+         ON decision_events(candidate_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_candidate_comments_candidate
+         ON candidate_comments(candidate_id, created_at)`,
+      `CREATE INDEX IF NOT EXISTS idx_briefing_batches_task
+         ON briefing_batches(task_identity, digest_version)`
+    ]
   }
 ];
 
