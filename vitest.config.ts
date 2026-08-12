@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    include: ['test/**/*.test.{ts,tsx}'],
     environment: 'jsdom',
     // Issue c4f456c: unconditional per-test reset of the src/db.ts singleton.
     setupFiles: ["./test/helpers/db-reset-backstop.ts"],
