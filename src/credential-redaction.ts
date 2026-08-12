@@ -326,6 +326,58 @@ function writeAll(fd: number, buffer: Buffer): void {
 }
 
 /**
+ * Append `payload` to the published replacement so that it either lands whole
+ * and durably or leaves the file byte-for-byte as it was.
+ *
+ * This is the single primitive every write to the replacement goes through
+ * after the rename: the ordinary tail appends, the seam splice that rewrites
+ * the snapshot's open final line, and the restoration that puts that line back
+ * when a splice fails (issue b3e4a09, fifth-pass item 1). Rollback used to be
+ * split between the append and a bespoke failure handler that re-wrote the seam
+ * inside a swallowing catch — so a restoration that itself wrote half and threw
+ * published a truncated line, and the file was still reported patched. One
+ * primitive leaves exactly one failure shape to reason about: the file is at
+ * the checkpoint, and the caller is told the bytes did not land.
+ *
+ * `rewindBy` is how many bytes at the end of the file the payload replaces:
+ * zero for a plain append, the seam's written length for a splice. The
+ * checkpoint is that rewind point, so a failed splice and a failed restoration
+ * both leave the file at the same offset with no fragment in between. The
+ * descriptor is in append mode, so a write after a rewind continues from the
+ * new end rather than from a stale file position.
+ *
+ * True is returned only after fsync has returned. Nothing may treat bytes as
+ * committed before they are durable — advancing the offset first is how the old
+ * seam handler under-reported abandoned bytes when the restoration fsync failed.
+ */
+function checkpointedAppend(outFd: number, payload: Buffer, rewindBy = 0): boolean {
+  let checkpoint: number;
+  try {
+    checkpoint = fs.fstatSync(outFd).size;
+  } catch {
+    return false;
+  }
+  const base = Math.max(0, checkpoint - rewindBy);
+  try {
+    if (base !== checkpoint) fs.ftruncateSync(outFd, base);
+    writeAll(outFd, payload);
+    fs.fsyncSync(outFd);
+    return true;
+  } catch {
+    try {
+      fs.ftruncateSync(outFd, base);
+      fs.fsyncSync(outFd);
+    } catch {
+      // The rewind itself failed, so the file may still hold a fragment of the
+      // payload. Nothing here can undo that on a disk that is failing both
+      // writes and truncates; the caller counts these bytes as uncommitted
+      // either way, which is the honest report of that state.
+    }
+    return false;
+  }
+}
+
+/**
  * The snapshot's open final line, when it has one.
  *
  * `source` is the unmasked bytes after the snapshot's last newline, i.e. the
@@ -336,6 +388,40 @@ function writeAll(fd: number, buffer: Buffer): void {
 interface SeamRegion {
   source: string;
   written: Buffer;
+}
+
+/**
+ * Recovery accounting, owned by the caller so that it survives an exception.
+ *
+ * `committed` is the old-inode offset of the first byte not yet durably on the
+ * replacement; `replacements` counts verified spans masked in recovered bytes.
+ * They live here rather than as locals inside the recovery loop because a
+ * failure that loop does not model — a read error on the unlinked inode is the
+ * realistic one — must still settle into a report instead of going up the stack
+ * with the numbers (issue b3e4a09, fifth-pass item 2).
+ */
+interface TailProgress {
+  committed: number;
+  replacements: number;
+}
+
+/** Turn recovery progress into the report's recovered/abandoned pair. */
+function settleTail(
+  fd: number,
+  fromOffset: number,
+  progress: TailProgress,
+): { bytes: number; replacements: number; abandoned: number } {
+  let abandoned = 0;
+  try {
+    abandoned = Math.max(0, fs.fstatSync(fd).size - progress.committed);
+  } catch {
+    abandoned = 0;
+  }
+  return {
+    bytes: Math.max(0, progress.committed - fromOffset),
+    replacements: progress.replacements,
+    abandoned,
+  };
 }
 
 interface TailRecoveryInput {
@@ -416,38 +502,39 @@ interface TailRecoveryInput {
  * Inserting a newline to "terminate" the open record would fabricate a record
  * boundary that never existed and split one JSON object into two invalid ones.
  *
- * Offsets advance only after an append is proven complete. `committed` is the
- * old-inode offset of the first byte not yet durably on the replacement, so a
- * failed write, a short write, or a failed fsync leaves those bytes counted as
- * abandoned instead of vanishing behind a zero report.
+ * Offsets advance only after an append is proven complete. `progress.committed`
+ * is the old-inode offset of the first byte not yet durably on the replacement,
+ * so a failed write, a short write, or a failed fsync leaves those bytes counted
+ * as abandoned instead of vanishing behind a zero report.
  *
- * Every append is checkpointed (issue b3e4a09, fourth-pass items 2 and 3). The
- * replacement's size is read before the append and the file is rewound to that
- * checkpoint if anything about the append fails, so the published file is
- * byte-for-byte what it was before an append that did not complete. That is
- * what makes a partial write harmless: previously `writeAll` could put half a
- * masked chunk on disk and then throw, leaving a truncated record in the file
- * while the report called the whole chunk abandoned — and on the seam path the
- * failure handler re-appended the open final line *on top of* that fragment,
- * producing a duplicated, corrupted line. With a rewind there is no partial
- * state to reason about at all.
+ * Every write goes through `checkpointedAppend` (issue b3e4a09, fourth-pass
+ * items 2 and 3, completed in the fifth pass). That includes the two halves of
+ * the seam: the splice that replaces the masked open final line with the joined
+ * masked region, and — when the splice fails — the restoration that puts that
+ * line back. Both are the same operation against the same checkpoint, so there
+ * is no failure path left that can publish a fragment. Previously `writeAll`
+ * could put half a masked chunk on disk and then throw, leaving a truncated
+ * record in the file while the report called the whole chunk abandoned; the
+ * seam handler then re-appended the open final line *on top of* that fragment,
+ * and if that second write also failed part-way its exception was swallowed and
+ * the truncated line was published as a patched file. Now a restoration that
+ * cannot land leaves the replacement at the rewind point — the open final line
+ * absent rather than mangled — and `committed` drops below it so those bytes
+ * are reported abandoned. They are still in the unlinked inode the abandoned
+ * count is measured against, so that report is literally true.
  */
-function recoverAppendedTail(
-  input: TailRecoveryInput,
-): { bytes: number; replacements: number; abandoned: number } {
+function recoverAppendedTail(input: TailRecoveryInput, progress: TailProgress): void {
   const { fd, outFd, fromOffset, seam, pepper, fingerprint, mask } = input;
-  // `committed` is the old-inode offset of the first byte not durably on the
-  // replacement. The whole snapshot is on it to begin with, including the open
-  // final line — masked, but present — so recovery starts fully accounted.
-  let committed = fromOffset;
+  // Recovery starts fully accounted: the whole snapshot is on the replacement
+  // to begin with, including the open final line — masked, but present — so
+  // `progress.committed` enters at `fromOffset`.
   let readCursor = fromOffset;
-  // `carried` is the contiguous region starting at `committed` that has not
-  // been appended yet. It is seeded with the snapshot's open final line so the
-  // seam is masked as one text with the writer's continuation of it.
+  // `carried` is the contiguous region starting at `progress.committed` that
+  // has not been appended yet. It is seeded with the snapshot's open final line
+  // so the seam is masked as one text with the writer's continuation of it.
   let carried = seam?.source ?? "";
   let seamPending = seam !== null;
   let failed = false;
-  let replacements = 0;
 
   const appendMasked = (chunk: string): boolean => {
     if (chunk.length === 0) return true;
@@ -455,48 +542,34 @@ function recoverAppendedTail(
       conservative: true,
     });
     const payload = Buffer.from(masked.text, "latin1");
-    let checkpoint: number;
-    try {
-      checkpoint = fs.fstatSync(outFd).size;
-    } catch {
-      return false;
-    }
     // The seam rewrites the snapshot's open final line as the head of this
-    // chunk, so it first has to come off. `rewound` records that it did, which
-    // is what the failure path needs: it must put those exact bytes back, and
-    // only when it actually removed them.
-    const splicing = seamPending && seam !== null;
-    const rewindTo = splicing && seam !== null
-      ? Math.max(0, checkpoint - seam.written.length)
-      : checkpoint;
-    let rewound = false;
-    try {
-      if (splicing && seam !== null) {
-        fs.ftruncateSync(outFd, rewindTo);
-        rewound = true;
+    // chunk, so that line comes off the replacement as part of the same
+    // checkpointed write that replaces it.
+    const splice = seamPending ? seam : null;
+    if (checkpointedAppend(outFd, payload, splice === null ? 0 : splice.written.length)) {
+      if (splice !== null) {
         seamPending = false;
-        committed -= seam.source.length;
+        progress.committed -= splice.source.length;
       }
-      writeAll(outFd, payload);
-      fs.fsyncSync(outFd);
-    } catch {
-      try {
-        fs.ftruncateSync(outFd, rewound ? rewindTo : checkpoint);
-        if (rewound && seam !== null) {
-          writeAll(outFd, seam.written);
-          committed += seam.source.length;
-        }
-        fs.fsyncSync(outFd);
-      } catch {
-        // The rewind itself failed, so the replacement may be missing the open
-        // final line. `committed` still sits below it, which is exactly what
-        // the abandoned count below reports.
-      }
-      return false;
+      progress.replacements += masked.replacements;
+      progress.committed += chunk.length;
+      return true;
     }
-    replacements += masked.replacements;
-    committed += chunk.length;
-    return true;
+    if (splice !== null) {
+      // The failed splice rewound to just before the open final line and left
+      // it there. Putting that line back is an append like any other, so it
+      // uses the same primitive: it lands whole and durably, or the file stays
+      // at the rewind point with no fragment of it. Only when it does not land
+      // does `committed` drop below the seam — never before the restoration's
+      // own fsync has returned.
+      if (!checkpointedAppend(outFd, splice.written)) {
+        progress.committed -= splice.source.length;
+      }
+      // `seamPending` is deliberately left alone: a failure ends recovery, and
+      // whether the seam is back on the replacement is now the restoration's
+      // answer rather than a flag anything else consults.
+    }
+    return false;
   };
 
   for (let round = 0; round < MAX_TAIL_RECOVERY_ROUNDS; round += 1) {
@@ -534,15 +607,7 @@ function recoverAppendedTail(
   // just the seam, which is already on the replacement, and rewriting it would
   // be a truncate-and-write over a file that needs neither.
   const grew = readCursor > fromOffset;
-  if (!failed && grew && carried.length > 0 && !appendMasked(carried)) failed = true;
-
-  let abandoned = 0;
-  try {
-    abandoned = Math.max(0, fs.fstatSync(fd).size - committed);
-  } catch {
-    abandoned = 0;
-  }
-  return { bytes: Math.max(0, committed - fromOffset), replacements, abandoned };
+  if (!failed && grew && carried.length > 0) appendMasked(carried);
 }
 
 /**
@@ -705,85 +770,124 @@ function patchThroughDescriptor(
     }
   };
 
+  // From the successful open to the close in the `finally` below, one block
+  // owns the descriptor (issue b3e4a09, fifth-pass item 2). Nothing inside it
+  // returns: each step records its result on `outcome`, so there is a single
+  // exit and the teardown cannot be skipped by a path added later. The reason
+  // it has to be a `finally` rather than a sequence of calls is that the steps
+  // are not all guarded — `recoverAppendedTail` reads the unlinked inode, and
+  // an EIO there used to travel straight past the mode restore and the close,
+  // leaving the replacement published with its creation mode, the descriptor
+  // leaked, and the operator holding an exception instead of an account of what
+  // did and did not make it onto the file.
+  const outcome = patchOutcome("failed");
+  const progress: TailProgress = { committed: original.length, replacements: 0 };
+  let retry = false;
+  let published = false;
   try {
-    writeAll(outFd, Buffer.from(masked.text, "latin1"));
-    fs.fsyncSync(outFd);
-  } catch {
-    closeOut();
-    discardTemp();
-    return patchOutcome("failed");
-  }
+    let staged = false;
+    try {
+      writeAll(outFd, Buffer.from(masked.text, "latin1"));
+      fs.fsyncSync(outFd);
+      staged = true;
+    } catch {
+      // `outcome` is already "failed".
+    }
 
-  if (!sourceUnchanged(fd, filePath, original)) {
-    closeOut();
-    discardTemp();
-    redactionLog("warn", "credential_redaction_source_changed", {
-      file: filePath,
-      attempt,
-    });
-    return null;
-  }
+    if (staged && !sourceUnchanged(fd, filePath, original)) {
+      redactionLog("warn", "credential_redaction_source_changed", {
+        file: filePath,
+        attempt,
+      });
+      staged = false;
+      retry = true;
+    }
 
-  try {
-    fs.renameSync(tempPath, filePath);
-  } catch {
-    closeOut();
-    discardTemp();
-    return patchOutcome("failed");
-  }
+    if (staged) {
+      try {
+        fs.renameSync(tempPath, filePath);
+        published = true;
+      } catch {
+        // `outcome` is already "failed".
+      }
+    }
 
-  // The read descriptor is still open on the now-unlinked inode, which is the
-  // only way to see anything a writer appended inside the verify-to-rename
-  // window; `outFd` is still the replacement's own descriptor from creation.
-  const lastNewline = original.lastIndexOf(0x0a);
-  const openTail = original.toString("latin1").slice(lastNewline + 1);
-  const maskedLastNewline = masked.text.lastIndexOf("\n");
-  const tail = recoverAppendedTail({
-    fd,
-    outFd,
-    fromOffset: original.length,
-    seam: openTail.length === 0
-      ? null
-      : {
-        source: openTail,
-        written: Buffer.from(masked.text.slice(maskedLastNewline + 1), "latin1"),
-      },
-    pepper,
-    fingerprint,
-    mask,
-  });
-  // The mode goes back through the same descriptor, so it lands on this run's
-  // file whatever the path names by now, and openSync's umask-masked mode
-  // argument is corrected in the same call. A failure is reported rather than
-  // swallowed: the bytes are in place, but the file is left more permissive
-  // than the operator's, and that is not something a security command may hide.
-  let modeRestoreFailed = false;
-  try {
-    fs.fchmodSync(outFd, finalMode);
+    if (published) {
+      // The read descriptor is still open on the now-unlinked inode, which is
+      // the only way to see anything a writer appended inside the
+      // verify-to-rename window; `outFd` is still the replacement's own
+      // descriptor from creation.
+      const lastNewline = original.lastIndexOf(0x0a);
+      const openTail = original.toString("latin1").slice(lastNewline + 1);
+      const maskedLastNewline = masked.text.lastIndexOf("\n");
+      recoverAppendedTail({
+        fd,
+        outFd,
+        fromOffset: original.length,
+        seam: openTail.length === 0
+          ? null
+          : {
+            source: openTail,
+            written: Buffer.from(masked.text.slice(maskedLastNewline + 1), "latin1"),
+          },
+        pepper,
+        fingerprint,
+        mask,
+      }, progress);
+    }
   } catch (error) {
-    modeRestoreFailed = true;
-    redactionLog("error", "credential_redaction_source_mode_restore_failed", {
+    // Everything above that can fail in an expected way is already guarded, so
+    // reaching here means the filesystem failed in a way this code does not
+    // model. It is still not a reason to throw past a published replacement:
+    // `progress` holds what recovery had durably committed, and the settlement
+    // below turns that into the same recovered/abandoned account any other
+    // incomplete recovery produces. Before the rename there is nothing
+    // published and the temp file is discarded in the `finally`, so the file
+    // is simply reported as failed.
+    redactionLog("error", "credential_redaction_source_patch_failed", {
       file: filePath,
-      mode: finalMode.toString(8),
+      published,
       error: String(error),
     });
+  } finally {
+    if (published) {
+      // The mode goes back through the same descriptor, so it lands on this
+      // run's file whatever the path names by now, and openSync's umask-masked
+      // mode argument is corrected in the same call. A failure is reported
+      // rather than swallowed: the bytes are in place, but the file is left
+      // more permissive than the operator's, and that is not something a
+      // security command may hide.
+      try {
+        fs.fchmodSync(outFd, finalMode);
+      } catch (error) {
+        outcome.modeRestoreFailed = true;
+        redactionLog("error", "credential_redaction_source_mode_restore_failed", {
+          file: filePath,
+          mode: finalMode.toString(8),
+          error: String(error),
+        });
+      }
+    }
+    closeOut();
+    if (!published) discardTemp();
   }
-  closeOut();
-  if (tail.bytes > 0 || tail.abandoned > 0) {
-    redactionLog("warn", "credential_redaction_source_tail_recovered", {
-      file: filePath,
-      recovered_bytes: tail.bytes,
-      recovered_spans: tail.replacements,
-      abandoned_bytes: tail.abandoned,
-    });
+
+  if (published) {
+    const tail = settleTail(fd, original.length, progress);
+    if (tail.bytes > 0 || tail.abandoned > 0) {
+      redactionLog("warn", "credential_redaction_source_tail_recovered", {
+        file: filePath,
+        recovered_bytes: tail.bytes,
+        recovered_spans: tail.replacements,
+        abandoned_bytes: tail.abandoned,
+      });
+    }
+    outcome.status = "patched";
+    outcome.replacements = masked.replacements + tail.replacements;
+    outcome.recoveredBytes = tail.bytes;
+    outcome.abandonedBytes = tail.abandoned;
   }
-  return {
-    status: "patched",
-    replacements: masked.replacements + tail.replacements,
-    recoveredBytes: tail.bytes,
-    abandonedBytes: tail.abandoned,
-    modeRestoreFailed,
-  };
+  return retry ? null : outcome;
 }
 
 interface BlockRow {
