@@ -1,5 +1,7 @@
 // Parser for Codex (OpenAI) JSONL conversation files.
 // Format: ~/.codex/sessions/YYYY/MM/DD/rollout-<timestamp>-<ULID>.jsonl
+// Archived: ~/.codex/archived_sessions/rollout-<timestamp>-<ULID>.jsonl
+// (`codex archive`/`codex unarchive` move the same file between those roots)
 //
 // Record types:
 //   session_meta  — session metadata (id, cwd, git, model_provider, cli_version)
@@ -128,20 +130,99 @@ function parseToolArguments(argumentsText: string | undefined): unknown {
   }
 }
 
-function codexRootForSessionFile(filePath: string): string | null {
+export const CODEX_SESSIONS_DIR_NAME = "sessions";
+export const CODEX_ARCHIVED_SESSIONS_DIR_NAME = "archived_sessions";
+
+const CODEX_ROLLOUT_ROOT_NAMES: readonly string[] = [
+  CODEX_SESSIONS_DIR_NAME,
+  CODEX_ARCHIVED_SESSIONS_DIR_NAME,
+];
+
+interface CodexRolloutLocation {
+  /** The `~/.codex` directory that owns the rollout file. */
+  codexRoot: string;
+  /** Either `sessions` or `archived_sessions`. */
+  rootName: string;
+  /** Rollout path relative to the `sessions`/`archived_sessions` root. */
+  relative: string;
+}
+
+/**
+ * Split a Codex rollout path into its owning `~/.codex` root, the rollout root
+ * it currently lives under, and its relative location inside that root.
+ *
+ * `codex archive`/`codex unarchive` move rollout files between
+ * `~/.codex/sessions/YYYY/MM/DD/` and the flat `~/.codex/archived_sessions/`,
+ * so both roots describe the same conversation identity.
+ */
+function locateCodexRollout(filePath: string): CodexRolloutLocation | null {
   let dir = path.dirname(filePath);
   while (dir && dir !== path.dirname(dir)) {
-    if (path.basename(dir) === "sessions") {
-      return path.dirname(dir);
+    const name = path.basename(dir);
+    if (CODEX_ROLLOUT_ROOT_NAMES.includes(name)) {
+      return {
+        codexRoot: path.dirname(dir),
+        rootName: name,
+        relative: path.relative(dir, filePath),
+      };
     }
     dir = path.dirname(dir);
   }
   return null;
 }
 
+/**
+ * Codex rollout files live under `~/.codex/sessions` until `codex archive`
+ * relocates them to `~/.codex/archived_sessions`. Both roots hold the same
+ * files, so both are Codex sources.
+ */
+function isCodexRolloutSourcePath(filePath: string): boolean {
+  return filePath.endsWith(".jsonl")
+    && (filePath.includes("/.codex/sessions/") || filePath.includes("/.codex/archived_sessions/"));
+}
+
+export function isCodexRolloutPath(filePath: string): boolean {
+  return isCodexRolloutSourcePath(filePath) && locateCodexRollout(filePath) !== null;
+}
+
+/**
+ * Candidate paths the same rollout file would occupy after `codex archive` or
+ * `codex unarchive` relocated it. Ordered most likely first; callers probe the
+ * filesystem to find which one (if any) actually holds the moved file.
+ */
+export function codexRelocationCandidates(filePath: string): string[] {
+  const location = locateCodexRollout(filePath);
+  if (!location) return [];
+  const base = path.basename(filePath);
+  const candidates: string[] = [];
+  const push = (candidate: string) => {
+    if (candidate !== filePath && !candidates.includes(candidate)) {
+      candidates.push(candidate);
+    }
+  };
+
+  if (location.rootName === CODEX_SESSIONS_DIR_NAME) {
+    // Archiving flattens the date directories.
+    const archivedRoot = path.join(location.codexRoot, CODEX_ARCHIVED_SESSIONS_DIR_NAME);
+    push(path.join(archivedRoot, base));
+    push(path.join(archivedRoot, location.relative));
+    return candidates;
+  }
+
+  // Unarchiving restores the date directories derived from the rollout name.
+  const sessionsRoot = path.join(location.codexRoot, CODEX_SESSIONS_DIR_NAME);
+  const dated = base.match(/^rollout-(\d{4})-(\d{2})-(\d{2})T/);
+  if (dated) {
+    push(path.join(sessionsRoot, dated[1], dated[2], dated[3], base));
+  }
+  push(path.join(sessionsRoot, location.relative));
+  push(path.join(sessionsRoot, base));
+  return candidates;
+}
+
 export function getCodexSessionIndexPath(filePath: string): string | null {
-  const codexRoot = codexRootForSessionFile(filePath);
-  return codexRoot ? path.join(codexRoot, "session_index.jsonl") : null;
+  const location = locateCodexRollout(filePath);
+  return location ? path.join(location.codexRoot, "session_index.jsonl") : null;
 }
 
 export async function loadCodexSessionIndexTitle(filePath: string, sessionId: string): Promise<string | null> {
@@ -180,7 +261,9 @@ export class CodexParser implements ConversationParser {
   source = "codex" as const;
 
   canParse(filePath: string): boolean {
-    return filePath.endsWith(".jsonl") && filePath.includes("/.codex/sessions/");
+    // Archived rollouts are the same files after `codex archive` relocated
+    // them; they stay parseable so archiving never drops ingested history.
+    return isCodexRolloutSourcePath(filePath);
   }
 
   async parse(filePath: string): Promise<ParseResult | null> {

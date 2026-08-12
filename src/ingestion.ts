@@ -11,7 +11,12 @@ import { getDb } from "./db.js";
 import { broadcast } from "./sse.js";
 import { compressContentAsync } from "./compression.js";
 import { getParserForFile } from "./parsers/index.js";
-import { getCodexSessionIndexPath, loadCodexSessionIndexTitle } from "./parsers/codex.js";
+import {
+  codexRelocationCandidates,
+  getCodexSessionIndexPath,
+  isCodexRolloutPath,
+  loadCodexSessionIndexTitle,
+} from "./parsers/codex.js";
 import { parseClaudeSubagentPath } from "./parsers/claude.js";
 import { inferGeminiProjectIdentity } from "./parsers/gemini.js";
 import { clearHookNotificationAttention } from "./claude-hook-attention.js";
@@ -33,6 +38,10 @@ const WATCH_CONFIGS = [
   { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/*.jsonl" },
   { base: path.join(os.homedir(), ".claude", "projects"), glob: "**/workflows/wf_*.json" },
   { base: path.join(os.homedir(), ".codex", "sessions"), glob: "**/*.jsonl" },
+  // `codex archive` (which Mandible itself triggers on merge/resume) moves
+  // rollout files here. Watching the archive root keeps those conversations
+  // ingestable instead of looking like deleted sources.
+  { base: path.join(os.homedir(), ".codex", "archived_sessions"), glob: "**/*.jsonl" },
   { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.json" },
   { base: path.join(os.homedir(), ".gemini", "tmp"), glob: "**/chats/*.jsonl" },
 ];
@@ -775,7 +784,88 @@ function deleteAppendState(db: ReturnType<typeof getDb>, filePath: string): void
   db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(filePath);
 }
 
+/**
+ * Re-point an ingested conversation at the same file in its new location.
+ *
+ * `codex archive` / `codex unarchive` rename a rollout between
+ * `~/.codex/sessions/**` and `~/.codex/archived_sessions/**`. The bytes and the
+ * conversation identity are unchanged, so the ingested row must follow the move
+ * instead of being treated as a deleted source. Any row already created for the
+ * destination path (an earlier reconcile that ingested the moved file as a new
+ * conversation) is folded into the original row so conversation ids, stars,
+ * labels, notes, and blocks survive.
+ *
+ * Bug: c927726 — archiving a Codex thread silently deleted its conversation
+ * and every block from SQLite on the next reconcile.
+ */
+function repointConversationSource(
+  db: ReturnType<typeof getDb>,
+  fromPath: string,
+  toPath: string,
+): boolean {
+  const original = db.prepare(`
+    SELECT id, starred
+    FROM conversations
+    WHERE source_path = ?
+    ORDER BY block_count DESC, updated_at DESC
+  `).all(fromPath) as Array<{ id: string; starred: number }>;
+  if (original.length === 0) return false;
+
+  const keep = original[0];
+  const repoint = db.transaction(() => {
+    const duplicates = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?")
+      .all(toPath) as Array<{ id: string; starred: number }>;
+    let starred = keep.starred;
+    for (const duplicate of duplicates) {
+      if (duplicate.id === keep.id) continue;
+      if (duplicate.starred) starred = 1;
+      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(duplicate.id);
+      db.prepare("DELETE FROM conversations WHERE id = ?").run(duplicate.id);
+    }
+    for (const stale of original) {
+      if (stale.id === keep.id) continue;
+      db.prepare("DELETE FROM conversation_blocks WHERE conversation_id = ?").run(stale.id);
+      db.prepare("DELETE FROM conversations WHERE id = ?").run(stale.id);
+    }
+    db.prepare(`
+      UPDATE conversations
+      SET source_path = ?, starred = ?, updated_at = datetime('now')
+      WHERE id = ?
+    `).run(toPath, starred, keep.id);
+    // Append state is keyed by path; move it so incremental ingestion of the
+    // relocated file continues from the already-ingested offset.
+    db.prepare("DELETE FROM conversation_ingest_state WHERE file_path = ?").run(toPath);
+    db.prepare("UPDATE conversation_ingest_state SET file_path = ? WHERE file_path = ?")
+      .run(toPath, fromPath);
+  });
+  repoint();
+  return true;
+}
+
+/**
+ * If a missing source file is a Codex rollout that was archived or unarchived,
+ * follow the move and return its new path. Returns null when the file is really
+ * gone (or is not a Codex rollout), leaving normal cleanup to the caller.
+ */
+function relocateMovedCodexSource(
+  db: ReturnType<typeof getDb>,
+  filePath: string,
+): string | null {
+  if (!isCodexRolloutPath(filePath)) return null;
+  if (fs.existsSync(filePath)) return null;
+  for (const candidate of codexRelocationCandidates(filePath)) {
+    if (!fs.existsSync(candidate)) continue;
+    if (!repointConversationSource(db, filePath, candidate)) continue;
+    logger("info", "ingestion_source_relocated", { from: filePath, to: candidate });
+    return candidate;
+  }
+  return null;
+}
+
 function removeConversationForMissingSource(db: ReturnType<typeof getDb>, filePath: string): void {
+  if (relocateMovedCodexSource(db, filePath)) {
+    return;
+  }
   const remove = db.transaction(() => {
     const row = db.prepare("SELECT id, starred FROM conversations WHERE source_path = ?")
       .get(filePath) as { id: string; starred: number } | undefined;
@@ -1987,6 +2077,18 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
   for (const row of rows) {
     dbPaths.set(row.source_path, row.source_mtime);
   }
+
+  // Follow `codex archive` / `codex unarchive` relocations before scanning, so
+  // the moved rollout is recognized as the conversation it already is instead
+  // of being ingested as a new row and then deleted as a missing source.
+  // Bug: c927726.
+  for (const [sourcePath, sourceMtime] of Array.from(dbPaths)) {
+    const relocated = relocateMovedCodexSource(db, sourcePath);
+    if (!relocated) continue;
+    dbPaths.delete(sourcePath);
+    dbPaths.set(relocated, sourceMtime);
+  }
+
   const workflowRows = db
     .prepare("SELECT file_path, source_mtime FROM workflow_ingest_state")
     .all() as Array<{ file_path: string; source_mtime: number }>;
@@ -2061,8 +2163,13 @@ async function reconcile(runToken: number, options: ReconcileOptions = {}): Prom
       "SELECT id, starred FROM conversations WHERE source_path = ?"
     );
     let removed = 0;
+    // A rollout archived while this reconcile was scanning is a move, not a
+    // deletion; relocate it (outside the delete transaction) before cleanup.
+    const deletablePaths = missingPaths.filter(
+      (sourcePath) => !relocateMovedCodexSource(db, sourcePath),
+    );
     const cleanupMissing = db.transaction(() => {
-      for (const sourcePath of missingPaths) {
+      for (const sourcePath of deletablePaths) {
         const row = findConversation.get(sourcePath) as { id: string; starred: number } | undefined;
         if (!row || row.starred) continue;
         deleteBlocks.run(row.id);
@@ -2191,16 +2298,20 @@ function globToMatcher(glob: string): (filePath: string) => boolean {
   const parts = glob.split("/");
   let regexStr = "^";
   for (let i = 0; i < parts.length; i++) {
-    if (i > 0) regexStr += "/";
     const part = parts[i];
+    const isLast = i === parts.length - 1;
     if (part === "**") {
-      regexStr += ".*";
-    } else {
-      // Escape regex special chars, convert * to [^/]*
-      regexStr += part
-        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
-        .replace(/\*/g, "[^/]*");
+      // `**/` matches any number of leading directories, including none, so a
+      // flat root such as ~/.codex/archived_sessions is covered by the same
+      // `**/*.jsonl` glob as the date-nested ~/.codex/sessions tree.
+      regexStr += isLast ? ".*" : "(?:[^/]+/)*";
+      continue;
     }
+    // Escape regex special chars, convert * to [^/]*
+    regexStr += part
+      .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, "[^/]*");
+    if (!isLast) regexStr += "/";
   }
   regexStr += "$";
   const regex = new RegExp(regexStr);

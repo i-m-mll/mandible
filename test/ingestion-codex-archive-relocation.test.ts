@@ -1,0 +1,200 @@
+// Bug: c927726 — `codex archive` moves a rollout out of ~/.codex/sessions into
+// ~/.codex/archived_sessions. Mandible itself triggers that archive on
+// successful auth merges and on session resume, so reconcile must treat the
+// relocation as a move. Before the fix it treated the source as missing and
+// deleted the conversation and every ingested block.
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+import { openDb, setDb, type Db } from "../src/db.js";
+import { triggerReconcileForTest, triggerTargetedIngest } from "../src/ingestion.js";
+import { CodexParser } from "../src/parsers/codex.js";
+
+const ROLLOUT_NAME = "rollout-2026-08-11T09-15-00-019f8ab1-archive-move.jsonl";
+const SESSION_ID = "019f8ab1-archive-move";
+
+let tempDir = "";
+let codexRoot = "";
+let sessionsBase = "";
+let archivedBase = "";
+let sessionPath = "";
+let archivedPath = "";
+let db: Db;
+
+function row(record: unknown): string {
+  return `${JSON.stringify(record)}\n`;
+}
+
+function transcript(): string {
+  return [
+    row({
+      type: "session_meta",
+      timestamp: "2026-08-11T09:15:00.000Z",
+      payload: { id: SESSION_ID, cwd: "/tmp/project", model_provider: "openai" },
+    }),
+    row({
+      type: "response_item",
+      timestamp: "2026-08-11T09:15:01.000Z",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "archive me" }],
+      },
+    }),
+    row({
+      type: "response_item",
+      timestamp: "2026-08-11T09:15:02.000Z",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "archived reply" }],
+      },
+    }),
+  ].join("");
+}
+
+function watchConfigs(): Array<{ base: string; glob: string }> {
+  return [
+    { base: sessionsBase, glob: "**/*.jsonl" },
+    { base: archivedBase, glob: "**/*.jsonl" },
+  ];
+}
+
+function conversationRow(sourcePath: string): { id: string; block_count: number } | undefined {
+  return db
+    .prepare("SELECT id, block_count FROM conversations WHERE source_path = ?")
+    .get(sourcePath) as { id: string; block_count: number } | undefined;
+}
+
+function blockCount(conversationId: string): number {
+  const result = db
+    .prepare("SELECT COUNT(*) AS count FROM conversation_blocks WHERE conversation_id = ?")
+    .get(conversationId) as { count: number };
+  return result.count;
+}
+
+/** Same rename `codex archive` performs: sessions/YYYY/MM/DD/x -> archived_sessions/x. */
+async function archiveRollout(): Promise<void> {
+  await fsp.rename(sessionPath, archivedPath);
+}
+
+async function unarchiveRollout(): Promise<void> {
+  await fsp.rename(archivedPath, sessionPath);
+}
+
+beforeEach(async () => {
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-codex-archive-"));
+  codexRoot = path.join(tempDir, ".codex");
+  sessionsBase = path.join(codexRoot, "sessions");
+  archivedBase = path.join(codexRoot, "archived_sessions");
+  sessionPath = path.join(sessionsBase, "2026", "08", "11", ROLLOUT_NAME);
+  archivedPath = path.join(archivedBase, ROLLOUT_NAME);
+  await fsp.mkdir(path.dirname(sessionPath), { recursive: true });
+  await fsp.mkdir(archivedBase, { recursive: true });
+  await fsp.writeFile(sessionPath, transcript(), "utf8");
+  db = openDb(path.join(tempDir, "mandible.db"));
+  setDb(db);
+});
+
+afterEach(() => {
+  db.close();
+  fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+describe("codex archive relocation", () => {
+  it("parses archived rollouts", () => {
+    const parser = new CodexParser();
+    expect(parser.canParse(sessionPath)).toBe(true);
+    expect(parser.canParse(archivedPath)).toBe(true);
+  });
+
+  it("keeps the conversation and its blocks when a thread is archived", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const ingested = conversationRow(sessionPath);
+    expect(ingested).toBeDefined();
+    expect(ingested!.block_count).toBeGreaterThan(0);
+    expect(blockCount(ingested!.id)).toBe(ingested!.block_count);
+
+    await archiveRollout();
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(conversationRow(sessionPath)).toBeUndefined();
+    const relocated = conversationRow(archivedPath);
+    expect(relocated).toBeDefined();
+    // Same conversation identity, same blocks — a move, not a delete + re-add.
+    expect(relocated!.id).toBe(ingested!.id);
+    expect(blockCount(relocated!.id)).toBe(ingested!.block_count);
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM conversations").get(),
+    ).toMatchObject({ count: 1 });
+    // Append state follows the file so incremental ingestion stays continuous.
+    expect(
+      db.prepare("SELECT file_path FROM conversation_ingest_state WHERE file_path = ?")
+        .get(archivedPath),
+    ).toBeDefined();
+    expect(
+      db.prepare("SELECT file_path FROM conversation_ingest_state WHERE file_path = ?")
+        .get(sessionPath),
+    ).toBeUndefined();
+  });
+
+  it("survives an archive/unarchive round trip", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const ingested = conversationRow(sessionPath);
+    expect(ingested).toBeDefined();
+
+    await archiveRollout();
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    expect(conversationRow(archivedPath)?.id).toBe(ingested!.id);
+
+    await unarchiveRollout();
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    const restored = conversationRow(sessionPath);
+    expect(restored).toBeDefined();
+    expect(restored!.id).toBe(ingested!.id);
+    expect(blockCount(restored!.id)).toBe(ingested!.block_count);
+    expect(conversationRow(archivedPath)).toBeUndefined();
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM conversations").get(),
+    ).toMatchObject({ count: 1 });
+  });
+
+  it("follows the move when the watcher reports the source as gone", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    const ingested = conversationRow(sessionPath);
+    expect(ingested).toBeDefined();
+
+    await archiveRollout();
+    // The live watcher path: an unlink event ingests the vanished path.
+    await triggerTargetedIngest({ transcriptPath: sessionPath, now: 1_000 });
+
+    expect(conversationRow(archivedPath)?.id).toBe(ingested!.id);
+    expect(blockCount(ingested!.id)).toBe(ingested!.block_count);
+  });
+
+  it("ingests an archived rollout that was never seen under sessions", async () => {
+    await archiveRollout();
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    const ingested = conversationRow(archivedPath);
+    expect(ingested).toBeDefined();
+    expect(blockCount(ingested!.id)).toBe(ingested!.block_count);
+  });
+
+  it("still deletes a conversation whose source is genuinely gone", async () => {
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+    expect(conversationRow(sessionPath)).toBeDefined();
+
+    await fsp.rm(sessionPath);
+    await triggerReconcileForTest({ watchConfigs: watchConfigs() });
+
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM conversations").get(),
+    ).toMatchObject({ count: 0 });
+  });
+});
