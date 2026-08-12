@@ -963,3 +963,186 @@ export type ResolverResult = {
 };
 
 export type ResolveRefResponse = { resolution: ResolverResult };
+
+// --- briefing review queue (umbrella 99b74d6 / issue ce22a3a) ----------------
+//
+// The briefing store holds reviewable findings produced by scheduled collector
+// tasks. Identity is publisher-derived and deterministic:
+//   candidate_key = sha256(source + "\0" + ref)
+//   evidence_hash = sha256(canonical JSON of the evidence the ref points at)
+// A (candidate_key, evidence_hash) pair is a REVISION. Seeing the same pair
+// again is only a new occurrence; a new evidence_hash for a known candidate is
+// a new revision that re-pends the candidate exactly once.
+//
+// Review state is DERIVED from the append-only decision-event stream, never
+// stored as a mutable column. See `BriefingCandidateState`.
+
+export const BRIEFING_INGEST_SCHEMA = 'briefing-ingest@1';
+
+export type BriefingEvidenceKind = 'snapshot-item' | 'finding-only';
+
+export type BriefingDecisionAction = 'keep' | 'dismiss' | 'undo' | 'expire';
+
+/** Actions a human reviewer may submit. `expire` is system-generated only. */
+export type BriefingReviewAction = 'keep' | 'dismiss' | 'undo';
+
+/**
+ * Presentation state of a candidate, derived from the last decision event on
+ * its current revision: no events or a trailing `undo` means pending.
+ * `expired_unreviewed` is an `expire` event, which the sweep records with a
+ * NULL actor because no human reviewed it.
+ */
+export type BriefingCandidateState =
+  | 'pending'
+  | 'kept'
+  | 'dismissed'
+  | 'expired_unreviewed';
+
+/** One finding in an ingest batch. All identity fields are publisher-derived. */
+export type BriefingIngestItem = {
+  candidate_key: string;
+  source: string;
+  ref: string;
+  title: string;
+  why_notable?: string | null;
+  refs?: string[];
+  evidence_hash: string;
+  evidence_kind: BriefingEvidenceKind;
+  captured_at?: string | null;
+  rank?: number | null;
+};
+
+export type BriefingIngestRequest = {
+  schema: typeof BRIEFING_INGEST_SCHEMA;
+  task_identity: string;
+  run_id: string;
+  digest: { series_ref: string; version: number };
+  batch_key: string;
+  items: BriefingIngestItem[];
+};
+
+/**
+ * Ingest outcome. Replaying a `batch_key` writes nothing and returns exactly
+ * this same result, so the shape carries no batch-local or replay-local fields.
+ */
+export type BriefingIngestResult = {
+  accepted: number;
+  created: number;
+  revised: number;
+  unchanged: number;
+};
+
+export type BriefingRevision = {
+  id: string;
+  candidate_id: string;
+  title: string;
+  why_notable: string | null;
+  refs: string[];
+  source_ref: string | null;
+  evidence_hash: string;
+  evidence_kind: BriefingEvidenceKind;
+  captured_at: string | null;
+  run_id: string | null;
+  digest_series_ref: string | null;
+  digest_version: number | null;
+  rank: number | null;
+  batch_key: string;
+  ingested_at: number;
+};
+
+export type BriefingOccurrenceStats = {
+  count: number;
+  first_seen_at: number | null;
+  last_seen_at: number | null;
+};
+
+export type BriefingDecisionEvent = {
+  id: string;
+  candidate_id: string;
+  revision_id: string;
+  action: BriefingDecisionAction;
+  actor_user_id: string | null;
+  comment_id: string | null;
+  created_at: number;
+};
+
+export type BriefingComment = {
+  id: string;
+  candidate_id: string;
+  revision_id: string;
+  body: string;
+  actor_user_id: string | null;
+  created_at: number;
+};
+
+export type BriefingQueueEntry = {
+  id: string;
+  source: string;
+  candidate_key: string;
+  created_at: number;
+  state: BriefingCandidateState;
+  revision: BriefingRevision;
+  revision_count: number;
+  occurrences: BriefingOccurrenceStats;
+};
+
+/** Per-source ingest health, pulled from the batch ledger. */
+export type BriefingSourceHealth = {
+  source: string;
+  pending_count: number;
+  candidate_count: number;
+  last_task_identity: string | null;
+  last_run_id: string | null;
+  last_digest_version: number | null;
+  last_ingested_at: number | null;
+  last_ingest_age_ms: number | null;
+  last_batch_item_count: number | null;
+};
+
+export type BriefingQueueResponse = {
+  candidates: BriefingQueueEntry[];
+  sources: BriefingSourceHealth[];
+};
+
+export type BriefingCandidateHistoryResponse = {
+  candidate: {
+    id: string;
+    source: string;
+    candidate_key: string;
+    current_revision_id: string | null;
+    created_at: number;
+    state: BriefingCandidateState;
+  };
+  revisions: BriefingRevision[];
+  decisions: BriefingDecisionEvent[];
+  comments: BriefingComment[];
+};
+
+export type BriefingDecisionResponse = {
+  candidate_id: string;
+  revision_id: string;
+  action: BriefingReviewAction;
+  event_id: string;
+  state: BriefingCandidateState;
+};
+
+export type BriefingCommentResponse = { comment: BriefingComment };
+
+/** SSE event names emitted by the briefing routes. */
+export const BRIEFING_EVENTS = Object.freeze({
+  ingested: 'briefing:ingested',
+  decided: 'briefing:decided',
+  commented: 'briefing:commented',
+  expired: 'briefing:expired',
+} as const);
+
+export type BriefingEvent = (typeof BRIEFING_EVENTS)[keyof typeof BRIEFING_EVENTS];
+
+export const BRIEFING_EVENT_VALUES: readonly BriefingEvent[] = Object.freeze(
+  Object.values(BRIEFING_EVENTS),
+) as readonly BriefingEvent[];
+
+export function isBriefingEvent(value: unknown): value is BriefingEvent {
+  return typeof value === 'string'
+    && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
+}

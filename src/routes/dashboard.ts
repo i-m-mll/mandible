@@ -1,3 +1,4 @@
+import { countPendingBriefingCandidates } from "../briefing.js";
 import type { AuthQueue } from "../auth-queue.js";
 import { getDb, type Db } from "../db.js";
 import type { RouteRegistrar } from "../server.js";
@@ -8,6 +9,12 @@ export type DashboardBadgeCounts = {
   auth: number;
   inbox: number;
   work: number;
+  /**
+   * Briefing candidates awaiting review (umbrella 99b74d6). Derived from the
+   * decision-event stream, so an expiry sweep drops out of this count exactly
+   * like a human decision does.
+   */
+  briefing: number;
 };
 
 export function readDashboardBadgeCounts(
@@ -29,6 +36,7 @@ export function readDashboardBadgeCounts(
     auth,
     inbox: countGlobalInboxBadge(db),
     work: Number(dirtyWork.count),
+    briefing: countPendingBriefingCandidates(db),
   };
 }
 
