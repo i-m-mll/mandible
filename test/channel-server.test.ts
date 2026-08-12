@@ -3,6 +3,10 @@
 // Tests tool handler logic and notification translation.
 // Uses mocked HTTP responses (globalThis.fetch) to avoid needing a running daemon.
 
+import { execFileSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
 // --- Base URL resolution (issue 70dffb8) ---
@@ -169,14 +173,17 @@ describe("channel-server client", () => {
     expect(url).toContain("label=feature");
   });
 
+  // Issue 08a5f04 — the canonical command shape (`--into <base>`) is what the
+  // channel tool now emits; the client passes it through byte-identically.
   it("submitAuth sends correct payload", async () => {
     mockFetch(201, { request_id: "new-auth-id" });
 
     const { submitAuth } = await import("../channel-server/client.js");
     const result = await submitAuth({
-      command: "mandible auth merge feature/x",
+      command: "mandible auth merge feature/x --into main",
       title: "Merge feature/x",
       head_branch: "feature/x",
+      base_branch: "main",
       issue_references: ["abc123"],
       issue_closures: ["def456"],
       cwd: "/tmp/repo",
@@ -186,7 +193,8 @@ describe("channel-server client", () => {
     expect(result.request_id).toBe("new-auth-id");
     const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
     const body = JSON.parse(call[1].body as string);
-    expect(body.command).toBe("mandible auth merge feature/x");
+    expect(body.command).toBe("mandible auth merge feature/x --into main");
+    expect(body.base_branch).toBe("main");
     expect(body.issue_references).toEqual(["abc123"]);
     expect(body.issue_closures).toEqual(["def456"]);
   });
@@ -249,6 +257,108 @@ describe("channel-server client", () => {
     expect(call[1].method).toBe("PATCH");
     const body = JSON.parse(call[1].body as string);
     expect(body.assigned_session_id).toBe("session-456");
+  });
+});
+
+// --- mandible_submit_auth command shape (issue 08a5f04) ---
+
+describe("mandible_submit_auth command shape (issue 08a5f04)", () => {
+  const originalFetch = globalThis.fetch;
+  const tempDirs: string[] = [];
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    for (const dir of tempDirs.splice(0)) {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  function gitRepo(branches: string[]): string {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-tool-"));
+    tempDirs.push(repo);
+    const git = (args: string[]) =>
+      execFileSync("git", args, { cwd: repo, encoding: "utf8" });
+    git(["init", "-b", branches[0]]);
+    git(["config", "user.name", "Channel Tool Test"]);
+    git(["config", "user.email", "channel-tool@localhost"]);
+    git(["config", "commit.gpgsign", "false"]);
+    fs.writeFileSync(path.join(repo, "base.txt"), "base\n");
+    git(["add", "."]);
+    git(["commit", "-m", "init"]);
+    for (const branch of branches.slice(1)) {
+      git(["branch", branch]);
+    }
+    return repo;
+  }
+
+  async function invokeSubmitAuth(
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      statusText: "Created",
+      json: async () => ({ request_id: "tool-auth-id" }),
+    });
+    const { registerTools } = await import("../channel-server/tools.js");
+    const handlers = new Map<string, (a: Record<string, unknown>) => Promise<unknown>>();
+    const mockServer = {
+      tool: (
+        name: string,
+        _description: string,
+        _schema: unknown,
+        handler: (a: Record<string, unknown>) => Promise<unknown>,
+      ) => {
+        handlers.set(name, handler);
+      },
+    };
+    // sessionId null — registration/liveness calls are skipped, so the only
+    // fetch is the auth submission itself.
+    registerTools(mockServer as never, null);
+    const handler = handlers.get("mandible_submit_auth");
+    if (!handler) throw new Error("mandible_submit_auth not registered");
+    await handler(args);
+    const call = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(String(call[0])).toContain("/api/auth/request");
+    return JSON.parse((call[1] as RequestInit).body as string);
+  }
+
+  it("emits the canonical --into form with the detected main base", async () => {
+    const repo = gitRepo(["main"]);
+    const body = await invokeSubmitAuth({
+      branch: "feature/x",
+      title: "Merge feature/x",
+      cwd: repo,
+    });
+    expect(body.command).toBe("mandible auth merge feature/x --into main");
+    expect(body.base_branch).toBe("main");
+    expect(body.head_branch).toBe("feature/x");
+    expect(body.cwd).toBe(repo);
+  });
+
+  it("prefers develop over main, matching detect_protected_branch", async () => {
+    const repo = gitRepo(["main", "develop"]);
+    const body = await invokeSubmitAuth({
+      branch: "feature/y",
+      title: "Merge feature/y",
+      cwd: repo,
+    });
+    expect(body.command).toBe("mandible auth merge feature/y --into develop");
+    expect(body.base_branch).toBe("develop");
+  });
+
+  it("falls back to the legacy shape when the base cannot be resolved", async () => {
+    const notARepo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-channel-plain-"));
+    tempDirs.push(notARepo);
+    const body = await invokeSubmitAuth({
+      branch: "feature/z",
+      title: "Merge feature/z",
+      cwd: notARepo,
+    });
+    // Legacy single-source shape: the daemon normalizes exactly this shape to
+    // the canonical form at POST submission once it resolves the base.
+    expect(body.command).toBe("mandible auth merge feature/z");
+    expect(body.base_branch).toBeUndefined();
   });
 });
 

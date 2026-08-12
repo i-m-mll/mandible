@@ -5,6 +5,7 @@ import {
   computeAuthMergeReviewMetadata,
   isAuthMergeCommand,
   normalizeExistingPath,
+  normalizeLegacySingleSourceMergeCommand,
   repoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../auth-context.js";
@@ -61,6 +62,15 @@ export function registerAuthRoutes(
     const isAuthMerge = isAuthMergeCommand(payload);
     if (isAuthMerge) {
       try {
+        // Issue 08a5f04 — legacy submitters (MCP channel server, raw API
+        // clients) omit base_branch entirely; `mandible auth merge <branch>`
+        // has always meant "into the detected protected branch". Resolve that
+        // default here so execution-context resolution (which validates the
+        // base as protected, existing, and behind the head) can run. All
+        // fail-closed validation below applies to the defaulted value.
+        if (!payload.base_branch && payload.cwd) {
+          payload.base_branch = detectProtectedBranch(payload.cwd) ?? undefined;
+        }
         const resolved = resolveAuthMergeExecutionContext(getDb(), payload);
         payload.cwd = resolved.executionCwd;
         payload.target_repo_root = resolved.targetRepoRoot;
@@ -68,6 +78,19 @@ export function registerAuthRoutes(
         payload.base_branch = resolved.baseBranch;
         payload.head_branch = resolved.headBranch;
         payload.merge_head_sha = payload.merge_head_sha ?? resolved.headSha;
+        // Issue 08a5f04 — submission-time (never approval-time) normalization
+        // of the legacy single-source command shape: the reviewed row must
+        // already carry the canonical `mandible auth merge <head> --into
+        // <base>` bytes that approve-time canonical enforcement accepts.
+        // Non-matching shapes are stored as-is and refused at approval.
+        const normalizedCommand = normalizeLegacySingleSourceMergeCommand(
+          payload.command,
+          resolved.headBranch,
+          resolved.baseBranch,
+        );
+        if (normalizedCommand) {
+          payload.command = normalizedCommand;
+        }
         const needsCounts =
           payload.files_changed === undefined ||
           payload.additions === undefined ||

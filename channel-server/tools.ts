@@ -201,18 +201,31 @@ export function registerTools(
     async (args) => {
       await ensureChannelRegistered("mandible_submit_auth");
       try {
-        // Build the auth merge command that will be executed
-        const command = `mandible auth merge ${args.branch}`;
+        // Issue 08a5f04 — approve-time canonical enforcement only accepts
+        // `mandible auth merge <head> --into <base>`, so emit the canonical
+        // form whenever the protected base can be resolved here. The daemon
+        // re-validates the base (protected, existing, ancestry) regardless.
+        const cwd = args.cwd ?? process.env.CLAUDE_CWD ?? process.cwd();
+        const base = detectProtectedBranch(cwd);
+        const canonical =
+          base !== null && SAFE_BRANCH_RE.test(args.branch) && SAFE_BRANCH_RE.test(base);
+        // When the base cannot be resolved pre-submission, fall back to the
+        // legacy single-source shape: the daemon normalizes exactly that shape
+        // to the canonical form at POST submission after resolving the base.
+        const command = canonical
+          ? `mandible auth merge ${args.branch} --into ${base}`
+          : `mandible auth merge ${args.branch}`;
 
         const result = await client.submitAuth({
           command,
           title: args.title,
           head_branch: args.branch,
+          ...(canonical ? { base_branch: base } : {}),
           spec_content: args.spec ?? null,
           issue_references: args.issue_ids ?? null,
           issue_closures: args.closes_issue_ids ?? null,
           issues: args.closes_issue_ids ?? null,
-          cwd: args.cwd ?? null,
+          cwd,
           commit_message: args.commit_message ?? null,
           session_id: sessionId,
         });
@@ -341,6 +354,40 @@ export function registerTools(
       }
     },
   );
+}
+
+// --- Merge command helpers (issue 08a5f04) ---
+
+// Branch names safe to embed in the canonical command string. Mirrors the
+// daemon's safe-branch byte set; anything else falls back to the legacy shape
+// and server-side validation.
+const SAFE_BRANCH_RE = /^[A-Za-z0-9._/-]+$/;
+
+/**
+ * Resolve the protected base branch the same way cli/auth-request.sh's
+ * detect_protected_branch does: `develop` when it exists locally, else `main`.
+ * Returns null when the cwd is not a usable git repo, letting the caller fall
+ * back to the legacy command shape (normalized server-side at submission).
+ */
+function detectProtectedBranch(cwd: string): string | null {
+  const hasLocalBranch = (branch: string): boolean => {
+    try {
+      execSync(`git show-ref --verify --quiet refs/heads/${branch}`, {
+        cwd,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    if (hasLocalBranch("develop")) return "develop";
+    if (hasLocalBranch("main")) return "main";
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Formatting helpers ---
