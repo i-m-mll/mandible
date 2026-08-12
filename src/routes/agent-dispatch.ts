@@ -1,0 +1,145 @@
+// Agent dispatch HTTP surface (umbrella 99b74d6 / issue ce83a84).
+//
+// Starting an agent is the most consequential thing this dashboard can do from
+// a single click, so these routes sit in the same enforcement class as the
+// briefing decision routes:
+//
+//   - HUMAN ONLY. Publisher and agent credential classes are rejected here, at
+//     the boundary. No ingestion path, scheduled task, or worker session can
+//     dispatch another agent through this API — auto-dispatch is a non-goal of
+//     this lane, and this is where that is enforced rather than assumed.
+//   - fileRpc: DENY on every mutating route, including the preview. A sandboxed
+//     file-transport caller cannot reach them at all.
+//   - Read-only instances refuse them through the central operational-mutation
+//     gate (src/instance-policy.ts, category `agent_dispatch`).
+//
+// `preview` writes nothing anywhere: it exists so the confirmation dialog can
+// show the exact prompt the worker would receive. Declining after a preview
+// leaves no comment, no handling event, no prompt file, and no session.
+//
+// `dispatch` answers 200 with `{ok, event}` even when the spawn fails. The
+// request succeeded — Mandible recorded a handling event — and the spawn
+// outcome is data on that event, which the UI reports honestly rather than
+// swallowing into a generic error.
+
+import {
+  AgentDispatchError,
+  dispatchAgent,
+  listAgentDispatchEvents,
+  previewAgentDispatch,
+  type AgentDispatchSubjectInput,
+} from "../agent-dispatch.js";
+import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
+import { getDb, type Db } from "../db.js";
+import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
+import { getUserById } from "../users/store.js";
+import { sendJson } from "./http.js";
+
+function handleError(res: ResponseLike, error: unknown): void {
+  if (error instanceof ClientAuthzError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
+    return;
+  }
+  if (error instanceof AgentDispatchError) {
+    sendJson(res, error.status, { error: error.message });
+    return;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  sendJson(res, 400, { error: message });
+}
+
+/**
+ * Admit only a live human principal. Identical in spirit to the briefing
+ * reviewer gate: attribution comes from the authenticated user id, never from
+ * an `agent_session` hint or any client-supplied actor field.
+ */
+function requireHumanDispatcher(db: Db, req: RequestLike): string {
+  const identity = requireIdentity(req);
+  const user = getUserById(db, identity.user_id);
+  if (!user || user.status !== "active") {
+    throw new ClientAuthzError(403, "forbidden", "The authenticated user is not active.");
+  }
+  if (user.kind !== "human") {
+    throw new ClientAuthzError(
+      403,
+      "human_dispatcher_required",
+      "Starting an agent requires a human credential; agent and publisher "
+        + "credentials may not dispatch agents.",
+    );
+  }
+  return user.id;
+}
+
+function bodyRecord(req: RequestLike): Record<string, unknown> {
+  return req.body && typeof req.body === "object" && !Array.isArray(req.body)
+    ? (req.body as Record<string, unknown>)
+    : {};
+}
+
+/** Parse the subject strictly; an unrecognized shape never becomes a default. */
+function parseSubject(value: unknown): AgentDispatchSubjectInput {
+  const row = value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+  if (row.kind === "finding" && typeof row.candidate_id === "string" && row.candidate_id.trim()) {
+    return { kind: "finding", candidate_id: row.candidate_id.trim() };
+  }
+  if (row.kind === "issue" && typeof row.issue_ref === "string" && row.issue_ref.trim()) {
+    return { kind: "issue", issue_ref: row.issue_ref.trim() };
+  }
+  throw new AgentDispatchError(
+    "subject must be {kind:'finding',candidate_id} or {kind:'issue',issue_ref}",
+  );
+}
+
+export function registerAgentDispatchRoutes(server: RouteRegistrar, db: Db = getDb()): void {
+  // Confirmation source of truth. No storage, no filesystem, no process.
+  server.post("/api/agent-dispatch/preview", (req, res) => {
+    try {
+      const actorUserId = requireHumanDispatcher(db, req);
+      const body = bodyRecord(req);
+      const plan = previewAgentDispatch(db, {
+        subject: parseSubject(body.subject),
+        instruction: body.instruction,
+        actorUserId,
+      });
+      sendJson(res, 200, { plan });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.post("/api/agent-dispatch/dispatch", (req, res) => {
+    try {
+      const actorUserId = requireHumanDispatcher(db, req);
+      const body = bodyRecord(req);
+      const outcome = dispatchAgent(db, {
+        subject: parseSubject(body.subject),
+        instruction: body.instruction,
+        actorUserId,
+      });
+      sendJson(res, 200, { ok: outcome.ok, event: outcome.event });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  // Read surface so a reloaded page can still show the audit chain.
+  server.get("/api/agent-dispatch/events", (req, res) => {
+    try {
+      const candidateId = typeof req.query?.candidate_id === "string" && req.query.candidate_id.trim()
+        ? req.query.candidate_id.trim()
+        : undefined;
+      const issueId = typeof req.query?.issue_id === "string" && req.query.issue_id.trim()
+        ? req.query.issue_id.trim()
+        : undefined;
+      const limitRaw = typeof req.query?.limit === "string" ? Number(req.query.limit) : Number.NaN;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.trunc(limitRaw) : undefined;
+      sendJson(res, 200, {
+        events: listAgentDispatchEvents(db, { candidateId, issueId, limit }),
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+}

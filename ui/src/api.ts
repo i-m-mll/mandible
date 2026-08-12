@@ -486,6 +486,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/spaces');
   } else if (type.startsWith('artifact:')) {
     invalidateApiGetCache('/api/artifacts');
+  } else if (type.startsWith('briefing:')) {
+    // Ingest, decision, comment, and expiry events all move the review queue.
+    invalidateApiGetCache('/api/briefing');
   }
 }
 
@@ -759,6 +762,13 @@ export type DashboardBadgeCounts = {
   auth: number;
   inbox: number;
   work: number;
+  /**
+   * Briefing pending-candidate count (umbrella 99b74d6, contract v1 §4). The
+   * server is the only authority for this number — no client-derived fallback
+   * exists in selectBadgeCounts — so it stays optional. Absent means "no count
+   * reported" (e.g. an older server), not "zero pending".
+   */
+  briefing?: number;
 };
 
 export async function getDashboardBadges(): Promise<DashboardBadgeCounts> {
@@ -3592,4 +3602,688 @@ export async function getSpaceExportDrift(
 ): Promise<{ space_id: string; drift: ExportDriftResult[] }> {
   const response = await apiGet(`/api/spaces/${encodeURIComponent(spaceId)}/exports/drift`);
   return (await parseMaybeJson(response)) as { space_id: string; drift: ExportDriftResult[] };
+}
+
+// --- finding (briefing review candidate) references -------------------------
+// Appended trailing section (briefing umbrella 99b74d6, lane d7e51a1). Every
+// call here is READ-ONLY: Spaces displays a finding's review state and never
+// mutates it. Saving a finding to a Space goes through the ordinary
+// `addSpaceItem` / occurrence writes above — a placement fact that creates no
+// decision event.
+
+import type {
+  SpaceFindingCandidateSummary as ContractSpaceFindingCandidateSummary,
+  SpaceFindingListResponse,
+  SpaceFindingRefMetadata as ContractSpaceFindingRefMetadata,
+  SpaceFindingResolution as ContractSpaceFindingResolution,
+  SpaceFindingResolveResponse,
+} from '../../src/contracts';
+
+export type {
+  FindingReviewState,
+  SpaceFindingCandidateSummary,
+  SpaceFindingListResponse,
+  SpaceFindingRefMetadata,
+  SpaceFindingResolution,
+  SpaceFindingResolveResponse,
+  SpaceFindingRevisionMode,
+  SpaceFindingRevisionState,
+  SpaceFindingRevisionSummary,
+} from '../../src/contracts';
+
+export {
+  SPACE_FINDING_REVISION_MODES,
+  SPACE_FINDING_WARNING_LATEST_NOT_PINNED,
+  SPACE_FINDING_WARNING_PINNED_MISSING,
+  SPACE_FINDING_WARNING_PINNED_SUPERSEDED,
+  SPACE_FINDING_WARNING_STORE_UNAVAILABLE,
+} from '../../src/contracts';
+
+/** Pickable review candidates for the Space item picker. */
+export async function listSpaceFindings(
+  options: { limit?: number; query?: string } = {},
+): Promise<ContractSpaceFindingCandidateSummary[]> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set('limit', String(options.limit));
+  if (options.query) params.set('q', options.query);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const response = await apiGet(`/api/spaces/findings${suffix}`);
+  const payload = (await parseMaybeJson(response)) as SpaceFindingListResponse;
+  return payload.findings ?? [];
+}
+
+/**
+ * Resolve a candidate under caller-supplied revision semantics (preview before a
+ * placement exists). Pass the same metadata the placement will carry so the
+ * preview and the placed reference agree.
+ */
+export async function resolveSpaceFinding(
+  candidateId: string,
+  metadata: ContractSpaceFindingRefMetadata = { revision_mode: 'latest' },
+): Promise<ContractSpaceFindingResolution> {
+  const params = new URLSearchParams({ revision_mode: metadata.revision_mode });
+  if (metadata.revision_mode === 'pinned' && metadata.pinned_revision_id) {
+    params.set('pinned_revision_id', metadata.pinned_revision_id);
+  }
+  const response = await apiGet(
+    `/api/spaces/findings/${encodeURIComponent(candidateId)}/resolve?${params.toString()}`,
+  );
+  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
+  return payload.resolution;
+}
+
+/** Resolve one PLACED finding reference under the semantics stored on the item. */
+export async function resolveSpaceItemFinding(
+  spaceId: string,
+  itemId: string,
+): Promise<ContractSpaceFindingResolution> {
+  const response = await apiGet(
+    `/api/spaces/${encodeURIComponent(spaceId)}/items/${encodeURIComponent(itemId)}/finding`,
+  );
+  const payload = (await parseMaybeJson(response)) as SpaceFindingResolveResponse;
+  return payload.resolution;
+}
+
+// ===========================================================================
+// Briefing review queue — client section (umbrella 99b74d6, lane d304a9b).
+//
+// APPEND-ONLY SECTION. The server routes live in lane ce22a3a and are pinned by
+// "Briefing pilot — integration contract v1" §4:
+//
+//   GET  /api/briefing/queue                          (read-only)
+//   GET  /api/briefing/candidates/:id/history          (read-only)
+//   POST /api/briefing/candidates/:id/decision         (human-only mutation)
+//   POST /api/briefing/candidates/:id/comments         (human-only mutation)
+//
+// Field names follow the contract's schema (§2) and ingest item shape (§3)
+// verbatim. Every payload is normalized defensively before it reaches the view
+// so a partial or in-flight server implementation degrades into an honest
+// "unavailable" state instead of throwing inside a render.
+//
+// TRUST BOUNDARY: `title`, `why_notable`, and `refs` originate from an LLM
+// analyzer. They are carried as plain strings and MUST be rendered as untrusted
+// text (never as HTML, never as an unfiltered href). See ui/src/views/briefing.tsx.
+// ===========================================================================
+
+/** Contract §2: how a revision's evidence hash was derived. */
+export type BriefingEvidenceKind = 'snapshot-item' | 'finding-only';
+
+/** Contract §4: presentation state of a candidate returned by the queue. */
+export type BriefingCandidateState = 'pending' | 'expired_unreviewed';
+
+/** Contract §2 `decision_events.action`. `expire` is system-generated. */
+export type BriefingDecisionAction = 'keep' | 'dismiss' | 'undo' | 'expire';
+
+/** Human-initiated subset the UI is allowed to POST. */
+export type BriefingJudgeAction = 'keep' | 'dismiss' | 'undo';
+
+/** Contract §2 `candidate_revisions` row, with `refs_json` already parsed. */
+export type BriefingRevision = {
+  id: string;
+  candidate_id: string;
+  /** LLM-authored. Untrusted text. */
+  title: string;
+  /** LLM-authored one-sentence rationale. Untrusted text. */
+  why_notable: string;
+  /** LLM-selected refs. Untrusted; linkify only allowlisted schemes. */
+  refs: string[];
+  /** The finding's verbatim ref (identity input for candidate_key). */
+  source_ref: string;
+  evidence_hash: string;
+  evidence_kind: BriefingEvidenceKind | null;
+  captured_at: string | null;
+  run_id: string | null;
+  digest_series_ref: string | null;
+  digest_version: number | null;
+  rank: number | null;
+  batch_key: string | null;
+  ingested_at: number | null;
+};
+
+/** Contract §2 `candidate_occurrences`, aggregated per candidate. */
+export type BriefingOccurrenceStats = {
+  count: number;
+  first_seen_at: number | null;
+  last_seen_at: number | null;
+};
+
+/** One occurrence row, shown in the inline provenance fold-out. */
+export type BriefingOccurrence = {
+  id: string;
+  revision_id: string;
+  digest_version: number | null;
+  batch_key: string | null;
+  seen_at: number | null;
+};
+
+/** Contract §2 `decision_events` row. */
+export type BriefingDecisionEvent = {
+  id: string;
+  candidate_id: string;
+  revision_id: string;
+  action: BriefingDecisionAction;
+  /** NULL marks a system-generated event (`expire`). */
+  actor_user_id: string | null;
+  comment_id: string | null;
+  created_at: number | null;
+};
+
+/** Contract §2 `candidate_comments` row. Operator-authored, immutable. */
+export type BriefingComment = {
+  id: string;
+  candidate_id: string;
+  revision_id: string;
+  body: string;
+  actor_user_id: string | null;
+  created_at: number | null;
+};
+
+/** One pending candidate plus its current revision and provenance. */
+export type BriefingQueueItem = {
+  candidate_id: string;
+  source: string;
+  candidate_key: string;
+  created_at: number | null;
+  state: BriefingCandidateState;
+  revision: BriefingRevision;
+  occurrences: BriefingOccurrenceStats;
+};
+
+/**
+ * Deterministic per-source health. `status` is authoritative when the server
+ * sends it; otherwise it is derived here from `last_ingest_at` /
+ * `last_run_status` by {@link deriveBriefingSourceStatus}. Nothing in this
+ * summary is model-derived.
+ */
+export type BriefingSourceStatus = 'current' | 'stale' | 'failed' | 'unknown';
+
+export type BriefingSourceHealth = {
+  source: string;
+  status: BriefingSourceStatus;
+  last_ingest_at: number | null;
+  last_run_id: string | null;
+  last_run_status: string | null;
+  pending_count: number | null;
+};
+
+/**
+ * Optional digest headline. Not required by contract v1 §4; when the server
+ * omits it the view says so rather than inventing a summary.
+ */
+export type BriefingDigestHeadline = {
+  headline: string | null;
+  series_ref: string | null;
+  version: number | null;
+  generated_at: number | null;
+};
+
+/**
+ * Optional deterministic cost figure for the reporting window. Not required by
+ * contract v1 §4; absent renders as "cost not reported".
+ */
+export type BriefingCostSummary = {
+  amount_usd: number | null;
+  window_label: string | null;
+};
+
+/**
+ * The queue envelope. Follows the SessionOverviewSection degradable-section
+ * idiom: `available: false` + `reason` is a first-class, renderable state, and
+ * it is NOT the same thing as an empty `items` array.
+ */
+export type BriefingQueue = {
+  available: boolean;
+  reason: string | null;
+  items: BriefingQueueItem[];
+  /** Server-reported pending total; used for honest truncation counts. */
+  total_pending: number;
+  sources: BriefingSourceHealth[];
+  digest: BriefingDigestHeadline | null;
+  cost: BriefingCostSummary | null;
+  generated_at: number | null;
+};
+
+/** Contract §4: revisions + decisions + comments for one candidate. */
+export type BriefingHistory = {
+  available: boolean;
+  reason: string | null;
+  candidate_id: string;
+  revisions: BriefingRevision[];
+  decisions: BriefingDecisionEvent[];
+  comments: BriefingComment[];
+  occurrences: BriefingOccurrence[];
+};
+
+export type BriefingDecisionResult = {
+  ok: boolean;
+  candidate_id: string;
+  revision_id: string | null;
+  action: BriefingDecisionAction | null;
+  decision_event_id: string | null;
+};
+
+export type BriefingCommentResult = {
+  ok: boolean;
+  comment_id: string | null;
+};
+
+/** Fallback staleness horizon when the server does not classify a source. */
+export const BRIEFING_SOURCE_STALE_AFTER_MS = 36 * 60 * 60 * 1000;
+
+const BRIEFING_FAILED_RUN_STATUSES = new Set([
+  'failed',
+  'failure',
+  'error',
+  'errored',
+  'quarantined',
+  'timeout',
+  'timed_out',
+]);
+
+/**
+ * Deterministic client-side fallback classification. Pure function of the
+ * batch-derived facts in contract §4 plus an explicit `now`, so it is testable
+ * and never depends on model output.
+ */
+export function deriveBriefingSourceStatus(
+  lastIngestAt: number | null,
+  lastRunStatus: string | null,
+  now: number,
+): BriefingSourceStatus {
+  const runStatus = (lastRunStatus ?? '').trim().toLowerCase();
+  if (runStatus && BRIEFING_FAILED_RUN_STATUSES.has(runStatus)) return 'failed';
+  if (lastIngestAt === null) return 'unknown';
+  return now - lastIngestAt > BRIEFING_SOURCE_STALE_AFTER_MS ? 'stale' : 'current';
+}
+
+function briefingRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function briefingString(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function briefingOptionalString(value: unknown): string | null {
+  return typeof value === 'string' && value !== '' ? value : null;
+}
+
+function briefingOptionalNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return null;
+}
+
+function briefingStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.filter((entry): entry is string => typeof entry === 'string');
+  }
+  // Tolerate a raw refs_json column that was not expanded server-side.
+  if (typeof value === 'string' && value.trim().startsWith('[')) {
+    try {
+      const parsed = JSON.parse(value) as unknown;
+      if (Array.isArray(parsed)) {
+        return parsed.filter((entry): entry is string => typeof entry === 'string');
+      }
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+function normalizeBriefingRevision(value: unknown, candidateId: string): BriefingRevision {
+  const row = briefingRecord(value);
+  const evidenceKind = briefingOptionalString(row.evidence_kind);
+  return {
+    id: briefingString(row.id),
+    candidate_id: briefingString(row.candidate_id, candidateId),
+    title: briefingString(row.title),
+    why_notable: briefingString(row.why_notable),
+    refs: briefingStringArray(row.refs ?? row.refs_json),
+    source_ref: briefingString(row.source_ref ?? row.ref),
+    evidence_hash: briefingString(row.evidence_hash),
+    evidence_kind:
+      evidenceKind === 'snapshot-item' || evidenceKind === 'finding-only' ? evidenceKind : null,
+    captured_at: briefingOptionalString(row.captured_at),
+    run_id: briefingOptionalString(row.run_id),
+    digest_series_ref: briefingOptionalString(row.digest_series_ref),
+    digest_version: briefingOptionalNumber(row.digest_version),
+    rank: briefingOptionalNumber(row.rank),
+    batch_key: briefingOptionalString(row.batch_key),
+    ingested_at: briefingOptionalNumber(row.ingested_at),
+  };
+}
+
+function normalizeBriefingOccurrenceStats(value: unknown): BriefingOccurrenceStats {
+  const row = briefingRecord(value);
+  return {
+    count: briefingOptionalNumber(row.count) ?? 0,
+    first_seen_at: briefingOptionalNumber(row.first_seen_at),
+    last_seen_at: briefingOptionalNumber(row.last_seen_at),
+  };
+}
+
+function normalizeBriefingQueueItem(value: unknown): BriefingQueueItem | null {
+  const row = briefingRecord(value);
+  const candidateId = briefingString(row.candidate_id ?? row.id);
+  if (!candidateId) return null;
+  const state = briefingOptionalString(row.state);
+  return {
+    candidate_id: candidateId,
+    source: briefingString(row.source, 'unknown'),
+    candidate_key: briefingString(row.candidate_key),
+    created_at: briefingOptionalNumber(row.created_at),
+    state: state === 'expired_unreviewed' ? 'expired_unreviewed' : 'pending',
+    revision: normalizeBriefingRevision(row.revision ?? row.current_revision, candidateId),
+    occurrences: normalizeBriefingOccurrenceStats(row.occurrences ?? row.occurrence_stats),
+  };
+}
+
+function normalizeBriefingSourceHealth(value: unknown, now: number): BriefingSourceHealth {
+  const row = briefingRecord(value);
+  const lastIngestAt = briefingOptionalNumber(row.last_ingest_at);
+  const lastRunStatus = briefingOptionalString(row.last_run_status);
+  const declared = briefingOptionalString(row.status);
+  const status: BriefingSourceStatus =
+    declared === 'current' || declared === 'stale' || declared === 'failed' || declared === 'unknown'
+      ? declared
+      : deriveBriefingSourceStatus(lastIngestAt, lastRunStatus, now);
+  return {
+    source: briefingString(row.source, 'unknown'),
+    status,
+    last_ingest_at: lastIngestAt,
+    last_run_id: briefingOptionalString(row.last_run_id),
+    last_run_status: lastRunStatus,
+    pending_count: briefingOptionalNumber(row.pending_count),
+  };
+}
+
+/**
+ * Normalize a raw `/api/briefing/queue` payload. Exported for tests and for the
+ * view's fixture path; `now` is injected so classification stays deterministic.
+ */
+export function normalizeBriefingQueue(payload: unknown, now: number = Date.now()): BriefingQueue {
+  const root = briefingRecord(payload);
+  const rawItems = Array.isArray(root.items) ? root.items : [];
+  const items = rawItems
+    .map((entry) => normalizeBriefingQueueItem(entry))
+    .filter((entry): entry is BriefingQueueItem => entry !== null);
+  const rawSources = Array.isArray(root.sources) ? root.sources : [];
+  const sources = rawSources.map((entry) => normalizeBriefingSourceHealth(entry, now));
+  const digestRow = root.digest === null || root.digest === undefined ? null : briefingRecord(root.digest);
+  const costRow = root.cost === null || root.cost === undefined ? null : briefingRecord(root.cost);
+  const available = root.available === undefined ? true : root.available !== false;
+  return {
+    available,
+    reason: briefingOptionalString(root.reason),
+    items,
+    total_pending: briefingOptionalNumber(root.total_pending) ?? items.length,
+    sources,
+    digest: digestRow
+      ? {
+          headline: briefingOptionalString(digestRow.headline),
+          series_ref: briefingOptionalString(digestRow.series_ref),
+          version: briefingOptionalNumber(digestRow.version),
+          generated_at: briefingOptionalNumber(digestRow.generated_at),
+        }
+      : null,
+    cost: costRow
+      ? {
+          amount_usd: briefingOptionalNumber(costRow.amount_usd ?? costRow.cost_usd),
+          window_label: briefingOptionalString(costRow.window_label),
+        }
+      : null,
+    generated_at: briefingOptionalNumber(root.generated_at),
+  };
+}
+
+/** Normalize a raw `/api/briefing/candidates/:id/history` payload. */
+export function normalizeBriefingHistory(payload: unknown, candidateId: string): BriefingHistory {
+  const root = briefingRecord(payload);
+  const revisions = (Array.isArray(root.revisions) ? root.revisions : []).map((entry) =>
+    normalizeBriefingRevision(entry, candidateId),
+  );
+  const decisions = (Array.isArray(root.decisions) ? root.decisions : []).map((entry) => {
+    const row = briefingRecord(entry);
+    const action = briefingOptionalString(row.action);
+    return {
+      id: briefingString(row.id),
+      candidate_id: briefingString(row.candidate_id, candidateId),
+      revision_id: briefingString(row.revision_id),
+      action:
+        action === 'keep' || action === 'dismiss' || action === 'undo' || action === 'expire'
+          ? action
+          : 'expire',
+      actor_user_id: briefingOptionalString(row.actor_user_id),
+      comment_id: briefingOptionalString(row.comment_id),
+      created_at: briefingOptionalNumber(row.created_at),
+    } satisfies BriefingDecisionEvent;
+  });
+  const comments = (Array.isArray(root.comments) ? root.comments : []).map((entry) => {
+    const row = briefingRecord(entry);
+    return {
+      id: briefingString(row.id),
+      candidate_id: briefingString(row.candidate_id, candidateId),
+      revision_id: briefingString(row.revision_id),
+      body: briefingString(row.body),
+      actor_user_id: briefingOptionalString(row.actor_user_id),
+      created_at: briefingOptionalNumber(row.created_at),
+    } satisfies BriefingComment;
+  });
+  const occurrences = (Array.isArray(root.occurrences) ? root.occurrences : []).map((entry) => {
+    const row = briefingRecord(entry);
+    return {
+      id: briefingString(row.id),
+      revision_id: briefingString(row.revision_id),
+      digest_version: briefingOptionalNumber(row.digest_version),
+      batch_key: briefingOptionalString(row.batch_key),
+      seen_at: briefingOptionalNumber(row.seen_at),
+    } satisfies BriefingOccurrence;
+  });
+  return {
+    available: root.available === undefined ? true : root.available !== false,
+    reason: briefingOptionalString(root.reason),
+    candidate_id: briefingString(root.candidate_id, candidateId),
+    revisions,
+    decisions,
+    comments,
+    occurrences,
+  };
+}
+
+/** Contract §4 — pending queue + deterministic per-source health. Read-only. */
+export async function getBriefingQueue(signal?: AbortSignal): Promise<BriefingQueue> {
+  const response = await apiGet('/api/briefing/queue', signal ? { signal } : {});
+  return normalizeBriefingQueue(await parseMaybeJson(response));
+}
+
+/** Contract §4 — revisions + decisions + comments for one candidate. Read-only. */
+export async function getBriefingHistory(
+  candidateId: string,
+  signal?: AbortSignal,
+): Promise<BriefingHistory> {
+  const response = await apiGet(
+    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/history`,
+    signal ? { signal } : {},
+  );
+  return normalizeBriefingHistory(await parseMaybeJson(response), candidateId);
+}
+
+/**
+ * Contract §4 — record a human keep/dismiss/undo. The server rejects publisher
+ * and agent credential classes and refuses in read-only mode; the UI additionally
+ * gates every call site on `operational_mutations === 'allow'`. Attribution comes
+ * from the authenticated user, never from an agent_session param.
+ */
+export async function postBriefingDecision(
+  candidateId: string,
+  action: BriefingJudgeAction,
+): Promise<BriefingDecisionResult> {
+  const response = await apiPost(
+    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/decision`,
+    { action },
+  );
+  const payload = briefingRecord(await parseMaybeJson(response));
+  const resolvedAction = briefingOptionalString(payload.action);
+  // The pending count changed: drop the cached badge read so the nav badge
+  // reconciles from the server instead of a stale SWR entry.
+  invalidateApiGetCache('/api/dashboard/badges');
+  return {
+    ok: payload.ok !== false,
+    candidate_id: briefingString(payload.candidate_id, candidateId),
+    revision_id: briefingOptionalString(payload.revision_id),
+    action:
+      resolvedAction === 'keep' ||
+      resolvedAction === 'dismiss' ||
+      resolvedAction === 'undo' ||
+      resolvedAction === 'expire'
+        ? resolvedAction
+        : action,
+    decision_event_id: briefingOptionalString(payload.id ?? payload.decision_event_id),
+  };
+}
+
+/** Contract §4 — append an immutable operator comment to a candidate. */
+export async function postBriefingComment(
+  candidateId: string,
+  body: string,
+): Promise<BriefingCommentResult> {
+  const response = await apiPost(
+    `/api/briefing/candidates/${encodeURIComponent(candidateId)}/comments`,
+    { body },
+  );
+  const payload = briefingRecord(await parseMaybeJson(response));
+  return {
+    ok: payload.ok !== false,
+    comment_id: briefingOptionalString(payload.comment_id ?? payload.id),
+  };
+}
+
+// ===========================================================================
+// Agent dispatch — client section (umbrella 99b74d6, issue ce83a84).
+//
+// APPEND-ONLY SECTION. Server routes live in src/routes/agent-dispatch.ts:
+//
+//   POST /api/agent-dispatch/preview    (human-only; writes NOTHING)
+//   POST /api/agent-dispatch/dispatch   (human-only; the confirmed act)
+//   GET  /api/agent-dispatch/events     (read-only audit chain)
+//
+// The two-call shape is the whole point: `previewAgentDispatch` renders exactly
+// the prompt the worker would receive, so the confirmation dialog shows the
+// real thing rather than a client-side reconstruction of it, and declining
+// costs nothing because nothing has been written.
+//
+// TRUST BOUNDARY: `plan.prompt` embeds LLM- and collector-authored text inside
+// an explicitly untrusted block. The dialog MUST render it as plain text.
+// ===========================================================================
+
+export type AgentDispatchSubject =
+  | { kind: 'finding'; candidate_id: string }
+  | { kind: 'issue'; issue_ref: string };
+
+export type AgentDispatchPlan = {
+  subject_kind: 'finding' | 'issue';
+  subject_label: string;
+  instruction: string;
+  cwd: string;
+  /** The exact seed prompt. Untrusted content inside; render as text only. */
+  prompt: string;
+  capability_surface: string[];
+};
+
+export type AgentDispatchEvent = {
+  id: string;
+  subject_kind: 'finding' | 'issue';
+  candidate_id: string | null;
+  comment_id: string | null;
+  issue_id: string | null;
+  instruction: string;
+  cwd: string;
+  status: 'dispatching' | 'dispatched' | 'failed';
+  session_handle: string | null;
+  attach_command: string | null;
+  error: string | null;
+  created_at: number | null;
+};
+
+export type AgentDispatchResult = {
+  ok: boolean;
+  event: AgentDispatchEvent;
+};
+
+function normalizeAgentDispatchEvent(value: unknown): AgentDispatchEvent {
+  const row = briefingRecord(value);
+  const status = briefingOptionalString(row.status);
+  return {
+    id: briefingString(row.id),
+    subject_kind: row.subject_kind === 'issue' ? 'issue' : 'finding',
+    candidate_id: briefingOptionalString(row.candidate_id),
+    comment_id: briefingOptionalString(row.comment_id),
+    issue_id: briefingOptionalString(row.issue_id),
+    instruction: briefingString(row.instruction),
+    cwd: briefingString(row.cwd),
+    // An unrecognized status is reported as unsettled rather than as success.
+    status: status === 'dispatched' || status === 'failed' ? status : 'dispatching',
+    session_handle: briefingOptionalString(row.session_handle),
+    attach_command: briefingOptionalString(row.attach_command),
+    error: briefingOptionalString(row.error),
+    created_at: briefingOptionalNumber(row.created_at),
+  };
+}
+
+/** Render the dispatch plan for confirmation. Writes nothing server-side. */
+export async function previewAgentDispatch(
+  subject: AgentDispatchSubject,
+  instruction: string,
+): Promise<AgentDispatchPlan> {
+  const response = await apiPost('/api/agent-dispatch/preview', { subject, instruction });
+  const plan = briefingRecord(briefingRecord(await parseMaybeJson(response)).plan);
+  return {
+    subject_kind: plan.subject_kind === 'issue' ? 'issue' : 'finding',
+    subject_label: briefingString(plan.subject_label),
+    instruction: briefingString(plan.instruction, instruction),
+    cwd: briefingString(plan.cwd),
+    prompt: briefingString(plan.prompt),
+    capability_surface: briefingStringArray(plan.capability_surface),
+  };
+}
+
+/**
+ * Execute a confirmed dispatch. A spawn failure comes back as `ok: false` with
+ * the recorded event, not as a thrown error: the handling event exists either
+ * way and the UI must show which happened.
+ */
+export async function dispatchAgent(
+  subject: AgentDispatchSubject,
+  instruction: string,
+): Promise<AgentDispatchResult> {
+  const response = await apiPost('/api/agent-dispatch/dispatch', { subject, instruction });
+  const payload = briefingRecord(await parseMaybeJson(response));
+  return {
+    ok: payload.ok === true,
+    event: normalizeAgentDispatchEvent(payload.event),
+  };
+}
+
+/** Read the recorded dispatch chain for one finding or issue. */
+export async function getAgentDispatchEvents(
+  filter: { candidateId?: string; issueId?: string },
+  signal?: AbortSignal,
+): Promise<AgentDispatchEvent[]> {
+  const query = new URLSearchParams();
+  if (filter.candidateId) query.set('candidate_id', filter.candidateId);
+  if (filter.issueId) query.set('issue_id', filter.issueId);
+  const response = await apiGet(
+    `/api/agent-dispatch/events?${query.toString()}`,
+    signal ? { signal } : {},
+  );
+  const payload = briefingRecord(await parseMaybeJson(response));
+  const events = Array.isArray(payload.events) ? payload.events : [];
+  return events.map(normalizeAgentDispatchEvent);
 }

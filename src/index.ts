@@ -53,6 +53,11 @@ import { registerAuthHookRoutes } from "./routes/auth-hooks.js";
 import { registerRuntimeRoutes } from "./routes/runtime.js";
 import { registerTimelineRoutes } from "./routes/timeline.js";
 import { registerSpacesRoutes } from "./routes/spaces.js";
+// Umbrella 99b74d6 / issue ce22a3a — briefing review store, ingest, and sweep.
+import { registerBriefingRoutes } from "./routes/briefing.js";
+import { startBriefingExpirySweep, stopBriefingExpirySweep } from "./briefing-scheduler.js";
+// Umbrella 99b74d6 / issue ce83a84 — human-initiated agent dispatch.
+import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerClientAuthRoutes } from "./routes/client-auth.js";
@@ -230,6 +235,10 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerRuntimeRoutes(router);
   registerTimelineRoutes(router);
   registerSpacesRoutes(router);
+  // Issue: ce22a3a — briefing ingestion, review queue, and decision routes
+  registerBriefingRoutes(router, db);
+  // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
+  registerAgentDispatchRoutes(router, db);
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
@@ -547,6 +556,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   if (operationalMutationsAllowed) {
     startBackupScheduler();
     startTrashGcScheduler(db, (level, event, fields) => logger(level, event, fields));
+    // Issue ce22a3a — retire unreviewed briefing candidates on a slow cadence.
+    startBriefingExpirySweep(db, (level, event, fields) => logger(level, event, fields));
   }
 
   // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
@@ -585,6 +596,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     await stopIngestionGracefully();
     stopBackupScheduler();
     stopTrashGcScheduler();
+    stopBriefingExpirySweep();
     daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();

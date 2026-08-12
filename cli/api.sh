@@ -816,9 +816,11 @@ api_operational_mutation_category() {
 
   case "$pathname" in
     /api/admin|/api/admin/*) printf 'system'; return 0 ;;
+    /api/agent-dispatch|/api/agent-dispatch/*) printf 'agent_dispatch'; return 0 ;;
     /api/artifacts|/api/artifacts/*) printf 'artifacts'; return 0 ;;
     /api/auth|/api/auth/*) printf 'auth'; return 0 ;;
     /api/backup|/api/backup/*) printf 'backup'; return 0 ;;
+    /api/briefing|/api/briefing/*) printf 'briefing'; return 0 ;;
     /api/chats|/api/chats/*) printf 'chats'; return 0 ;;
     /api/console|/api/console/*) printf 'console'; return 0 ;;
     /api/conversations|/api/conversations/*) printf 'conversations'; return 0 ;;
