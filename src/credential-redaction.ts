@@ -77,6 +77,18 @@ export interface CredentialRedactionSourceReport {
   /** Files that could not be rewritten (permissions, IO). */
   failed_files: number;
   /**
+   * Files that were published and then had a write fail whose rollback also
+   * failed, so their bytes are neither the original nor a clean patch. Never
+   * counted as patched: the state is unknown, and an operator has to look at
+   * the file. Their spans are not counted either, for the same reason.
+   *
+   * Their recovered/abandoned byte counts are still reported. Those are
+   * measured against the unlinked inode and against appends whose fsync
+   * returned, so they stay true statements; what is unknown is only what the
+   * file holds past the last committed append.
+   */
+  indeterminate_files: number;
+  /**
    * Files deliberately left alone: the file kept changing under the rewrite, or
    * its scan hit the verification budget so a rewrite could not be complete.
    * Refusing is the safe outcome — a source rewrite is destructive.
@@ -92,8 +104,20 @@ export interface CredentialRedactionSourceReport {
    * Bytes still sitting in the unlinked inode when bounded tail recovery gave
    * up. Non-zero means a writer is appending faster than recovery drains it and
    * those events exist only in that writer's descriptor.
+   *
+   * Sums only the files whose tail could actually be measured — see
+   * `unknown_tail_files`. Zero here therefore means "nothing was left behind on
+   * any file this count covers", never "nothing could be determined".
    */
   abandoned_tail_bytes: number;
+  /**
+   * Files whose abandoned tail could not be measured at all, because the size
+   * of the inode the rename unlinked could not be read. Unknown, not zero: this
+   * is exactly the state in which a writer's bytes go with the closing inode,
+   * so folding it into `abandoned_tail_bytes: 0` would report the loss as a
+   * clean run (issue b3e4a09, sixth-pass item 2).
+   */
+  unknown_tail_files: number;
   /**
    * Files whose patched bytes are in place but whose original permission bits
    * could not be restored, so they are left owner-writable. Reported rather
@@ -243,15 +267,32 @@ function maskCredentialInText(
   };
 }
 
-type PatchStatus = "patched" | "unchanged" | "missing" | "failed" | "refused";
+/**
+ * `indeterminate` is deliberately not a flavour of `failed`. A failed file was
+ * not rewritten at all — the operator can re-run and nothing is at stake. An
+ * indeterminate one was published and then had a write fail in a way that could
+ * not be rolled back, so its bytes may be neither the original nor a clean
+ * patch. That needs a person to look at the file, which is a different
+ * instruction and therefore a different bucket.
+ */
+type PatchStatus =
+  | "patched"
+  | "unchanged"
+  | "missing"
+  | "failed"
+  | "refused"
+  | "indeterminate";
 
 interface PatchOutcome {
   status: PatchStatus;
   replacements: number;
   /** Bytes appended to the old inode after the rename and carried over. */
   recoveredBytes: number;
-  /** Bytes still in the unlinked inode when tail recovery gave up. */
-  abandonedBytes: number;
+  /**
+   * Bytes still in the unlinked inode when tail recovery gave up, or `null`
+   * when the inode's size could not be determined at all.
+   */
+  abandonedBytes: number | null;
   /** The patch landed but the original mode could not be put back. */
   modeRestoreFailed: boolean;
 }
@@ -326,8 +367,32 @@ function writeAll(fd: number, buffer: Buffer): void {
 }
 
 /**
+ * What one checkpointed append left behind.
+ *
+ * These four states are materially different instructions to the caller, and
+ * collapsing them into a boolean is what the fifth-pass primitive got wrong
+ * (issue b3e4a09, sixth-pass item 1):
+ *
+ *   - `committed`   the payload is whole and durable, and any rewind it made
+ *                   is permanent. Offsets may advance.
+ *   - `unchanged`   nothing was attempted. The checkpoint could not be taken,
+ *                   so the file is exactly as the previous operation left it —
+ *                   including, for a splice, the region the payload was going
+ *                   to replace. There is nothing to restore, and restoring
+ *                   anyway duplicates that region.
+ *   - `rewound`     the write failed and the file was put back at the
+ *                   checkpoint. For a splice that means the replaced region is
+ *                   gone, so restoring it is exactly the right move.
+ *   - `indeterminate` the write failed and the rollback failed with it. What
+ *                   the file holds is unknown: possibly a fragment of the
+ *                   payload, possibly not. Nothing may be written on top of it
+ *                   and nothing may call it patched.
+ */
+type AppendOutcome = "committed" | "unchanged" | "rewound" | "indeterminate";
+
+/**
  * Append `payload` to the published replacement so that it either lands whole
- * and durably or leaves the file byte-for-byte as it was.
+ * and durably or leaves the file byte-for-byte as it was — and say which.
  *
  * This is the single primitive every write to the replacement goes through
  * after the rename: the ordinary tail appends, the seam splice that rewrites
@@ -346,34 +411,55 @@ function writeAll(fd: number, buffer: Buffer): void {
  * descriptor is in append mode, so a write after a rewind continues from the
  * new end rather than from a stale file position.
  *
- * True is returned only after fsync has returned. Nothing may treat bytes as
- * committed before they are durable — advancing the offset first is how the old
- * seam handler under-reported abandoned bytes when the restoration fsync failed.
+ * `committed` is returned only after fsync has returned. Nothing may treat
+ * bytes as committed before they are durable — advancing the offset first is
+ * how the old seam handler under-reported abandoned bytes when the restoration
+ * fsync failed.
  */
-function checkpointedAppend(outFd: number, payload: Buffer, rewindBy = 0): boolean {
+function checkpointedAppend(outFd: number, payload: Buffer, rewindBy = 0): AppendOutcome {
   let checkpoint: number;
   try {
     checkpoint = fs.fstatSync(outFd).size;
   } catch {
-    return false;
+    // No checkpoint means no rewind and no write: every byte of the file is
+    // still what it was one instruction ago. This is the state that must not be
+    // confused with a rewind — a splice that never took its checkpoint never
+    // removed the region it was going to replace.
+    return "unchanged";
   }
   const base = Math.max(0, checkpoint - rewindBy);
+  if (base !== checkpoint) {
+    try {
+      fs.ftruncateSync(outFd, base);
+    } catch {
+      // The rewind is the first thing that would have changed the file, and it
+      // did not happen, so this is the same "nothing was attempted" state.
+      return "unchanged";
+    }
+  }
   try {
-    if (base !== checkpoint) fs.ftruncateSync(outFd, base);
     writeAll(outFd, payload);
     fs.fsyncSync(outFd);
-    return true;
+    return "committed";
   } catch {
     try {
       fs.ftruncateSync(outFd, base);
+    } catch {
+      // The rollback itself failed, so the file may still hold a fragment of
+      // the payload. Nothing here can undo that on a disk that is failing both
+      // writes and truncates, and nothing may be appended on top of a fragment
+      // whose extent is unknown.
+      return "indeterminate";
+    }
+    try {
       fs.fsyncSync(outFd);
     } catch {
-      // The rewind itself failed, so the file may still hold a fragment of the
-      // payload. Nothing here can undo that on a disk that is failing both
-      // writes and truncates; the caller counts these bytes as uncommitted
-      // either way, which is the honest report of that state.
+      // The truncate is in effect for every reader of this file; only its
+      // durability across a crash is unproven. Not knowing whether a rewind
+      // survives a power cut is not the same as not knowing what the file
+      // holds, so this stays `rewound`.
     }
-    return false;
+    return "rewound";
   }
 }
 
@@ -403,19 +489,36 @@ interface SeamRegion {
 interface TailProgress {
   committed: number;
   replacements: number;
+  /**
+   * An append reported `indeterminate`: the replacement holds something this
+   * code cannot describe. It lives on the caller-owned record for the same
+   * reason the offsets do — a later exception must not lose the fact — and it
+   * is what forbids the file's outcome from ever being `patched`.
+   */
+  indeterminate: boolean;
 }
 
-/** Turn recovery progress into the report's recovered/abandoned pair. */
+/**
+ * Turn recovery progress into the report's recovered/abandoned pair.
+ *
+ * `abandoned` is `null` when the old inode's size could not be determined. That
+ * is not the same number as zero and must not be reported as one (issue
+ * b3e4a09, sixth-pass item 2): the size is measured through the descriptor on
+ * the inode the rename unlinked, so a persistent IO error there is exactly the
+ * case where a writer's bytes are about to be lost with that inode — and the
+ * old catch turned it into `abandoned: 0`, an operator-visible "nothing was
+ * left behind" over bytes nothing could see again.
+ */
 function settleTail(
   fd: number,
   fromOffset: number,
   progress: TailProgress,
-): { bytes: number; replacements: number; abandoned: number } {
-  let abandoned = 0;
+): { bytes: number; replacements: number; abandoned: number | null } {
+  let abandoned: number | null;
   try {
     abandoned = Math.max(0, fs.fstatSync(fd).size - progress.committed);
   } catch {
-    abandoned = 0;
+    abandoned = null;
   }
   return {
     bytes: Math.max(0, progress.committed - fromOffset),
@@ -522,6 +625,16 @@ interface TailRecoveryInput {
  * absent rather than mangled — and `committed` drops below it so those bytes
  * are reported abandoned. They are still in the unlinked inode the abandoned
  * count is measured against, so that report is literally true.
+ *
+ * What the primitive *reports* is the sixth-pass correction. A boolean cannot
+ * distinguish "the splice never started" from "the splice was rolled back", and
+ * the restoration is only correct in the second case: an append that could not
+ * take its checkpoint left the open final line exactly where it was, so writing
+ * it back duplicates it. Nor can a boolean distinguish either of those from
+ * "the rollback failed too", where the file holds an unknown fragment and the
+ * only safe move is to stop writing and refuse to call the file patched. The
+ * three failure states are now distinct values and the caller branches on them
+ * (issue b3e4a09, sixth-pass item 1).
  */
 function recoverAppendedTail(input: TailRecoveryInput, progress: TailProgress): void {
   const { fd, outFd, fromOffset, seam, pepper, fingerprint, mask } = input;
@@ -546,7 +659,12 @@ function recoverAppendedTail(input: TailRecoveryInput, progress: TailProgress): 
     // chunk, so that line comes off the replacement as part of the same
     // checkpointed write that replaces it.
     const splice = seamPending ? seam : null;
-    if (checkpointedAppend(outFd, payload, splice === null ? 0 : splice.written.length)) {
+    const result = checkpointedAppend(
+      outFd,
+      payload,
+      splice === null ? 0 : splice.written.length,
+    );
+    if (result === "committed") {
       if (splice !== null) {
         seamPending = false;
         progress.committed -= splice.source.length;
@@ -555,14 +673,31 @@ function recoverAppendedTail(input: TailRecoveryInput, progress: TailProgress): 
       progress.committed += chunk.length;
       return true;
     }
-    if (splice !== null) {
-      // The failed splice rewound to just before the open final line and left
-      // it there. Putting that line back is an append like any other, so it
-      // uses the same primitive: it lands whole and durably, or the file stays
-      // at the rewind point with no fragment of it. Only when it does not land
-      // does `committed` drop below the seam — never before the restoration's
-      // own fsync has returned.
-      if (!checkpointedAppend(outFd, splice.written)) {
+    if (result === "indeterminate") {
+      // The replacement holds something nobody can describe. Writing the seam
+      // back would append onto a fragment of unknown length, so recovery stops
+      // here and the file is reported for inspection instead of patched. The
+      // offsets are left where they are: they are claims about a file whose
+      // state is now unknown, and adjusting them would dress that up as an
+      // account.
+      progress.indeterminate = true;
+      return false;
+    }
+    if (splice !== null && result === "rewound") {
+      // Only a rewound splice actually removed the open final line, and only
+      // then is there anything to put back (issue b3e4a09, sixth-pass item 1).
+      // An `unchanged` splice never took its checkpoint, so the line is still
+      // on the file — restoring it there would write it a second time and
+      // publish a duplicated record.
+      //
+      // Putting the line back is an append like any other, so it uses the same
+      // primitive: it lands whole and durably, or the file stays at the rewind
+      // point with no fragment of it. Only when it does not land does
+      // `committed` drop below the seam — never before the restoration's own
+      // fsync has returned.
+      const restored = checkpointedAppend(outFd, splice.written);
+      if (restored !== "committed") {
+        if (restored === "indeterminate") progress.indeterminate = true;
         progress.committed -= splice.source.length;
       }
       // `seamPending` is deliberately left alone: a failure ends recovery, and
@@ -706,6 +841,33 @@ function patchSourceFile(
   return patchOutcome("refused");
 }
 
+/**
+ * How far one attempt got with the replacement, as a state rather than a set of
+ * booleans (issue b3e4a09, sixth-pass item 1).
+ *
+ *   unpublished → nothing was renamed into place; the temp file is discarded.
+ *   stale       → the source moved under the attempt; re-read and try again.
+ *   published   → the replacement is the file at that path, and its contents
+ *                 are exactly what this code wrote.
+ *   inconsistent→ published, and then an append failed in a way that could not
+ *                 be rolled back, so the contents are not known. Terminal.
+ *
+ * The last one exists so that "do not report an uncertain file as patched" is a
+ * property of the machine instead of a check somebody has to remember to write:
+ * `inconsistent` has no outgoing transition, and it is the only state that maps
+ * to `indeterminate`, exactly as `published` is the only state that maps to
+ * `patched`.
+ */
+type PublicationState = "unpublished" | "stale" | "published" | "inconsistent";
+
+/** Total state → outcome mapping. `null` means "retry this file". */
+const PATCH_STATUS_BY_PUBLICATION: Record<PublicationState, PatchStatus | null> = {
+  unpublished: "failed",
+  stale: null,
+  published: "patched",
+  inconsistent: "indeterminate",
+};
+
 /** One attempt of the read-mask-verify-rename-recover cycle. `null` = retry. */
 function patchThroughDescriptor(
   fd: number,
@@ -781,9 +943,26 @@ function patchThroughDescriptor(
   // leaked, and the operator holding an exception instead of an account of what
   // did and did not make it onto the file.
   const outcome = patchOutcome("failed");
-  const progress: TailProgress = { committed: original.length, replacements: 0 };
-  let retry = false;
-  let published = false;
+  const progress: TailProgress = {
+    committed: original.length,
+    replacements: 0,
+    indeterminate: false,
+  };
+  // The attempt's whole result is this one variable, and `advance` is the only
+  // way it moves (issue b3e4a09, sixth-pass item 1). `patched` is not a status
+  // this function can decide to set at the end — it is what the mapping below
+  // returns for exactly one state, and an append that reported `indeterminate`
+  // moves the machine to a state that has no transition back. That is the
+  // structural version of "never report an uncertain file as patched": there is
+  // no ordering of the steps below, and no step a later edit could add, that
+  // reaches `patched` from `inconsistent`.
+  let state: PublicationState = "unpublished";
+  const advance = (next: PublicationState): void => {
+    if (state === "inconsistent") return;
+    state = next;
+  };
+  /** Is the replacement now the file at `filePath`? */
+  const isPublished = (): boolean => state === "published" || state === "inconsistent";
   try {
     let staged = false;
     try {
@@ -800,19 +979,19 @@ function patchThroughDescriptor(
         attempt,
       });
       staged = false;
-      retry = true;
+      advance("stale");
     }
 
     if (staged) {
       try {
         fs.renameSync(tempPath, filePath);
-        published = true;
+        advance("published");
       } catch {
         // `outcome` is already "failed".
       }
     }
 
-    if (published) {
+    if (isPublished()) {
       // The read descriptor is still open on the now-unlinked inode, which is
       // the only way to see anything a writer appended inside the
       // verify-to-rename window; `outFd` is still the replacement's own
@@ -834,6 +1013,7 @@ function patchThroughDescriptor(
         fingerprint,
         mask,
       }, progress);
+      if (progress.indeterminate) advance("inconsistent");
     }
   } catch (error) {
     // Everything above that can fail in an expected way is already guarded, so
@@ -846,11 +1026,11 @@ function patchThroughDescriptor(
     // is simply reported as failed.
     redactionLog("error", "credential_redaction_source_patch_failed", {
       file: filePath,
-      published,
+      published: isPublished(),
       error: String(error),
     });
   } finally {
-    if (published) {
+    if (isPublished()) {
       // The mode goes back through the same descriptor, so it lands on this
       // run's file whatever the path names by now, and openSync's umask-masked
       // mode argument is corrected in the same call. A failure is reported
@@ -869,25 +1049,47 @@ function patchThroughDescriptor(
       }
     }
     closeOut();
-    if (!published) discardTemp();
+    if (!isPublished()) discardTemp();
   }
 
-  if (published) {
+  // The exception path can leave `progress` marked without the transition above
+  // having run, so the machine is settled once more here — through `advance`,
+  // and immediately before the mapping, with nothing in between that could move
+  // it back.
+  if (progress.indeterminate) advance("inconsistent");
+  const status = PATCH_STATUS_BY_PUBLICATION[state];
+  if (status === null) return null;
+  outcome.status = status;
+
+  if (isPublished()) {
     const tail = settleTail(fd, original.length, progress);
-    if (tail.bytes > 0 || tail.abandoned > 0) {
+    if (tail.bytes > 0 || tail.abandoned === null || tail.abandoned > 0) {
       redactionLog("warn", "credential_redaction_source_tail_recovered", {
         file: filePath,
         recovered_bytes: tail.bytes,
         recovered_spans: tail.replacements,
         abandoned_bytes: tail.abandoned,
+        // Explicit, because `null` in a log line reads as "the field was not
+        // filled in" rather than "the number could not be obtained".
+        tail_accounting: tail.abandoned === null ? "unknown" : "known",
       });
     }
-    outcome.status = "patched";
-    outcome.replacements = masked.replacements + tail.replacements;
     outcome.recoveredBytes = tail.bytes;
     outcome.abandonedBytes = tail.abandoned;
+    // Spans are only claimed for a file whose contents are known. An
+    // indeterminate file may hold a fragment of an append, so counting its
+    // masked spans would be reporting a rewrite this code cannot vouch for.
+    if (status === "patched") {
+      outcome.replacements = masked.replacements + tail.replacements;
+    } else {
+      redactionLog("error", "credential_redaction_source_indeterminate", {
+        file: filePath,
+        recovered_bytes: tail.bytes,
+        abandoned_bytes: tail.abandoned,
+      });
+    }
   }
-  return retry ? null : outcome;
+  return outcome;
 }
 
 interface BlockRow {
@@ -1255,9 +1457,11 @@ export function redactCredential(
     patched_files: sources?.patched_files ?? null,
     missing_files: sources?.missing_files ?? null,
     failed_files: sources?.failed_files ?? null,
+    indeterminate_files: sources?.indeterminate_files ?? null,
     refused_files: sources?.refused_files ?? null,
     recovered_tail_bytes: sources?.recovered_tail_bytes ?? null,
     abandoned_tail_bytes: sources?.abandoned_tail_bytes ?? null,
+    unknown_tail_files: sources?.unknown_tail_files ?? null,
     mode_restore_failed_files: sources?.mode_restore_failed_files ?? null,
   });
 
@@ -1357,10 +1561,12 @@ function patchSourcesForConversations(
     unchanged_files: 0,
     missing_files: 0,
     failed_files: 0,
+    indeterminate_files: 0,
     refused_files: 0,
     patched_spans: 0,
     recovered_tail_bytes: 0,
     abandoned_tail_bytes: 0,
+    unknown_tail_files: 0,
     mode_restore_failed_files: 0,
   };
   if (conversationIds.length === 0) return report;
@@ -1376,7 +1582,10 @@ function patchSourcesForConversations(
   for (const file of files) {
     const outcome = patchSourceFile(file, pepper, fingerprint, mask);
     report.recovered_tail_bytes += outcome.recoveredBytes;
-    report.abandoned_tail_bytes += outcome.abandonedBytes;
+    // An unmeasurable tail is counted as a file, not added as a zero: a sum can
+    // only carry numbers that exist.
+    if (outcome.abandonedBytes === null) report.unknown_tail_files += 1;
+    else report.abandoned_tail_bytes += outcome.abandonedBytes;
     if (outcome.modeRestoreFailed) report.mode_restore_failed_files += 1;
     switch (outcome.status) {
       case "patched":
@@ -1391,6 +1600,9 @@ function patchSourcesForConversations(
         break;
       case "refused":
         report.refused_files += 1;
+        break;
+      case "indeterminate":
+        report.indeterminate_files += 1;
         break;
       default:
         report.failed_files += 1;
