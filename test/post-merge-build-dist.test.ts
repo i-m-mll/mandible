@@ -6,8 +6,93 @@ import { afterEach, describe, expect, it } from "vitest";
 
 const tempRoots: string[] = [];
 
+type HookResult = {
+  status: number | null;
+  stderr: string;
+  home: string;
+  tracePath: string;
+};
+
 function copyCliFile(name: string, destDir: string): void {
   fs.copyFileSync(path.join(process.cwd(), "cli", name), path.join(destDir, name));
+}
+
+function runGit(repo: string, args: string[]): void {
+  const result = spawnSync("git", args, {
+    cwd: repo,
+    encoding: "utf8",
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+  });
+  expect(result.status, result.stderr).toBe(0);
+}
+
+function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
+  tempRoots.push(tempDir);
+
+  const repo = path.join(tempDir, "repo");
+  const home = path.join(tempDir, "home");
+  const cliDir = path.join(repo, "cli");
+  const tracePath = path.join(tempDir, "trace");
+  fs.mkdirSync(cliDir, { recursive: true });
+  fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
+
+  copyCliFile("post-merge-build-dist.sh", cliDir);
+  copyCliFile("instructions.sh", cliDir);
+  copyCliFile("instructions-contract.json", cliDir);
+  // instructions.sh's settings helper requires the shared production-DB guard
+  // from the same cli/ directory (issue 07edc0d); ship it into the temp repo.
+  copyCliFile("production-db-guard.cjs", cliDir);
+
+  runGit(repo, ["init", "-b", "main"]);
+  runGit(repo, ["config", "user.name", "Mandible Test"]);
+  runGit(repo, ["config", "user.email", "mandible-test@example.invalid"]);
+  runGit(repo, ["add", "."]);
+  runGit(repo, ["commit", "-m", "baseline"]);
+  runGit(repo, ["checkout", "-b", "topic"]);
+
+  const changedFile = path.join(repo, changedPath);
+  fs.mkdirSync(path.dirname(changedFile), { recursive: true });
+  fs.appendFileSync(changedFile, "\n", "utf8");
+  runGit(repo, ["add", changedPath]);
+  runGit(repo, ["commit", "-m", `change ${changedPath}`]);
+  runGit(repo, ["checkout", "main"]);
+  runGit(repo, ["merge", "--no-ff", "topic", "-m", "merge topic"]);
+
+  const hookEnv = { ...process.env };
+  if (failGitDiff) {
+    const gitBin = spawnSync("which", ["git"], { encoding: "utf8" }).stdout.trim();
+    const shimDir = path.join(tempDir, "bin");
+    fs.mkdirSync(shimDir);
+    fs.writeFileSync(
+      path.join(shimDir, "git"),
+      `#!/usr/bin/env bash
+if [[ "$1" == "diff" ]]; then
+  printf '%s\\n' 'injected git diff failure' >&2
+  exit 42
+fi
+exec "$REAL_GIT" "$@"
+`,
+      { mode: 0o755 },
+    );
+    hookEnv.PATH = `${shimDir}${path.delimiter}${hookEnv.PATH}`;
+    hookEnv.REAL_GIT = gitBin;
+  }
+
+  const result = spawnSync("bash", ["cli/post-merge-build-dist.sh"], {
+    cwd: repo,
+    encoding: "utf8",
+    env: {
+      ...hookEnv,
+      HOME: home,
+      MANDIBLE_POST_MERGE_BUILD_COMMAND: 'printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
+      MANDIBLE_TEST_TRACE: tracePath,
+      NODE_PATH: path.join(process.cwd(), "node_modules"),
+    },
+  });
+
+  return { status: result.status, stderr: result.stderr, home, tracePath };
 }
 
 afterEach(() => {
@@ -17,45 +102,60 @@ afterEach(() => {
 });
 
 describe("post-merge build hook", () => {
-  it("installs managed instructions after a local build", () => {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-post-merge-hook-"));
-    tempRoots.push(tempDir);
+  it(
+    "skips the build but installs instructions after an instruction-only merge",
+    () => {
+      const result = runHookAfterMerge("cli/instructions-contract.json");
 
-    const repo = path.join(tempDir, "repo");
-    const home = path.join(tempDir, "home");
-    const cliDir = path.join(repo, "cli");
-    fs.mkdirSync(cliDir, { recursive: true });
-    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
-    fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");
+      expect(result.stderr).not.toContain("[post-merge-build] generated local build artifacts");
+      expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
+      expect(fs.existsSync(result.tracePath)).toBe(false);
 
-    copyCliFile("post-merge-build-dist.sh", cliDir);
-    copyCliFile("instructions.sh", cliDir);
-    copyCliFile("instructions-contract.json", cliDir);
-    // instructions.sh's settings helper requires the shared production-DB guard
-    // from the same cli/ directory (issue 07edc0d); ship it into the temp repo.
-    copyCliFile("production-db-guard.cjs", cliDir);
+      const claudeTarget = path.join(result.home, ".claude", "CLAUDE.md");
+      const codexTarget = path.join(result.home, ".codex", "AGENTS.md");
+      expect(fs.readFileSync(claudeTarget, "utf8")).toContain("Mandible Interface Contract");
+      expect(fs.readFileSync(codexTarget, "utf8")).toContain("Mandible Interface Contract");
+      expect(fs.readFileSync(codexTarget, "utf8")).toContain("Local policy.");
+    },
+    15_000,
+  );
 
-    expect(spawnSync("git", ["init", "-b", "main"], { cwd: repo }).status).toBe(0);
+  it(
+    "builds and installs instructions after a source-changing merge",
+    () => {
+      const result = runHookAfterMerge("src/index.ts");
 
-    const result = spawnSync("bash", ["cli/post-merge-build-dist.sh"], {
-      cwd: repo,
-      encoding: "utf8",
-      env: {
-        ...process.env,
-        HOME: home,
-        MANDIBLE_POST_MERGE_BUILD_COMMAND: "true",
-        NODE_PATH: path.join(process.cwd(), "node_modules"),
-      },
-    });
+      expect(result.status).toBe(0);
+      expect(result.stderr).toContain("[post-merge-build] generated local build artifacts");
+      expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
+      expect(fs.readFileSync(result.tracePath, "utf8")).toBe("build\n");
+      expect(fs.readFileSync(path.join(result.home, ".claude", "CLAUDE.md"), "utf8")).toContain(
+        "Mandible Interface Contract",
+      );
+    },
+    15_000,
+  );
+
+  it("does nothing after an unrelated merge", () => {
+    const result = runHookAfterMerge("docs/note.md");
 
     expect(result.status).toBe(0);
-    expect(result.stderr).toContain("[post-merge-build] generated local build artifacts");
-    expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
+    expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");
+    expect(result.stderr).not.toContain("[post-merge-build] generated local build artifacts");
+    expect(result.stderr).not.toContain("[post-merge-build] installed managed instruction fragments");
+    expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.existsSync(path.join(result.home, ".claude", "CLAUDE.md"))).toBe(false);
+  });
 
-    const claudeTarget = path.join(home, ".claude", "CLAUDE.md");
-    const codexTarget = path.join(home, ".codex", "AGENTS.md");
-    expect(fs.readFileSync(claudeTarget, "utf8")).toContain("Mandible Interface Contract");
-    expect(fs.readFileSync(codexTarget, "utf8")).toContain("Mandible Interface Contract");
-    expect(fs.readFileSync(codexTarget, "utf8")).toContain("Local policy.");
+  it("exits nonzero when git diff fails", () => {
+    const result = runHookAfterMerge("docs/note.md", true);
+
+    expect(result.status).toBe(42);
+    expect(result.stderr).toContain("injected git diff failure");
+    expect(result.stderr).not.toContain("skipping build");
+    expect(result.stderr).not.toContain("installed managed instruction fragments");
+    expect(fs.existsSync(result.tracePath)).toBe(false);
   });
 });
