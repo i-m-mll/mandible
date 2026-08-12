@@ -25,6 +25,7 @@ source "$API_HELPER"
 RESET=$'\033[0m'
 RED=$'\033[31m'
 GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
 
 err() { printf "%b\n" "$*" >&2; }
 die() { err "$1"; exit "${2:-1}"; }
@@ -60,9 +61,13 @@ Setup is idempotent and is the only way the local human operator is created.
 their app and provider-session-environment bindings.
 Defaults for --name/--email come from git config user.name / user.email.
 Setup also registers git user.signingkey as the operator's ssh_key credential
-when one is configured (idempotent; skipped silently when unset). Protected
-merges are only attested when their signature verifies against an active
-registered credential, so this is not an optional step.
+when one is configured in GLOBAL git config (idempotent; skipped silently when
+unset). Operator credentials are global, so a key configured only in the
+current repository is reported with the command that registers it, never
+auto-registered. Protected merges are only attested when their signature
+verifies against an active registered credential, so this is not an optional
+step. `credential add --from-git-signingkey` registers the effective key of the
+current repository and prints which config scope it came from.
 Credentials are immutable: revoke then add, never mutate a fingerprint. No
 private key material is ever accepted.
 
@@ -132,7 +137,19 @@ git_config_value() {
   git config --get "$1" 2>/dev/null || true
 }
 
+# Issue 2205073 — read one git config value with the dotfiles agent-signing
+# GIT_CONFIG_* overrides stripped, so the operator's own configuration is what
+# is read rather than whatever key the current agent environment injects.
+#
+# $1 selects the scope, and the scope is the whole point (review F5):
+#   global    — only the operator's global git config. A registry credential is
+#               global by construction (it is the operator's identity in every
+#               repository), so onboarding may only auto-register from here.
+#   effective — whatever this repository resolves, repo-local scope included.
+#               Explicit commands may use it; they must say which scope won.
+# $2 is the config key.
 git_config_value_without_overrides() {
+  local scope="$1" key="$2"
   (
     unset GIT_CONFIG_COUNT
     unset GIT_CONFIG_PARAMETERS
@@ -140,27 +157,53 @@ git_config_value_without_overrides() {
     for var in $(env | sed -n 's/^\(GIT_CONFIG_\(KEY\|VALUE\)_[0-9][0-9]*\)=.*/\1/p'); do
       unset "$var"
     done
-    git config --get "$1" 2>/dev/null || true
+    if [[ "$scope" == "global" ]]; then
+      git config --global --get "$key" 2>/dev/null || true
+    else
+      git config --get "$key" 2>/dev/null || true
+    fi
   )
 }
 
 # Issue 2205073 — derive the OpenSSH public material and SHA256 fingerprint of
-# the configured git user.signingkey. Sets SIGNING_KEY_MATERIAL and
-# SIGNING_KEY_FINGERPRINT on success. Returns 1 when user.signingkey is unset
-# (nothing to register) and 2 when it is set but cannot be resolved; the reason
-# is left in SIGNING_KEY_ERROR. Callers decide whether that is fatal.
+# the configured git user.signingkey. Sets SIGNING_KEY_MATERIAL,
+# SIGNING_KEY_FINGERPRINT and SIGNING_KEY_SCOPE on success. Returns 1 when
+# user.signingkey is unset in the requested scope (nothing to register) and 2
+# when it is set but cannot be resolved; the reason is left in
+# SIGNING_KEY_ERROR. Callers decide whether that is fatal.
+#
+# $1 is the config scope: "global" (default) or "effective". SIGNING_KEY_SCOPE
+# reports where the resolved key actually came from — "global" or "non-global"
+# — so an explicit caller can name the scope it is about to promote into a
+# global operator credential.
 #
 # Accepts the three shapes git supports: a literal `key::` value, an inline
 # public key, or a path to a public or private key file.
 resolve_git_signing_key() {
+  local scope="${1:-global}"
   SIGNING_KEY_MATERIAL=""
   SIGNING_KEY_FINGERPRINT=""
   SIGNING_KEY_ERROR=""
-  local signing_key key_path key_line
-  signing_key="$(git_config_value_without_overrides user.signingkey)"
+  SIGNING_KEY_SCOPE=""
+  local signing_key key_path key_line global_key
+  signing_key="$(git_config_value_without_overrides "$scope" user.signingkey)"
   if [[ -z "$signing_key" ]]; then
-    SIGNING_KEY_ERROR="Git user.signingkey is not configured."
+    if [[ "$scope" == "global" ]]; then
+      SIGNING_KEY_ERROR="Git user.signingkey is not configured in global git config."
+    else
+      SIGNING_KEY_ERROR="Git user.signingkey is not configured."
+    fi
     return 1
+  fi
+  if [[ "$scope" == "global" ]]; then
+    SIGNING_KEY_SCOPE="global"
+  else
+    global_key="$(git_config_value_without_overrides global user.signingkey)"
+    if [[ -n "$global_key" && "$signing_key" == "$global_key" ]]; then
+      SIGNING_KEY_SCOPE="global"
+    else
+      SIGNING_KEY_SCOPE="non-global"
+    fi
   fi
   if ! command -v ssh-keygen >/dev/null 2>&1; then
     SIGNING_KEY_ERROR="ssh-keygen not found."
@@ -213,11 +256,29 @@ resolve_git_signing_key() {
 # merges succeed, but the approval-time base-transition check refuses to attest
 # them, and the second queued approval fails with no visible cause. Never fatal
 # — setup itself already succeeded by the time this runs.
+#
+# Review F5 — auto-registration reads GLOBAL git config only, matching the
+# startup audit in src/signing-credential-audit.ts. An operator credential is
+# global by construction: it is the identity every protected merge is attested
+# against. `git config --get` resolves repo-local configuration first, so
+# reading effective config here meant that running `mandible user setup` inside
+# any repository carrying a per-repo or agent signing key silently promoted
+# that key into an active, globally-scoped operator credential. A non-global
+# key is now reported with the explicit command that registers it, never
+# registered on its own.
 setup_signing_credential() {
   local ref="$1" rc=0
-  resolve_git_signing_key || rc=$?
+  resolve_git_signing_key global || rc=$?
   if (( rc == 1 )); then
-    return 0  # No signing key configured: nothing to register, say nothing.
+    # No GLOBAL signing key. If this repository resolves one from a non-global
+    # scope, name it and hand over the explicit command rather than acting.
+    local local_key
+    local_key="$(git_config_value_without_overrides effective user.signingkey)"
+    if [[ -n "$local_key" ]]; then
+      err "${YELLOW}Signing credential not registered:${RESET} git user.signingkey is set here only outside global config (${local_key})."
+      err "Operator credentials are global. If that is your protected-merge key, register it explicitly: mandible user credential add ${ref} --from-git-signingkey"
+    fi
+    return 0  # No global signing key configured: nothing to register.
   fi
   if (( rc != 0 )); then
     err "Signing credential not registered: ${SIGNING_KEY_ERROR}"
@@ -236,7 +297,7 @@ setup_signing_credential() {
   payload="$(jq -n --arg fp "$SIGNING_KEY_FINGERPRINT" --arg material "$SIGNING_KEY_MATERIAL" \
     '{type:"ssh_key", fingerprint:$fp, public_material:$material, label:"git user.signingkey"}')"
   if response="$(api_send POST "/api/users/$(urlencode "$ref")/credentials" "$payload" 2>/dev/null)"; then
-    err "${GREEN}Signing credential registered (${SIGNING_KEY_FINGERPRINT}).${RESET}"
+    err "${GREEN}Signing credential registered from global git config (${SIGNING_KEY_FINGERPRINT}).${RESET}"
   else
     err "Could not register the git signing key as a credential. Run: mandible user credential add ${ref} --from-git-signingkey"
   fi
@@ -418,9 +479,17 @@ credential_add() {
   if (( from_git )); then
     [[ -z "$ctype" && -z "$fingerprint" && $material_set -eq 0 ]] \
       || die "--from-git-signingkey cannot be combined with --type, --fingerprint, or --public-material." 2
-    # Issue 2205073 — shared with `mandible user setup`, which registers the
-    # same credential automatically.
-    resolve_git_signing_key || die "${SIGNING_KEY_ERROR}" 1
+    # Issue 2205073 — shared with `mandible user setup`, which auto-registers
+    # from global config only. This is the explicit command, so it honours the
+    # effective configuration of the current repository; review F5 requires it
+    # to say which scope the key came from, because the credential it creates
+    # is global regardless of where the key was configured.
+    resolve_git_signing_key effective || die "${SIGNING_KEY_ERROR}" 1
+    if [[ "$SIGNING_KEY_SCOPE" == "global" ]]; then
+      err "Registering git user.signingkey from global git config (${SIGNING_KEY_FINGERPRINT})."
+    else
+      err "${YELLOW}Registering git user.signingkey from a non-global git config scope (${SIGNING_KEY_FINGERPRINT}).${RESET} The credential applies to this user everywhere, not just this repository."
+    fi
     material="$SIGNING_KEY_MATERIAL"
     fingerprint="$SIGNING_KEY_FINGERPRINT"
     ctype="ssh_key"
