@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   classifyGitFailure,
   describeGitFailure,
+  probeRepoRootFromGitCommonDir,
+  repoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../src/auth-context.js";
 import type { Db } from "../src/db.js";
@@ -143,6 +145,92 @@ describe("resolveAuthMergeExecutionContext branch verification", () => {
       expect(message).toContain("git could not be executed (ENOENT)");
       expect(message).toContain("Retry the approval");
       expect(message).not.toContain("does not exist");
+    } finally {
+      process.env.PATH = originalPath;
+      db.close();
+    }
+  });
+});
+
+// Issue 2205073 (review F8) — the cwd-based repository lookup was the one
+// approval-context path still collapsing every git outcome into null, so a
+// daemon-health failure was reported as an unregistered repository.
+describe("repoRootFromGitCommonDir failure honesty", () => {
+  it("resolves the repo root and reports no failure inside a repository", () => {
+    const repo = createRepo();
+    const probe = probeRepoRootFromGitCommonDir(repo);
+    expect(probe.failure).toBeNull();
+    expect(probe.root).toBe(repo);
+    expect(repoRootFromGitCommonDir(repo)).toBe(repo);
+  });
+
+  it("reports git's own answer as an exit failure outside a repository", () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-norepo-")));
+    tempDirs.push(dir);
+    const probe = probeRepoRootFromGitCommonDir(dir);
+    expect(probe.root).toBeNull();
+    expect(probe.failure?.kind).toBe("exit");
+  });
+
+  it("reports an unrunnable git as a spawn failure, not as a missing repository", () => {
+    const repo = createRepo();
+    const originalPath = process.env.PATH;
+    try {
+      process.env.PATH = path.join(repo, "no-such-bin");
+      const probe = probeRepoRootFromGitCommonDir(repo);
+      expect(probe.root).toBeNull();
+      expect(probe.failure).toMatchObject({ kind: "spawn", errno: "ENOENT" });
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+});
+
+describe("resolveAuthMergeExecutionContext cwd resolution", () => {
+  it("reports a cwd outside any repository as invalid or unregistered", () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-auth-cwd-")));
+    tempDirs.push(dir);
+    const db = createSharedMigratedDb({ now: 1 });
+    try {
+      expect(() =>
+        resolveAuthMergeExecutionContext(db, {
+          type: "merge",
+          command: "mandible auth merge feature/x --into main",
+          cwd: dir,
+          base_branch: "main",
+          head_branch: "feature/x",
+        }),
+      ).toThrow(/Invalid or unregistered 'cwd'/);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("blames daemon health, not repository registration, when git never answers", () => {
+    const repo = createRepo();
+    const db = createSharedMigratedDb({ now: 1 });
+    const originalPath = process.env.PATH;
+    try {
+      registerRepo(db, repo);
+      // The repo is registered and healthy; git simply cannot be spawned.
+      process.env.PATH = path.join(repo, "no-such-bin");
+      let message = "";
+      try {
+        resolveAuthMergeExecutionContext(db, {
+          type: "merge",
+          command: "mandible auth merge feature/x --into main",
+          cwd: repo,
+          base_branch: "main",
+          head_branch: "feature/x",
+        });
+        throw new Error("expected resolveAuthMergeExecutionContext to throw");
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).toContain("Unable to resolve the repository for 'cwd'");
+      expect(message).toContain("git could not be executed (ENOENT)");
+      expect(message).toContain("daemon health");
+      expect(message).not.toContain("Invalid or unregistered");
     } finally {
       process.env.PATH = originalPath;
       db.close();

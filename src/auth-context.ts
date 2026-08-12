@@ -244,17 +244,47 @@ function isSafeBranchName(value: string): boolean {
   );
 }
 
-export function repoRootFromGitCommonDir(cwd: string): string | null {
+/**
+ * Issue 2205073 (review F8) — the repo-root probe is a git invocation like any
+ * other, and it fails in the same three worlds the classifier tells apart.
+ *
+ * `root` is set only when git actually answered with a git-common-dir.
+ * `failure` carries how git failed, so callers can tell "git says this is not a
+ * repository" (exit) apart from "git never answered" (timeout/spawn errno).
+ * Collapsing the latter into a null root is what let the approval path report a
+ * healthy, registered repository as an invalid or unregistered `cwd`.
+ */
+export interface RepoRootProbe {
+  root: string | null;
+  failure: GitFailure | null;
+}
+
+export function probeRepoRootFromGitCommonDir(cwd: string): RepoRootProbe {
   try {
     const gitCommonDir = execFileSync(
       "git",
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd, encoding: "utf-8", timeout: GIT_REF_TIMEOUT_MS, env: authGitEnv() }
+      {
+        cwd,
+        encoding: "utf-8",
+        timeout: GIT_REF_TIMEOUT_MS,
+        env: authGitEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+      }
     ).trim();
-    return gitCommonDir ? path.dirname(gitCommonDir) : null;
-  } catch {
-    return null;
+    return { root: gitCommonDir ? path.dirname(gitCommonDir) : null, failure: null };
+  } catch (error) {
+    return { root: null, failure: classifyGitFailure(error, GIT_REF_TIMEOUT_MS) };
   }
+}
+
+/**
+ * Best-effort form for callers that only enrich optional metadata from a cwd
+ * (repo-name backfill at submission). Anything that refuses work on the answer
+ * must use `probeRepoRootFromGitCommonDir` and report the failure honestly.
+ */
+export function repoRootFromGitCommonDir(cwd: string): string | null {
+  return probeRepoRootFromGitCommonDir(cwd).root;
 }
 
 export function resolveAuthMergeExecutionContext(
@@ -489,7 +519,18 @@ function resolveRegisteredTargetRepo(
     );
   }
 
-  const cwdRepoRoot = repoRootFromGitCommonDir(cwd);
+  // Issue 2205073 (review F8) — a raw/local request may identify its repository
+  // only through cwd. When `git rev-parse` times out or cannot be spawned
+  // (EMFILE from fd exhaustion, EAGAIN, ENOMEM), nothing was learned about this
+  // path: saying it is "invalid or unregistered" sends the operator to register
+  // an already-registered repo while the real cause is daemon/process health.
+  const cwdProbe = probeRepoRootFromGitCommonDir(cwd);
+  if (cwdProbe.failure && cwdProbe.failure.kind !== "exit") {
+    throw new AuthExecutionContextError(
+      `Unable to resolve the repository for 'cwd' ${cwd}: ${describeGitFailure(cwdProbe.failure)}`
+    );
+  }
+  const cwdRepoRoot = cwdProbe.root;
   if (!cwdRepoRoot) {
     throw new AuthExecutionContextError(
       `Invalid or unregistered 'cwd' for auth merge execution context: ${cwd}`
