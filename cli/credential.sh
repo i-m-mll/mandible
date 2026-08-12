@@ -25,12 +25,16 @@ usage() {
 Usage:
   mandible credential redact <credential-id> [--patch-sources] [--json]
 
-redact rescans every stored conversation block — plus the conversation titles
-and summaries derived from them — for the given credential's plaintext,
-verifying each `mandible_pat_...` candidate against that credential's stored
-fingerprint, and replaces every confirmed occurrence with
-`[mandible-credential:<id-prefix>]`. Only counts are reported; the matched
-secret is never printed or logged.
+redact rescans every stored conversation block — its text and its tool
+metadata, plus the conversation titles and summaries derived from them — for
+the given credential's plaintext, verifying each `mandible_pat_...` candidate
+against that credential's stored fingerprint, and replaces every confirmed
+occurrence with `[mandible-credential:<id-prefix>]`. Only counts are reported;
+the matched secret is never printed or logged.
+
+A redacted block's id is recomputed to the value the next ingest of the
+redacted text derives, so links captured after the redaction keep working
+across re-ingest. Conflicts are reported rather than forced.
 
 Revoked credentials are accepted deliberately — the recommended order is to
 rotate first (`mandible user token mint <ref> --store`, then
@@ -39,8 +43,11 @@ rotate first (`mandible user token mint <ref> --store`, then
 --patch-sources additionally rewrites the same verified spans in the local
 source transcripts the affected conversations came from, so a later full
 re-ingest cannot resurrect the plaintext. Every other byte of those files is
-preserved; each file is replaced atomically. Files that are no longer on disk
-are reported as missing rather than treated as an error.
+preserved; each file is replaced atomically, and a file that changed while its
+replacement was being prepared is re-read rather than overwritten from the
+stale snapshot. Files that are no longer on disk are reported as missing, and
+files that kept changing (or whose scan could not check every candidate) are
+reported as refused — never partially rewritten.
 
 Requires the local operator's credential (MANDIBLE_TOKEN or
 `mandible user dashboard-link`).
@@ -83,13 +90,25 @@ cmd_redact() {
     + "\n  redacted titles:   \(.redacted_metadata_fields)"
     + "\n  redacted spans:    \(.redacted_spans)"
     + "\n  conversations:     \(.redacted_conversations)"
-    + (if .truncated then "\n  warning: candidate verification hit the pathological per-text limit" else "" end)
+    + (if (.unverified_spans // 0) > 0 then
+         "\n  unverified spans:  \(.unverified_spans) (masked without verification)"
+       else "" end)
+    + (if (.renumbered_blocks // 0) > 0 then
+         "\n  renumbered blocks: \(.renumbered_blocks)"
+         + (if (.id_conflicts // 0) > 0 then ", \(.id_conflicts) kept (id already in use)" else "" end)
+       else "" end)
+    + (if .truncated then
+         "\n  warning: a scanned text exceeded the per-text candidate budget; the"
+         + "\n           unchecked remainder was masked unverified and any source"
+         + "\n           file in that state was refused"
+       else "" end)
     + (if .sources == null then
          "\n  sources:           not patched (re-run with --patch-sources to make this durable)"
        else
          "\n  source files:      \(.sources.patched_files) patched, "
          + "\(.sources.unchanged_files) already clean, "
          + "\(.sources.missing_files) missing, "
+         + "\(.sources.refused_files) refused, "
          + "\(.sources.failed_files) failed (of \(.sources.candidate_files))"
          + "\n  source spans:      \(.sources.patched_spans)"
        end)'
