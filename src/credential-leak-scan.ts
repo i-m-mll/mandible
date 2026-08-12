@@ -43,7 +43,16 @@ export function credentialCandidatePattern(): RegExp {
   return new RegExp(`${API_TOKEN_PREFIX}[A-Za-z0-9_-]{43}`, "g");
 }
 
-/** Bound the work a single hostile block can force. */
+/**
+ * Bound the verification work a single hostile block can force.
+ *
+ * This is a budget for peppered-HMAC verifications, not a place to stop
+ * scanning. When a text exceeds it the masking paths fail closed: every
+ * token-shaped span that was never verified is replaced with
+ * `UNVERIFIED_CREDENTIAL_MASK` rather than persisted in the clear (issue
+ * b3e4a09, review finding 2). Without that, 4,096 lookalikes followed by a real
+ * PAT would be a deterministic bypass.
+ */
 export const MAX_CANDIDATES_PER_TEXT = 4096;
 
 export interface ExtractedTokenCandidates {
@@ -229,6 +238,39 @@ export function credentialMaskFor(credentialId: string): string {
   return `[mandible-credential:${credentialId.slice(0, CREDENTIAL_MASK_ID_LENGTH)}]`;
 }
 
+/**
+ * The replacement for a token-shaped span the scan could not verify.
+ *
+ * Two situations produce one: the per-text verification budget was exhausted
+ * (so the span was never hashed), or verification itself failed — a locked
+ * database, an unreadable pepper. Both are fail-closed: the span is masked
+ * without knowing whether it is a live credential, because the alternative is
+ * persisting and broadcasting what might be a working token. The mask is a
+ * constant, so it does not disturb ingest determinism.
+ */
+export const UNVERIFIED_CREDENTIAL_MASK = "[mandible-credential:unverified]";
+
+/**
+ * Replace every token-shaped span that is not known clean.
+ *
+ * `isKnownClean` is how a caller keeps spans it *did* verify as non-credentials:
+ * those were hashed and positively cleared, so over-masking them would destroy
+ * legitimate transcript text for no security gain.
+ */
+export function maskUnverifiedCandidates(
+  text: string,
+  isKnownClean: (candidate: string) => boolean = () => false,
+): { text: string; replacements: number } {
+  if (!text.includes(API_TOKEN_PREFIX)) return { text, replacements: 0 };
+  let replacements = 0;
+  const next = text.replace(credentialCandidatePattern(), (match) => {
+    if (isKnownClean(match)) return match;
+    replacements += 1;
+    return UNVERIFIED_CREDENTIAL_MASK;
+  });
+  return { text: next, replacements };
+}
+
 /** Global literal replacement plus a count, without regex-escaping games. */
 export function replaceAllCounted(
   text: string,
@@ -368,6 +410,8 @@ export interface ScanTextOptions {
 export interface CredentialLeakScanResult {
   detections: CredentialLeakDetection[];
   truncated: boolean;
+  /** Alerts that could not be persisted after masking already completed. */
+  alert_failures: number;
 }
 
 export interface ScannableBlock {
@@ -376,16 +420,97 @@ export interface ScannableBlock {
   position?: number | null;
 }
 
-/** A block whose `content` the redacting walker is allowed to rewrite in place. */
+/**
+ * A block whose `content` and `metadata` the redacting walker may rewrite.
+ *
+ * Metadata is in scope because the parsers duplicate tool arguments and short
+ * tool results into it (`tool_input`, `tool_output`), and ingestion serializes
+ * that object into `conversation_blocks.metadata_json` and into the append SSE
+ * payload. Masking only `content` left a working token in both (issue b3e4a09,
+ * review finding 1).
+ */
 export interface RedactableBlock extends ScannableBlock {
   content: string | null | undefined;
+  metadata?: unknown;
 }
 
 export interface CredentialLeakRedactionResult extends CredentialLeakScanResult {
-  /** Blocks whose content was rewritten. */
+  /** Blocks whose content or metadata was rewritten. */
   redacted_blocks: number;
-  /** Individual credential occurrences replaced across those blocks. */
+  /** Verified credential occurrences replaced across those blocks. */
   redacted_spans: number;
+  /** Spans masked without verification (budget exhausted or verification failed). */
+  unverified_spans: number;
+  /** True when verification itself threw and blocks were conservatively masked. */
+  verification_failed: boolean;
+}
+
+/** JSON text for a block's metadata, or null when there is nothing to scan. */
+function metadataText(metadata: unknown): string | null {
+  if (metadata === null || metadata === undefined) return null;
+  try {
+    const json = JSON.stringify(metadata);
+    return typeof json === "string" ? json : null;
+  } catch {
+    // A metadata object ingestion could not serialize would not reach the DB
+    // either — JSON.stringify is the same call the insert makes.
+    return null;
+  }
+}
+
+/**
+ * Re-hydrate masked metadata JSON.
+ *
+ * The mask is plain ASCII with no JSON metacharacters, so substituting it for a
+ * token inside a serialized object always leaves valid JSON. The guard exists
+ * so that an impossible parse failure still fails closed rather than restoring
+ * the original object.
+ */
+function parseMaskedMetadata(json: string): { ok: true; value: unknown } | { ok: false } {
+  try {
+    return { ok: true, value: JSON.parse(json) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Last-resort masking: replace every token-shaped span in these blocks without
+ * verifying any of them.
+ *
+ * Used when verification is impossible (see UNVERIFIED_CREDENTIAL_MASK) and
+ * exported so ingestion's outer error path can guarantee the same property —
+ * a scan that failed must never let the original text reach storage or SSE.
+ */
+export function maskAllCandidatesInBlocks(
+  blocks: readonly RedactableBlock[],
+): { blocks: number; spans: number } {
+  let changedBlocks = 0;
+  let spans = 0;
+  for (const block of blocks) {
+    let blockSpans = 0;
+    if (typeof block.content === "string") {
+      const masked = maskUnverifiedCandidates(block.content);
+      if (masked.replacements > 0) {
+        block.content = masked.text;
+        blockSpans += masked.replacements;
+      }
+    }
+    const json = metadataText(block.metadata);
+    if (json !== null) {
+      const masked = maskUnverifiedCandidates(json);
+      if (masked.replacements > 0) {
+        const parsed = parseMaskedMetadata(masked.text);
+        block.metadata = parsed.ok ? parsed.value : { redaction_error: "metadata_masking_failed" };
+        blockSpans += masked.replacements;
+      }
+    }
+    if (blockSpans > 0) {
+      changedBlocks += 1;
+      spans += blockSpans;
+    }
+  }
+  return { blocks: changedBlocks, spans };
 }
 
 /**
@@ -394,8 +519,19 @@ export interface CredentialLeakRedactionResult extends CredentialLeakScanResult 
  * Detection semantics are identical in both modes: one alert per distinct
  * leaked credential, first location wins, so a token repeated across many
  * blocks still produces a single alert. In `mask` mode every verified
- * occurrence — not just the first — is replaced, because the goal there is that
- * no live plaintext survives into storage.
+ * occurrence — not just the first — is replaced in both `content` and the
+ * serialized `metadata`, because the goal there is that no live plaintext
+ * survives into storage.
+ *
+ * Ordering is a security property (issue b3e4a09, review finding 3): masking is
+ * computed and assigned to every block *before* any alert side effect runs.
+ * Recording an alert writes to the database and can fail — SQLITE_BUSY, a
+ * revocation race — and a failure there must never leave the caller holding the
+ * original plaintext. For the same reason a verification failure conservatively
+ * masks the block instead of propagating: the caller is about to persist these
+ * blocks, so "could not check" has to mean "masked", not "stored as-is". The
+ * lost alert is recoverable — the backfill sweep re-detects it — while a
+ * persisted token is not.
  */
 function walkBlocksForCredentials(
   db: Db,
@@ -407,71 +543,175 @@ function walkBlocksForCredentials(
   const empty: CredentialLeakRedactionResult = {
     detections: [],
     truncated: false,
+    alert_failures: 0,
     redacted_blocks: 0,
     redacted_spans: 0,
+    unverified_spans: 0,
+    verification_failed: false,
   };
   if (blocks.length === 0) return empty;
-  if (!hasActiveApiTokenCredentials(db)) return empty;
 
-  const pepper = options.pepper ?? scanPepper(db);
+  let pepper: string;
+  try {
+    if (!hasActiveApiTokenCredentials(db)) return empty;
+    pepper = options.pepper ?? scanPepper(db);
+  } catch (error) {
+    // Scan-only callers (backfill, dry runs) own their own error handling and
+    // have nothing to persist; the masking path cannot afford to give up.
+    if (!mask) throw error;
+    const masked = maskAllCandidatesInBlocks(blocks);
+    credentialLeakLog("error", "credential_leak_scan_verification_unavailable", {
+      conversation_id: location.conversation_id,
+      masked_blocks: masked.blocks,
+      masked_spans: masked.spans,
+      error: String(error),
+    });
+    return {
+      ...empty,
+      redacted_blocks: masked.blocks,
+      unverified_spans: masked.spans,
+      verification_failed: true,
+    };
+  }
+
   const now = options.now ?? Date.now();
   const record = options.record !== false;
-  const detections: CredentialLeakDetection[] = [];
   const seenCredentials = new Set<string>();
   // Verification is a peppered HMAC per candidate; a token repeated across a
   // long conversation should be hashed once. The cache also keeps masking
   // consistent within one pass when an alert auto-revokes a session-scoped
   // credential partway through.
   const verified = new Map<string, LeakedCredential | null>();
+  const isKnownClean = (candidate: string): boolean => verified.get(candidate) === null;
+  const pending: Array<{ leak: LeakedCredential; location: CredentialLeakLocation }> = [];
   let truncated = false;
   let redactedBlocks = 0;
   let redactedSpans = 0;
+  let unverifiedSpans = 0;
+  let verificationFailed = false;
 
   for (const block of blocks) {
-    const extracted = extractTokenCandidatesWithStatus(block.content);
-    truncated ||= extracted.truncated;
-    let text = typeof block.content === "string" ? block.content : null;
+    const originalContent = typeof block.content === "string" ? block.content : null;
+    const originalMetadata = mask ? metadataText(block.metadata) : null;
+    let text = originalContent;
+    let metadataJson = originalMetadata;
     let blockSpans = 0;
-    for (const candidate of extracted.candidates) {
-      let leak = verified.get(candidate);
-      if (leak === undefined) {
-        leak = matchActiveCredential(db, pepper, candidate);
-        verified.set(candidate, leak);
+    let blockUnverified = 0;
+
+    const extractedContent = extractTokenCandidatesWithStatus(originalContent);
+    const extractedMetadata = extractTokenCandidatesWithStatus(originalMetadata);
+    const blockTruncated = extractedContent.truncated || extractedMetadata.truncated;
+    truncated ||= blockTruncated;
+    const candidates = extractedMetadata.candidates.length === 0
+      ? extractedContent.candidates
+      : [...new Set([...extractedContent.candidates, ...extractedMetadata.candidates])];
+
+    const conservative = (): void => {
+      if (!mask) return;
+      if (text !== null) {
+        const masked = maskUnverifiedCandidates(text, isKnownClean);
+        text = masked.text;
+        blockUnverified += masked.replacements;
       }
-      if (!leak) continue;
-      if (mask && text !== null) {
-        const replaced = replaceAllCounted(
-          text,
-          candidate,
-          credentialMaskFor(leak.credential_id),
-        );
-        text = replaced.text;
-        blockSpans += replaced.replacements;
+      if (metadataJson !== null) {
+        const masked = maskUnverifiedCandidates(metadataJson, isKnownClean);
+        metadataJson = masked.text;
+        blockUnverified += masked.replacements;
       }
-      if (seenCredentials.has(leak.credential_id)) continue;
-      seenCredentials.add(leak.credential_id);
-      const blockLocation: CredentialLeakLocation = {
-        ...location,
-        block_id: block.id ?? null,
-        block_position: block.position ?? null,
-      };
-      detections.push(
-        record
-          ? recordCredentialLeak(db, leak, blockLocation, now)
-          : {
-            event_id: leakEventId(leak.credential_id, blockLocation.conversation_id),
-            detected_at: now,
-            credential: leak,
-            location: blockLocation,
-            revoked: false,
-            new_event: false,
+    };
+
+    try {
+      for (const candidate of candidates) {
+        let leak = verified.get(candidate);
+        if (leak === undefined) {
+          leak = matchActiveCredential(db, pepper, candidate);
+          verified.set(candidate, leak);
+        }
+        if (!leak) continue;
+        if (mask) {
+          const replacement = credentialMaskFor(leak.credential_id);
+          if (text !== null) {
+            const replaced = replaceAllCounted(text, candidate, replacement);
+            text = replaced.text;
+            blockSpans += replaced.replacements;
+          }
+          if (metadataJson !== null) {
+            const replaced = replaceAllCounted(metadataJson, candidate, replacement);
+            metadataJson = replaced.text;
+            blockSpans += replaced.replacements;
+          }
+        }
+        if (seenCredentials.has(leak.credential_id)) continue;
+        seenCredentials.add(leak.credential_id);
+        pending.push({
+          leak,
+          location: {
+            ...location,
+            block_id: block.id ?? null,
+            block_position: block.position ?? null,
           },
-      );
+        });
+      }
+      // The verification budget ran out: everything past it is unchecked, so it
+      // is masked rather than trusted.
+      if (blockTruncated) conservative();
+    } catch (error) {
+      if (!mask) throw error;
+      verificationFailed = true;
+      conservative();
+      credentialLeakLog("error", "credential_leak_scan_verification_failed", {
+        conversation_id: location.conversation_id,
+        block_id: block.id ?? null,
+        error: String(error),
+      });
     }
-    if (mask && blockSpans > 0 && text !== null) {
-      block.content = text;
-      redactedBlocks += 1;
-      redactedSpans += blockSpans;
+
+    if (mask) {
+      if (text !== null && text !== originalContent) block.content = text;
+      if (metadataJson !== null && metadataJson !== originalMetadata) {
+        const parsed = parseMaskedMetadata(metadataJson);
+        if (parsed.ok) {
+          block.metadata = parsed.value;
+        } else {
+          block.metadata = { redaction_error: "metadata_masking_failed" };
+          credentialLeakLog("error", "credential_leak_metadata_reparse_failed", {
+            conversation_id: location.conversation_id,
+            block_id: block.id ?? null,
+          });
+        }
+      }
+      if (blockSpans + blockUnverified > 0) {
+        redactedBlocks += 1;
+        redactedSpans += blockSpans;
+        unverifiedSpans += blockUnverified;
+      }
+    }
+  }
+
+  // Side effects only after every block carries its masked text.
+  const detections: CredentialLeakDetection[] = [];
+  let alertFailures = 0;
+  for (const entry of pending) {
+    if (!record) {
+      detections.push({
+        event_id: leakEventId(entry.leak.credential_id, entry.location.conversation_id),
+        detected_at: now,
+        credential: entry.leak,
+        location: entry.location,
+        revoked: false,
+        new_event: false,
+      });
+      continue;
+    }
+    try {
+      detections.push(recordCredentialLeak(db, entry.leak, entry.location, now));
+    } catch (error) {
+      alertFailures += 1;
+      credentialLeakLog("error", "credential_leak_alert_failed", {
+        conversation_id: entry.location.conversation_id,
+        credential_id: entry.leak.credential_id,
+        error: String(error),
+      });
     }
   }
 
@@ -479,13 +719,17 @@ function walkBlocksForCredentials(
     credentialLeakLog("warn", "credential_leak_scan_candidates_truncated", {
       conversation_id: location.conversation_id,
       max_candidates_per_text: MAX_CANDIDATES_PER_TEXT,
+      unverified_spans: unverifiedSpans,
     });
   }
   return {
     detections,
     truncated,
+    alert_failures: alertFailures,
     redacted_blocks: redactedBlocks,
     redacted_spans: redactedSpans,
+    unverified_spans: unverifiedSpans,
+    verification_failed: verificationFailed,
   };
 }
 
@@ -500,14 +744,14 @@ export function scanBlocksForCredentialLeaks(
   location: CredentialLeakLocation,
   options: ScanTextOptions = {},
 ): CredentialLeakScanResult {
-  const { detections, truncated } = walkBlocksForCredentials(
+  const { detections, truncated, alert_failures } = walkBlocksForCredentials(
     db,
     blocks,
     location,
     options,
     false,
   );
-  return { detections, truncated };
+  return { detections, truncated, alert_failures };
 }
 
 export interface MaskedText {
@@ -517,6 +761,10 @@ export interface MaskedText {
   /** Distinct credentials matched, in first-seen order. */
   credentials: LeakedCredential[];
   truncated: boolean;
+  /** Spans masked without verification (budget exhausted or verification failed). */
+  unverified_replacements: number;
+  /** True when verification threw and the text was conservatively masked. */
+  verification_failed: boolean;
 }
 
 /**
@@ -537,25 +785,69 @@ export function maskActiveCredentialsInText(
 ): MaskedText {
   const original = typeof text === "string" ? text : "";
   const extracted = extractTokenCandidatesWithStatus(original);
-  if (extracted.candidates.length === 0) {
-    return { text: original, replacements: 0, credentials: [], truncated: extracted.truncated };
-  }
-  if (!hasActiveApiTokenCredentials(db)) {
-    return { text: original, replacements: 0, credentials: [], truncated: extracted.truncated };
-  }
-  const pepper = options.pepper ?? scanPepper(db);
+  const clean: MaskedText = {
+    text: original,
+    replacements: 0,
+    credentials: [],
+    truncated: extracted.truncated,
+    unverified_replacements: 0,
+    verification_failed: false,
+  };
+  if (extracted.candidates.length === 0 && !extracted.truncated) return clean;
+
   const credentials: LeakedCredential[] = [];
+  const verified = new Map<string, LeakedCredential | null>();
+  const isKnownClean = (candidate: string): boolean => verified.get(candidate) === null;
   let next = original;
   let replacements = 0;
-  for (const candidate of extracted.candidates) {
-    const leak = matchActiveCredential(db, pepper, candidate);
-    if (!leak) continue;
-    const replaced = replaceAllCounted(next, candidate, credentialMaskFor(leak.credential_id));
-    next = replaced.text;
-    replacements += replaced.replacements;
-    credentials.push(leak);
+  try {
+    if (!hasActiveApiTokenCredentials(db)) return clean;
+    const pepper = options.pepper ?? scanPepper(db);
+    for (const candidate of extracted.candidates) {
+      const leak = matchActiveCredential(db, pepper, candidate);
+      verified.set(candidate, leak);
+      if (!leak) continue;
+      const replaced = replaceAllCounted(next, candidate, credentialMaskFor(leak.credential_id));
+      next = replaced.text;
+      replacements += replaced.replacements;
+      credentials.push(leak);
+    }
+  } catch (error) {
+    // Same fail-closed rule as the block walk: this text is about to be stored
+    // on the conversations row, so an unverifiable span is masked, not kept.
+    const masked = maskUnverifiedCandidates(next, isKnownClean);
+    credentialLeakLog("error", "credential_leak_text_verification_failed", {
+      masked_spans: masked.replacements,
+      error: String(error),
+    });
+    return {
+      text: masked.text,
+      replacements,
+      credentials,
+      truncated: extracted.truncated,
+      unverified_replacements: masked.replacements,
+      verification_failed: true,
+    };
   }
-  return { text: next, replacements, credentials, truncated: extracted.truncated };
+  if (!extracted.truncated) {
+    return {
+      text: next,
+      replacements,
+      credentials,
+      truncated: false,
+      unverified_replacements: 0,
+      verification_failed: false,
+    };
+  }
+  const masked = maskUnverifiedCandidates(next, isKnownClean);
+  return {
+    text: masked.text,
+    replacements,
+    credentials,
+    truncated: true,
+    unverified_replacements: masked.replacements,
+    verification_failed: false,
+  };
 }
 
 /**
@@ -603,6 +895,7 @@ interface BackfillRow {
   id: string;
   conversation_id: string;
   content: Buffer | string;
+  metadata_json: string | null;
   compressed: number;
   position: number;
   session_id: string | null;
@@ -642,6 +935,7 @@ export function backfillCredentialLeakScan(
 
   const select = db.prepare(
     `SELECT b.id AS id, b.conversation_id AS conversation_id, b.content AS content,
+            b.metadata_json AS metadata_json,
             b.compressed AS compressed, b.position AS position,
             c.session_id AS session_id, c.source AS source, c.branch AS branch,
             c.title AS title
@@ -676,9 +970,15 @@ export function backfillCredentialLeakScan(
       } catch {
         continue;
       }
-      const extracted = extractTokenCandidatesWithStatus(text);
-      truncated ||= extracted.truncated;
-      for (const candidate of extracted.candidates) {
+      // Tool arguments and short tool results are duplicated into metadata_json
+      // by the parsers, so a sweep that only reads `content` under-reports.
+      const extractedContent = extractTokenCandidatesWithStatus(text);
+      const extractedMetadata = extractTokenCandidatesWithStatus(row.metadata_json);
+      truncated ||= extractedContent.truncated || extractedMetadata.truncated;
+      const candidates = extractedMetadata.candidates.length === 0
+        ? extractedContent.candidates
+        : [...new Set([...extractedContent.candidates, ...extractedMetadata.candidates])];
+      for (const candidate of candidates) {
         const leak = matchActiveCredential(db, pepper, candidate);
         if (!leak) continue;
         const key = `${leak.credential_id} ${row.conversation_id}`;
