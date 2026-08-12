@@ -59,6 +59,10 @@ Setup is idempotent and is the only way the local human operator is created.
 --agents deliberately provisions the claude-code, codex, and gemini users,
 their app and provider-session-environment bindings.
 Defaults for --name/--email come from git config user.name / user.email.
+Setup also registers git user.signingkey as the operator's ssh_key credential
+when one is configured (idempotent; skipped silently when unset). Protected
+merges are only attested when their signature verifies against an active
+registered credential, so this is not an optional step.
 Credentials are immutable: revoke then add, never mutate a fingerprint. No
 private key material is ever accepted.
 
@@ -140,6 +144,105 @@ git_config_value_without_overrides() {
   )
 }
 
+# Issue 2205073 — derive the OpenSSH public material and SHA256 fingerprint of
+# the configured git user.signingkey. Sets SIGNING_KEY_MATERIAL and
+# SIGNING_KEY_FINGERPRINT on success. Returns 1 when user.signingkey is unset
+# (nothing to register) and 2 when it is set but cannot be resolved; the reason
+# is left in SIGNING_KEY_ERROR. Callers decide whether that is fatal.
+#
+# Accepts the three shapes git supports: a literal `key::` value, an inline
+# public key, or a path to a public or private key file.
+resolve_git_signing_key() {
+  SIGNING_KEY_MATERIAL=""
+  SIGNING_KEY_FINGERPRINT=""
+  SIGNING_KEY_ERROR=""
+  local signing_key key_path key_line
+  signing_key="$(git_config_value_without_overrides user.signingkey)"
+  if [[ -z "$signing_key" ]]; then
+    SIGNING_KEY_ERROR="Git user.signingkey is not configured."
+    return 1
+  fi
+  if ! command -v ssh-keygen >/dev/null 2>&1; then
+    SIGNING_KEY_ERROR="ssh-keygen not found."
+    return 2
+  fi
+  case "$signing_key" in
+    key::*) key_line="${signing_key#key::}" ;;
+    ssh-*\ *|ecdsa-*\ *|sk-*\ *) key_line="$signing_key" ;;
+    *)
+      key_path="$signing_key"
+      [[ "$key_path" == "~/"* ]] && key_path="${HOME}/${key_path#\~/}"
+      if [[ ! -r "$key_path" ]]; then
+        SIGNING_KEY_ERROR="Configured git signing key is not readable: $signing_key"
+        return 2
+      fi
+      key_line="$(sed -n '1p' "$key_path")"
+      case "$key_line" in
+        ssh-*\ *|ecdsa-*\ *|sk-*\ *) ;;
+        *)
+          if [[ -r "${key_path}.pub" ]]; then
+            key_line="$(sed -n '1p' "${key_path}.pub")"
+          else
+            if ! key_line="$(ssh-keygen -y -f "$key_path" 2>/dev/null)"; then
+              SIGNING_KEY_ERROR="Could not derive the public key from git user.signingkey."
+              return 2
+            fi
+          fi
+          ;;
+      esac
+      ;;
+  esac
+  SIGNING_KEY_MATERIAL="$(printf '%s\n' "$key_line" | awk 'NF >= 2 { print $1 " " $2; exit }')"
+  if [[ -z "$SIGNING_KEY_MATERIAL" ]]; then
+    SIGNING_KEY_ERROR="Git user.signingkey did not resolve to an OpenSSH public key."
+    return 2
+  fi
+  SIGNING_KEY_FINGERPRINT="$(printf '%s\n' "$SIGNING_KEY_MATERIAL" \
+    | ssh-keygen -lf - -E sha256 2>/dev/null | awk 'NF >= 2 { print $2; exit }')"
+  if [[ "$SIGNING_KEY_FINGERPRINT" != SHA256:* ]]; then
+    SIGNING_KEY_ERROR="Could not fingerprint git user.signingkey."
+    return 2
+  fi
+  return 0
+}
+
+# Issue 2205073 — register the configured git signing key as an ssh_key
+# credential on $1 unless an active credential already carries its fingerprint.
+#
+# Without this, the signing credential is a hidden manual step: protected
+# merges succeed, but the approval-time base-transition check refuses to attest
+# them, and the second queued approval fails with no visible cause. Never fatal
+# — setup itself already succeeded by the time this runs.
+setup_signing_credential() {
+  local ref="$1" rc=0
+  resolve_git_signing_key || rc=$?
+  if (( rc == 1 )); then
+    return 0  # No signing key configured: nothing to register, say nothing.
+  fi
+  if (( rc != 0 )); then
+    err "Signing credential not registered: ${SIGNING_KEY_ERROR}"
+    return 0
+  fi
+  local existing
+  if existing="$(api_read "/api/users/$(urlencode "$ref")/credentials" "credentials" 2>/dev/null)"; then
+    if printf '%s\n' "$existing" | jq -e \
+      --arg fp "$SIGNING_KEY_FINGERPRINT" \
+      '[.credentials[]? | select(.status == "active" and .fingerprint == $fp)] | length > 0' \
+      >/dev/null 2>&1; then
+      return 0  # Already registered: idempotent, no redundant action.
+    fi
+  fi
+  local payload response
+  payload="$(jq -n --arg fp "$SIGNING_KEY_FINGERPRINT" --arg material "$SIGNING_KEY_MATERIAL" \
+    '{type:"ssh_key", fingerprint:$fp, public_material:$material, label:"git user.signingkey"}')"
+  if response="$(api_send POST "/api/users/$(urlencode "$ref")/credentials" "$payload" 2>/dev/null)"; then
+    err "${GREEN}Signing credential registered (${SIGNING_KEY_FINGERPRINT}).${RESET}"
+  else
+    err "Could not register the git signing key as a credential. Run: mandible user credential add ${ref} --from-git-signingkey"
+  fi
+  return 0
+}
+
 cmd_setup() {
   local slug="" name="" email="" json=0 email_set=0 agents=0
   while (( $# > 0 )); do
@@ -170,6 +273,11 @@ cmd_setup() {
   response="$(api_send POST "/api/users/setup" "$payload")" || die "${RED}Setup failed.${RESET}" 1
   err "${GREEN}Operator ready.${RESET}"
   (( agents == 0 )) || err "${GREEN}Agent users ready.${RESET}"
+  # Issue 2205073 — the protected-merge signing credential is part of operator
+  # setup, not a hidden manual follow-up step.
+  local operator_ref
+  operator_ref="$(printf '%s\n' "$response" | jq -r '.user.slug // .user.id // "operator"')"
+  setup_signing_credential "$operator_ref"
   emit "$response" "$json" '.user | "id: \(.id)\nslug: \(.slug)\nname: \(.display_name)\nemail: \(.email // "-")"'
 }
 
@@ -310,35 +418,11 @@ credential_add() {
   if (( from_git )); then
     [[ -z "$ctype" && -z "$fingerprint" && $material_set -eq 0 ]] \
       || die "--from-git-signingkey cannot be combined with --type, --fingerprint, or --public-material." 2
-    command -v ssh-keygen >/dev/null 2>&1 || die "ssh-keygen not found." 1
-    local signing_key key_path key_line
-    signing_key="$(git_config_value_without_overrides user.signingkey)"
-    [[ -n "$signing_key" ]] || die "Git user.signingkey is not configured." 1
-    case "$signing_key" in
-      key::*) key_line="${signing_key#key::}" ;;
-      ssh-*\ *|ecdsa-*\ *|sk-*\ *) key_line="$signing_key" ;;
-      *)
-        key_path="$signing_key"
-        [[ "$key_path" == "~/"* ]] && key_path="${HOME}/${key_path#\~/}"
-        [[ -r "$key_path" ]] || die "Configured git signing key is not readable: $signing_key" 1
-        key_line="$(sed -n '1p' "$key_path")"
-        case "$key_line" in
-          ssh-*\ *|ecdsa-*\ *|sk-*\ *) ;;
-          *)
-            if [[ -r "${key_path}.pub" ]]; then
-              key_line="$(sed -n '1p' "${key_path}.pub")"
-            else
-              key_line="$(ssh-keygen -y -f "$key_path" 2>/dev/null)" \
-                || die "Could not derive the public key from git user.signingkey." 1
-            fi
-            ;;
-        esac
-        ;;
-    esac
-    material="$(printf '%s\n' "$key_line" | awk 'NF >= 2 { print $1 " " $2; exit }')"
-    [[ -n "$material" ]] || die "Git user.signingkey did not resolve to an OpenSSH public key." 1
-    fingerprint="$(printf '%s\n' "$material" | ssh-keygen -lf - -E sha256 2>/dev/null | awk 'NF >= 2 { print $2; exit }')"
-    [[ "$fingerprint" == SHA256:* ]] || die "Could not fingerprint git user.signingkey." 1
+    # Issue 2205073 — shared with `mandible user setup`, which registers the
+    # same credential automatically.
+    resolve_git_signing_key || die "${SIGNING_KEY_ERROR}" 1
+    material="$SIGNING_KEY_MATERIAL"
+    fingerprint="$SIGNING_KEY_FINGERPRINT"
     ctype="ssh_key"
     material_set=1
   fi

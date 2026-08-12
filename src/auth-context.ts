@@ -49,6 +49,93 @@ const SAFE_BRANCH_NAME = /^[A-Za-z0-9._/-]+$/;
 const MAX_DIFF_BYTES = 102400;
 const MAX_DIFF_PREVIEW_BYTES = MAX_DIFF_BYTES;
 const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
+const GIT_REF_TIMEOUT_MS = 5000;
+
+/**
+ * Issue 2205073 — every git spawn on the approval path runs with
+ * GIT_OPTIONAL_LOCKS=0. Read-only probes must never take the index lock: on a
+ * busy repo the lock contention is exactly the kind of transient failure that
+ * used to be reported as "branch does not exist".
+ */
+export function authGitEnv(): NodeJS.ProcessEnv {
+  return { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+}
+
+/**
+ * Issue 2205073 — how a git invocation failed, told apart honestly.
+ *
+ * `execFileSync` throws one error shape for three very different worlds:
+ *  - the process ran and exited non-zero (`status` is a number) — a real git
+ *    answer, e.g. `show-ref --verify` exiting 1 for a ref that is absent;
+ *  - the process was killed by the timeout (`code === "ETIMEDOUT"`) — git
+ *    never answered, so nothing was learned about the repo;
+ *  - the process could not be spawned at all (`code` is an errno such as
+ *    EMFILE, EAGAIN, ENOENT, ENOMEM) — a daemon-health failure that says
+ *    nothing about the repository.
+ *
+ * Collapsing all three into "the branch does not exist" is the defect this
+ * classifier exists to prevent: a real EMFILE from watcher fd exhaustion was
+ * reported to the operator as a missing `main` branch on a healthy repo.
+ */
+export type GitFailure =
+  | { kind: "exit"; status: number; stderr: string }
+  | { kind: "timeout"; timeoutMs: number | null; stderr: string }
+  | { kind: "spawn"; errno: string | null; stderr: string };
+
+export function classifyGitFailure(error: unknown, timeoutMs: number | null = null): GitFailure {
+  const record = (error ?? {}) as {
+    status?: unknown;
+    code?: unknown;
+    signal?: unknown;
+    stderr?: unknown;
+  };
+  const stderr = typeof record.stderr === "string"
+    ? record.stderr.trim()
+    : Buffer.isBuffer(record.stderr)
+      ? record.stderr.toString("utf-8").trim()
+      : "";
+  if (typeof record.status === "number") {
+    return { kind: "exit", status: record.status, stderr };
+  }
+  if (record.code === "ETIMEDOUT") {
+    return { kind: "timeout", timeoutMs, stderr };
+  }
+  return {
+    kind: "spawn",
+    errno: typeof record.code === "string" ? record.code : null,
+    stderr,
+  };
+}
+
+/**
+ * Issue 2205073 — a human-readable cause plus the fix that actually applies.
+ * Never asserts anything about repository contents for a failure that never
+ * reached the repository.
+ */
+export function describeGitFailure(failure: GitFailure): string {
+  const detail = failure.stderr ? ` git said: ${truncate(failure.stderr, 300)}` : "";
+  switch (failure.kind) {
+    case "timeout":
+      return (
+        `git timed out${failure.timeoutMs ? ` after ${failure.timeoutMs}ms` : ""} and never answered, ` +
+        "so this is not evidence about the repository. Retry the approval; if it keeps timing out, " +
+        `check daemon health and repo load.${detail}`
+      );
+    case "spawn":
+      return (
+        `git could not be executed (${failure.errno ?? "unknown spawn failure"}), ` +
+        "so this is not evidence about the repository. Retry the approval; if it persists, check " +
+        "daemon health — process/file-descriptor exhaustion (EMFILE/EAGAIN/ENOMEM) is the usual cause." +
+        detail
+      );
+    case "exit":
+      return `git exited with status ${failure.status}.${detail}`;
+  }
+}
+
+function truncate(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}...`;
+}
 
 export function isAuthMergeCommand(input: AuthMergeContextInput): boolean {
   const command = input.command ?? "";
@@ -162,7 +249,7 @@ export function repoRootFromGitCommonDir(cwd: string): string | null {
     const gitCommonDir = execFileSync(
       "git",
       ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-      { cwd, encoding: "utf-8", timeout: 5000 }
+      { cwd, encoding: "utf-8", timeout: GIT_REF_TIMEOUT_MS, env: authGitEnv() }
     ).trim();
     return gitCommonDir ? path.dirname(gitCommonDir) : null;
   } catch {
@@ -196,22 +283,31 @@ export function resolveAuthMergeExecutionContext(
 }
 
 export function resolveBranchHeadSha(repoRoot: string, branch: string): string {
+  let sha: string;
   try {
-    const sha = execFileSync(
+    sha = execFileSync(
       "git",
       ["rev-parse", "--verify", `refs/heads/${branch}^{commit}`],
-      { cwd: repoRoot, encoding: "utf-8", timeout: 5000 }
+      {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        timeout: GIT_REF_TIMEOUT_MS,
+        env: authGitEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+      }
     ).trim();
-    if (sha) {
-      return sha;
-    }
-  } catch {
+  } catch (error) {
+    // Issue 2205073 — say whether git answered "no such ref" or never ran.
     throw new AuthExecutionContextError(
-      `Unable to resolve auth merge head commit for ${branch}.`
+      `Unable to resolve auth merge head commit for ${branch}: ` +
+        describeGitFailure(classifyGitFailure(error, GIT_REF_TIMEOUT_MS))
     );
   }
+  if (sha) {
+    return sha;
+  }
   throw new AuthExecutionContextError(
-    `Unable to resolve auth merge head commit for ${branch}.`
+    `Unable to resolve auth merge head commit for ${branch}: git resolved the ref to an empty value.`
   );
 }
 
@@ -233,6 +329,7 @@ export async function computeAuthMergeReviewMetadata(
       cwd: repoRoot,
       encoding: "utf-8",
       timeout: 10000,
+      env: authGitEnv(),
     }).trim();
     const { filesChanged, additions, deletions } = parseGitShortstat(shortstat);
     metadata.filesChanged = filesChanged;
@@ -250,6 +347,7 @@ export async function computeAuthMergeReviewMetadata(
         cwd: repoRoot,
         encoding: "utf-8",
         timeout: 10000,
+        env: authGitEnv(),
       }).trim() || `Merge ${headBranch}`;
   }
 
@@ -267,6 +365,7 @@ async function readBoundedDiffPreview(repoRoot: string, range: string): Promise<
     const child = spawn("git", ["diff", range], {
       cwd: repoRoot,
       stdio: ["ignore", "pipe", "pipe"],
+      env: authGitEnv(),
     });
     const timer = setTimeout(() => {
       timedOut = true;
@@ -505,6 +604,12 @@ function readProtectedBranches(db: Db): string[] {
   }
 }
 
+/**
+ * Issue 2205073 — `git show-ref --verify --quiet` answers "this ref is absent"
+ * with exit status 1 and nothing else. Only that answer justifies claiming the
+ * branch does not exist; a timeout, a spawn errno, or any other git status
+ * (128 = repository-level fatal) is reported as what it is.
+ */
 function verifyLocalBranch(
   repoRoot: string,
   field: "base_branch" | "head_branch",
@@ -513,47 +618,70 @@ function verifyLocalBranch(
   try {
     execFileSync("git", ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`], {
       cwd: repoRoot,
-      timeout: 5000,
+      timeout: GIT_REF_TIMEOUT_MS,
+      env: authGitEnv(),
+      stdio: ["ignore", "ignore", "pipe"],
     });
-  } catch {
+  } catch (error) {
+    const failure = classifyGitFailure(error, GIT_REF_TIMEOUT_MS);
+    if (failure.kind === "exit" && failure.status === 1) {
+      throw new AuthExecutionContextError(
+        `Invalid '${field}' for auth merge execution context: local branch '${branch}' does not exist in ${repoRoot}.`
+      );
+    }
     throw new AuthExecutionContextError(
-      `Invalid '${field}' for auth merge execution context: local branch '${branch}' does not exist in ${repoRoot}.`
+      `Unable to verify '${field}' branch '${branch}' in ${repoRoot}: ${describeGitFailure(failure)}`
     );
   }
 }
 
 function verifyHeadAheadOfBase(repoRoot: string, baseBranch: string, headBranch: string): void {
+  let output: string;
   try {
-    const count = Number(
-      execFileSync(
-        "git",
-        ["rev-list", "--count", `refs/heads/${baseBranch}..refs/heads/${headBranch}`],
-        { cwd: repoRoot, encoding: "utf-8", timeout: 10000 }
-      ).trim()
-    );
-    if (!Number.isFinite(count) || count <= 0) {
-      throw new AuthExecutionContextError(
-        `Invalid 'head_branch' for auth merge execution context: ${headBranch} is not ahead of ${baseBranch}.`
-      );
-    }
+    output = execFileSync(
+      "git",
+      ["rev-list", "--count", `refs/heads/${baseBranch}..refs/heads/${headBranch}`],
+      {
+        cwd: repoRoot,
+        encoding: "utf-8",
+        timeout: 10000,
+        env: authGitEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+      }
+    ).trim();
   } catch (error) {
-    if (error instanceof AuthExecutionContextError) {
-      throw error;
-    }
     throw new AuthExecutionContextError(
-      `Unable to validate auth merge branch ancestry for ${headBranch} onto ${baseBranch}.`
+      `Unable to validate auth merge branch ancestry for ${headBranch} onto ${baseBranch}: ` +
+        describeGitFailure(classifyGitFailure(error, 10000))
+    );
+  }
+  const count = Number(output);
+  if (!Number.isFinite(count) || count <= 0) {
+    throw new AuthExecutionContextError(
+      `Invalid 'head_branch' for auth merge execution context: ${headBranch} is not ahead of ${baseBranch}.`
     );
   }
 }
 
 function resolveBaseBranchWorktree(repoRoot: string, baseBranch: string): string {
-  const entries = parseWorktreePorcelain(
-    execFileSync("git", ["worktree", "list", "--porcelain"], {
+  let porcelain: string;
+  try {
+    porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
       cwd: repoRoot,
       encoding: "utf-8",
       timeout: 10000,
-    })
-  );
+      env: authGitEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch (error) {
+    // Issue 2205073 — a failed worktree listing is not evidence that the base
+    // branch is unchecked-out.
+    throw new AuthExecutionContextError(
+      `Unable to list worktrees for ${repoRoot} while resolving base_branch '${baseBranch}': ` +
+        describeGitFailure(classifyGitFailure(error, 10000))
+    );
+  }
+  const entries = parseWorktreePorcelain(porcelain);
   const expectedBranch = `refs/heads/${baseBranch}`;
   const match = entries.find((entry) => entry.branch === expectedBranch);
   if (!match) {

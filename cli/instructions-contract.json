@@ -196,7 +196,7 @@
     },
     {
       "name": "mandible user setup [--slug <s>] [--name <n>] [--email <e>] [--agents] [--json]",
-      "description": "Idempotently create or update the local human operator and record its user id in settings; --agents deliberately provisions the built-in agent users and bindings. Migrations never create either the operator or agent users."
+      "description": "Idempotently create or update the local human operator and record its user id in settings; --agents deliberately provisions the built-in agent users and bindings. When git user.signingkey resolves to a readable public key, setup also registers it as the operator's ssh_key credential (idempotent; never duplicates an active fingerprint), which protected-merge attestation requires. Migrations never create either the operator or agent users."
     },
     {
       "name": "mandible user whoami [--json]",

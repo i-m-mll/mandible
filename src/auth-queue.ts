@@ -33,6 +33,10 @@ import {
   resolveBranchHeadSha,
 } from "./auth-context.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
+import {
+  describeRecomputeRefusal,
+  type RecomputeRefusal,
+} from "./auth-recompute-refusal.js";
 import { canonicalRepoKeyForPath, canonicalRepoKeysForRef } from "./repo-identity.js";
 import {
   defaultCodexThreadArchiver,
@@ -392,6 +396,16 @@ const HIERARCHICAL_MERGE_COMMAND_RE = /(^|\s)--hierarchical(?:\s|$)/;
 // commits a base transition may contain and still qualify for provenance
 // verification. Longer transitions fail closed to the strict requeue error.
 const MAX_BASE_TRANSITION_COMMITS = 32;
+
+/**
+ * Issue 2205073 — base-transition provenance verification returns *why* it
+ * refused, not just a boolean. The reason and its context (commit, key
+ * fingerprint, recorded request) are what the approval error needs to name a
+ * fix; previously they existed only in daemon_log.
+ */
+type BaseTransitionResult =
+  | { accounted: true }
+  | { accounted: false; reason: string; detail: Record<string, unknown> };
 
 /**
  * Issue 93d978e — batches merge-side work-unit ancestry checks.
@@ -2478,7 +2492,10 @@ export class AuthQueue {
       // is unchanged, so the candidate is recomputed against the current base
       // within this same approval action. Head drift and every other
       // staleness cause keep the strict blocking behavior below.
-      const recomputed = this.recomputeStaleCandidateForApproval(request);
+      // Issue 2205073 — the refusal sink carries the specific guard that
+      // declined out to the approver instead of leaving it in daemon_log.
+      const refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null };
+      const recomputed = this.recomputeStaleCandidateForApproval(request, refusalSink);
       if (recomputed) {
         request = recomputed;
         candidateExact = this.mergeCandidateExact(request);
@@ -2486,7 +2503,7 @@ export class AuthQueue {
       if (request.merge_candidate_pin_sha && !candidateExact) {
         throw new AuthQueueError(
           "merge_check_failed",
-          "Reviewed merge inputs or retained candidate changed; requeue and reapprove this request.",
+          this.describeRecomputeRefusal(refusalSink.refusal),
         );
       }
     }
@@ -2869,12 +2886,30 @@ export class AuthQueue {
    * cleanly, and with the strict requeue message when a fresh pin cannot be
    * obtained (review F4 — never proceed unpinned).
    */
-  private recomputeStaleCandidateForApproval(request: AuthRequest): AuthRequest | null {
-    if (this.strictPinRequested(request)) return null;
+  private recomputeStaleCandidateForApproval(
+    request: AuthRequest,
+    refusalSink: { refusal: RecomputeRefusal | null } = { refusal: null },
+  ): AuthRequest | null {
+    // Issue 2205073 — every decline records why. The approval error the
+    // operator reads is built from exactly this reason.
+    const refuse = (reason: string, detail?: Record<string, unknown>): null => {
+      refusalSink.refusal = { reason, ...(detail ? { detail } : {}) };
+      return null;
+    };
+    if (this.strictPinRequested(request)) return refuse("strict_pin_requested");
     // Issue 060c9c8 — no hierarchical-shape check here: this recompute runs
     // only from approve(), strictly after enforceCanonicalMergeCommand refused
     // every non-canonical (including hierarchical-shaped) merge command in the
     // same synchronous call.
+    const missing: string[] = [];
+    if (request.execution_mode === "remote") missing.push("execution_mode=remote");
+    if (!isAuthMergeCommand(request)) missing.push("not an auth merge command");
+    if (!request.cwd) missing.push("cwd");
+    if (!request.base_branch) missing.push("base_branch");
+    if (!request.head_branch) missing.push("head_branch");
+    if (!request.merge_head_sha) missing.push("merge_head_sha");
+    if (!request.merge_preflight_base_sha) missing.push("merge_preflight_base_sha");
+    if (!request.merge_candidate_pin_sha) missing.push("merge_candidate_pin_sha");
     if (
       request.execution_mode === "remote" ||
       !isAuthMergeCommand(request) ||
@@ -2885,7 +2920,7 @@ export class AuthQueue {
       !request.merge_preflight_base_sha ||
       !request.merge_candidate_pin_sha
     ) {
-      return null;
+      return refuse("not_recomputable_request", { missing });
     }
     // Review F5 — recompute rescues *pure base drift* only: the retained pin
     // must still be exactly the reviewed candidate (intact commit, tree, both
@@ -2893,28 +2928,56 @@ export class AuthQueue {
     // tamper evidence, not drift, and stays strictly blocked even when the
     // base also moved.
     if (!this.mergeCandidatePinIsValid(request)) {
-      return null;
+      return refuse("retained_candidate_invalid", {
+        pin_sha: request.merge_candidate_pin_sha,
+      });
     }
     // Head drift stays strict: recompute applies only while the head branch
     // still points at the reviewed commit. Daemon-mode merges already blocked
     // head drift in resolveExecutionContextBeforeApproval; this re-check keeps
     // the guarantee independent of that path.
-    if (this.resolveBranchHeadForCheck(request.cwd, request.head_branch) !== request.merge_head_sha) {
-      return null;
+    // Issue 2205073 — in practice resolveExecutionContextBeforeApproval refuses
+    // head drift with its own specific message before approval reaches here,
+    // so this reason is defense in depth for any path that skips it.
+    const currentHead = this.resolveBranchHeadForCheck(request.cwd, request.head_branch);
+    if (currentHead !== request.merge_head_sha) {
+      return refuse("head_branch_moved", {
+        head_branch: request.head_branch,
+        reviewed_head: request.merge_head_sha,
+        current_head: currentHead,
+      });
     }
     // Re-entrancy guard: never run a preflight against a repo whose execution
     // chain is busy (a merge executing, or a revalidation pass in flight).
     if (this.executionChains.has(this.chainKeyForRequest(request))) {
-      return null;
+      return refuse("execution_chain_busy");
     }
     // Review F1 — the base transition must be fully accounted for by
     // signature-verified, queue-recorded merges before any recompute.
     const currentBase = this.resolveBranchHeadForCheck(request.cwd, request.base_branch);
-    if (!currentBase || currentBase === request.merge_preflight_base_sha) {
-      return null;
+    if (!currentBase) {
+      return refuse("base_head_unresolvable", {
+        base_branch: request.base_branch,
+        cwd: request.cwd,
+      });
     }
-    if (!this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha, currentBase)) {
-      return null;
+    if (currentBase === request.merge_preflight_base_sha) {
+      // Defense in depth: a valid pin at an unmoved base is by definition an
+      // exact candidate, so approve() would not have entered recompute at all.
+      return refuse("base_unchanged", { base_sha: currentBase });
+    }
+    const transition = this.baseTransitionAccountedFor(
+      request,
+      request.merge_preflight_base_sha,
+      currentBase,
+    );
+    if (!transition.accounted) {
+      return refuse("base_transition_unaccounted", {
+        old_base: request.merge_preflight_base_sha,
+        new_base: currentBase,
+        transition_reason: transition.reason,
+        ...transition.detail,
+      });
     }
     const report = this.checkMergeIndependence({
       request_id: request.id,
@@ -2934,13 +2997,16 @@ export class AuthQueue {
       );
     }
     if (report.status !== "clean" || !report.target_head_sha) {
-      return null;
+      return refuse("recomputed_preflight_unavailable", { status: report.status });
     }
     // Review F1/F6 — the preflight must have run against exactly the base
     // whose transition provenance was just verified; a ref that moved again
     // in between falls back to the strict error.
     if (report.target_head_sha !== currentBase) {
-      return null;
+      return refuse("base_moved_again", {
+        verified_base: currentBase,
+        preflight_base: report.target_head_sha,
+      });
     }
     const refreshed = this.repinMergeCandidate(request, currentBase, report.queue_fingerprint ?? null, {
       failClosed: true,
@@ -2989,10 +3055,12 @@ export class AuthQueue {
     request: AuthRequest,
     oldBase: string,
     newBase: string,
-  ): boolean {
+  ): BaseTransitionResult {
     const cwd = request.cwd;
     const baseBranch = request.base_branch;
-    const refuse = (reason: string, extra: Record<string, unknown> = {}): false => {
+    // Issue 2205073 — the reason and its context are returned, not only
+    // logged, so the approval error can name the guard and the human fix.
+    const refuse = (reason: string, extra: Record<string, unknown> = {}): BaseTransitionResult => {
       authLog("warn", "auth_merge_base_transition_unaccounted", {
         subsystem: "auth",
         auth_request_id: request.id,
@@ -3001,7 +3069,7 @@ export class AuthQueue {
         reason,
         ...extra,
       });
-      return false;
+      return { accounted: false, reason, detail: extra };
     };
     if (!cwd || !baseBranch) {
       return refuse("missing_repo_context");
@@ -3113,10 +3181,27 @@ export class AuthQueue {
           commit,
           recorded_request_id: record.id,
           signature_reason: signature.reason,
+          // Issue 2205073 — the fingerprint is the actionable half: it names
+          // the key the operator must register as a signing credential.
+          signature_fingerprint: signature.fingerprint,
         });
       }
     }
-    return true;
+    return { accounted: true };
+  }
+
+  /**
+   * Issue 2205073 — the operator ref used in the credential-registration hint
+   * of an approval refusal message.
+   */
+  private describeRecomputeRefusal(refusal: RecomputeRefusal | null): string {
+    let operatorRef: string | null = null;
+    try {
+      operatorRef = getOperator(this.db)?.slug ?? null;
+    } catch {
+      operatorRef = null;
+    }
+    return describeRecomputeRefusal(refusal, { operatorRef });
   }
 
   /**
@@ -3171,9 +3256,13 @@ export class AuthQueue {
         reason,
       });
       if (options.failClosed) {
+        // Issue 2205073 — name the pin failure instead of the generic sentence.
         throw new AuthQueueError(
           "merge_check_failed",
-          "Reviewed merge inputs or retained candidate changed; requeue and reapprove this request.",
+          this.describeRecomputeRefusal({
+            reason: "repin_failed",
+            detail: { repin_reason: reason },
+          }),
         );
       }
       return null;
@@ -4677,7 +4766,10 @@ export class AuthQueue {
     // Review F1 — the base advance must be fully accounted for by authorized
     // queue merges (the sibling merge that triggered this pass, in the normal
     // case) before the candidate is proactively re-attested.
-    if (!this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha, report.target_head_sha)) {
+    if (
+      !this.baseTransitionAccountedFor(request, request.merge_preflight_base_sha, report.target_head_sha)
+        .accounted
+    ) {
       return null;
     }
     const refreshed = this.repinMergeCandidate(request, report.target_head_sha, queueFingerprint, {
