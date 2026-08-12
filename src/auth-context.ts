@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { Db } from "./db.js";
@@ -52,6 +53,107 @@ const MAX_DIFF_PREVIEW_READ_BYTES = MAX_DIFF_PREVIEW_BYTES + 1;
 export function isAuthMergeCommand(input: AuthMergeContextInput): boolean {
   const command = input.command ?? "";
   return command.includes("auth merge") || command.includes("auth-merge");
+}
+
+/**
+ * Issue 08a5f04 (review F2) — the canonical auth merge command space.
+ *
+ * The submission CLI (cli/auth-request.sh) builds
+ * `${HOME}/.dotfiles/bin/mandible auth merge <head> --into <base>`; a bare
+ * `mandible` prefix is the enumerated PATH-resolved equivalent, and
+ * `--preserve-head-branch` is the one legitimate execution modifier that is
+ * not representable in structured fields. Everything a merge execution does is
+ * derived from these structured fields, so approval refuses any stored command
+ * that does not byte-equal one of these forms: a mutated command can never
+ * execute, and shell-expansion evasion is impossible because only these exact
+ * byte sequences are executable. Hierarchical/multi-source commands have no
+ * canonical form (no per-source reviewed head exists — issue fff66b9) and are
+ * therefore not approvable through the queue.
+ *
+ * The absolute-prefix variants embed os.homedir() and the whole command later
+ * runs through `bash -c`, so a daemon launched with a metacharacter-bearing
+ * HOME could otherwise smuggle hostile bytes into an "approvable" command.
+ * When the home path contains anything outside a strict safe byte set the
+ * absolute-prefix variants are omitted entirely (fail closed to the bare
+ * `mandible` prefix) rather than emitting a dangerous byte form. Argv-based
+ * execution is the long-term fix (issue fff66b9).
+ */
+export function canonicalAuthMergeCommands(
+  headBranch: string | null | undefined,
+  baseBranch: string | null | undefined,
+): string[] {
+  if (!headBranch || !baseBranch) return [];
+  if (!isSafeBranchName(headBranch) || !isSafeBranchName(baseBranch)) return [];
+  const core = `auth merge ${headBranch} --into ${baseBranch}`;
+  const prefixes = ["mandible"];
+  const homeDir = safeCanonicalHomeDir();
+  if (homeDir) {
+    prefixes.push(path.join(homeDir, ".dotfiles/bin/mandible"));
+  }
+  const commands: string[] = [];
+  for (const prefix of prefixes) {
+    commands.push(`${prefix} ${core}`);
+    commands.push(`${prefix} ${core} --preserve-head-branch`);
+  }
+  return commands;
+}
+
+// Issue 08a5f04 (review advisory) — bytes allowed in a home path that may be
+// embedded verbatim in a canonical command executed via `bash -c`. No
+// whitespace and no shell metacharacters: alnum, `/`, `.`, `_`, `-` only.
+const SAFE_HOME_PATH = /^\/[A-Za-z0-9._/-]*$/;
+
+function safeCanonicalHomeDir(): string | null {
+  let home: string;
+  try {
+    home = os.homedir();
+  } catch {
+    return null;
+  }
+  if (!home || !SAFE_HOME_PATH.test(home) || home.includes("..")) {
+    return null;
+  }
+  return home;
+}
+
+/**
+ * Issue 08a5f04 (channel-server compatibility) — normalize the legacy
+ * single-source merge command shape at submission time.
+ *
+ * Older submitters (the MCP channel server's `mandible_submit_auth`, raw API
+ * clients) stored `mandible auth merge <branch>` with no `--into <base>`;
+ * canonical enforcement at approval refuses that shape. When the submitted
+ * command matches EXACTLY the legacy single-source shape, its one argument
+ * byte-equals the server-resolved head branch, and both resolved branches are
+ * safe names, this returns the canonical `mandible auth merge <head> --into
+ * <base>` form so the reviewed row is canonical from the start. Anything else
+ * — extra flags, a different branch argument, hierarchical shapes — returns
+ * null and the command is stored as-is (approval will refuse it, as designed).
+ *
+ * This normalization runs only at POST submission, never at approval: the
+ * reviewed row must already carry the canonical bytes the approver sees.
+ */
+export function normalizeLegacySingleSourceMergeCommand(
+  command: string | null | undefined,
+  headBranch: string | null | undefined,
+  baseBranch: string | null | undefined,
+): string | null {
+  if (!command || !headBranch || !baseBranch) return null;
+  if (!isSafeBranchName(headBranch) || !isSafeBranchName(baseBranch)) return null;
+  const match = /^mandible auth merge (\S+)$/.exec(command);
+  if (!match || match[1] !== headBranch) return null;
+  return `mandible auth merge ${headBranch} --into ${baseBranch}`;
+}
+
+function isSafeBranchName(value: string): boolean {
+  return (
+    SAFE_BRANCH_NAME.test(value) &&
+    !value.startsWith("-") &&
+    !value.includes("..") &&
+    !value.includes("//") &&
+    !value.endsWith("/") &&
+    !value.endsWith(".")
+  );
 }
 
 export function repoRootFromGitCommonDir(cwd: string): string | null {
@@ -247,14 +349,7 @@ function requireValidBranch(field: "base_branch" | "head_branch", value: string 
       `Auth merge requests require '${field}' so the server can resolve execution context.`
     );
   }
-  if (
-    !SAFE_BRANCH_NAME.test(value) ||
-    value.startsWith("-") ||
-    value.includes("..") ||
-    value.includes("//") ||
-    value.endsWith("/") ||
-    value.endsWith(".")
-  ) {
+  if (!isSafeBranchName(value)) {
     throw new AuthExecutionContextError(
       `Invalid '${field}' for auth merge execution context: ${value}`
     );

@@ -517,6 +517,41 @@ current_branch_sha() {
   git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true
 }
 
+# Issue 08a5f04 (review F3) — the daemon passes the reviewed head commit as
+# MANDIBLE_AUTH_EXPECTED_HEAD_SHA on every daemon-started merge. When a
+# reviewed commit is supplied, the live source ref is verified against it
+# immediately before the signing merge, and the merge then targets the exact
+# reviewed object (not the racy branch name) with the branch-style merge
+# message. Without a reviewed commit (direct CLI invocation), the legacy
+# merge-by-branch-name behavior is preserved.
+merge_source_signed() {
+  local source_branch=$1
+  local expected=${2:-}
+  # Issue 08a5f04 (re-review advisory) — the preflight cleanliness check ran
+  # earlier in the flow; re-check the tracked worktree immediately before the
+  # non-atomic signing merge so state that changed in between never merges.
+  if ! tracked_worktree_is_clean; then
+    err "${RED}Tracked worktree state changed before the signing merge; refusing to merge. No ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  if [[ -z "$expected" ]]; then
+    run_signing_git merge --no-ff --no-edit -S "$source_branch"
+    return
+  fi
+  local live
+  live=$(current_branch_sha "$source_branch")
+  if [[ -z "$live" || "$live" != "$expected" ]]; then
+    err "${RED}Source ${source_branch} is at ${live:-unknown}, not the reviewed commit ${expected}; requeue and reapprove this request. No ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  local message
+  if ! message=$(printf "%s\t\tbranch '%s' of .\n" "$expected" "$source_branch" | git fmt-merge-msg); then
+    err "${RED}Could not derive the merge message for reviewed commit ${expected}; no ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  run_signing_git merge --no-ff --no-edit -S -m "$message" "$expected"
+}
+
 run_merge_preflight() {
   local cwd="$1"
   local head_branch="$2"
@@ -1258,6 +1293,11 @@ main() {
         || die "Cannot resume merge: target HEAD changed during validation." 1
       [[ "$(git rev-parse --verify "refs/heads/${resume_source}^{commit}")" == "$requested_head" ]] \
         || die "Cannot resume merge: requested source moved during validation." 1
+      # Issue 08a5f04 (review F3) — a daemon-resumed merge must still be the
+      # reviewed commit; a moved source cannot be laundered through --continue.
+      if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" && "$requested_head" != "$MANDIBLE_AUTH_EXPECTED_HEAD_SHA" ]]; then
+        die "Cannot resume merge: source '${resume_source}' is at ${requested_head}, not the reviewed commit ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}." 1
+      fi
 
       local merge_heads
       merge_heads=$(sed '/^$/d' "$merge_head_file" | sort)
@@ -1459,6 +1499,13 @@ main() {
     source=${sources[0]}
     local source_head merge_tree merge_sha
     source_head=$(current_branch_sha "$source")
+    # Issue 08a5f04 (review F3) — the reviewed-head context must be internally
+    # consistent: the daemon-supplied expected head and the cached candidate
+    # head describe the same reviewed commit.
+    if [[ -n "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}" && \
+          "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
+      die "Reviewed head context is inconsistent (expected ${MANDIBLE_AUTH_EXPECTED_HEAD_SHA}, candidate ${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-unset}); requeue and reapprove. No ref or worktree was changed." 1
+    fi
     if [[ "$atomic_base" != "${MANDIBLE_AUTH_CANDIDATE_BASE_SHA:-}" ]] || \
        [[ "$source_head" != "${MANDIBLE_AUTH_CANDIDATE_HEAD_SHA:-}" ]]; then
       die "Reviewed base or head moved since auth submission; requeue and reapprove. No ref or worktree was changed." 1
@@ -1483,7 +1530,9 @@ main() {
     local pre_merge_head
     pre_merge_head=$(git rev-parse HEAD)
     auth_phase "creating signed merge commit..."
-    if run_signing_git merge --no-ff --no-edit -S "$source"; then
+    # Issue 08a5f04 (review F3) — verify the live source against the reviewed
+    # commit and merge the exact reviewed object on the non-atomic path.
+    if merge_source_signed "$source" "${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}"; then
       auth_phase "signed merge complete; running follow-up actions..."
       verify_merge_not_empty
       record_auth_merge_result "$pre_merge_head"
@@ -1516,9 +1565,20 @@ main() {
   local pre_merge_head
   pre_merge_head=$(git rev-parse HEAD)
   local -a succeeded=()
+  local hierarchical_source_index=0
   for source in "${sources[@]}"; do
     auth_phase "creating signed merge commit for ${source}..."
-    if run_signing_git merge --no-ff --no-edit -S "$source"; then
+    # Issue 08a5f04 (review F3) — the request's reviewed head binds the first
+    # hierarchical source (the request's head branch). Remaining sources have
+    # no per-source reviewed SHA today; that gap is the execution-descriptor
+    # redesign (issue fff66b9), and candidate auto-recompute refuses
+    # hierarchical commands entirely in the meantime.
+    local expected_source_head=""
+    if (( hierarchical_source_index == 0 )); then
+      expected_source_head=${MANDIBLE_AUTH_EXPECTED_HEAD_SHA:-}
+    fi
+    hierarchical_source_index=$((hierarchical_source_index + 1))
+    if merge_source_signed "$source" "$expected_source_head"; then
       verify_merge_not_empty
       succeeded+=("$source")
       continue

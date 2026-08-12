@@ -202,6 +202,9 @@ describe("atomic auth merge", () => {
     setupOperator(db, { slug: "atomic-endpoint", display_name: "Atomic Endpoint" });
     const queue = new AuthQueue({ db, backgroundMaintenance: false });
     const request = queue.submit({ command: "echo checkpoint", title: "Atomic checkpoint" });
+    // Issue 08a5f04 (review F1) — the output endpoint is lifecycle-locked to
+    // executing requests; the real merge posts its checkpoints mid-execution.
+    db.prepare("UPDATE auth_requests SET status = 'executing' WHERE id = ?").run(request.id);
     const router = new Router();
     registerAuthRoutes(router, queue, new AuthAutoApproveManager({ db }));
     const server = createServer({
@@ -409,6 +412,95 @@ describe("atomic auth merge", () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("creating signed merge commit...");
     expect(result.stderr).not.toContain("with git commit-tree");
+  });
+
+  // Issue 08a5f04 (review F3) — the daemon passes the reviewed head SHA as
+  // MANDIBLE_AUTH_EXPECTED_HEAD_SHA on every daemon-started merge; the
+  // non-atomic path verifies the live source against it and merges the exact
+  // reviewed object.
+  function runNonAtomic(
+    extraEnv: Record<string, string> = {},
+    mainArgs = "feature/atomic --into main",
+  ): ReturnType<typeof spawnSync> {
+    const snippet = [
+      "export MANDIBLE_AUTH_MERGE_SOURCE_ONLY=1",
+      `source ${JSON.stringify(AUTH_MERGE)}`,
+      "prompt_confirm() { printf 'y'; }",
+      "run_merge_preflight() { :; }",
+      "cleanup_merged_worktrees() { :; }",
+      "collect_declared_issues() { :; }",
+      `main ${mainArgs}`,
+    ].join("\n");
+    return spawnSync("bash", ["-c", snippet], {
+      cwd: repo,
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        GIT_OPTIONAL_LOCKS: "0",
+        MANDIBLE_CLI_DIR: path.dirname(AUTH_MERGE),
+        MANDIBLE_AUTH_REQUEST_ID: "nonatomic-test",
+        ...extraEnv,
+      },
+    });
+  }
+
+  it("non-atomic path merges the exact reviewed object when the source matches", () => {
+    const base = git(["rev-parse", "main"]);
+    const head = git(["rev-parse", "feature/atomic"]);
+
+    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: head });
+
+    expect(result.status).toBe(0);
+    const merged = git(["rev-parse", "main"]);
+    expect(git(["show", "-s", "--format=%P", merged])).toBe(`${base} ${head}`);
+    expect(git(["show", "-s", "--format=%s", merged])).toBe("Merge branch 'feature/atomic'");
+    expect(result.stderr).toContain("MANDIBLE_MERGE_RESULT");
+  });
+
+  it("non-atomic path refuses a source that moved from the reviewed commit", () => {
+    const base = git(["rev-parse", "main"]);
+    const reviewedHead = git(["rev-parse", "feature/atomic"]);
+    git(["checkout", "feature/atomic"]);
+    write("moved.txt", "moved\n");
+    commit("moved head");
+    git(["checkout", "main"]);
+
+    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: reviewedHead });
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).toContain("not the reviewed commit");
+    expect(result.stderr).not.toContain("MANDIBLE_MERGE_RESULT");
+  });
+
+  it("hierarchical path refuses a first source that moved from the reviewed commit", () => {
+    const base = git(["rev-parse", "main"]);
+    const reviewedHead = git(["rev-parse", "feature/atomic"]);
+    git(["checkout", "feature/atomic"]);
+    write("moved.txt", "moved\n");
+    commit("moved head");
+    git(["checkout", "main"]);
+
+    const result = runNonAtomic(
+      { MANDIBLE_AUTH_EXPECTED_HEAD_SHA: reviewedHead },
+      "--hierarchical feature/atomic --into main",
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(git(["rev-parse", "main"])).toBe(base);
+    expect(result.stderr).toContain("not the reviewed commit");
+  });
+
+  it("resume path refuses when MERGE_HEAD is not the reviewed commit", () => {
+    const base = git(["rev-parse", "main"]);
+    git(["merge", "--no-ff", "--no-commit", "feature/atomic"]);
+
+    // The daemon reviewed a different commit than the one staged in MERGE_HEAD.
+    const result = runNonAtomic({ MANDIBLE_AUTH_EXPECTED_HEAD_SHA: base });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("not the reviewed commit");
+    expect(git(["rev-parse", "main"])).toBe(base);
   });
 
   it("accepts SHA-256 repository object ids", () => {
