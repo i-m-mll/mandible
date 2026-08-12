@@ -1786,6 +1786,50 @@ export function registerIssueRoutes(
     });
   }, { fileRpc: "deny" });
 
+  // POST /api/issues/resolutions — record a commit that resolved an issue
+  // Registered before /:repoId to avoid "resolutions" being treated as repoId.
+  // Bug: c934e60 — issue lifecycle tracking
+  server.post("/api/issues/resolutions", (req, res) => {
+    const body = getBody(req);
+    const issue_id = typeof body?.issue_id === "string" ? body.issue_id : "";
+    const commit_sha = typeof body?.commit_sha === "string" ? body.commit_sha : "";
+    const repo_id = typeof body?.repo_id === "string" ? body.repo_id : "";
+
+    if (!issue_id || !commit_sha || !repo_id) {
+      sendJson(res, 400, { error: "issue_id, commit_sha, and repo_id are required" });
+      return;
+    }
+
+    const db = getDb();
+    const operationalIssue = resolveOperationalIssueRef(db, issue_id, repo_id);
+    if (!operationalIssue.ok && operationalIssue.error === "ambiguous") {
+      sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
+      return;
+    }
+    if (operationalIssue.ok
+      && !enforceIssueProjectAccess(db, req, res, operationalIssue.issue_id, "write")) return;
+    const resolvedAt = Date.now();
+    db.prepare(
+      `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
+       VALUES (?, ?, ?, ?)`
+    ).run(issue_id, commit_sha, repo_id, resolvedAt);
+
+    let ledgerIssueId: string | null = null;
+    try {
+      const result = linkCommitToLedgerIssue(db, {
+        commit_sha,
+        issue_ref: issue_id,
+        repo_ref: repo_id,
+        now: resolvedAt,
+      });
+      ledgerIssueId = result.ok ? result.issue_id : null;
+    } catch {
+      ledgerIssueId = null;
+    }
+
+    sendJson(res, 200, { ok: true, ledger_issue_id: ledgerIssueId });
+  }, { fileRpc: "allow" });
+
   server.post("/api/issues/:repoId", (req, res) => {
     const repoRef = getParam(req, "repoId");
     if (!repoRef) {
@@ -2268,50 +2312,6 @@ export function registerIssueRoutes(
       return;
     }
   }, { fileRpc: "deny" });
-
-  // POST /api/issues/resolutions — record a commit that resolved an issue
-  // Registered before /:repoId/:issueId to avoid "resolutions" being treated as repoId.
-  // Bug: c934e60 — issue lifecycle tracking
-  server.post("/api/issues/resolutions", (req, res) => {
-    const body = getBody(req);
-    const issue_id = typeof body?.issue_id === "string" ? body.issue_id : "";
-    const commit_sha = typeof body?.commit_sha === "string" ? body.commit_sha : "";
-    const repo_id = typeof body?.repo_id === "string" ? body.repo_id : "";
-
-    if (!issue_id || !commit_sha || !repo_id) {
-      sendJson(res, 400, { error: "issue_id, commit_sha, and repo_id are required" });
-      return;
-    }
-
-    const db = getDb();
-    const operationalIssue = resolveOperationalIssueRef(db, issue_id, repo_id);
-    if (!operationalIssue.ok && operationalIssue.error === "ambiguous") {
-      sendJson(res, 403, { error: "ambiguous issue project", code: "ambiguous_project" });
-      return;
-    }
-    if (operationalIssue.ok
-      && !enforceIssueProjectAccess(db, req, res, operationalIssue.issue_id, "write")) return;
-    const resolvedAt = Date.now();
-    db.prepare(
-      `INSERT OR IGNORE INTO issue_resolutions (issue_id, commit_sha, repo_id, resolved_at)
-       VALUES (?, ?, ?, ?)`
-    ).run(issue_id, commit_sha, repo_id, resolvedAt);
-
-    let ledgerIssueId: string | null = null;
-    try {
-      const result = linkCommitToLedgerIssue(db, {
-        commit_sha,
-        issue_ref: issue_id,
-        repo_ref: repo_id,
-        now: resolvedAt,
-      });
-      ledgerIssueId = result.ok ? result.issue_id : null;
-    } catch {
-      ledgerIssueId = null;
-    }
-
-    sendJson(res, 200, { ok: true, ledger_issue_id: ledgerIssueId });
-  }, { fileRpc: "allow" });
 
   // GET /api/issues/resolutions/:issueId — get resolutions for an issue
   // Bug: c934e60 — issue lifecycle tracking
