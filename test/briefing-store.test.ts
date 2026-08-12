@@ -89,8 +89,8 @@ afterEach(() => {
 });
 
 describe("briefing schema", () => {
-  it("applies the v120 migration cleanly from the current head", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(120);
+  it("applies the briefing migrations cleanly from the current head", () => {
+    expect(CURRENT_SCHEMA_VERSION).toBe(121);
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master
@@ -109,6 +109,77 @@ describe("briefing schema", () => {
       "review_candidates",
     ]);
     expect(db.pragma("foreign_key_check")).toEqual([]);
+    expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
+  });
+
+  it("admits a finding ref in space_items after the v121 rebuild", () => {
+    // Contract §6/§7 amendment: a Space may reference a briefing candidate, so
+    // the ref_type CHECK must accept 'finding' while still rejecting an
+    // unregistered type. The migrated-vs-fresh equality of this DDL is covered
+    // by test/db-schema-baseline.test.ts.
+    db.prepare(
+      `INSERT INTO spaces (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+    ).run("space-1", "Briefing", 1_000, 1_000);
+    ingestBriefingBatch(db, batch(), 1_000);
+    const candidateId = candidateIdFor("arxiv-scan", "paper-1");
+
+    expect(() => db.prepare(
+      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
+       VALUES (?, 'space-1', 'finding', ?, 1000, 1000)`,
+    ).run("item-1", candidateId)).not.toThrow();
+    expect(() => db.prepare(
+      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
+       VALUES (?, 'space-1', 'not-a-ref-type', ?, 1000, 1000)`,
+    ).run("item-2", candidateId)).toThrow(/CHECK constraint/);
+  });
+
+  it("rebuilds a live space_items table whose CHECK predates finding refs", () => {
+    // A database that already reached head before this wave keeps the old
+    // CHECK, so the v121 post-migration must rebuild it in place — preserving
+    // existing rows — the next time the daemon opens the database.
+    db.prepare(
+      `INSERT INTO spaces (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+    ).run("space-1", "Briefing", 1_000, 1_000);
+    db.exec("DROP TABLE space_items");
+    db.exec(
+      `CREATE TABLE space_items (
+        id            TEXT NOT NULL,
+        space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+        ref_type      TEXT NOT NULL
+                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space')),
+        ref_id        TEXT NOT NULL CHECK(ref_id != ''),
+        ref_uri       TEXT,
+        title         TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}'
+                        CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+        created_at    INTEGER NOT NULL,
+        updated_at    INTEGER NOT NULL,
+        PRIMARY KEY (id),
+        UNIQUE (space_id, id),
+        UNIQUE (space_id, ref_type, ref_id),
+        CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
+      )`,
+    );
+    db.prepare(
+      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
+       VALUES ('legacy-item', 'space-1', 'issue', 'issue-1', 1000, 1000)`,
+    ).run();
+    db.prepare("DELETE FROM meta WHERE key = ?")
+      .run("post_migration.v121_space_items_finding_refs.complete");
+
+    migrate(db);
+
+    expect(() => db.prepare(
+      `INSERT INTO space_items (id, space_id, ref_type, ref_id, created_at, updated_at)
+       VALUES ('finding-item', 'space-1', 'finding', 'candidate-1', 1000, 1000)`,
+    ).run()).not.toThrow();
+    expect(
+      db.prepare("SELECT ref_type, ref_id FROM space_items WHERE id = 'legacy-item'").get(),
+    ).toEqual({ ref_type: "issue", ref_id: "issue-1" });
+    expect(
+      db.prepare("SELECT value FROM meta WHERE key = ?")
+        .get("post_migration.v121_space_items_finding_refs.complete"),
+    ).toEqual({ value: "done" });
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
   });
 

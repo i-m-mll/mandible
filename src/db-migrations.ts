@@ -2078,7 +2078,7 @@ export const MIGRATIONS: readonly Migration[] = [
         id            TEXT NOT NULL,
         space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
         ref_type      TEXT NOT NULL
-                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space')),
+                        CHECK(ref_type IN ('issue','comment','artifact','external_ref','space','finding')),
         ref_id        TEXT NOT NULL CHECK(ref_id != ''),
         ref_uri       TEXT,
         title         TEXT,
@@ -3360,6 +3360,17 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_briefing_batches_task
          ON briefing_batches(task_identity, digest_version)`
     ]
+  },
+  {
+    version: 121,
+    name: "space_items_finding_refs",
+    // Umbrella 99b74d6 (contract §6 / §7 amendment) — a Space may reference a
+    // briefing finding, so `space_items.ref_type` must admit 'finding'. SQLite
+    // cannot alter a CHECK in place, so existing databases rebuild the table in
+    // the gated post-migration helper below (same shape as v90's 'space'
+    // expansion). Fresh databases and full replays get the expanded CHECK
+    // directly from the spaces_core DDL above, so the rebuild is a no-op there.
+    statements: []
   }
 ];
 
@@ -3785,6 +3796,19 @@ export function migrate(db: Db): void {
     ensureBranchUpstreamColumns(db);
     ensureWorkUnitMergeScanRetirementColumn(db);
     ensureAuthRequestMergeFinalizerStateColumn(db);
+  }
+
+  // Issue ce22a3a / umbrella 99b74d6 (migration 121): admit finding refs in
+  // space_items.ref_type. SQLite cannot alter a CHECK in place, so this follows
+  // the v90 gated-rebuild pattern; it runs after applySchemaMigrations(afterV105)
+  // so the v121 DDL version is already recorded, and it is a no-op once the live
+  // CHECK lists 'finding'.
+  if (shouldRunPostMigration(db, "v121_space_items_finding_refs", pending, 121, () =>
+    needsSpaceItemsFindingRefType(db)
+  )) {
+    runPostMigration(db, "v121_space_items_finding_refs", () => {
+      rebuildSpaceItemsWithFindingRefType(db);
+    });
   }
 }
 
@@ -4728,6 +4752,90 @@ function rebuildSpaceItemsWithSpaceRefType(db: Db): void {
   if (violations.length > 0) {
     throw new Error(
       `space_items linked-space migration left ${violations.length} foreign key violations`,
+    );
+  }
+}
+
+/**
+ * Umbrella 99b74d6 — true when `space_items.ref_type` still excludes briefing
+ * finding refs. Fresh databases built from the updated baseline DDL already
+ * include 'finding', so this returns false for them and the v121 post-migration
+ * records itself as complete without touching the table.
+ */
+function needsSpaceItemsFindingRefType(db: Db): boolean {
+  const row = db
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'space_items'")
+    .get() as { sql: string } | undefined;
+  if (!row) return false;
+  return !row.sql.includes("'finding'");
+}
+
+/**
+ * Umbrella 99b74d6 — rebuild `space_items` with `ref_type='finding'` accepted by
+ * the inline CHECK. Every other invariant is preserved verbatim: the inline
+ * UNIQUE constraints metadata backup/restore depends on, the non-empty ref_id
+ * CHECK, and the external_ref ref_uri CHECK. Child tables reference
+ * (space_id, id), so this uses the same FK-safe foreign_keys OFF +
+ * foreign_key_check pattern as the v90 rebuild.
+ */
+function rebuildSpaceItemsWithFindingRefType(db: Db): void {
+  if (!needsSpaceItemsFindingRefType(db)) return;
+
+  const previousForeignKeys = db.pragma("foreign_keys", { simple: true }) as number;
+  db.pragma("foreign_keys = OFF");
+  try {
+    db.transaction(() => {
+      db.exec("DROP TABLE IF EXISTS space_items_v121");
+      db.exec(
+        `CREATE TABLE space_items_v121 (
+          id            TEXT NOT NULL,
+          space_id      TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+          ref_type      TEXT NOT NULL
+                          CHECK(ref_type IN ('issue','comment','artifact','external_ref','space','finding')),
+          ref_id        TEXT NOT NULL CHECK(ref_id != ''),
+          ref_uri       TEXT,
+          title         TEXT,
+          metadata_json TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(metadata_json) AND json_type(metadata_json)='object'),
+          created_at    INTEGER NOT NULL,
+          updated_at    INTEGER NOT NULL,
+          PRIMARY KEY (id),
+          UNIQUE (space_id, id),
+          UNIQUE (space_id, ref_type, ref_id),
+          CHECK (ref_type != 'external_ref' OR ref_uri IS NOT NULL)
+        )`,
+      );
+      db.exec(
+        `INSERT INTO space_items_v121 (
+          id, space_id, ref_type, ref_id, ref_uri, title,
+          metadata_json, created_at, updated_at
+        )
+        SELECT
+          id, space_id, ref_type, ref_id, ref_uri, title,
+          metadata_json, created_at, updated_at
+        FROM space_items`,
+      );
+      db.exec("DROP TABLE space_items");
+      db.exec("ALTER TABLE space_items_v121 RENAME TO space_items");
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_space_items_lookup
+          ON space_items(space_id, ref_type, ref_id)`,
+      );
+      db.exec(
+        `CREATE INDEX IF NOT EXISTS idx_space_items_by_ref
+          ON space_items(ref_type, ref_id, space_id)`,
+      );
+    })();
+  } finally {
+    if (previousForeignKeys) {
+      db.pragma("foreign_keys = ON");
+    }
+  }
+
+  const violations = db.prepare("PRAGMA foreign_key_check").all();
+  if (violations.length > 0) {
+    throw new Error(
+      `space_items finding-ref migration left ${violations.length} foreign key violations`,
     );
   }
 }
