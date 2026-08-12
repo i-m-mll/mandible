@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import {
   allowsPerFileFallback,
   groupWatchConfigs,
+  isLiveWatchMode,
   makeWatchRootMatcher,
   resolveWatchEventPath,
   watchConversationRoots,
@@ -274,6 +275,16 @@ function recordingPerFileFactory(calls: Array<{ base: string; glob: string }>): 
   };
 }
 
+describe("isLiveWatchMode", () => {
+  it("counts only the modes that actually have a watcher attached", () => {
+    expect(isLiveWatchMode("recursive")).toBe(true);
+    expect(isLiveWatchMode("per-file")).toBe(true);
+    // Both of these mean "no watcher, events are being missed".
+    expect(isLiveWatchMode("reattaching")).toBe(false);
+    expect(isLiveWatchMode("degraded-poll")).toBe(false);
+  });
+});
+
 describe("allowsPerFileFallback", () => {
   it("refuses per-file watching on darwin and allows it elsewhere", () => {
     expect(allowsPerFileFallback("darwin")).toBe(false);
@@ -353,6 +364,9 @@ describe("watchConversationRoots darwin fallback policy", () => {
     // lost-event window is reported so the caller reconciles.
     expect(live.closeCount).toBe(1);
     expect(degraded[0]).toBe("watcher_error");
+    // ...and the root stops claiming a live recursive watcher the moment it
+    // loses one, rather than at the end of the ladder.
+    expect(handle.rootModes.get(base)).toBe("reattaching");
 
     await waitFor(() => handle?.rootModes.get(base) === "degraded-poll");
     expect(attempts).toBe(3); // initial attach + two bounded retries
@@ -360,6 +374,46 @@ describe("watchConversationRoots darwin fallback policy", () => {
     expect(perFileCalls).toEqual([]);
     expect(handle.rootCount).toBe(0);
     expect(handle.degradedRootCount).toBe(1);
+  });
+
+  // Bug: 4f7e45e (re-review nit) — a runtime error closes the watcher, but the
+  // root used to keep reporting mode "recursive" for the whole retry interval,
+  // so `rootCount` counted a live watcher that no longer existed exactly while
+  // events were being lost. Status must describe the gap, not the last good
+  // state.
+  it("reports a root with a closed watcher as reattaching, never as a live root", async () => {
+    const base = makeRoot();
+    const live = new FakeFsWatcher();
+    let attempts = 0;
+
+    handle = watchConversationRoots({
+      configs: [{ base, glob: "**/*.jsonl" }],
+      onFile: () => undefined,
+      platform: "darwin",
+      watchFactory: () => {
+        attempts += 1;
+        return asFsWatcher(live);
+      },
+      perFileWatchFactory: () => {
+        throw new Error("per-file fallback must not be reachable on darwin");
+      },
+      // Long enough that the assertions below run inside the retry gap.
+      retryDelaysMs: [60_000],
+      degradedPollIntervalMs: 60_000,
+    });
+
+    expect(handle.rootCount).toBe(1);
+    expect(handle.degradedRootCount).toBe(0);
+
+    live.emit("error", new Error("watcher died"));
+
+    // No watcher exists, and no retry has run yet.
+    expect(attempts).toBe(1);
+    expect(handle.rootModes.get(base)).toBe("reattaching");
+    expect(handle.rootCount).toBe(0);
+    expect(handle.degradedRootCount).toBe(1);
+    // The counts still partition the watched roots.
+    expect(handle.rootCount + handle.degradedRootCount).toBe(handle.rootModes.size);
   });
 
   it("re-establishes a recursive watcher after a runtime error and resumes events", async () => {
@@ -385,9 +439,11 @@ describe("watchConversationRoots darwin fallback policy", () => {
     });
 
     first.emit("error", new Error("watcher died"));
+    expect(handle.rootModes.get(base)).toBe("reattaching");
     await waitFor(() => listeners.length === 2);
     expect(handle.rootModes.get(base)).toBe("recursive");
     expect(handle.rootCount).toBe(1);
+    expect(handle.degradedRootCount).toBe(0);
 
     listeners[1]("change", "2026/08/12/rollout.jsonl");
     expect(seen).toEqual([path.join(base, "2026", "08", "12", "rollout.jsonl")]);

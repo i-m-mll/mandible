@@ -2,11 +2,13 @@ import { AuthQueue, AuthQueueError } from "../auth-queue.js";
 import { AuthActionValidationError } from "../auth-actions.js";
 import { AuthAutoApproveManager } from "../auth-auto-approve.js";
 import {
+  classifyGitFailure,
   computeAuthMergeReviewMetadata,
+  describeGitFailure,
   isAuthMergeCommand,
   normalizeExistingPath,
   normalizeLegacySingleSourceMergeCommand,
-  repoRootFromGitCommonDir,
+  probeRepoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../auth-context.js";
 import { getDaemonLogger } from "../daemon-log.js";
@@ -124,7 +126,23 @@ export function registerAuthRoutes(
       }
     }
 
-    const cwdRepoRoot = payload.cwd ? repoRootFromGitCommonDir(payload.cwd) : null;
+    // Issue 2205073 — this call site is deliberately best effort: it only
+    // enriches optional metadata (target_repo_root backfill and the repo-name
+    // fallback below) and never refuses work on the answer, so a failed probe
+    // degrades to "no enrichment" rather than to a false claim about the cwd.
+    // The failure is still logged with its kind, so a request that arrived
+    // without a target_repo_root can be explained after the fact instead of
+    // looking like the submitter simply omitted it.
+    const cwdRootProbe = payload.cwd ? probeRepoRootFromGitCommonDir(payload.cwd) : null;
+    if (cwdRootProbe?.failure && cwdRootProbe.failure.kind !== "exit") {
+      authRouteLog("warn", "auth_cwd_repo_root_probe_failed", {
+        subsystem: "auth",
+        cwd: payload.cwd,
+        failure_kind: cwdRootProbe.failure.kind,
+        detail: describeGitFailure(cwdRootProbe.failure, "submission"),
+      });
+    }
+    const cwdRepoRoot = cwdRootProbe?.root ?? null;
     if (!payload.target_repo_root && cwdRepoRoot) {
       payload.target_repo_root = cwdRepoRoot;
     }
@@ -960,7 +978,24 @@ function validateAuthGateBranch(field: "base_branch" | "head_branch", value: str
   return null;
 }
 
-function verifyMandibleIssueReferences(
+/**
+ * The action-bearing `Mandible-Issue:` trailer gate: a non-null return refuses
+ * the submission.
+ *
+ * Issue 2205073 (review F8, residual) — this gate used to resolve the repo root
+ * through the lossy null-returning wrapper and report every null as
+ * "Invalid 'cwd'". Two of the three ways git can fail (killed by timeout, never
+ * spawned at all — EMFILE/EAGAIN/ENOMEM from daemon fd exhaustion) say nothing
+ * about the cwd, so a healthy repository was blamed for a daemon-health
+ * failure and the operator was sent to fix a path that was never wrong. Only
+ * git's own answer (a real non-zero exit, "not a git repository") may claim the
+ * cwd is invalid; the gate still fails closed either way.
+ *
+ * Exported for regression tests: the honest-failure branches are unreachable
+ * through the route, because a git that cannot run fails execution-context
+ * resolution earlier in the request.
+ */
+export function verifyMandibleIssueReferences(
   payload: AuthRequestInput
 ): string | null {
   const { cwd, head_branch, base_branch } = payload;
@@ -973,8 +1008,15 @@ function verifyMandibleIssueReferences(
   const headError = validateAuthGateBranch("head_branch", head_branch);
   if (headError) return headError;
 
-  const repoRoot = repoRootFromGitCommonDir(cwd);
-  if (!repoRoot) {
+  const repoRootProbe = probeRepoRootFromGitCommonDir(cwd);
+  if (repoRootProbe.failure && repoRootProbe.failure.kind !== "exit") {
+    return (
+      `Unable to verify Mandible issue references for 'cwd' ${cwd}: ` +
+      `${describeGitFailure(repoRootProbe.failure, "submission")} ` +
+      "This is a daemon-health failure, not an invalid cwd; the request was not submitted."
+    );
+  }
+  if (!repoRootProbe.root) {
     return "Invalid 'cwd' for auth merge verification; manual review required.";
   }
 
@@ -1023,10 +1065,23 @@ function verifyMandibleIssueReferences(
 
     return null;
   } catch (err) {
+    // Issue 2205073 — the same three worlds apply to the `git log` probes: an
+    // exit is git's own answer about this history, a timeout or spawn errno is
+    // a daemon-health failure that learned nothing. Both still refuse the
+    // submission (the gate fails closed), but they must not read alike.
+    const failure = classifyGitFailure(err);
     authRouteLog("error", "auth_issue_reference_verification_failed", {
       subsystem: "auth",
+      failure_kind: failure.kind,
       error: String(err),
     });
-    return "Mandible issue reference verification failed; manual review required.";
+    if (failure.kind === "exit") {
+      return "Mandible issue reference verification failed; manual review required.";
+    }
+    return (
+      "Mandible issue reference verification could not run: " +
+      `${describeGitFailure(failure, "submission")} ` +
+      "This is a daemon-health failure, not a verdict on the branch; the request was not submitted."
+    );
   }
 }
