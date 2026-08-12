@@ -581,3 +581,15 @@
   line-height: 1;
   padding: 0;
 }
+
+/* --- nav rail badge ------------------------------------------------------- */
+
+/* The Briefing badge carries the server-authoritative pending count. It reads
+ * as review work (purple, matching the agent-generated accent above), distinct
+ * from the amber auth badge that means "a human must authenticate something".
+ * Declared here rather than in base.css so the whole view stays in one file;
+ * style.css imports this after base.css, so equal specificity resolves here. */
+.tab-badge--briefing {
+  background: var(--status-purple-bg);
+  color: var(--status-purple-fg);
+}
