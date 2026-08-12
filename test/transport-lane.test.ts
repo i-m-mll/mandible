@@ -1,7 +1,8 @@
 import Database from "better-sqlite3";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, setDb } from "../src/db.js";
+import { CLAUDE_PTY_LANE_ENV_KEY } from "../src/claude-lane-policy.js";
 import { SessionManager } from "../src/session-manager.js";
 
 function createManager(): { db: InstanceType<typeof Database>; manager: SessionManager } {
@@ -15,6 +16,17 @@ function createManager(): { db: InstanceType<typeof Database>; manager: SessionM
 }
 
 describe("console transport lanes", () => {
+  // Issue 8aadf70 — the Claude PTY/Channel lanes are local-only and off by
+  // default. The lane-selection behaviour under test here is unchanged; the
+  // tests that exercise those lanes opt into them explicitly.
+  beforeEach(() => {
+    delete process.env[CLAUDE_PTY_LANE_ENV_KEY];
+  });
+
+  afterEach(() => {
+    delete process.env[CLAUDE_PTY_LANE_ENV_KEY];
+  });
+
   it("adds the persisted transport lane column through migrations", () => {
     const { db } = createManager();
     try {
@@ -25,7 +37,7 @@ describe("console transport lanes", () => {
     }
   });
 
-  it("defaults Claude to the PTY lane and Codex/Gemini to ACP", () => {
+  it("defaults Claude to the SDK lane and Codex/Gemini to ACP", () => {
     const { db, manager } = createManager();
     try {
       const claude = manager.create({ label: "Claude", command: "claude" });
@@ -33,10 +45,10 @@ describe("console transport lanes", () => {
       const gemini = manager.create({ label: "Gemini", command: "gemini" });
 
       expect(claude).toMatchObject({
-        backend_type: "pty",
-        transport_lane: "pty",
+        backend_type: "sdk",
+        transport_lane: "sdk",
         channel_enabled: false,
-        transport_badge: { label: "PTY" },
+        transport_badge: { label: "SDK" },
       });
       expect(codex).toMatchObject({
         backend_type: "acp",
@@ -54,6 +66,7 @@ describe("console transport lanes", () => {
   });
 
   it("preserves the legacy channel-enabled PTY path as the Channel lane", () => {
+    process.env[CLAUDE_PTY_LANE_ENV_KEY] = "1";
     const { db, manager } = createManager();
     try {
       const session = manager.create({

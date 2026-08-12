@@ -18,6 +18,11 @@ import type {
   ConsoleTransportLane,
 } from "../types.js";
 import { sendJson } from "./http.js";
+import {
+  ClaudeLaneDisabledError,
+  DEFAULT_CLAUDE_BACKEND_TYPE,
+  isClaudePtyLaneEnabled,
+} from "../claude-lane-policy.js";
 import { globalCapabilityRoute } from "../permissions/routes.js";
 import {
   ClientAuthzError,
@@ -259,6 +264,20 @@ export function registerConsoleRoutes(
   }, { fileRpc: "deny" });
 
   // ------------------------------------------------------------------
+  // GET /api/console/lane-policy — which Claude lanes this install ships
+  //
+  // Issue 8aadf70 — the dashboard must not offer a lane the daemon will reject.
+  // The gate is resolvable from settings *and* an environment override, so the
+  // UI asks the daemon rather than inferring it from the settings table.
+  // ------------------------------------------------------------------
+  server.get("/api/console/lane-policy", (_req, res) => {
+    sendJson(res, 200, {
+      claude_default_backend_type: DEFAULT_CLAUDE_BACKEND_TYPE,
+      claude_pty_lane_enabled: isClaudePtyLaneEnabled(),
+    });
+  }, { fileRpc: "deny" });
+
+  // ------------------------------------------------------------------
   // POST /api/console/sessions — create a new session
   // ------------------------------------------------------------------
   server.post("/api/console/sessions", globalCapabilityRoute("spawn_console", (req, res) => {
@@ -293,12 +312,17 @@ export function registerConsoleRoutes(
       interaction_mode: (["inbox_only", "direct", "both"].includes(body.interaction_mode ?? ""))
         ? body.interaction_mode as ConsoleInteractionMode
         : "both",
+      // Issue 8aadf70 — Claude defaults to the sanctioned Agent SDK lane. The
+      // Mandible-owned Claude PTY lane is local-only and rejected below unless
+      // `claude_pty_lane_enabled` is explicitly set.
       backend_type: body.backend_type === "pty"
         || body.backend_type === "sdk"
         || body.backend_type === "spawn"
         || body.backend_type === "acp"
         ? body.backend_type
-        : (body.command === "claude" ? "pty" : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
+        : (body.command === "claude"
+          ? DEFAULT_CLAUDE_BACKEND_TYPE
+          : (body.command === "gemini" || body.command === "codex") ? "acp" : "spawn"),
       transport_lane: parseTransportLane((body as Record<string, unknown>).transport_lane),
       // Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity
       channel_enabled: (body as Record<string, unknown>).channel_enabled === true,
@@ -310,7 +334,18 @@ export function registerConsoleRoutes(
         : undefined,
     };
 
-    const session = manager.create(input);
+    let session: ConsoleSession;
+    try {
+      session = manager.create(input);
+    } catch (error) {
+      // Issue 8aadf70 — asking for a lane the release build does not ship is a
+      // client error with a specific, actionable message, not a 500.
+      if (error instanceof ClaudeLaneDisabledError) {
+        sendJson(res, error.status, { error: error.code, message: error.message });
+        return;
+      }
+      throw error;
+    }
     const structuredChat = input.command === "claude" || input.command === "codex" || input.command === "gemini";
     // Start immediately for: operators, non-structured-chat (shell), and structured
     // sessions (they just wait for the first prompt — no process to allocate).
@@ -415,7 +450,17 @@ export function registerConsoleRoutes(
       sendJson(res, 400, { error: "already_running" });
       return;
     }
-    manager.start(id);
+    try {
+      manager.start(id);
+    } catch (error) {
+      // Issue 8aadf70 — a Claude PTY session recorded while the local-only lane
+      // was enabled must not restart after the lane is turned off.
+      if (error instanceof ClaudeLaneDisabledError) {
+        sendJson(res, error.status, { error: error.code, message: error.message });
+        return;
+      }
+      throw error;
+    }
     res.status(200).json({ session: ptySession.meta });
   }, { fileRpc: "deny" });
 

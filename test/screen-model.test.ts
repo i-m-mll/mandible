@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import { PTYBackend } from "../src/backends/pty-backend.js";
 import { detectClaudePermissionPrompt } from "../src/claude-permission-patterns.js";
+import { CLAUDE_PTY_LANE_ENV_KEY } from "../src/claude-lane-policy.js";
 import {
   detectInteractiveState,
   PtyScreenObserver,
@@ -150,10 +151,20 @@ describe("PTY screen detection", () => {
   });
 
   it("defaults screen modeling to agent PTY sessions and honors kill switches", () => {
-    expect(shouldEnablePtyScreenModel(makeSession())).toBe(true);
+    // Issue 8aadf70 — Claude screen classification belongs to the gated
+    // local-only lane, so the default agent case here is codex, not claude.
+    const codex = makeSession({ command: "codex", agent_type: "codex" });
+    expect(shouldEnablePtyScreenModel(codex)).toBe(true);
     expect(shouldEnablePtyScreenModel(makeSession({ command: "bash", agent_type: "shell" }))).toBe(false);
     expect(
-      shouldEnablePtyScreenModel(makeSession({ env: { MANDIBLE_PTY_SCREEN_ATTENTION: "0" } })),
+      shouldEnablePtyScreenModel({ ...codex, env: { MANDIBLE_PTY_SCREEN_ATTENTION: "0" } }),
+    ).toBe(false);
+  });
+
+  it("never engages screen modeling for Claude while the PTY lane is gated off", () => {
+    expect(shouldEnablePtyScreenModel(makeSession())).toBe(false);
+    expect(
+      shouldEnablePtyScreenModel(makeSession({ env: { MANDIBLE_PTY_SCREEN_ATTENTION: "1" } })),
     ).toBe(false);
   });
 });
@@ -208,6 +219,9 @@ describe("PtyScreenObserver", () => {
 describe("PTYBackend screen attention integration", () => {
   it("emits console attention changes from scripted terminal output", async () => {
     vi.useFakeTimers();
+    // Issue 8aadf70 — driving a Claude terminal is the gated local-only lane;
+    // this integration test exercises that lane, so it opts in explicitly.
+    process.env[CLAUDE_PTY_LANE_ENV_KEY] = "1";
     try {
       const backend = new PTYBackend(makeSession({ status: "running" }), (() => undefined) as Logger);
       const changes: Array<ConsoleAttentionState | null> = [];
@@ -228,6 +242,7 @@ describe("PTYBackend screen attention integration", () => {
       expect(changes[1]?.active).toBe(false);
       expect(backend.meta.attention).toBeNull();
     } finally {
+      delete process.env[CLAUDE_PTY_LANE_ENV_KEY];
       vi.useRealTimers();
     }
   });

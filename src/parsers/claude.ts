@@ -231,7 +231,7 @@ export class ClaudeParser implements ConversationParser {
       // encoded-path uses - for /
       const dir = subagentPath ? path.dirname(path.dirname(path.dirname(filePath))) : path.dirname(filePath);
       const dirName = path.basename(dir);
-      // Decode: "-Users-mll--dotfiles" → "/Users/mll/.dotfiles"
+      // Decode: "-home-alice--dotfiles" → "/home/alice/.dotfiles"
       // The encoding replaces / with - and . with - (first char only)
       projectPath = dirName;
     }

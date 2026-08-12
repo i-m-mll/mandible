@@ -1,44 +1,73 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NewSessionDialog } from "../ui/src/components/console/NewSessionDialog";
+
+// Issue 8aadf70 — the dialog asks the daemon which Claude lanes this install
+// ships. The default answer is "SDK only"; the terminal-driving lanes appear
+// only when the daemon reports them enabled.
+const getConsoleLanePolicy = vi.fn(async () => ({
+  claude_default_backend_type: "sdk" as const,
+  claude_pty_lane_enabled: false,
+}));
 
 vi.mock("../ui/src/api", () => ({
   getPresets: vi.fn(async () => []),
   getDefaultPresetIds: vi.fn(async () => []),
   getSettings: vi.fn(async () => ({})),
   validatePresetIds: vi.fn(async () => ({ warnings: [] })),
+  getConsoleLanePolicy: (...args: []) => getConsoleLanePolicy(...args),
 }));
+
+beforeEach(() => {
+  getConsoleLanePolicy.mockResolvedValue({
+    claude_default_backend_type: "sdk",
+    claude_pty_lane_enabled: false,
+  });
+});
 
 afterEach(() => {
   cleanup();
+  vi.clearAllMocks();
 });
 
 describe("NewSessionDialog transport lanes", () => {
-  it("defaults Claude sessions to the PTY transport lane", async () => {
+  it("defaults Claude sessions to the SDK transport lane", async () => {
     const onSubmit = vi.fn();
     render(<NewSessionDialog open onClose={vi.fn()} onSubmit={onSubmit} />);
 
-    await waitFor(() => expect(screen.getByText("Claude PTY")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText("Claude SDK")).toBeTruthy());
     fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Claude local" } });
     fireEvent.click(screen.getByText("Create chat"));
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
       label: "Claude local",
       backend: "claude",
-      backend_type: "pty",
-      transport_lane: "pty",
+      backend_type: "sdk",
+      transport_lane: "sdk",
       channel_enabled: undefined,
     }));
   });
 
-  it("submits Channel as a channel-enabled PTY lane", async () => {
+  it("hides the Claude PTY and Channel lanes when the daemon does not ship them", async () => {
+    render(<NewSessionDialog open onClose={vi.fn()} onSubmit={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByText("Claude SDK")).toBeTruthy());
+    expect(screen.queryByText(/Claude PTY/)).toBeNull();
+    expect(screen.queryByText(/Claude Channel/)).toBeNull();
+  });
+
+  it("offers Channel as a channel-enabled PTY lane once the daemon enables it", async () => {
+    getConsoleLanePolicy.mockResolvedValue({
+      claude_default_backend_type: "sdk",
+      claude_pty_lane_enabled: true,
+    });
     const onSubmit = vi.fn();
     render(<NewSessionDialog open onClose={vi.fn()} onSubmit={onSubmit} />);
 
-    await waitFor(() => expect(screen.getByText("Claude Channel")).toBeTruthy());
+    const channel = await screen.findByText("Claude Channel (local only)");
     fireEvent.input(screen.getByLabelText("Name"), { target: { value: "Claude channel" } });
-    fireEvent.click(screen.getByText("Claude Channel"));
+    fireEvent.click(channel);
     fireEvent.click(screen.getByText("Create chat"));
 
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({

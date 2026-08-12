@@ -1624,6 +1624,26 @@ export async function getSettings(): Promise<Record<string, string>> {
   return {};
 }
 
+/**
+ * Issue 8aadf70 — which Claude lanes this daemon ships. The Claude PTY lane
+ * (terminal driving) is local-only and off by default, and the gate is
+ * resolvable from an environment override as well as the settings table, so the
+ * dialog asks the daemon instead of reading the setting directly.
+ */
+export type ConsoleLanePolicy = {
+  claude_default_backend_type: ConsoleBackendType;
+  claude_pty_lane_enabled: boolean;
+};
+
+export async function getConsoleLanePolicy(): Promise<ConsoleLanePolicy> {
+  const payload = await cachedApiGetJson<unknown>('/api/console/lane-policy');
+  const record = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {};
+  return {
+    claude_default_backend_type: (record.claude_default_backend_type as ConsoleBackendType) ?? 'sdk',
+    claude_pty_lane_enabled: record.claude_pty_lane_enabled === true,
+  };
+}
+
 export async function updateSetting(key: string, value: string): Promise<void> {
   const response = await fetch(`/api/settings/${encodeURIComponent(key)}`, {
     method: 'PUT',
@@ -1776,16 +1796,20 @@ export async function createConsoleSession(
   if (options?.presetIds) {
     body.presetIds = options.presetIds;
   }
+  // Issue 8aadf70 — Claude sessions default to the sanctioned Agent SDK lane,
+  // which gates tools through canUseTool and Mandible's permission cards.
+  // `--dangerously-skip-permissions` is never sent for the default lane; it
+  // stays only on the local-only, explicitly gated Claude PTY lane.
   if (kind === 'operator') {
     body.command = 'claude';
-    body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
+    body.backend_type = backendType ?? 'sdk';
+    body.args = body.backend_type === 'pty' ? ['--dangerously-skip-permissions'] : [];
     body.auto_restart = true;
     body.is_operator = true;
-    body.backend_type = backendType ?? 'pty';
   } else if (backend === 'claude') {
     body.command = 'claude';
-    body.args = backendType === 'sdk' ? [] : ['--dangerously-skip-permissions'];
-    body.backend_type = backendType ?? 'pty';
+    body.backend_type = backendType ?? 'sdk';
+    body.args = body.backend_type === 'pty' ? ['--dangerously-skip-permissions'] : [];
   } else if (backend === 'codex') {
     body.command = 'codex';
     body.args = [];

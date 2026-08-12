@@ -41,6 +41,10 @@ import type {
 } from "../types.js";
 import { SessionRegistry } from "../registry.js";
 import { getDb } from "../db.js";
+import {
+  DEFAULT_SDK_PERMISSION_MODE,
+  describeAnthropicBilling,
+} from "../claude-lane-policy.js";
 import { computePresetUnion } from "../presets.js";
 import { withMandibleInstructionsFragment } from "../instructions/fragment.js";
 
@@ -114,6 +118,8 @@ implements
   private activeQuery: ClaudeQuery | null = null;
   private abortController: AbortController | null = null;
   private destroyed = false;
+  /** Issue 8aadf70 — log the API-key/subscription posture once per backend. */
+  private billingPostureLogged = false;
   private readonly mandibleTokenSource: string | (() => string | null) | null;
   /** Bug: 790433d — Message index counter for parameter snapshots */
   private messageIndex = 0;
@@ -566,7 +572,11 @@ implements
 
   private buildQueryOptions(abortController: AbortController): ClaudeSDKOptions {
     const cwd = this.meta.cwd ?? process.cwd();
-    const permissionMode = this.options.permissionMode ?? "default";
+    // Issue 8aadf70 — the shipped default is real permission gating: mode
+    // "default" plus the `canUseTool` callback below, which drives Mandible's
+    // permission cards. `bypassPermissions` is only ever an explicit
+    // per-session operator override, never a default.
+    const permissionMode = this.options.permissionMode ?? DEFAULT_SDK_PERMISSION_MODE;
     const allowedTools = [...this.autoAllowedTools];
     const hooks = this.buildHooks();
 
@@ -694,6 +704,19 @@ implements
     env.MANDIBLE_MANAGED_CLIENT = "1";
     const mandibleToken = this.currentMandibleToken();
     if (mandibleToken) env.MANDIBLE_TOKEN = mandibleToken;
+    // Issue 8aadf70 — the environment we are about to hand the SDK decides
+    // whether this session bills to the Anthropic API or to the operator's
+    // Claude subscription. Say so once per backend rather than inheriting it
+    // silently; the same posture is projected onto the session as
+    // `anthropic_billing`.
+    if (!this.billingPostureLogged) {
+      this.billingPostureLogged = true;
+      const billing = describeAnthropicBilling(env);
+      this.logger(
+        billing.mode === "api_key" ? "warn" : "info",
+        `SDK session ${this.id} Anthropic billing: ${billing.mode}. ${billing.note}`,
+      );
+    }
     return env;
   }
 
@@ -1244,7 +1267,7 @@ implements
       const db = getDb();
       const model = this.options.model ?? this.extractModel(this.meta.args) ?? null;
       const thinkingEffort = this.options.thinkingEffort ?? null;
-      const permissionMode = this.options.permissionMode ?? "default";
+      const permissionMode = this.options.permissionMode ?? DEFAULT_SDK_PERMISSION_MODE;
       const maxTurns = this.options.maxTurns ?? null;
       const maxCostUsd = this.options.maxCostUsd ?? null;
       const presetIds = this.options.presetIds ?? [];

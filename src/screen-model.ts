@@ -3,6 +3,7 @@ import {
   detectClaudePermissionPrompt,
   type ClaudePermissionPrompt,
 } from "./claude-permission-patterns.js";
+import { isClaudeCommand, isClaudePtyLaneEnabled } from "./claude-lane-policy.js";
 
 const DEFAULT_SETTLE_MS = 125;
 const DEFAULT_UNKNOWN_QUIET_MS = 1_000;
@@ -43,6 +44,14 @@ export interface PtyScreenObserverOptions {
 }
 
 export function shouldEnablePtyScreenModel(meta: ConsoleSession): boolean {
+  // Issue 8aadf70 — classifying Claude Code's TUI is part of the gated
+  // local-only lane. When that lane is off the screen model must never engage
+  // for Claude, regardless of the per-session attention switches below; other
+  // providers keep their existing behaviour.
+  if (isClaudeCommand(meta.command) && !isClaudePtyLaneEnabled()) {
+    return false;
+  }
+
   const processSwitch = readBooleanSwitch(process.env.MANDIBLE_PTY_SCREEN_ATTENTION);
   if (processSwitch === false) {
     return false;

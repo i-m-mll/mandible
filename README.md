@@ -49,10 +49,39 @@ Chat History and Console Chat use a **shared message-blocks library** (`ui/src/c
 
 Embedded terminal sessions with rich agent integration:
 
-- **Operator session**: persistent shell (auto-restarted on exit)
-- **SDK sessions**: Claude agents spawned via the Claude Agent SDK with full lifecycle control, structured event streaming, permission gating, cost tracking, and conversation branching
+- **Operator session**: persistent Claude SDK session (auto-restarted on exit)
+- **Claude sessions — SDK lane (default)**: spawned via the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) with full lifecycle control, structured event streaming, real permission gating through `canUseTool`, cost tracking, and conversation branching. This is the only Claude chat lane a released build offers.
+- **Claude sessions — headless spawn lane**: the documented `claude -p --output-format stream-json` mode, used for one-shot and resumed non-interactive work
+- **Codex / Gemini sessions**: ACP lane by default (Agent Client Protocol live sessions), with a plain PTY terminal available as a CLI fallback
 - **PTY sessions**: terminal processes for Codex, Gemini, and shell commands with xterm.js rendering over WebSocket
 - **Rich chat view**: for SDK sessions, structured stream events are rendered alongside the terminal using the shared message-blocks library
+
+#### Claude PTY lane (local-only, off by default)
+
+Mandible also contains a lane that drives the interactive Claude Code CLI inside
+a Mandible-owned PTY — classifying the terminal screen, parsing permission
+prompts, and answering them with synthetic keystrokes. That is a developer
+capability for running against your own account locally, not something a
+released build ships or enables. It is gated behind the `claude_pty_lane_enabled`
+setting (or the `MANDIBLE_CLAUDE_PTY_LANE` environment variable), defaults to
+off, and while off:
+
+- creating a Claude session on the `pty` or `channel` transport lane is rejected
+  with `claude_pty_lane_disabled`, and the lane is hidden in the new-session dialog;
+- an existing Claude PTY session will not start;
+- screen classification and permission-prompt parsing never engage for Claude;
+- the development-channel launch flag is never appended.
+
+Codex, Gemini, and shell PTY sessions are unaffected.
+
+#### Anthropic billing posture
+
+Claude sessions report which credentials they will bill against. If
+`ANTHROPIC_API_KEY` (or `ANTHROPIC_AUTH_TOKEN`) is present in the daemon
+environment, the session is marked `api_key` — it bills to the Anthropic API —
+and the daemon logs a warning at spawn. Otherwise the session runs on the local
+Claude Code credentials and their subscription limits. The posture is surfaced
+on the session as `anthropic_billing` so it is never a silent inheritance.
 - **Token/context indicators**: real-time token usage and context-window fill displayed per session, with model-aware context window sizes
 
 ### Presets (Convention Management)
@@ -204,9 +233,10 @@ Mandible interacts with agents at four integration tiers:
 
 | Tier | Name | Control | Use case |
 |------|------|---------|----------|
-| 1st | SDK | Full lifecycle (start/stop/abort/resume), structured events, permissions, cost tracking | Claude sessions spawned from Console |
-| 1.5 | Channel | No lifecycle control; rich tool-mediated integration (inbox, issues, work units, auth) | `claude --channels server:mandible` |
-| 2nd | PTY | Process-level control, terminal I/O | Codex, Gemini, shell commands in Console |
+| 1st | SDK | Full lifecycle (start/stop/abort/resume), structured events, permissions, cost tracking | Claude sessions spawned from Console (the default) |
+| 1.5 | Channel | No lifecycle control; rich tool-mediated integration (inbox, issues, work units, auth) | A Claude CLI session you start yourself and connect to Mandible |
+| 2nd | ACP | Structured live sessions over Agent Client Protocol | Codex and Gemini sessions in Console (the default for both) |
+| 2nd | PTY | Process-level control, terminal I/O | Codex, Gemini, shell commands in Console. For Claude, local-only and off by default — see the Claude PTY lane note above |
 | 3rd | External | Best-effort monitoring only | Agents started from terminal |
 
 ### Key Design Decisions

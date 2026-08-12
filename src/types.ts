@@ -12,6 +12,7 @@ import type {
   ReadUserIdentity,
 } from "./identity/read-projection.js";
 import type { SessionIdentityMismatch } from "./identity/session-mismatch.js";
+import type { AnthropicBillingPosture } from "./claude-lane-policy.js";
 
 export interface SSEEvent {
   type: string;
@@ -710,6 +711,13 @@ export interface ConsoleSession {
   resume_at_message: string | null;
   /** Derived from command and is_operator. Not stored in DB. */
   agent_type: 'claude' | 'codex' | 'gemini' | 'operator' | 'shell';
+  /**
+   * Issue 8aadf70 — which Anthropic billing path a Claude session lands on
+   * (API key present in the spawn environment vs. the local Claude Code
+   * subscription credentials). Derived at read time, not stored in DB; null for
+   * non-Claude sessions.
+   */
+  anthropic_billing?: AnthropicBillingPosture | null;
   /** Bug: b5aba0e — channel-enabled PTY: launch with MCP channel server connectivity. */
   channel_enabled: boolean;
   owner_user_id: string | null;
