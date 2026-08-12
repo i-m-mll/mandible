@@ -8,9 +8,9 @@ import {
   classifyGitFailure,
   describeGitFailure,
   probeRepoRootFromGitCommonDir,
-  repoRootFromGitCommonDir,
   resolveAuthMergeExecutionContext,
 } from "../src/auth-context.js";
+import { verifyMandibleIssueReferences } from "../src/routes/auth.js";
 import type { Db } from "../src/db.js";
 import { createMigratedDb as createSharedMigratedDb } from "./helpers/ledger-fixtures.js";
 
@@ -161,7 +161,6 @@ describe("repoRootFromGitCommonDir failure honesty", () => {
     const probe = probeRepoRootFromGitCommonDir(repo);
     expect(probe.failure).toBeNull();
     expect(probe.root).toBe(repo);
-    expect(repoRootFromGitCommonDir(repo)).toBe(repo);
   });
 
   it("reports git's own answer as an exit failure outside a repository", () => {
@@ -183,6 +182,74 @@ describe("repoRootFromGitCommonDir failure honesty", () => {
     } finally {
       process.env.PATH = originalPath;
     }
+  });
+});
+
+// Issue 2205073 (review F8, residual) — the submission-time `Mandible-Issue:`
+// trailer gate was the last action-bearing caller of the lossy wrapper: it
+// refused work and named the cwd as the cause for failures that never reached
+// the repository. The gate still fails closed; only the explanation changes.
+describe("verifyMandibleIssueReferences cwd honesty", () => {
+  const merge = (cwd: string, head: string) => ({
+    type: "merge",
+    command: `mandible auth merge ${head} --into main`,
+    cwd,
+    base_branch: "main",
+    head_branch: head,
+  });
+
+  it("blames the cwd only when git itself answers that it is not a repository", () => {
+    const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "mandible-gate-norepo-")));
+    tempDirs.push(dir);
+    expect(verifyMandibleIssueReferences(merge(dir, "feature/x"))).toContain(
+      "Invalid 'cwd' for auth merge verification",
+    );
+  });
+
+  it("blames daemon health, not the cwd, when git cannot be spawned", () => {
+    const repo = createRepo();
+    const originalPath = process.env.PATH;
+    try {
+      // The cwd is a healthy repository; git simply cannot run (stands in for
+      // EMFILE/EAGAIN from daemon fd exhaustion).
+      process.env.PATH = path.join(repo, "no-such-bin");
+      const error = verifyMandibleIssueReferences(merge(repo, "feature/x")) ?? "";
+      // Still fails closed...
+      expect(error).toBeTruthy();
+      // ...but never as a claim about the path.
+      expect(error).not.toContain("Invalid 'cwd'");
+      expect(error).toContain("git could not be executed (ENOENT)");
+      expect(error).toContain("daemon health");
+      expect(error).toContain("not an invalid cwd");
+    } finally {
+      process.env.PATH = originalPath;
+    }
+  });
+
+  it("keeps refusing commits that genuinely lack a Mandible-Issue trailer", () => {
+    const repo = createRepo();
+    expect(verifyMandibleIssueReferences(merge(repo, "feature/x"))).toContain(
+      "missing Mandible-Issue references",
+    );
+  });
+
+  it("admits a branch whose commits all carry the trailer", () => {
+    const repo = createRepo();
+    git(repo, ["checkout", "-b", "feature/trailered"]);
+    fs.writeFileSync(path.join(repo, "c.txt"), "c\n");
+    git(repo, ["add", "."]);
+    git(repo, ["commit", "-m", "trailered\n\nMandible-Issue: 2205073"]);
+    git(repo, ["checkout", "main"]);
+    expect(verifyMandibleIssueReferences(merge(repo, "feature/trailered"))).toBeNull();
+  });
+
+  it("keeps the generic manual-review refusal when git answers with a non-zero exit", () => {
+    const repo = createRepo();
+    // git log exits non-zero for an absent revision: a real git answer about
+    // this history, not a daemon-health failure.
+    expect(verifyMandibleIssueReferences(merge(repo, "feature/absent"))).toBe(
+      "Mandible issue reference verification failed; manual review required.",
+    );
   });
 });
 

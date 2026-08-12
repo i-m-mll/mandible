@@ -111,20 +111,25 @@ export function classifyGitFailure(error: unknown, timeoutMs: number | null = nu
  * Issue 2205073 — a human-readable cause plus the fix that actually applies.
  * Never asserts anything about repository contents for a failure that never
  * reached the repository.
+ *
+ * `retryAction` names the operation the reader should retry. It defaults to
+ * "approval" because that is where these failures were first observed; the
+ * submission-time gates pass "submission" so the advice matches the step that
+ * actually failed.
  */
-export function describeGitFailure(failure: GitFailure): string {
+export function describeGitFailure(failure: GitFailure, retryAction: string = "approval"): string {
   const detail = failure.stderr ? ` git said: ${truncate(failure.stderr, 300)}` : "";
   switch (failure.kind) {
     case "timeout":
       return (
         `git timed out${failure.timeoutMs ? ` after ${failure.timeoutMs}ms` : ""} and never answered, ` +
-        "so this is not evidence about the repository. Retry the approval; if it keeps timing out, " +
+        `so this is not evidence about the repository. Retry the ${retryAction}; if it keeps timing out, ` +
         `check daemon health and repo load.${detail}`
       );
     case "spawn":
       return (
         `git could not be executed (${failure.errno ?? "unknown spawn failure"}), ` +
-        "so this is not evidence about the repository. Retry the approval; if it persists, check " +
+        `so this is not evidence about the repository. Retry the ${retryAction}; if it persists, check ` +
         "daemon health — process/file-descriptor exhaustion (EMFILE/EAGAIN/ENOMEM) is the usual cause." +
         detail
       );
@@ -278,14 +283,16 @@ export function probeRepoRootFromGitCommonDir(cwd: string): RepoRootProbe {
   }
 }
 
-/**
- * Best-effort form for callers that only enrich optional metadata from a cwd
- * (repo-name backfill at submission). Anything that refuses work on the answer
- * must use `probeRepoRootFromGitCommonDir` and report the failure honestly.
+/*
+ * Issue 2205073 (review F8, residual) — the `repoRootFromGitCommonDir(cwd):
+ * string | null` convenience wrapper that used to live here is gone. It was a
+ * footgun with exactly one honest use (best-effort metadata enrichment) and one
+ * dishonest one: the submission-time issue-reference gate called it and read
+ * every null as "invalid cwd", which is a claim about the path that a timeout
+ * or a spawn errno never supports. Callers that only enrich metadata now read
+ * `probeRepoRootFromGitCommonDir(cwd).root` explicitly, which keeps the
+ * discarded failure visible at the call site.
  */
-export function repoRootFromGitCommonDir(cwd: string): string | null {
-  return probeRepoRootFromGitCommonDir(cwd).root;
-}
 
 export function resolveAuthMergeExecutionContext(
   db: Db,
