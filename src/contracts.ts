@@ -163,6 +163,8 @@ export type AuthRequest = {
   cwd: string | null;
   diff_summary: string | null;
   commit_message: string | null;
+  /** Issue 7d64d8f — SHA-256 of the canonical change message bytes, or null. */
+  commit_message_digest?: string | null;
   spec_content: string | null;
   repo?: string;
   base_branch?: string;

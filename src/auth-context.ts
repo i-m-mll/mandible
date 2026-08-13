@@ -29,13 +29,15 @@ export interface AuthMergeReviewMetadata {
   additions?: number;
   deletions?: number;
   diffSummary?: string;
-  commitMessage?: string;
 }
 
+// Issue 7d64d8f — there is deliberately no `commitMessage` here any more. The
+// merge message is either an agent-authored canonical change message supplied
+// with the request, or nothing at all; the daemon no longer synthesizes a
+// `git log --format="- %s"` bullet dump as a stand-in.
 export interface AuthMergeReviewMetadataOptions {
   counts?: boolean;
   diffSummary?: boolean;
-  commitMessage?: boolean;
 }
 
 export class AuthExecutionContextError extends Error {
@@ -355,7 +357,6 @@ export async function computeAuthMergeReviewMetadata(
   options: AuthMergeReviewMetadataOptions = {
     counts: true,
     diffSummary: true,
-    commitMessage: true,
   }
 ): Promise<AuthMergeReviewMetadata> {
   const range = `refs/heads/${baseBranch}..refs/heads/${headBranch}`;
@@ -376,16 +377,6 @@ export async function computeAuthMergeReviewMetadata(
 
   if (options.diffSummary !== false) {
     metadata.diffSummary = await readBoundedDiffPreview(repoRoot, range);
-  }
-
-  if (options.commitMessage !== false) {
-    metadata.commitMessage =
-      execFileSync("git", ["log", "--format=- %s", "-20", range], {
-        cwd: repoRoot,
-        encoding: "utf-8",
-        timeout: 10000,
-        env: authGitEnv(),
-      }).trim() || `Merge ${headBranch}`;
   }
 
   return metadata;

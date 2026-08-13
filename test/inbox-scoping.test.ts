@@ -1360,7 +1360,11 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(request?.deletions).toBe(0);
       expect(request?.diff_summary).toContain("diff --git");
       expect(request?.diff_summary).toContain("+feature");
-      expect(request?.commit_message).toBe("- typed trailer");
+      // Issue 7d64d8f — the daemon no longer synthesizes a git-log bullet
+      // dump as a stand-in merge message; absent an agent-authored
+      // canonical change message the request carries none.
+      expect(request?.commit_message).toBeNull();
+      expect(request?.commit_message_digest).toBeNull();
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1397,7 +1401,11 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(request?.additions).toBe(1);
       expect(request?.deletions).toBe(0);
       expect(request?.diff_summary).toContain("README.md");
-      expect(request?.commit_message).toBe("- typed trailer");
+      // Issue 7d64d8f — the daemon no longer synthesizes a git-log bullet
+      // dump as a stand-in merge message; absent an agent-authored
+      // canonical change message the request carries none.
+      expect(request?.commit_message).toBeNull();
+      expect(request?.commit_message_digest).toBeNull();
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
@@ -1511,7 +1519,11 @@ describe("auth route accepts target_session_id / target_repo_root from CLI", () 
       expect(request?.diff_summary).toContain("diff --git");
       expect(request?.diff_summary).toContain("[truncated: diff preview exceeded 102400 bytes]");
       expect(request?.diff_summary?.length).toBeLessThan(110000);
-      expect(request?.commit_message).toBe("- typed trailer");
+      // Issue 7d64d8f — the daemon no longer synthesizes a git-log bullet
+      // dump as a stand-in merge message; absent an agent-authored
+      // canonical change message the request carries none.
+      expect(request?.commit_message).toBeNull();
+      expect(request?.commit_message_digest).toBeNull();
       db.close();
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
