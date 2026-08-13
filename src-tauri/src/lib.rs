@@ -195,7 +195,7 @@ fn discard_spent_proof(path: &Path) {
 fn enrollment_precheck(app: &AppHandle) -> Result<(), String> {
     app.get_webview_window("main")
         .ok_or_else(|| "desktop main window is unavailable".to_string())?;
-    verify_same_user_daemon(app)
+    verify_same_user_daemon()
 }
 
 /// Navigate the bundled desktop shell to an enrolled dashboard without ever
@@ -664,7 +664,7 @@ fn navigate_to_enrolled_dashboard(app: &AppHandle, token: &str, route: &str) -> 
         .map_err(|error| format!("failed to navigate to enrolled dashboard: {error}"))
 }
 
-fn verify_same_user_daemon(app: &AppHandle) -> Result<(), String> {
+fn verify_same_user_daemon() -> Result<(), String> {
     let pid = read_pid_file(pid_file_path())
         .ok_or_else(|| "refusing desktop enrollment without a daemon pid file".to_string())?;
     if !process_alive(pid) || !check_health(daemon_port()) {
@@ -690,21 +690,13 @@ fn verify_same_user_daemon(app: &AppHandle) -> Result<(), String> {
             );
         }
 
-        let expected_entry = resolve_daemon_entry(app)?
-            .canonicalize()
-            .map_err(|error| format!("failed to canonicalize daemon entry: {error}"))?;
-        let daemon_command = Command::new("ps")
-            .args(["-p", &pid.to_string(), "-o", "command="])
-            .output()
-            .map_err(|error| format!("failed to inspect daemon command: {error}"))?;
-        let command = String::from_utf8_lossy(&daemon_command.stdout);
-        if !daemon_command.status.success()
-            || !command.contains(&expected_entry.display().to_string())
-        {
-            return Err(
-                "refusing desktop enrollment for an unexpected listener process".to_string(),
-            );
-        }
+        // Do not compare the daemon command with a path derived from
+        // CARGO_MANIFEST_DIR. Release bundles may be built in disposable
+        // worktrees, and coupling enrollment to that build checkout makes the
+        // installed app fail as soon as the worktree disappears. The security
+        // boundary here is the OS user: a same-uid process can already read the
+        // same login Keychain item and user-owned Mandible state, while the uid
+        // comparison above still refuses a listener owned by another user.
     }
     Ok(())
 }

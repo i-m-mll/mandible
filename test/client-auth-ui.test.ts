@@ -100,8 +100,9 @@ describe("dashboard client-auth enrollment", () => {
     expect(bootstrap).not.toContain("mandible_auth=");
     expect(rust).toContain("CLIENT_AUTH_BOOTSTRAP_CONSUMED.swap(true");
     expect(rust).toContain("fn enrollment_precheck(app: &AppHandle)");
-    expect(rust).toContain("verify_same_user_daemon(app)");
-    expect(rust).toContain("refusing desktop enrollment for an unexpected listener process");
+    expect(rust).toContain("verify_same_user_daemon()");
+    expect(rust).toContain("refusing desktop enrollment for a daemon owned by another user");
+    expect(rust).not.toContain("let expected_entry = resolve_daemon_entry(app)?");
     expect(rust).toContain("window.location.replace({encoded})");
     // The bootstrap path passes no route, so this still resolves to `#/?mandible_auth=`
     // (see normalize_enrollment_route); the keychain path reuses the same builder.
