@@ -23,8 +23,17 @@ import type {
 
 export type { AuthHookExecutionResult };
 
-// Maximum time for a single hook execution (5 minutes).
-const HOOK_TIMEOUT_MS = 5 * 60 * 1000;
+// Most hooks should finish quickly. The built-in Mandible hook may perform a
+// cold Rust/Tauri release build after native changes, so it gets a deliberate
+// longer ceiling instead of being killed halfway through bundle production.
+const DEFAULT_HOOK_TIMEOUT_MS = 5 * 60 * 1000;
+const MANDIBLE_REBUILD_HOOK_TIMEOUT_MS = 30 * 60 * 1000;
+
+export function authHookTimeoutMs(hookId: string): number {
+  return hookId === "builtin-mandible-rebuild"
+    ? MANDIBLE_REBUILD_HOOK_TIMEOUT_MS
+    : DEFAULT_HOOK_TIMEOUT_MS;
+}
 
 export class AuthHookManager {
   private readonly db: Db;
@@ -88,6 +97,7 @@ export class AuthHookManager {
   ): Promise<AuthHookExecutionResult> {
     const startedAt = Date.now();
     const cwd = request.cwd ?? undefined;
+    const timeoutMs = authHookTimeoutMs(hook.id);
 
     return new Promise<AuthHookExecutionResult>((resolve) => {
       let output = "";
@@ -119,10 +129,10 @@ export class AuthHookManager {
           hook_id: hook.id,
           label: hook.label,
           exit_code: null,
-          output: output + "\n[hook timed out after " + (HOOK_TIMEOUT_MS / 1000) + "s]",
+          output: output + "\n[hook timed out after " + (timeoutMs / 1000) + "s]",
           duration_ms: Date.now() - startedAt,
         });
-      }, HOOK_TIMEOUT_MS);
+      }, timeoutMs);
 
       const handleChunk = (data: Buffer): void => {
         const text = data.toString("utf8");
