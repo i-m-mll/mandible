@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "identifier": "bio.mll.mandible",
   "build": {
-    "frontendDist": "../dist",
+    "frontendDist": "dist",
     "beforeDevCommand": "scripts/make-dist.sh",
     "beforeBuildCommand": "scripts/make-dist.sh"
   },

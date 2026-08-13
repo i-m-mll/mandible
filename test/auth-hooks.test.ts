@@ -1,7 +1,7 @@
 import Database from "better-sqlite3";
 import { describe, expect, it } from "vitest";
 
-import { AuthHookManager } from "../src/auth-hooks.js";
+import { AuthHookManager, authHookTimeoutMs } from "../src/auth-hooks.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { migrate } from "../src/db.js";
 import type { AuthRequest } from "../src/types.js";
@@ -15,6 +15,11 @@ function createDbWithHooks(): InstanceType<typeof Database> {
 }
 
 describe("AuthHookManager", () => {
+  it("allows the native Mandible rebuild hook to finish a cold release build", () => {
+    expect(authHookTimeoutMs("builtin-mandible-rebuild")).toBe(30 * 60 * 1000);
+    expect(authHookTimeoutMs("custom-hook")).toBe(5 * 60 * 1000);
+  });
+
   it("lists hooks including built-in", () => {
     const db = createDbWithHooks();
     const manager = new AuthHookManager(db);

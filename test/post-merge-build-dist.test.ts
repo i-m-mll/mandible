@@ -11,6 +11,7 @@ type HookResult = {
   stderr: string;
   home: string;
   tracePath: string;
+  desktopTracePath: string;
 };
 
 function copyCliFile(name: string, destDir: string): void {
@@ -34,6 +35,7 @@ function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult
   const home = path.join(tempDir, "home");
   const cliDir = path.join(repo, "cli");
   const tracePath = path.join(tempDir, "trace");
+  const desktopTracePath = path.join(tempDir, "desktop-trace");
   fs.mkdirSync(cliDir, { recursive: true });
   fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
   fs.writeFileSync(path.join(home, ".codex", "AGENTS.md"), "# Codex\n\nLocal policy.\n", "utf8");
@@ -54,7 +56,11 @@ function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult
 
   const changedFile = path.join(repo, changedPath);
   fs.mkdirSync(path.dirname(changedFile), { recursive: true });
-  fs.appendFileSync(changedFile, "\n", "utf8");
+  if (changedPath === "package.json") {
+    fs.writeFileSync(changedFile, '{"name":"post-merge-test","private":true}\n', "utf8");
+  } else {
+    fs.appendFileSync(changedFile, "\n", "utf8");
+  }
   runGit(repo, ["add", changedPath]);
   runGit(repo, ["commit", "-m", `change ${changedPath}`]);
   runGit(repo, ["checkout", "main"]);
@@ -87,12 +93,15 @@ exec "$REAL_GIT" "$@"
       ...hookEnv,
       HOME: home,
       MANDIBLE_POST_MERGE_BUILD_COMMAND: 'printf "build\\n" >> "$MANDIBLE_TEST_TRACE"',
+      MANDIBLE_POST_MERGE_DESKTOP_COMMAND:
+        'printf "desktop\\n" >> "$MANDIBLE_TEST_DESKTOP_TRACE"',
       MANDIBLE_TEST_TRACE: tracePath,
+      MANDIBLE_TEST_DESKTOP_TRACE: desktopTracePath,
       NODE_PATH: path.join(process.cwd(), "node_modules"),
     },
   });
 
-  return { status: result.status, stderr: result.stderr, home, tracePath };
+  return { status: result.status, stderr: result.stderr, home, tracePath, desktopTracePath };
 }
 
 afterEach(() => {
@@ -110,8 +119,10 @@ describe("post-merge build hook", () => {
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");
       expect(result.stderr).not.toContain("[post-merge-build] generated local build artifacts");
+      expect(result.stderr).toContain("no native desktop changes detected");
       expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
       expect(fs.existsSync(result.tracePath)).toBe(false);
+      expect(fs.existsSync(result.desktopTracePath)).toBe(false);
 
       const claudeTarget = path.join(result.home, ".claude", "CLAUDE.md");
       const codexTarget = path.join(result.home, ".codex", "AGENTS.md");
@@ -123,14 +134,16 @@ describe("post-merge build hook", () => {
   );
 
   it(
-    "builds and installs instructions after a source-changing merge",
+    "builds local artifacts and installs instructions after a source-changing merge",
     () => {
       const result = runHookAfterMerge("src/index.ts");
 
       expect(result.status).toBe(0);
       expect(result.stderr).toContain("[post-merge-build] generated local build artifacts");
+      expect(result.stderr).toContain("no native desktop changes detected");
       expect(result.stderr).toContain("[post-merge-build] installed managed instruction fragments");
       expect(fs.readFileSync(result.tracePath, "utf8")).toBe("build\n");
+      expect(fs.existsSync(result.desktopTracePath)).toBe(false);
       expect(fs.readFileSync(path.join(result.home, ".claude", "CLAUDE.md"), "utf8")).toContain(
         "Mandible Interface Contract",
       );
@@ -138,14 +151,34 @@ describe("post-merge build hook", () => {
     15_000,
   );
 
+  it("deploys the desktop bundle after a native-only source merge", () => {
+    const result = runHookAfterMerge("src-tauri/src/lib.rs");
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("no Mandible source changes detected");
+    expect(result.stderr).toContain("installed native desktop bundle");
+    expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
+  });
+
+  it("runs both build paths after a shared dependency merge", () => {
+    const result = runHookAfterMerge("package.json");
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(fs.readFileSync(result.tracePath, "utf8")).toBe("build\n");
+    expect(fs.readFileSync(result.desktopTracePath, "utf8")).toBe("desktop\n");
+  });
+
   it("does nothing after an unrelated merge", () => {
     const result = runHookAfterMerge("docs/note.md");
 
     expect(result.status).toBe(0);
     expect(result.stderr).toContain("[post-merge-build] no Mandible source changes detected; skipping build");
     expect(result.stderr).not.toContain("[post-merge-build] generated local build artifacts");
+    expect(result.stderr).toContain("no native desktop changes detected");
     expect(result.stderr).not.toContain("[post-merge-build] installed managed instruction fragments");
     expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.existsSync(result.desktopTracePath)).toBe(false);
     expect(fs.existsSync(path.join(result.home, ".claude", "CLAUDE.md"))).toBe(false);
   });
 
@@ -157,5 +190,6 @@ describe("post-merge build hook", () => {
     expect(result.stderr).not.toContain("skipping build");
     expect(result.stderr).not.toContain("installed managed instruction fragments");
     expect(fs.existsSync(result.tracePath)).toBe(false);
+    expect(fs.existsSync(result.desktopTracePath)).toBe(false);
   });
 });

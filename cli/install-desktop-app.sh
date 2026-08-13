@@ -1,0 +1,214 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+err() {
+  printf '%s\n' "$*" >&2
+}
+
+pgrep_command="${MANDIBLE_DESKTOP_PGREP:-/usr/bin/pgrep}"
+ps_command="${MANDIBLE_DESKTOP_PS:-/bin/ps}"
+kill_command="${MANDIBLE_DESKTOP_KILL:-/bin/kill}"
+open_command="${MANDIBLE_DESKTOP_OPEN:-/usr/bin/open}"
+sleep_command="${MANDIBLE_DESKTOP_SLEEP:-sleep}"
+
+matching_installed_pids() {
+  local install_path="$1"
+  local executable_name="$2"
+  local expected_command="${install_path}/Contents/MacOS/${executable_name}"
+  local pid command
+
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    command="$($ps_command -ww -p "$pid" -o command= 2>/dev/null || true)"
+    case "$command" in
+      "$expected_command"|"$expected_command "*) printf '%s\n' "$pid" ;;
+    esac
+  done < <("$pgrep_command" -x "$executable_name" 2>/dev/null || true)
+}
+
+relaunch_installed_app() {
+  local install_path="$1"
+  local executable_name="$2"
+  local delay_seconds="$3"
+
+  "$sleep_command" "$delay_seconds"
+
+  local attempt pid pids
+  pids="$(matching_installed_pids "$install_path" "$executable_name")"
+  if [[ -n "$pids" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && "$kill_command" -TERM "$pid" >/dev/null 2>&1 || true
+    done <<<"$pids"
+  fi
+
+  for attempt in {1..20}; do
+    pids="$(matching_installed_pids "$install_path" "$executable_name")"
+    if [[ -z "$pids" ]]; then
+      break
+    fi
+    "$sleep_command" 0.25
+  done
+  if [[ -n "$pids" ]]; then
+    while IFS= read -r pid; do
+      [[ -n "$pid" ]] && "$kill_command" -KILL "$pid" >/dev/null 2>&1 || true
+    done <<<"$pids"
+  fi
+
+  "$open_command" -n "$install_path"
+}
+
+if [[ "${1:-}" == "--relaunch" ]]; then
+  shift
+  if [[ "$#" -ne 3 ]]; then
+    err "usage: $0 --relaunch <app-path> <executable> <delay-seconds>"
+    exit 2
+  fi
+  relaunch_installed_app "$@"
+  exit 0
+fi
+
+platform="${MANDIBLE_DESKTOP_PLATFORM:-$(uname -s)}"
+if [[ "$platform" != "Darwin" ]]; then
+  err "[desktop-install] native desktop deployment is macOS-only; skipping on ${platform}"
+  exit 0
+fi
+
+GIT_ENV_HELPER="${MANDIBLE_CLI_DIR:-$(cd "$(dirname "$0")" && pwd)}/git-env.sh"
+if [[ -f "$GIT_ENV_HELPER" ]]; then
+  source "$GIT_ENV_HELPER"
+else
+  export GIT_OPTIONAL_LOCKS=0
+fi
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"
+cd "$repo_root"
+
+dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-npm install --ignore-scripts --no-audit --no-fund}"
+build_command="${MANDIBLE_DESKTOP_BUILD_COMMAND:-npm run tauri:build -- --bundles app}"
+built_app="${MANDIBLE_DESKTOP_BUNDLE_PATH:-$repo_root/src-tauri/target/release/bundle/macos/Mandible.app}"
+install_app="${MANDIBLE_DESKTOP_INSTALL_PATH:-/Applications/Mandible.app}"
+backup_dir="${MANDIBLE_DESKTOP_BACKUP_DIR:-${HOME}/Library/Application Support/Mandible/app-backups}"
+expected_bundle_id="${MANDIBLE_DESKTOP_BUNDLE_ID:-bio.mll.mandible}"
+expected_executable="${MANDIBLE_DESKTOP_EXECUTABLE:-mandible-app}"
+codesign_command="${MANDIBLE_DESKTOP_CODESIGN:-/usr/bin/codesign}"
+ditto_command="${MANDIBLE_DESKTOP_DITTO:-/usr/bin/ditto}"
+plist_command="${MANDIBLE_DESKTOP_PLISTBUDDY:-/usr/libexec/PlistBuddy}"
+
+case "$install_app" in
+  /*.app) ;;
+  *)
+    err "[desktop-install] install target must be an absolute .app path: ${install_app}"
+    exit 2
+    ;;
+esac
+
+validate_bundle() {
+  local app_path="$1"
+  local label="$2"
+  local info_plist="$app_path/Contents/Info.plist"
+
+  if [[ ! -d "$app_path" || ! -f "$info_plist" ]]; then
+    err "[desktop-install] ${label} is not a complete app bundle: ${app_path}"
+    return 1
+  fi
+
+  local actual_bundle_id actual_executable
+  actual_bundle_id="$($plist_command -c 'Print :CFBundleIdentifier' "$info_plist" 2>/dev/null)" || {
+    err "[desktop-install] ${label} has no readable CFBundleIdentifier"
+    return 1
+  }
+  actual_executable="$($plist_command -c 'Print :CFBundleExecutable' "$info_plist" 2>/dev/null)" || {
+    err "[desktop-install] ${label} has no readable CFBundleExecutable"
+    return 1
+  }
+  if [[ "$actual_bundle_id" != "$expected_bundle_id" ]]; then
+    err "[desktop-install] ${label} bundle id ${actual_bundle_id} does not match ${expected_bundle_id}"
+    return 1
+  fi
+  if [[ "$actual_executable" != "$expected_executable" ]]; then
+    err "[desktop-install] ${label} executable ${actual_executable} does not match ${expected_executable}"
+    return 1
+  fi
+  if [[ ! -x "$app_path/Contents/MacOS/$actual_executable" ]]; then
+    err "[desktop-install] ${label} executable is missing or not executable"
+    return 1
+  fi
+  if ! "$codesign_command" --verify --deep --strict "$app_path" >/dev/null 2>&1; then
+    err "[desktop-install] ${label} failed code-signature verification"
+    return 1
+  fi
+}
+
+err "[desktop-install] aligning dependencies from package-lock.json"
+bash -lc "$dependency_command"
+err "[desktop-install] running: ${build_command}"
+bash -lc "$build_command"
+validate_bundle "$built_app" "built app"
+
+install_parent="$(dirname "$install_app")"
+mkdir -p "$install_parent" "$backup_dir"
+staging_app="${install_parent}/.$(basename "$install_app").install.$$"
+rollback_app="${install_parent}/.$(basename "$install_app").rollback.$$"
+backup_app=""
+new_bundle_moved=false
+
+cleanup_install_paths() {
+  local status=$?
+  trap - EXIT
+  if [[ "$status" -ne 0 && "$new_bundle_moved" == "true" && -e "$install_app" ]]; then
+    rm -rf -- "$install_app"
+  fi
+  if [[ "$status" -ne 0 && -d "$rollback_app" ]]; then
+    mv "$rollback_app" "$install_app" || true
+  fi
+  if [[ -e "$staging_app" ]]; then
+    rm -rf -- "$staging_app"
+  fi
+  if [[ "$status" -eq 0 && -e "$rollback_app" ]]; then
+    rm -rf -- "$rollback_app"
+  fi
+  exit "$status"
+}
+trap cleanup_install_paths EXIT
+
+"$ditto_command" "$built_app" "$staging_app"
+validate_bundle "$staging_app" "staged app"
+
+was_running=false
+if [[ "${MANDIBLE_DESKTOP_ASSUME_RUNNING:-}" == "1" ]] \
+  || [[ -n "$(matching_installed_pids "$install_app" "$expected_executable")" ]]; then
+  was_running=true
+fi
+
+if [[ -d "$install_app" ]]; then
+  backup_stamp="${MANDIBLE_DESKTOP_BACKUP_STAMP:-$(date '+%Y%m%dT%H%M%S')}"
+  backup_app="${backup_dir}/Mandible-${backup_stamp}-$$.app"
+  "$ditto_command" "$install_app" "$backup_app"
+  validate_bundle "$backup_app" "backup app"
+  mv "$install_app" "$rollback_app"
+fi
+
+mv "$staging_app" "$install_app"
+new_bundle_moved=true
+validate_bundle "$install_app" "installed app"
+
+if [[ -n "$backup_app" ]]; then
+  err "[desktop-install] installed ${install_app}; previous bundle preserved at ${backup_app}"
+else
+  err "[desktop-install] installed ${install_app}"
+fi
+
+if [[ "$was_running" == "true" ]]; then
+  if [[ -n "${MANDIBLE_DESKTOP_RELAUNCH_COMMAND:-}" ]]; then
+    bash -lc "$MANDIBLE_DESKTOP_RELAUNCH_COMMAND"
+  else
+    relaunch_log_dir="${HOME}/Library/Logs/Mandible"
+    mkdir -p "$relaunch_log_dir"
+    nohup bash "$repo_root/cli/install-desktop-app.sh" --relaunch \
+      "$install_app" "$expected_executable" \
+      "${MANDIBLE_DESKTOP_RELAUNCH_DELAY_SECONDS:-4}" \
+      >>"$relaunch_log_dir/desktop-relaunch.log" 2>&1 </dev/null &
+  fi
+  err "[desktop-install] scheduled restart of the running desktop shell"
+fi
