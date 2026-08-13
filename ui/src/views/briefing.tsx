@@ -7,22 +7,24 @@
 //  1. DETERMINISTIC FACTS FIRST. The source-health strip is rendered above
 //     anything a model wrote, from batch/ingest facts only. It is nearly
 //     invisible when every source is current and auto-expands when it is not.
-//     "No findings" while a collector failed is NOT a successful empty
+//     "No findings" while a collector went silent is NOT a successful empty
 //     briefing, and the empty state says so in those words.
-//  2. MODEL OUTPUT IS LABELLED AND UNTRUSTED. The digest headline carries an
-//     explicit agent-generated label. Every model-derived string (`title`,
-//     `why_notable`, `refs`) is rendered as a text node — never as HTML — and a
-//     ref becomes a link only when it is an http(s) URL or a recognized
-//     internal resource ref (ui/src/resource-refs.ts). Anything else renders as
-//     inert text.
+//  2. MODEL OUTPUT IS LABELLED AND UNTRUSTED. Every model-derived string
+//     (`title`, `why_notable`, `refs`) is rendered as a text node — never as
+//     HTML — and a ref becomes a link only when it is an http(s) URL or a
+//     recognized internal resource ref (ui/src/resource-refs.ts). Anything else
+//     renders as inert text.
 //  3. JUDGING IS CHEAP AND REVERSIBLE. j/k moves, y keeps, n dismisses, u
 //     undoes; every decision raises an undo toast. Judged items leave the
 //     default view immediately and stay reachable behind the Judged filter.
 //
-// Server contract: "Briefing pilot — integration contract v1" §4, implemented
-// by lane ce22a3a. This view is a pure client of the queue/history/decision/
-// comment routes and of the server-authoritative `briefing` badge count; it
-// never derives the badge itself.
+// Server contract: src/contracts.ts (`BriefingQueueResponse` and friends),
+// implemented by src/routes/briefing.ts. This view renders ONLY what that
+// contract carries (issue 223d090): there is no agent-written digest headline
+// and no cost figure anywhere in the pipeline, so the page does not reserve a
+// permanent apology for either. It is a pure client of the queue/history/
+// decision/comment routes and of the server-authoritative `briefing` badge
+// count; it never derives the badge itself.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
@@ -31,7 +33,6 @@ import {
   getBriefingQueue,
   postBriefingComment,
   postBriefingDecision,
-  type BriefingCommentResult,
   type BriefingHistory,
   type BriefingJudgeAction,
   type BriefingQueue,
@@ -123,6 +124,16 @@ export function formatBriefingAge(timestampMs: number | null, now: number): stri
   return `${Math.floor(days / 30)}mo ago`;
 }
 
+/**
+ * Age of a source's last ingest batch. The server measures the age itself at
+ * response time (`last_ingest_age_ms`), so prefer it over the client clock and
+ * fall back to the raw timestamp only when the server did not report one.
+ */
+export function formatSourceIngestAge(source: BriefingSourceHealth, now: number): string {
+  if (source.last_ingest_age_ms !== null) return formatBriefingAge(now - source.last_ingest_age_ms, now);
+  return formatBriefingAge(source.last_ingested_at, now);
+}
+
 function parseTimestamp(value: string | number | null): number | null {
   if (value === null) return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -142,7 +153,6 @@ function shortHash(value: string, length = 12): string {
 const SOURCE_STATUS_LABEL: Record<BriefingSourceStatus, string> = {
   current: 'current',
   stale: 'stale',
-  failed: 'failed',
   unknown: 'unknown',
 };
 
@@ -231,32 +241,29 @@ export function BriefingRef({ value }: { value: string }): JSX.Element {
 export type BriefingHealthSummary = {
   current: number;
   stale: number;
-  failed: number;
   unknown: number;
   healthy: boolean;
 };
 
 /** Deterministic roll-up of the per-source health rows. No model input. */
 export function summarizeBriefingHealth(sources: BriefingSourceHealth[]): BriefingHealthSummary {
-  const summary = { current: 0, stale: 0, failed: 0, unknown: 0 };
+  const summary = { current: 0, stale: 0, unknown: 0 };
   for (const source of sources) summary[source.status] += 1;
   return {
     ...summary,
-    healthy: sources.length > 0 && summary.stale === 0 && summary.failed === 0 && summary.unknown === 0,
+    healthy: sources.length > 0 && summary.stale === 0 && summary.unknown === 0,
   };
 }
 
 function BriefingHealthStrip({
   sources,
   summary,
-  cost,
   open,
   loading,
   onToggle,
 }: {
   sources: BriefingSourceHealth[];
   summary: BriefingHealthSummary;
-  cost: BriefingQueue['cost'];
   open: boolean;
   loading: boolean;
   onToggle(): void;
@@ -267,11 +274,9 @@ function BriefingHealthStrip({
   // in flight the strip stays neutral rather than flashing a false verdict.
   const state = loading
     ? 'loading'
-    : summary.failed > 0
-      ? 'failed'
-      : summary.stale > 0 || summary.unknown > 0 || sources.length === 0
-        ? 'degraded'
-        : 'healthy';
+    : summary.stale > 0 || summary.unknown > 0 || sources.length === 0
+      ? 'degraded'
+      : 'healthy';
   return (
     <section
       className={`briefing-health briefing-health--${state}`}
@@ -302,21 +307,11 @@ function BriefingHealthStrip({
               {summary.stale} stale
             </span>
           ) : null}
-          {summary.failed > 0 ? (
-            <span className="briefing-health__count briefing-health__count--failed">
-              {summary.failed} failed
-            </span>
-          ) : null}
           {summary.unknown > 0 ? (
             <span className="briefing-health__count briefing-health__count--unknown">
               {summary.unknown} unknown
             </span>
           ) : null}
-        </span>
-        <span className="briefing-health__cost">
-          {cost && cost.amount_usd !== null
-            ? `$${cost.amount_usd.toFixed(2)}${cost.window_label ? ` · ${cost.window_label}` : ''}`
-            : 'cost not reported'}
         </span>
       </div>
       {open ? (
@@ -331,50 +326,34 @@ function BriefingHealthStrip({
               key={source.source}
               className={`briefing-health__row briefing-health__row--${source.status}`}
             >
-              <span className="briefing-health__source">{source.source}</span>
+              <span
+                className="briefing-health__source"
+                title={source.last_task_identity ?? undefined}
+              >
+                {source.source}
+              </span>
               <span className={`briefing-chip briefing-chip--${source.status}`}>
                 {SOURCE_STATUS_LABEL[source.status]}
               </span>
               <span className="briefing-health__meta">
-                last ingest {formatBriefingAge(source.last_ingest_at, now)}
+                last ingest {formatSourceIngestAge(source, now)}
               </span>
-              <span className="briefing-health__meta">
-                run {source.last_run_status ?? 'unreported'}
-              </span>
+              {source.last_digest_version !== null ? (
+                <span className="briefing-health__meta">
+                  digest v{source.last_digest_version}
+                </span>
+              ) : null}
+              {source.last_batch_item_count !== null ? (
+                <span className="briefing-health__meta">
+                  {source.last_batch_item_count} in last batch
+                </span>
+              ) : null}
               {source.pending_count !== null ? (
                 <span className="briefing-health__meta">{source.pending_count} pending</span>
               ) : null}
             </li>
           ))}
         </ul>
-      ) : null}
-    </section>
-  );
-}
-
-// --- digest headline ---------------------------------------------------------
-
-function BriefingDigestHeadline({ digest }: { digest: BriefingQueue['digest'] }): JSX.Element {
-  return (
-    <section className="briefing-digest" data-testid="briefing-digest" aria-label="Digest headline">
-      <span className="briefing-digest__label">Agent-generated summary</span>
-      {digest && digest.headline ? (
-        <p className="briefing-digest__text">{digest.headline}</p>
-      ) : (
-        <p className="briefing-digest__text briefing-digest__text--absent">
-          No agent-generated headline was published for this briefing.
-        </p>
-      )}
-      {digest && digest.series_ref ? (
-        <p className="briefing-digest__provenance">
-          <BriefingRef
-            value={
-              digest.version !== null
-                ? `${digest.series_ref}@${digest.version}`
-                : digest.series_ref
-            }
-          />
-        </p>
       ) : null}
     </section>
   );
@@ -505,35 +484,28 @@ function BriefingRowDetail({
         <h4 className="briefing-detail__heading">
           Occurrences ({item.occurrences.count})
         </h4>
+        {/*
+          The history route carries revisions, decisions, and comments — not
+          per-occurrence rows. The occurrence facts come from the queue entry's
+          aggregate (contract `BriefingOccurrenceStats`), which is what the
+          server actually computes.
+        */}
+        <ul className="briefing-detail__occurrences">
+          <li>
+            <span className="briefing-detail__occurrence-when">
+              first seen {formatBriefingAge(item.occurrences.first_seen_at, Date.now())}
+            </span>
+            <span className="briefing-detail__occurrence-when">
+              last seen {formatBriefingAge(item.occurrences.last_seen_at, Date.now())}
+            </span>
+          </li>
+        </ul>
         {historyLoading ? (
           <LoadingSkeleton variant="detail" label="Loading occurrence history" />
         ) : historyError ? (
           <p className="briefing-detail__error">History unavailable: {historyError}</p>
-        ) : history && !history.available ? (
-          <p className="briefing-detail__error">
-            History unavailable{history.reason ? `: ${history.reason}` : '.'}
-          </p>
         ) : history ? (
           <>
-            <ul className="briefing-detail__occurrences">
-              {history.occurrences.length === 0 ? (
-                <li className="briefing-detail__empty">
-                  No individual occurrence rows were returned.
-                </li>
-              ) : null}
-              {history.occurrences.map((occurrence) => (
-                <li key={occurrence.id}>
-                  <span className="briefing-detail__occurrence-when">
-                    {formatBriefingAge(occurrence.seen_at, Date.now())}
-                  </span>
-                  {occurrence.digest_version !== null ? (
-                    <span className="briefing-chip briefing-chip--provenance">
-                      digest v{occurrence.digest_version}
-                    </span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
             {history.revisions.length > 1 ? (
               <p className="briefing-detail__note">
                 {history.revisions.length} revisions — new evidence re-pends a candidate once.
@@ -833,7 +805,7 @@ export function BriefingView({
   const judgedIds = useMemo(() => new Set(judged.map((entry) => entry.item.candidate_id)), [judged]);
 
   const pendingItems = useMemo(() => {
-    const items = queue.data?.items ?? [];
+    const items = queue.data?.candidates ?? [];
     // A judged item leaves the default view immediately, before the next poll
     // confirms it server-side.
     const visible = items.filter((item) => !judgedIds.has(item.candidate_id));
@@ -853,10 +825,10 @@ export function BriefingView({
     [pendingItems],
   );
 
-  // Honest truncation: count against the server's pending total when it is
-  // larger than what this page received, so a server-side cap is still visible.
-  const serverPending = queue.data?.total_pending ?? pendingItems.length;
-  const totalPending = Math.max(serverPending - judged.length, pendingItems.length);
+  // Honest truncation: the queue route returns every pending candidate, so the
+  // page's own list IS the pending total. Truncation is a display cap only, and
+  // the note counts exactly what this page is hiding.
+  const totalPending = pendingItems.length;
   const hiddenPending = Math.max(totalPending - visibleItems.length, 0);
 
   const groups = useMemo(() => {
@@ -934,8 +906,8 @@ export function BriefingView({
 
   const comment = useCallback(async (candidateId: string, body: string) => {
     if (!operationalMutationsAllowed) return;
-    const result: BriefingCommentResult = await postBriefingComment(candidateId, body);
-    if (!result.ok) throw new Error('The comment was not accepted.');
+    // A rejected comment throws out of the client; reaching here means it landed.
+    await postBriefingComment(candidateId, body);
     history.refresh();
   }, [operationalMutationsAllowed, history]);
 
@@ -1022,8 +994,7 @@ export function BriefingView({
     toggleExpand,
   ]);
 
-  const queueUnavailable = queue.data !== null && !queue.data.available;
-  const sourcesDegraded = healthSummary.failed > 0 || healthSummary.stale > 0 || healthSummary.unknown > 0;
+  const sourcesDegraded = healthSummary.stale > 0 || healthSummary.unknown > 0;
 
   const renderDetail = (item: BriefingQueueItem): JSX.Element => (
     <BriefingRowDetail
@@ -1042,13 +1013,10 @@ export function BriefingView({
       <BriefingHealthStrip
         sources={sources}
         summary={healthSummary}
-        cost={queue.data?.cost ?? null}
         open={healthOpen}
         loading={queue.data === null && queue.loading}
         onToggle={toggleHealth}
       />
-
-      <BriefingDigestHeadline digest={queue.data?.digest ?? null} />
 
       {!operationalMutationsAllowed ? (
         <PreviewDisabledNotice title="Read-only instance">
@@ -1097,12 +1065,6 @@ export function BriefingView({
           The briefing queue could not be loaded: {queue.error}
         </p>
       ) : null}
-      {queueUnavailable ? (
-        <p className="briefing-error" role="alert" data-testid="briefing-unavailable">
-          The briefing queue is unavailable
-          {queue.data?.reason ? `: ${queue.data.reason}` : '.'}
-        </p>
-      ) : null}
 
       {filter === 'judged' ? (
         <section className="briefing-judged" aria-label="Judged findings">
@@ -1135,7 +1097,7 @@ export function BriefingView({
       ) : queue.loading && queue.data === null ? (
         <LoadingSkeleton variant="tab" label="Loading briefing queue" />
       ) : visibleItems.length === 0 ? (
-        sourcesDegraded || queueUnavailable || sources.length === 0 ? (
+        sourcesDegraded || sources.length === 0 ? (
           <section
             className="briefing-empty briefing-empty--degraded"
             data-testid="briefing-empty-degraded"
@@ -1143,13 +1105,11 @@ export function BriefingView({
           >
             <h3>No findings — but this briefing is not clean</h3>
             <p>
-              {healthSummary.failed > 0
-                ? `${healthSummary.failed} source(s) failed to report.`
-                : healthSummary.stale > 0
-                  ? `${healthSummary.stale} source(s) are stale.`
-                  : sources.length === 0
-                    ? 'No collector source has reported an ingest batch.'
-                    : 'Source health could not be established.'}{' '}
+              {healthSummary.stale > 0
+                ? `${healthSummary.stale} source(s) are stale.`
+                : sources.length === 0
+                  ? 'No collector source has reported an ingest batch.'
+                  : 'Source health could not be established.'}{' '}
               An empty queue here does not mean there was nothing to find.
             </p>
           </section>

@@ -1,13 +1,20 @@
-// Briefing view tests — umbrella 99b74d6, lane d304a9b.
+// Briefing view tests — umbrella 99b74d6, lane d304a9b; contract alignment 223d090.
 //
-// The server routes (integration contract v1 §4) are owned by a sibling lane
-// and are not live yet, so every test here drives the real client layer in
-// ui/src/api.ts against a stubbed `fetch` carrying contract-shaped payloads.
-// The point of the suite is the properties that make the Briefing trustworthy:
-// deterministic health before model output, an honest empty-but-broken state,
-// keyboard-only triage with undo, inline (not hover) fold-outs, allowlisted ref
-// linkification, and mutation gating on the instance policy.
+// Every stub here is typed as the SERVER CONTRACT (src/contracts.ts) — the same
+// types src/briefing.ts returns — so a fixture can no longer invent a field the
+// server never sends. That invention is exactly what hid the queue-key drift
+// this suite now guards: the old fixtures stubbed `items`, so a normalizer that
+// read `items` while the server sent `candidates` passed every test and rendered
+// an empty queue in production. The "server payload → normalizer" describe at
+// the bottom closes the loop with a payload built by the real server function.
+//
+// The rest of the suite covers the properties that make the Briefing
+// trustworthy: deterministic health before model output, an honest
+// empty-but-broken state, keyboard-only triage with undo, inline (not hover)
+// fold-outs, allowlisted ref linkification, and mutation gating on the instance
+// policy.
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,8 +28,18 @@ import {
 import {
   deriveBriefingSourceStatus,
   normalizeBriefingQueue,
-  type BriefingSourceHealth,
 } from '../ui/src/api';
+import { ingestBriefingBatch, listBriefingQueue } from '../src/briefing.js';
+import {
+  BRIEFING_INGEST_SCHEMA,
+  type BriefingCandidateHistoryResponse,
+  type BriefingCommentResponse,
+  type BriefingDecisionResponse,
+  type BriefingQueueEntry,
+  type BriefingQueueResponse,
+  type BriefingSourceHealth,
+} from '../src/contracts.js';
+import { migrate, setDb, type Db } from '../src/db.js';
 import { AppShellProvider, type AppShellContextValue } from '../ui/src/app-shell';
 import { parseRouteFromHash } from '../ui/src/routing';
 
@@ -35,10 +52,11 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
-function makeItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const id = (overrides.candidate_id as string) ?? 'cand-1';
+/** A contract `BriefingQueueEntry`. `id` IS the candidate id — not `candidate_id`. */
+function makeItem(overrides: Partial<BriefingQueueEntry> = {}): BriefingQueueEntry {
+  const id = overrides.id ?? 'cand-1';
   return {
-    candidate_id: id,
+    id,
     source: 'github-releases',
     candidate_key: `key-${id}`,
     created_at: Date.now() - HOUR,
@@ -60,44 +78,74 @@ function makeItem(overrides: Record<string, unknown> = {}): Record<string, unkno
       batch_key: 'b'.repeat(64),
       ingested_at: Date.now() - HOUR,
     },
+    revision_count: 1,
     occurrences: { count: 1, first_seen_at: Date.now() - HOUR, last_seen_at: Date.now() - HOUR },
     ...overrides,
   };
 }
 
-function makeSource(overrides: Partial<BriefingSourceHealth> = {}): Record<string, unknown> {
+/**
+ * A contract `BriefingSourceHealth`. The server reports batch facts and NO
+ * `status` field — the client derives the classification — so a fixture cannot
+ * declare a source healthy or stale; it can only report when it last ingested.
+ */
+function makeSource(overrides: Partial<BriefingSourceHealth> = {}): BriefingSourceHealth {
+  const lastIngestedAt = overrides.last_ingested_at ?? Date.now() - HOUR;
   return {
     source: 'github-releases',
-    status: 'current',
-    last_ingest_at: Date.now() - HOUR,
-    last_run_id: 'run-9',
-    last_run_status: 'ok',
     pending_count: 1,
+    candidate_count: 1,
+    last_task_identity: 'agent-schedule/daily-digest',
+    last_run_id: 'run-9',
+    last_digest_version: 7,
+    last_ingested_at: lastIngestedAt,
+    last_ingest_age_ms: lastIngestedAt === null ? null : Date.now() - lastIngestedAt,
+    last_batch_item_count: 1,
     ...overrides,
   };
 }
 
-function makeQueue(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeQueue(overrides: Partial<BriefingQueueResponse> = {}): BriefingQueueResponse {
   return {
-    available: true,
-    items: [makeItem()],
-    total_pending: 1,
+    candidates: [makeItem()],
     sources: [makeSource()],
-    digest: {
-      headline: 'Three releases and one advisory landed overnight.',
-      series_ref: 'artifact-series:abcdef123456',
-      version: 7,
-      generated_at: Date.now() - HOUR,
+    ...overrides,
+  };
+}
+
+/** A source that has gone quiet past the staleness horizon. */
+function staleSource(overrides: Partial<BriefingSourceHealth> = {}): BriefingSourceHealth {
+  return makeSource({
+    source: 'rss',
+    last_ingested_at: Date.now() - 72 * HOUR,
+    last_ingest_age_ms: 72 * HOUR,
+    ...overrides,
+  });
+}
+
+/** A contract `BriefingCandidateHistoryResponse`: no per-occurrence rows exist. */
+function makeHistory(
+  overrides: Partial<BriefingCandidateHistoryResponse> = {},
+): BriefingCandidateHistoryResponse {
+  return {
+    candidate: {
+      id: 'cand-1',
+      source: 'github-releases',
+      candidate_key: 'key-cand-1',
+      current_revision_id: 'rev-cand-1',
+      created_at: Date.now() - HOUR,
+      state: 'pending',
     },
-    cost: { amount_usd: 0.42, window_label: 'today' },
-    generated_at: Date.now(),
+    revisions: [],
+    decisions: [],
+    comments: [],
     ...overrides,
   };
 }
 
 type StubOptions = {
-  queue?: Record<string, unknown>;
-  history?: Record<string, unknown>;
+  queue?: BriefingQueueResponse;
+  history?: BriefingCandidateHistoryResponse;
   decisionStatus?: number;
 };
 
@@ -122,16 +170,7 @@ function stubFetch(options: StubOptions = {}): { calls: FetchCall[] } {
       return Promise.resolve(jsonResponse(options.queue ?? makeQueue()));
     }
     if (url.includes('/history')) {
-      return Promise.resolve(jsonResponse(options.history ?? {
-        available: true,
-        candidate_id: 'cand-1',
-        revisions: [],
-        decisions: [],
-        comments: [],
-        occurrences: [
-          { id: 'occ-1', revision_id: 'rev-cand-1', digest_version: 7, batch_key: 'b', seen_at: Date.now() - HOUR },
-        ],
-      }));
+      return Promise.resolve(jsonResponse(options.history ?? makeHistory()));
     }
     if (url.includes('/decision') && method === 'POST') {
       if (options.decisionStatus && options.decisionStatus >= 400) {
@@ -140,10 +179,27 @@ function stubFetch(options: StubOptions = {}): { calls: FetchCall[] } {
           headers: { 'Content-Type': 'application/json' },
         }));
       }
-      return Promise.resolve(jsonResponse({ ok: true, id: 'dec-1' }));
+      const decision: BriefingDecisionResponse = {
+        candidate_id: 'cand-1',
+        revision_id: 'rev-cand-1',
+        action: 'keep',
+        event_id: 'dec-1',
+        state: 'kept',
+      };
+      return Promise.resolve(jsonResponse(decision));
     }
     if (url.includes('/comments') && method === 'POST') {
-      return Promise.resolve(jsonResponse({ ok: true, comment_id: 'com-1' }));
+      const created: BriefingCommentResponse = {
+        comment: {
+          id: 'com-1',
+          candidate_id: 'cand-1',
+          revision_id: 'rev-cand-1',
+          body: 'noted',
+          actor_user_id: 'operator',
+          created_at: Date.now(),
+        },
+      };
+      return Promise.resolve(jsonResponse(created));
     }
     if (url === '/api/dashboard/badges') {
       return Promise.resolve(jsonResponse({ auth: 0, inbox: 0, work: 0, briefing: 1 }));
@@ -275,23 +331,16 @@ describe('ref linkification allowlist', () => {
   });
 
   it('renders a non-linkable ref as inert visible text rather than dropping it', async () => {
-    stubFetch({
-      queue: makeQueue({
-        items: [makeItem({ candidate_id: 'cand-1' })],
-      }),
+    const queue = makeQueue({
+      candidates: [makeItem({
+        id: 'cand-1',
+        revision: {
+          ...makeItem().revision,
+          refs: ['javascript:alert(1)'],
+          source_ref: 'javascript:alert(1)',
+        },
+      })],
     });
-    // Rewrite the refs of the single item to a hostile value.
-    const queue = makeQueue();
-    (queue.items as Record<string, unknown>[])[0] = makeItem({
-      candidate_id: 'cand-1',
-      revision: {
-        ...(makeItem().revision as Record<string, unknown>),
-        refs: ['javascript:alert(1)'],
-        source_ref: 'javascript:alert(1)',
-      },
-    });
-    cleanup();
-    vi.unstubAllGlobals();
     stubFetch({ queue });
     renderBriefing();
 
@@ -308,44 +357,37 @@ describe('ref linkification allowlist', () => {
 });
 
 describe('deterministic health classification', () => {
-  it('derives status from batch facts only', () => {
+  it('derives status from the batch facts the server actually reports', () => {
     const now = 1_000_000_000_000;
-    expect(deriveBriefingSourceStatus(now - HOUR, 'ok', now)).toBe('current');
-    expect(deriveBriefingSourceStatus(now - 48 * HOUR, 'ok', now)).toBe('stale');
-    expect(deriveBriefingSourceStatus(now - HOUR, 'failed', now)).toBe('failed');
+    expect(deriveBriefingSourceStatus(now - HOUR, HOUR, now)).toBe('current');
+    expect(deriveBriefingSourceStatus(now - 48 * HOUR, 48 * HOUR, now)).toBe('stale');
+    // The server's own age wins over the client clock when the two disagree.
+    expect(deriveBriefingSourceStatus(now - HOUR, 48 * HOUR, now)).toBe('stale');
+    // No batch on record at all is unknown — never quietly "current".
     expect(deriveBriefingSourceStatus(null, null, now)).toBe('unknown');
   });
 
   it('summarizes only as healthy when every source is current', () => {
     const now = Date.now();
     const queue = normalizeBriefingQueue({
-      items: [],
-      sources: [makeSource(), makeSource({ source: 'rss', status: undefined, last_run_status: 'failed' })],
+      candidates: [],
+      sources: [makeSource(), staleSource()],
     }, now);
     const summary = summarizeBriefingHealth(queue.sources);
-    expect(summary.failed).toBe(1);
+    expect(summary.stale).toBe(1);
     expect(summary.healthy).toBe(false);
     expect(summarizeBriefingHealth([]).healthy).toBe(false);
   });
 
-  it('parses a refs_json string and defaults an absent envelope honestly', () => {
-    const queue = normalizeBriefingQueue({
-      items: [{
-        candidate_id: 'c1',
-        source: 's',
-        revision: { id: 'r1', title: 't', why_notable: 'w', refs_json: '["https://a.example"]' },
-      }],
-    });
-    expect(queue.available).toBe(true);
-    expect(queue.items[0].revision.refs).toEqual(['https://a.example']);
-    expect(queue.digest).toBeNull();
-    expect(queue.cost).toBeNull();
-    expect(queue.total_pending).toBe(1);
+  it('degrades an unrecognizable payload to empty instead of inventing content', () => {
+    const queue = normalizeBriefingQueue({ candidates: 'nope', sources: null });
+    expect(queue.candidates).toEqual([]);
+    expect(queue.sources).toEqual([]);
   });
 });
 
 describe('BriefingView page composition', () => {
-  it('puts deterministic health above the labelled agent-generated headline', async () => {
+  it('leads with deterministic health and publishes no agent-written summary', async () => {
     stubFetch();
     renderBriefing();
 
@@ -353,37 +395,35 @@ describe('BriefingView page composition', () => {
     await waitFor(() => {
       expect(health.dataset.healthState).toBe('healthy');
     });
-    const digest = screen.getByTestId('briefing-digest');
-    expect(health.compareDocumentPosition(digest) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(digest).getByText('Agent-generated summary')).toBeTruthy();
+    // Nothing in the pipeline writes a digest headline, so the page reserves no
+    // space for one and never apologizes for its absence.
+    expect(screen.queryByTestId('briefing-digest')).toBeNull();
+    expect(screen.queryByText(/No agent-generated headline/)).toBeNull();
     // Compact when healthy: no per-source rows rendered.
     expect(within(health).queryByText(/last ingest/)).toBeNull();
   });
 
-  it('auto-expands the health strip when a source failed', async () => {
-    stubFetch({
-      queue: makeQueue({
-        sources: [makeSource(), makeSource({ source: 'rss', status: 'failed', last_run_status: 'failed' })],
-      }),
-    });
+  it('auto-expands the health strip when a source went stale', async () => {
+    stubFetch({ queue: makeQueue({ sources: [makeSource(), staleSource()] }) });
     renderBriefing();
 
     const health = await screen.findByTestId('briefing-health');
     await waitFor(() => {
-      expect(health.dataset.healthState).toBe('failed');
+      expect(health.dataset.healthState).toBe('degraded');
     });
-    expect(within(health).getByText('1 failed')).toBeTruthy();
+    expect(within(health).getByText('1 stale')).toBeTruthy();
     expect(within(health).getAllByText(/last ingest/).length).toBe(2);
+    // The expanded rows carry the server's real batch facts, not placeholders.
+    expect(within(health).getAllByText(/digest v7/).length).toBe(2);
   });
 
   it('groups rows by source with a title, source chip, age, and one-sentence rationale', async () => {
     stubFetch({
       queue: makeQueue({
-        items: [
-          makeItem({ candidate_id: 'a' }),
-          makeItem({ candidate_id: 'b', source: 'rss' }),
+        candidates: [
+          makeItem({ id: 'a' }),
+          makeItem({ id: 'b', source: 'rss' }),
         ],
-        total_pending: 2,
         sources: [makeSource(), makeSource({ source: 'rss' })],
       }),
     });
@@ -397,9 +437,9 @@ describe('BriefingView page composition', () => {
   });
 
   it('truncates honestly instead of rendering an unbounded queue', async () => {
-    const items = Array.from({ length: BRIEFING_VISIBLE_LIMIT + 4 }, (_unused, index) =>
-      makeItem({ candidate_id: `c${index}` }));
-    stubFetch({ queue: makeQueue({ items, total_pending: items.length }) });
+    const candidates = Array.from({ length: BRIEFING_VISIBLE_LIMIT + 4 }, (_unused, index) =>
+      makeItem({ id: `c${index}` }));
+    stubFetch({ queue: makeQueue({ candidates }) });
     renderBriefing();
 
     const note = await screen.findByTestId('briefing-truncation');
@@ -410,19 +450,18 @@ describe('BriefingView page composition', () => {
 
 describe('BriefingView empty states', () => {
   it('renders an empty-and-healthy briefing as a success', async () => {
-    stubFetch({ queue: makeQueue({ items: [], total_pending: 0 }) });
+    stubFetch({ queue: makeQueue({ candidates: [] }) });
     renderBriefing();
 
     expect(await screen.findByTestId('briefing-empty-healthy')).toBeTruthy();
     expect(screen.queryByTestId('briefing-empty-degraded')).toBeNull();
   });
 
-  it('never presents an empty queue as clean when a collector failed', async () => {
+  it('never presents an empty queue as clean when a collector went quiet', async () => {
     stubFetch({
       queue: makeQueue({
-        items: [],
-        total_pending: 0,
-        sources: [makeSource({ status: 'failed', last_run_status: 'failed' })],
+        candidates: [],
+        sources: [staleSource()],
       }),
     });
     renderBriefing();
@@ -433,14 +472,15 @@ describe('BriefingView empty states', () => {
     expect(screen.queryByTestId('briefing-empty-healthy')).toBeNull();
   });
 
-  it('distinguishes an unavailable queue from an empty one', async () => {
-    stubFetch({
-      queue: { available: false, reason: 'briefing routes are not deployed', items: [], sources: [] },
-    });
+  it('does not read an empty briefing as clean when no source has reported', async () => {
+    // The queue route has no "unavailable" envelope: a transport failure is
+    // reported by the load error, and zero sources is a degraded briefing.
+    stubFetch({ queue: { candidates: [], sources: [] } });
     renderBriefing();
 
-    const notice = await screen.findByTestId('briefing-unavailable');
-    expect(notice.textContent).toContain('briefing routes are not deployed');
+    const degraded = await screen.findByTestId('briefing-empty-degraded');
+    expect(degraded.textContent).toContain('No collector source has reported an ingest batch.');
+    expect(screen.queryByTestId('briefing-empty-healthy')).toBeNull();
   });
 });
 
@@ -448,8 +488,7 @@ describe('BriefingView keyboard triage', () => {
   it('processes the queue with the keyboard only and offers immediate undo', async () => {
     const { calls } = stubFetch({
       queue: makeQueue({
-        items: [makeItem({ candidate_id: 'a' }), makeItem({ candidate_id: 'b' })],
-        total_pending: 2,
+        candidates: [makeItem({ id: 'a' }), makeItem({ id: 'b' })],
       }),
     });
     renderBriefing();
@@ -584,5 +623,92 @@ describe('age formatting', () => {
     expect(formatBriefingAge(now - 5 * 60_000, now)).toBe('5m ago');
     expect(formatBriefingAge(now - 3 * HOUR, now)).toBe('3h ago');
     expect(formatBriefingAge(now - 50 * HOUR, now)).toBe('2d ago');
+  });
+});
+
+/**
+ * Issue 223d090. Every other test in this file feeds the normalizer a
+ * hand-written fixture; a fixture and a normalizer can agree with each other
+ * and both be wrong about the server. This one builds the payload with the real
+ * server function against a real database, so the queue key, the source-health
+ * field names, and the candidate id all have to match what the daemon sends.
+ */
+describe('server payload → client normalizer', () => {
+  let db: Db;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    migrate(db);
+    setDb(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function ingest(now: number): void {
+    ingestBriefingBatch(db, {
+      schema: BRIEFING_INGEST_SCHEMA,
+      task_identity: 'agent-schedule/daily-digest',
+      run_id: 'run-1',
+      digest: { series_ref: 'artifact-series:abc123', version: 3 },
+      batch_key: 'batch-1',
+      items: [{
+        candidate_key: 'k'.repeat(64),
+        source: 'arxiv-scan',
+        ref: 'https://example.invalid/paper-1',
+        title: 'A notable finding',
+        why_notable: 'It moves the pilot forward',
+        refs: ['https://example.invalid/paper-1'],
+        evidence_hash: 'evidence-a',
+        evidence_kind: 'snapshot-item',
+        captured_at: '2026-08-11T09:00:00Z',
+        rank: 1,
+      }],
+    }, now);
+  }
+
+  it('carries candidates and source health from listBriefingQueue into the view model', () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+
+    // The exact object the route serializes — not a reconstruction of it.
+    const payload: BriefingQueueResponse = listBriefingQueue(db, { now });
+    const queue = normalizeBriefingQueue(payload, now);
+
+    expect(payload.candidates).toHaveLength(1);
+    expect(queue.candidates).toHaveLength(1);
+    expect(queue.candidates[0].candidate_id).toBe(payload.candidates[0].id);
+    expect(queue.candidates[0].source).toBe('arxiv-scan');
+    expect(queue.candidates[0].revision.title).toBe('A notable finding');
+    expect(queue.candidates[0].occurrences.count).toBe(1);
+
+    expect(queue.sources).toHaveLength(1);
+    expect(queue.sources[0].last_ingested_at).toBe(payload.sources[0].last_ingested_at);
+    expect(queue.sources[0].pending_count).toBe(1);
+    // A source that reported an hour ago is current, never `unknown`.
+    expect(queue.sources[0].status).toBe('current');
+    expect(summarizeBriefingHealth(queue.sources).healthy).toBe(true);
+  });
+
+  it('classifies a source that stopped reporting as stale, not as clean', () => {
+    const now = Date.now();
+    ingest(now - 72 * HOUR);
+
+    const queue = normalizeBriefingQueue(listBriefingQueue(db, { now }), now);
+    expect(queue.sources[0].status).toBe('stale');
+    expect(summarizeBriefingHealth(queue.sources).healthy).toBe(false);
+  });
+
+  it('renders a live server payload through the view', async () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+    const payload = listBriefingQueue(db, { now });
+    stubFetch({ queue: payload });
+    renderBriefing();
+
+    const row = await screen.findByTestId(`briefing-row-${payload.candidates[0].id}`);
+    expect(within(row).getByText('A notable finding')).toBeTruthy();
+    expect(screen.queryByTestId('briefing-empty-degraded')).toBeNull();
   });
 });
