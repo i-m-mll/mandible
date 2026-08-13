@@ -1,0 +1,15 @@
+[[permission]]
+identifier = "allow-desktop-commands"
+description = "Allows only the application commands used by the Mandible desktop shell."
+commands.allow = [
+  "daemon_status",
+  "daemon_get_launch_mode",
+  "daemon_set_launch_mode",
+  "daemon_start",
+  "daemon_stop",
+  "daemon_restart",
+  "client_auth_enroll",
+  "client_auth_keychain_enroll",
+  "zone2_status",
+  "zone2_bootstrap",
+]

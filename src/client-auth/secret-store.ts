@@ -20,6 +20,7 @@ import { getMandibleConfigDir } from "../platform-paths.js";
 const PEPPER_FILE = "pepper";
 const BOOTSTRAP_TOKEN_FILE = "bootstrap-token";
 const DASHBOARD_SESSION_FILE = "dashboard-session.json";
+export const MAX_DASHBOARD_SESSIONS = 8;
 /** Legacy location: the pepper used to live in the settings KV table. */
 const LEGACY_PEPPER_SETTING_KEY = "client_auth.token_pepper";
 
@@ -146,9 +147,55 @@ export interface StoredDashboardSession {
   renew_until: number;
 }
 
-export function readDashboardSession(
+export interface StoredDashboardSessions {
+  version: 2;
+  sessions: StoredDashboardSession[];
+}
+
+function parseDashboardSession(value: unknown): StoredDashboardSession {
+  if (!value || typeof value !== "object") {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    typeof record.token_fingerprint !== "string"
+    || !/^sha256:[0-9a-f]{64}$/.test(record.token_fingerprint)
+    || typeof record.user_id !== "string"
+    || record.user_id.length === 0
+    || typeof record.slug !== "string"
+    || record.slug.length === 0
+    || typeof record.created_at !== "number"
+    || !Number.isSafeInteger(record.created_at)
+    || record.created_at < 0
+    || typeof record.expires_at !== "number"
+    || !Number.isSafeInteger(record.expires_at)
+    || record.expires_at < 0
+    || (record.renew_until !== undefined
+      && (typeof record.renew_until !== "number"
+        || !Number.isSafeInteger(record.renew_until)
+        || record.renew_until < 0))
+  ) {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  const renewUntil = typeof record.renew_until === "number"
+    ? record.renew_until
+    : record.expires_at;
+  if (record.created_at > record.expires_at || renewUntil < record.expires_at) {
+    throw new Error("Invalid client-auth dashboard session file.");
+  }
+  return {
+    token_fingerprint: record.token_fingerprint,
+    user_id: record.user_id,
+    slug: record.slug,
+    created_at: record.created_at,
+    expires_at: record.expires_at,
+    renew_until: renewUntil,
+  };
+}
+
+export function readDashboardSessions(
   dir: string = defaultClientAuthDir(),
-): StoredDashboardSession | null {
+): { sessions: StoredDashboardSession[]; legacy: boolean } | null {
   const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
   const raw = readProtectedSecretFile(filePath);
   if (!raw) return null;
@@ -158,38 +205,46 @@ export function readDashboardSession(
   } catch {
     throw new Error("Invalid client-auth dashboard session file.");
   }
-  if (!parsed || typeof parsed !== "object") {
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Invalid client-auth dashboard session file.");
   }
   const value = parsed as Record<string, unknown>;
-  if (
-    typeof value.token_fingerprint !== "string"
-    || !/^sha256:[0-9a-f]{64}$/.test(value.token_fingerprint)
-    || typeof value.user_id !== "string"
-    || typeof value.slug !== "string"
-    || typeof value.created_at !== "number"
-    || typeof value.expires_at !== "number"
-    || (value.renew_until !== undefined && typeof value.renew_until !== "number")
-  ) {
-    throw new Error("Invalid client-auth dashboard session file.");
+  if (value.version === 2) {
+    if (!Array.isArray(value.sessions) || value.sessions.length > MAX_DASHBOARD_SESSIONS) {
+      throw new Error("Invalid client-auth dashboard session file.");
+    }
+    const sessions = value.sessions.map(parseDashboardSession);
+    if (new Set(sessions.map((session) => session.token_fingerprint)).size !== sessions.length) {
+      throw new Error("Invalid client-auth dashboard session file.");
+    }
+    return { sessions, legacy: false };
   }
-  const renewUntil = typeof value.renew_until === "number"
-    ? value.renew_until
-    : value.expires_at;
-  if (renewUntil < value.expires_at) {
-    throw new Error("Invalid client-auth dashboard session file.");
+  return { sessions: [parseDashboardSession(value)], legacy: true };
+}
+
+export function writeDashboardSessions(
+  sessions: StoredDashboardSession[],
+  dir: string = defaultClientAuthDir(),
+): void {
+  const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
+  if (sessions.length > 0) {
+    const state: StoredDashboardSessions = { version: 2, sessions };
+    writeSecretFile(filePath, JSON.stringify(state));
+    return;
   }
-  return { ...value, renew_until: renewUntil } as unknown as StoredDashboardSession;
+  fs.rmSync(filePath, { force: true });
+}
+
+/** Compatibility helpers for callers that still operate on one session. */
+export function readDashboardSession(
+  dir: string = defaultClientAuthDir(),
+): StoredDashboardSession | null {
+  return readDashboardSessions(dir)?.sessions[0] ?? null;
 }
 
 export function writeDashboardSession(
   session: StoredDashboardSession | null,
   dir: string = defaultClientAuthDir(),
 ): void {
-  const filePath = path.join(dir, DASHBOARD_SESSION_FILE);
-  if (session) {
-    writeSecretFile(filePath, JSON.stringify(session));
-    return;
-  }
-  fs.rmSync(filePath, { force: true });
+  writeDashboardSessions(session ? [session] : [], dir);
 }

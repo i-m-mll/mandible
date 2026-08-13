@@ -8,10 +8,11 @@
 // and re-runs the normal handshake that adopts, strips, and rotates it.
 //
 // Enrollment is attempted only when this surface has no working session, and at
-// most once automatically per shell process, because the daemon keeps exactly
-// one operator dashboard session: every successful handshake rotates it and
-// revokes whichever surface held it before (see the rotation note on
-// client_auth_keychain_enroll in src-tauri/src/lib.rs).
+// most once automatically per unauthenticated episode. Concurrent callers share
+// one promise. A later enrolled -> unauthenticated transition opens a new
+// episode, so an expired or rejected mid-session token can recover without a
+// reload. Independent bounded dashboard sessions may coexist; this lane does
+// not identify surfaces or assume server-side rotation semantics.
 
 import {
   enrollDesktopClientAuth,
@@ -50,6 +51,42 @@ export interface DesktopLoginDeps {
   refreshSession(): Promise<ClientAuthSessionState>;
   onError?(message: string): void;
 }
+
+/**
+ * Bounds automatic recovery to one single-flight attempt per unauthenticated
+ * episode. The coordinator deliberately lives in the renderer: it governs UI
+ * policy, while Rust independently prevents concurrent keychain reads and
+ * never accepts a renderer-controlled bypass.
+ */
+export class DesktopLoginRecoveryCoordinator {
+  private automaticAttempt: Promise<DesktopLoginOutcome> | null = null;
+  private manualRetryAllowed = false;
+
+  recover(run: () => Promise<DesktopLoginOutcome>): Promise<DesktopLoginOutcome> {
+    if (this.automaticAttempt) return this.automaticAttempt;
+    this.automaticAttempt = run().then((outcome) => {
+      this.manualRetryAllowed = outcome !== 'enrolled';
+      return outcome;
+    });
+    return this.automaticAttempt;
+  }
+
+  retry(run: () => Promise<DesktopLoginOutcome>): Promise<DesktopLoginOutcome> {
+    if (!this.manualRetryAllowed) return Promise.resolve('unavailable');
+    return run();
+  }
+
+  reset(): void {
+    this.automaticAttempt = null;
+    this.manualRetryAllowed = false;
+  }
+
+  canRetryManually(): boolean {
+    return this.manualRetryAllowed;
+  }
+}
+
+const desktopLoginRecovery = new DesktopLoginRecoveryCoordinator();
 
 /**
  * Try each enrollment source in order, stopping at the first one that yields a
@@ -148,10 +185,8 @@ async function refreshSessionAndSyncRoute(returnHash: string): Promise<ClientAut
 }
 
 /**
- * Log this desktop webview in. `manual` marks an explicit operator action: it
- * retries the keychain even after the shell's automatic attempt was spent.
- * Outside the desktop shell this is always 'unavailable' — browsers enroll
- * through `mandible user dashboard-link`.
+ * Log this desktop webview in. Outside the desktop shell this is always
+ * 'unavailable' — browsers enroll through `mandible user dashboard-link`.
  */
 export async function runDesktopLogin(
   options: { manual?: boolean; onError?: (message: string) => void } = {},
@@ -164,9 +199,33 @@ export async function runDesktopLogin(
   const returnHash = sanitized ? `#${sanitized}` : '';
   const route = sanitized || '/';
   return attemptDesktopLogin(manual ? MANUAL_ENROLLMENT_SOURCES : AUTOMATIC_ENROLLMENT_SOURCES, {
-    enroll: (source) => enrollDesktopClientAuth(source, { route, force: manual }),
+    enroll: (source) => enrollDesktopClientAuth(source, { route }),
     awaitCredentialFragment,
     refreshSession: () => refreshSessionAndSyncRoute(returnHash),
     onError: options.onError,
   });
+}
+
+/** Share one automatic attempt across boot and the mounted status component. */
+export function recoverDesktopLoginAutomatically(
+  options: { onError?: (message: string) => void } = {},
+): Promise<DesktopLoginOutcome> {
+  if (!isDesktopShell()) return Promise.resolve('unavailable');
+  return desktopLoginRecovery.recover(() => runDesktopLogin(options));
+}
+
+/** Manual retry becomes available only after the bounded automatic attempt failed. */
+export function retryDesktopLoginManually(
+  options: { onError?: (message: string) => void } = {},
+): Promise<DesktopLoginOutcome> {
+  return desktopLoginRecovery.retry(() => runDesktopLogin({ ...options, manual: true }));
+}
+
+/** An authenticated state closes the old episode and arms the next genuine loss. */
+export function resetDesktopLoginRecoveryEpisode(): void {
+  desktopLoginRecovery.reset();
+}
+
+export function canRetryDesktopLoginManually(): boolean {
+  return desktopLoginRecovery.canRetryManually();
 }

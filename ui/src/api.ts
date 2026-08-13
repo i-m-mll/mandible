@@ -2449,13 +2449,13 @@ export type DesktopEnrollmentSource = 'bootstrap' | 'keychain';
  * and navigates with only that session in a URL fragment — no durable
  * credential is returned across IPC or exposed to this renderer, so `true`
  * means "a session was injected". `route` keeps the operator on their current
- * view instead of resetting it; `force` bypasses the shell's once-per-process
- * guard for an explicit login action (the shell treats it as untrusted input,
- * bounded to churning the session this renderer already holds).
+ * view instead of resetting it. The keychain command deliberately accepts no
+ * retry-control argument: renderer input cannot decide whether Rust may read
+ * the durable credential.
  */
 export async function enrollDesktopClientAuth(
   source: DesktopEnrollmentSource,
-  options: { route?: string; force?: boolean } = {},
+  options: { route?: string } = {},
 ): Promise<boolean> {
   if (!hasTauriRuntime()) {
     return false;
@@ -2465,7 +2465,6 @@ export async function enrollDesktopClientAuth(
   }
   return invokeDesktop<boolean>('client_auth_keychain_enroll', {
     route: options.route ?? null,
-    force: options.force === true,
   });
 }
 

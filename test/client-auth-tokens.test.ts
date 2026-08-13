@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { openDb, type Db } from "../src/db.js";
-import { createUser, revokeCredential, updateUser } from "../src/users/store.js";
+import { createUser, revokeCredential, setupOperator, updateUser } from "../src/users/store.js";
 import { ClientAuthenticator } from "../src/client-auth/authenticator.js";
 import {
   API_TOKEN_PREFIX,
@@ -13,7 +13,11 @@ import {
   normalizeBearer,
   verifyApiToken,
 } from "../src/client-auth/tokens.js";
-import { loadOrCreatePepper } from "../src/client-auth/secret-store.js";
+import {
+  loadOrCreatePepper,
+  MAX_DASHBOARD_SESSIONS,
+  readDashboardSessions,
+} from "../src/client-auth/secret-store.js";
 import {
   DEFAULT_CLIENT_AUTH_MODE,
   getClientAuthMode,
@@ -165,6 +169,107 @@ describe("api token minting and verification", () => {
     expect(normalizeBearer("abc123")).toBe("abc123");
     expect(normalizeBearer("  ")).toBeNull();
     expect(normalizeBearer(undefined)).toBeNull();
+  });
+});
+
+describe("bounded dashboard sessions", () => {
+  function operatorAuth(options: ConstructorParameters<typeof ClientAuthenticator>[1] = {}) {
+    const operator = setupOperator(db, { display_name: "Operator", email: "op@example.com" });
+    const auth = new ClientAuthenticator(db, { secretsDir, ...options });
+    const durable = auth.mintApiToken(operator.id).token;
+    const identity = auth.authenticate(durable)!;
+    return { auth, operator, durable, identity };
+  }
+
+  it("keeps concurrent sessions and renews only the presented session", () => {
+    const { auth, identity } = operatorAuth();
+    const browser = auth.issueDashboardToken(identity);
+    const desktop = auth.issueDashboardToken(identity);
+    expect(auth.authenticate(browser.token)).not.toBeNull();
+    expect(auth.authenticate(desktop.token)).not.toBeNull();
+
+    const browserIdentity = auth.authenticate(browser.token, "http_bearer", {
+      method: "POST",
+      pathname: "/api/client-auth/handshake",
+    })!;
+    const renewed = auth.issueDashboardToken(browserIdentity);
+    expect(auth.authenticate(browser.token)).toBeNull();
+    expect(auth.authenticate(desktop.token)).not.toBeNull();
+    expect(auth.authenticate(renewed.token)).not.toBeNull();
+  });
+
+  it("adds a durable-token enrollment without revoking existing surfaces", () => {
+    const { auth, durable, identity } = operatorAuth();
+    const first = auth.issueDashboardToken(identity);
+    const secondIdentity = auth.authenticate(durable)!;
+    const second = auth.issueDashboardToken(secondIdentity);
+    expect(auth.authenticate(first.token)).not.toBeNull();
+    expect(auth.authenticate(second.token)).not.toBeNull();
+  });
+
+  it("purges expired sessions before evicting the oldest at capacity", () => {
+    let now = 1_000;
+    const { auth, identity } = operatorAuth({
+      dashboardSessionTtlMs: 10,
+      dashboardSessionRenewalGraceMs: 10,
+      now: () => now,
+    });
+    const expired = auth.issueDashboardToken(identity);
+    now = 1_021;
+    const live: string[] = [];
+    for (let index = 0; index < MAX_DASHBOARD_SESSIONS; index += 1) {
+      now += 1;
+      live.push(auth.issueDashboardToken(identity).token);
+    }
+    expect(auth.authenticate(expired.token)).toBeNull();
+    expect(readDashboardSessions(secretsDir)?.sessions).toHaveLength(MAX_DASHBOARD_SESSIONS);
+    expect(live.every((token) => auth.authenticate(token) !== null)).toBe(true);
+
+    now += 1;
+    const newest = auth.issueDashboardToken(identity);
+    expect(auth.authenticate(live[0])).toBeNull();
+    expect(auth.authenticate(live.at(-1)!)).not.toBeNull();
+    expect(auth.authenticate(newest.token)).not.toBeNull();
+  });
+
+  it("restores all persisted sessions after restart", () => {
+    const { auth, operator, identity } = operatorAuth();
+    const first = auth.issueDashboardToken(identity);
+    const second = auth.issueDashboardToken(identity);
+    const restarted = new ClientAuthenticator(db, { secretsDir });
+    expect(restarted.authenticate(first.token)).toMatchObject({ user_id: operator.id });
+    expect(restarted.authenticate(second.token)).toMatchObject({ user_id: operator.id });
+  });
+
+  it("migrates the legacy single-record file transparently", () => {
+    const { auth, operator, identity } = operatorAuth();
+    const token = auth.issueDashboardToken(identity).token;
+    const state = readDashboardSessions(secretsDir)!;
+    fs.writeFileSync(
+      path.join(secretsDir, "dashboard-session.json"),
+      JSON.stringify(state.sessions[0]),
+      { mode: 0o600 },
+    );
+
+    const restarted = new ClientAuthenticator(db, { secretsDir });
+    expect(restarted.authenticate(token)).toMatchObject({ user_id: operator.id });
+    expect(JSON.parse(fs.readFileSync(
+      path.join(secretsDir, "dashboard-session.json"),
+      "utf8",
+    ))).toMatchObject({ version: 2, sessions: [state.sessions[0]] });
+  });
+
+  it("fails closed on malformed persisted state", () => {
+    const operator = setupOperator(db, { display_name: "Operator", email: "op@example.com" });
+    fs.writeFileSync(
+      path.join(secretsDir, "dashboard-session.json"),
+      JSON.stringify({ version: 2, sessions: [{ token_fingerprint: "raw-secret" }] }),
+      { mode: 0o600 },
+    );
+    expect(operator.id).toBeTruthy();
+    expect(() => new ClientAuthenticator(db, { secretsDir })).toThrow(
+      "Invalid client-auth dashboard session file.",
+    );
   });
 });
 
