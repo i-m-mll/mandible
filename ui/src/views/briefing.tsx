@@ -119,6 +119,18 @@ type JudgedEntry = {
   decidedAt: number;
 };
 
+/**
+ * Identity of a JUDGMENT, which is a decision about a revision and not about a
+ * candidate. A candidate that is re-ingested with new content gets a new
+ * revision and returns to the queue as pending; suppressing it locally because
+ * an EARLIER revision of it was judged would hide live work — and would make
+ * the producer counts and the "everything is judged" empty state lie — for as
+ * long as this page stays mounted.
+ */
+function judgmentKey(item: BriefingQueueItem): string {
+  return `${item.candidate_id}::${item.revision.id}`;
+}
+
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
   initialFilter?: string;
@@ -283,20 +295,20 @@ export type BriefingProducer = {
   pending: number;
   /** Identity of the source's most recent batch, when the ledger has one. */
   lastTaskIdentity: string | null;
-  /** null when the source appears in the queue but has no health row. */
-  status: BriefingSourceStatus | null;
+  status: BriefingSourceStatus;
 };
 
 /**
  * The producer axis, derived entirely on the client from the payload the queue
  * route already returned.
  *
- * Both inputs matter and neither is sufficient: the health rows cover a source
- * that reported batches but has nothing pending (the case the page must never
- * hide), while the queue covers a source with pending work whose health row is
- * missing. `pinned` keeps a currently-selected producer selectable even after
- * its last pending item is judged away, so a selection never silently collapses
- * back to "All" underneath the operator.
+ * The health rows ARE the domain: the server groups them over every review
+ * candidate, so a source with anything pending necessarily has one. That makes
+ * the list stable — a producer stays listed and selectable when its last item
+ * is judged away, because its health row does not depend on the queue — and it
+ * makes a queue-only source what it actually is: a payload that contradicts the
+ * contract. Such a source is still offered rather than hidden (its pending work
+ * is real), but with `unknown` health, which the page renders as degraded.
  *
  * Counts come from the queue items rather than `BriefingSourceHealth.pending_count`
  * on purpose: the items are the exact set this page will render, already net of
@@ -306,7 +318,6 @@ export type BriefingProducer = {
 export function listBriefingProducers(
   sources: BriefingSourceHealth[],
   items: BriefingQueueItem[],
-  pinned: string | null = null,
 ): BriefingProducer[] {
   const byName = new Map<string, BriefingProducer>();
   for (const source of sources) {
@@ -317,20 +328,19 @@ export function listBriefingProducers(
       status: source.status,
     });
   }
-  const ensure = (name: string): BriefingProducer => {
-    const existing = byName.get(name);
-    if (existing) return existing;
-    const created: BriefingProducer = {
-      source: name,
-      pending: 0,
+  for (const item of items) {
+    const producer = byName.get(item.source);
+    if (producer) {
+      producer.pending += 1;
+      continue;
+    }
+    byName.set(item.source, {
+      source: item.source,
+      pending: 1,
       lastTaskIdentity: null,
-      status: null,
-    };
-    byName.set(name, created);
-    return created;
-  };
-  for (const item of items) ensure(item.source).pending += 1;
-  if (pinned) ensure(pinned);
+      status: 'unknown',
+    });
+  }
   return [...byName.values()].sort((left, right) => left.source.localeCompare(right.source));
 }
 
@@ -840,6 +850,10 @@ export function BriefingView({
   );
   const [queue, setQueue] = useState<QueueState>({ data: null, loading: true, error: null });
   const [selectedId, setSelectedId] = useState<string | null>(initialCandidateId ?? null);
+  // A candidate link that has not been reconciled with the queue yet. Held as
+  // state rather than a ref so the selection keep-alive sees the same value in
+  // the same render pass and cannot race the scope reset a link may force.
+  const [pendingDeepLink, setPendingDeepLink] = useState<string | null>(initialCandidateId ?? null);
   const [judged, setJudged] = useState<JudgedEntry[]>([]);
   const [undoEntry, setUndoEntry] = useState<JudgedEntry | null>(null);
   const [busyIds, setBusyIds] = useState<string[]>([]);
@@ -858,6 +872,14 @@ export function BriefingView({
       setViewState((current) => (current.filter === initialFilter ? current : { ...current, filter: initialFilter }));
     }
   }, [initialFilter, setViewState]);
+
+  // Unlike `filter`, a candidate link is honored every time it changes: this
+  // route stays mounted while hidden, so a second navigation from Spaces
+  // arrives as a new prop on the same instance and must still land on its
+  // finding.
+  useEffect(() => {
+    if (initialCandidateId) setPendingDeepLink(initialCandidateId);
+  }, [initialCandidateId]);
 
   const filter = viewState.filter;
   const expandedId = viewState.expandedCandidateId;
@@ -903,13 +925,14 @@ export function BriefingView({
     load: loadHistory,
   });
 
-  const judgedIds = useMemo(() => new Set(judged.map((entry) => entry.item.candidate_id)), [judged]);
+  const judgedKeys = useMemo(() => new Set(judged.map((entry) => judgmentKey(entry.item))), [judged]);
 
   const pendingItems = useMemo(() => {
     const items = queue.data?.candidates ?? [];
     // A judged item leaves the default view immediately, before the next poll
-    // confirms it server-side.
-    const visible = items.filter((item) => !judgedIds.has(item.candidate_id));
+    // confirms it server-side. The suppression is bound to the revision that
+    // was judged, so a NEWER revision of the same candidate comes back.
+    const visible = items.filter((item) => !judgedKeys.has(judgmentKey(item)));
     return [...visible].sort((left, right) => {
       const leftRank = left.revision.rank ?? Number.MAX_SAFE_INTEGER;
       const rightRank = right.revision.rank ?? Number.MAX_SAFE_INTEGER;
@@ -919,7 +942,7 @@ export function BriefingView({
       if (leftAt !== rightAt) return rightAt - leftAt;
       return left.candidate_id.localeCompare(right.candidate_id);
     });
-  }, [queue.data, judgedIds]);
+  }, [queue.data, judgedKeys]);
 
   const sources = queue.data?.sources ?? [];
   const selectedSource = viewState.source;
@@ -929,8 +952,8 @@ export function BriefingView({
   // them. Both lists below are scoped, so the two tab rows always describe the
   // same set of candidates.
   const producers = useMemo(
-    () => listBriefingProducers(sources, pendingItems, selectedSource),
-    [sources, pendingItems, selectedSource],
+    () => listBriefingProducers(sources, pendingItems),
+    [sources, pendingItems],
   );
 
   const scopedPending = useMemo(
@@ -1004,8 +1027,29 @@ export function BriefingView({
     }));
   }, [setViewState]);
 
+  // An explicit candidate link (Spaces builds `#/briefing?candidate=…`) is a
+  // navigation, and a navigation outranks a persisted producer filter: landing
+  // on a page that silently shows a DIFFERENT finding because a filter was left
+  // selected in an earlier session is the failure this guards. When the linked
+  // candidate is not visible under the current producer scope, the scope is
+  // dropped rather than the link. A candidate that is not pending at all
+  // changes nothing — the selection keep-alive below owns that case.
+  useEffect(() => {
+    if (pendingDeepLink === null || queue.data === null) return;
+    const target = pendingItems.find((item) => item.candidate_id === pendingDeepLink);
+    if (target) {
+      if (selectedSource !== null && target.source !== selectedSource) setSource(null);
+      setSelectedId(pendingDeepLink);
+    }
+    setPendingDeepLink(null);
+  }, [pendingDeepLink, queue.data, pendingItems, selectedSource]);
+
   // Keep a selection alive as rows come and go.
   useEffect(() => {
+    // While a deep link is still being honored the visible list is one render
+    // behind the scope reset it forces; adopting a default selection here would
+    // overwrite the linked candidate with whatever happens to be on top.
+    if (pendingDeepLink !== null) return;
     if (visibleItems.length === 0) {
       if (selectedId !== null) setSelectedId(null);
       return;
@@ -1013,7 +1057,7 @@ export function BriefingView({
     if (!selectedId || !visibleItems.some((item) => item.candidate_id === selectedId)) {
       setSelectedId(visibleItems[0].candidate_id);
     }
-  }, [visibleItems, selectedId]);
+  }, [visibleItems, selectedId, pendingDeepLink]);
 
   const judge = useCallback(
     async (item: BriefingQueueItem, action: Exclude<BriefingJudgeAction, 'undo'>) => {
@@ -1023,7 +1067,8 @@ export function BriefingView({
       try {
         await postBriefingDecision(item.candidate_id, action);
         const entry: JudgedEntry = { item, action, decidedAt: Date.now() };
-        setJudged((current) => [entry, ...current.filter((row) => row.item.candidate_id !== item.candidate_id)]);
+        const key = judgmentKey(item);
+        setJudged((current) => [entry, ...current.filter((row) => judgmentKey(row.item) !== key)]);
         setUndoEntry(entry);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
@@ -1040,9 +1085,15 @@ export function BriefingView({
       setActionError(null);
       try {
         await postBriefingDecision(entry.item.candidate_id, 'undo');
-        setJudged((current) => current.filter((row) => row.item.candidate_id !== entry.item.candidate_id));
-        setUndoEntry((current) => (current?.item.candidate_id === entry.item.candidate_id ? null : current));
+        const key = judgmentKey(entry.item);
+        setJudged((current) => current.filter((row) => judgmentKey(row.item) !== key));
+        setUndoEntry((current) => (current && judgmentKey(current.item) === key ? null : current));
         setSelectedId(entry.item.candidate_id);
+        // Dropping the local suppression only un-hides an item the last poll
+        // still carried. Once a poll has taken the decided candidate out of the
+        // queue, the undone item exists only on the server, so the page refetches
+        // rather than showing a queue and counts that are missing it for a minute.
+        setReloadNonce((current) => current + 1);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
       }
@@ -1201,10 +1252,12 @@ export function BriefingView({
       {/*
         The producer selector leads the controls because the producer is the
         primary axis; the pending/judged filter below composes with whatever is
-        selected here. With a single producer the row would say nothing the
-        queue's own group heading does not, so it is not rendered.
+        selected here. With a single producer and no selection the row would say
+        nothing the queue's own group heading does not, so it is not rendered —
+        but a live selection always keeps its "All producers" way back out, even
+        if the selected source has since left the health list entirely.
       */}
-      {producers.length > 1 ? (
+      {producers.length > 1 || selectedSource !== null ? (
         <div
           className="briefing-producers"
           role="group"
@@ -1227,7 +1280,7 @@ export function BriefingView({
               type="button"
               className={`briefing-tab briefing-tab--producer${
                 selectedSource === producer.source ? ' briefing-tab--active' : ''
-              }${producer.status !== null && producer.status !== 'current' ? ' briefing-tab--degraded' : ''}`}
+              }${producer.status !== 'current' ? ' briefing-tab--degraded' : ''}`}
               aria-pressed={selectedSource === producer.source}
               data-testid={`briefing-producer-${producer.source}`}
               title={producer.lastTaskIdentity ?? undefined}
@@ -1292,7 +1345,7 @@ export function BriefingView({
           ) : (
             <ul className="briefing-judged__list">
               {scopedJudged.map((entry) => (
-                <li key={entry.item.candidate_id} className="briefing-judged__row">
+                <li key={judgmentKey(entry.item)} className="briefing-judged__row">
                   <span className={`briefing-chip briefing-chip--${entry.action}`}>{entry.action}</span>
                   <span className="briefing-judged__title">{entry.item.revision.title}</span>
                   <span className="briefing-chip briefing-chip--source">{entry.item.source}</span>

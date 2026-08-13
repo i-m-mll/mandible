@@ -478,15 +478,6 @@ function occurrenceStats(db: Db, revisionId: string): BriefingOccurrenceStats {
   };
 }
 
-/** The publisher task identity recorded for a batch, or null if it is unknown. */
-function batchTaskIdentity(db: Db, batchKey: string | null): string | null {
-  if (!batchKey) return null;
-  const row = db
-    .prepare("SELECT task_identity FROM briefing_batches WHERE batch_key = ?")
-    .get(batchKey) as { task_identity: string } | undefined;
-  return row?.task_identity ?? null;
-}
-
 export interface BriefingQueueOptions {
   source?: string;
   limit?: number;
@@ -511,13 +502,25 @@ export function listBriefingQueue(
   }
   const rows = db.prepare(sql).all(...params) as CandidateRow[];
 
+  // The queue is unbounded and the UI reloads it on a timer, so the per-entry
+  // lookups are prepared once and the batch ledger is JOINED into the revision
+  // read rather than queried again per entry. The join is on the CURRENT
+  // revision's own `batch_key`, so `task_identity` stays the producer of this
+  // revision — not the source's latest batch, which is a different fact.
+  const revisionStatement = db.prepare(
+    `SELECT r.*, b.task_identity AS batch_task_identity
+       FROM candidate_revisions AS r
+       LEFT JOIN briefing_batches AS b ON b.batch_key = r.batch_key
+      WHERE r.id = ?`,
+  );
+  const revisionCountStatement = db.prepare(
+    "SELECT COUNT(*) AS n FROM candidate_revisions WHERE candidate_id = ?",
+  );
+
   const candidates: BriefingQueueEntry[] = rows.map((row) => {
-    const revision = db
-      .prepare("SELECT * FROM candidate_revisions WHERE id = ?")
-      .get(row.current_revision_id) as RevisionRow;
-    const revisionCount = (db
-      .prepare("SELECT COUNT(*) AS n FROM candidate_revisions WHERE candidate_id = ?")
-      .get(row.id) as { n: number }).n;
+    const revision = revisionStatement.get(row.current_revision_id) as
+      RevisionRow & { batch_task_identity: string | null };
+    const revisionCount = (revisionCountStatement.get(row.id) as { n: number }).n;
     return {
       id: row.id,
       source: row.source,
@@ -531,7 +534,7 @@ export function listBriefingQueue(
       // client cannot resolve one from the other. Resolving it here is what
       // makes "who produced this finding" answerable per entry instead of only
       // per source; see `BriefingQueueEntry.task_identity`.
-      task_identity: batchTaskIdentity(db, revision.batch_key),
+      task_identity: revision.batch_task_identity ?? null,
     };
   });
 

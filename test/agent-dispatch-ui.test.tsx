@@ -101,6 +101,9 @@ function stubFetch(options: DispatchStub = {}): FetchCall[] {
           },
           revision_count: 1,
           occurrences: { count: 1, first_seen_at: Date.now() - HOUR, last_seen_at: Date.now() - HOUR },
+          // Required by the contract; omitting it is drift the type-only
+          // annotation here does not catch under esbuild transpilation.
+          task_identity: 'agent-schedule/daily-digest',
         }],
       };
       return Promise.resolve(jsonResponse(queue));
