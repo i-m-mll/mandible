@@ -541,7 +541,7 @@ function BriefingRowDetail({
   historyLoading: boolean;
   historyError: string | null;
   mutationsAllowed: boolean;
-  onComment(candidateId: string, body: string): Promise<void>;
+  onComment(candidateId: string, body: string, revisionId: string): Promise<void>;
   onDispatched(): void;
 }): JSX.Element {
   const [draft, setDraft] = useState('');
@@ -575,7 +575,9 @@ function BriefingRowDetail({
     setSubmitting(true);
     setCommentError(null);
     try {
-      await onComment(item.candidate_id, body);
+      // Pinned to the revision this row is showing, so a re-ingest racing the
+      // save cannot attribute the note to content nobody read.
+      await onComment(item.candidate_id, body, revision.id);
       setDraft('');
     } catch (error) {
       setCommentError(error instanceof Error ? error.message : String(error));
@@ -1204,10 +1206,10 @@ export function BriefingView({
     [operationalMutationsAllowed],
   );
 
-  const comment = useCallback(async (candidateId: string, body: string) => {
+  const comment = useCallback(async (candidateId: string, body: string, revisionId: string) => {
     if (!operationalMutationsAllowed) return;
     // A rejected comment throws out of the client; reaching here means it landed.
-    await postBriefingComment(candidateId, body);
+    await postBriefingComment(candidateId, body, revisionId);
     history.refresh();
   }, [operationalMutationsAllowed, history]);
 

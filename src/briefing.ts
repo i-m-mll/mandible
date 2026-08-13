@@ -774,9 +774,20 @@ export interface BriefingCommentInput {
   candidateId: string;
   body: string;
   actorUserId: string;
+  /**
+   * The revision the note is about. Omitted means the candidate's current
+   * revision, which is only correct for a caller that never showed a specific
+   * revision to the human it is acting for — same semantics as decisions.
+   */
+  revisionId?: string;
   now?: number;
 }
 
+/**
+ * Append a note to ONE revision. Like decisions, the comment is addressed by
+ * revision: a re-ingest racing the write cannot silently attribute the note to
+ * newer content the author never saw.
+ */
 export function addBriefingComment(db: Db, input: BriefingCommentInput): BriefingComment {
   const now = input.now ?? Date.now();
   const body = input.body.trim();
@@ -786,11 +797,23 @@ export function addBriefingComment(db: Db, input: BriefingCommentInput): Briefin
   if (!candidate.current_revision_id) {
     throw new BriefingValidationError("candidate has no current revision", 409);
   }
+  let revisionId = candidate.current_revision_id;
+  if (input.revisionId !== undefined) {
+    // A revision id from a client is a claim about identity, so it is checked
+    // against THIS candidate — same rule as recordBriefingDecision.
+    const owned = db
+      .prepare("SELECT 1 AS ok FROM candidate_revisions WHERE id = ? AND candidate_id = ?")
+      .get(input.revisionId, candidate.id) as { ok: number } | undefined;
+    if (!owned) {
+      throw new BriefingValidationError("revision not found for candidate", 404);
+    }
+    revisionId = input.revisionId;
+  }
   const id = randomUUID();
   db.prepare(
     `INSERT INTO candidate_comments (id, candidate_id, revision_id, body, actor_user_id, created_at)
      VALUES (?, ?, ?, ?, ?, ?)`,
-  ).run(id, candidate.id, candidate.current_revision_id, body, input.actorUserId, now);
+  ).run(id, candidate.id, revisionId, body, input.actorUserId, now);
   return db
     .prepare("SELECT * FROM candidate_comments WHERE id = ?")
     .get(id) as BriefingComment;

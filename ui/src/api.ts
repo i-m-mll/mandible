@@ -4161,10 +4161,14 @@ export async function postBriefingDecision(
 export async function postBriefingComment(
   candidateId: string,
   body: string,
+  // The revision the note is about — the one this client displayed. Omitting
+  // it means "whatever revision is current server-side", which can silently
+  // drift under a concurrent re-ingest; callers that showed a revision pass it.
+  revisionId?: string,
 ): Promise<BriefingComment> {
   const response = await apiPost(
     `/api/briefing/candidates/${encodeURIComponent(candidateId)}/comments`,
-    { body },
+    { body, ...(revisionId ? { revision_id: revisionId } : {}) },
   );
   const payload = briefingContractRecord<ContractBriefingCommentResponse>(
     await parseMaybeJson(response),

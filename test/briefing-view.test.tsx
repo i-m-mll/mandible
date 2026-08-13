@@ -1346,6 +1346,28 @@ describe('BriefingView keyboard triage', () => {
     fireEvent.keyDown(textarea, { key: 'n' });
     expect(calls.some((call) => call.url.includes('/decision'))).toBe(false);
   });
+
+  it('sends the displayed revision with a saved note', async () => {
+    const { calls } = stubFetch();
+    renderBriefing();
+
+    await screen.findByTestId('briefing-row-cand-1');
+    await awaitSelection('cand-1');
+    fireEvent.keyDown(window, { key: 'o' });
+    const detail = await screen.findByTestId('briefing-detail-cand-1');
+    const textarea = within(detail).getByRole('textbox');
+    fireEvent.input(textarea, { target: { value: 'worth a note' } });
+    fireEvent.click(within(detail).getByRole('button', { name: 'Save note' }));
+
+    await waitFor(() => {
+      expect(calls.some((call) => call.url.includes('/comments'))).toBe(true);
+    });
+    const commentCall = calls.find((call) => call.url.includes('/comments'));
+    // The revision is on the wire for notes exactly like decisions: the server
+    // stores the note where the operator's eyes were (issue f8f8d76).
+    expect(commentCall?.url).toBe('/api/briefing/candidates/cand-1/comments');
+    expect(commentCall?.body).toEqual({ body: 'worth a note', revision_id: 'rev-cand-1' });
+  });
 });
 
 describe('BriefingView mutation gating', () => {

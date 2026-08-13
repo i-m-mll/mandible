@@ -442,6 +442,58 @@ describe("briefing decision and comment routes", () => {
     expect(typeof comment.id).toBe("string");
   });
 
+  // Issue f8f8d76: the route accepts the revision the client displayed and
+  // validates it exactly like the decision route.
+  it("pins a comment to a caller-supplied revision and validates it", async () => {
+    const candidateId = onlyCandidateId();
+    const displayedRevisionId = currentRevisionId(candidateId);
+    // A second batch supersedes the displayed revision before the note lands.
+    ingestBriefingBatch(db, batch({
+      batch_key: "batch-2",
+      digest: { series_ref: "artifact-series:abc123", version: 2 },
+      items: [{
+        candidate_key: candidateKey("arxiv-scan", "paper-1"),
+        source: "arxiv-scan",
+        ref: "paper-1",
+        title: "Sharper finding",
+        why_notable: null,
+        refs: [],
+        evidence_hash: "evidence-b",
+        evidence_kind: "snapshot-item",
+        captured_at: "2026-08-12T09:00:00Z",
+        rank: 1,
+      }],
+    }));
+    expect(currentRevisionId(candidateId)).not.toBe(displayedRevisionId);
+
+    const pinned = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/comments`,
+      body: { body: "about the old text", revision_id: displayedRevisionId },
+      credential: "operator",
+    });
+    expect(pinned.status).toBe(200);
+    expect((pinned.body as { comment: Record<string, unknown> }).comment).toMatchObject({
+      revision_id: displayedRevisionId,
+    });
+
+    const malformed = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/comments`,
+      body: { body: "bad pin", revision_id: "  " },
+      credential: "operator",
+    });
+    expect(malformed.status).toBe(400);
+
+    const unknown = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/comments`,
+      body: { body: "foreign pin", revision_id: "not-a-revision-of-this-candidate" },
+      credential: "operator",
+    });
+    expect(unknown.status).toBe(404);
+  });
+
   it("refuses decisions and comments while the instance is read-only", async () => {
     const readOnlyRouter = makeRouter({ readOnly: true });
     registerBriefingRoutes(readOnlyRouter, db);
