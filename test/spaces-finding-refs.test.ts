@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { lastActionForRevision } from "../src/briefing.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import {
   findingCandidateIdFromRef,
@@ -141,13 +142,14 @@ function seedDecision(
   revisionId: string,
   action: "keep" | "dismiss" | "undo" | "expire",
   createdAt: number,
+  id?: string,
 ): void {
   database
     .prepare(
       `INSERT INTO decision_events (id, candidate_id, revision_id, action, actor_user_id, comment_id, created_at)
        VALUES (?, ?, ?, ?, NULL, NULL, ?)`,
     )
-    .run(`de-${revisionId}-${action}-${createdAt}`, candidateId, revisionId, action, createdAt);
+    .run(id ?? `de-${revisionId}-${action}-${createdAt}`, candidateId, revisionId, action, createdAt);
 }
 
 /**
@@ -433,6 +435,18 @@ describe("finding review state (display only)", () => {
     migrate(fresh);
     expect(resolveFindingReference(fresh, "cand-1", {}).review_state).toBe("unknown");
     fresh.close();
+  });
+
+  it("agrees with the briefing store when two decisions share a created_at", () => {
+    // `created_at` is millisecond `Date.now()` and ids are random UUIDs, so a
+    // same-millisecond pair can have UUID order opposite insertion order. Both
+    // surfaces must pick the trailing row by (created_at, rowid) — the
+    // later-INSERTED `dismiss` — or Spaces state and the undo CAS diverge.
+    seedDecision(db, "cand-1", "rev-1", "keep", 1000, "fe1c9a6e-1111-4111-8111-111111111111");
+    seedDecision(db, "cand-1", "rev-1", "dismiss", 1000, "0a3d7b12-2222-4222-8222-222222222222");
+
+    expect(lastActionForRevision(db, "rev-1")).toBe("dismiss");
+    expect(resolveFindingReference(db, "cand-1", {}).review_state).toBe("dismissed");
   });
 
   it("re-pends on a new revision: the new current revision carries no decision", () => {

@@ -7,31 +7,47 @@
 //  1. DETERMINISTIC FACTS FIRST. The source-health strip is rendered above
 //     anything a model wrote, from batch/ingest facts only. It is nearly
 //     invisible when every source is current and auto-expands when it is not.
-//     "No findings" while a collector failed is NOT a successful empty
+//     "No findings" while a collector went silent is NOT a successful empty
 //     briefing, and the empty state says so in those words.
-//  2. MODEL OUTPUT IS LABELLED AND UNTRUSTED. The digest headline carries an
-//     explicit agent-generated label. Every model-derived string (`title`,
-//     `why_notable`, `refs`) is rendered as a text node — never as HTML — and a
-//     ref becomes a link only when it is an http(s) URL or a recognized
-//     internal resource ref (ui/src/resource-refs.ts). Anything else renders as
-//     inert text.
+//  2. MODEL OUTPUT IS LABELLED AND UNTRUSTED. Every model-derived string
+//     (`title`, `why_notable`, `refs`) is rendered as a text node — never as
+//     HTML — and a ref becomes a link only when it is an http(s) URL or a
+//     recognized internal resource ref (ui/src/resource-refs.ts). Anything else
+//     renders as inert text.
 //  3. JUDGING IS CHEAP AND REVERSIBLE. j/k moves, y keeps, n dismisses, u
 //     undoes; every decision raises an undo toast. Judged items leave the
 //     default view immediately and stay reachable behind the Judged filter.
+//  4. THE PRIMARY AXIS IS THE PRODUCER (issue 5497690). A briefing is not one
+//     undifferentiated queue: every candidate names the `source` that produced
+//     it and the `task_identity` of the batch it arrived in, and the page is
+//     navigable along that axis. The producer selector is CLIENT-SIDE over the
+//     already-loaded queue, not a refetch of `/api/briefing/queue?source=`:
+//     that route returns every pending candidate plus global source health in
+//     one unpaginated payload, so the page already holds the complete set. One
+//     poll therefore backs every producer view, switching producers costs no
+//     request, and the optimistic judged set, the undo entry, and the "N more
+//     pending" counts all stay consistent against a single snapshot. The
+//     server-side `source` filter remains the right tool for an API consumer
+//     that wants one producer's slice; it is the wrong tool for a view that
+//     must also show every OTHER producer's health at the same time.
 //
-// Server contract: "Briefing pilot — integration contract v1" §4, implemented
-// by lane ce22a3a. This view is a pure client of the queue/history/decision/
-// comment routes and of the server-authoritative `briefing` badge count; it
-// never derives the badge itself.
+// Server contract: src/contracts.ts (`BriefingQueueResponse` and friends),
+// implemented by src/routes/briefing.ts. This view renders ONLY what that
+// contract carries (issue 223d090): there is no agent-written digest headline
+// and no cost figure anywhere in the pipeline, so the page does not reserve a
+// permanent apology for either. It is a pure client of the queue/history/
+// decision/comment routes and of the server-authoritative `briefing` badge
+// count; it never derives the badge itself.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 
 import {
   getAgentDispatchEvents,
   getBriefingHistory,
   getBriefingQueue,
+  isApiErrorStatus,
   postBriefingComment,
   postBriefingDecision,
-  type BriefingCommentResult,
+  type BriefingDecisionTarget,
   type BriefingHistory,
   type BriefingJudgeAction,
   type BriefingQueue,
@@ -70,6 +86,8 @@ export type BriefingFilter = 'pending' | 'judged';
 
 type BriefingViewState = {
   filter: BriefingFilter;
+  /** Selected producer (`source`), or null for every producer. */
+  source: string | null;
   /** null = follow the deterministic default (open only when unhealthy). */
   healthOpen: boolean | null;
   expandedCandidateId: string | null;
@@ -77,6 +95,7 @@ type BriefingViewState = {
 
 const DEFAULT_VIEW_STATE: BriefingViewState = {
   filter: 'pending',
+  source: null,
   healthOpen: null,
   expandedCandidateId: null,
 };
@@ -84,20 +103,54 @@ const DEFAULT_VIEW_STATE: BriefingViewState = {
 function normalizeViewState(value: unknown, defaults: Readonly<BriefingViewState>): BriefingViewState {
   const row = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
   const filter = row.filter === 'judged' ? 'judged' : defaults.filter;
+  // State persisted before the producer axis existed simply has no `source`,
+  // which reads as "every producer" — the pre-existing behavior.
+  const source = typeof row.source === 'string' && row.source ? row.source : defaults.source;
   const healthOpen = typeof row.healthOpen === 'boolean' ? row.healthOpen : null;
   const expandedCandidateId =
     typeof row.expandedCandidateId === 'string' && row.expandedCandidateId
       ? row.expandedCandidateId
       : null;
-  return { filter, healthOpen, expandedCandidateId };
+  return { filter, source, healthOpen, expandedCandidateId };
 }
 
-/** A decision taken in this page session, kept so it can be undone and listed. */
+/**
+ * A decision taken in this page session, kept so it can be undone and listed.
+ *
+ * `eventId` is the identity the server returned for THIS judgment. Undo carries
+ * it back so it can only retract the decision this row represents: without it,
+ * an Undo clicked here after someone else decided the same revision would erase
+ * their newer judgment. Null only if a server answered without an event id, in
+ * which case Undo falls back to the pre-existing revision-addressed behavior.
+ */
 type JudgedEntry = {
   item: BriefingQueueItem;
   action: Exclude<BriefingJudgeAction, 'undo'>;
-  decidedAt: number;
+  eventId: string | null;
 };
+
+/**
+ * Identity of a JUDGMENT, which is a decision about a revision and not about a
+ * candidate. A candidate that is re-ingested with new content gets a new
+ * revision and returns to the queue as pending; suppressing it locally because
+ * an EARLIER revision of it was judged would hide live work — and would make
+ * the producer counts and the "everything is judged" empty state lie — for as
+ * long as this page stays mounted.
+ */
+function judgmentKey(item: BriefingQueueItem): string {
+  return `${item.candidate_id}::${item.revision.id}`;
+}
+
+/**
+ * The same identity as `judgmentKey`, addressed to the server. Local
+ * suppression and the wire decision are derived from ONE pair of fields, so the
+ * row the operator saw, the row this page hides, and the revision the ledger
+ * records can never come apart: an Undo issued from a judged row for revision A
+ * undoes revision A, even when the candidate has since moved to revision B.
+ */
+function decisionTarget(item: BriefingQueueItem): BriefingDecisionTarget {
+  return { candidate_id: item.candidate_id, revision_id: item.revision.id };
+}
 
 export type BriefingViewProps = {
   instance: InstanceInfo | null;
@@ -123,6 +176,16 @@ export function formatBriefingAge(timestampMs: number | null, now: number): stri
   return `${Math.floor(days / 30)}mo ago`;
 }
 
+/**
+ * Age of a source's last ingest batch. The server measures the age itself at
+ * response time (`last_ingest_age_ms`), so prefer it over the client clock and
+ * fall back to the raw timestamp only when the server did not report one.
+ */
+export function formatSourceIngestAge(source: BriefingSourceHealth, now: number): string {
+  if (source.last_ingest_age_ms !== null) return formatBriefingAge(now - source.last_ingest_age_ms, now);
+  return formatBriefingAge(source.last_ingested_at, now);
+}
+
 function parseTimestamp(value: string | number | null): number | null {
   if (value === null) return null;
   if (typeof value === 'number') return Number.isFinite(value) ? value : null;
@@ -142,7 +205,6 @@ function shortHash(value: string, length = 12): string {
 const SOURCE_STATUS_LABEL: Record<BriefingSourceStatus, string> = {
   current: 'current',
   stale: 'stale',
-  failed: 'failed',
   unknown: 'unknown',
 };
 
@@ -231,32 +293,87 @@ export function BriefingRef({ value }: { value: string }): JSX.Element {
 export type BriefingHealthSummary = {
   current: number;
   stale: number;
-  failed: number;
   unknown: number;
   healthy: boolean;
 };
 
 /** Deterministic roll-up of the per-source health rows. No model input. */
 export function summarizeBriefingHealth(sources: BriefingSourceHealth[]): BriefingHealthSummary {
-  const summary = { current: 0, stale: 0, failed: 0, unknown: 0 };
+  const summary = { current: 0, stale: 0, unknown: 0 };
   for (const source of sources) summary[source.status] += 1;
   return {
     ...summary,
-    healthy: sources.length > 0 && summary.stale === 0 && summary.failed === 0 && summary.unknown === 0,
+    healthy: sources.length > 0 && summary.stale === 0 && summary.unknown === 0,
   };
+}
+
+// --- producers ---------------------------------------------------------------
+
+/** One selectable producer: a `source`, its pending count, and its identity. */
+export type BriefingProducer = {
+  source: string;
+  /** Pending candidates this page is currently showing for the source. */
+  pending: number;
+  /** Identity of the source's most recent batch, when the ledger has one. */
+  lastTaskIdentity: string | null;
+  status: BriefingSourceStatus;
+};
+
+/**
+ * The producer axis, derived entirely on the client from the payload the queue
+ * route already returned.
+ *
+ * The health rows ARE the domain: the server groups them over every review
+ * candidate, so a source with anything pending necessarily has one. That makes
+ * the list stable — a producer stays listed and selectable when its last item
+ * is judged away, because its health row does not depend on the queue — and it
+ * makes a queue-only source what it actually is: a payload that contradicts the
+ * contract. Such a source is still offered rather than hidden (its pending work
+ * is real), but with `unknown` health, which the page renders as degraded.
+ *
+ * Counts come from the queue items rather than `BriefingSourceHealth.pending_count`
+ * on purpose: the items are the exact set this page will render, already net of
+ * decisions taken in this session, whereas the server count is a snapshot from
+ * load time. The health strip keeps reporting the server number as a fact.
+ */
+export function listBriefingProducers(
+  sources: BriefingSourceHealth[],
+  items: BriefingQueueItem[],
+): BriefingProducer[] {
+  const byName = new Map<string, BriefingProducer>();
+  for (const source of sources) {
+    byName.set(source.source, {
+      source: source.source,
+      pending: 0,
+      lastTaskIdentity: source.last_task_identity,
+      status: source.status,
+    });
+  }
+  for (const item of items) {
+    const producer = byName.get(item.source);
+    if (producer) {
+      producer.pending += 1;
+      continue;
+    }
+    byName.set(item.source, {
+      source: item.source,
+      pending: 1,
+      lastTaskIdentity: null,
+      status: 'unknown',
+    });
+  }
+  return [...byName.values()].sort((left, right) => left.source.localeCompare(right.source));
 }
 
 function BriefingHealthStrip({
   sources,
   summary,
-  cost,
   open,
   loading,
   onToggle,
 }: {
   sources: BriefingSourceHealth[];
   summary: BriefingHealthSummary;
-  cost: BriefingQueue['cost'];
   open: boolean;
   loading: boolean;
   onToggle(): void;
@@ -267,11 +384,9 @@ function BriefingHealthStrip({
   // in flight the strip stays neutral rather than flashing a false verdict.
   const state = loading
     ? 'loading'
-    : summary.failed > 0
-      ? 'failed'
-      : summary.stale > 0 || summary.unknown > 0 || sources.length === 0
-        ? 'degraded'
-        : 'healthy';
+    : summary.stale > 0 || summary.unknown > 0 || sources.length === 0
+      ? 'degraded'
+      : 'healthy';
   return (
     <section
       className={`briefing-health briefing-health--${state}`}
@@ -302,21 +417,11 @@ function BriefingHealthStrip({
               {summary.stale} stale
             </span>
           ) : null}
-          {summary.failed > 0 ? (
-            <span className="briefing-health__count briefing-health__count--failed">
-              {summary.failed} failed
-            </span>
-          ) : null}
           {summary.unknown > 0 ? (
             <span className="briefing-health__count briefing-health__count--unknown">
               {summary.unknown} unknown
             </span>
           ) : null}
-        </span>
-        <span className="briefing-health__cost">
-          {cost && cost.amount_usd !== null
-            ? `$${cost.amount_usd.toFixed(2)}${cost.window_label ? ` · ${cost.window_label}` : ''}`
-            : 'cost not reported'}
         </span>
       </div>
       {open ? (
@@ -335,12 +440,33 @@ function BriefingHealthStrip({
               <span className={`briefing-chip briefing-chip--${source.status}`}>
                 {SOURCE_STATUS_LABEL[source.status]}
               </span>
-              <span className="briefing-health__meta">
-                last ingest {formatBriefingAge(source.last_ingest_at, now)}
+              {/*
+                The producing task identity is a first-class fact, not a hover
+                affordance: a source is a namespace, and the identity names the
+                scheduled task that actually filled it. Its absence is reported
+                in words rather than by omitting the field, because "no batch on
+                record" is exactly the state the strip exists to expose.
+              */}
+              <span
+                className={`briefing-health__identity${
+                  source.last_task_identity ? '' : ' briefing-health__identity--unknown'
+                }`}
+              >
+                {source.last_task_identity ?? 'no batch identity on record'}
               </span>
               <span className="briefing-health__meta">
-                run {source.last_run_status ?? 'unreported'}
+                last ingest {formatSourceIngestAge(source, now)}
               </span>
+              {source.last_digest_version !== null ? (
+                <span className="briefing-health__meta">
+                  digest v{source.last_digest_version}
+                </span>
+              ) : null}
+              {source.last_batch_item_count !== null ? (
+                <span className="briefing-health__meta">
+                  {source.last_batch_item_count} in last batch
+                </span>
+              ) : null}
               {source.pending_count !== null ? (
                 <span className="briefing-health__meta">{source.pending_count} pending</span>
               ) : null}
@@ -352,40 +478,25 @@ function BriefingHealthStrip({
   );
 }
 
-// --- digest headline ---------------------------------------------------------
-
-function BriefingDigestHeadline({ digest }: { digest: BriefingQueue['digest'] }): JSX.Element {
-  return (
-    <section className="briefing-digest" data-testid="briefing-digest" aria-label="Digest headline">
-      <span className="briefing-digest__label">Agent-generated summary</span>
-      {digest && digest.headline ? (
-        <p className="briefing-digest__text">{digest.headline}</p>
-      ) : (
-        <p className="briefing-digest__text briefing-digest__text--absent">
-          No agent-generated headline was published for this briefing.
-        </p>
-      )}
-      {digest && digest.series_ref ? (
-        <p className="briefing-digest__provenance">
-          <BriefingRef
-            value={
-              digest.version !== null
-                ? `${digest.series_ref}@${digest.version}`
-                : digest.series_ref
-            }
-          />
-        </p>
-      ) : null}
-    </section>
-  );
-}
-
 // --- row ---------------------------------------------------------------------
 
 function BriefingProvenance({ item }: { item: BriefingQueueItem }): JSX.Element {
   const revision = item.revision;
   return (
     <div className="briefing-detail__provenance">
+      {/*
+        The producer of THIS revision, from the batch that carried it — not the
+        source's most recent batch identity, which can name a different task.
+        Omitted rather than substituted when the server did not resolve one.
+      */}
+      {item.task_identity ? (
+        <span
+          className="briefing-chip briefing-chip--provenance"
+          title="Task identity of the batch that carried this revision"
+        >
+          producer {item.task_identity}
+        </span>
+      ) : null}
       <span className="briefing-chip briefing-chip--provenance">
         evidence: {revision.evidence_kind ?? 'unreported'}
       </span>
@@ -505,35 +616,28 @@ function BriefingRowDetail({
         <h4 className="briefing-detail__heading">
           Occurrences ({item.occurrences.count})
         </h4>
+        {/*
+          The history route carries revisions, decisions, and comments — not
+          per-occurrence rows. The occurrence facts come from the queue entry's
+          aggregate (contract `BriefingOccurrenceStats`), which is what the
+          server actually computes.
+        */}
+        <ul className="briefing-detail__occurrences">
+          <li>
+            <span className="briefing-detail__occurrence-when">
+              first seen {formatBriefingAge(item.occurrences.first_seen_at, Date.now())}
+            </span>
+            <span className="briefing-detail__occurrence-when">
+              last seen {formatBriefingAge(item.occurrences.last_seen_at, Date.now())}
+            </span>
+          </li>
+        </ul>
         {historyLoading ? (
           <LoadingSkeleton variant="detail" label="Loading occurrence history" />
         ) : historyError ? (
           <p className="briefing-detail__error">History unavailable: {historyError}</p>
-        ) : history && !history.available ? (
-          <p className="briefing-detail__error">
-            History unavailable{history.reason ? `: ${history.reason}` : '.'}
-          </p>
         ) : history ? (
           <>
-            <ul className="briefing-detail__occurrences">
-              {history.occurrences.length === 0 ? (
-                <li className="briefing-detail__empty">
-                  No individual occurrence rows were returned.
-                </li>
-              ) : null}
-              {history.occurrences.map((occurrence) => (
-                <li key={occurrence.id}>
-                  <span className="briefing-detail__occurrence-when">
-                    {formatBriefingAge(occurrence.seen_at, Date.now())}
-                  </span>
-                  {occurrence.digest_version !== null ? (
-                    <span className="briefing-chip briefing-chip--provenance">
-                      digest v{occurrence.digest_version}
-                    </span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
             {history.revisions.length > 1 ? (
               <p className="briefing-detail__note">
                 {history.revisions.length} revisions — new evidence re-pends a candidate once.
@@ -746,6 +850,30 @@ type QueueState = {
   data: BriefingQueue | null;
   loading: boolean;
   error: string | null;
+  /**
+   * Sequence number of the load whose completion produced this state; 0 before
+   * any load finishes. It exists so the page can ask "is what I am holding old
+   * enough to predate that navigation?" — a question the payload itself cannot
+   * answer. A load that FAILS still advances it: the point is that an attempt
+   * concluded, so nothing can wait forever on a queue route that is down.
+   */
+  generation: number;
+};
+
+/**
+ * A candidate link that has not been reconciled with the queue yet.
+ *
+ * `minGeneration` is the first queue load allowed to declare the link
+ * unresolvable. Presence in any payload is proof enough to select — a candidate
+ * that is there is there — but ABSENCE only proves something in a payload
+ * loaded at or after the navigation. Without that floor, a second navigation
+ * into this keep-alive route is answered by whatever snapshot happens to be in
+ * hand, and a link arriving moments after the candidate was ingested is dropped
+ * against a payload that predates it.
+ */
+type PendingDeepLink = {
+  candidateId: string;
+  minGeneration: number;
 };
 
 export function BriefingView({
@@ -765,14 +893,29 @@ export function BriefingView({
     normalizeViewState,
     DEFAULT_VIEW_STATE,
   );
-  const [queue, setQueue] = useState<QueueState>({ data: null, loading: true, error: null });
+  const [queue, setQueue] = useState<QueueState>({
+    data: null,
+    loading: true,
+    error: null,
+    generation: 0,
+  });
   const [selectedId, setSelectedId] = useState<string | null>(initialCandidateId ?? null);
+  // Held as state rather than a ref so the selection keep-alive sees the same
+  // value in the same render pass and cannot race the scope reset a link may
+  // force. A link present at mount is armed against the FIRST load, which is
+  // the one the mount is about to start.
+  const [pendingDeepLink, setPendingDeepLink] = useState<PendingDeepLink | null>(
+    initialCandidateId ? { candidateId: initialCandidateId, minGeneration: 1 } : null,
+  );
   const [judged, setJudged] = useState<JudgedEntry[]>([]);
   const [undoEntry, setUndoEntry] = useState<JudgedEntry | null>(null);
   const [busyIds, setBusyIds] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [now, setNow] = useState(() => nowMs ?? Date.now());
   const [reloadNonce, setReloadNonce] = useState(0);
+  // Monotonic id of the most recently STARTED queue load. Read synchronously
+  // when arming a deep link, so the link knows which load it is waiting for.
+  const loadSeq = useRef(0);
 
   // A `filter` deep-link param wins on first mount only. After that the
   // persisted user choice owns the filter: a later route re-render must not
@@ -786,22 +929,54 @@ export function BriefingView({
     }
   }, [initialFilter, setViewState]);
 
+  // Unlike `filter`, a candidate link is honored every time it changes: this
+  // route stays mounted while hidden, so a second navigation from Spaces
+  // arrives as a new prop on the same instance and must still land on its
+  // finding. The mount case is already armed in the initial state above; only a
+  // LATER link runs this, and a later link is armed against the next load and
+  // asks for that load, because the payload in hand may be a minute old and
+  // predate the finding the operator just clicked.
+  const deepLinkMount = useRef(true);
+  useEffect(() => {
+    if (deepLinkMount.current) {
+      deepLinkMount.current = false;
+      return;
+    }
+    if (!initialCandidateId) return;
+    setPendingDeepLink({ candidateId: initialCandidateId, minGeneration: loadSeq.current + 1 });
+    setReloadNonce((current) => current + 1);
+  }, [initialCandidateId]);
+
   const filter = viewState.filter;
   const expandedId = viewState.expandedCandidateId;
 
   const loadQueue = useCallback(async (signal: AbortSignal) => {
+    // Stamped at START, so the stamp orders the REQUESTS. A response that
+    // arrives after a newer one is discarded rather than allowed to reinstate
+    // an older queue — and the generation never moves backwards, which is what
+    // lets a deep link trust it.
+    const seq = ++loadSeq.current;
     try {
       const data = await getBriefingQueue(signal);
       if (signal.aborted) return;
-      setQueue({ data, loading: false, error: null });
+      setQueue((current) => (
+        seq < current.generation
+          ? current
+          : { data, loading: false, error: null, generation: seq }
+      ));
       setNow(nowMs ?? Date.now());
     } catch (error) {
       if (signal.aborted) return;
-      setQueue((current) => ({
-        data: current.data,
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      }));
+      setQueue((current) => (
+        seq < current.generation
+          ? current
+          : {
+            data: current.data,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+            generation: seq,
+          }
+      ));
     }
   }, [nowMs]);
 
@@ -830,13 +1005,14 @@ export function BriefingView({
     load: loadHistory,
   });
 
-  const judgedIds = useMemo(() => new Set(judged.map((entry) => entry.item.candidate_id)), [judged]);
+  const judgedKeys = useMemo(() => new Set(judged.map((entry) => judgmentKey(entry.item))), [judged]);
 
   const pendingItems = useMemo(() => {
-    const items = queue.data?.items ?? [];
+    const items = queue.data?.candidates ?? [];
     // A judged item leaves the default view immediately, before the next poll
-    // confirms it server-side.
-    const visible = items.filter((item) => !judgedIds.has(item.candidate_id));
+    // confirms it server-side. The suppression is bound to the revision that
+    // was judged, so a NEWER revision of the same candidate comes back.
+    const visible = items.filter((item) => !judgedKeys.has(judgmentKey(item)));
     return [...visible].sort((left, right) => {
       const leftRank = left.revision.rank ?? Number.MAX_SAFE_INTEGER;
       const rightRank = right.revision.rank ?? Number.MAX_SAFE_INTEGER;
@@ -846,18 +1022,42 @@ export function BriefingView({
       if (leftAt !== rightAt) return rightAt - leftAt;
       return left.candidate_id.localeCompare(right.candidate_id);
     });
-  }, [queue.data, judgedIds]);
+  }, [queue.data, judgedKeys]);
 
-  const visibleItems = useMemo(
-    () => pendingItems.slice(0, BRIEFING_VISIBLE_LIMIT),
-    [pendingItems],
+  const sources = queue.data?.sources ?? [];
+  const selectedSource = viewState.source;
+
+  // The producer axis and the pending/judged axis compose: the producer scopes
+  // WHICH findings this page is about, the filter scopes what has happened to
+  // them. Both lists below are scoped, so the two tab rows always describe the
+  // same set of candidates.
+  const producers = useMemo(
+    () => listBriefingProducers(sources, pendingItems),
+    [sources, pendingItems],
   );
 
-  // Honest truncation: count against the server's pending total when it is
-  // larger than what this page received, so a server-side cap is still visible.
-  const serverPending = queue.data?.total_pending ?? pendingItems.length;
-  const totalPending = Math.max(serverPending - judged.length, pendingItems.length);
+  const scopedPending = useMemo(
+    () => (selectedSource ? pendingItems.filter((item) => item.source === selectedSource) : pendingItems),
+    [pendingItems, selectedSource],
+  );
+  const scopedJudged = useMemo(
+    () => (selectedSource ? judged.filter((entry) => entry.item.source === selectedSource) : judged),
+    [judged, selectedSource],
+  );
+
+  const visibleItems = useMemo(
+    () => scopedPending.slice(0, BRIEFING_VISIBLE_LIMIT),
+    [scopedPending],
+  );
+
+  // Honest truncation: the queue route returns every pending candidate, so the
+  // page's own list IS the pending total. Truncation is a display cap only, and
+  // the note counts exactly what this page is hiding — within the selected
+  // producer, which is the set the list is showing.
+  const totalPending = scopedPending.length;
   const hiddenPending = Math.max(totalPending - visibleItems.length, 0);
+  /** Pending work a producer selection is hiding, counted so it can be named. */
+  const otherProducerPending = pendingItems.length - scopedPending.length;
 
   const groups = useMemo(() => {
     const bySource = new Map<string, BriefingQueueItem[]>();
@@ -869,12 +1069,33 @@ export function BriefingView({
     return [...bySource.entries()].map(([source, items]) => ({ source, items }));
   }, [visibleItems]);
 
-  const sources = queue.data?.sources ?? [];
+  /** Health rows by source, so a queue group can name its producer identity. */
+  const healthBySource = useMemo(
+    () => new Map(sources.map((source) => [source.source, source])),
+    [sources],
+  );
+
+  // The strip itself stays GLOBAL under a producer selection: hiding another
+  // collector's silence because the operator is looking at one producer is the
+  // exact failure this page exists to prevent. Only the empty state below
+  // narrows, and it narrows to the producer it is actually speaking about.
   const healthSummary = useMemo(() => summarizeBriefingHealth(sources), [sources]);
   const healthOpen = viewState.healthOpen ?? !healthSummary.healthy;
 
+  const scopedSources = useMemo(
+    () => (selectedSource ? sources.filter((source) => source.source === selectedSource) : sources),
+    [sources, selectedSource],
+  );
+  const scopedHealthSummary = useMemo(
+    () => summarizeBriefingHealth(scopedSources),
+    [scopedSources],
+  );
+
   const setFilter = (next: BriefingFilter) => {
     setViewState((current) => ({ ...current, filter: next }));
+  };
+  const setSource = (next: string | null) => {
+    setViewState((current) => (current.source === next ? current : { ...current, source: next }));
   };
   const toggleHealth = () => {
     setViewState((current) => ({ ...current, healthOpen: !(current.healthOpen ?? !healthSummary.healthy) }));
@@ -886,8 +1107,36 @@ export function BriefingView({
     }));
   }, [setViewState]);
 
+  // An explicit candidate link (Spaces builds `#/briefing?candidate=…`) is a
+  // navigation, and a navigation outranks a persisted producer filter: landing
+  // on a page that silently shows a DIFFERENT finding because a filter was left
+  // selected in an earlier session is the failure this guards. When the linked
+  // candidate is not visible under the current producer scope, the scope is
+  // dropped rather than the link. A candidate that is not pending at all
+  // changes nothing — the selection keep-alive below owns that case.
+  useEffect(() => {
+    if (pendingDeepLink === null) return;
+    const target = pendingItems.find((item) => item.candidate_id === pendingDeepLink.candidateId);
+    if (target) {
+      // Presence needs no freshness argument: any payload that carries the
+      // candidate answers the link.
+      if (selectedSource !== null && target.source !== selectedSource) setSource(null);
+      setSelectedId(pendingDeepLink.candidateId);
+      setPendingDeepLink(null);
+      return;
+    }
+    // Absence is only evidence in a payload that postdates the navigation.
+    // Until such a load has concluded, the link is still open — the candidate
+    // may be in the refresh that is on its way.
+    if (queue.generation >= pendingDeepLink.minGeneration) setPendingDeepLink(null);
+  }, [pendingDeepLink, queue.generation, pendingItems, selectedSource]);
+
   // Keep a selection alive as rows come and go.
   useEffect(() => {
+    // While a deep link is still being honored the visible list is one render
+    // behind the scope reset it forces; adopting a default selection here would
+    // overwrite the linked candidate with whatever happens to be on top.
+    if (pendingDeepLink !== null) return;
     if (visibleItems.length === 0) {
       if (selectedId !== null) setSelectedId(null);
       return;
@@ -895,7 +1144,7 @@ export function BriefingView({
     if (!selectedId || !visibleItems.some((item) => item.candidate_id === selectedId)) {
       setSelectedId(visibleItems[0].candidate_id);
     }
-  }, [visibleItems, selectedId]);
+  }, [visibleItems, selectedId, pendingDeepLink]);
 
   const judge = useCallback(
     async (item: BriefingQueueItem, action: Exclude<BriefingJudgeAction, 'undo'>) => {
@@ -903,9 +1152,10 @@ export function BriefingView({
       setBusyIds((current) => (current.includes(item.candidate_id) ? current : [...current, item.candidate_id]));
       setActionError(null);
       try {
-        await postBriefingDecision(item.candidate_id, action);
-        const entry: JudgedEntry = { item, action, decidedAt: Date.now() };
-        setJudged((current) => [entry, ...current.filter((row) => row.item.candidate_id !== item.candidate_id)]);
+        const result = await postBriefingDecision(decisionTarget(item), action);
+        const entry: JudgedEntry = { item, action, eventId: result.event_id };
+        const key = judgmentKey(item);
+        setJudged((current) => [entry, ...current.filter((row) => judgmentKey(row.item) !== key)]);
         setUndoEntry(entry);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
@@ -921,12 +1171,34 @@ export function BriefingView({
       if (!operationalMutationsAllowed) return;
       setActionError(null);
       try {
-        await postBriefingDecision(entry.item.candidate_id, 'undo');
-        setJudged((current) => current.filter((row) => row.item.candidate_id !== entry.item.candidate_id));
-        setUndoEntry((current) => (current?.item.candidate_id === entry.item.candidate_id ? null : current));
+        // Addressed to the revision this row is about AND to the judgment it
+        // represents. A server that has since taken a newer revision keeps that
+        // newer decision; a revision whose decision is already gone, or whose
+        // latest decision is no longer the one this row recorded, answers 409,
+        // which surfaces as an action error and leaves the local list as it was.
+        await postBriefingDecision(
+          {
+            ...decisionTarget(entry.item),
+            ...(entry.eventId ? { expected_event_id: entry.eventId } : {}),
+          },
+          'undo',
+        );
+        const key = judgmentKey(entry.item);
+        setJudged((current) => current.filter((row) => judgmentKey(row.item) !== key));
+        setUndoEntry((current) => (current && judgmentKey(current.item) === key ? null : current));
         setSelectedId(entry.item.candidate_id);
+        // Dropping the local suppression only un-hides an item the last poll
+        // still carried. Once a poll has taken the decided candidate out of the
+        // queue, the undone item exists only on the server, so the page refetches
+        // rather than showing a queue and counts that are missing it for a minute.
+        setReloadNonce((current) => current + 1);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
+        // A 409 means this page's picture of the revision is behind the server:
+        // the decision it wanted to retract is gone or has been superseded. The
+        // judged row stays (nothing was undone), but the queue and counts are
+        // refetched so the view reconciles with whatever actually happened.
+        if (isApiErrorStatus(error, 409)) setReloadNonce((current) => current + 1);
       }
     },
     [operationalMutationsAllowed],
@@ -934,8 +1206,8 @@ export function BriefingView({
 
   const comment = useCallback(async (candidateId: string, body: string) => {
     if (!operationalMutationsAllowed) return;
-    const result: BriefingCommentResult = await postBriefingComment(candidateId, body);
-    if (!result.ok) throw new Error('The comment was not accepted.');
+    // A rejected comment throws out of the client; reaching here means it landed.
+    await postBriefingComment(candidateId, body);
     history.refresh();
   }, [operationalMutationsAllowed, history]);
 
@@ -1022,8 +1294,34 @@ export function BriefingView({
     toggleExpand,
   ]);
 
-  const queueUnavailable = queue.data !== null && !queue.data.available;
-  const sourcesDegraded = healthSummary.failed > 0 || healthSummary.stale > 0 || healthSummary.unknown > 0;
+  // Scoped to the selected producer: "nothing pending" must be a verdict about
+  // the producer being looked at, never a global all-clear borrowed from it.
+  const sourcesDegraded =
+    scopedHealthSummary.stale > 0
+    || scopedHealthSummary.unknown > 0
+    || scopedSources.length === 0;
+
+  const degradedReason = selectedSource
+    ? scopedSources.length === 0
+      ? `${selectedSource} has not reported an ingest batch.`
+      : scopedHealthSummary.stale > 0
+        ? `${selectedSource} stopped reporting.`
+        : `Health for ${selectedSource} could not be established.`
+    : scopedHealthSummary.stale > 0
+      ? `${scopedHealthSummary.stale} source(s) are stale.`
+      : scopedSources.length === 0
+        ? 'No collector source has reported an ingest batch.'
+        : 'Source health could not be established.';
+
+  /** Names the pending work a producer selection is hiding, and offers it. */
+  const otherProducersNote = selectedSource && otherProducerPending > 0 ? (
+    <p className="briefing-note" data-testid="briefing-other-producers">
+      {otherProducerPending} pending from other producers.{' '}
+      <button type="button" className="briefing-button" onClick={() => setSource(null)}>
+        Show all producers
+      </button>
+    </p>
+  ) : null;
 
   const renderDetail = (item: BriefingQueueItem): JSX.Element => (
     <BriefingRowDetail
@@ -1042,19 +1340,60 @@ export function BriefingView({
       <BriefingHealthStrip
         sources={sources}
         summary={healthSummary}
-        cost={queue.data?.cost ?? null}
         open={healthOpen}
         loading={queue.data === null && queue.loading}
         onToggle={toggleHealth}
       />
-
-      <BriefingDigestHeadline digest={queue.data?.digest ?? null} />
 
       {!operationalMutationsAllowed ? (
         <PreviewDisabledNotice title="Read-only instance">
           Keep, dismiss, undo, and notes are disabled here. Decisions are recorded only on an
           instance that allows operational mutations.
         </PreviewDisabledNotice>
+      ) : null}
+
+      {/*
+        The producer selector leads the controls because the producer is the
+        primary axis; the pending/judged filter below composes with whatever is
+        selected here. With a single producer and no selection the row would say
+        nothing the queue's own group heading does not, so it is not rendered —
+        but a live selection always keeps its "All producers" way back out, even
+        if the selected source has since left the health list entirely.
+      */}
+      {producers.length > 1 || selectedSource !== null ? (
+        <div
+          className="briefing-producers"
+          role="group"
+          aria-label="Producer"
+          data-testid="briefing-producers"
+        >
+          <button
+            type="button"
+            className={`briefing-tab briefing-tab--producer${selectedSource === null ? ' briefing-tab--active' : ''}`}
+            aria-pressed={selectedSource === null}
+            data-testid="briefing-producer-all"
+            onClick={() => setSource(null)}
+          >
+            <span className="briefing-tab__name">All producers</span>
+            <span className="briefing-tab__count">{pendingItems.length}</span>
+          </button>
+          {producers.map((producer) => (
+            <button
+              key={producer.source}
+              type="button"
+              className={`briefing-tab briefing-tab--producer${
+                selectedSource === producer.source ? ' briefing-tab--active' : ''
+              }${producer.status !== 'current' ? ' briefing-tab--degraded' : ''}`}
+              aria-pressed={selectedSource === producer.source}
+              data-testid={`briefing-producer-${producer.source}`}
+              title={producer.lastTaskIdentity ?? undefined}
+              onClick={() => setSource(producer.source)}
+            >
+              <span className="briefing-tab__name">{producer.source}</span>
+              <span className="briefing-tab__count">{producer.pending}</span>
+            </button>
+          ))}
+        </div>
       ) : null}
 
       <div className="briefing-toolbar">
@@ -1073,7 +1412,7 @@ export function BriefingView({
             aria-pressed={filter === 'judged'}
             onClick={() => setFilter('judged')}
           >
-            Judged{judged.length > 0 ? ` (${judged.length})` : ''}
+            Judged{scopedJudged.length > 0 ? ` (${scopedJudged.length})` : ''}
           </button>
         </div>
         <p className="briefing-toolbar__keys">
@@ -1097,21 +1436,19 @@ export function BriefingView({
           The briefing queue could not be loaded: {queue.error}
         </p>
       ) : null}
-      {queueUnavailable ? (
-        <p className="briefing-error" role="alert" data-testid="briefing-unavailable">
-          The briefing queue is unavailable
-          {queue.data?.reason ? `: ${queue.data.reason}` : '.'}
-        </p>
-      ) : null}
 
       {filter === 'judged' ? (
         <section className="briefing-judged" aria-label="Judged findings">
-          {judged.length === 0 ? (
-            <p className="briefing-empty">Nothing has been judged in this session yet.</p>
+          {scopedJudged.length === 0 ? (
+            <p className="briefing-empty">
+              {selectedSource
+                ? `Nothing from ${selectedSource} has been judged in this session yet.`
+                : 'Nothing has been judged in this session yet.'}
+            </p>
           ) : (
             <ul className="briefing-judged__list">
-              {judged.map((entry) => (
-                <li key={entry.item.candidate_id} className="briefing-judged__row">
+              {scopedJudged.map((entry) => (
+                <li key={judgmentKey(entry.item)} className="briefing-judged__row">
                   <span className={`briefing-chip briefing-chip--${entry.action}`}>{entry.action}</span>
                   <span className="briefing-judged__title">{entry.item.revision.title}</span>
                   <span className="briefing-chip briefing-chip--source">{entry.item.source}</span>
@@ -1135,23 +1472,22 @@ export function BriefingView({
       ) : queue.loading && queue.data === null ? (
         <LoadingSkeleton variant="tab" label="Loading briefing queue" />
       ) : visibleItems.length === 0 ? (
-        sourcesDegraded || queueUnavailable || sources.length === 0 ? (
+        sourcesDegraded ? (
           <section
             className="briefing-empty briefing-empty--degraded"
             data-testid="briefing-empty-degraded"
             role="status"
           >
-            <h3>No findings — but this briefing is not clean</h3>
+            <h3>
+              {selectedSource
+                ? `No findings from ${selectedSource} — and this is not clean`
+                : 'No findings — but this briefing is not clean'}
+            </h3>
             <p>
-              {healthSummary.failed > 0
-                ? `${healthSummary.failed} source(s) failed to report.`
-                : healthSummary.stale > 0
-                  ? `${healthSummary.stale} source(s) are stale.`
-                  : sources.length === 0
-                    ? 'No collector source has reported an ingest batch.'
-                    : 'Source health could not be established.'}{' '}
+              {degradedReason}{' '}
               An empty queue here does not mean there was nothing to find.
             </p>
+            {otherProducersNote}
           </section>
         ) : (
           <section
@@ -1159,8 +1495,13 @@ export function BriefingView({
             data-testid="briefing-empty-healthy"
             role="status"
           >
-            <h3>Nothing pending</h3>
-            <p>All sources are current and every finding has been judged.</p>
+            <h3>{selectedSource ? `Nothing pending from ${selectedSource}` : 'Nothing pending'}</h3>
+            <p>
+              {selectedSource
+                ? `${selectedSource} is current and every finding it produced has been judged.`
+                : 'All sources are current and every finding has been judged.'}
+            </p>
+            {otherProducersNote}
           </section>
         )
       ) : (
@@ -1172,6 +1513,16 @@ export function BriefingView({
                 <span className="briefing-group__count">
                   {group.items.length} pending
                 </span>
+                {/*
+                  The producing task identity, from the batch ledger. Labelled
+                  as the source's LAST batch because that is what the health row
+                  reports; a given row's own producer is in its fold-out.
+                */}
+                {healthBySource.get(group.source)?.last_task_identity ? (
+                  <span className="briefing-group__identity">
+                    last batch by {healthBySource.get(group.source)?.last_task_identity}
+                  </span>
+                ) : null}
               </h3>
               <ul className="briefing-group__list">
                 {group.items.map((item) => (
@@ -1197,6 +1548,7 @@ export function BriefingView({
               {hiddenPending} more pending — showing the top {visibleItems.length}.
             </p>
           ) : null}
+          {otherProducersNote}
         </section>
       )}
 

@@ -1,3 +1,4 @@
+import { candidateStateFromAction, lastActionForRevision } from "../briefing.js";
 import { getDb, type Db } from "../db.js";
 import { LedgerStore } from "../ledger/store.js";
 import {
@@ -352,24 +353,7 @@ function loadFindingRevision(db: Db, revisionId: string): SpaceFindingRevisionSu
  */
 function findingReviewState(db: Db, revisionId: string | null): FindingReviewState {
   if (!revisionId || !tableExists(db, "decision_events")) return "unknown";
-  const rows = db
-    .prepare(
-      `SELECT action FROM decision_events
-        WHERE revision_id = ?
-        ORDER BY created_at ASC, id ASC`,
-    )
-    .all(revisionId) as Array<{ action: string }>;
-  let effective: string | null = null;
-  for (const row of rows) {
-    if (row.action === "undo") effective = null;
-    else if (row.action === "keep" || row.action === "dismiss" || row.action === "expire") {
-      effective = row.action;
-    }
-  }
-  if (effective === "keep") return "kept";
-  if (effective === "dismiss") return "dismissed";
-  if (effective === "expire") return "expired_unreviewed";
-  return "pending";
+  return candidateStateFromAction(lastActionForRevision(db, revisionId));
 }
 
 /**

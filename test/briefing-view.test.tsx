@@ -1,13 +1,20 @@
-// Briefing view tests — umbrella 99b74d6, lane d304a9b.
+// Briefing view tests — umbrella 99b74d6, lane d304a9b; contract alignment 223d090.
 //
-// The server routes (integration contract v1 §4) are owned by a sibling lane
-// and are not live yet, so every test here drives the real client layer in
-// ui/src/api.ts against a stubbed `fetch` carrying contract-shaped payloads.
-// The point of the suite is the properties that make the Briefing trustworthy:
-// deterministic health before model output, an honest empty-but-broken state,
-// keyboard-only triage with undo, inline (not hover) fold-outs, allowlisted ref
-// linkification, and mutation gating on the instance policy.
+// Every stub here is typed as the SERVER CONTRACT (src/contracts.ts) — the same
+// types src/briefing.ts returns — so a fixture can no longer invent a field the
+// server never sends. That invention is exactly what hid the queue-key drift
+// this suite now guards: the old fixtures stubbed `items`, so a normalizer that
+// read `items` while the server sent `candidates` passed every test and rendered
+// an empty queue in production. The "server payload → normalizer" describe at
+// the bottom closes the loop with a payload built by the real server function.
+//
+// The rest of the suite covers the properties that make the Briefing
+// trustworthy: deterministic health before model output, an honest
+// empty-but-broken state, keyboard-only triage with undo, inline (not hover)
+// fold-outs, allowlisted ref linkification, and mutation gating on the instance
+// policy.
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/preact';
+import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -16,13 +23,32 @@ import {
   BriefingView,
   briefingRefLink,
   formatBriefingAge,
+  listBriefingProducers,
   summarizeBriefingHealth,
 } from '../ui/src/views/briefing';
 import {
   deriveBriefingSourceStatus,
   normalizeBriefingQueue,
-  type BriefingSourceHealth,
 } from '../ui/src/api';
+import {
+  BriefingValidationError,
+  countPendingBriefingCandidates,
+  getBriefingCandidateHistory,
+  ingestBriefingBatch,
+  listBriefingQueue,
+  recordBriefingDecision,
+} from '../src/briefing.js';
+import { createUser } from '../src/users/store.js';
+import {
+  BRIEFING_INGEST_SCHEMA,
+  type BriefingCandidateHistoryResponse,
+  type BriefingCommentResponse,
+  type BriefingDecisionResponse,
+  type BriefingQueueEntry,
+  type BriefingQueueResponse,
+  type BriefingSourceHealth,
+} from '../src/contracts.js';
+import { migrate, setDb, type Db } from '../src/db.js';
 import { AppShellProvider, type AppShellContextValue } from '../ui/src/app-shell';
 import { parseRouteFromHash } from '../ui/src/routing';
 
@@ -35,10 +61,11 @@ function jsonResponse(payload: unknown): Response {
   });
 }
 
-function makeItem(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  const id = (overrides.candidate_id as string) ?? 'cand-1';
+/** A contract `BriefingQueueEntry`. `id` IS the candidate id — not `candidate_id`. */
+function makeItem(overrides: Partial<BriefingQueueEntry> = {}): BriefingQueueEntry {
+  const id = overrides.id ?? 'cand-1';
   return {
-    candidate_id: id,
+    id,
     source: 'github-releases',
     candidate_key: `key-${id}`,
     created_at: Date.now() - HOUR,
@@ -60,44 +87,106 @@ function makeItem(overrides: Record<string, unknown> = {}): Record<string, unkno
       batch_key: 'b'.repeat(64),
       ingested_at: Date.now() - HOUR,
     },
+    revision_count: 1,
     occurrences: { count: 1, first_seen_at: Date.now() - HOUR, last_seen_at: Date.now() - HOUR },
+    // The producer of THIS entry's revision — a per-entry contract field, not
+    // the source's most recent batch identity.
+    task_identity: 'agent-schedule/daily-digest',
     ...overrides,
   };
 }
 
-function makeSource(overrides: Partial<BriefingSourceHealth> = {}): Record<string, unknown> {
+/**
+ * A contract `BriefingSourceHealth`. The server reports batch facts and NO
+ * `status` field — the client derives the classification — so a fixture cannot
+ * declare a source healthy or stale; it can only report when it last ingested.
+ */
+function makeSource(overrides: Partial<BriefingSourceHealth> = {}): BriefingSourceHealth {
+  const lastIngestedAt = overrides.last_ingested_at ?? Date.now() - HOUR;
   return {
     source: 'github-releases',
-    status: 'current',
-    last_ingest_at: Date.now() - HOUR,
-    last_run_id: 'run-9',
-    last_run_status: 'ok',
     pending_count: 1,
+    candidate_count: 1,
+    last_task_identity: 'agent-schedule/daily-digest',
+    last_run_id: 'run-9',
+    last_digest_version: 7,
+    last_ingested_at: lastIngestedAt,
+    last_ingest_age_ms: lastIngestedAt === null ? null : Date.now() - lastIngestedAt,
+    last_batch_item_count: 1,
     ...overrides,
   };
 }
 
-function makeQueue(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeQueue(overrides: Partial<BriefingQueueResponse> = {}): BriefingQueueResponse {
   return {
-    available: true,
-    items: [makeItem()],
-    total_pending: 1,
+    candidates: [makeItem()],
     sources: [makeSource()],
-    digest: {
-      headline: 'Three releases and one advisory landed overnight.',
-      series_ref: 'artifact-series:abcdef123456',
-      version: 7,
-      generated_at: Date.now() - HOUR,
+    ...overrides,
+  };
+}
+
+/**
+ * Two producers writing into one briefing: `github-releases` with two pending
+ * findings and `rss` with one, each with its own task identity. This is the
+ * shape the producer axis exists for, and no earlier fixture had it.
+ */
+function multiProducerQueue(): BriefingQueueResponse {
+  return {
+    candidates: [
+      makeItem({ id: 'gh-1' }),
+      makeItem({ id: 'gh-2' }),
+      makeItem({ id: 'rss-1', source: 'rss', task_identity: 'agent-schedule/rss-sweep' }),
+    ],
+    sources: [
+      makeSource({ pending_count: 2, candidate_count: 2 }),
+      makeSource({
+        source: 'rss',
+        pending_count: 1,
+        candidate_count: 1,
+        last_task_identity: 'agent-schedule/rss-sweep',
+      }),
+    ],
+  };
+}
+
+/** A source that has gone quiet past the staleness horizon. */
+function staleSource(overrides: Partial<BriefingSourceHealth> = {}): BriefingSourceHealth {
+  return makeSource({
+    source: 'rss',
+    last_ingested_at: Date.now() - 72 * HOUR,
+    last_ingest_age_ms: 72 * HOUR,
+    ...overrides,
+  });
+}
+
+/** A contract `BriefingCandidateHistoryResponse`: no per-occurrence rows exist. */
+function makeHistory(
+  overrides: Partial<BriefingCandidateHistoryResponse> = {},
+): BriefingCandidateHistoryResponse {
+  return {
+    candidate: {
+      id: 'cand-1',
+      source: 'github-releases',
+      candidate_key: 'key-cand-1',
+      current_revision_id: 'rev-cand-1',
+      created_at: Date.now() - HOUR,
+      state: 'pending',
     },
-    cost: { amount_usd: 0.42, window_label: 'today' },
-    generated_at: Date.now(),
+    revisions: [],
+    decisions: [],
+    comments: [],
     ...overrides,
   };
 }
 
 type StubOptions = {
-  queue?: Record<string, unknown>;
-  history?: Record<string, unknown>;
+  /**
+   * A function is resolved per request, which is how a test makes the SERVER
+   * change between polls — a new revision arriving, or a decided candidate
+   * leaving the queue — instead of pretending the payload is frozen.
+   */
+  queue?: BriefingQueueResponse | (() => BriefingQueueResponse);
+  history?: BriefingCandidateHistoryResponse;
   decisionStatus?: number;
 };
 
@@ -119,19 +208,11 @@ function stubFetch(options: StubOptions = {}): { calls: FetchCall[] } {
     calls.push({ url, method, body });
 
     if (url === '/api/briefing/queue') {
-      return Promise.resolve(jsonResponse(options.queue ?? makeQueue()));
+      const queue = typeof options.queue === 'function' ? options.queue() : options.queue;
+      return Promise.resolve(jsonResponse(queue ?? makeQueue()));
     }
     if (url.includes('/history')) {
-      return Promise.resolve(jsonResponse(options.history ?? {
-        available: true,
-        candidate_id: 'cand-1',
-        revisions: [],
-        decisions: [],
-        comments: [],
-        occurrences: [
-          { id: 'occ-1', revision_id: 'rev-cand-1', digest_version: 7, batch_key: 'b', seen_at: Date.now() - HOUR },
-        ],
-      }));
+      return Promise.resolve(jsonResponse(options.history ?? makeHistory()));
     }
     if (url.includes('/decision') && method === 'POST') {
       if (options.decisionStatus && options.decisionStatus >= 400) {
@@ -140,10 +221,27 @@ function stubFetch(options: StubOptions = {}): { calls: FetchCall[] } {
           headers: { 'Content-Type': 'application/json' },
         }));
       }
-      return Promise.resolve(jsonResponse({ ok: true, id: 'dec-1' }));
+      const decision: BriefingDecisionResponse = {
+        candidate_id: 'cand-1',
+        revision_id: 'rev-cand-1',
+        action: 'keep',
+        event_id: 'dec-1',
+        state: 'kept',
+      };
+      return Promise.resolve(jsonResponse(decision));
     }
     if (url.includes('/comments') && method === 'POST') {
-      return Promise.resolve(jsonResponse({ ok: true, comment_id: 'com-1' }));
+      const created: BriefingCommentResponse = {
+        comment: {
+          id: 'com-1',
+          candidate_id: 'cand-1',
+          revision_id: 'rev-cand-1',
+          body: 'noted',
+          actor_user_id: 'operator',
+          created_at: Date.now(),
+        },
+      };
+      return Promise.resolve(jsonResponse(created));
     }
     if (url === '/api/dashboard/badges') {
       return Promise.resolve(jsonResponse({ auth: 0, inbox: 0, work: 0, briefing: 1 }));
@@ -153,21 +251,38 @@ function stubFetch(options: StubOptions = {}): { calls: FetchCall[] } {
   return { calls };
 }
 
-function renderBriefing(
+function briefingElement(
   props: Partial<Parameters<typeof BriefingView>[0]> = {},
   shell: Partial<AppShellContextValue> = {},
-): void {
+) {
   const context: AppShellContextValue = {
     bottomPanel: null,
     registerBottomPanel: () => () => undefined,
     active: true,
     ...shell,
   };
-  render(
+  return (
     <AppShellProvider value={context}>
       <BriefingView instance={null} {...props} />
-    </AppShellProvider>,
+    </AppShellProvider>
   );
+}
+
+function renderBriefing(
+  props: Partial<Parameters<typeof BriefingView>[0]> = {},
+  shell: Partial<AppShellContextValue> = {},
+): ReturnType<typeof render> {
+  return render(briefingElement(props, shell));
+}
+
+/**
+ * Seed the view state this page persists across sessions. The key is written
+ * literally: it is a storage contract with the operator's own browser, so a
+ * test that silently followed a renamed key would stop covering the case where
+ * a filter chosen days ago is still in force.
+ */
+function persistBriefingViewState(state: Record<string, unknown>): void {
+  window.localStorage.setItem('mandible.briefing.viewState:v1', JSON.stringify(state));
 }
 
 /** This jsdom setup has no usable localStorage; the view persists view state. */
@@ -275,23 +390,16 @@ describe('ref linkification allowlist', () => {
   });
 
   it('renders a non-linkable ref as inert visible text rather than dropping it', async () => {
-    stubFetch({
-      queue: makeQueue({
-        items: [makeItem({ candidate_id: 'cand-1' })],
-      }),
+    const queue = makeQueue({
+      candidates: [makeItem({
+        id: 'cand-1',
+        revision: {
+          ...makeItem().revision,
+          refs: ['javascript:alert(1)'],
+          source_ref: 'javascript:alert(1)',
+        },
+      })],
     });
-    // Rewrite the refs of the single item to a hostile value.
-    const queue = makeQueue();
-    (queue.items as Record<string, unknown>[])[0] = makeItem({
-      candidate_id: 'cand-1',
-      revision: {
-        ...(makeItem().revision as Record<string, unknown>),
-        refs: ['javascript:alert(1)'],
-        source_ref: 'javascript:alert(1)',
-      },
-    });
-    cleanup();
-    vi.unstubAllGlobals();
     stubFetch({ queue });
     renderBriefing();
 
@@ -308,44 +416,37 @@ describe('ref linkification allowlist', () => {
 });
 
 describe('deterministic health classification', () => {
-  it('derives status from batch facts only', () => {
+  it('derives status from the batch facts the server actually reports', () => {
     const now = 1_000_000_000_000;
-    expect(deriveBriefingSourceStatus(now - HOUR, 'ok', now)).toBe('current');
-    expect(deriveBriefingSourceStatus(now - 48 * HOUR, 'ok', now)).toBe('stale');
-    expect(deriveBriefingSourceStatus(now - HOUR, 'failed', now)).toBe('failed');
+    expect(deriveBriefingSourceStatus(now - HOUR, HOUR, now)).toBe('current');
+    expect(deriveBriefingSourceStatus(now - 48 * HOUR, 48 * HOUR, now)).toBe('stale');
+    // The server's own age wins over the client clock when the two disagree.
+    expect(deriveBriefingSourceStatus(now - HOUR, 48 * HOUR, now)).toBe('stale');
+    // No batch on record at all is unknown — never quietly "current".
     expect(deriveBriefingSourceStatus(null, null, now)).toBe('unknown');
   });
 
   it('summarizes only as healthy when every source is current', () => {
     const now = Date.now();
     const queue = normalizeBriefingQueue({
-      items: [],
-      sources: [makeSource(), makeSource({ source: 'rss', status: undefined, last_run_status: 'failed' })],
+      candidates: [],
+      sources: [makeSource(), staleSource()],
     }, now);
     const summary = summarizeBriefingHealth(queue.sources);
-    expect(summary.failed).toBe(1);
+    expect(summary.stale).toBe(1);
     expect(summary.healthy).toBe(false);
     expect(summarizeBriefingHealth([]).healthy).toBe(false);
   });
 
-  it('parses a refs_json string and defaults an absent envelope honestly', () => {
-    const queue = normalizeBriefingQueue({
-      items: [{
-        candidate_id: 'c1',
-        source: 's',
-        revision: { id: 'r1', title: 't', why_notable: 'w', refs_json: '["https://a.example"]' },
-      }],
-    });
-    expect(queue.available).toBe(true);
-    expect(queue.items[0].revision.refs).toEqual(['https://a.example']);
-    expect(queue.digest).toBeNull();
-    expect(queue.cost).toBeNull();
-    expect(queue.total_pending).toBe(1);
+  it('degrades an unrecognizable payload to empty instead of inventing content', () => {
+    const queue = normalizeBriefingQueue({ candidates: 'nope', sources: null });
+    expect(queue.candidates).toEqual([]);
+    expect(queue.sources).toEqual([]);
   });
 });
 
 describe('BriefingView page composition', () => {
-  it('puts deterministic health above the labelled agent-generated headline', async () => {
+  it('leads with deterministic health and publishes no agent-written summary', async () => {
     stubFetch();
     renderBriefing();
 
@@ -353,37 +454,35 @@ describe('BriefingView page composition', () => {
     await waitFor(() => {
       expect(health.dataset.healthState).toBe('healthy');
     });
-    const digest = screen.getByTestId('briefing-digest');
-    expect(health.compareDocumentPosition(digest) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(digest).getByText('Agent-generated summary')).toBeTruthy();
+    // Nothing in the pipeline writes a digest headline, so the page reserves no
+    // space for one and never apologizes for its absence.
+    expect(screen.queryByTestId('briefing-digest')).toBeNull();
+    expect(screen.queryByText(/No agent-generated headline/)).toBeNull();
     // Compact when healthy: no per-source rows rendered.
     expect(within(health).queryByText(/last ingest/)).toBeNull();
   });
 
-  it('auto-expands the health strip when a source failed', async () => {
-    stubFetch({
-      queue: makeQueue({
-        sources: [makeSource(), makeSource({ source: 'rss', status: 'failed', last_run_status: 'failed' })],
-      }),
-    });
+  it('auto-expands the health strip when a source went stale', async () => {
+    stubFetch({ queue: makeQueue({ sources: [makeSource(), staleSource()] }) });
     renderBriefing();
 
     const health = await screen.findByTestId('briefing-health');
     await waitFor(() => {
-      expect(health.dataset.healthState).toBe('failed');
+      expect(health.dataset.healthState).toBe('degraded');
     });
-    expect(within(health).getByText('1 failed')).toBeTruthy();
+    expect(within(health).getByText('1 stale')).toBeTruthy();
     expect(within(health).getAllByText(/last ingest/).length).toBe(2);
+    // The expanded rows carry the server's real batch facts, not placeholders.
+    expect(within(health).getAllByText(/digest v7/).length).toBe(2);
   });
 
   it('groups rows by source with a title, source chip, age, and one-sentence rationale', async () => {
     stubFetch({
       queue: makeQueue({
-        items: [
-          makeItem({ candidate_id: 'a' }),
-          makeItem({ candidate_id: 'b', source: 'rss' }),
+        candidates: [
+          makeItem({ id: 'a' }),
+          makeItem({ id: 'b', source: 'rss' }),
         ],
-        total_pending: 2,
         sources: [makeSource(), makeSource({ source: 'rss' })],
       }),
     });
@@ -397,9 +496,9 @@ describe('BriefingView page composition', () => {
   });
 
   it('truncates honestly instead of rendering an unbounded queue', async () => {
-    const items = Array.from({ length: BRIEFING_VISIBLE_LIMIT + 4 }, (_unused, index) =>
-      makeItem({ candidate_id: `c${index}` }));
-    stubFetch({ queue: makeQueue({ items, total_pending: items.length }) });
+    const candidates = Array.from({ length: BRIEFING_VISIBLE_LIMIT + 4 }, (_unused, index) =>
+      makeItem({ id: `c${index}` }));
+    stubFetch({ queue: makeQueue({ candidates }) });
     renderBriefing();
 
     const note = await screen.findByTestId('briefing-truncation');
@@ -408,21 +507,744 @@ describe('BriefingView page composition', () => {
   });
 });
 
+/**
+ * Issue 5497690 — the briefing is presented BY PRODUCER. The queue payload
+ * already carries everything this needs (`source` per candidate, `task_identity`
+ * per candidate, per-source health), so the selector is client-side over the
+ * loaded queue and these tests never expect a second fetch.
+ */
+describe('producer axis derivation', () => {
+  it('takes its domain from health and overlays the live pending counts', () => {
+    const queue = normalizeBriefingQueue(multiProducerQueue());
+    const producers = listBriefingProducers(
+      [
+        ...queue.sources,
+        // A source that reported batches but has nothing pending right now: the
+        // case the page must never hide, and the reason health owns the domain.
+        ...normalizeBriefingQueue({
+          candidates: [],
+          sources: [makeSource({ source: 'quiet-but-known', pending_count: 0 })],
+        }).sources,
+      ],
+      queue.candidates,
+    );
+    expect(producers.map((producer) => [producer.source, producer.pending, producer.status]))
+      .toEqual([
+        ['github-releases', 2, 'current'],
+        ['quiet-but-known', 0, 'current'],
+        ['rss', 1, 'current'],
+      ]);
+  });
+
+  it('keeps a producer listed once its last pending item is judged away', () => {
+    // The queue is empty — every finding was judged in this session — and the
+    // producer is still offered, because its health row does not depend on the
+    // queue. No pin, and no selection collapsing under the operator.
+    const producers = listBriefingProducers(
+      normalizeBriefingQueue(multiProducerQueue()).sources,
+      [],
+    );
+    expect(producers.map((producer) => [producer.source, producer.pending]))
+      .toEqual([['github-releases', 0], ['rss', 0]]);
+  });
+
+  it('marks a queue-only producer unknown instead of claiming health it lacks', () => {
+    // The server groups health over every review candidate, so a source with
+    // pending work always has a health row. A payload without one contradicts
+    // the contract: the pending work is still offered, and the producer reads
+    // as degraded rather than as a source that is silently fine.
+    const producers = listBriefingProducers(
+      [],
+      normalizeBriefingQueue(multiProducerQueue()).candidates,
+    );
+    expect(producers.map((producer) => [producer.source, producer.pending, producer.status]))
+      .toEqual([
+        ['github-releases', 2, 'unknown'],
+        ['rss', 1, 'unknown'],
+      ]);
+    expect(producers.every((producer) => producer.lastTaskIdentity === null)).toBe(true);
+  });
+
+  it('renders a contract-inconsistent producer as degraded in the selector', async () => {
+    stubFetch({
+      queue: {
+        candidates: multiProducerQueue().candidates,
+        // `rss` has pending candidates but no health row.
+        sources: [makeSource()],
+      },
+    });
+    renderBriefing();
+
+    const rss = await screen.findByTestId('briefing-producer-rss');
+    expect(rss.className).toContain('briefing-tab--degraded');
+    expect(screen.getByTestId('briefing-producer-github-releases').className)
+      .not.toContain('briefing-tab--degraded');
+  });
+});
+
+describe('BriefingView producer selector', () => {
+  it('offers every producer with its pending count and does not refetch to filter', async () => {
+    const { calls } = stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    const producers = await screen.findByTestId('briefing-producers');
+    expect(within(producers).getByTestId('briefing-producer-all').textContent)
+      .toContain('All producers');
+    expect(within(producers).getByTestId('briefing-producer-all').textContent).toContain('3');
+    expect(within(producers).getByTestId('briefing-producer-github-releases').textContent)
+      .toContain('2');
+    expect(within(producers).getByTestId('briefing-producer-rss').textContent).toContain('1');
+
+    const queueCallsBefore = calls.filter((call) => call.url.startsWith('/api/briefing/queue')).length;
+    fireEvent.click(within(producers).getByTestId('briefing-producer-rss'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('briefing-row-gh-1')).toBeNull();
+    });
+    expect(screen.getByTestId('briefing-row-rss-1')).toBeTruthy();
+    expect(screen.getByTestId('briefing-row-rss-1').getAttribute('aria-current')).toBe('true');
+    // The whole point of filtering client-side: no new request, and certainly
+    // no `?source=` round trip.
+    expect(calls.filter((call) => call.url.startsWith('/api/briefing/queue')).length)
+      .toBe(queueCallsBefore);
+    expect(calls.some((call) => call.url.includes('source='))).toBe(false);
+  });
+
+  it('composes with the pending/judged filter in both directions', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+    const row = await screen.findByTestId('briefing-row-rss-1');
+    fireEvent.click(within(row).getByRole('button', { name: 'Dismiss' }));
+
+    // Pending under this producer drains; the counts follow immediately.
+    await waitFor(() => {
+      expect(screen.getByTestId('briefing-producer-rss').textContent).toContain('0');
+    });
+    expect(screen.getByTestId('briefing-producer-all').textContent).toContain('2');
+    expect(screen.getByRole('button', { name: 'Pending' })).toBeTruthy();
+
+    // Judged, scoped to the selected producer.
+    fireEvent.click(screen.getByRole('button', { name: 'Judged (1)' }));
+    await waitFor(() => {
+      expect(screen.getByText('Finding rss-1')).toBeTruthy();
+    });
+    expect(screen.queryByText('Finding gh-1')).toBeNull();
+
+    // Same filter, other producer: nothing was judged there, and the page says
+    // so about THAT producer rather than claiming the session judged nothing.
+    fireEvent.click(screen.getByTestId('briefing-producer-github-releases'));
+    await waitFor(() => {
+      expect(screen.getByText(/Nothing from github-releases has been judged/)).toBeTruthy();
+    });
+  });
+
+  it('scopes the empty state to the selected producer and names what it hides', async () => {
+    stubFetch({
+      queue: {
+        candidates: [makeItem({ id: 'gh-1' })],
+        sources: [makeSource(), makeSource({ source: 'rss', pending_count: 0, candidate_count: 0 })],
+      },
+    });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+
+    const empty = await screen.findByTestId('briefing-empty-healthy');
+    expect(empty.textContent).toContain('Nothing pending from rss');
+    const note = screen.getByTestId('briefing-other-producers');
+    expect(note.textContent).toContain('1 pending from other producers');
+
+    fireEvent.click(within(note).getByRole('button', { name: 'Show all producers' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('briefing-row-gh-1')).toBeTruthy();
+    });
+  });
+
+  it('never reads a selected producer as clean when that producer went quiet', async () => {
+    stubFetch({
+      queue: {
+        candidates: [makeItem({ id: 'gh-1' })],
+        sources: [makeSource(), staleSource({ pending_count: 0, candidate_count: 0 })],
+      },
+    });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+
+    const degraded = await screen.findByTestId('briefing-empty-degraded');
+    expect(degraded.textContent).toContain('No findings from rss');
+    expect(degraded.textContent).toContain('rss stopped reporting.');
+    expect(screen.queryByTestId('briefing-empty-healthy')).toBeNull();
+  });
+
+  it('keeps the health strip global so a selection cannot hide another source', async () => {
+    stubFetch({
+      queue: {
+        candidates: [makeItem({ id: 'gh-1' })],
+        sources: [makeSource(), staleSource({ pending_count: 0, candidate_count: 0 })],
+      },
+    });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-github-releases'));
+
+    const health = await screen.findByTestId('briefing-health');
+    await waitFor(() => {
+      expect(health.dataset.healthState).toBe('degraded');
+    });
+    expect(within(health).getByText('1 stale')).toBeTruthy();
+    expect(within(health).getAllByText(/last ingest/).length).toBe(2);
+  });
+
+  it('does not render a producer row when there is only one producer', async () => {
+    stubFetch();
+    renderBriefing();
+
+    await screen.findByTestId('briefing-row-cand-1');
+    expect(screen.queryByTestId('briefing-producers')).toBeNull();
+  });
+});
+
+describe('BriefingView session judgments', () => {
+  it('does not hide a newer revision of a candidate judged earlier', async () => {
+    let payload = multiProducerQueue();
+    stubFetch({ queue: () => payload });
+    renderBriefing();
+
+    const row = await screen.findByTestId('briefing-row-rss-1');
+    fireEvent.click(within(row).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('briefing-row-rss-1')).toBeNull();
+    });
+    expect(screen.getByTestId('briefing-producer-rss').textContent).toContain('0');
+
+    // The collector re-ingests the finding with new content: the SAME candidate,
+    // a new revision, pending again. The judgment was about the old revision and
+    // says nothing about this one.
+    payload = {
+      ...multiProducerQueue(),
+      candidates: multiProducerQueue().candidates.map((entry) => (
+        entry.id === 'rss-1'
+          ? {
+            ...entry,
+            revision: { ...entry.revision, id: 'rev-rss-1-b', title: 'Finding rss-1, revised' },
+          }
+          : entry
+      )),
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    const revised = await screen.findByTestId('briefing-row-rss-1');
+    expect(within(revised).getByText('Finding rss-1, revised')).toBeTruthy();
+    // Counted, not merely rendered: the producer tab and the pending tab are the
+    // numbers an operator would trust to say the queue is empty.
+    await waitFor(() => {
+      expect(screen.getByTestId('briefing-producer-rss').textContent).toContain('1');
+    });
+    expect(screen.getByRole('button', { name: 'Pending (3)' })).toBeTruthy();
+  });
+
+  it('brings back an undone finding a poll had already removed', async () => {
+    const full = multiProducerQueue();
+    let payload: BriefingQueueResponse = full;
+    const { calls } = stubFetch({ queue: () => payload });
+    const queueCalls = () => calls.filter((call) => call.url === '/api/briefing/queue').length;
+    renderBriefing();
+
+    const row = await screen.findByTestId('briefing-row-rss-1');
+    fireEvent.click(within(row).getByRole('button', { name: 'Dismiss' }));
+    await screen.findByTestId('briefing-undo-toast');
+
+    // A poll lands while the toast is still up. The server has taken the decided
+    // candidate out of the queue, so the local overlay is no longer what hides it.
+    payload = { ...full, candidates: full.candidates.filter((entry) => entry.id !== 'rss-1') };
+    const before = queueCalls();
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => {
+      expect(queueCalls()).toBe(before + 1);
+    });
+
+    // Undo puts it back on the server; the page must not stay a poll behind.
+    payload = full;
+    fireEvent.click(
+      within(screen.getByTestId('briefing-undo-toast')).getByRole('button', { name: 'Undo' }),
+    );
+
+    const restored = await screen.findByTestId('briefing-row-rss-1');
+    expect(within(restored).getByText('Finding rss-1')).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByTestId('briefing-producer-rss').textContent).toContain('1');
+    });
+  });
+});
+
+/**
+ * The judged/undo path against the REAL store, not a fixture that agrees with
+ * the page. Everything below runs `listBriefingQueue` and
+ * `recordBriefingDecision` over an in-memory database, so an assertion about
+ * "which revision was undone" is an assertion about rows the daemon would
+ * write — the one thing a hand-rolled fetch stub cannot establish, and the
+ * exact gap that let a candidate-addressed Undo pass this suite.
+ */
+describe('BriefingView decisions against the real store', () => {
+  let db: Db;
+  let reviewerId: string;
+
+  const CANDIDATE_KEY = 'c'.repeat(64);
+
+  function ingestRevision(
+    options: { title: string; evidenceHash: string; version: number; now: number },
+  ): void {
+    ingestBriefingBatch(db, {
+      schema: BRIEFING_INGEST_SCHEMA,
+      task_identity: 'agent-schedule/daily-digest',
+      run_id: `run-${options.version}`,
+      digest: { series_ref: 'artifact-series:abc123', version: options.version },
+      batch_key: `batch-${options.version}`,
+      items: [{
+        candidate_key: CANDIDATE_KEY,
+        source: 'arxiv-scan',
+        ref: 'https://example.invalid/paper-1',
+        title: options.title,
+        why_notable: 'It moves the pilot forward',
+        refs: [],
+        evidence_hash: options.evidenceHash,
+        evidence_kind: 'snapshot-item',
+        captured_at: '2026-08-11T09:00:00Z',
+        rank: 1,
+      }],
+    }, options.now);
+  }
+
+  function candidateId(): string {
+    return (db.prepare('SELECT id FROM review_candidates LIMIT 1').get() as { id: string }).id;
+  }
+
+  function revisionIdByTitle(title: string): string {
+    return (db
+      .prepare('SELECT id FROM candidate_revisions WHERE title = ?')
+      .get(title) as { id: string }).id;
+  }
+
+  function lastActionOn(revisionId: string): string | null {
+    const row = db
+      .prepare(
+        `SELECT action FROM decision_events
+          WHERE revision_id = ?
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT 1`,
+      )
+      .get(revisionId) as { action: string } | undefined;
+    return row?.action ?? null;
+  }
+
+  /** Serve the page from the real store: queue reads and decision writes both. */
+  function stubRealServer(): void {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const body = typeof init?.body === 'string'
+        ? JSON.parse(init.body) as Record<string, unknown>
+        : {};
+
+      if (url === '/api/briefing/queue') {
+        return Promise.resolve(jsonResponse(listBriefingQueue(db, { now: Date.now() })));
+      }
+      if (url === '/api/dashboard/badges') {
+        return Promise.resolve(jsonResponse({
+          auth: 0,
+          inbox: 0,
+          work: 0,
+          briefing: countPendingBriefingCandidates(db),
+        }));
+      }
+      if (url.includes('/history')) {
+        const id = decodeURIComponent(url.split('/candidates/')[1].split('/')[0]);
+        return Promise.resolve(jsonResponse(getBriefingCandidateHistory(db, id)));
+      }
+      if (url.includes('/decision') && method === 'POST') {
+        const id = decodeURIComponent(url.split('/candidates/')[1].split('/')[0]);
+        try {
+          const outcome = recordBriefingDecision(db, {
+            candidateId: id,
+            action: body.action as 'keep' | 'dismiss' | 'undo',
+            actorUserId: reviewerId,
+            ...(typeof body.revision_id === 'string' ? { revisionId: body.revision_id } : {}),
+            ...(typeof body.expected_event_id === 'string'
+              ? { expectedEventId: body.expected_event_id }
+              : {}),
+          });
+          return Promise.resolve(jsonResponse(outcome));
+        } catch (error) {
+          const status = error instanceof BriefingValidationError ? error.status : 400;
+          const message = error instanceof Error ? error.message : String(error);
+          return Promise.resolve(new Response(JSON.stringify({ error: message }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+      }
+      return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
+    }));
+  }
+
+  /** The Undo button on the judged row showing this revision's title. */
+  function undoButtonFor(title: string): HTMLElement {
+    const row = screen.getByText(title).closest('li');
+    if (!row) throw new Error(`no judged row for ${title}`);
+    return within(row as HTMLElement).getByRole('button', { name: 'Undo' });
+  }
+
+  /**
+   * Judge revision A, let the collector revise the finding, judge revision B,
+   * then reach back and undo A from the older judged row.
+   */
+  async function judgeBothRevisions(): Promise<void> {
+    ingestRevision({ title: 'Finding A', evidenceHash: 'evidence-a', version: 1, now: Date.now() - HOUR });
+    stubRealServer();
+    renderBriefing();
+
+    const rowA = await screen.findByText('Finding A');
+    fireEvent.click(within(rowA.closest('li') as HTMLElement).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Finding A')).toBeNull();
+    });
+
+    ingestRevision({ title: 'Finding B', evidenceHash: 'evidence-b', version: 2, now: Date.now() });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    const rowB = await screen.findByText('Finding B');
+    fireEvent.click(within(rowB.closest('li') as HTMLElement).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Finding B')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Judged/ }));
+    await screen.findByText('Finding A');
+    expect(lastActionOn(revisionIdByTitle('Finding A'))).toBe('dismiss');
+    expect(lastActionOn(revisionIdByTitle('Finding B'))).toBe('dismiss');
+  }
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    migrate(db);
+    setDb(db);
+    reviewerId = createUser(db, { slug: 'operator', kind: 'human', display_name: 'Operator' }).id;
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('undoes the older judged revision without clearing the newer judgment', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+    const revisionB = revisionIdByTitle('Finding B');
+
+    fireEvent.click(undoButtonFor('Finding A'));
+
+    await waitFor(() => {
+      expect(lastActionOn(revisionA)).toBe('undo');
+    });
+    // The judgment the operator did NOT touch survives. A candidate-addressed
+    // undo landed here instead, un-dismissing content nobody re-reviewed.
+    expect(lastActionOn(revisionB)).toBe('dismiss');
+    // The candidate follows its current revision, so it stays out of the queue.
+    expect(countPendingBriefingCandidates(db)).toBe(0);
+
+    // UI state matches: the undone row is gone from Judged, the newer one
+    // remains, and the queue does not resurrect the finding.
+    await waitFor(() => {
+      expect(screen.queryByText('Finding A')).toBeNull();
+    });
+    expect(screen.getByText('Finding B')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Pending/ }));
+    await screen.findByTestId('briefing-view');
+    expect(screen.queryByText('Finding B')).toBeNull();
+  });
+
+  it('re-pends the candidate when the CURRENT revision is the one undone', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+    const revisionB = revisionIdByTitle('Finding B');
+
+    fireEvent.click(undoButtonFor('Finding B'));
+    await waitFor(() => {
+      expect(lastActionOn(revisionB)).toBe('undo');
+    });
+    expect(lastActionOn(revisionA)).toBe('dismiss');
+    expect(countPendingBriefingCandidates(db)).toBe(1);
+
+    // Undoing the older row afterwards is still valid and still local to it.
+    fireEvent.click(undoButtonFor('Finding A'));
+    await waitFor(() => {
+      expect(lastActionOn(revisionA)).toBe('undo');
+    });
+    expect(lastActionOn(revisionB)).toBe('undo');
+    expect(countPendingBriefingCandidates(db)).toBe(1);
+  });
+
+  it('surfaces a rejected undo and keeps the judged row', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+
+    // Somewhere else — another tab, another operator — that decision is already
+    // gone. The page must report the conflict rather than pretend it undid it.
+    recordBriefingDecision(db, {
+      candidateId: candidateId(),
+      revisionId: revisionA,
+      action: 'undo',
+      actorUserId: reviewerId,
+    });
+
+    fireEvent.click(undoButtonFor('Finding A'));
+
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('no decision to undo');
+    expect(screen.getByText('Finding A')).toBeTruthy();
+    expect(screen.getByText('Finding B')).toBeTruthy();
+  });
+
+  /**
+   * The pass-3 finding, end to end through the page. Revision addressing alone
+   * cannot save this: the row and the intervening decision are about the SAME
+   * revision, so only the event identity distinguishes the judgment this page
+   * made from the one that replaced it.
+   */
+  it('conflicts on a stale undo and reconciles instead of erasing the newer judgment', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+    const pageDismissId = (db
+      .prepare(
+        `SELECT id FROM decision_events
+          WHERE revision_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(revisionA) as { id: string }).id;
+
+    // Another operator judges the same revision after this page dismissed it.
+    const bob = createUser(db, { slug: 'bob', kind: 'human', display_name: 'Bob' }).id;
+    recordBriefingDecision(db, {
+      candidateId: candidateId(),
+      revisionId: revisionA,
+      action: 'keep',
+      actorUserId: bob,
+    });
+
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    const queueLoads = (): number => fetchMock.mock.calls
+      .filter((call) => String(call[0]) === '/api/briefing/queue').length;
+    const loadsBefore = queueLoads();
+
+    fireEvent.click(undoButtonFor('Finding A'));
+
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('decision changed since it was read');
+
+    // The request named the event this page recorded, not merely the revision.
+    const undoInit = fetchMock.mock.calls
+      .filter((call) => String(call[0]).includes('/decision')).at(-1)?.[1] as RequestInit;
+    expect(JSON.parse(String(undoInit.body)) as Record<string, unknown>).toMatchObject({
+      action: 'undo',
+      revision_id: revisionA,
+      expected_event_id: pageDismissId,
+    });
+
+    // Nothing was written: Bob's judgment stands and the judged row remains,
+    // because this page did not undo anything.
+    expect(lastActionOn(revisionA)).toBe('keep');
+    expect(screen.getByText('Finding A')).toBeTruthy();
+    expect(screen.getByText('Finding B')).toBeTruthy();
+
+    // The page refetches so it stops rendering a picture the server moved past.
+    await waitFor(() => {
+      expect(queueLoads()).toBeGreaterThan(loadsBefore);
+    });
+  });
+});
+
+describe('BriefingView candidate deep link', () => {
+  it('overrides a persisted producer filter on first mount', async () => {
+    // The operator left the page scoped to `rss` in an earlier session; the link
+    // that brings them back points at a `github-releases` finding.
+    persistBriefingViewState({ filter: 'pending', source: 'rss' });
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing({ initialCandidateId: 'gh-1' });
+
+    await awaitSelection('gh-1');
+    expect(screen.getByTestId('briefing-producer-all').getAttribute('aria-pressed')).toBe('true');
+    // The scope was dropped, not narrowed to the link's own producer.
+    expect(screen.getByTestId('briefing-row-rss-1')).toBeTruthy();
+  });
+
+  it('honors a later candidate prop on the already-mounted route', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    const view = renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+    await awaitSelection('rss-1');
+
+    // A second navigation from Spaces: this route is keep-alive, so it arrives
+    // as a new prop on the same instance rather than a fresh mount.
+    view.rerender(briefingElement({ initialCandidateId: 'gh-1' }));
+
+    await awaitSelection('gh-1');
+    expect(screen.getByTestId('briefing-producer-all').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('reconciles a later link against a queue loaded after the navigation', async () => {
+    // The payload this keep-alive page is holding predates the finding: the
+    // collector ingested `gh-1` after the last poll. Answering the link from
+    // that snapshot means declaring the candidate absent on the strength of
+    // evidence that could not have contained it.
+    let payload: BriefingQueueResponse = {
+      candidates: [makeItem({ id: 'rss-1', source: 'rss', task_identity: 'agent-schedule/rss-sweep' })],
+      sources: [makeSource({ source: 'rss', last_task_identity: 'agent-schedule/rss-sweep' })],
+    };
+    stubFetch({ queue: () => payload });
+    const view = renderBriefing();
+
+    await awaitSelection('rss-1');
+
+    payload = multiProducerQueue();
+    view.rerender(briefingElement({ initialCandidateId: 'gh-1' }));
+
+    await awaitSelection('gh-1');
+  });
+
+  it('does not freeze the selection on a link the queue will never contain', async () => {
+    let payload: BriefingQueueResponse = multiProducerQueue();
+    stubFetch({ queue: () => payload });
+    const view = renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+    await awaitSelection('rss-1');
+
+    view.rerender(briefingElement({ initialCandidateId: 'never-ingested' }));
+
+    // The load the link asked for concludes without it, so the link is spent
+    // and the ordinary selection keep-alive resumes rather than waiting forever
+    // for a candidate that is not coming.
+    payload = {
+      candidates: multiProducerQueue().candidates.filter((entry) => entry.id !== 'rss-1'),
+      sources: multiProducerQueue().sources,
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('briefing-row-rss-1')).toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('briefing-producer-all'));
+    await awaitSelection('gh-1');
+  });
+
+  it('leaves a filter alone when the linked candidate is already in scope', async () => {
+    persistBriefingViewState({ filter: 'pending', source: 'rss' });
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing({ initialCandidateId: 'rss-1' });
+
+    await awaitSelection('rss-1');
+    expect(screen.getByTestId('briefing-producer-rss').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.queryByTestId('briefing-row-gh-1')).toBeNull();
+  });
+});
+
+describe('task identity visibility', () => {
+  it('renders each source\'s producing task identity as text in the health strip', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    const health = await screen.findByTestId('briefing-health');
+    // Both sources are current, so the strip settles collapsed; only then is
+    // the toggle a reliable "open it" rather than a race with the first load.
+    await waitFor(() => {
+      expect(health.dataset.healthState).toBe('healthy');
+    });
+    const toggle = within(health).getByRole('button');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(within(health).getByText('agent-schedule/daily-digest')).toBeTruthy();
+    });
+    expect(within(health).getByText('agent-schedule/rss-sweep')).toBeTruthy();
+  });
+
+  it('says so in words when a source has no batch identity on record', async () => {
+    stubFetch({
+      queue: makeQueue({
+        candidates: [],
+        sources: [makeSource({
+          last_task_identity: null,
+          last_ingested_at: null,
+          last_ingest_age_ms: null,
+        })],
+      }),
+    });
+    renderBriefing();
+
+    const health = await screen.findByTestId('briefing-health');
+    await waitFor(() => {
+      expect(within(health).getByText('no batch identity on record')).toBeTruthy();
+    });
+  });
+
+  it('labels each queue group with the producing identity of its last batch', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-row-gh-1');
+    const headings = screen.getAllByRole('heading', { level: 3 });
+    const text = headings.map((heading) => heading.textContent ?? '');
+    expect(text.some((line) => /last batch by agent-schedule\/daily-digest/.test(line))).toBe(true);
+    expect(text.some((line) => /last batch by agent-schedule\/rss-sweep/.test(line))).toBe(true);
+  });
+
+  it('shows the fold-out the producer of that finding, not the source default', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    const row = await screen.findByTestId('briefing-row-rss-1');
+    fireEvent.click(within(row).getByRole('button', { expanded: false }));
+    const detail = await screen.findByTestId('briefing-detail-rss-1');
+    expect(within(detail).getByText('producer agent-schedule/rss-sweep')).toBeTruthy();
+  });
+
+  it('omits the fold-out producer chip rather than substituting a source-level one', async () => {
+    stubFetch({
+      queue: makeQueue({ candidates: [makeItem({ id: 'cand-1', task_identity: null })] }),
+    });
+    renderBriefing();
+
+    const row = await screen.findByTestId('briefing-row-cand-1');
+    fireEvent.click(within(row).getByRole('button', { expanded: false }));
+    const detail = await screen.findByTestId('briefing-detail-cand-1');
+    expect(within(detail).queryByText(/^producer /)).toBeNull();
+    // The source-level identity is still on the page; it is simply not claimed
+    // as this revision's producer.
+    expect(within(detail).getByText(/evidence: snapshot-item/)).toBeTruthy();
+  });
+});
+
 describe('BriefingView empty states', () => {
   it('renders an empty-and-healthy briefing as a success', async () => {
-    stubFetch({ queue: makeQueue({ items: [], total_pending: 0 }) });
+    stubFetch({ queue: makeQueue({ candidates: [] }) });
     renderBriefing();
 
     expect(await screen.findByTestId('briefing-empty-healthy')).toBeTruthy();
     expect(screen.queryByTestId('briefing-empty-degraded')).toBeNull();
   });
 
-  it('never presents an empty queue as clean when a collector failed', async () => {
+  it('never presents an empty queue as clean when a collector went quiet', async () => {
     stubFetch({
       queue: makeQueue({
-        items: [],
-        total_pending: 0,
-        sources: [makeSource({ status: 'failed', last_run_status: 'failed' })],
+        candidates: [],
+        sources: [staleSource()],
       }),
     });
     renderBriefing();
@@ -433,14 +1255,15 @@ describe('BriefingView empty states', () => {
     expect(screen.queryByTestId('briefing-empty-healthy')).toBeNull();
   });
 
-  it('distinguishes an unavailable queue from an empty one', async () => {
-    stubFetch({
-      queue: { available: false, reason: 'briefing routes are not deployed', items: [], sources: [] },
-    });
+  it('does not read an empty briefing as clean when no source has reported', async () => {
+    // The queue route has no "unavailable" envelope: a transport failure is
+    // reported by the load error, and zero sources is a degraded briefing.
+    stubFetch({ queue: { candidates: [], sources: [] } });
     renderBriefing();
 
-    const notice = await screen.findByTestId('briefing-unavailable');
-    expect(notice.textContent).toContain('briefing routes are not deployed');
+    const degraded = await screen.findByTestId('briefing-empty-degraded');
+    expect(degraded.textContent).toContain('No collector source has reported an ingest batch.');
+    expect(screen.queryByTestId('briefing-empty-healthy')).toBeNull();
   });
 });
 
@@ -448,8 +1271,7 @@ describe('BriefingView keyboard triage', () => {
   it('processes the queue with the keyboard only and offers immediate undo', async () => {
     const { calls } = stubFetch({
       queue: makeQueue({
-        items: [makeItem({ candidate_id: 'a' }), makeItem({ candidate_id: 'b' })],
-        total_pending: 2,
+        candidates: [makeItem({ id: 'a' }), makeItem({ id: 'b' })],
       }),
     });
     renderBriefing();
@@ -471,7 +1293,9 @@ describe('BriefingView keyboard triage', () => {
       expect(screen.queryByTestId('briefing-row-a')).toBeNull();
     });
     const decision = calls.find((call) => call.url.includes('/decision'));
-    expect(decision?.body).toEqual({ action: 'keep' });
+    // The revision is on the wire, not just the candidate: the server writes
+    // the event where the operator's eyes were.
+    expect(decision?.body).toEqual({ action: 'keep', revision_id: 'rev-a' });
     expect(decision?.url).toBe('/api/briefing/candidates/a/decision');
 
     const toast = await screen.findByTestId('briefing-undo-toast');
@@ -484,7 +1308,10 @@ describe('BriefingView keyboard triage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('briefing-row-a')).toBeTruthy();
     });
-    expect(calls.filter((call) => call.url.includes('/decision')).at(-1)?.body).toEqual({ action: 'undo' });
+    // The undo names the EVENT the keep returned, not just the revision, so it
+    // can only retract that judgment and never a newer one on the same revision.
+    expect(calls.filter((call) => call.url.includes('/decision')).at(-1)?.body)
+      .toEqual({ action: 'undo', revision_id: 'rev-a', expected_event_id: 'dec-1' });
   });
 
   it('opens the fold-out from the keyboard, inline and not on hover', async () => {
@@ -584,5 +1411,264 @@ describe('age formatting', () => {
     expect(formatBriefingAge(now - 5 * 60_000, now)).toBe('5m ago');
     expect(formatBriefingAge(now - 3 * HOUR, now)).toBe('3h ago');
     expect(formatBriefingAge(now - 50 * HOUR, now)).toBe('2d ago');
+  });
+});
+
+/**
+ * Issue 223d090. Every other test in this file feeds the normalizer a
+ * hand-written fixture; a fixture and a normalizer can agree with each other
+ * and both be wrong about the server. This one builds the payload with the real
+ * server function against a real database, so the queue key, the source-health
+ * field names, and the candidate id all have to match what the daemon sends.
+ */
+describe('server payload → client normalizer', () => {
+  let db: Db;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    migrate(db);
+    setDb(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  function ingest(now: number): void {
+    ingestBriefingBatch(db, {
+      schema: BRIEFING_INGEST_SCHEMA,
+      task_identity: 'agent-schedule/daily-digest',
+      run_id: 'run-1',
+      digest: { series_ref: 'artifact-series:abc123', version: 3 },
+      batch_key: 'batch-1',
+      items: [{
+        candidate_key: 'k'.repeat(64),
+        source: 'arxiv-scan',
+        ref: 'https://example.invalid/paper-1',
+        title: 'A notable finding',
+        why_notable: 'It moves the pilot forward',
+        refs: ['https://example.invalid/paper-1'],
+        evidence_hash: 'evidence-a',
+        evidence_kind: 'snapshot-item',
+        captured_at: '2026-08-11T09:00:00Z',
+        rank: 1,
+      }],
+    }, now);
+  }
+
+  /** A second producer: its own task identity, its own source namespace. */
+  function ingestSecondProducer(now: number): void {
+    ingestBriefingBatch(db, {
+      schema: BRIEFING_INGEST_SCHEMA,
+      task_identity: 'agent-schedule/rss-sweep',
+      run_id: 'run-2',
+      digest: { series_ref: 'artifact-series:def456', version: 1 },
+      batch_key: 'batch-2',
+      items: [{
+        candidate_key: 'j'.repeat(64),
+        source: 'rss',
+        ref: 'https://example.invalid/post-1',
+        title: 'A second producer finding',
+        why_notable: 'It came from a different collector',
+        refs: [],
+        evidence_hash: 'evidence-b',
+        evidence_kind: 'finding-only',
+        captured_at: '2026-08-11T10:00:00Z',
+        rank: 1,
+      }],
+    }, now);
+  }
+
+  it('carries candidates and source health from listBriefingQueue into the view model', () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+
+    // The exact object the route serializes — not a reconstruction of it.
+    const payload: BriefingQueueResponse = listBriefingQueue(db, { now });
+    const queue = normalizeBriefingQueue(payload, now);
+
+    expect(payload.candidates).toHaveLength(1);
+    expect(queue.candidates).toHaveLength(1);
+    expect(queue.candidates[0].candidate_id).toBe(payload.candidates[0].id);
+    expect(queue.candidates[0].source).toBe('arxiv-scan');
+    expect(queue.candidates[0].revision.title).toBe('A notable finding');
+    expect(queue.candidates[0].occurrences.count).toBe(1);
+
+    expect(queue.sources).toHaveLength(1);
+    expect(queue.sources[0].last_ingested_at).toBe(payload.sources[0].last_ingested_at);
+    expect(queue.sources[0].pending_count).toBe(1);
+    // A source that reported an hour ago is current, never `unknown`.
+    expect(queue.sources[0].status).toBe('current');
+    expect(summarizeBriefingHealth(queue.sources).healthy).toBe(true);
+  });
+
+  /**
+   * The claim that `Partial<Contract…>` projections in ui/src/api.ts couple the
+   * client to the server at COMPILE time is not enforced anywhere: the root
+   * tsconfig includes `src` only, and Vitest transpiles with esbuild without
+   * type-checking. A repo-wide `tsc --noEmit` over ui/src and test reports ~600
+   * pre-existing errors (mostly the repo's global-`JSX` convention, which preact
+   * 10 does not declare), so this suite closes the gap at RUNTIME instead: every
+   * field the client reads is asserted present, and equal, on a payload built by
+   * the real server function. A renamed or dropped field fails here by name.
+   */
+  const CONSUMED_ENTRY_FIELDS = [
+    'source',
+    'candidate_key',
+    'created_at',
+    'state',
+    'revision_count',
+    'task_identity',
+  ];
+  const CONSUMED_REVISION_FIELDS = [
+    'id',
+    'candidate_id',
+    'title',
+    'why_notable',
+    'refs',
+    'source_ref',
+    'evidence_hash',
+    'evidence_kind',
+    'captured_at',
+    'run_id',
+    'digest_series_ref',
+    'digest_version',
+    'rank',
+    'batch_key',
+    'ingested_at',
+  ];
+  const CONSUMED_OCCURRENCE_FIELDS = ['count', 'first_seen_at', 'last_seen_at'];
+  const CONSUMED_HEALTH_FIELDS = [
+    'source',
+    'last_ingested_at',
+    'last_ingest_age_ms',
+    'last_task_identity',
+    'last_run_id',
+    'last_digest_version',
+    'last_batch_item_count',
+    'pending_count',
+  ];
+
+  /** Report missing and drifted field names, so a failure says which one. */
+  function expectCarried(
+    label: string,
+    raw: Record<string, unknown>,
+    normalized: Record<string, unknown>,
+    fields: string[],
+  ): void {
+    expect({ [`${label} missing`]: fields.filter((field) => !(field in raw)) })
+      .toEqual({ [`${label} missing`]: [] });
+    expect({
+      [`${label} drifted`]: fields.filter(
+        (field) => JSON.stringify(raw[field]) !== JSON.stringify(normalized[field]),
+      ),
+    }).toEqual({ [`${label} drifted`]: [] });
+  }
+
+  it('carries every field the client consumes off the real server payload', () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+
+    const payload: BriefingQueueResponse = listBriefingQueue(db, { now });
+    const queue = normalizeBriefingQueue(payload, now);
+
+    const rawEntry = payload.candidates[0] as unknown as Record<string, unknown>;
+    const entry = queue.candidates[0];
+    expectCarried('entry', rawEntry, entry as unknown as Record<string, unknown>, CONSUMED_ENTRY_FIELDS);
+    // The one deliberate rename in the whole projection.
+    expect(entry.candidate_id).toBe(rawEntry.id);
+    expectCarried(
+      'revision',
+      rawEntry.revision as Record<string, unknown>,
+      entry.revision as unknown as Record<string, unknown>,
+      CONSUMED_REVISION_FIELDS,
+    );
+    expectCarried(
+      'occurrences',
+      rawEntry.occurrences as Record<string, unknown>,
+      entry.occurrences as unknown as Record<string, unknown>,
+      CONSUMED_OCCURRENCE_FIELDS,
+    );
+    expectCarried(
+      'health',
+      payload.sources[0] as unknown as Record<string, unknown>,
+      queue.sources[0] as unknown as Record<string, unknown>,
+      CONSUMED_HEALTH_FIELDS,
+    );
+
+    // The provenance the producer axis renders is real, not merely present.
+    expect(entry.task_identity).toBe('agent-schedule/daily-digest');
+    expect(entry.revision.digest_series_ref).toBe('artifact-series:abc123');
+    expect(entry.revision.batch_key).toBe('batch-1');
+    expect(queue.sources[0].last_task_identity).toBe('agent-schedule/daily-digest');
+    expect(queue.sources[0].last_run_id).toBe('run-1');
+    expect(queue.sources[0].last_digest_version).toBe(3);
+    expect(queue.sources[0].last_batch_item_count).toBe(1);
+    // `status` is the one field the client adds; the server never sends it.
+    expect('status' in (payload.sources[0] as unknown as Record<string, unknown>)).toBe(false);
+    expect(queue.sources[0].status).toBe('current');
+  });
+
+  it('classifies a source that stopped reporting as stale, not as clean', () => {
+    const now = Date.now();
+    ingest(now - 72 * HOUR);
+
+    const queue = normalizeBriefingQueue(listBriefingQueue(db, { now }), now);
+    expect(queue.sources[0].status).toBe('stale');
+    expect(summarizeBriefingHealth(queue.sources).healthy).toBe(false);
+  });
+
+  it('renders a live server payload through the view', async () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+    const payload = listBriefingQueue(db, { now });
+    stubFetch({ queue: payload });
+    renderBriefing();
+
+    const row = await screen.findByTestId(`briefing-row-${payload.candidates[0].id}`);
+    expect(within(row).getByText('A notable finding')).toBeTruthy();
+    expect(screen.queryByTestId('briefing-empty-degraded')).toBeNull();
+  });
+
+  it('resolves each entry\'s own producing task identity, not the source default', () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+    ingestSecondProducer(now - 2 * HOUR);
+
+    const payload: BriefingQueueResponse = listBriefingQueue(db, { now });
+    const queue = normalizeBriefingQueue(payload, now);
+    const bySource = new Map(queue.candidates.map((entry) => [entry.source, entry]));
+
+    expect([...bySource.keys()].sort()).toEqual(['arxiv-scan', 'rss']);
+    expect(bySource.get('arxiv-scan')?.task_identity).toBe('agent-schedule/daily-digest');
+    expect(bySource.get('rss')?.task_identity).toBe('agent-schedule/rss-sweep');
+
+    // Producer counts and identities the tabs render, derived from that payload
+    // alone — no second request and no `?source=` filter involved.
+    expect(listBriefingProducers(queue.sources, queue.candidates).map((producer) => [
+      producer.source,
+      producer.pending,
+      producer.lastTaskIdentity,
+    ])).toEqual([
+      ['arxiv-scan', 1, 'agent-schedule/daily-digest'],
+      ['rss', 1, 'agent-schedule/rss-sweep'],
+    ]);
+  });
+
+  it('drives the producer selector from a two-producer server payload', async () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+    ingestSecondProducer(now - 2 * HOUR);
+    const payload = listBriefingQueue(db, { now });
+    stubFetch({ queue: payload });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('A notable finding')).toBeNull();
+    });
+    expect(screen.getByText('A second producer finding')).toBeTruthy();
   });
 });

@@ -19,6 +19,10 @@ import { LedgerIssueDetail } from '../ui/src/components/ledger/IssueDetail';
 import { BriefingView } from '../ui/src/views/briefing';
 import { AppShellProvider, type AppShellContextValue } from '../ui/src/app-shell';
 import type { LedgerIssueDetailProjection } from '../ui/src/api';
+import type {
+  BriefingCandidateHistoryResponse,
+  BriefingQueueResponse,
+} from '../src/contracts.js';
 
 const HOUR = 60 * 60 * 1000;
 
@@ -58,18 +62,22 @@ function stubFetch(options: DispatchStub = {}): FetchCall[] {
     calls.push({ url, method, body });
 
     if (url === '/api/briefing/queue') {
-      return Promise.resolve(jsonResponse({
-        available: true,
-        total_pending: 1,
+      // Typed as the server contract so this stub cannot drift from the real
+      // payload the way it did before issue 223d090.
+      const queue: BriefingQueueResponse = {
         sources: [{
           source: 'arxiv-scan',
-          status: 'current',
-          last_ingest_at: Date.now() - HOUR,
-          last_run_status: 'ok',
           pending_count: 1,
+          candidate_count: 1,
+          last_task_identity: 'agent-schedule/daily-digest',
+          last_run_id: 'run-9',
+          last_digest_version: 7,
+          last_ingested_at: Date.now() - HOUR,
+          last_ingest_age_ms: HOUR,
+          last_batch_item_count: 1,
         }],
-        items: [{
-          candidate_id: 'cand-1',
+        candidates: [{
+          id: 'cand-1',
           source: 'arxiv-scan',
           candidate_key: 'key-1',
           created_at: Date.now() - HOUR,
@@ -91,19 +99,30 @@ function stubFetch(options: DispatchStub = {}): FetchCall[] {
             batch_key: 'b'.repeat(64),
             ingested_at: Date.now() - HOUR,
           },
+          revision_count: 1,
           occurrences: { count: 1, first_seen_at: Date.now() - HOUR, last_seen_at: Date.now() - HOUR },
+          // Required by the contract; omitting it is drift the type-only
+          // annotation here does not catch under esbuild transpilation.
+          task_identity: 'agent-schedule/daily-digest',
         }],
-      }));
+      };
+      return Promise.resolve(jsonResponse(queue));
     }
     if (url.includes('/history')) {
-      return Promise.resolve(jsonResponse({
-        available: true,
-        candidate_id: 'cand-1',
+      const history: BriefingCandidateHistoryResponse = {
+        candidate: {
+          id: 'cand-1',
+          source: 'arxiv-scan',
+          candidate_key: 'key-1',
+          current_revision_id: 'rev-1',
+          created_at: Date.now() - HOUR,
+          state: 'pending',
+        },
         revisions: [],
         decisions: [],
         comments: [],
-        occurrences: [],
-      }));
+      };
+      return Promise.resolve(jsonResponse(history));
     }
     if (url.startsWith('/api/agent-dispatch/events')) {
       return Promise.resolve(jsonResponse({ events: options.events ?? [] }));

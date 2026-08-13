@@ -418,19 +418,32 @@ export function summarizeBatch(db: Db, batchKey: string): BriefingIngestResult {
 // --- derived review state ---------------------------------------------------
 
 /**
- * The last decision action on a revision. `undo` clears whatever preceded it,
- * so the trailing event alone determines the effective state.
+ * The EFFECTIVE latest decision on a revision: the single trailing event by
+ * `(created_at, rowid)`. `undo` clears whatever preceded it, so that one row
+ * determines both the revision's state and the identity an Undo must name.
  */
-function lastActionForRevision(db: Db, revisionId: string): string | null {
+function lastDecisionForRevision(
+  db: Db,
+  revisionId: string,
+): { id: string; action: string } | null {
   const row = db
     .prepare(
-      `SELECT action FROM decision_events
+      `SELECT id, action FROM decision_events
         WHERE revision_id = ?
         ORDER BY created_at DESC, rowid DESC
         LIMIT 1`,
     )
-    .get(revisionId) as { action: string } | undefined;
-  return row?.action ?? null;
+    .get(revisionId) as { id: string; action: string } | undefined;
+  return row ?? null;
+}
+
+/**
+ * The action of the effective latest decision; null when the revision is undecided.
+ * Exported so every surface (briefing state, undo CAS, Spaces finding refs)
+ * reads the same trailing row and cannot disagree about what is effective.
+ */
+export function lastActionForRevision(db: Db, revisionId: string): string | null {
+  return lastDecisionForRevision(db, revisionId)?.action ?? null;
 }
 
 export function candidateStateFromAction(action: string | null): BriefingCandidateState {
@@ -502,13 +515,25 @@ export function listBriefingQueue(
   }
   const rows = db.prepare(sql).all(...params) as CandidateRow[];
 
+  // The queue is unbounded and the UI reloads it on a timer, so the per-entry
+  // lookups are prepared once and the batch ledger is JOINED into the revision
+  // read rather than queried again per entry. The join is on the CURRENT
+  // revision's own `batch_key`, so `task_identity` stays the producer of this
+  // revision — not the source's latest batch, which is a different fact.
+  const revisionStatement = db.prepare(
+    `SELECT r.*, b.task_identity AS batch_task_identity
+       FROM candidate_revisions AS r
+       LEFT JOIN briefing_batches AS b ON b.batch_key = r.batch_key
+      WHERE r.id = ?`,
+  );
+  const revisionCountStatement = db.prepare(
+    "SELECT COUNT(*) AS n FROM candidate_revisions WHERE candidate_id = ?",
+  );
+
   const candidates: BriefingQueueEntry[] = rows.map((row) => {
-    const revision = db
-      .prepare("SELECT * FROM candidate_revisions WHERE id = ?")
-      .get(row.current_revision_id) as RevisionRow;
-    const revisionCount = (db
-      .prepare("SELECT COUNT(*) AS n FROM candidate_revisions WHERE candidate_id = ?")
-      .get(row.id) as { n: number }).n;
+    const revision = revisionStatement.get(row.current_revision_id) as
+      RevisionRow & { batch_task_identity: string | null };
+    const revisionCount = (revisionCountStatement.get(row.id) as { n: number }).n;
     return {
       id: row.id,
       source: row.source,
@@ -518,6 +543,11 @@ export function listBriefingQueue(
       revision: projectRevision(revision),
       revision_count: revisionCount,
       occurrences: occurrenceStats(db, revision.id),
+      // The revision carries `batch_key` but not the identity behind it, and a
+      // client cannot resolve one from the other. Resolving it here is what
+      // makes "who produced this finding" answerable per entry instead of only
+      // per source; see `BriefingQueueEntry.task_identity`.
+      task_identity: revision.batch_task_identity ?? null,
     };
   });
 
@@ -633,6 +663,18 @@ export interface BriefingDecisionInput {
   candidateId: string;
   action: BriefingReviewAction;
   actorUserId: string;
+  /**
+   * The revision the judgment is about. Omitted means the candidate's current
+   * revision, which is only correct for a caller that never showed a specific
+   * revision to the human it is acting for.
+   */
+  revisionId?: string;
+  /**
+   * Compare-and-set token for `undo`: the decision event the caller means to
+   * undo. Omitted means "undo whatever is effective now", which is only correct
+   * for a caller that holds no event identity.
+   */
+  expectedEventId?: string;
   now?: number;
 }
 
@@ -645,9 +687,22 @@ export interface BriefingDecisionOutcome {
 }
 
 /**
- * Append a human decision to the current revision. `undo` is only meaningful
- * when an effective decision exists; undoing a pending candidate is a conflict
- * rather than a silent no-op.
+ * Append a human decision to ONE revision.
+ *
+ * The event is addressed by revision, not by candidate: `input.revisionId`
+ * pins it to the revision the reviewer actually judged, so a re-ingest racing
+ * the click can neither move a keep onto text nobody read nor make an Undo of
+ * an older row clear the decision on a newer one. A caller with no revision in
+ * hand omits it and gets the current revision, which is the pre-existing
+ * behavior.
+ *
+ * `undo` is only meaningful when the TARGET revision carries an effective
+ * decision; undoing an undecided revision is a conflict rather than a silent
+ * no-op, and that check is what turns a double-undo into a visible 409.
+ *
+ * `input.expectedEventId` additionally compare-and-sets the undo against the
+ * event the caller is acting on, so an intervening decision on the SAME
+ * revision conflicts instead of being erased.
  */
 export function recordBriefingDecision(
   db: Db,
@@ -662,10 +717,36 @@ export function recordBriefingDecision(
     if (!candidate.current_revision_id) {
       throw new BriefingValidationError("candidate has no current revision", 409);
     }
-    const revisionId = candidate.current_revision_id;
-    const last = lastActionForRevision(db, revisionId);
-    if (input.action === "undo" && candidateStateFromAction(last) === "pending") {
+    let revisionId = candidate.current_revision_id;
+    if (input.revisionId !== undefined) {
+      // A revision id from a client is a claim about identity, so it is checked
+      // against THIS candidate: a decision may never be written across the
+      // candidate boundary the id was presented under.
+      const owned = db
+        .prepare("SELECT 1 AS ok FROM candidate_revisions WHERE id = ? AND candidate_id = ?")
+        .get(input.revisionId, candidate.id) as { ok: number } | undefined;
+      if (!owned) {
+        throw new BriefingValidationError("revision not found for candidate", 404);
+      }
+      revisionId = input.revisionId;
+    }
+    const last = lastDecisionForRevision(db, revisionId);
+    if (input.action === "undo" && candidateStateFromAction(last?.action ?? null) === "pending") {
       throw new BriefingValidationError("no decision to undo", 409);
+    }
+    // Compare-and-set, inside the same transaction as the insert. Pinning the
+    // revision stops an Undo from crossing to newer CONTENT, but not from
+    // erasing a newer JUDGMENT on the same content: keep(A) then dismiss(B)
+    // then Alice's Undo of her older keep row would clear Bob's dismiss. The
+    // caller names the event it is undoing, so the write lands only while that
+    // event is still the revision's effective latest decision; anything
+    // appended in between makes this a visible 409 instead.
+    if (
+      input.action === "undo"
+      && input.expectedEventId !== undefined
+      && last?.id !== input.expectedEventId
+    ) {
+      throw new BriefingValidationError("decision changed since it was read", 409);
     }
     const eventId = randomUUID();
     db.prepare(
@@ -678,7 +759,12 @@ export function recordBriefingDecision(
       revision_id: revisionId,
       action: input.action,
       event_id: eventId,
-      state: candidateStateFromAction(lastActionForRevision(db, revisionId)),
+      // The candidate's state follows its CURRENT revision even when the event
+      // landed on a superseded one, so the response never reports a candidate
+      // as decided on the strength of a judgment about older content.
+      state: candidateStateFromAction(
+        lastActionForRevision(db, candidate.current_revision_id),
+      ),
     };
   });
   return run();

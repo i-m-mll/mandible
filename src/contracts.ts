@@ -1084,6 +1084,14 @@ export type BriefingQueueEntry = {
   revision: BriefingRevision;
   revision_count: number;
   occurrences: BriefingOccurrenceStats;
+  /**
+   * Task identity of the batch that first carried `revision` (its `batch_key`),
+   * resolved from the batch ledger. This is the PRODUCER of this finding as it
+   * currently stands, and it is per-entry on purpose: `BriefingSourceHealth`
+   * reports the identity of a source's MOST RECENT batch, which is a different
+   * fact and may name a different task. NULL only when the batch row is gone.
+   */
+  task_identity: string | null;
 };
 
 /** Per-source ingest health, pulled from the batch ledger. */
@@ -1118,6 +1126,38 @@ export type BriefingCandidateHistoryResponse = {
   comments: BriefingComment[];
 };
 
+/**
+ * A human decision POST body.
+ *
+ * `revision_id` names the revision the judgment is ABOUT — the exact revision
+ * the reviewer was shown. A decision is a fact about a revision, never about a
+ * candidate: between the render and the click a collector may have re-ingested
+ * the finding, and resolving the event against whatever is current at write
+ * time would attach the reviewer's judgment to text they never read. Omitting
+ * it means "whatever is current", which is only honest for a caller that has no
+ * revision in hand.
+ *
+ * `expected_event_id` is a compare-and-set token and is meaningful only for
+ * `action: "undo"`. It names the decision event the caller believes it is
+ * undoing — the one it was handed when it made that judgment. When present the
+ * undo applies only if that event is still the revision's effective latest
+ * decision; a keep, dismiss, or undo appended in between (another tab, another
+ * operator) makes the request a 409 rather than letting a stale Undo erase a
+ * newer judgment. Omitting it is honest only for a caller with no event in
+ * hand, and preserves the pre-existing behavior.
+ */
+export type BriefingDecisionRequest = {
+  action: BriefingReviewAction;
+  revision_id?: string;
+  expected_event_id?: string;
+};
+
+/**
+ * `revision_id` is the revision the event was appended to (the requested one
+ * when the request named it). `state` is the CANDIDATE's presentation state,
+ * which is always derived from its current revision — so undoing a superseded
+ * revision reports the candidate as still pending on the newer one.
+ */
 export type BriefingDecisionResponse = {
   candidate_id: string;
   revision_id: string;
