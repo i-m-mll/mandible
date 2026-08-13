@@ -3715,6 +3715,7 @@ import type {
   BriefingCommentResponse as ContractBriefingCommentResponse,
   BriefingDecisionAction,
   BriefingDecisionEvent as ContractBriefingDecisionEvent,
+  BriefingDecisionRequest as ContractBriefingDecisionRequest,
   BriefingDecisionResponse as ContractBriefingDecisionResponse,
   BriefingEvidenceKind,
   BriefingOccurrenceStats as ContractBriefingOccurrenceStats,
@@ -4096,18 +4097,38 @@ export async function getBriefingHistory(
 }
 
 /**
- * Contract §4 — record a human keep/dismiss/undo. The server rejects publisher
- * and agent credential classes and refuses in read-only mode; the UI additionally
- * gates every call site on `operational_mutations === 'allow'`. Attribution comes
- * from the authenticated user, never from an agent_session param.
+ * The exact thing a judgment is about: a candidate AND the revision of it the
+ * reviewer was shown. Both are required on purpose. A candidate-only decision
+ * is resolved server-side against whatever revision is current at write time,
+ * which silently misaddresses every decision made about a row the page rendered
+ * before a re-ingest — most visibly, Undo on an older judged row clearing the
+ * decision on a newer revision the operator never touched. Making the revision
+ * part of the argument means no call site can express that decision at all.
+ */
+export type BriefingDecisionTarget = {
+  candidate_id: string;
+  revision_id: string;
+};
+
+/**
+ * Contract §4 — record a human keep/dismiss/undo against one revision. The
+ * server rejects publisher and agent credential classes and refuses in
+ * read-only mode; the UI additionally gates every call site on
+ * `operational_mutations === 'allow'`. Attribution comes from the authenticated
+ * user, never from an agent_session param.
  */
 export async function postBriefingDecision(
-  candidateId: string,
+  target: BriefingDecisionTarget,
   action: BriefingJudgeAction,
 ): Promise<BriefingDecisionResult> {
+  const candidateId = target.candidate_id;
+  const request: ContractBriefingDecisionRequest = {
+    action,
+    revision_id: target.revision_id,
+  };
   const response = await apiPost(
     `/api/briefing/candidates/${encodeURIComponent(candidateId)}/decision`,
-    { action },
+    request,
   );
   const payload = briefingContractRecord<ContractBriefingDecisionResponse>(
     await parseMaybeJson(response),

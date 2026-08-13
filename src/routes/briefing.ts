@@ -146,16 +146,24 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.post("/api/briefing/candidates/:id/decision", (req, res) => {
     try {
       const actorUserId = requireHumanReviewer(db, req);
-      const action = bodyRecord(req).action;
+      const body = bodyRecord(req);
+      const action = body.action;
       if (typeof action !== "string" || !REVIEW_ACTIONS.includes(action as BriefingReviewAction)) {
         throw new BriefingValidationError(
           `action must be one of: ${REVIEW_ACTIONS.join(", ")}`,
         );
       }
+      // Optional, but the only way a caller can bind a judgment to the revision
+      // it displayed. Absent means the current revision (see the store).
+      const revisionId = body.revision_id;
+      if (revisionId !== undefined && (typeof revisionId !== "string" || !revisionId.trim())) {
+        throw new BriefingValidationError("revision_id must be a non-empty string");
+      }
       const outcome = recordBriefingDecision(db, {
         candidateId: req.params.id,
         action: action as BriefingReviewAction,
         actorUserId,
+        ...(typeof revisionId === "string" ? { revisionId } : {}),
       });
       broadcast(BRIEFING_EVENTS.decided, outcome);
       sendJson(res, 200, outcome);

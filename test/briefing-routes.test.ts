@@ -91,6 +91,12 @@ function onlyCandidateId(): string {
   return (db.prepare("SELECT id FROM review_candidates LIMIT 1").get() as { id: string }).id;
 }
 
+function currentRevisionId(candidateId: string): string {
+  return (db
+    .prepare("SELECT current_revision_id AS id FROM review_candidates WHERE id = ?")
+    .get(candidateId) as { id: string }).id;
+}
+
 beforeEach(() => {
   db = new Database(":memory:");
   migrate(db);
@@ -220,6 +226,101 @@ describe("briefing decision and comment routes", () => {
     });
     expect(undone.body).toMatchObject({ state: "pending" });
     expect(countPendingBriefingCandidates(db)).toBe(1);
+  });
+
+  it("appends the decision to the revision the request names", async () => {
+    const candidateId = onlyCandidateId();
+    const revisionA = currentRevisionId(candidateId);
+
+    const kept = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "keep", revision_id: revisionA },
+      credential: "operator",
+    });
+    expect(kept.status).toBe(200);
+    expect(kept.body).toMatchObject({ revision_id: revisionA, state: "kept" });
+
+    // Re-ingest: the candidate moves to a new revision and is pending again.
+    ingestBriefingBatch(db, batch({
+      digest: { series_ref: "artifact-series:abc123", version: 2 },
+      batch_key: "batch-2",
+      items: [{
+        candidate_key: candidateKey("arxiv-scan", "paper-1"),
+        source: "arxiv-scan",
+        ref: "paper-1",
+        title: "The revised finding",
+        why_notable: "It changed",
+        refs: [],
+        evidence_hash: "evidence-b",
+        evidence_kind: "snapshot-item",
+        captured_at: "2026-08-12T09:00:00Z",
+        rank: 1,
+      }],
+    }), 2_000);
+    const revisionB = currentRevisionId(candidateId);
+    expect(revisionB).not.toBe(revisionA);
+
+    await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "dismiss", revision_id: revisionB },
+      credential: "operator",
+    });
+    expect(countPendingBriefingCandidates(db)).toBe(0);
+
+    // Undo of the OLDER row. Without revision addressing this cleared the
+    // dismissal on revision B and put the candidate back in the queue.
+    const undone = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "undo", revision_id: revisionA },
+      credential: "operator",
+    });
+    expect(undone.status).toBe(200);
+    expect(undone.body).toMatchObject({ revision_id: revisionA, state: "dismissed" });
+    expect(countPendingBriefingCandidates(db)).toBe(0);
+
+    // The same undo again is a conflict the client can see.
+    const again = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "undo", revision_id: revisionA },
+      credential: "operator",
+    });
+    expect(again.status).toBe(409);
+    expect(again.body).toMatchObject({ error: "no decision to undo" });
+  });
+
+  it("rejects a malformed or foreign revision_id", async () => {
+    const candidateId = onlyCandidateId();
+    const blank = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "keep", revision_id: "  " },
+      credential: "operator",
+    });
+    expect(blank.status).toBe(400);
+
+    const wrongType = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "keep", revision_id: 7 },
+      credential: "operator",
+    });
+    expect(wrongType.status).toBe(400);
+
+    const unknown = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "keep", revision_id: "rev-does-not-exist" },
+      credential: "operator",
+    });
+    expect(unknown.status).toBe(404);
+
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+    ).toBe(0);
   });
 
   it("rejects publisher and agent credentials on decisions and comments", async () => {

@@ -1126,6 +1126,28 @@ export type BriefingCandidateHistoryResponse = {
   comments: BriefingComment[];
 };
 
+/**
+ * A human decision POST body.
+ *
+ * `revision_id` names the revision the judgment is ABOUT — the exact revision
+ * the reviewer was shown. A decision is a fact about a revision, never about a
+ * candidate: between the render and the click a collector may have re-ingested
+ * the finding, and resolving the event against whatever is current at write
+ * time would attach the reviewer's judgment to text they never read. Omitting
+ * it means "whatever is current", which is only honest for a caller that has no
+ * revision in hand.
+ */
+export type BriefingDecisionRequest = {
+  action: BriefingReviewAction;
+  revision_id?: string;
+};
+
+/**
+ * `revision_id` is the revision the event was appended to (the requested one
+ * when the request named it). `state` is the CANDIDATE's presentation state,
+ * which is always derived from its current revision — so undoing a superseded
+ * revision reports the candidate as still pending on the newer one.
+ */
 export type BriefingDecisionResponse = {
   candidate_id: string;
   revision_id: string;

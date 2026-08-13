@@ -46,6 +46,7 @@ import {
   getBriefingQueue,
   postBriefingComment,
   postBriefingDecision,
+  type BriefingDecisionTarget,
   type BriefingHistory,
   type BriefingJudgeAction,
   type BriefingQueue,
@@ -116,7 +117,6 @@ function normalizeViewState(value: unknown, defaults: Readonly<BriefingViewState
 type JudgedEntry = {
   item: BriefingQueueItem;
   action: Exclude<BriefingJudgeAction, 'undo'>;
-  decidedAt: number;
 };
 
 /**
@@ -129,6 +129,17 @@ type JudgedEntry = {
  */
 function judgmentKey(item: BriefingQueueItem): string {
   return `${item.candidate_id}::${item.revision.id}`;
+}
+
+/**
+ * The same identity as `judgmentKey`, addressed to the server. Local
+ * suppression and the wire decision are derived from ONE pair of fields, so the
+ * row the operator saw, the row this page hides, and the revision the ledger
+ * records can never come apart: an Undo issued from a judged row for revision A
+ * undoes revision A, even when the candidate has since moved to revision B.
+ */
+function decisionTarget(item: BriefingQueueItem): BriefingDecisionTarget {
+  return { candidate_id: item.candidate_id, revision_id: item.revision.id };
 }
 
 export type BriefingViewProps = {
@@ -829,6 +840,30 @@ type QueueState = {
   data: BriefingQueue | null;
   loading: boolean;
   error: string | null;
+  /**
+   * Sequence number of the load whose completion produced this state; 0 before
+   * any load finishes. It exists so the page can ask "is what I am holding old
+   * enough to predate that navigation?" — a question the payload itself cannot
+   * answer. A load that FAILS still advances it: the point is that an attempt
+   * concluded, so nothing can wait forever on a queue route that is down.
+   */
+  generation: number;
+};
+
+/**
+ * A candidate link that has not been reconciled with the queue yet.
+ *
+ * `minGeneration` is the first queue load allowed to declare the link
+ * unresolvable. Presence in any payload is proof enough to select — a candidate
+ * that is there is there — but ABSENCE only proves something in a payload
+ * loaded at or after the navigation. Without that floor, a second navigation
+ * into this keep-alive route is answered by whatever snapshot happens to be in
+ * hand, and a link arriving moments after the candidate was ingested is dropped
+ * against a payload that predates it.
+ */
+type PendingDeepLink = {
+  candidateId: string;
+  minGeneration: number;
 };
 
 export function BriefingView({
@@ -848,18 +883,29 @@ export function BriefingView({
     normalizeViewState,
     DEFAULT_VIEW_STATE,
   );
-  const [queue, setQueue] = useState<QueueState>({ data: null, loading: true, error: null });
+  const [queue, setQueue] = useState<QueueState>({
+    data: null,
+    loading: true,
+    error: null,
+    generation: 0,
+  });
   const [selectedId, setSelectedId] = useState<string | null>(initialCandidateId ?? null);
-  // A candidate link that has not been reconciled with the queue yet. Held as
-  // state rather than a ref so the selection keep-alive sees the same value in
-  // the same render pass and cannot race the scope reset a link may force.
-  const [pendingDeepLink, setPendingDeepLink] = useState<string | null>(initialCandidateId ?? null);
+  // Held as state rather than a ref so the selection keep-alive sees the same
+  // value in the same render pass and cannot race the scope reset a link may
+  // force. A link present at mount is armed against the FIRST load, which is
+  // the one the mount is about to start.
+  const [pendingDeepLink, setPendingDeepLink] = useState<PendingDeepLink | null>(
+    initialCandidateId ? { candidateId: initialCandidateId, minGeneration: 1 } : null,
+  );
   const [judged, setJudged] = useState<JudgedEntry[]>([]);
   const [undoEntry, setUndoEntry] = useState<JudgedEntry | null>(null);
   const [busyIds, setBusyIds] = useState<string[]>([]);
   const [actionError, setActionError] = useState<string | null>(null);
   const [now, setNow] = useState(() => nowMs ?? Date.now());
   const [reloadNonce, setReloadNonce] = useState(0);
+  // Monotonic id of the most recently STARTED queue load. Read synchronously
+  // when arming a deep link, so the link knows which load it is waiting for.
+  const loadSeq = useRef(0);
 
   // A `filter` deep-link param wins on first mount only. After that the
   // persisted user choice owns the filter: a later route re-render must not
@@ -876,27 +922,51 @@ export function BriefingView({
   // Unlike `filter`, a candidate link is honored every time it changes: this
   // route stays mounted while hidden, so a second navigation from Spaces
   // arrives as a new prop on the same instance and must still land on its
-  // finding.
+  // finding. The mount case is already armed in the initial state above; only a
+  // LATER link runs this, and a later link is armed against the next load and
+  // asks for that load, because the payload in hand may be a minute old and
+  // predate the finding the operator just clicked.
+  const deepLinkMount = useRef(true);
   useEffect(() => {
-    if (initialCandidateId) setPendingDeepLink(initialCandidateId);
+    if (deepLinkMount.current) {
+      deepLinkMount.current = false;
+      return;
+    }
+    if (!initialCandidateId) return;
+    setPendingDeepLink({ candidateId: initialCandidateId, minGeneration: loadSeq.current + 1 });
+    setReloadNonce((current) => current + 1);
   }, [initialCandidateId]);
 
   const filter = viewState.filter;
   const expandedId = viewState.expandedCandidateId;
 
   const loadQueue = useCallback(async (signal: AbortSignal) => {
+    // Stamped at START, so the stamp orders the REQUESTS. A response that
+    // arrives after a newer one is discarded rather than allowed to reinstate
+    // an older queue — and the generation never moves backwards, which is what
+    // lets a deep link trust it.
+    const seq = ++loadSeq.current;
     try {
       const data = await getBriefingQueue(signal);
       if (signal.aborted) return;
-      setQueue({ data, loading: false, error: null });
+      setQueue((current) => (
+        seq < current.generation
+          ? current
+          : { data, loading: false, error: null, generation: seq }
+      ));
       setNow(nowMs ?? Date.now());
     } catch (error) {
       if (signal.aborted) return;
-      setQueue((current) => ({
-        data: current.data,
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      }));
+      setQueue((current) => (
+        seq < current.generation
+          ? current
+          : {
+            data: current.data,
+            loading: false,
+            error: error instanceof Error ? error.message : String(error),
+            generation: seq,
+          }
+      ));
     }
   }, [nowMs]);
 
@@ -1035,14 +1105,21 @@ export function BriefingView({
   // dropped rather than the link. A candidate that is not pending at all
   // changes nothing — the selection keep-alive below owns that case.
   useEffect(() => {
-    if (pendingDeepLink === null || queue.data === null) return;
-    const target = pendingItems.find((item) => item.candidate_id === pendingDeepLink);
+    if (pendingDeepLink === null) return;
+    const target = pendingItems.find((item) => item.candidate_id === pendingDeepLink.candidateId);
     if (target) {
+      // Presence needs no freshness argument: any payload that carries the
+      // candidate answers the link.
       if (selectedSource !== null && target.source !== selectedSource) setSource(null);
-      setSelectedId(pendingDeepLink);
+      setSelectedId(pendingDeepLink.candidateId);
+      setPendingDeepLink(null);
+      return;
     }
-    setPendingDeepLink(null);
-  }, [pendingDeepLink, queue.data, pendingItems, selectedSource]);
+    // Absence is only evidence in a payload that postdates the navigation.
+    // Until such a load has concluded, the link is still open — the candidate
+    // may be in the refresh that is on its way.
+    if (queue.generation >= pendingDeepLink.minGeneration) setPendingDeepLink(null);
+  }, [pendingDeepLink, queue.generation, pendingItems, selectedSource]);
 
   // Keep a selection alive as rows come and go.
   useEffect(() => {
@@ -1065,8 +1142,8 @@ export function BriefingView({
       setBusyIds((current) => (current.includes(item.candidate_id) ? current : [...current, item.candidate_id]));
       setActionError(null);
       try {
-        await postBriefingDecision(item.candidate_id, action);
-        const entry: JudgedEntry = { item, action, decidedAt: Date.now() };
+        await postBriefingDecision(decisionTarget(item), action);
+        const entry: JudgedEntry = { item, action };
         const key = judgmentKey(item);
         setJudged((current) => [entry, ...current.filter((row) => judgmentKey(row.item) !== key)]);
         setUndoEntry(entry);
@@ -1084,7 +1161,11 @@ export function BriefingView({
       if (!operationalMutationsAllowed) return;
       setActionError(null);
       try {
-        await postBriefingDecision(entry.item.candidate_id, 'undo');
+        // Addressed to the revision this row is about. A server that has since
+        // taken a newer revision keeps that newer decision; a revision whose
+        // decision is already gone answers 409, which surfaces as an action
+        // error and leaves the local list exactly as it was.
+        await postBriefingDecision(decisionTarget(entry.item), 'undo');
         const key = judgmentKey(entry.item);
         setJudged((current) => current.filter((row) => judgmentKey(row.item) !== key));
         setUndoEntry((current) => (current && judgmentKey(current.item) === key ? null : current));

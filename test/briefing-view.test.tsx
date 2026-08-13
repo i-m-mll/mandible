@@ -30,7 +30,15 @@ import {
   deriveBriefingSourceStatus,
   normalizeBriefingQueue,
 } from '../ui/src/api';
-import { ingestBriefingBatch, listBriefingQueue } from '../src/briefing.js';
+import {
+  BriefingValidationError,
+  countPendingBriefingCandidates,
+  getBriefingCandidateHistory,
+  ingestBriefingBatch,
+  listBriefingQueue,
+  recordBriefingDecision,
+} from '../src/briefing.js';
+import { createUser } from '../src/users/store.js';
 import {
   BRIEFING_INGEST_SCHEMA,
   type BriefingCandidateHistoryResponse,
@@ -776,6 +784,231 @@ describe('BriefingView session judgments', () => {
   });
 });
 
+/**
+ * The judged/undo path against the REAL store, not a fixture that agrees with
+ * the page. Everything below runs `listBriefingQueue` and
+ * `recordBriefingDecision` over an in-memory database, so an assertion about
+ * "which revision was undone" is an assertion about rows the daemon would
+ * write — the one thing a hand-rolled fetch stub cannot establish, and the
+ * exact gap that let a candidate-addressed Undo pass this suite.
+ */
+describe('BriefingView decisions against the real store', () => {
+  let db: Db;
+  let reviewerId: string;
+
+  const CANDIDATE_KEY = 'c'.repeat(64);
+
+  function ingestRevision(
+    options: { title: string; evidenceHash: string; version: number; now: number },
+  ): void {
+    ingestBriefingBatch(db, {
+      schema: BRIEFING_INGEST_SCHEMA,
+      task_identity: 'agent-schedule/daily-digest',
+      run_id: `run-${options.version}`,
+      digest: { series_ref: 'artifact-series:abc123', version: options.version },
+      batch_key: `batch-${options.version}`,
+      items: [{
+        candidate_key: CANDIDATE_KEY,
+        source: 'arxiv-scan',
+        ref: 'https://example.invalid/paper-1',
+        title: options.title,
+        why_notable: 'It moves the pilot forward',
+        refs: [],
+        evidence_hash: options.evidenceHash,
+        evidence_kind: 'snapshot-item',
+        captured_at: '2026-08-11T09:00:00Z',
+        rank: 1,
+      }],
+    }, options.now);
+  }
+
+  function candidateId(): string {
+    return (db.prepare('SELECT id FROM review_candidates LIMIT 1').get() as { id: string }).id;
+  }
+
+  function revisionIdByTitle(title: string): string {
+    return (db
+      .prepare('SELECT id FROM candidate_revisions WHERE title = ?')
+      .get(title) as { id: string }).id;
+  }
+
+  function lastActionOn(revisionId: string): string | null {
+    const row = db
+      .prepare(
+        `SELECT action FROM decision_events
+          WHERE revision_id = ?
+          ORDER BY created_at DESC, rowid DESC
+          LIMIT 1`,
+      )
+      .get(revisionId) as { action: string } | undefined;
+    return row?.action ?? null;
+  }
+
+  /** Serve the page from the real store: queue reads and decision writes both. */
+  function stubRealServer(): void {
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const body = typeof init?.body === 'string'
+        ? JSON.parse(init.body) as Record<string, unknown>
+        : {};
+
+      if (url === '/api/briefing/queue') {
+        return Promise.resolve(jsonResponse(listBriefingQueue(db, { now: Date.now() })));
+      }
+      if (url === '/api/dashboard/badges') {
+        return Promise.resolve(jsonResponse({
+          auth: 0,
+          inbox: 0,
+          work: 0,
+          briefing: countPendingBriefingCandidates(db),
+        }));
+      }
+      if (url.includes('/history')) {
+        const id = decodeURIComponent(url.split('/candidates/')[1].split('/')[0]);
+        return Promise.resolve(jsonResponse(getBriefingCandidateHistory(db, id)));
+      }
+      if (url.includes('/decision') && method === 'POST') {
+        const id = decodeURIComponent(url.split('/candidates/')[1].split('/')[0]);
+        try {
+          const outcome = recordBriefingDecision(db, {
+            candidateId: id,
+            action: body.action as 'keep' | 'dismiss' | 'undo',
+            actorUserId: reviewerId,
+            ...(typeof body.revision_id === 'string' ? { revisionId: body.revision_id } : {}),
+          });
+          return Promise.resolve(jsonResponse(outcome));
+        } catch (error) {
+          const status = error instanceof BriefingValidationError ? error.status : 400;
+          const message = error instanceof Error ? error.message : String(error);
+          return Promise.resolve(new Response(JSON.stringify({ error: message }), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          }));
+        }
+      }
+      return Promise.reject(new Error(`unexpected fetch ${method} ${url}`));
+    }));
+  }
+
+  /** The Undo button on the judged row showing this revision's title. */
+  function undoButtonFor(title: string): HTMLElement {
+    const row = screen.getByText(title).closest('li');
+    if (!row) throw new Error(`no judged row for ${title}`);
+    return within(row as HTMLElement).getByRole('button', { name: 'Undo' });
+  }
+
+  /**
+   * Judge revision A, let the collector revise the finding, judge revision B,
+   * then reach back and undo A from the older judged row.
+   */
+  async function judgeBothRevisions(): Promise<void> {
+    ingestRevision({ title: 'Finding A', evidenceHash: 'evidence-a', version: 1, now: Date.now() - HOUR });
+    stubRealServer();
+    renderBriefing();
+
+    const rowA = await screen.findByText('Finding A');
+    fireEvent.click(within(rowA.closest('li') as HTMLElement).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Finding A')).toBeNull();
+    });
+
+    ingestRevision({ title: 'Finding B', evidenceHash: 'evidence-b', version: 2, now: Date.now() });
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+
+    const rowB = await screen.findByText('Finding B');
+    fireEvent.click(within(rowB.closest('li') as HTMLElement).getByRole('button', { name: 'Dismiss' }));
+    await waitFor(() => {
+      expect(screen.queryByText('Finding B')).toBeNull();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Judged/ }));
+    await screen.findByText('Finding A');
+    expect(lastActionOn(revisionIdByTitle('Finding A'))).toBe('dismiss');
+    expect(lastActionOn(revisionIdByTitle('Finding B'))).toBe('dismiss');
+  }
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    migrate(db);
+    setDb(db);
+    reviewerId = createUser(db, { slug: 'operator', kind: 'human', display_name: 'Operator' }).id;
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('undoes the older judged revision without clearing the newer judgment', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+    const revisionB = revisionIdByTitle('Finding B');
+
+    fireEvent.click(undoButtonFor('Finding A'));
+
+    await waitFor(() => {
+      expect(lastActionOn(revisionA)).toBe('undo');
+    });
+    // The judgment the operator did NOT touch survives. A candidate-addressed
+    // undo landed here instead, un-dismissing content nobody re-reviewed.
+    expect(lastActionOn(revisionB)).toBe('dismiss');
+    // The candidate follows its current revision, so it stays out of the queue.
+    expect(countPendingBriefingCandidates(db)).toBe(0);
+
+    // UI state matches: the undone row is gone from Judged, the newer one
+    // remains, and the queue does not resurrect the finding.
+    await waitFor(() => {
+      expect(screen.queryByText('Finding A')).toBeNull();
+    });
+    expect(screen.getByText('Finding B')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: /^Pending/ }));
+    await screen.findByTestId('briefing-view');
+    expect(screen.queryByText('Finding B')).toBeNull();
+  });
+
+  it('re-pends the candidate when the CURRENT revision is the one undone', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+    const revisionB = revisionIdByTitle('Finding B');
+
+    fireEvent.click(undoButtonFor('Finding B'));
+    await waitFor(() => {
+      expect(lastActionOn(revisionB)).toBe('undo');
+    });
+    expect(lastActionOn(revisionA)).toBe('dismiss');
+    expect(countPendingBriefingCandidates(db)).toBe(1);
+
+    // Undoing the older row afterwards is still valid and still local to it.
+    fireEvent.click(undoButtonFor('Finding A'));
+    await waitFor(() => {
+      expect(lastActionOn(revisionA)).toBe('undo');
+    });
+    expect(lastActionOn(revisionB)).toBe('undo');
+    expect(countPendingBriefingCandidates(db)).toBe(1);
+  });
+
+  it('surfaces a rejected undo and keeps the judged row', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+
+    // Somewhere else — another tab, another operator — that decision is already
+    // gone. The page must report the conflict rather than pretend it undid it.
+    recordBriefingDecision(db, {
+      candidateId: candidateId(),
+      revisionId: revisionA,
+      action: 'undo',
+      actorUserId: reviewerId,
+    });
+
+    fireEvent.click(undoButtonFor('Finding A'));
+
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('no decision to undo');
+    expect(screen.getByText('Finding A')).toBeTruthy();
+    expect(screen.getByText('Finding B')).toBeTruthy();
+  });
+});
+
 describe('BriefingView candidate deep link', () => {
   it('overrides a persisted producer filter on first mount', async () => {
     // The operator left the page scoped to `rss` in an earlier session; the link
@@ -804,6 +1037,52 @@ describe('BriefingView candidate deep link', () => {
 
     await awaitSelection('gh-1');
     expect(screen.getByTestId('briefing-producer-all').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('reconciles a later link against a queue loaded after the navigation', async () => {
+    // The payload this keep-alive page is holding predates the finding: the
+    // collector ingested `gh-1` after the last poll. Answering the link from
+    // that snapshot means declaring the candidate absent on the strength of
+    // evidence that could not have contained it.
+    let payload: BriefingQueueResponse = {
+      candidates: [makeItem({ id: 'rss-1', source: 'rss', task_identity: 'agent-schedule/rss-sweep' })],
+      sources: [makeSource({ source: 'rss', last_task_identity: 'agent-schedule/rss-sweep' })],
+    };
+    stubFetch({ queue: () => payload });
+    const view = renderBriefing();
+
+    await awaitSelection('rss-1');
+
+    payload = multiProducerQueue();
+    view.rerender(briefingElement({ initialCandidateId: 'gh-1' }));
+
+    await awaitSelection('gh-1');
+  });
+
+  it('does not freeze the selection on a link the queue will never contain', async () => {
+    let payload: BriefingQueueResponse = multiProducerQueue();
+    stubFetch({ queue: () => payload });
+    const view = renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+    await awaitSelection('rss-1');
+
+    view.rerender(briefingElement({ initialCandidateId: 'never-ingested' }));
+
+    // The load the link asked for concludes without it, so the link is spent
+    // and the ordinary selection keep-alive resumes rather than waiting forever
+    // for a candidate that is not coming.
+    payload = {
+      candidates: multiProducerQueue().candidates.filter((entry) => entry.id !== 'rss-1'),
+      sources: multiProducerQueue().sources,
+    };
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('briefing-row-rss-1')).toBeNull();
+    });
+    fireEvent.click(screen.getByTestId('briefing-producer-all'));
+    await awaitSelection('gh-1');
   });
 
   it('leaves a filter alone when the linked candidate is already in scope', async () => {
@@ -955,7 +1234,9 @@ describe('BriefingView keyboard triage', () => {
       expect(screen.queryByTestId('briefing-row-a')).toBeNull();
     });
     const decision = calls.find((call) => call.url.includes('/decision'));
-    expect(decision?.body).toEqual({ action: 'keep' });
+    // The revision is on the wire, not just the candidate: the server writes
+    // the event where the operator's eyes were.
+    expect(decision?.body).toEqual({ action: 'keep', revision_id: 'rev-a' });
     expect(decision?.url).toBe('/api/briefing/candidates/a/decision');
 
     const toast = await screen.findByTestId('briefing-undo-toast');
@@ -968,7 +1249,8 @@ describe('BriefingView keyboard triage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('briefing-row-a')).toBeTruthy();
     });
-    expect(calls.filter((call) => call.url.includes('/decision')).at(-1)?.body).toEqual({ action: 'undo' });
+    expect(calls.filter((call) => call.url.includes('/decision')).at(-1)?.body)
+      .toEqual({ action: 'undo', revision_id: 'rev-a' });
   });
 
   it('opens the fold-out from the keyboard, inline and not on hover', async () => {
