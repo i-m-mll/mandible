@@ -417,7 +417,9 @@ describe("desktop shell keychain command", () => {
     expect(rust).toContain("client_auth_keychain_enroll,");
     // Same daemon-ownership gate as the bootstrap path, run as a precheck.
     expect(rust).toContain("|| enrollment_precheck(&app),");
-    expect(rust).toContain("verify_same_user_daemon(app)");
+    expect(rust).toContain("verify_same_user_daemon()");
+    // Release enrollment must not depend on the checkout that built the app.
+    expect(rust).not.toContain("let expected_entry = resolve_daemon_entry(app)?");
     // Same keychain item the CLI falls back to, read through `security`.
     expect(rust).toContain('const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator"');
     expect(rust).toContain('.args(["find-generic-password", "-s", service, "-w"])');
