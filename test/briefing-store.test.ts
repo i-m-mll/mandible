@@ -750,4 +750,66 @@ describe("briefing review state", () => {
       revision_id: currentRevisionId(candidateId),
     });
   });
+
+  // Issue f8f8d76: comments are revision-addressed like decisions, so a
+  // re-ingest racing the write cannot re-attribute the note.
+  it("pins a comment to the revision the caller displayed, not the current one", () => {
+    ingestBriefingBatch(db, batch(), 1_000);
+    const candidateId = candidateIdFor("arxiv-scan", "paper-1");
+    const displayedRevisionId = currentRevisionId(candidateId);
+    // A newer batch moves the candidate's current revision after the reviewer
+    // loaded the page but before they saved the note.
+    ingestBriefingBatch(
+      db,
+      batch({
+        digest: { series_ref: "artifact-series:abc123", version: 2 },
+        batch_key: "batch-2",
+        items: [item({ evidence_hash: "evidence-b", title: "Sharper finding" })],
+      }),
+      2_000,
+    );
+    expect(currentRevisionId(candidateId)).not.toBe(displayedRevisionId);
+
+    const comment = addBriefingComment(db, {
+      candidateId,
+      body: "about the OLD text",
+      actorUserId: reviewerId,
+      revisionId: displayedRevisionId as string,
+      now: 2_500,
+    });
+    expect(comment.revision_id).toBe(displayedRevisionId);
+
+    // A caller with no revision in hand keeps the pre-existing behavior.
+    const unpinned = addBriefingComment(db, {
+      candidateId,
+      body: "about whatever is current",
+      actorUserId: reviewerId,
+      now: 2_600,
+    });
+    expect(unpinned.revision_id).toBe(currentRevisionId(candidateId));
+  });
+
+  it("rejects a comment naming a revision of a different candidate", () => {
+    ingestBriefingBatch(
+      db,
+      batch({ items: [item(), item({ ref: "paper-2", evidence_hash: "evidence-p2" })] }),
+      1_000,
+    );
+    const candidateId = candidateIdFor("arxiv-scan", "paper-1");
+    const foreignRevisionId = currentRevisionId(candidateIdFor("arxiv-scan", "paper-2"));
+
+    expect(() =>
+      addBriefingComment(db, {
+        candidateId,
+        body: "misaddressed",
+        actorUserId: reviewerId,
+        revisionId: foreignRevisionId as string,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        name: "BriefingValidationError",
+        status: 404,
+      }) as Error,
+    );
+  });
 });

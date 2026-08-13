@@ -569,6 +569,9 @@ export function dispatchAgent(db: Db, input: AgentDispatchInput): AgentDispatchO
       candidateId: plan.candidate_id,
       body: plan.instruction,
       actorUserId: input.actorUserId,
+      // The plan rendered THIS revision into the confirmed prompt; the note is
+      // pinned to it so a re-ingest between preview and confirm cannot move it.
+      ...(plan.revision_id ? { revisionId: plan.revision_id } : {}),
       now,
     }).id;
   }

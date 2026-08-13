@@ -186,14 +186,22 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
   server.post("/api/briefing/candidates/:id/comments", (req, res) => {
     try {
       const actorUserId = requireHumanReviewer(db, req);
-      const body = bodyRecord(req).body;
+      const record = bodyRecord(req);
+      const body = record.body;
       if (typeof body !== "string" || !body.trim()) {
         throw new BriefingValidationError("body is required");
+      }
+      // Optional, but the only way a caller can bind the note to the revision
+      // it displayed. Absent means the current revision (see the store).
+      const revisionId = record.revision_id;
+      if (revisionId !== undefined && (typeof revisionId !== "string" || !revisionId.trim())) {
+        throw new BriefingValidationError("revision_id must be a non-empty string");
       }
       const comment = addBriefingComment(db, {
         candidateId: req.params.id,
         body,
         actorUserId,
+        ...(typeof revisionId === "string" ? { revisionId } : {}),
       });
       broadcast(BRIEFING_EVENTS.commented, {
         candidate_id: comment.candidate_id,
