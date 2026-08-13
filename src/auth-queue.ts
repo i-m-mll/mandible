@@ -32,6 +32,13 @@ import {
   resolveAuthMergeExecutionContext,
   resolveBranchHeadSha,
 } from "./auth-context.js";
+import {
+  canonicalizeChangeMessage,
+  changeMessageDigest,
+  isCanonicalChangeMessage,
+  validateCanonicalChangeMessage,
+  type CanonicalChangeMessageFields,
+} from "./auth-change-message.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import {
   describeRecomputeRefusal,
@@ -106,6 +113,9 @@ const AUTH_HISTORY_SUMMARY_COLUMNS = [
   "created_at", "updated_at", "approved_at", "resolved_at", "skipped_at",
   "expires_at", "exit_code", "error", "repo", "base_branch", "head_branch",
   "files_changed", "additions", "deletions", "execution_mode", "commit_message",
+  // Issue 7d64d8f — small scalar digest; list surfaces need it to label an
+  // agent-authored canonical change message without refetching the detail row.
+  "commit_message_digest",
   "last_executed_at", "acknowledged_by", "post_merge_handoff", "issue_ids",
   "depends_on_id", "issues", "type", "target_session_id", "target_repo_root",
   "delivered_at", "conversation_id", "approval_source", "approval_lease_id",
@@ -1475,6 +1485,20 @@ export class AuthQueue {
 
     const now = this.now();
     const requesterUserId = this.resolveRequesterUserId(payload, requestedByUserId);
+    // Issue 7d64d8f — a submitter that declares `canonical_message` hands over
+    // an agent-authored merge commit message. The daemon is the single
+    // authority for the canonical bytes and their digest: it canonicalizes
+    // once here, stores the result back as `commit_message`, and records the
+    // digest that cli/auth-merge.sh verifies before using those exact bytes.
+    const canonical = this.resolveCanonicalChangeMessage(
+      payload.commit_message ?? null,
+      payload.canonical_message === true,
+      {
+        verification: payload.verification,
+        issueReferences: payload.issue_references,
+        issueClosures: payload.issue_closures ?? payload.issues,
+      },
+    );
     const request: AuthRequest = {
       id: randomUUID(),
       session_id: payload.session_id ?? null,
@@ -1486,7 +1510,8 @@ export class AuthQueue {
       title: payload.title,
       cwd: payload.cwd ?? null,
       diff_summary: payload.diff_summary ?? null,
-      commit_message: payload.commit_message ?? null,
+      commit_message: canonical.message,
+      commit_message_digest: canonical.digest,
       spec_content: payload.spec_content ?? null,
       repo: payload.repo,
       base_branch: payload.base_branch,
@@ -1504,7 +1529,7 @@ export class AuthQueue {
       post_merge_handoff: payload.post_merge_handoff ?? null,
       issue_references: payload.issue_references ?? null,
       issue_closures: payload.issue_closures ?? payload.issues ?? null,
-      issue_ids: extractIssueIdsFromCommitMessage(payload.commit_message),
+      issue_ids: extractIssueIdsFromCommitMessage(canonical.message),
       issues: payload.issues ?? null,
       depends_on_id: payload.depends_on_id ?? null,
       execution_mode: payload.execution_mode ?? "daemon",
@@ -1544,6 +1569,7 @@ export class AuthQueue {
         cwd,
         diff_summary,
         commit_message,
+        commit_message_digest,
         spec_content,
         repo,
         base_branch,
@@ -1595,6 +1621,7 @@ export class AuthQueue {
         @cwd,
         @diff_summary,
         @commit_message,
+        @commit_message_digest,
         @spec_content,
         @repo,
         @base_branch,
@@ -1641,6 +1668,7 @@ export class AuthQueue {
     const insertRequest = this.db.transaction(() => {
       stmt.run({
         ...request,
+        commit_message_digest: request.commit_message_digest ?? null,
         repo: request.repo ?? null,
         base_branch: request.base_branch ?? null,
         head_branch: request.head_branch ?? null,
@@ -2012,6 +2040,45 @@ export class AuthQueue {
     return row ? mapRow(row) : null;
   }
 
+  /**
+   * Issue 7d64d8f — resolve the stored `commit_message` / `commit_message_digest`
+   * pair from a submitted message and the submitter's canonical declaration.
+   *
+   * When the message is declared canonical it is stored in canonical form and
+   * bound to its digest, so the bytes the reviewer approves are byte-identical
+   * to the bytes the merge commits. Otherwise the message is stored verbatim
+   * as free-form review text with no digest, and the merge keeps its legacy
+   * `git fmt-merge-msg` behaviour.
+   */
+  private resolveCanonicalChangeMessage(
+    message: string | null,
+    declaredCanonical: boolean,
+    fields: CanonicalChangeMessageFields,
+  ): { message: string | null; digest: string | null } {
+    if (!declaredCanonical) {
+      return { message: message ?? null, digest: null };
+    }
+    const canonical = canonicalizeChangeMessage(message);
+    if (canonical.length === 0) {
+      throw {
+        status: 400,
+        message: "canonical_message was declared but commit_message is empty.",
+      };
+    }
+    // Validate the machine-owned envelope at the daemon boundary, before the
+    // bytes are digested and become immutable. The CLI runs the same checks for
+    // fast feedback, but this is the one that binds every submitter.
+    const invalid = validateCanonicalChangeMessage(canonical, fields);
+    if (invalid) {
+      throw { status: 400, message: invalid };
+    }
+    // Digest the exact stored octets, not a re-normalized copy.
+    if (!isCanonicalChangeMessage(canonical)) {
+      throw { status: 500, message: "Canonicalization did not produce canonical bytes." };
+    }
+    return { message: canonical, digest: changeMessageDigest(canonical) };
+  }
+
   private signatureVerificationForRequest(request: AuthRequest): Record<string, unknown> | null {
     if (!request.execution_evidence_id) return null;
     const evidence = getAttributionEvidence(this.db, request.execution_evidence_id);
@@ -2054,11 +2121,12 @@ export class AuthQueue {
 
     const resetToPending = (isFailed || isApproved) && fields.status === "pending";
 
+    // Issue 7d64d8f — `commit_message` is handled explicitly below because a
+    // canonical change message must keep its digest in step with its bytes.
     const allowedFields = [
       "type",
       "title",
       "diff_summary",
-      "commit_message",
       "spec_content",
       "post_merge_handoff",
       "repo",
@@ -2102,6 +2170,55 @@ export class AuthQueue {
         updates.push(`${field} = ?`);
         values.push(payload[field]);
       }
+    }
+
+    // Issue 7d64d8f — canonical change message immutability. Once a request
+    // carrying a canonical message leaves `pending` (approved, executing, or
+    // already executed), the reviewed bytes are the bytes the merge uses, so
+    // they can no longer be edited in place; requeue the request to pending
+    // first and re-review. Free-form review text keeps its prior edit surface.
+    // `canonical_message` is honoured on presence, not truthiness: an explicit
+    // `false` is a demotion back to free-form review text and must take the
+    // same pending-only path (and must not fall through as "no fields to
+    // update"), not be silently ignored.
+    const editsMessageBytes = "commit_message" in payload && payload.commit_message !== undefined;
+    const declaresCanonicalFlag = "canonical_message" in payload;
+    if (editsMessageBytes || declaresCanonicalFlag) {
+      if (request.commit_message_digest && request.status !== "pending") {
+        throw {
+          status: 409,
+          message:
+            "The canonical change message is immutable once the request leaves pending; " +
+            "requeue the request to pending before editing it.",
+        };
+      }
+      const nextRaw = editsMessageBytes
+        ? (payload.commit_message as string | null)
+        : request.commit_message;
+      const declaredCanonical = declaresCanonicalFlag
+        ? payload.canonical_message === true
+        : request.commit_message_digest != null;
+      const resolved = this.resolveCanonicalChangeMessage(
+        nextRaw ?? null,
+        declaredCanonical && (nextRaw ?? "").length > 0,
+        {
+          verification: payload.verification as string | null | undefined,
+          issueReferences:
+            "issue_references" in payload
+              ? (payload.issue_references as string[] | null)
+              : request.issue_references,
+          issueClosures:
+            "issue_closures" in payload
+              ? (payload.issue_closures as string[] | null)
+              : "issues" in payload
+                ? (payload.issues as string[] | null)
+                : request.issue_closures,
+        },
+      );
+      updates.push("commit_message = ?");
+      values.push(resolved.message);
+      updates.push("commit_message_digest = ?");
+      values.push(resolved.digest);
     }
     // Issue 08a5f04 (review F2) — `command` is part of the reviewed merge
     // inputs: a mutated command (e.g. source injection) must drop the
@@ -2656,6 +2773,14 @@ export class AuthQueue {
       env.MANDIBLE_AUTH_CANDIDATE_BASE_SHA = request.merge_preflight_base_sha;
       env.MANDIBLE_AUTH_CANDIDATE_HEAD_SHA = request.merge_head_sha;
       env.MANDIBLE_AUTH_CANDIDATE_REF = this.mergeCandidateRef(request.id);
+    }
+    // Issue 7d64d8f — the reviewed change message is a reviewed merge input like
+    // the reviewed head SHA and the retained candidate tree. Passing its digest
+    // lets cli/auth-merge.sh know a canonical message MUST be applied, so a
+    // failed fetch aborts the merge instead of silently falling back to
+    // `git fmt-merge-msg`.
+    if (request.commit_message_digest) {
+      env.MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST = request.commit_message_digest;
     }
     if (this.canReuseSubmitPreflight(request)) {
       env.MANDIBLE_AUTH_SKIP_MERGE_PREFLIGHT = "1";
@@ -6134,6 +6259,10 @@ function mapRow(row: Record<string, unknown>): AuthRequest {
     cwd: row.cwd == null ? null : String(row.cwd),
     diff_summary: row.diff_summary == null ? null : String(row.diff_summary),
     commit_message: row.commit_message == null ? null : String(row.commit_message),
+    // Issue 7d64d8f — non-null marks `commit_message` as the canonical,
+    // agent-authored change message bound to these exact bytes.
+    commit_message_digest:
+      row.commit_message_digest == null ? null : String(row.commit_message_digest),
     spec_content: row.spec_content == null ? null : String(row.spec_content),
     repo: row.repo == null ? undefined : String(row.repo),
     base_branch: row.base_branch == null ? undefined : String(row.base_branch),

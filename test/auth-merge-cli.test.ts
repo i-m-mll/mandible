@@ -110,8 +110,16 @@ function listenForAuthCheck(
   });
 }
 
-function git(args: string[], cwd = tempDir): string {
-  const result = spawnSync("git", args, { cwd, encoding: "utf8" });
+function git(
+  args: string[],
+  cwd = tempDir,
+  extraEnv: Record<string, string> = {},
+): string {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...process.env, ...extraEnv },
+  });
   if (result.status !== 0) {
     throw new Error(`git ${args.join(" ")} failed:\n${result.stderr}`);
   }
@@ -800,8 +808,18 @@ describe("auth merge reversible cleanup", () => {
     const featureWorktree = createFeatureWorktree(feature);
     const side = "feature/merge-side";
     const sideWorktree = createFeatureWorktree(side);
-    commitFile(sideWorktree, "side.txt", "shared side change\n");
-    git(["cherry-pick", side], tempDir);
+    // The fixture needs main's cherry-pick to reproduce the *identical* commit
+    // object, so `git cherry` reports nothing at all. Without pinned dates the
+    // two commits only match when they happen to land in the same wall-clock
+    // second, which makes this test fail whenever the run's timing shifts.
+    const fixedDates = {
+      GIT_AUTHOR_DATE: "2026-01-01T00:00:00 +0000",
+      GIT_COMMITTER_DATE: "2026-01-01T00:00:00 +0000",
+    };
+    fs.writeFileSync(path.join(sideWorktree, "side.txt"), "shared side change\n", "utf8");
+    git(["add", "side.txt"], sideWorktree);
+    git(["commit", "-m", "add side.txt"], sideWorktree, fixedDates);
+    git(["cherry-pick", side], tempDir, fixedDates);
 
     git(["merge", "--no-ff", "--no-commit", side], featureWorktree);
     fs.writeFileSync(path.join(featureWorktree, "merge-only.txt"), "unique merge resolution\n", "utf8");
