@@ -52,6 +52,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   { prefix: "/api/sessions", category: "sessions" },
   { prefix: "/api/spaces", category: "spaces" },
   { prefix: "/api/system", category: "system" },
+  { prefix: "/api/tasks", category: "tasks" },
   { prefix: "/api/timeline", category: "timeline" },
   { prefix: "/api/webhooks", category: "webhooks" },
   { prefix: "/api/work-units", category: "work_units" },

@@ -58,6 +58,8 @@ import { registerBriefingRoutes } from "./routes/briefing.js";
 import { startBriefingExpirySweep, stopBriefingExpirySweep } from "./briefing-scheduler.js";
 // Umbrella 99b74d6 / issue ce83a84 — human-initiated agent dispatch.
 import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
+// Issue 0bc2279 — executor task inventory receipts and read-only projection.
+import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerClientAuthRoutes } from "./routes/client-auth.js";
@@ -239,6 +241,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerBriefingRoutes(router, db);
   // Issue: ce83a84 — human-only agent dispatch (preview, dispatch, events)
   registerAgentDispatchRoutes(router, db);
+  // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)
+  registerTaskRoutes(router, db);
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)

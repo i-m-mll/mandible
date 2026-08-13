@@ -1302,3 +1302,191 @@ export const SPACE_FINDING_WARNING_STORE_UNAVAILABLE = 'finding_store_unavailabl
 
 export type SpaceFindingResolveResponse = { resolution: SpaceFindingResolution };
 export type SpaceFindingListResponse = { findings: SpaceFindingCandidateSummary[] };
+
+// --- executor task inventory (issue 0bc2279) --------------------------------
+//
+// TELEMETRY, NOT CONTROL. An executor (today: agent-schedule) is the authority
+// on which recurring tasks exist and what state they are in. Mandible stores
+// what the executor REPORTS, verifies who reported it and that the payload has
+// the declared shape, and projects the latest generation into a read-only view.
+// It never runs, enables, or edits a task, and it never infers a fact the
+// executor did not state.
+//
+// Three rules make the stored facts honest:
+//
+//  1. ATOMIC GENERATIONS. One POST is one complete snapshot of every task the
+//     executor manages. There is no per-task upsert, so the view can never mix
+//     halves of two different observations.
+//  2. EXPLICIT UNKNOWN. Every field that an executor may not be able to answer
+//     accepts the literal string `'unknown'`. Absent, null, and empty are
+//     REJECTED — a publisher that does not know must say so. This is what keeps
+//     "no bundle binding recorded for runs older than the feature" visibly
+//     different from "not deployed".
+//  3. IMMUTABLE RECEIPTS. Generations are append-only rows carrying the
+//     authenticated principal that posted them and a content digest. Re-posting
+//     the same canonical generation for one executor is a no-op that returns
+//     the original receipt.
+//
+// The publisher-facing spec is docs/executor-inventory-contract.md.
+
+export const TASK_INVENTORY_SCHEMA = 'executor-inventory@1';
+
+/** The literal an executor sends when it cannot answer a field. */
+export const TASK_INVENTORY_UNKNOWN = 'unknown';
+export type TaskInventoryUnknown = typeof TASK_INVENTORY_UNKNOWN;
+
+/** A value the executor knows, or an explicit statement that it does not. */
+export type TaskInventoryMaybe<T> = T | TaskInventoryUnknown;
+
+/**
+ * Who manages the task's lifecycle. Slice 1 admits `external` only: the
+ * executor owns the task and Mandible observes it. The union exists so a later
+ * slice can add a Mandible-managed mode without a schema change at this layer.
+ */
+export type TaskManagementMode = 'external';
+
+export type TaskCircuitState = 'closed' | 'open' | 'half_open';
+export type TaskKillSwitchState = 'engaged' | 'clear';
+/** The EXECUTOR's own judgment about this task, not Mandible's view age. */
+export type TaskStalenessClaim = 'fresh' | 'stale';
+export type TaskRunOutcome = 'success' | 'failure' | 'timeout' | 'cancelled';
+
+/** The deployed code a task currently executes. */
+export type TaskBundleFacts = {
+  /** Commit of the repository the bundle was built from. */
+  commit: TaskInventoryMaybe<string>;
+  /** Hash of the bundle's content as deployed. */
+  content_hash: TaskInventoryMaybe<string>;
+  /** Hash of the executable form actually invoked. */
+  execution_hash: TaskInventoryMaybe<string>;
+  /** Epoch ms the bundle became active. */
+  deployed_at: TaskInventoryMaybe<number>;
+};
+
+/**
+ * Activation deliberately reports TWO facts that a single `enabled` flag would
+ * conflate: what the checked-in configuration asks for, and what this host is
+ * actually running right now.
+ */
+export type TaskActivationFacts = {
+  config_enabled: TaskInventoryMaybe<boolean>;
+  locally_activated: TaskInventoryMaybe<boolean>;
+};
+
+/** Runtime guards the executor applies to the task. */
+export type TaskGuardFacts = {
+  circuit: TaskInventoryMaybe<TaskCircuitState>;
+  /** Retry attempts already spent on the pending run; 0 means none. */
+  retry_attempt: TaskInventoryMaybe<number>;
+  /** Epoch ms of the scheduled retry, or `'none'` when nothing is queued. */
+  retry_next_at: TaskInventoryMaybe<number | 'none'>;
+  kill_switch: TaskInventoryMaybe<TaskKillSwitchState>;
+  staleness: TaskInventoryMaybe<TaskStalenessClaim>;
+};
+
+/**
+ * One run, bound to the identities it ran under. The binding fields are the
+ * point: a failure that cannot name the bundle it ran is reported as
+ * `'unknown'` rather than silently attributed to whatever is deployed now.
+ */
+export type TaskRunFacts = {
+  run_id: TaskInventoryMaybe<string>;
+  started_at: TaskInventoryMaybe<number>;
+  finished_at: TaskInventoryMaybe<number>;
+  outcome: TaskInventoryMaybe<TaskRunOutcome>;
+  bundle_commit: TaskInventoryMaybe<string>;
+  content_hash: TaskInventoryMaybe<string>;
+  execution_hash: TaskInventoryMaybe<string>;
+  config_hash: TaskInventoryMaybe<string>;
+  /** Free text the executor logged. Untrusted; render as text, never HTML. */
+  detail: TaskInventoryMaybe<string>;
+};
+
+/** `'never'` is a positive claim ("this has not happened"), not an unknown. */
+export type TaskRunSlot = TaskRunFacts | 'never' | TaskInventoryUnknown;
+
+export type TaskInventoryEntry = {
+  /** Stable id in the executor's own namespace. Unique within a generation. */
+  task_id: string;
+  display_name: string;
+  management_mode: TaskManagementMode;
+  bundle: TaskBundleFacts | TaskInventoryUnknown;
+  activation: TaskActivationFacts;
+  guards: TaskGuardFacts;
+  last_run: TaskRunSlot;
+  last_failure: TaskRunSlot;
+};
+
+export type TaskExecutorIdentity = {
+  /** Stable executor name. The projection key: one latest generation each. */
+  name: string;
+  version: TaskInventoryMaybe<string>;
+  /** Free-form capability tokens; empty array means "declared none". */
+  capabilities: string[];
+};
+
+/** One atomic inventory generation, exactly as posted. */
+export type TaskInventoryGeneration = {
+  schema: typeof TASK_INVENTORY_SCHEMA;
+  executor: TaskExecutorIdentity;
+  /** Epoch ms the executor took the snapshot. Doubles as its heartbeat. */
+  observed_at: number;
+  tasks: TaskInventoryEntry[];
+};
+
+/** POST receipt. A replayed digest returns the original with `stored: false`. */
+export type TaskInventoryPostResult = {
+  generation_id: string;
+  digest: string;
+  /** False when this exact generation was already on record. */
+  stored: boolean;
+  executor: string;
+  task_count: number;
+  observed_at: number;
+};
+
+/** Mandible's view-age judgment about an executor, from `observed_at` alone. */
+export type TaskExecutorFreshness = 'current' | 'stale' | 'unknown';
+
+export type TaskExecutorSummary = {
+  name: string;
+  version: TaskInventoryMaybe<string>;
+  capabilities: string[];
+  observed_at: number;
+  observed_age_ms: number;
+  freshness: TaskExecutorFreshness;
+  generation_id: string;
+  digest: string;
+  received_at: number;
+  /** The authenticated principal that posted the generation. */
+  posted_by_user_id: string;
+  posted_by_slug: string | null;
+  task_count: number;
+};
+
+/** A task as reported by its executor, carrying that executor's view age. */
+export type TaskInventoryView = {
+  /** `${executor}/${task_id}` — stable across generations, unique in a view. */
+  key: string;
+  executor: string;
+  freshness: TaskExecutorFreshness;
+  observed_at: number;
+  observed_age_ms: number;
+  task: TaskInventoryEntry;
+};
+
+/**
+ * The whole read surface. `executors` is empty exactly when no executor has
+ * ever posted, which the view must state plainly rather than showing an empty
+ * task list as though every task were gone.
+ */
+export type TaskInventoryResponse = {
+  executors: TaskExecutorSummary[];
+  tasks: TaskInventoryView[];
+  /** Horizon used for `freshness`, so a client never guesses it. */
+  stale_after_ms: number;
+};
+
+export const TASK_INVENTORY_EVENTS = Object.freeze({
+  posted: 'tasks.inventory.posted',
+} as const);

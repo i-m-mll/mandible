@@ -3437,6 +3437,42 @@ export const MIGRATIONS: readonly Migration[] = [
     // helper verifies the existing column's exact declared shape and throws on
     // divergence, so a replay can never silently accept a different column.
     statements: []
+  },
+  {
+    version: 124,
+    name: "task_inventory_generations",
+    // Issue 0bc2279 — executor task inventory receipts. Append-only: one row is
+    // one atomic generation exactly as an authenticated executor posted it,
+    // with the principal that posted it and a content digest over the canonical
+    // payload. There is no per-task table and no mutable task state: the Tasks
+    // view is a PROJECTION of the latest generation per executor, so a replayed
+    // or reordered post can never leave the view holding halves of two
+    // different observations. `(executor_name, digest)` is UNIQUE, which is the
+    // idempotency mechanism — re-posting the same canonical generation for one
+    // executor is refused by the index and answered with the original receipt,
+    // without letting a synthetic cross-executor collision suppress a receipt.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS task_inventory_generations (
+        id                TEXT PRIMARY KEY,
+        digest            TEXT NOT NULL,
+        schema_id         TEXT NOT NULL,
+        executor_name     TEXT NOT NULL,
+        executor_version  TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL DEFAULT '[]'
+                            CHECK(json_valid(capabilities_json)
+                              AND json_type(capabilities_json)='array'),
+        observed_at       INTEGER NOT NULL,
+        task_count        INTEGER NOT NULL DEFAULT 0,
+        payload_json      TEXT NOT NULL CHECK(json_valid(payload_json)),
+        posted_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at        INTEGER NOT NULL,
+        UNIQUE(executor_name, digest)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_task_inventory_generations_executor
+         ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_task_inventory_generations_received
+         ON task_inventory_generations(created_at DESC)`
+    ]
   }
 ];
 

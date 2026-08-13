@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v122 migration replay.
+ * Schema snapshot generated from a full v1-v124 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 123;
+export const BASELINE_SCHEMA_VERSION = 124;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -433,6 +433,26 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON agent_dispatch_events(issue_id, created_at DESC)`,
   `CREATE INDEX idx_agent_dispatch_events_comment
          ON agent_dispatch_events(comment_id)`,
+  `CREATE TABLE task_inventory_generations (
+        id                TEXT PRIMARY KEY,
+        digest            TEXT NOT NULL,
+        schema_id         TEXT NOT NULL,
+        executor_name     TEXT NOT NULL,
+        executor_version  TEXT NOT NULL,
+        capabilities_json TEXT NOT NULL DEFAULT '[]'
+                            CHECK(json_valid(capabilities_json)
+                              AND json_type(capabilities_json)='array'),
+        observed_at       INTEGER NOT NULL,
+        task_count        INTEGER NOT NULL DEFAULT 0,
+        payload_json      TEXT NOT NULL CHECK(json_valid(payload_json)),
+        posted_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at        INTEGER NOT NULL,
+        UNIQUE(executor_name, digest)
+      )`,
+  `CREATE INDEX idx_task_inventory_generations_executor
+         ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
+  `CREATE INDEX idx_task_inventory_generations_received
+         ON task_inventory_generations(created_at DESC)`,
 ];
 
 const COMPLETED_POST_MIGRATIONS: readonly string[] = [

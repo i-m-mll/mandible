@@ -1,0 +1,223 @@
+/* Tasks view (issue 0bc2279) — read-only executor inventory projection.
+   Layout mirrors the other <ViewSidebar> views: a resize rail plus a scrolling
+   detail pane. Only the two colors below carry meaning: an explicit `unknown`
+   is visibly not a value, and a stale executor report is visibly not current. */
+
+.tasks-layout {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+}
+
+.tasks-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.tasks-sidebar__title {
+  font-size: var(--text-md);
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tasks-sidebar__count {
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tasks-sidebar__list {
+  padding: 4px 0;
+}
+
+.tasks-sidebar__empty {
+  padding: 16px 14px;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.tasks-row {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-left: 2px solid transparent;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: inherit;
+}
+
+.tasks-row:hover {
+  background: var(--bg-hover);
+}
+
+.tasks-row--selected {
+  background: var(--bg-active);
+  border-left-color: var(--accent-fg);
+}
+
+.tasks-row__name {
+  font-size: var(--text-md);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.tasks-row__meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tasks-row__executor {
+  overflow-wrap: anywhere;
+}
+
+.tasks-freshness {
+  font-size: var(--text-xs);
+  letter-spacing: 0.02em;
+}
+
+.tasks-freshness--current {
+  color: var(--text-muted);
+}
+
+.tasks-freshness--stale {
+  color: var(--status-warning-fg);
+}
+
+.tasks-freshness--unknown {
+  color: var(--text-disabled);
+}
+
+.tasks-detail {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 28px 48px;
+}
+
+.tasks-detail__empty {
+  padding: 32px 0;
+  max-width: 52ch;
+  font-size: var(--text-md);
+  line-height: 1.6;
+}
+
+.tasks-provenance {
+  margin: 0 0 20px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-muted);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  font-size: var(--text-xs);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  max-width: 76ch;
+}
+
+.tasks-detail__header {
+  margin-bottom: 20px;
+}
+
+.tasks-detail__title {
+  margin: 0 0 4px;
+  font-size: var(--text-xl);
+  font-weight: 600;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.tasks-detail__subtitle {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tasks-detail__id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.tasks-detail__sep {
+  color: var(--text-disabled);
+}
+
+.tasks-section {
+  margin-bottom: 22px;
+  max-width: 76ch;
+}
+
+.tasks-section__title {
+  margin: 0 0 8px;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.tasks-section__caption {
+  margin: 12px 0 6px;
+  font-size: var(--text-xs);
+  color: var(--text-muted);
+}
+
+.tasks-facts {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 4px 16px;
+  margin: 0;
+}
+
+.tasks-fact {
+  display: contents;
+}
+
+.tasks-fact__label {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.tasks-fact__value {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+/* An explicit unknown must never read as a value. */
+.tasks-fact__value--unknown {
+  color: var(--text-disabled);
+  font-style: italic;
+}
+
+.tasks-fact__value--mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.tasks-note {
+  margin: 8px 0 0;
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.tasks-note--unknown {
+  color: var(--text-disabled);
+  font-style: italic;
+}

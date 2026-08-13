@@ -124,6 +124,7 @@ import './views/spaces/SpaceSeedDialog.css';
 import './views/spaces/SpacesSidebar.css';
 import './views/spaces/SpacesViewShell.css';
 import './views/spaces/SpaceTypeIndicator.css';
+import './views/tasks.css';
 import './style.css';
 
 const LAST_SEEN_COMMIT_KEY = 'mandible-last-seen-commit';
@@ -156,6 +157,7 @@ const RENDERABLE_TABS: RenderableTab[] = [
   'timeline',
   'spaces',
   'briefing',
+  'tasks',
 ];
 
 const loadAuthQueueView = () =>
@@ -184,6 +186,8 @@ const loadSessionOverviewView = () =>
   import('./views/session-overview').then((module) => ({ default: module.SessionOverviewView }));
 const loadBriefingView = () =>
   import('./views/briefing').then((module) => ({ default: module.BriefingView }));
+const loadTasksView = () =>
+  import('./views/tasks').then((module) => ({ default: module.TasksView }));
 
 const LazyAuthQueueView = lazy(loadAuthQueueView);
 const LazyArtifactsView = lazy(loadArtifactsView);
@@ -198,6 +202,7 @@ const LazyTimelineView = lazy(loadTimelineView);
 const LazySpacesTab = lazy(loadSpacesTab);
 const LazySessionOverviewView = lazy(loadSessionOverviewView);
 const LazyBriefingView = lazy(loadBriefingView);
+const LazyTasksView = lazy(loadTasksView);
 
 const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>> = {
   auth: loadAuthQueueView,
@@ -213,6 +218,7 @@ const ROUTE_CHUNK_LOADERS: Partial<Record<RenderableTab, () => Promise<unknown>>
   spaces: loadSpacesTab,
   overview: loadSessionOverviewView,
   briefing: loadBriefingView,
+  tasks: loadTasksView,
 };
 
 const INACTIVE_APP_SHELL_CONTEXT: AppShellContextValue = {
@@ -382,6 +388,7 @@ const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
   'artifacts',
   'inbox',
   'spaces',
+  'tasks',
 ]);
 
 // Tabs that use the shared resize-rail layout (<ViewSidebar>) and therefore want
@@ -394,6 +401,7 @@ const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'inbox',
   'issues',
   'spaces',
+  'tasks',
   'timeline',
 ]);
 
@@ -417,6 +425,20 @@ function BriefingIcon({ size = 18 }: { size?: number }): JSX.Element {
       <path d="M7 8h7" />
       <path d="M7 12h7" />
       <path d="M7 16h4" />
+    </svg>
+  );
+}
+
+function TasksIcon({ size = 18 }: { size?: number }): JSX.Element {
+  // Lucide-style "calendar-clock": recurring work on a schedule, observed.
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M8 2v4" />
+      <path d="M16 2v4" />
+      <path d="M3 10h18" />
+      <path d="M21 13V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h7" />
+      <circle cx="18" cy="18" r="4" />
+      <path d="M18 16.5V18l1 1" />
     </svg>
   );
 }
@@ -1755,6 +1777,13 @@ function App(): JSX.Element {
       icon: GraphIcon,
     },
     {
+      tab: 'tasks',
+      href: '#/tasks',
+      label: 'Tasks',
+      title: 'Tasks',
+      icon: TasksIcon,
+    },
+    {
       tab: 'logs',
       href: '#/logs',
       label: 'Logs',
@@ -2146,6 +2175,15 @@ function App(): JSX.Element {
               instance={instanceInfo}
               initialFilter={tabRoute.params.filter}
               initialCandidateId={tabRoute.params.candidate ?? null}
+            />
+          );
+        })())}
+        {renderTabPanel('tasks', (() => {
+          const tabRoute = routeForTab('tasks', route, tabRouteSnapshots);
+          return (
+            <LazyTasksView
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
+              initialTaskKey={tabRoute.params.task ?? null}
             />
           );
         })())}
