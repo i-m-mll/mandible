@@ -837,6 +837,7 @@ api_operational_mutation_category() {
     /api/sessions|/api/sessions/*) printf 'sessions'; return 0 ;;
     /api/spaces|/api/spaces/*) printf 'spaces'; return 0 ;;
     /api/system|/api/system/*) printf 'system'; return 0 ;;
+    /api/tasks|/api/tasks/*) printf 'tasks'; return 0 ;;
     /api/timeline|/api/timeline/*) printf 'timeline'; return 0 ;;
     /api/webhooks|/api/webhooks/*) printf 'webhooks'; return 0 ;;
     /api/work-units|/api/work-units/*) printf 'work_units'; return 0 ;;

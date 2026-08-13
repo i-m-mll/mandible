@@ -152,6 +152,12 @@ export const METADATA_BACKUP_TABLES = [
   // event -> session handle) behind human-triggered dispatches; durable
   // metadata. References candidate_comments and users, both emitted above.
   "agent_dispatch_events",
+  // Executor task inventory receipts (issue 0bc2279, migration 124). Each row
+  // is an immutable observation an executor made at a moment that has passed;
+  // nothing in Mandible can re-derive it, and the Tasks view is a projection of
+  // the newest one, so losing the receipts loses the view. References `users`
+  // (the posting principal), already emitted above.
+  "task_inventory_generations",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

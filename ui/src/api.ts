@@ -4302,3 +4302,220 @@ export async function getAgentDispatchEvents(
   const events = Array.isArray(payload.events) ? payload.events : [];
   return events.map(normalizeAgentDispatchEvent);
 }
+
+// ===========================================================================
+// Executor task inventory — client section (issue 0bc2279).
+//
+//   POST /api/tasks/inventory   (registered executors only; never from the UI)
+//   GET  /api/tasks             (read-only projection)
+//
+// The Tasks view is a READ SURFACE over facts an executor reported. The UI has
+// no write path here at all, which is why only the GET has a client below.
+//
+// NORMALIZATION IS DELIBERATELY LOSSY TOWARD `'unknown'`. Every optional field
+// the server may carry is either its typed value or the contract's explicit
+// `'unknown'` sentinel; a payload that is missing or malformed at some field
+// degrades to `'unknown'` there rather than to a blank or a zero. That is the
+// same honesty rule the server enforces on publishers, applied to the wire.
+//
+// TRUST BOUNDARY: `display_name` and run `detail` are executor-authored. They
+// are carried as plain strings and MUST be rendered as untrusted text.
+// ===========================================================================
+
+import {
+  TASK_INVENTORY_UNKNOWN,
+  type TaskActivationFacts,
+  type TaskBundleFacts,
+  type TaskCircuitState,
+  type TaskExecutorFreshness,
+  type TaskExecutorSummary as ContractTaskExecutorSummary,
+  type TaskGuardFacts,
+  type TaskInventoryEntry,
+  type TaskInventoryResponse as ContractTaskInventoryResponse,
+  type TaskInventoryView as ContractTaskInventoryView,
+  type TaskKillSwitchState,
+  type TaskManagementMode,
+  type TaskRunFacts,
+  type TaskRunOutcome,
+  type TaskRunSlot,
+  type TaskStalenessClaim,
+} from '../../src/contracts';
+
+export {
+  TASK_INVENTORY_UNKNOWN,
+};
+export type {
+  TaskActivationFacts,
+  TaskBundleFacts,
+  TaskExecutorFreshness,
+  TaskGuardFacts,
+  TaskInventoryEntry,
+  TaskRunFacts,
+  TaskRunSlot,
+};
+
+export type TaskExecutorSummary = ContractTaskExecutorSummary;
+export type TaskInventoryItem = ContractTaskInventoryView;
+export type TaskInventory = ContractTaskInventoryResponse;
+
+const TASK_CIRCUIT_STATES: readonly TaskCircuitState[] = ['closed', 'open', 'half_open'];
+const TASK_KILL_SWITCH_STATES: readonly TaskKillSwitchState[] = ['engaged', 'clear'];
+const TASK_STALENESS_CLAIMS: readonly TaskStalenessClaim[] = ['fresh', 'stale'];
+const TASK_RUN_OUTCOMES: readonly TaskRunOutcome[] = ['success', 'failure', 'timeout', 'cancelled'];
+const TASK_FRESHNESS: readonly TaskExecutorFreshness[] = ['current', 'stale', 'unknown'];
+
+/** Default horizon used only when the server omits `stale_after_ms`. */
+export const TASK_INVENTORY_DEFAULT_STALE_AFTER_MS = 3 * 60 * 60 * 1000;
+
+function taskMaybeString(value: unknown): string | typeof TASK_INVENTORY_UNKNOWN {
+  return typeof value === 'string' && value !== '' ? value : TASK_INVENTORY_UNKNOWN;
+}
+
+function taskMaybeNumber(value: unknown): number | typeof TASK_INVENTORY_UNKNOWN {
+  return typeof value === 'number' && Number.isFinite(value) ? value : TASK_INVENTORY_UNKNOWN;
+}
+
+function taskMaybeBoolean(value: unknown): boolean | typeof TASK_INVENTORY_UNKNOWN {
+  return typeof value === 'boolean' ? value : TASK_INVENTORY_UNKNOWN;
+}
+
+function taskMaybeEnum<T extends string>(
+  value: unknown,
+  values: readonly T[],
+): T | typeof TASK_INVENTORY_UNKNOWN {
+  return typeof value === 'string' && values.includes(value as T)
+    ? (value as T)
+    : TASK_INVENTORY_UNKNOWN;
+}
+
+function normalizeTaskBundle(value: unknown): TaskBundleFacts | typeof TASK_INVENTORY_UNKNOWN {
+  const row = briefingRecord(value);
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return TASK_INVENTORY_UNKNOWN;
+  return {
+    commit: taskMaybeString(row.commit),
+    content_hash: taskMaybeString(row.content_hash),
+    execution_hash: taskMaybeString(row.execution_hash),
+    deployed_at: taskMaybeNumber(row.deployed_at),
+  };
+}
+
+function normalizeTaskActivation(value: unknown): TaskActivationFacts {
+  const row = briefingRecord(value);
+  return {
+    config_enabled: taskMaybeBoolean(row.config_enabled),
+    locally_activated: taskMaybeBoolean(row.locally_activated),
+  };
+}
+
+function normalizeTaskGuards(value: unknown): TaskGuardFacts {
+  const row = briefingRecord(value);
+  const retryNextAt = row.retry_next_at === 'none'
+    ? ('none' as const)
+    : taskMaybeNumber(row.retry_next_at);
+  return {
+    circuit: taskMaybeEnum(row.circuit, TASK_CIRCUIT_STATES),
+    retry_attempt: taskMaybeNumber(row.retry_attempt),
+    retry_next_at: retryNextAt,
+    kill_switch: taskMaybeEnum(row.kill_switch, TASK_KILL_SWITCH_STATES),
+    staleness: taskMaybeEnum(row.staleness, TASK_STALENESS_CLAIMS),
+  };
+}
+
+function normalizeTaskRunSlot(value: unknown): TaskRunSlot {
+  if (value === 'never') return 'never';
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return TASK_INVENTORY_UNKNOWN;
+  const row = value as Record<string, unknown>;
+  return {
+    run_id: taskMaybeString(row.run_id),
+    started_at: taskMaybeNumber(row.started_at),
+    finished_at: taskMaybeNumber(row.finished_at),
+    outcome: taskMaybeEnum(row.outcome, TASK_RUN_OUTCOMES),
+    bundle_commit: taskMaybeString(row.bundle_commit),
+    content_hash: taskMaybeString(row.content_hash),
+    execution_hash: taskMaybeString(row.execution_hash),
+    config_hash: taskMaybeString(row.config_hash),
+    detail: taskMaybeString(row.detail),
+  };
+}
+
+function normalizeTaskEntry(value: unknown): TaskInventoryEntry | null {
+  const row = briefingContractRecord<TaskInventoryEntry>(value);
+  const taskId = briefingOptionalString(row.task_id);
+  if (!taskId) return null;
+  // `external` is the only mode v1 defines; anything else is a server the UI is
+  // older than, so it is shown as the raw string rather than silently coerced.
+  const mode = (typeof row.management_mode === 'string' && row.management_mode
+    ? row.management_mode
+    : 'external') as TaskManagementMode;
+  return {
+    task_id: taskId,
+    display_name: briefingOptionalString(row.display_name) ?? taskId,
+    management_mode: mode,
+    bundle: normalizeTaskBundle(row.bundle),
+    activation: normalizeTaskActivation(row.activation),
+    guards: normalizeTaskGuards(row.guards),
+    last_run: normalizeTaskRunSlot(row.last_run),
+    last_failure: normalizeTaskRunSlot(row.last_failure),
+  };
+}
+
+function normalizeTaskExecutorSummary(value: unknown): TaskExecutorSummary | null {
+  const row = briefingContractRecord<ContractTaskExecutorSummary>(value);
+  const name = briefingOptionalString(row.name);
+  if (!name) return null;
+  return {
+    name,
+    version: taskMaybeString(row.version),
+    capabilities: briefingStringArray(row.capabilities),
+    observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
+    observed_age_ms: briefingOptionalNumber(row.observed_age_ms) ?? 0,
+    freshness: taskMaybeEnum(row.freshness, TASK_FRESHNESS) === TASK_INVENTORY_UNKNOWN
+      ? 'unknown'
+      : (row.freshness as TaskExecutorFreshness),
+    generation_id: briefingString(row.generation_id),
+    digest: briefingString(row.digest),
+    received_at: briefingOptionalNumber(row.received_at) ?? 0,
+    posted_by_user_id: briefingString(row.posted_by_user_id),
+    posted_by_slug: briefingOptionalString(row.posted_by_slug),
+    task_count: briefingOptionalNumber(row.task_count) ?? 0,
+  };
+}
+
+function normalizeTaskInventoryItem(value: unknown): TaskInventoryItem | null {
+  const row = briefingContractRecord<ContractTaskInventoryView>(value);
+  const task = normalizeTaskEntry(row.task);
+  if (!task) return null;
+  const executor = briefingOptionalString(row.executor) ?? 'unknown';
+  return {
+    key: briefingOptionalString(row.key) ?? `${executor}/${task.task_id}`,
+    executor,
+    freshness: taskMaybeEnum(row.freshness, TASK_FRESHNESS) === TASK_INVENTORY_UNKNOWN
+      ? 'unknown'
+      : (row.freshness as TaskExecutorFreshness),
+    observed_at: briefingOptionalNumber(row.observed_at) ?? 0,
+    observed_age_ms: briefingOptionalNumber(row.observed_age_ms) ?? 0,
+    task,
+  };
+}
+
+export function normalizeTaskInventory(payload: unknown): TaskInventory {
+  const row = briefingContractRecord<ContractTaskInventoryResponse>(payload);
+  const executors = Array.isArray(row.executors) ? row.executors : [];
+  const tasks = Array.isArray(row.tasks) ? row.tasks : [];
+  return {
+    executors: executors
+      .map(normalizeTaskExecutorSummary)
+      .filter((entry): entry is TaskExecutorSummary => entry !== null),
+    tasks: tasks
+      .map(normalizeTaskInventoryItem)
+      .filter((entry): entry is TaskInventoryItem => entry !== null),
+    stale_after_ms:
+      briefingOptionalNumber(row.stale_after_ms) ?? TASK_INVENTORY_DEFAULT_STALE_AFTER_MS,
+  };
+}
+
+/** The whole Tasks read surface. Read-only: the UI never posts an inventory. */
+export async function getTaskInventory(signal?: AbortSignal): Promise<TaskInventory> {
+  const response = await apiGet('/api/tasks', signal ? { signal } : {});
+  return normalizeTaskInventory(await parseMaybeJson(response));
+}
