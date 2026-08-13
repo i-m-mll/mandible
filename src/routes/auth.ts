@@ -98,7 +98,10 @@ export function registerAuthRoutes(
           payload.additions === undefined ||
           payload.deletions === undefined;
         const needsDiffSummary = payload.diff_summary == null;
-        const needsCommitMessage = payload.commit_message == null;
+        // Issue 7d64d8f — review metadata no longer includes a synthesized
+        // commit message. A request either carries an agent-authored canonical
+        // change message or carries none, in which case the merge keeps git's
+        // own `fmt-merge-msg` default.
         const metadata = await computeAuthMergeReviewMetadata(
           resolved.targetRepoRoot,
           resolved.baseBranch,
@@ -106,7 +109,6 @@ export function registerAuthRoutes(
           {
             counts: needsCounts,
             diffSummary: needsDiffSummary,
-            commitMessage: needsCommitMessage,
           }
         );
         payload.files_changed = payload.files_changed ?? metadata.filesChanged;
@@ -114,9 +116,6 @@ export function registerAuthRoutes(
         payload.deletions = payload.deletions ?? metadata.deletions;
         if (payload.diff_summary == null) {
           payload.diff_summary = metadata.diffSummary;
-        }
-        if (payload.commit_message == null) {
-          payload.commit_message = metadata.commitMessage;
         }
       } catch (error) {
         res.status(400).json({
@@ -630,6 +629,9 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     cwd: typeof body.cwd === "string" ? body.cwd : null,
     diff_summary: typeof body.diff_summary === "string" ? body.diff_summary : null,
     commit_message: typeof body.commit_message === "string" ? body.commit_message : null,
+    // Issue 7d64d8f — the submitter declares an agent-authored canonical change
+    // message; the queue canonicalizes it and binds it to a digest.
+    canonical_message: body.canonical_message === true,
     spec_content: typeof body.spec_content === "string" ? body.spec_content : null,
     repo: typeof body.repo === "string" ? body.repo : undefined,
     base_branch: typeof body.base_branch === "string" ? body.base_branch : undefined,
@@ -798,6 +800,16 @@ function parseAuthRequestUpdatePayload(
     } else {
       return { ok: false, error: "Invalid 'commit_message' — must be a string or null" };
     }
+  }
+
+  // Issue 7d64d8f — an update may promote free-form review text to a canonical
+  // change message, or (with false) demote it back, while the request is still
+  // pending. The queue owns canonicalization and the digest either way.
+  if (hasKey("canonical_message")) {
+    if (typeof body.canonical_message !== "boolean") {
+      return { ok: false, error: "Invalid 'canonical_message' — must be a boolean" };
+    }
+    payload.canonical_message = body.canonical_message;
   }
 
   if (hasKey("spec_content")) {

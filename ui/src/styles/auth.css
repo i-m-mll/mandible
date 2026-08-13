@@ -1273,6 +1273,28 @@
   font-style: italic;
 }
 
+/* Issue 7d64d8f — the canonical change message is the literal merge commit
+   message, so it is shown verbatim rather than rendered as prose. */
+.panel__badge {
+  margin-left: 8px;
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: lowercase;
+  color: var(--text-muted);
+}
+
+.canonical-message {
+  margin: 0;
+  font-family: var(--font-mono, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-primary);
+}
+
 /* Bug: 2c826ca — inline edit controls for auth request fields */
 .panel__edit-btn {
   margin-left: auto;

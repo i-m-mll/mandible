@@ -3418,6 +3418,19 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_agent_dispatch_events_comment
          ON agent_dispatch_events(comment_id)`
     ]
+  },
+  {
+    version: 123,
+    name: "auth_request_canonical_change_message",
+    // Issue 7d64d8f — the canonical change message binding. `commit_message`
+    // already existed as free-form review text; this column records the
+    // SHA-256 of the canonical bytes of an *agent-authored* change message.
+    // Its presence is the discriminator: a request with a digest carries a
+    // canonical message that cli/auth-merge.sh must use verbatim as the merge
+    // commit message, and a request without one keeps the legacy
+    // `git fmt-merge-msg` behaviour. Applied through a guarded helper so a
+    // version-rewind fixture re-running migrate is a no-op.
+    statements: []
   }
 ];
 
@@ -3524,6 +3537,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 119) {
         ensureAuthRequestAtomicMergeColumns(db);
+      }
+      if (migration.version === 123) {
+        ensureAuthRequestCanonicalChangeMessageColumn(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -6638,6 +6654,16 @@ function ensureAuthRequestAtomicMergeColumns(db: Db): void {
   }
   if (!columns.has("merge_atomic_enabled")) {
     db.exec("ALTER TABLE auth_requests ADD COLUMN merge_atomic_enabled INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+// Issue 7d64d8f (migration 123) — additive nullable digest column binding an
+// auth request to the exact canonical change message bytes the merge must use.
+function ensureAuthRequestCanonicalChangeMessageColumn(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const columns = tableColumnNames(db, "auth_requests");
+  if (!columns.has("commit_message_digest")) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN commit_message_digest TEXT");
   }
 }
 

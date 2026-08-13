@@ -8,8 +8,45 @@
 #   <branch>                Branch to merge into protected branch
 #   --title <text>          Dashboard title
 #
+# Canonical change message (issue 7d64d8f):
+#   --message <text>        Agent-authored change message (mutually exclusive with
+#                           --message-file and --commit-message)
+#   --message-file <file>   Read the agent-authored change message from a file
+#                           ('-' reads stdin)
+#   --verification <text>   Verification section text (default: "Not recorded")
+#
+#   The agent authors only prose. Its first non-empty line is the <outcome>;
+#   the CLI prefixes it with "Merge <branch>: " so the subject stays
+#   merge-recognizable. Everything after that line is the body, where the agent
+#   writes the "Why:" section and, optionally, a "Caveats:" section. The CLI
+#   owns the rest of the template:
+#
+#       Merge <branch>: <outcome>
+#
+#       Why:
+#       <one short agent-authored paragraph>
+#
+#       Verification:
+#       <--verification text, or "Not recorded">
+#
+#       Caveats:
+#       <agent-authored; omitted when empty>
+#
+#       Mandible-Issue: <ref>
+#
+#   The machine-owned "Verification:" section is inserted immediately before a
+#   "Caveats:" heading when one is present, otherwise appended after the body.
+#   Trailers are derived from --issue / --closes-issue only, never parsed from
+#   prose: --issue emits "Mandible-Issue:" and --closes-issue emits
+#   "Closes-Mandible-Issue:". Authoring a "Verification:" heading or any
+#   Mandible issue trailer inside the message is an error.
+#
+#   With no message flag, no change message is submitted and the merge keeps
+#   git's own default merge message.
+#
 # Options:
-#   --commit-message <text> Commit message (auto-generated from git log if omitted)
+#   --commit-message <text> Legacy free-form review text stored on the request.
+#                           Not used as the merge commit message.
 #   --diff-summary <text>   Unified diff (auto-generated from git diff if omitted; truncated at 100KB)
 #   --spec <text>           Spec/notes content
 #   --repo <name>           Repo name (auto-detected from git toplevel basename)
@@ -58,6 +95,11 @@ branch=""
 title=""
 auth_type="merge"
 commit_message=""
+change_message_text=""
+change_message_file=""
+change_message_set=0
+verification_text=""
+canonical_message="false"
 diff_summary=""
 spec_content=""
 post_merge_handoff=""
@@ -78,6 +120,9 @@ while [[ $# -gt 0 ]]; do
     --title)          title="$2"; shift 2 ;;
     --type)           auth_type="$2"; shift 2 ;;
     --commit-message) commit_message="$2"; shift 2 ;;
+    --message)        change_message_text="$2"; change_message_set=1; shift 2 ;;
+    --message-file)   change_message_file="$2"; change_message_set=1; shift 2 ;;
+    --verification)   verification_text="$2"; shift 2 ;;
     --diff-summary)   diff_summary="$2"; shift 2 ;;
     --spec)           spec_content="$2"; shift 2 ;;
     --handoff)        post_merge_handoff="$2"; shift 2 ;;
@@ -116,6 +161,19 @@ fi
 if [ $(( ${#ISSUE_REFERENCES[@]} + ${#ISSUE_CLOSURES[@]} )) -eq 0 ]; then
   echo "Error: at least one --issue <id> or --closes-issue <id> is required" >&2
   exit 1
+fi
+# Issue 7d64d8f — the canonical change message has exactly one source.
+if [[ -n "$change_message_text" && -n "$change_message_file" ]]; then
+  echo "Error: --message and --message-file are mutually exclusive" >&2
+  exit 2
+fi
+if [[ $change_message_set -eq 1 && -n "$commit_message" ]]; then
+  echo "Error: --commit-message cannot be combined with --message/--message-file" >&2
+  exit 2
+fi
+if [[ $change_message_set -eq 0 && -n "$verification_text" ]]; then
+  echo "Error: --verification requires --message or --message-file" >&2
+  exit 2
 fi
 if api_is_file_rpc && [[ $no_watch -eq 0 ]]; then
   echo "Error: file transport does not support SSE/watch; pass --no-watch." >&2
@@ -176,6 +234,111 @@ read_mandible_toml_value() {
       }
     }
   ' "$config_file"
+}
+
+# --- Canonical change message composition (issue 7d64d8f) ---
+#
+# Machine-owned parts (the "Merge <branch>: " subject prefix, the
+# "Verification:" section, and the Mandible issue trailers) are composed here
+# from explicit flags. They are never recovered by parsing agent prose, so an
+# agent cannot smuggle a closure trailer or a forged verification claim into
+# the durable merge record through the message body.
+
+change_message_trailers() {
+  local ref
+  if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
+    for ref in "${ISSUE_REFERENCES[@]}"; do
+      printf 'Mandible-Issue: %s\n' "$ref"
+    done
+  fi
+  if [[ ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
+    for ref in "${ISSUE_CLOSURES[@]}"; do
+      printf 'Closes-Mandible-Issue: %s\n' "$ref"
+    done
+  fi
+}
+
+# Refuse agent-authored text that claims a machine-owned section or trailer.
+reject_machine_owned_lines() {
+  local body="$1"
+  local offending
+  offending=$(printf '%s\n' "$body" |
+    grep -nE '^(Verification:|Mandible-Issue:|Closes-Mandible-Issue:)' || true)
+  if [[ -n "$offending" ]]; then
+    echo "Error: the change message may not author machine-owned lines:" >&2
+    printf '%s\n' "$offending" >&2
+    echo "Use --verification for the Verification section and --issue/--closes-issue for trailers." >&2
+    exit 2
+  fi
+  # git's commit-message cleanup can drop a '#'-leading line, which would make
+  # the merge commit differ from the approved canonical bytes.
+  local commented
+  commented=$(printf '%s\n' "$body" | grep -nE '^#' || true)
+  if [[ -n "$commented" ]]; then
+    echo "Error: the change message may not contain lines starting with '#':" >&2
+    printf '%s\n' "$commented" >&2
+    echo "git's commit-message cleanup would strip them, breaking the canonical digest." >&2
+    exit 2
+  fi
+}
+
+compose_change_message() {
+  local branch_name="$1"
+  local body="$2"
+  local verification="$3"
+  local trailers="$4"
+
+  # Multi-line values travel through the environment: BSD awk rejects embedded
+  # newlines in -v assignments.
+  printf '%s\n' "$body" | \
+    MANDIBLE_CM_BRANCH="$branch_name" \
+    MANDIBLE_CM_VERIFICATION="$verification" \
+    MANDIBLE_CM_TRAILERS="$trailers" \
+    awk '
+    BEGIN {
+      branch = ENVIRON["MANDIBLE_CM_BRANCH"]
+      verification = ENVIRON["MANDIBLE_CM_VERIFICATION"]
+      trailers = ENVIRON["MANDIBLE_CM_TRAILERS"]
+    }
+    { sub(/\r$/, ""); lines[++n] = $0 }
+    END {
+      s = 1
+      while (s <= n && lines[s] ~ /^[ \t]*$/) s++
+      if (s > n) exit 3
+      outcome = lines[s]
+      sub(/^[ \t]+/, "", outcome)
+
+      b1 = s + 1
+      while (b1 <= n && lines[b1] ~ /^[ \t]*$/) b1++
+      b2 = n
+      while (b2 >= b1 && lines[b2] ~ /^[ \t]*$/) b2--
+
+      cav = 0
+      for (i = b1; i <= b2; i++) {
+        if (lines[i] ~ /^Caveats:/) { cav = i; break }
+      }
+
+      printf "Merge %s: %s\n", branch, outcome
+      if (cav > 0) {
+        p2 = cav - 1
+        while (p2 >= b1 && lines[p2] ~ /^[ \t]*$/) p2--
+        if (b1 <= p2) {
+          printf "\n"
+          for (i = b1; i <= p2; i++) printf "%s\n", lines[i]
+        }
+        printf "\nVerification:\n%s\n", verification
+        printf "\n"
+        for (i = cav; i <= b2; i++) printf "%s\n", lines[i]
+      } else {
+        if (b1 <= b2) {
+          printf "\n"
+          for (i = b1; i <= b2; i++) printf "%s\n", lines[i]
+        }
+        printf "\nVerification:\n%s\n", verification
+      }
+      if (trailers != "") printf "\n%s", trailers
+    }
+  '
 }
 
 normalize_dirty_policy() {
@@ -518,14 +681,45 @@ if [[ -z "$diff_summary" ]]; then
   fi
 fi
 
-# --- Auto-detect commit message ---
-# Bug: 8b0b5e2 — COMMIT_MSG.txt removed; auto-generate from git log instead.
+# --- Canonical change message ---
+# Issue 7d64d8f — the merge commit message is authored, not synthesized. The
+# previous `git log --format="- %s" | head -20` bullet aggregation is gone: a
+# request either carries an agent-authored canonical change message, or carries
+# none and the merge keeps git's own default merge message.
 
-if [[ -z "$commit_message" ]]; then
-  commit_message=$(git log --format="- %s" "${base_branch}..${branch}" 2>/dev/null | head -20)
-  if [[ -z "$commit_message" ]]; then
-    commit_message="Merge ${branch}"
+if [[ $change_message_set -eq 1 ]]; then
+  change_message_body=""
+  if [[ -n "$change_message_file" ]]; then
+    if [[ "$change_message_file" == "-" ]]; then
+      change_message_body=$(cat)
+    else
+      if [[ ! -f "$change_message_file" ]]; then
+        echo "Error: --message-file '${change_message_file}' does not exist" >&2
+        exit 2
+      fi
+      change_message_body=$(cat "$change_message_file")
+    fi
+  else
+    change_message_body="$change_message_text"
   fi
+
+  if [[ -z "${change_message_body//[[:space:]]/}" ]]; then
+    echo "Error: the change message is empty" >&2
+    exit 2
+  fi
+  reject_machine_owned_lines "$change_message_body"
+
+  if [[ -z "$verification_text" ]]; then
+    verification_text="Not recorded"
+  fi
+
+  commit_message=$(compose_change_message \
+    "$branch" "$change_message_body" "$verification_text" "$(change_message_trailers)")
+  if [[ -z "$commit_message" ]]; then
+    echo "Error: the change message could not be composed" >&2
+    exit 1
+  fi
+  canonical_message="true"
 fi
 
 # --- Build command and metadata ---
@@ -591,6 +785,7 @@ payload=$(jq -nc \
   --argjson deletions "$deletions" \
   --arg diff_summary "$diff_summary" \
   --arg commit_message "$commit_message" \
+  --argjson canonical_message "$canonical_message" \
   --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
@@ -615,7 +810,8 @@ payload=$(jq -nc \
     additions: $additions,
     deletions: $deletions,
     diff_summary: $diff_summary,
-    commit_message: $commit_message,
+    commit_message: (if $commit_message == "" then null else $commit_message end),
+    canonical_message: $canonical_message,
     spec_content: $spec_content,
     post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end),
     issue_references: $issue_references,

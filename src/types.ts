@@ -213,6 +213,11 @@ export interface AuthRequest {
   cwd: string | null;
   diff_summary: string | null;
   commit_message: string | null;
+  // Issue 7d64d8f — SHA-256 of the canonical change message bytes. Non-null
+  // exactly when `commit_message` is an agent-authored canonical change
+  // message that cli/auth-merge.sh must use verbatim as the merge commit
+  // message. Null for legacy/free-form review text.
+  commit_message_digest?: string | null;
   spec_content: string | null;
   repo?: string;
   base_branch?: string;
@@ -287,6 +292,11 @@ export interface AuthRequestInput {
   cwd?: string | null;
   diff_summary?: string | null;
   commit_message?: string | null;
+  // Issue 7d64d8f — declares that `commit_message` is an agent-authored
+  // canonical change message. The daemon canonicalizes the bytes, stores them
+  // back, and records their digest; only then does the merge consume them
+  // verbatim. Absent/false keeps the legacy free-form review-text behaviour.
+  canonical_message?: boolean;
   spec_content?: string | null;
   repo?: string;
   base_branch?: string;

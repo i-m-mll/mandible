@@ -8,7 +8,7 @@ import { migrate, openDb, type Db } from "../src/db.js";
 // Integration reconciliation (umbrella c16807e): the auth-request finalizer
 // state migration (issue 75f52ac) was renumbered to v114 atop main's
 // user-system migrations v107-v111 and our v112/v113 additive columns.
-// Migration head has since advanced to v121 (through issue be2ab49's v117
+// Migration head has since advanced to v123 (through issue be2ab49's v117
 // residual sweep, issue 13b071e's v118 project-identity pass, issue 8d12c96's
 // v119 merge-candidate tree, and umbrella 99b74d6's v120/v121 briefing store
 // and space_items finding refs).
@@ -39,7 +39,7 @@ describe("migration v114: auth-request finalizer state", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "122",
+      value: "123",
     });
     const columns = db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{
       name: string;
@@ -64,13 +64,13 @@ describe("migration v114: auth-request finalizer state", () => {
     expect(columns.filter((entry) => entry.name === "merge_finalizer_state")).toHaveLength(1);
   });
 
-  it("leaves a freshly migrated database at head (v122) with the column present", () => {
+  it("leaves a freshly migrated database at head (v123) with the column present", () => {
     const fresh = openDb(path.join(tempDir, "fresh.db"));
     try {
       const columns = fresh.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_finalizer_state");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "122",
+        value: "123",
       });
     } finally {
       fresh.close();

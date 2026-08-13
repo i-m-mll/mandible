@@ -515,6 +515,118 @@ current_branch_sha() {
   git rev-parse --verify "refs/heads/${branch}^{commit}" 2>/dev/null || true
 }
 
+# --- Canonical change message (issue 7d64d8f) ---
+#
+# An auth request may carry an agent-authored canonical change message: the
+# exact merge commit message, reviewed as part of the request and bound to a
+# SHA-256 of its canonical bytes. When one exists, this script uses those bytes
+# verbatim on every merge path instead of `git fmt-merge-msg`.
+#
+# Existence is asserted by the daemon through MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST,
+# alongside the other reviewed merge inputs (expected head SHA, retained
+# candidate tree). That is what makes a failed fetch fatal rather than a silent
+# fallback: the merge knows a canonical message must be applied even when it
+# cannot read it. A direct CLI invocation that can still read the request also
+# honours a stored message, so the API remains the source of the bytes.
+#
+# Canonicalization mirrors src/auth-change-message.ts exactly: drop CR, strip
+# trailing spaces/tabs per line, collapse runs of blank lines, drop leading and
+# trailing blank lines, single trailing newline. Those are also git's own
+# message-cleanup normalizations, so `git merge -m` cannot alter the approved
+# bytes.
+AUTH_MERGE_CANONICAL_MESSAGE=""
+AUTH_MERGE_HAS_CANONICAL_MESSAGE=0
+
+canonicalize_change_message() {
+  LC_ALL=C tr -d '\r' | LC_ALL=C awk '
+    { sub(/[ \t]+$/, ""); lines[++n] = $0 }
+    END {
+      s = 1
+      while (s <= n && lines[s] == "") s++
+      e = n
+      while (e >= s && lines[e] == "") e--
+      blank = 0
+      for (i = s; i <= e; i++) {
+        if (lines[i] == "") {
+          if (blank) continue
+          blank = 1
+        } else {
+          blank = 0
+        }
+        printf "%s\n", lines[i]
+      }
+    }
+  '
+}
+
+change_message_digest() {
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 | awk '{print $1}'
+  else
+    sha256sum | awk '{print $1}'
+  fi
+}
+
+load_canonical_change_message() {
+  local request_id="${MANDIBLE_AUTH_REQUEST_ID:-}"
+  local expected_digest="${MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST:-}"
+
+  if [[ -z "$request_id" ]]; then
+    if [[ -n "$expected_digest" ]]; then
+      err "${RED}A canonical change message digest was supplied without an auth request id; no ref or worktree was changed.${RESET}"
+      return 1
+    fi
+    return 0
+  fi
+
+  local resolved_timeout resolved_retries
+  resolved_timeout="${MANDIBLE_HTTP_TIMEOUT:-5}"
+  resolved_retries="${MANDIBLE_HTTP_RETRIES:-0}"
+  local MANDIBLE_HTTP_TIMEOUT="$resolved_timeout"
+  local MANDIBLE_HTTP_RETRIES="$resolved_retries"
+
+  local response
+  if ! response=$(api_get "/api/auth/request/${request_id}" 2>/dev/null); then
+    if [[ -n "$expected_digest" ]]; then
+      err "${RED}Auth request ${request_id} carries an approved canonical change message (sha256 ${expected_digest}) that could not be fetched; no ref or worktree was changed.${RESET}"
+      return 1
+    fi
+    return 0
+  fi
+
+  local stored_digest
+  stored_digest=$(printf '%s' "$response" | jq -r '.commit_message_digest // empty' 2>/dev/null || true)
+  if [[ -z "$stored_digest" ]]; then
+    if [[ -n "$expected_digest" ]]; then
+      err "${RED}Auth request ${request_id} no longer carries the approved canonical change message (sha256 ${expected_digest}); requeue and reapprove. No ref or worktree was changed.${RESET}"
+      return 1
+    fi
+    return 0
+  fi
+  if [[ -n "$expected_digest" && "$stored_digest" != "$expected_digest" ]]; then
+    err "${RED}Canonical change message changed after approval (approved sha256 ${expected_digest}, stored sha256 ${stored_digest}); requeue and reapprove. No ref or worktree was changed.${RESET}"
+    return 1
+  fi
+
+  local message canonical actual
+  message=$(printf '%s' "$response" | jq -r '.commit_message // empty' 2>/dev/null || true)
+  canonical=$(printf '%s\n' "$message" | canonicalize_change_message)
+  if [[ -z "$canonical" ]]; then
+    err "${RED}Auth request ${request_id} records a canonical change message digest but no message bytes; no ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  actual=$(printf '%s\n' "$canonical" | change_message_digest)
+  if [[ "$actual" != "$stored_digest" ]]; then
+    err "${RED}Canonical change message digest mismatch (expected sha256 ${stored_digest}, computed sha256 ${actual}); no ref or worktree was changed.${RESET}"
+    return 1
+  fi
+
+  AUTH_MERGE_CANONICAL_MESSAGE="$canonical"
+  AUTH_MERGE_HAS_CANONICAL_MESSAGE=1
+  auth_phase "using the approved canonical change message (sha256 ${stored_digest})."
+  return 0
+}
+
 # Issue 08a5f04 (review F3) — the daemon passes the reviewed head commit as
 # MANDIBLE_AUTH_EXPECTED_HEAD_SHA on every daemon-started merge. When a
 # reviewed commit is supplied, the live source ref is verified against it
@@ -533,7 +645,13 @@ merge_source_signed() {
     return 1
   fi
   if [[ -z "$expected" ]]; then
-    run_signing_git merge --no-ff --no-edit -S "$source_branch"
+    # Issue 7d64d8f — an approved canonical change message replaces git's
+    # default merge message on the legacy merge-by-branch-name path too.
+    if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
+      run_signing_git merge --no-ff --no-edit -S -m "$AUTH_MERGE_CANONICAL_MESSAGE" "$source_branch"
+    else
+      run_signing_git merge --no-ff --no-edit -S "$source_branch"
+    fi
     return
   fi
   local live
@@ -543,7 +661,9 @@ merge_source_signed() {
     return 1
   fi
   local message
-  if ! message=$(printf "%s\t\tbranch '%s' of .\n" "$expected" "$source_branch" | git fmt-merge-msg); then
+  if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
+    message="$AUTH_MERGE_CANONICAL_MESSAGE"
+  elif ! message=$(printf "%s\t\tbranch '%s' of .\n" "$expected" "$source_branch" | git fmt-merge-msg); then
     err "${RED}Could not derive the merge message for reviewed commit ${expected}; no ref or worktree was changed.${RESET}"
     return 1
   fi
@@ -626,7 +746,13 @@ create_signed_merge_commit() {
   local second_parent=$3
   local source_branch=$4
   local message merge_sha
-  message=$(printf "%s\t\tbranch '%s' of .\n" "$second_parent" "$source_branch" | git fmt-merge-msg) || return 1
+  # Issue 7d64d8f — the atomic path commits the same approved bytes as the
+  # non-atomic path; commit-tree reads them verbatim from stdin.
+  if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
+    message="$AUTH_MERGE_CANONICAL_MESSAGE"
+  else
+    message=$(printf "%s\t\tbranch '%s' of .\n" "$second_parent" "$source_branch" | git fmt-merge-msg) || return 1
+  fi
   if ! merge_sha=$(printf '%s\n' "$message" |
     run_signing_git commit-tree "$tree_sha" -p "$first_parent" -p "$second_parent" -S -F -); then
     report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
@@ -1321,6 +1447,17 @@ main() {
 
     validate_resume_provenance
 
+    # Issue 7d64d8f — the interrupted attempt already wrote MERGE_MSG from the
+    # canonical bytes, but a resume must not depend on that file surviving
+    # intact. Re-derive and rewrite it so `merge --continue` commits exactly
+    # the approved message; a failure to establish it aborts the resume.
+    if ! load_canonical_change_message; then
+      exit 1
+    fi
+    if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
+      printf '%s\n' "$AUTH_MERGE_CANONICAL_MESSAGE" > "$(git rev-parse --git-dir)/MERGE_MSG"
+    fi
+
     err ""
     err "${BOLD_YELLOW}Merge already in progress — resuming with git merge --continue${RESET}"
     err ""
@@ -1389,6 +1526,13 @@ main() {
 
   if ! branch_exists "$source"; then
     die "Source branch '$source' does not exist." 2
+  fi
+
+  # Issue 7d64d8f — resolve the approved merge commit message before anything
+  # is confirmed or mutated, so a missing or tampered message fails the request
+  # rather than the repository.
+  if ! load_canonical_change_message; then
+    exit 1
   fi
 
   # Pre-flight: ensure tracked worktree state and the candidate merge are clean.

@@ -75,6 +75,9 @@ export type AuthRequest = {
   additions?: number;
   deletions?: number;
   commit_message?: string;
+  // Issue 7d64d8f — present when commit_message is the agent-authored
+  // canonical change message the merge will commit verbatim.
+  commit_message_digest?: string | null;
   spec_content?: string;
   diff_summary?: string;
   post_merge_handoff?: string | null;
@@ -695,6 +698,13 @@ function AuthCard({
   const consoleEndRef = useRef<HTMLDivElement>(null);
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
+  // Issue 7d64d8f — a digest means these exact bytes are the merge commit
+  // message, so they are shown verbatim rather than rendered as Markdown.
+  const canonicalDigest =
+    typeof request.commit_message_digest === 'string' && request.commit_message_digest
+      ? request.commit_message_digest
+      : '';
+  const isCanonicalMessage = canonicalDigest !== '' && commitMsg !== '';
   const specContent = typeof request.spec_content === 'string' ? request.spec_content : '';
   const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
 
@@ -971,8 +981,16 @@ function AuthCard({
                     </span>
                     Commit Message
                   </button>
+                  {isCanonicalMessage && (
+                    <span className="panel__badge" title={`sha256 ${canonicalDigest}`}>
+                      agent-authored
+                    </span>
+                  )}
                   {/* Bug: 2c826ca — editable commit message for pending/failed requests */}
-                  {onUpdateField && mutationsAllowed && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                  {/* Issue 7d64d8f — a canonical message is immutable once it leaves pending. */}
+                  {onUpdateField && mutationsAllowed
+                    && (status === 'pending' || (failedLike && !isCanonicalMessage))
+                    && !editingCommitMsg && (
                     <button
                       type="button"
                       className="panel__edit-btn"
@@ -1018,6 +1036,10 @@ function AuthCard({
                           Cancel
                         </button>
                       </div>
+                    </div>
+                  ) : isCanonicalMessage ? (
+                    <div className="panel__body spec-panel">
+                      <pre className="canonical-message">{commitMsg}</pre>
                     </div>
                   ) : commitHtml ? (
                     <div
@@ -1192,6 +1214,13 @@ function AuthRequestDetail({
   const actionsMenuRef = useRef<HTMLDivElement>(null);
 
   const commitMsg = typeof request.commit_message === 'string' ? request.commit_message : '';
+  // Issue 7d64d8f — a digest means these exact bytes are the merge commit
+  // message, so they are shown verbatim rather than rendered as Markdown.
+  const canonicalDigest =
+    typeof request.commit_message_digest === 'string' && request.commit_message_digest
+      ? request.commit_message_digest
+      : '';
+  const isCanonicalMessage = canonicalDigest !== '' && commitMsg !== '';
   const specContent = typeof request.spec_content === 'string' ? request.spec_content : '';
   const diffRaw = typeof request.diff_summary === 'string' ? request.diff_summary : '';
 
@@ -1584,7 +1613,15 @@ function AuthRequestDetail({
                     </span>
                     Commit Message
                   </button>
-                  {onUpdateField && mutationsAllowed && (status === 'pending' || failedLike) && !editingCommitMsg && (
+                  {isCanonicalMessage && (
+                    <span className="panel__badge" title={`sha256 ${canonicalDigest}`}>
+                      agent-authored
+                    </span>
+                  )}
+                  {/* Issue 7d64d8f — a canonical message is immutable once it leaves pending. */}
+                  {onUpdateField && mutationsAllowed
+                    && (status === 'pending' || (failedLike && !isCanonicalMessage))
+                    && !editingCommitMsg && (
                     <button
                       type="button"
                       className="panel__edit-btn"
@@ -1630,6 +1667,10 @@ function AuthRequestDetail({
                           Cancel
                         </button>
                       </div>
+                    </div>
+                  ) : isCanonicalMessage ? (
+                    <div className="panel__body spec-panel">
+                      <pre className="canonical-message">{commitMsg}</pre>
                     </div>
                   ) : commitHtml ? (
                     <div

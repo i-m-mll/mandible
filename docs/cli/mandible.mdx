@@ -275,7 +275,10 @@ mandible auth request <branch> --title <text> [options]
 | `--issue <id>` | Issue ID to reference for context; does not close on merge (repeatable) |
 | `--ref-issue <id>` | Alias for `--issue` |
 | `--closes-issue <id>` | Issue ID to close on successful merge (repeatable) |
-| `--commit-message <text>` | Override commit message (auto-generated from git log) |
+| `--message <text>` | Agent-authored canonical change message (see below) |
+| `--message-file <file>` | Read the canonical change message from a file (`-` for stdin) |
+| `--verification <text>` | Machine-owned `Verification:` section (default `Not recorded`) |
+| `--commit-message <text>` | Legacy free-form review text; not used as the merge commit message |
 | `--diff-summary <text>` | Override diff (auto-generated, truncated at 100KB) |
 | `--spec <text>` | Spec/design notes |
 | `--handoff <text>` | Post-merge handoff note for next session |
@@ -294,7 +297,23 @@ The script auto-detects:
 - Protected branch worktree path (from `git worktree list`)
 - Repo name (from git common dir)
 - Diff stats and unified diff
-- Commit message summary (from git log)
+
+**Canonical change message:**
+
+`--message` / `--message-file` supply prose only: the first non-empty line is
+the outcome, and the rest is the body where the agent writes `Why:` and an
+optional `Caveats:` section. The CLI owns the rest of the template — the
+`Merge <branch>: ` subject prefix, the `Verification:` section from
+`--verification` (default `Not recorded`), and the `Mandible-Issue:` /
+`Closes-Mandible-Issue:` trailers derived from `--issue` and `--closes-issue`.
+Authoring those machine-owned lines (or any `#`-leading line, which git's
+message cleanup would strip) is refused.
+
+The daemon canonicalizes the composed bytes, records their SHA-256, and freezes
+both once the request leaves `pending`. `mandible auth merge` re-verifies the
+digest and commits exactly those bytes on both merge paths, aborting on a
+mismatch rather than falling back. With no message flag, nothing is stored and
+the merge keeps git's own default merge message.
 
 **Pre-flight checks:**
 
@@ -318,6 +337,12 @@ for manual recovery.
 ### mandible auth merge
 
 Interactive merge command for protected branches. Requires user authentication via YubiKey.
+
+When the approved request carries a canonical change message, the merge fetches
+it, verifies its SHA-256, and uses those exact bytes as the merge commit message
+on the `git merge` path, the atomic `git commit-tree` path, and a resumed
+`git merge --continue`. A fetch failure, a missing message, or a digest mismatch
+aborts before any ref or worktree changes.
 
 ```
 mandible auth merge <source-branch>
