@@ -437,8 +437,12 @@ function lastDecisionForRevision(
   return row ?? null;
 }
 
-/** The action of the effective latest decision; null when the revision is undecided. */
-function lastActionForRevision(db: Db, revisionId: string): string | null {
+/**
+ * The action of the effective latest decision; null when the revision is undecided.
+ * Exported so every surface (briefing state, undo CAS, Spaces finding refs)
+ * reads the same trailing row and cannot disagree about what is effective.
+ */
+export function lastActionForRevision(db: Db, revisionId: string): string | null {
   return lastDecisionForRevision(db, revisionId)?.action ?? null;
 }
 
