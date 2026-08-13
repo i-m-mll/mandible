@@ -28,8 +28,10 @@ import { getClientAuthMode } from "./mode.js";
 import {
   defaultClientAuthDir,
   loadOrCreatePepper,
-  readDashboardSession,
-  writeDashboardSession,
+  MAX_DASHBOARD_SESSIONS,
+  readDashboardSessions,
+  writeDashboardSessions,
+  type StoredDashboardSession,
   writeBootstrapTokenFile,
 } from "./secret-store.js";
 import {
@@ -71,7 +73,7 @@ export function wrapSessionPurpose(sessionId: string): string {
 export interface ClientAuthenticatorOptions {
   /** Override the filesystem secrets directory (tests). Defaults to config dir. */
   secretsDir?: string;
-  /** Expiry for the single restart-stable dashboard session (tests may shorten). */
+  /** Expiry for restart-stable dashboard sessions (tests may shorten). */
   dashboardSessionTtlMs?: number;
   /** Bounded handshake-only renewal grace after dashboard expiry (tests may shorten). */
   dashboardSessionRenewalGraceMs?: number;
@@ -81,7 +83,7 @@ export interface ClientAuthenticatorOptions {
   wrapSessionPreRegistrationGraceMs?: number;
   /** Independent cap for wrap-time session-scoped tokens. */
   maxWrapSessionTokens?: number;
-  /** Hard cap for non-wrap daemon-lifetime ephemeral credentials. */
+  /** Hard cap for general daemon-lifetime ephemeral credentials. */
   maxEphemeralTokens?: number;
   /** Injectable clock for expiry tests. */
   now?: () => number;
@@ -109,6 +111,8 @@ export class ClientAuthenticator implements ClientAuthGate {
   private readonly now: () => number;
   /** Pepper is loaded from the filesystem ONCE at construction (startup). */
   private readonly pepper: string;
+  /** Presented dashboard fingerprint keyed by the exact authenticate() result. */
+  private readonly presentedDashboardSessions = new WeakMap<object, string>();
   private bootstrapRaw: string | null = null;
 
   constructor(
@@ -161,7 +165,7 @@ export class ClientAuthenticator implements ClientAuthGate {
         if (!renewableDashboard) {
           this.ephemeral.delete(key);
           if (eph.purpose === "dashboard_handshake") {
-            writeDashboardSession(null, this.secretsDir);
+            this.persistDashboardSessions();
           }
           return null;
         }
@@ -176,6 +180,7 @@ export class ClientAuthenticator implements ClientAuthGate {
       const currentUser = getUserById(this.db, eph.identity.user_id);
       if (!currentUser || currentUser.status !== "active") {
         this.ephemeral.delete(key);
+        if (eph.purpose === "dashboard_handshake") this.persistDashboardSessions();
         return null;
       }
       if (!this.agentSessionIdentityStillValid(eph)) {
@@ -194,6 +199,9 @@ export class ClientAuthenticator implements ClientAuthGate {
         source,
         ephemeral_purpose: eph.purpose,
       };
+      if (eph.purpose === "dashboard_handshake") {
+        this.presentedDashboardSessions.set(identity, key);
+      }
       if (eph.purpose === "operator_bootstrap") {
         // The filesystem proof exists only for first enrollment and is
         // consumed on its first authenticated request. Long-lived dashboard
@@ -268,7 +276,10 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   /** Revoke one daemon-lifetime capability without retaining its raw value. */
   revokeEphemeralToken(raw: string): void {
-    this.ephemeral.delete(fingerprintForToken(this.pepper, raw));
+    const key = fingerprintForToken(this.pepper, raw);
+    const entry = this.ephemeral.get(key);
+    this.ephemeral.delete(key);
+    if (entry?.purpose === "dashboard_handshake") this.persistDashboardSessions();
   }
 
   /**
@@ -370,17 +381,19 @@ export class ClientAuthenticator implements ClientAuthGate {
   /**
    * Rotate the operator dashboard session. The caller must already have passed
    * requireOperator; this method never upgrades an anonymous or unrelated user.
-   * Exactly one session fingerprint is kept in a protected file so a strict
-   * dashboard can authenticate and renew after a normal daemon restart without
+   * A dashboard credential replaces only the exact session it presented;
+   * durable operator credentials add a session without disturbing other
+   * browser or desktop surfaces. A bounded set of fingerprints is kept in a
+   * protected file so strict dashboards survive daemon restarts without
    * persisting reusable bearer bytes.
    */
   issueDashboardToken(identity: { user_id: string; slug: string }): {
     token: string;
     expires_at: number;
   } {
-    const previous = [...this.ephemeral.entries()]
-      .filter(([, entry]) => entry.purpose === "dashboard_handshake");
-    for (const [key] of previous) this.ephemeral.delete(key);
+    const previous = this.dashboardEntries();
+    const replacedFingerprint = this.presentedDashboardSessions.get(identity);
+    if (replacedFingerprint) this.ephemeral.delete(replacedFingerprint);
     const token = this.issueEphemeralToken(identity, "dashboard_handshake", {
       ttlMs: this.dashboardSessionTtlMs,
     });
@@ -390,16 +403,10 @@ export class ClientAuthenticator implements ClientAuthGate {
     }
     entry.renewUntil = entry.expiresAt + this.dashboardSessionRenewalGraceMs;
     try {
-      writeDashboardSession({
-        token_fingerprint: fingerprintForToken(this.pepper, token),
-        user_id: identity.user_id,
-        slug: identity.slug,
-        created_at: entry.createdAt,
-        expires_at: entry.expiresAt,
-        renew_until: entry.renewUntil,
-      }, this.secretsDir);
+      this.enforceDashboardSessionLimit();
+      this.persistDashboardSessions();
     } catch (error) {
-      this.ephemeral.delete(fingerprintForToken(this.pepper, token));
+      for (const [key] of this.dashboardEntries()) this.ephemeral.delete(key);
       for (const [key, previousEntry] of previous) {
         this.ephemeral.set(key, previousEntry);
       }
@@ -445,28 +452,32 @@ export class ClientAuthenticator implements ClientAuthGate {
   }
 
   private restoreDashboardSession(): void {
-    const session = readDashboardSession(this.secretsDir);
-    if (!session) return;
+    const stored = readDashboardSessions(this.secretsDir);
+    if (!stored) return;
     const operator = getOperator(this.db);
-    if (
-      session.renew_until <= this.now()
-      || !operator
-      || session.user_id !== operator.id
-    ) {
-      writeDashboardSession(null, this.secretsDir);
-      return;
+    for (const session of stored.sessions) {
+      if (
+        session.renew_until <= this.now()
+        || !operator
+        || session.user_id !== operator.id
+      ) continue;
+      this.ephemeral.set(session.token_fingerprint, {
+        identity: { user_id: session.user_id, slug: operator.slug },
+        purpose: "dashboard_handshake",
+        createdAt: session.created_at,
+        expiresAt: session.expires_at,
+        renewUntil: session.renew_until,
+      });
     }
-    this.ephemeral.set(session.token_fingerprint, {
-      identity: { user_id: session.user_id, slug: operator.slug },
-      purpose: "dashboard_handshake",
-      createdAt: session.created_at,
-      expiresAt: session.expires_at,
-      renewUntil: session.renew_until,
-    });
+    this.enforceDashboardSessionLimit();
+    if (stored.legacy || this.dashboardEntries().length !== stored.sessions.length) {
+      this.persistDashboardSessions();
+    }
   }
 
   private evictExpired(): void {
     const now = this.now();
+    let dashboardChanged = false;
     for (const [key, entry] of this.ephemeral) {
       if (
         entry.expiresAt !== null
@@ -477,10 +488,36 @@ export class ClientAuthenticator implements ClientAuthGate {
       ) {
         this.ephemeral.delete(key);
         if (entry.purpose === "dashboard_handshake") {
-          writeDashboardSession(null, this.secretsDir);
+          dashboardChanged = true;
         }
       }
     }
+    if (dashboardChanged) this.persistDashboardSessions();
+  }
+
+  private dashboardEntries(): Array<[string, EphemeralEntry]> {
+    return [...this.ephemeral.entries()]
+      .filter(([, entry]) => entry.purpose === "dashboard_handshake");
+  }
+
+  private enforceDashboardSessionLimit(): void {
+    const sessions = this.dashboardEntries()
+      .sort((a, b) => a[1].createdAt - b[1].createdAt);
+    while (sessions.length > MAX_DASHBOARD_SESSIONS) {
+      this.ephemeral.delete(sessions.shift()![0]);
+    }
+  }
+
+  private persistDashboardSessions(): void {
+    const sessions: StoredDashboardSession[] = this.dashboardEntries().map(([key, entry]) => ({
+      token_fingerprint: key,
+      user_id: entry.identity.user_id,
+      slug: entry.identity.slug,
+      created_at: entry.createdAt,
+      expires_at: entry.expiresAt!,
+      renew_until: entry.renewUntil!,
+    }));
+    writeDashboardSessions(sessions, this.secretsDir);
   }
 
   private agentSessionIdentityStillValid(entry: EphemeralEntry): boolean {
@@ -549,22 +586,23 @@ export class ClientAuthenticator implements ClientAuthGate {
 
   private enforceEphemeralLimit(): void {
     let retained = [...this.ephemeral.values()]
-      .filter((entry) => !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX))
+      .filter((entry) => (
+        entry.purpose !== "dashboard_handshake"
+        && !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
+      ))
       .length;
     if (retained <= this.maxEphemeralTokens) return;
     const evictable = [...this.ephemeral.entries()]
       .filter(([, entry]) => (
         entry.purpose !== "operator_bootstrap"
+        && entry.purpose !== "dashboard_handshake"
         && !entry.purpose.startsWith(WRAP_SESSION_PURPOSE_PREFIX)
       ))
       .sort((a, b) => a[1].createdAt - b[1].createdAt);
     while (retained > this.maxEphemeralTokens && evictable.length > 0) {
-      const [key, entry] = evictable.shift()!;
+      const [key] = evictable.shift()!;
       this.ephemeral.delete(key);
       retained -= 1;
-      if (entry.purpose === "dashboard_handshake") {
-        writeDashboardSession(null, this.secretsDir);
-      }
     }
   }
 }
