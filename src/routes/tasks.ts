@@ -47,11 +47,25 @@ function handleError(res: ResponseLike, error: unknown): void {
  */
 function requireExecutorPublisher(db: Db, req: RequestLike, executorName: string): string {
   const identity = requireIdentity(req);
+  if (identity.method !== "api_token") {
+    throw new ClientAuthzError(
+      403,
+      "executor_credential_required",
+      "Executor inventory publication requires a durable API token, not a session credential.",
+    );
+  }
   const user = getUserById(db, identity.user_id);
   if (!user || user.status !== "active") {
     throw new ClientAuthzError(403, "forbidden", "The authenticated user is not active.");
   }
   if (isOperator(db, identity)) return user.id;
+  if (user.kind !== "agent") {
+    throw new ClientAuthzError(
+      403,
+      "executor_agent_required",
+      "Executor inventory publication requires an agent identity.",
+    );
+  }
   if (!publisherMayPostInventory(db, user.slug, executorName)) {
     throw new ClientAuthzError(
       403,

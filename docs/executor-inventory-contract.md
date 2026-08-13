@@ -34,6 +34,10 @@ default seeds `agent-schedule`. The local operator is the administrative
 principal and may post under any name.
 
 - No token → `401 authentication_required`.
+- A session-scoped ephemeral credential → `403 executor_credential_required`.
+  Publication requires the executor's durable API token; an ordinary agent
+  session does not inherit this authority.
+- A mapped non-agent identity → `403 executor_agent_required`.
 - Authenticated but unmapped → `403 executor_identity_forbidden`. Authenticating
   is not the same as being permitted to publish; an arbitrary agent session
   cannot post an inventory.
@@ -53,7 +57,10 @@ Mint a publisher token with `mandible user token mint <slug> --store`.
 **One POST is one complete snapshot of every task the executor manages.** There
 is no per-task upsert and no partial update. Omitting a task means the executor
 is asserting it no longer manages it. The view projects the newest generation
-whole, so it can never show halves of two observations.
+whole, so it can never show halves of two observations. "Newest" is ordered by
+`observed_at` first, then receipt time and receipt insertion order as
+deterministic tie-breakers. A late-arriving snapshot with an older
+`observed_at` never displaces a newer executor observation.
 
 ---
 
@@ -147,7 +154,7 @@ literal text `unknown` cannot be distinguished from an unknown commit. Accepted.
 | `schema` | `"executor-inventory@1"` | Exact match. Any other value is a 400. |
 | `executor.name` | string | Stable executor identity. The projection key: one latest generation per name. Must be a name the publisher is mapped to. |
 | `executor.version` | string \| `unknown` | Executor build/version. |
-| `executor.capabilities` | string[] | Free-form tokens. `[]` means "declared none" — it is not unknown. |
+| `executor.capabilities` | string[] | Non-empty free-form tokens. `[]` means "declared none" — it is not unknown. |
 | `observed_at` | integer (epoch ms) | When the executor took the snapshot. Doubles as its heartbeat; Mandible's staleness judgment reads this and nothing else. |
 | `tasks[]` | array | Complete task set. May be empty (the executor manages nothing). `task_id` must be unique within the generation. |
 
@@ -205,8 +212,11 @@ Storage is **append-only**. Each generation is one row carrying the full payload
 the authenticated principal, and a SHA-256 **content digest** over the canonical
 (field-order-normalized) generation.
 
-**Idempotency is by digest.** Re-posting identical bytes writes nothing and
-returns the original receipt with `stored: false` — safe to retry blindly:
+**Idempotency is by `(executor name, digest)`.** Re-posting the same canonical
+generation writes nothing and returns the original receipt with `stored: false`
+— safe to retry blindly. Scoping uniqueness to the executor prevents a
+digest collision in one executor's namespace from suppressing another
+executor's authenticated receipt:
 
 ```json
 {

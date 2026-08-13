@@ -1,9 +1,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { migrate, openDb, type Db } from "../src/db.js";
+import { buildMetadataBackupSql, METADATA_BACKUP_TABLES } from "../src/ledger/backup.js";
 
 // Issue 0bc2279: migration v124 adds the append-only
 // `task_inventory_generations` receipts table. The table is additive (no column
@@ -72,8 +74,8 @@ describe("migration v124: task inventory generations", () => {
     // Every generation must name the principal that posted it.
     expect(byName.get("posted_by_user_id")).toMatchObject({ type: "TEXT", notnull: 1 });
 
-    // The digest is the idempotency mechanism, so uniqueness must be enforced
-    // by the schema rather than by the store remembering to check.
+    // The digest is the idempotency mechanism, scoped to one executor. A
+    // synthetic cross-executor digest collision must not suppress a receipt.
     db.prepare(
       `INSERT INTO users (id, slug, kind, display_name, status, created_at, updated_at, metadata_json)
        VALUES ('u1', 'exec', 'agent', 'Exec', 'active', 0, 0, '{}')`,
@@ -87,6 +89,14 @@ describe("migration v124: task inventory generations", () => {
       ).run(`gen-${Math.random()}`);
     insert();
     expect(() => insert()).toThrow(/UNIQUE/i);
+    expect(() =>
+      db.prepare(
+        `INSERT INTO task_inventory_generations (
+           id, digest, schema_id, executor_name, executor_version, capabilities_json,
+           observed_at, task_count, payload_json, posted_by_user_id, created_at
+         ) VALUES ('gen-other', 'digest-a', 'executor-inventory@1', 'other-executor', '1', '[]', 1, 0, '{}', 'u1', 1)`,
+      ).run(),
+    ).not.toThrow();
 
     // A generation may not name a principal that does not exist.
     expect(() =>
@@ -137,5 +147,47 @@ describe("migration v124: task inventory generations", () => {
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
       value: "124",
     });
+  });
+
+  it("includes authenticated receipts in the durable metadata backup", () => {
+    expect(METADATA_BACKUP_TABLES).toContain("task_inventory_generations");
+    db.prepare(
+      `INSERT INTO users (id, slug, kind, display_name, status, created_at, updated_at, metadata_json)
+       VALUES ('u-backup', 'executor-backup', 'agent', 'Executor Backup', 'active', 0, 0, '{}')`,
+    ).run();
+    const payload = JSON.stringify({
+      schema: "executor-inventory@1",
+      executor: { name: "executor-backup", version: "1", capabilities: [] },
+      observed_at: 1234,
+      tasks: [],
+    });
+    db.prepare(
+      `INSERT INTO task_inventory_generations (
+         id, digest, schema_id, executor_name, executor_version, capabilities_json,
+         observed_at, task_count, payload_json, posted_by_user_id, created_at
+       ) VALUES ('generation-backup', 'digest-backup', 'executor-inventory@1',
+         'executor-backup', '1', '[]', 1234, 0, ?, 'u-backup', 1235)`,
+    ).run(payload);
+
+    const dump = buildMetadataBackupSql(db);
+    expect(dump).toContain("-- Table: task_inventory_generations");
+    expect(dump).toContain("generation-backup");
+    expect(dump).toContain("digest-backup");
+
+    const restored = new Database(":memory:");
+    try {
+      restored.exec(dump);
+      expect(
+        restored.prepare(
+          "SELECT executor_name, posted_by_user_id, payload_json FROM task_inventory_generations WHERE id = ?",
+        ).get("generation-backup"),
+      ).toEqual({
+        executor_name: "executor-backup",
+        posted_by_user_id: "u-backup",
+        payload_json: payload,
+      });
+    } finally {
+      restored.close();
+    }
   });
 });

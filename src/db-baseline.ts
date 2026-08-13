@@ -435,7 +435,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON agent_dispatch_events(comment_id)`,
   `CREATE TABLE task_inventory_generations (
         id                TEXT PRIMARY KEY,
-        digest            TEXT NOT NULL UNIQUE,
+        digest            TEXT NOT NULL,
         schema_id         TEXT NOT NULL,
         executor_name     TEXT NOT NULL,
         executor_version  TEXT NOT NULL,
@@ -446,7 +446,8 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         task_count        INTEGER NOT NULL DEFAULT 0,
         payload_json      TEXT NOT NULL CHECK(json_valid(payload_json)),
         posted_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at        INTEGER NOT NULL
+        created_at        INTEGER NOT NULL,
+        UNIQUE(executor_name, digest)
       )`,
   `CREATE INDEX idx_task_inventory_generations_executor
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,

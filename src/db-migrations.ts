@@ -3447,13 +3447,14 @@ export const MIGRATIONS: readonly Migration[] = [
     // payload. There is no per-task table and no mutable task state: the Tasks
     // view is a PROJECTION of the latest generation per executor, so a replayed
     // or reordered post can never leave the view holding halves of two
-    // different observations. `digest` is UNIQUE, which is the idempotency
-    // mechanism — re-posting identical bytes is refused by the index and
-    // answered with the original receipt.
+    // different observations. `(executor_name, digest)` is UNIQUE, which is the
+    // idempotency mechanism — re-posting the same canonical generation for one
+    // executor is refused by the index and answered with the original receipt,
+    // without letting a synthetic cross-executor collision suppress a receipt.
     statements: [
       `CREATE TABLE IF NOT EXISTS task_inventory_generations (
         id                TEXT PRIMARY KEY,
-        digest            TEXT NOT NULL UNIQUE,
+        digest            TEXT NOT NULL,
         schema_id         TEXT NOT NULL,
         executor_name     TEXT NOT NULL,
         executor_version  TEXT NOT NULL,
@@ -3464,7 +3465,8 @@ export const MIGRATIONS: readonly Migration[] = [
         task_count        INTEGER NOT NULL DEFAULT 0,
         payload_json      TEXT NOT NULL CHECK(json_valid(payload_json)),
         posted_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
-        created_at        INTEGER NOT NULL
+        created_at        INTEGER NOT NULL,
+        UNIQUE(executor_name, digest)
       )`,
       `CREATE INDEX IF NOT EXISTS idx_task_inventory_generations_executor
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,

@@ -6,6 +6,9 @@
 // callers, and check that the principal recorded on the receipt is the
 // authenticated one rather than anything the payload claims.
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -13,6 +16,7 @@ import { setSetting } from "../src/client-auth/settings-kv.js";
 import { TASK_INVENTORY_SCHEMA } from "../src/contracts.js";
 import { migrate, setDb, type Db } from "../src/db.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { registerTaskRoutes } from "../src/routes/tasks.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { TASK_INVENTORY_EXECUTORS_KEY } from "../src/task-inventory.js";
@@ -30,18 +34,23 @@ let operatorId: string;
 class SlugGate implements ClientAuthGate {
   constructor(private readonly lookup: () => Db) {}
 
-  authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
+  authenticate(
+    credential: string | null | undefined,
+    source: ResolvedClientIdentity["source"] = "in_process",
+  ): ResolvedClientIdentity | null {
     if (!credential) return null;
+    const ephemeral = credential.startsWith("session:");
+    const slug = ephemeral ? credential.slice("session:".length) : credential;
     const row = this.lookup()
       .prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
-      .get(credential) as { id: string; slug: string } | undefined;
+      .get(slug) as { id: string; slug: string } | undefined;
     if (!row) return null;
     return {
       user_id: row.id,
       slug: row.slug,
-      method: "api_token",
+      method: ephemeral ? "ephemeral" : "api_token",
       credential_id: null,
-      source: "in_process",
+      source,
     };
   }
 
@@ -159,6 +168,30 @@ describe("POST /api/tasks/inventory", () => {
     ).toBe(0);
   });
 
+  it("rejects an ordinary session token even when its agent identity is mapped", async () => {
+    const response = await post(generation(), "session:agent-schedule");
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ code: "executor_credential_required" });
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM task_inventory_generations").get() as { n: number }).n,
+    ).toBe(0);
+  });
+
+  it("rejects a mapped non-agent identity", async () => {
+    createUser(db, { slug: "human-publisher", kind: "human", display_name: "Human Publisher" });
+    setSetting(
+      db,
+      TASK_INVENTORY_EXECUTORS_KEY,
+      JSON.stringify({ "human-publisher": ["agent-schedule"] }),
+    );
+    const response = await post(generation(), "human-publisher");
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ code: "executor_agent_required" });
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM task_inventory_generations").get() as { n: number }).n,
+    ).toBe(0);
+  });
+
   it("rejects a mapped publisher posting under an executor name it does not own", async () => {
     const response = await post(
       generation({ executor: { name: "other-executor", version: "1", capabilities: [] } }),
@@ -189,6 +222,69 @@ describe("POST /api/tasks/inventory", () => {
         "some-agent",
       )).status,
     ).toBe(200);
+  });
+
+  it("fails closed on a partially malformed publisher mapping", async () => {
+    setSetting(
+      db,
+      TASK_INVENTORY_EXECUTORS_KEY,
+      JSON.stringify({ "some-agent": ["fleet", null] }),
+    );
+    const response = await post(
+      generation({ executor: { name: "fleet", version: "1", capabilities: [] } }),
+      "some-agent",
+    );
+    expect(response.status).toBe(403);
+    expect(response.body).toMatchObject({ code: "executor_identity_forbidden" });
+  });
+
+  it("enforces the same identity boundary through actual file-RPC requests", async () => {
+    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-tasks-file-rpc-"));
+    try {
+      const transport = new FileRpcTransport({ router, dir: spool, responseTtlMs: 60_000 });
+      const requests = [
+        { id: "anonymous", ambient_identity: { provider: "codex", provider_session_id: "x" } },
+        { id: "unmapped", capability_token: "some-agent" },
+        { id: "session", capability_token: "session:agent-schedule" },
+        { id: "mapped", capability_token: "agent-schedule" },
+      ];
+      for (const request of requests) {
+        fs.writeFileSync(
+          path.join(spool, `${request.id}.request.json`),
+          JSON.stringify({
+            ...request,
+            method: "POST",
+            path: "/api/tasks/inventory",
+            body: generation(),
+          }),
+          "utf8",
+        );
+      }
+
+      await transport.processOnce();
+
+      const response = (id: string) => JSON.parse(
+        fs.readFileSync(path.join(spool, `${id}.response.json`), "utf8"),
+      ) as { status: number; body: Record<string, unknown> };
+      expect(response("anonymous")).toMatchObject({
+        status: 401,
+        body: { code: "authentication_required" },
+      });
+      expect(response("unmapped")).toMatchObject({
+        status: 403,
+        body: { code: "executor_identity_forbidden" },
+      });
+      expect(response("session")).toMatchObject({
+        status: 403,
+        body: { code: "executor_credential_required" },
+      });
+      expect(response("mapped")).toMatchObject({ status: 200, body: { stored: true } });
+      expect(
+        (db.prepare("SELECT COUNT(*) AS n FROM task_inventory_generations").get() as { n: number }).n,
+      ).toBe(1);
+    } finally {
+      fs.rmSync(spool, { recursive: true, force: true });
+    }
   });
 
   it("rejects unknown fields and unsupported schema versions with a clear error", async () => {

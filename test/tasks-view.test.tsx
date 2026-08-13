@@ -68,6 +68,25 @@ function knownTask(): Record<string, unknown> {
   };
 }
 
+function unknownTask(): Record<string, unknown> {
+  return {
+    task_id: 'unknown-task',
+    display_name: 'Unknown task',
+    management_mode: 'external',
+    bundle: 'unknown',
+    activation: { config_enabled: 'unknown', locally_activated: 'unknown' },
+    guards: {
+      circuit: 'unknown',
+      retry_attempt: 'unknown',
+      retry_next_at: 'unknown',
+      kill_switch: 'unknown',
+      staleness: 'unknown',
+    },
+    last_run: 'unknown',
+    last_failure: 'unknown',
+  };
+}
+
 function post(tasks: Array<Record<string, unknown>>, observedAt = Date.now()): void {
   const generation = parseTaskInventoryGeneration({
     schema: TASK_INVENTORY_SCHEMA,
@@ -138,6 +157,21 @@ describe('TasksView', () => {
     expect(screen.queryByRole('button', { name: /new|create|\+/i })).toBeNull();
   });
 
+  it('distinguishes a registered executor that reported an empty task set', async () => {
+    post([]);
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText(/executor reported no tasks|executor has reported, but listed no tasks/i))
+        .toHaveLength(2);
+    });
+    expect(screen.queryByText(/No executor has registered an inventory/i)).toBeNull();
+    expect(screen.queryByRole('textbox')).toBeNull();
+    expect(document.querySelector('form')).toBeNull();
+    expect(screen.queryByRole('button', { name: /new|create|run|enable|edit|delete|\+/i })).toBeNull();
+  });
+
   it('renders reported facts, keeps activation as two readings, and shows unknown as unknown', async () => {
     post([knownTask()]);
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
@@ -187,5 +221,50 @@ describe('TasksView', () => {
     const row = within(sidebar).getByText('Daily digest').closest('.tasks-row') as HTMLElement;
     expect(within(row).getByText('agent-schedule')).toBeTruthy();
     expect(row.querySelector('.tasks-freshness--stale')).toBeTruthy();
+  });
+
+  it('keeps every explicit unknown visible, including unknown freshness', async () => {
+    post([unknownTask()], Date.now() + HOUR);
+    stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
+    render(<TasksView />);
+
+    await waitFor(() => expect(screen.getAllByText('Unknown task').length).toBe(2));
+    const detail = document.querySelector('.tasks-detail') as HTMLElement;
+    const factValue = (label: string): HTMLElement => {
+      const term = within(detail).getAllByText(label)
+        .find((element) => element.classList.contains('tasks-fact__label')) as HTMLElement;
+      return term.nextElementSibling as HTMLElement;
+    };
+    for (const label of [
+      'Active bundle',
+      'Enabled in config',
+      'Activated on this host',
+      'Circuit',
+      'Retry attempts',
+      'Next retry',
+      'Kill switch',
+      'Executor staleness claim',
+    ]) {
+      expect(factValue(label).textContent, label).toBe('unknown');
+    }
+    expect(within(detail).getAllByText(/unknown — the executor could not say/i)).toHaveLength(2);
+    const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
+      .getByText('Unknown task').closest('.tasks-row') as HTMLElement;
+    expect(row.querySelector('.tasks-freshness--unknown')).toBeTruthy();
+  });
+
+  it('labels a report exactly at the staleness horizon as current', async () => {
+    const observedAt = Date.now();
+    post([knownTask()], observedAt);
+    const view = getTaskInventoryView(db, {
+      now: observedAt + TASK_INVENTORY_STALE_AFTER_MS,
+    });
+    stubInventory(normalizeTaskInventory(view));
+    render(<TasksView />);
+
+    await waitFor(() => expect(screen.getAllByText('Daily digest').length).toBe(2));
+    const row = within(document.querySelector('.tasks-sidebar') as HTMLElement)
+      .getByText('Daily digest').closest('.tasks-row') as HTMLElement;
+    expect(row.querySelector('.tasks-freshness--current')).toBeTruthy();
   });
 });

@@ -1324,7 +1324,8 @@ export type SpaceFindingListResponse = { findings: SpaceFindingCandidateSummary[
 //     different from "not deployed".
 //  3. IMMUTABLE RECEIPTS. Generations are append-only rows carrying the
 //     authenticated principal that posted them and a content digest. Re-posting
-//     identical bytes is a no-op that returns the original receipt.
+//     the same canonical generation for one executor is a no-op that returns
+//     the original receipt.
 //
 // The publisher-facing spec is docs/executor-inventory-contract.md.
 

@@ -193,13 +193,14 @@ function parseExecutor(value: unknown): TaskExecutorIdentity {
   const record = objectAt(value, "executor");
   rejectUnknownKeys(record, EXECUTOR_KEYS, "executor");
   const capabilities = record.capabilities;
-  if (!Array.isArray(capabilities) || capabilities.some((entry) => typeof entry !== "string")) {
+  if (!Array.isArray(capabilities)) {
     fail("executor.capabilities must be an array of strings (use [] for none)");
   }
   return {
     name: requireString(record.name, "executor.name"),
     version: maybe(record.version, "executor.version", requireString),
-    capabilities: (capabilities as string[]).map((entry) => entry.trim()).filter(Boolean),
+    capabilities: capabilities.map((entry, index) =>
+      requireString(entry, `executor.capabilities[${index}]`)),
   };
 }
 
@@ -340,12 +341,14 @@ export function readTaskExecutorPublishers(db: Db = getDb()): Record<string, str
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const mapping: Record<string, string[]> = {};
+    const entries: Array<[string, string[]]> = [];
     for (const [slug, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (!Array.isArray(value)) continue;
-      mapping[slug] = value.filter((entry): entry is string => typeof entry === "string");
+      if (!slug.trim() || slug !== slug.trim() || !Array.isArray(value)) return {};
+      if (value.some((entry) =>
+        typeof entry !== "string" || !entry.trim() || entry !== entry.trim())) return {};
+      entries.push([slug, value as string[]]);
     }
-    return mapping;
+    return Object.fromEntries(entries);
   } catch {
     // A malformed override is fail-closed: nobody may publish.
     return {};
@@ -399,8 +402,10 @@ export function recordTaskInventoryGeneration(
 
   const run = db.transaction((): TaskInventoryPostResult => {
     const existing = db
-      .prepare("SELECT * FROM task_inventory_generations WHERE digest = ?")
-      .get(digest) as GenerationRow | undefined;
+      .prepare(
+        "SELECT * FROM task_inventory_generations WHERE executor_name = ? AND digest = ?",
+      )
+      .get(generation.executor.name, digest) as GenerationRow | undefined;
     if (existing) {
       return {
         generation_id: existing.id,

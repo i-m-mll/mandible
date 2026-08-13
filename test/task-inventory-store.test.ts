@@ -5,6 +5,7 @@
 // that survives the round trip untouched, idempotency keyed on content, and a
 // projection that shows the newest complete generation and never a blend.
 
+import fs from "node:fs";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -98,6 +99,56 @@ afterEach(() => {
 });
 
 describe("generation validation", () => {
+  it("keeps the documented sample and field matrix aligned with the parser", () => {
+    const contract = fs.readFileSync(
+      "docs/executor-inventory-contract.md",
+      "utf8",
+    );
+    const sample = [...contract.matchAll(/```json\n([\s\S]*?)\n```/g)]
+      .map((match) => match[1])
+      .find((block) => block.includes(`"schema": "${TASK_INVENTORY_SCHEMA}"`));
+    expect(sample).toBeTruthy();
+    expect(() => parseTaskInventoryGeneration(JSON.parse(sample!))).not.toThrow();
+
+    const documentedPaths = [
+      "schema",
+      "executor.name",
+      "executor.version",
+      "executor.capabilities",
+      "observed_at",
+      "tasks[]",
+      "task_id",
+      "display_name",
+      "management_mode",
+      "bundle",
+      "bundle.commit",
+      "bundle.content_hash",
+      "bundle.execution_hash",
+      "bundle.deployed_at",
+      "activation.config_enabled",
+      "activation.locally_activated",
+      "guards.circuit",
+      "guards.retry_attempt",
+      "guards.retry_next_at",
+      "guards.kill_switch",
+      "guards.staleness",
+      "last_run",
+      "last_failure",
+      "run_id",
+      "started_at",
+      "finished_at",
+      "outcome",
+      "bundle_commit",
+      "content_hash",
+      "execution_hash",
+      "config_hash",
+      "detail",
+    ];
+    for (const field of documentedPaths) {
+      expect(contract, `missing contract field ${field}`).toContain(`\`${field}\``);
+    }
+  });
+
   it("accepts a well-formed generation", () => {
     const parsed = parseTaskInventoryGeneration(generationFixture());
     expect(parsed.executor).toEqual({
@@ -129,6 +180,86 @@ describe("generation validation", () => {
   it("rejects a schema it does not implement", () => {
     expect(() => parseTaskInventoryGeneration(generationFixture({ schema: "executor-inventory@2" })))
       .toThrow(/unsupported schema 'executor-inventory@2'/);
+  });
+
+  it("rejects prototype-shaped and deep unknown keys with their exact paths", () => {
+    const topLevel = generationFixture();
+    Object.defineProperty(topLevel, "__proto__", {
+      value: { polluted: true },
+      enumerable: true,
+    });
+    expect(() => parseTaskInventoryGeneration(topLevel))
+      .toThrow(/request body has unknown field\(s\): __proto__/);
+    expect(({} as { polluted?: boolean }).polluted).toBeUndefined();
+
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      executor: {
+        name: "agent-schedule",
+        version: "1",
+        capabilities: [],
+        constructor: "nope",
+      },
+    }))).toThrow(/executor has unknown field\(s\): constructor/);
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({
+        bundle: { ...(taskFixture().bundle as object), constructor: "nope" },
+      })],
+    }))).toThrow(/tasks\[0\]\.bundle has unknown field\(s\): constructor/);
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({
+        activation: { config_enabled: true, locally_activated: true, constructor: "nope" },
+      })],
+    }))).toThrow(/tasks\[0\]\.activation has unknown field\(s\): constructor/);
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      tasks: [taskFixture({
+        last_run: { ...(taskFixture().last_run as object), constructor: "nope" },
+      })],
+    }))).toThrow(/tasks\[0\]\.last_run has unknown field\(s\): constructor/);
+  });
+
+  it("rejects invalid timestamp types cleanly", () => {
+    const badValues = ["1786650000000", 1.5, null, {}, Number.NaN, Number.POSITIVE_INFINITY];
+    for (const value of badValues) {
+      expect(() => parseTaskInventoryGeneration(generationFixture({ observed_at: value })))
+        .toThrow(TaskInventoryValidationError);
+      expect(() => parseTaskInventoryGeneration(generationFixture({
+        tasks: [taskFixture({
+          bundle: { ...(taskFixture().bundle as object), deployed_at: value },
+        })],
+      }))).toThrow(TaskInventoryValidationError);
+    }
+  });
+
+  it("handles a large invalid task array as a clean 400-class validation failure", () => {
+    const tasks = Array.from({ length: 2_500 }, (_, index) => taskFixture({
+      task_id: `task-${index}`,
+      display_name: `Task ${index}`,
+    }));
+    tasks[tasks.length - 1].constructor = "unknown-field";
+    try {
+      parseTaskInventoryGeneration(generationFixture({ tasks }));
+      throw new Error("expected a validation failure");
+    } catch (error) {
+      expect(error).toBeInstanceOf(TaskInventoryValidationError);
+      expect((error as Error).message).toMatch(
+        /tasks\[2499\] has unknown field\(s\): constructor/,
+      );
+    }
+  });
+
+  it("rejects an empty capability token instead of silently dropping it", () => {
+    expect(() => parseTaskInventoryGeneration(generationFixture({
+      executor: { name: "agent-schedule", version: "1", capabilities: ["cron", "  "] },
+    }))).toThrow(/executor\.capabilities\[1\] must be a non-empty string/);
+  });
+
+  it("accepts an empty task set and a future observation explicitly", () => {
+    const parsed = parseTaskInventoryGeneration(generationFixture({
+      observed_at: NOW + HOUR,
+      tasks: [],
+    }));
+    expect(parsed.tasks).toEqual([]);
+    expect(deriveExecutorFreshness(parsed.observed_at, NOW)).toBe("unknown");
   });
 
   it("refuses null or omission where the contract wants an explicit 'unknown'", () => {
@@ -213,6 +344,26 @@ describe("receipts", () => {
       taskInventoryDigest(parseTaskInventoryGeneration(generationFixture())),
     );
   });
+
+  it("scopes digest idempotency to the executor identity", () => {
+    const first = parseTaskInventoryGeneration(generationFixture());
+    const second = parseTaskInventoryGeneration(generationFixture({
+      executor: { name: "other-executor", version: "1", capabilities: [] },
+    }));
+    const firstReceipt = store(first);
+
+    // Synthetic collision: make the existing executor's row carry the second
+    // generation's digest. A collision must not suppress a different
+    // executor's authenticated receipt.
+    db.prepare("UPDATE task_inventory_generations SET digest = ? WHERE id = ?")
+      .run(taskInventoryDigest(second), firstReceipt.generation_id);
+
+    const secondReceipt = store(second);
+    expect(secondReceipt).toMatchObject({ stored: true, executor: "other-executor" });
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM task_inventory_generations").get() as { n: number }).n,
+    ).toBe(2);
+  });
 });
 
 describe("projection", () => {
@@ -281,6 +432,24 @@ describe("projection", () => {
     expect(view.tasks.map((entry) => entry.key)).toEqual(["agent-schedule/daily-digest"]);
   });
 
+  it("drops tasks absent from the newest generation instead of leaving ghosts", () => {
+    store(parseTaskInventoryGeneration(generationFixture({
+      tasks: [
+        taskFixture(),
+        taskFixture({ task_id: "retired-task", display_name: "Retired task" }),
+      ],
+    })), NOW);
+    store(parseTaskInventoryGeneration(generationFixture({
+      observed_at: NOW + HOUR,
+      tasks: [],
+    })), NOW + HOUR);
+
+    const view = getTaskInventoryView(db, { now: NOW + HOUR });
+    expect(view.executors).toHaveLength(1);
+    expect(view.executors[0].task_count).toBe(0);
+    expect(view.tasks).toEqual([]);
+  });
+
   it("keeps executors separate", () => {
     store(parseTaskInventoryGeneration(generationFixture()));
     store(
@@ -293,6 +462,57 @@ describe("projection", () => {
     const view = getTaskInventoryView(db, { now: NOW });
     expect(view.executors.map((entry) => entry.name)).toEqual(["agent-schedule", "other-executor"]);
     expect(view.tasks.map((entry) => entry.executor)).toEqual(["agent-schedule", "other-executor"]);
+  });
+
+  it("keeps a renamed executor as a distinct identity", () => {
+    store(parseTaskInventoryGeneration(generationFixture()), NOW);
+    store(parseTaskInventoryGeneration(generationFixture({
+      executor: { name: "agent-schedule-v2", version: "2", capabilities: [] },
+      observed_at: NOW + HOUR,
+    })), NOW + HOUR);
+    const view = getTaskInventoryView(db, { now: NOW + HOUR });
+    expect(view.executors.map((entry) => entry.name)).toEqual([
+      "agent-schedule",
+      "agent-schedule-v2",
+    ]);
+  });
+
+  it("projects a few thousand receipts within a UI-poll budget", () => {
+    const insert = db.prepare(
+      `INSERT INTO task_inventory_generations (
+         id, digest, schema_id, executor_name, executor_version, capabilities_json,
+         observed_at, task_count, payload_json, posted_by_user_id, created_at
+       ) VALUES (?, ?, ?, ?, ?, '[]', ?, 0, ?, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (let index = 0; index < 4_000; index += 1) {
+        const executor = `executor-${index % 20}`;
+        const observedAt = NOW + index;
+        const payload = parseTaskInventoryGeneration(generationFixture({
+          executor: { name: executor, version: "1", capabilities: [] },
+          observed_at: observedAt,
+          tasks: [],
+        }));
+        insert.run(
+          `generation-${index}`,
+          `digest-${index}`,
+          TASK_INVENTORY_SCHEMA,
+          executor,
+          "1",
+          observedAt,
+          JSON.stringify(payload),
+          publisherId,
+          observedAt,
+        );
+      }
+    })();
+
+    const started = performance.now();
+    const view = getTaskInventoryView(db, { now: NOW + 4_000 });
+    const elapsedMs = performance.now() - started;
+    expect(view.executors).toHaveLength(20);
+    expect(view.tasks).toEqual([]);
+    expect(elapsedMs).toBeLessThan(1_000);
   });
 });
 
