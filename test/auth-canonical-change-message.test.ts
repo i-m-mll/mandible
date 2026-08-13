@@ -4,7 +4,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import {
   canonicalizeChangeMessage,
@@ -19,6 +19,7 @@ const CLI = path.join(process.cwd(), "bin", "mandible");
 
 let repo = "";
 let homeDir = "";
+let keyDir = "";
 let key = "";
 
 function git(args: string[], cwd = repo, env: Record<string, string> = {}): string {
@@ -187,19 +188,29 @@ function sourceHelper(snippet: string, env: Record<string, string> = {}): string
   return result.stdout;
 }
 
+// One signing key for the whole file: key generation is the slowest step here
+// and nothing in these tests depends on a per-test key identity.
+beforeAll(() => {
+  keyDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-canonical-key-"));
+  key = path.join(keyDir, "signing-key");
+  const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
+    encoding: "utf8",
+  });
+  if (keygen.status !== 0) throw new Error(keygen.stderr);
+});
+
+afterAll(() => {
+  fs.rmSync(keyDir, { recursive: true, force: true });
+});
+
 beforeEach(() => {
   repo = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-canonical-msg-"));
   homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-canonical-home-"));
-  key = path.join(repo, "signing-key");
   git(["init", "-b", "main"]);
   git(["config", "user.name", "Canonical Test"]);
   git(["config", "user.email", "canonical@example.invalid"]);
   git(["config", "gpg.format", "ssh"]);
   git(["config", "commit.gpgsign", "true"]);
-  const keygen = spawnSync("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", key], {
-    encoding: "utf8",
-  });
-  if (keygen.status !== 0) throw new Error(keygen.stderr);
   git(["config", "user.signingkey", key]);
   write("base.txt", "base\n");
   commit("base");
