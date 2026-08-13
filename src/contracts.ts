@@ -1136,10 +1136,20 @@ export type BriefingCandidateHistoryResponse = {
  * time would attach the reviewer's judgment to text they never read. Omitting
  * it means "whatever is current", which is only honest for a caller that has no
  * revision in hand.
+ *
+ * `expected_event_id` is a compare-and-set token and is meaningful only for
+ * `action: "undo"`. It names the decision event the caller believes it is
+ * undoing — the one it was handed when it made that judgment. When present the
+ * undo applies only if that event is still the revision's effective latest
+ * decision; a keep, dismiss, or undo appended in between (another tab, another
+ * operator) makes the request a 409 rather than letting a stale Undo erase a
+ * newer judgment. Omitting it is honest only for a caller with no event in
+ * hand, and preserves the pre-existing behavior.
  */
 export type BriefingDecisionRequest = {
   action: BriefingReviewAction;
   revision_id?: string;
+  expected_event_id?: string;
 };
 
 /**

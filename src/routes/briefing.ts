@@ -159,11 +159,22 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       if (revisionId !== undefined && (typeof revisionId !== "string" || !revisionId.trim())) {
         throw new BriefingValidationError("revision_id must be a non-empty string");
       }
+      // Optional compare-and-set token for undo: the decision event the caller
+      // is undoing. Validated like revision_id, so a malformed value is a 400
+      // that writes nothing rather than an undo that silently skips the check.
+      const expectedEventId = body.expected_event_id;
+      if (
+        expectedEventId !== undefined
+        && (typeof expectedEventId !== "string" || !expectedEventId.trim())
+      ) {
+        throw new BriefingValidationError("expected_event_id must be a non-empty string");
+      }
       const outcome = recordBriefingDecision(db, {
         candidateId: req.params.id,
         action: action as BriefingReviewAction,
         actorUserId,
         ...(typeof revisionId === "string" ? { revisionId } : {}),
+        ...(typeof expectedEventId === "string" ? { expectedEventId } : {}),
       });
       broadcast(BRIEFING_EVENTS.decided, outcome);
       sendJson(res, 200, outcome);

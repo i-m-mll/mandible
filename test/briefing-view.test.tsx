@@ -876,6 +876,9 @@ describe('BriefingView decisions against the real store', () => {
             action: body.action as 'keep' | 'dismiss' | 'undo',
             actorUserId: reviewerId,
             ...(typeof body.revision_id === 'string' ? { revisionId: body.revision_id } : {}),
+            ...(typeof body.expected_event_id === 'string'
+              ? { expectedEventId: body.expected_event_id }
+              : {}),
           });
           return Promise.resolve(jsonResponse(outcome));
         } catch (error) {
@@ -1006,6 +1009,62 @@ describe('BriefingView decisions against the real store', () => {
     expect(error.textContent).toContain('no decision to undo');
     expect(screen.getByText('Finding A')).toBeTruthy();
     expect(screen.getByText('Finding B')).toBeTruthy();
+  });
+
+  /**
+   * The pass-3 finding, end to end through the page. Revision addressing alone
+   * cannot save this: the row and the intervening decision are about the SAME
+   * revision, so only the event identity distinguishes the judgment this page
+   * made from the one that replaced it.
+   */
+  it('conflicts on a stale undo and reconciles instead of erasing the newer judgment', async () => {
+    await judgeBothRevisions();
+    const revisionA = revisionIdByTitle('Finding A');
+    const pageDismissId = (db
+      .prepare(
+        `SELECT id FROM decision_events
+          WHERE revision_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+      )
+      .get(revisionA) as { id: string }).id;
+
+    // Another operator judges the same revision after this page dismissed it.
+    const bob = createUser(db, { slug: 'bob', kind: 'human', display_name: 'Bob' }).id;
+    recordBriefingDecision(db, {
+      candidateId: candidateId(),
+      revisionId: revisionA,
+      action: 'keep',
+      actorUserId: bob,
+    });
+
+    const fetchMock = globalThis.fetch as unknown as ReturnType<typeof vi.fn>;
+    const queueLoads = (): number => fetchMock.mock.calls
+      .filter((call) => String(call[0]) === '/api/briefing/queue').length;
+    const loadsBefore = queueLoads();
+
+    fireEvent.click(undoButtonFor('Finding A'));
+
+    const error = await screen.findByRole('alert');
+    expect(error.textContent).toContain('decision changed since it was read');
+
+    // The request named the event this page recorded, not merely the revision.
+    const undoInit = fetchMock.mock.calls
+      .filter((call) => String(call[0]).includes('/decision')).at(-1)?.[1] as RequestInit;
+    expect(JSON.parse(String(undoInit.body)) as Record<string, unknown>).toMatchObject({
+      action: 'undo',
+      revision_id: revisionA,
+      expected_event_id: pageDismissId,
+    });
+
+    // Nothing was written: Bob's judgment stands and the judged row remains,
+    // because this page did not undo anything.
+    expect(lastActionOn(revisionA)).toBe('keep');
+    expect(screen.getByText('Finding A')).toBeTruthy();
+    expect(screen.getByText('Finding B')).toBeTruthy();
+
+    // The page refetches so it stops rendering a picture the server moved past.
+    await waitFor(() => {
+      expect(queueLoads()).toBeGreaterThan(loadsBefore);
+    });
   });
 });
 
@@ -1249,8 +1308,10 @@ describe('BriefingView keyboard triage', () => {
     await waitFor(() => {
       expect(screen.getByTestId('briefing-row-a')).toBeTruthy();
     });
+    // The undo names the EVENT the keep returned, not just the revision, so it
+    // can only retract that judgment and never a newer one on the same revision.
     expect(calls.filter((call) => call.url.includes('/decision')).at(-1)?.body)
-      .toEqual({ action: 'undo', revision_id: 'rev-a' });
+      .toEqual({ action: 'undo', revision_id: 'rev-a', expected_event_id: 'dec-1' });
   });
 
   it('opens the fold-out from the keyboard, inline and not on hover', async () => {

@@ -44,6 +44,7 @@ import {
   getAgentDispatchEvents,
   getBriefingHistory,
   getBriefingQueue,
+  isApiErrorStatus,
   postBriefingComment,
   postBriefingDecision,
   type BriefingDecisionTarget,
@@ -113,10 +114,19 @@ function normalizeViewState(value: unknown, defaults: Readonly<BriefingViewState
   return { filter, source, healthOpen, expandedCandidateId };
 }
 
-/** A decision taken in this page session, kept so it can be undone and listed. */
+/**
+ * A decision taken in this page session, kept so it can be undone and listed.
+ *
+ * `eventId` is the identity the server returned for THIS judgment. Undo carries
+ * it back so it can only retract the decision this row represents: without it,
+ * an Undo clicked here after someone else decided the same revision would erase
+ * their newer judgment. Null only if a server answered without an event id, in
+ * which case Undo falls back to the pre-existing revision-addressed behavior.
+ */
 type JudgedEntry = {
   item: BriefingQueueItem;
   action: Exclude<BriefingJudgeAction, 'undo'>;
+  eventId: string | null;
 };
 
 /**
@@ -1142,8 +1152,8 @@ export function BriefingView({
       setBusyIds((current) => (current.includes(item.candidate_id) ? current : [...current, item.candidate_id]));
       setActionError(null);
       try {
-        await postBriefingDecision(decisionTarget(item), action);
-        const entry: JudgedEntry = { item, action };
+        const result = await postBriefingDecision(decisionTarget(item), action);
+        const entry: JudgedEntry = { item, action, eventId: result.event_id };
         const key = judgmentKey(item);
         setJudged((current) => [entry, ...current.filter((row) => judgmentKey(row.item) !== key)]);
         setUndoEntry(entry);
@@ -1161,11 +1171,18 @@ export function BriefingView({
       if (!operationalMutationsAllowed) return;
       setActionError(null);
       try {
-        // Addressed to the revision this row is about. A server that has since
-        // taken a newer revision keeps that newer decision; a revision whose
-        // decision is already gone answers 409, which surfaces as an action
-        // error and leaves the local list exactly as it was.
-        await postBriefingDecision(decisionTarget(entry.item), 'undo');
+        // Addressed to the revision this row is about AND to the judgment it
+        // represents. A server that has since taken a newer revision keeps that
+        // newer decision; a revision whose decision is already gone, or whose
+        // latest decision is no longer the one this row recorded, answers 409,
+        // which surfaces as an action error and leaves the local list as it was.
+        await postBriefingDecision(
+          {
+            ...decisionTarget(entry.item),
+            ...(entry.eventId ? { expected_event_id: entry.eventId } : {}),
+          },
+          'undo',
+        );
         const key = judgmentKey(entry.item);
         setJudged((current) => current.filter((row) => judgmentKey(row.item) !== key));
         setUndoEntry((current) => (current && judgmentKey(current.item) === key ? null : current));
@@ -1177,6 +1194,11 @@ export function BriefingView({
         setReloadNonce((current) => current + 1);
       } catch (error) {
         setActionError(error instanceof Error ? error.message : String(error));
+        // A 409 means this page's picture of the revision is behind the server:
+        // the decision it wanted to retract is gone or has been superseded. The
+        // judged row stays (nothing was undone), but the queue and counts are
+        // refetched so the view reconciles with whatever actually happened.
+        if (isApiErrorStatus(error, 409)) setReloadNonce((current) => current + 1);
       }
     },
     [operationalMutationsAllowed],

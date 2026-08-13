@@ -4104,10 +4104,16 @@ export async function getBriefingHistory(
  * before a re-ingest — most visibly, Undo on an older judged row clearing the
  * decision on a newer revision the operator never touched. Making the revision
  * part of the argument means no call site can express that decision at all.
+ *
+ * `expected_event_id` narrows an undo from "this revision" to "this judgment":
+ * the decision event the caller was handed when it judged. The revision alone
+ * does not stop an Undo from erasing a NEWER decision on the same revision made
+ * elsewhere; naming the event makes that case a 409 instead.
  */
 export type BriefingDecisionTarget = {
   candidate_id: string;
   revision_id: string;
+  expected_event_id?: string;
 };
 
 /**
@@ -4125,6 +4131,7 @@ export async function postBriefingDecision(
   const request: ContractBriefingDecisionRequest = {
     action,
     revision_id: target.revision_id,
+    ...(target.expected_event_id ? { expected_event_id: target.expected_event_id } : {}),
   };
   const response = await apiPost(
     `/api/briefing/candidates/${encodeURIComponent(candidateId)}/decision`,

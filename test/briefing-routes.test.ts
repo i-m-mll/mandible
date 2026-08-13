@@ -323,6 +323,54 @@ describe("briefing decision and comment routes", () => {
     ).toBe(0);
   });
 
+  it("rejects a malformed expected_event_id and a stale one", async () => {
+    const candidateId = onlyCandidateId();
+    const revisionId = currentRevisionId(candidateId);
+
+    for (const expected_event_id of ["  ", 7]) {
+      const bad = await router.invoke({
+        method: "POST",
+        url: `/api/briefing/candidates/${candidateId}/decision`,
+        body: { action: "keep", revision_id: revisionId, expected_event_id },
+        credential: "operator",
+      });
+      expect(bad.status).toBe(400);
+    }
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+    ).toBe(0);
+
+    const kept = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "keep", revision_id: revisionId },
+      credential: "operator",
+    });
+    const keptEventId = (kept.body as { event_id: string }).event_id;
+
+    // Somebody else decides the SAME revision. The undo the first reviewer holds
+    // now names a judgment that is no longer effective.
+    await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "dismiss", revision_id: revisionId },
+      credential: "operator",
+    });
+
+    const stale = await router.invoke({
+      method: "POST",
+      url: `/api/briefing/candidates/${candidateId}/decision`,
+      body: { action: "undo", revision_id: revisionId, expected_event_id: keptEventId },
+      credential: "operator",
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ error: "decision changed since it was read" });
+    expect(
+      (db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number }).n,
+    ).toBe(2);
+    expect(countPendingBriefingCandidates(db)).toBe(0);
+  });
+
   it("rejects publisher and agent credentials on decisions and comments", async () => {
     const candidateId = onlyCandidateId();
     for (const url of [

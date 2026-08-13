@@ -418,19 +418,28 @@ export function summarizeBatch(db: Db, batchKey: string): BriefingIngestResult {
 // --- derived review state ---------------------------------------------------
 
 /**
- * The last decision action on a revision. `undo` clears whatever preceded it,
- * so the trailing event alone determines the effective state.
+ * The EFFECTIVE latest decision on a revision: the single trailing event by
+ * `(created_at, rowid)`. `undo` clears whatever preceded it, so that one row
+ * determines both the revision's state and the identity an Undo must name.
  */
-function lastActionForRevision(db: Db, revisionId: string): string | null {
+function lastDecisionForRevision(
+  db: Db,
+  revisionId: string,
+): { id: string; action: string } | null {
   const row = db
     .prepare(
-      `SELECT action FROM decision_events
+      `SELECT id, action FROM decision_events
         WHERE revision_id = ?
         ORDER BY created_at DESC, rowid DESC
         LIMIT 1`,
     )
-    .get(revisionId) as { action: string } | undefined;
-  return row?.action ?? null;
+    .get(revisionId) as { id: string; action: string } | undefined;
+  return row ?? null;
+}
+
+/** The action of the effective latest decision; null when the revision is undecided. */
+function lastActionForRevision(db: Db, revisionId: string): string | null {
+  return lastDecisionForRevision(db, revisionId)?.action ?? null;
 }
 
 export function candidateStateFromAction(action: string | null): BriefingCandidateState {
@@ -656,6 +665,12 @@ export interface BriefingDecisionInput {
    * revision to the human it is acting for.
    */
   revisionId?: string;
+  /**
+   * Compare-and-set token for `undo`: the decision event the caller means to
+   * undo. Omitted means "undo whatever is effective now", which is only correct
+   * for a caller that holds no event identity.
+   */
+  expectedEventId?: string;
   now?: number;
 }
 
@@ -680,6 +695,10 @@ export interface BriefingDecisionOutcome {
  * `undo` is only meaningful when the TARGET revision carries an effective
  * decision; undoing an undecided revision is a conflict rather than a silent
  * no-op, and that check is what turns a double-undo into a visible 409.
+ *
+ * `input.expectedEventId` additionally compare-and-sets the undo against the
+ * event the caller is acting on, so an intervening decision on the SAME
+ * revision conflicts instead of being erased.
  */
 export function recordBriefingDecision(
   db: Db,
@@ -707,9 +726,23 @@ export function recordBriefingDecision(
       }
       revisionId = input.revisionId;
     }
-    const last = lastActionForRevision(db, revisionId);
-    if (input.action === "undo" && candidateStateFromAction(last) === "pending") {
+    const last = lastDecisionForRevision(db, revisionId);
+    if (input.action === "undo" && candidateStateFromAction(last?.action ?? null) === "pending") {
       throw new BriefingValidationError("no decision to undo", 409);
+    }
+    // Compare-and-set, inside the same transaction as the insert. Pinning the
+    // revision stops an Undo from crossing to newer CONTENT, but not from
+    // erasing a newer JUDGMENT on the same content: keep(A) then dismiss(B)
+    // then Alice's Undo of her older keep row would clear Bob's dismiss. The
+    // caller names the event it is undoing, so the write lands only while that
+    // event is still the revision's effective latest decision; anything
+    // appended in between makes this a visible 409 instead.
+    if (
+      input.action === "undo"
+      && input.expectedEventId !== undefined
+      && last?.id !== input.expectedEventId
+    ) {
+      throw new BriefingValidationError("decision changed since it was read", 409);
     }
     const eventId = randomUUID();
     db.prepare(

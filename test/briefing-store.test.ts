@@ -583,6 +583,90 @@ describe("briefing review state", () => {
     ).toBe(0);
   });
 
+  /**
+   * The sequence the pass-3 review named. Pinning the revision stops an Undo
+   * from crossing to newer CONTENT, but two reviewers judging the SAME revision
+   * still collide: Alice keeps it, Bob dismisses it, and Alice's Undo of her own
+   * older row would append an undo that clears Bob's dismissal. Naming the event
+   * she is undoing makes that a conflict, and nothing is written.
+   */
+  it("refuses a stale undo whose judgment is no longer the revision's latest", () => {
+    ingestBriefingBatch(db, batch(), 1_000);
+    const candidateId = candidateIdFor("arxiv-scan", "paper-1");
+    const revisionId = currentRevisionId(candidateId)!;
+    const bobId = createUser(db, { slug: "bob", kind: "human", display_name: "Bob" }).id;
+
+    const aliceKeep = recordBriefingDecision(db, {
+      candidateId,
+      revisionId,
+      action: "keep",
+      actorUserId: reviewerId,
+      now: 1_100,
+    });
+    recordBriefingDecision(db, {
+      candidateId,
+      revisionId,
+      action: "dismiss",
+      actorUserId: bobId,
+      now: 1_200,
+    });
+    expect(lastActionsByRevision(candidateId)).toEqual({ [revisionId]: "dismiss" });
+
+    expect(() => recordBriefingDecision(db, {
+      candidateId,
+      revisionId,
+      action: "undo",
+      actorUserId: reviewerId,
+      expectedEventId: aliceKeep.event_id,
+      now: 1_300,
+    })).toThrow(/decision changed since it was read/);
+
+    // Nothing was appended and Bob's judgment stands.
+    expect(
+      (db
+        .prepare("SELECT COUNT(*) AS n FROM decision_events WHERE revision_id = ?")
+        .get(revisionId) as { n: number }).n,
+    ).toBe(2);
+    expect(lastActionsByRevision(candidateId)).toEqual({ [revisionId]: "dismiss" });
+    expect(countPendingBriefingCandidates(db)).toBe(0);
+  });
+
+  it("undoes the named event when it is still the revision's latest decision", () => {
+    ingestBriefingBatch(db, batch(), 1_000);
+    const candidateId = candidateIdFor("arxiv-scan", "paper-1");
+    const revisionId = currentRevisionId(candidateId)!;
+
+    const kept = recordBriefingDecision(db, {
+      candidateId,
+      revisionId,
+      action: "keep",
+      actorUserId: reviewerId,
+      now: 1_100,
+    });
+    const undone = recordBriefingDecision(db, {
+      candidateId,
+      revisionId,
+      action: "undo",
+      actorUserId: reviewerId,
+      expectedEventId: kept.event_id,
+      now: 1_200,
+    });
+    expect(undone.state).toBe("pending");
+    expect(lastActionsByRevision(candidateId)).toEqual({ [revisionId]: "undo" });
+    expect(countPendingBriefingCandidates(db)).toBe(1);
+
+    // The undo consumed the judgment it named, so replaying it conflicts on the
+    // pre-existing check rather than appending a second undo.
+    expect(() => recordBriefingDecision(db, {
+      candidateId,
+      revisionId,
+      action: "undo",
+      actorUserId: reviewerId,
+      expectedEventId: kept.event_id,
+      now: 1_300,
+    })).toThrow(/no decision to undo/);
+  });
+
   it("serves the pending queue with provenance, occurrence stats, and source health", () => {
     ingestBriefingBatch(db, batch(), 1_000);
     ingestBriefingBatch(
