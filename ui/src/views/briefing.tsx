@@ -17,6 +17,19 @@
 //  3. JUDGING IS CHEAP AND REVERSIBLE. j/k moves, y keeps, n dismisses, u
 //     undoes; every decision raises an undo toast. Judged items leave the
 //     default view immediately and stay reachable behind the Judged filter.
+//  4. THE PRIMARY AXIS IS THE PRODUCER (issue 5497690). A briefing is not one
+//     undifferentiated queue: every candidate names the `source` that produced
+//     it and the `task_identity` of the batch it arrived in, and the page is
+//     navigable along that axis. The producer selector is CLIENT-SIDE over the
+//     already-loaded queue, not a refetch of `/api/briefing/queue?source=`:
+//     that route returns every pending candidate plus global source health in
+//     one unpaginated payload, so the page already holds the complete set. One
+//     poll therefore backs every producer view, switching producers costs no
+//     request, and the optimistic judged set, the undo entry, and the "N more
+//     pending" counts all stay consistent against a single snapshot. The
+//     server-side `source` filter remains the right tool for an API consumer
+//     that wants one producer's slice; it is the wrong tool for a view that
+//     must also show every OTHER producer's health at the same time.
 //
 // Server contract: src/contracts.ts (`BriefingQueueResponse` and friends),
 // implemented by src/routes/briefing.ts. This view renders ONLY what that
@@ -71,6 +84,8 @@ export type BriefingFilter = 'pending' | 'judged';
 
 type BriefingViewState = {
   filter: BriefingFilter;
+  /** Selected producer (`source`), or null for every producer. */
+  source: string | null;
   /** null = follow the deterministic default (open only when unhealthy). */
   healthOpen: boolean | null;
   expandedCandidateId: string | null;
@@ -78,6 +93,7 @@ type BriefingViewState = {
 
 const DEFAULT_VIEW_STATE: BriefingViewState = {
   filter: 'pending',
+  source: null,
   healthOpen: null,
   expandedCandidateId: null,
 };
@@ -85,12 +101,15 @@ const DEFAULT_VIEW_STATE: BriefingViewState = {
 function normalizeViewState(value: unknown, defaults: Readonly<BriefingViewState>): BriefingViewState {
   const row = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
   const filter = row.filter === 'judged' ? 'judged' : defaults.filter;
+  // State persisted before the producer axis existed simply has no `source`,
+  // which reads as "every producer" — the pre-existing behavior.
+  const source = typeof row.source === 'string' && row.source ? row.source : defaults.source;
   const healthOpen = typeof row.healthOpen === 'boolean' ? row.healthOpen : null;
   const expandedCandidateId =
     typeof row.expandedCandidateId === 'string' && row.expandedCandidateId
       ? row.expandedCandidateId
       : null;
-  return { filter, healthOpen, expandedCandidateId };
+  return { filter, source, healthOpen, expandedCandidateId };
 }
 
 /** A decision taken in this page session, kept so it can be undone and listed. */
@@ -255,6 +274,66 @@ export function summarizeBriefingHealth(sources: BriefingSourceHealth[]): Briefi
   };
 }
 
+// --- producers ---------------------------------------------------------------
+
+/** One selectable producer: a `source`, its pending count, and its identity. */
+export type BriefingProducer = {
+  source: string;
+  /** Pending candidates this page is currently showing for the source. */
+  pending: number;
+  /** Identity of the source's most recent batch, when the ledger has one. */
+  lastTaskIdentity: string | null;
+  /** null when the source appears in the queue but has no health row. */
+  status: BriefingSourceStatus | null;
+};
+
+/**
+ * The producer axis, derived entirely on the client from the payload the queue
+ * route already returned.
+ *
+ * Both inputs matter and neither is sufficient: the health rows cover a source
+ * that reported batches but has nothing pending (the case the page must never
+ * hide), while the queue covers a source with pending work whose health row is
+ * missing. `pinned` keeps a currently-selected producer selectable even after
+ * its last pending item is judged away, so a selection never silently collapses
+ * back to "All" underneath the operator.
+ *
+ * Counts come from the queue items rather than `BriefingSourceHealth.pending_count`
+ * on purpose: the items are the exact set this page will render, already net of
+ * decisions taken in this session, whereas the server count is a snapshot from
+ * load time. The health strip keeps reporting the server number as a fact.
+ */
+export function listBriefingProducers(
+  sources: BriefingSourceHealth[],
+  items: BriefingQueueItem[],
+  pinned: string | null = null,
+): BriefingProducer[] {
+  const byName = new Map<string, BriefingProducer>();
+  for (const source of sources) {
+    byName.set(source.source, {
+      source: source.source,
+      pending: 0,
+      lastTaskIdentity: source.last_task_identity,
+      status: source.status,
+    });
+  }
+  const ensure = (name: string): BriefingProducer => {
+    const existing = byName.get(name);
+    if (existing) return existing;
+    const created: BriefingProducer = {
+      source: name,
+      pending: 0,
+      lastTaskIdentity: null,
+      status: null,
+    };
+    byName.set(name, created);
+    return created;
+  };
+  for (const item of items) ensure(item.source).pending += 1;
+  if (pinned) ensure(pinned);
+  return [...byName.values()].sort((left, right) => left.source.localeCompare(right.source));
+}
+
 function BriefingHealthStrip({
   sources,
   summary,
@@ -326,14 +405,23 @@ function BriefingHealthStrip({
               key={source.source}
               className={`briefing-health__row briefing-health__row--${source.status}`}
             >
-              <span
-                className="briefing-health__source"
-                title={source.last_task_identity ?? undefined}
-              >
-                {source.source}
-              </span>
+              <span className="briefing-health__source">{source.source}</span>
               <span className={`briefing-chip briefing-chip--${source.status}`}>
                 {SOURCE_STATUS_LABEL[source.status]}
+              </span>
+              {/*
+                The producing task identity is a first-class fact, not a hover
+                affordance: a source is a namespace, and the identity names the
+                scheduled task that actually filled it. Its absence is reported
+                in words rather than by omitting the field, because "no batch on
+                record" is exactly the state the strip exists to expose.
+              */}
+              <span
+                className={`briefing-health__identity${
+                  source.last_task_identity ? '' : ' briefing-health__identity--unknown'
+                }`}
+              >
+                {source.last_task_identity ?? 'no batch identity on record'}
               </span>
               <span className="briefing-health__meta">
                 last ingest {formatSourceIngestAge(source, now)}
@@ -365,6 +453,19 @@ function BriefingProvenance({ item }: { item: BriefingQueueItem }): JSX.Element 
   const revision = item.revision;
   return (
     <div className="briefing-detail__provenance">
+      {/*
+        The producer of THIS revision, from the batch that carried it — not the
+        source's most recent batch identity, which can name a different task.
+        Omitted rather than substituted when the server did not resolve one.
+      */}
+      {item.task_identity ? (
+        <span
+          className="briefing-chip briefing-chip--provenance"
+          title="Task identity of the batch that carried this revision"
+        >
+          producer {item.task_identity}
+        </span>
+      ) : null}
       <span className="briefing-chip briefing-chip--provenance">
         evidence: {revision.evidence_kind ?? 'unreported'}
       </span>
@@ -820,16 +921,40 @@ export function BriefingView({
     });
   }, [queue.data, judgedIds]);
 
+  const sources = queue.data?.sources ?? [];
+  const selectedSource = viewState.source;
+
+  // The producer axis and the pending/judged axis compose: the producer scopes
+  // WHICH findings this page is about, the filter scopes what has happened to
+  // them. Both lists below are scoped, so the two tab rows always describe the
+  // same set of candidates.
+  const producers = useMemo(
+    () => listBriefingProducers(sources, pendingItems, selectedSource),
+    [sources, pendingItems, selectedSource],
+  );
+
+  const scopedPending = useMemo(
+    () => (selectedSource ? pendingItems.filter((item) => item.source === selectedSource) : pendingItems),
+    [pendingItems, selectedSource],
+  );
+  const scopedJudged = useMemo(
+    () => (selectedSource ? judged.filter((entry) => entry.item.source === selectedSource) : judged),
+    [judged, selectedSource],
+  );
+
   const visibleItems = useMemo(
-    () => pendingItems.slice(0, BRIEFING_VISIBLE_LIMIT),
-    [pendingItems],
+    () => scopedPending.slice(0, BRIEFING_VISIBLE_LIMIT),
+    [scopedPending],
   );
 
   // Honest truncation: the queue route returns every pending candidate, so the
   // page's own list IS the pending total. Truncation is a display cap only, and
-  // the note counts exactly what this page is hiding.
-  const totalPending = pendingItems.length;
+  // the note counts exactly what this page is hiding — within the selected
+  // producer, which is the set the list is showing.
+  const totalPending = scopedPending.length;
   const hiddenPending = Math.max(totalPending - visibleItems.length, 0);
+  /** Pending work a producer selection is hiding, counted so it can be named. */
+  const otherProducerPending = pendingItems.length - scopedPending.length;
 
   const groups = useMemo(() => {
     const bySource = new Map<string, BriefingQueueItem[]>();
@@ -841,12 +966,33 @@ export function BriefingView({
     return [...bySource.entries()].map(([source, items]) => ({ source, items }));
   }, [visibleItems]);
 
-  const sources = queue.data?.sources ?? [];
+  /** Health rows by source, so a queue group can name its producer identity. */
+  const healthBySource = useMemo(
+    () => new Map(sources.map((source) => [source.source, source])),
+    [sources],
+  );
+
+  // The strip itself stays GLOBAL under a producer selection: hiding another
+  // collector's silence because the operator is looking at one producer is the
+  // exact failure this page exists to prevent. Only the empty state below
+  // narrows, and it narrows to the producer it is actually speaking about.
   const healthSummary = useMemo(() => summarizeBriefingHealth(sources), [sources]);
   const healthOpen = viewState.healthOpen ?? !healthSummary.healthy;
 
+  const scopedSources = useMemo(
+    () => (selectedSource ? sources.filter((source) => source.source === selectedSource) : sources),
+    [sources, selectedSource],
+  );
+  const scopedHealthSummary = useMemo(
+    () => summarizeBriefingHealth(scopedSources),
+    [scopedSources],
+  );
+
   const setFilter = (next: BriefingFilter) => {
     setViewState((current) => ({ ...current, filter: next }));
+  };
+  const setSource = (next: string | null) => {
+    setViewState((current) => (current.source === next ? current : { ...current, source: next }));
   };
   const toggleHealth = () => {
     setViewState((current) => ({ ...current, healthOpen: !(current.healthOpen ?? !healthSummary.healthy) }));
@@ -994,7 +1140,34 @@ export function BriefingView({
     toggleExpand,
   ]);
 
-  const sourcesDegraded = healthSummary.stale > 0 || healthSummary.unknown > 0;
+  // Scoped to the selected producer: "nothing pending" must be a verdict about
+  // the producer being looked at, never a global all-clear borrowed from it.
+  const sourcesDegraded =
+    scopedHealthSummary.stale > 0
+    || scopedHealthSummary.unknown > 0
+    || scopedSources.length === 0;
+
+  const degradedReason = selectedSource
+    ? scopedSources.length === 0
+      ? `${selectedSource} has not reported an ingest batch.`
+      : scopedHealthSummary.stale > 0
+        ? `${selectedSource} stopped reporting.`
+        : `Health for ${selectedSource} could not be established.`
+    : scopedHealthSummary.stale > 0
+      ? `${scopedHealthSummary.stale} source(s) are stale.`
+      : scopedSources.length === 0
+        ? 'No collector source has reported an ingest batch.'
+        : 'Source health could not be established.';
+
+  /** Names the pending work a producer selection is hiding, and offers it. */
+  const otherProducersNote = selectedSource && otherProducerPending > 0 ? (
+    <p className="briefing-note" data-testid="briefing-other-producers">
+      {otherProducerPending} pending from other producers.{' '}
+      <button type="button" className="briefing-button" onClick={() => setSource(null)}>
+        Show all producers
+      </button>
+    </p>
+  ) : null;
 
   const renderDetail = (item: BriefingQueueItem): JSX.Element => (
     <BriefingRowDetail
@@ -1025,6 +1198,48 @@ export function BriefingView({
         </PreviewDisabledNotice>
       ) : null}
 
+      {/*
+        The producer selector leads the controls because the producer is the
+        primary axis; the pending/judged filter below composes with whatever is
+        selected here. With a single producer the row would say nothing the
+        queue's own group heading does not, so it is not rendered.
+      */}
+      {producers.length > 1 ? (
+        <div
+          className="briefing-producers"
+          role="group"
+          aria-label="Producer"
+          data-testid="briefing-producers"
+        >
+          <button
+            type="button"
+            className={`briefing-tab briefing-tab--producer${selectedSource === null ? ' briefing-tab--active' : ''}`}
+            aria-pressed={selectedSource === null}
+            data-testid="briefing-producer-all"
+            onClick={() => setSource(null)}
+          >
+            <span className="briefing-tab__name">All producers</span>
+            <span className="briefing-tab__count">{pendingItems.length}</span>
+          </button>
+          {producers.map((producer) => (
+            <button
+              key={producer.source}
+              type="button"
+              className={`briefing-tab briefing-tab--producer${
+                selectedSource === producer.source ? ' briefing-tab--active' : ''
+              }${producer.status !== null && producer.status !== 'current' ? ' briefing-tab--degraded' : ''}`}
+              aria-pressed={selectedSource === producer.source}
+              data-testid={`briefing-producer-${producer.source}`}
+              title={producer.lastTaskIdentity ?? undefined}
+              onClick={() => setSource(producer.source)}
+            >
+              <span className="briefing-tab__name">{producer.source}</span>
+              <span className="briefing-tab__count">{producer.pending}</span>
+            </button>
+          ))}
+        </div>
+      ) : null}
+
       <div className="briefing-toolbar">
         <div className="briefing-toolbar__filters" role="group" aria-label="Briefing filter">
           <button
@@ -1041,7 +1256,7 @@ export function BriefingView({
             aria-pressed={filter === 'judged'}
             onClick={() => setFilter('judged')}
           >
-            Judged{judged.length > 0 ? ` (${judged.length})` : ''}
+            Judged{scopedJudged.length > 0 ? ` (${scopedJudged.length})` : ''}
           </button>
         </div>
         <p className="briefing-toolbar__keys">
@@ -1068,11 +1283,15 @@ export function BriefingView({
 
       {filter === 'judged' ? (
         <section className="briefing-judged" aria-label="Judged findings">
-          {judged.length === 0 ? (
-            <p className="briefing-empty">Nothing has been judged in this session yet.</p>
+          {scopedJudged.length === 0 ? (
+            <p className="briefing-empty">
+              {selectedSource
+                ? `Nothing from ${selectedSource} has been judged in this session yet.`
+                : 'Nothing has been judged in this session yet.'}
+            </p>
           ) : (
             <ul className="briefing-judged__list">
-              {judged.map((entry) => (
+              {scopedJudged.map((entry) => (
                 <li key={entry.item.candidate_id} className="briefing-judged__row">
                   <span className={`briefing-chip briefing-chip--${entry.action}`}>{entry.action}</span>
                   <span className="briefing-judged__title">{entry.item.revision.title}</span>
@@ -1097,21 +1316,22 @@ export function BriefingView({
       ) : queue.loading && queue.data === null ? (
         <LoadingSkeleton variant="tab" label="Loading briefing queue" />
       ) : visibleItems.length === 0 ? (
-        sourcesDegraded || sources.length === 0 ? (
+        sourcesDegraded ? (
           <section
             className="briefing-empty briefing-empty--degraded"
             data-testid="briefing-empty-degraded"
             role="status"
           >
-            <h3>No findings — but this briefing is not clean</h3>
+            <h3>
+              {selectedSource
+                ? `No findings from ${selectedSource} — and this is not clean`
+                : 'No findings — but this briefing is not clean'}
+            </h3>
             <p>
-              {healthSummary.stale > 0
-                ? `${healthSummary.stale} source(s) are stale.`
-                : sources.length === 0
-                  ? 'No collector source has reported an ingest batch.'
-                  : 'Source health could not be established.'}{' '}
+              {degradedReason}{' '}
               An empty queue here does not mean there was nothing to find.
             </p>
+            {otherProducersNote}
           </section>
         ) : (
           <section
@@ -1119,8 +1339,13 @@ export function BriefingView({
             data-testid="briefing-empty-healthy"
             role="status"
           >
-            <h3>Nothing pending</h3>
-            <p>All sources are current and every finding has been judged.</p>
+            <h3>{selectedSource ? `Nothing pending from ${selectedSource}` : 'Nothing pending'}</h3>
+            <p>
+              {selectedSource
+                ? `${selectedSource} is current and every finding it produced has been judged.`
+                : 'All sources are current and every finding has been judged.'}
+            </p>
+            {otherProducersNote}
           </section>
         )
       ) : (
@@ -1132,6 +1357,16 @@ export function BriefingView({
                 <span className="briefing-group__count">
                   {group.items.length} pending
                 </span>
+                {/*
+                  The producing task identity, from the batch ledger. Labelled
+                  as the source's LAST batch because that is what the health row
+                  reports; a given row's own producer is in its fold-out.
+                */}
+                {healthBySource.get(group.source)?.last_task_identity ? (
+                  <span className="briefing-group__identity">
+                    last batch by {healthBySource.get(group.source)?.last_task_identity}
+                  </span>
+                ) : null}
               </h3>
               <ul className="briefing-group__list">
                 {group.items.map((item) => (
@@ -1157,6 +1392,7 @@ export function BriefingView({
               {hiddenPending} more pending — showing the top {visibleItems.length}.
             </p>
           ) : null}
+          {otherProducersNote}
         </section>
       )}
 

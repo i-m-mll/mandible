@@ -459,6 +459,10 @@ describe("briefing review state", () => {
       state: "pending",
       revision_count: 1,
       occurrences: { count: 2, first_seen_at: 1_000, last_seen_at: 5_000 },
+      // The producer of the entry's CURRENT revision, resolved from the batch
+      // ledger through `revision.batch_key` — the second batch re-saw the same
+      // evidence, so the identity still comes from the batch that wrote it.
+      task_identity: "agent-schedule/daily-digest",
     });
     expect(queue.candidates[0].revision).toMatchObject({
       title: "A notable finding",

@@ -3816,6 +3816,14 @@ export type BriefingQueueItem = {
   revision: BriefingRevision;
   revision_count: number | null;
   occurrences: BriefingOccurrenceStats;
+  /**
+   * Producer of THIS entry's current revision (contract
+   * `BriefingQueueEntry.task_identity`). Distinct from
+   * {@link BriefingSourceHealth.last_task_identity}, which is the identity of
+   * the source's most recent batch; the two agree only when the newest batch
+   * is also the one that carried this revision.
+   */
+  task_identity: string | null;
 };
 
 /**
@@ -3980,6 +3988,7 @@ function normalizeBriefingQueueItem(value: unknown): BriefingQueueItem | null {
     revision: normalizeBriefingRevision(row.revision, candidateId),
     revision_count: briefingOptionalNumber(row.revision_count),
     occurrences: normalizeBriefingOccurrenceStats(row.occurrences),
+    task_identity: briefingOptionalString(row.task_identity),
   };
 }
 

@@ -1084,6 +1084,14 @@ export type BriefingQueueEntry = {
   revision: BriefingRevision;
   revision_count: number;
   occurrences: BriefingOccurrenceStats;
+  /**
+   * Task identity of the batch that first carried `revision` (its `batch_key`),
+   * resolved from the batch ledger. This is the PRODUCER of this finding as it
+   * currently stands, and it is per-entry on purpose: `BriefingSourceHealth`
+   * reports the identity of a source's MOST RECENT batch, which is a different
+   * fact and may name a different task. NULL only when the batch row is gone.
+   */
+  task_identity: string | null;
 };
 
 /** Per-source ingest health, pulled from the batch ledger. */

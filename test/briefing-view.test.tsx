@@ -23,6 +23,7 @@ import {
   BriefingView,
   briefingRefLink,
   formatBriefingAge,
+  listBriefingProducers,
   summarizeBriefingHealth,
 } from '../ui/src/views/briefing';
 import {
@@ -80,6 +81,9 @@ function makeItem(overrides: Partial<BriefingQueueEntry> = {}): BriefingQueueEnt
     },
     revision_count: 1,
     occurrences: { count: 1, first_seen_at: Date.now() - HOUR, last_seen_at: Date.now() - HOUR },
+    // The producer of THIS entry's revision — a per-entry contract field, not
+    // the source's most recent batch identity.
+    task_identity: 'agent-schedule/daily-digest',
     ...overrides,
   };
 }
@@ -110,6 +114,30 @@ function makeQueue(overrides: Partial<BriefingQueueResponse> = {}): BriefingQueu
     candidates: [makeItem()],
     sources: [makeSource()],
     ...overrides,
+  };
+}
+
+/**
+ * Two producers writing into one briefing: `github-releases` with two pending
+ * findings and `rss` with one, each with its own task identity. This is the
+ * shape the producer axis exists for, and no earlier fixture had it.
+ */
+function multiProducerQueue(): BriefingQueueResponse {
+  return {
+    candidates: [
+      makeItem({ id: 'gh-1' }),
+      makeItem({ id: 'gh-2' }),
+      makeItem({ id: 'rss-1', source: 'rss', task_identity: 'agent-schedule/rss-sweep' }),
+    ],
+    sources: [
+      makeSource({ pending_count: 2, candidate_count: 2 }),
+      makeSource({
+        source: 'rss',
+        pending_count: 1,
+        candidate_count: 1,
+        last_task_identity: 'agent-schedule/rss-sweep',
+      }),
+    ],
   };
 }
 
@@ -448,6 +476,248 @@ describe('BriefingView page composition', () => {
   });
 });
 
+/**
+ * Issue 5497690 — the briefing is presented BY PRODUCER. The queue payload
+ * already carries everything this needs (`source` per candidate, `task_identity`
+ * per candidate, per-source health), so the selector is client-side over the
+ * loaded queue and these tests never expect a second fetch.
+ */
+describe('producer axis derivation', () => {
+  it('unions health rows and queue rows so neither can hide a producer', () => {
+    const producers = listBriefingProducers(
+      normalizeBriefingQueue({
+        candidates: [],
+        // A source that reported batches but has nothing pending right now.
+        sources: [makeSource({ source: 'quiet-but-known', pending_count: 0 })],
+      }).sources,
+      normalizeBriefingQueue(multiProducerQueue()).candidates,
+    );
+    expect(producers.map((producer) => producer.source)).toEqual([
+      // Sorted, and the queue-only sources are present even though the health
+      // list named neither of them.
+      'github-releases',
+      'quiet-but-known',
+      'rss',
+    ]);
+    expect(producers.map((producer) => producer.pending)).toEqual([2, 0, 1]);
+    // A source seen only in the queue has no health row, so no status is claimed.
+    expect(producers.find((p) => p.source === 'rss')?.status).toBeNull();
+    expect(producers.find((p) => p.source === 'quiet-but-known')?.status).toBe('current');
+  });
+
+  it('keeps a selected producer selectable after its last item is judged away', () => {
+    const producers = listBriefingProducers([], [], 'rss');
+    expect(producers).toEqual([
+      { source: 'rss', pending: 0, lastTaskIdentity: null, status: null },
+    ]);
+  });
+});
+
+describe('BriefingView producer selector', () => {
+  it('offers every producer with its pending count and does not refetch to filter', async () => {
+    const { calls } = stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    const producers = await screen.findByTestId('briefing-producers');
+    expect(within(producers).getByTestId('briefing-producer-all').textContent)
+      .toContain('All producers');
+    expect(within(producers).getByTestId('briefing-producer-all').textContent).toContain('3');
+    expect(within(producers).getByTestId('briefing-producer-github-releases').textContent)
+      .toContain('2');
+    expect(within(producers).getByTestId('briefing-producer-rss').textContent).toContain('1');
+
+    const queueCallsBefore = calls.filter((call) => call.url.startsWith('/api/briefing/queue')).length;
+    fireEvent.click(within(producers).getByTestId('briefing-producer-rss'));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId('briefing-row-gh-1')).toBeNull();
+    });
+    expect(screen.getByTestId('briefing-row-rss-1')).toBeTruthy();
+    expect(screen.getByTestId('briefing-row-rss-1').getAttribute('aria-current')).toBe('true');
+    // The whole point of filtering client-side: no new request, and certainly
+    // no `?source=` round trip.
+    expect(calls.filter((call) => call.url.startsWith('/api/briefing/queue')).length)
+      .toBe(queueCallsBefore);
+    expect(calls.some((call) => call.url.includes('source='))).toBe(false);
+  });
+
+  it('composes with the pending/judged filter in both directions', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+    const row = await screen.findByTestId('briefing-row-rss-1');
+    fireEvent.click(within(row).getByRole('button', { name: 'Dismiss' }));
+
+    // Pending under this producer drains; the counts follow immediately.
+    await waitFor(() => {
+      expect(screen.getByTestId('briefing-producer-rss').textContent).toContain('0');
+    });
+    expect(screen.getByTestId('briefing-producer-all').textContent).toContain('2');
+    expect(screen.getByRole('button', { name: 'Pending' })).toBeTruthy();
+
+    // Judged, scoped to the selected producer.
+    fireEvent.click(screen.getByRole('button', { name: 'Judged (1)' }));
+    await waitFor(() => {
+      expect(screen.getByText('Finding rss-1')).toBeTruthy();
+    });
+    expect(screen.queryByText('Finding gh-1')).toBeNull();
+
+    // Same filter, other producer: nothing was judged there, and the page says
+    // so about THAT producer rather than claiming the session judged nothing.
+    fireEvent.click(screen.getByTestId('briefing-producer-github-releases'));
+    await waitFor(() => {
+      expect(screen.getByText(/Nothing from github-releases has been judged/)).toBeTruthy();
+    });
+  });
+
+  it('scopes the empty state to the selected producer and names what it hides', async () => {
+    stubFetch({
+      queue: {
+        candidates: [makeItem({ id: 'gh-1' })],
+        sources: [makeSource(), makeSource({ source: 'rss', pending_count: 0, candidate_count: 0 })],
+      },
+    });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+
+    const empty = await screen.findByTestId('briefing-empty-healthy');
+    expect(empty.textContent).toContain('Nothing pending from rss');
+    const note = screen.getByTestId('briefing-other-producers');
+    expect(note.textContent).toContain('1 pending from other producers');
+
+    fireEvent.click(within(note).getByRole('button', { name: 'Show all producers' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('briefing-row-gh-1')).toBeTruthy();
+    });
+  });
+
+  it('never reads a selected producer as clean when that producer went quiet', async () => {
+    stubFetch({
+      queue: {
+        candidates: [makeItem({ id: 'gh-1' })],
+        sources: [makeSource(), staleSource({ pending_count: 0, candidate_count: 0 })],
+      },
+    });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+
+    const degraded = await screen.findByTestId('briefing-empty-degraded');
+    expect(degraded.textContent).toContain('No findings from rss');
+    expect(degraded.textContent).toContain('rss stopped reporting.');
+    expect(screen.queryByTestId('briefing-empty-healthy')).toBeNull();
+  });
+
+  it('keeps the health strip global so a selection cannot hide another source', async () => {
+    stubFetch({
+      queue: {
+        candidates: [makeItem({ id: 'gh-1' })],
+        sources: [makeSource(), staleSource({ pending_count: 0, candidate_count: 0 })],
+      },
+    });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-github-releases'));
+
+    const health = await screen.findByTestId('briefing-health');
+    await waitFor(() => {
+      expect(health.dataset.healthState).toBe('degraded');
+    });
+    expect(within(health).getByText('1 stale')).toBeTruthy();
+    expect(within(health).getAllByText(/last ingest/).length).toBe(2);
+  });
+
+  it('does not render a producer row when there is only one producer', async () => {
+    stubFetch();
+    renderBriefing();
+
+    await screen.findByTestId('briefing-row-cand-1');
+    expect(screen.queryByTestId('briefing-producers')).toBeNull();
+  });
+});
+
+describe('task identity visibility', () => {
+  it('renders each source\'s producing task identity as text in the health strip', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    const health = await screen.findByTestId('briefing-health');
+    // Both sources are current, so the strip settles collapsed; only then is
+    // the toggle a reliable "open it" rather than a race with the first load.
+    await waitFor(() => {
+      expect(health.dataset.healthState).toBe('healthy');
+    });
+    const toggle = within(health).getByRole('button');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      expect(within(health).getByText('agent-schedule/daily-digest')).toBeTruthy();
+    });
+    expect(within(health).getByText('agent-schedule/rss-sweep')).toBeTruthy();
+  });
+
+  it('says so in words when a source has no batch identity on record', async () => {
+    stubFetch({
+      queue: makeQueue({
+        candidates: [],
+        sources: [makeSource({
+          last_task_identity: null,
+          last_ingested_at: null,
+          last_ingest_age_ms: null,
+        })],
+      }),
+    });
+    renderBriefing();
+
+    const health = await screen.findByTestId('briefing-health');
+    await waitFor(() => {
+      expect(within(health).getByText('no batch identity on record')).toBeTruthy();
+    });
+  });
+
+  it('labels each queue group with the producing identity of its last batch', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-row-gh-1');
+    const headings = screen.getAllByRole('heading', { level: 3 });
+    const text = headings.map((heading) => heading.textContent ?? '');
+    expect(text.some((line) => /last batch by agent-schedule\/daily-digest/.test(line))).toBe(true);
+    expect(text.some((line) => /last batch by agent-schedule\/rss-sweep/.test(line))).toBe(true);
+  });
+
+  it('shows the fold-out the producer of that finding, not the source default', async () => {
+    stubFetch({ queue: multiProducerQueue() });
+    renderBriefing();
+
+    const row = await screen.findByTestId('briefing-row-rss-1');
+    fireEvent.click(within(row).getByRole('button', { expanded: false }));
+    const detail = await screen.findByTestId('briefing-detail-rss-1');
+    expect(within(detail).getByText('producer agent-schedule/rss-sweep')).toBeTruthy();
+  });
+
+  it('omits the fold-out producer chip rather than substituting a source-level one', async () => {
+    stubFetch({
+      queue: makeQueue({ candidates: [makeItem({ id: 'cand-1', task_identity: null })] }),
+    });
+    renderBriefing();
+
+    const row = await screen.findByTestId('briefing-row-cand-1');
+    fireEvent.click(within(row).getByRole('button', { expanded: false }));
+    const detail = await screen.findByTestId('briefing-detail-cand-1');
+    expect(within(detail).queryByText(/^producer /)).toBeNull();
+    // The source-level identity is still on the page; it is simply not claimed
+    // as this revision's producer.
+    expect(within(detail).getByText(/evidence: snapshot-item/)).toBeTruthy();
+  });
+});
+
 describe('BriefingView empty states', () => {
   it('renders an empty-and-healthy briefing as a success', async () => {
     stubFetch({ queue: makeQueue({ candidates: [] }) });
@@ -668,6 +938,29 @@ describe('server payload → client normalizer', () => {
     }, now);
   }
 
+  /** A second producer: its own task identity, its own source namespace. */
+  function ingestSecondProducer(now: number): void {
+    ingestBriefingBatch(db, {
+      schema: BRIEFING_INGEST_SCHEMA,
+      task_identity: 'agent-schedule/rss-sweep',
+      run_id: 'run-2',
+      digest: { series_ref: 'artifact-series:def456', version: 1 },
+      batch_key: 'batch-2',
+      items: [{
+        candidate_key: 'j'.repeat(64),
+        source: 'rss',
+        ref: 'https://example.invalid/post-1',
+        title: 'A second producer finding',
+        why_notable: 'It came from a different collector',
+        refs: [],
+        evidence_hash: 'evidence-b',
+        evidence_kind: 'finding-only',
+        captured_at: '2026-08-11T10:00:00Z',
+        rank: 1,
+      }],
+    }, now);
+  }
+
   it('carries candidates and source health from listBriefingQueue into the view model', () => {
     const now = Date.now();
     ingest(now - HOUR);
@@ -710,5 +1003,47 @@ describe('server payload → client normalizer', () => {
     const row = await screen.findByTestId(`briefing-row-${payload.candidates[0].id}`);
     expect(within(row).getByText('A notable finding')).toBeTruthy();
     expect(screen.queryByTestId('briefing-empty-degraded')).toBeNull();
+  });
+
+  it('resolves each entry\'s own producing task identity, not the source default', () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+    ingestSecondProducer(now - 2 * HOUR);
+
+    const payload: BriefingQueueResponse = listBriefingQueue(db, { now });
+    const queue = normalizeBriefingQueue(payload, now);
+    const bySource = new Map(queue.candidates.map((entry) => [entry.source, entry]));
+
+    expect([...bySource.keys()].sort()).toEqual(['arxiv-scan', 'rss']);
+    expect(bySource.get('arxiv-scan')?.task_identity).toBe('agent-schedule/daily-digest');
+    expect(bySource.get('rss')?.task_identity).toBe('agent-schedule/rss-sweep');
+
+    // Producer counts and identities the tabs render, derived from that payload
+    // alone — no second request and no `?source=` filter involved.
+    expect(listBriefingProducers(queue.sources, queue.candidates).map((producer) => [
+      producer.source,
+      producer.pending,
+      producer.lastTaskIdentity,
+    ])).toEqual([
+      ['arxiv-scan', 1, 'agent-schedule/daily-digest'],
+      ['rss', 1, 'agent-schedule/rss-sweep'],
+    ]);
+  });
+
+  it('drives the producer selector from a two-producer server payload', async () => {
+    const now = Date.now();
+    ingest(now - HOUR);
+    ingestSecondProducer(now - 2 * HOUR);
+    const payload = listBriefingQueue(db, { now });
+    stubFetch({ queue: payload });
+    renderBriefing();
+
+    await screen.findByTestId('briefing-producers');
+    fireEvent.click(screen.getByTestId('briefing-producer-rss'));
+
+    await waitFor(() => {
+      expect(screen.queryByText('A notable finding')).toBeNull();
+    });
+    expect(screen.getByText('A second producer finding')).toBeTruthy();
   });
 });

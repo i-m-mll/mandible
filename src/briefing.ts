@@ -478,6 +478,15 @@ function occurrenceStats(db: Db, revisionId: string): BriefingOccurrenceStats {
   };
 }
 
+/** The publisher task identity recorded for a batch, or null if it is unknown. */
+function batchTaskIdentity(db: Db, batchKey: string | null): string | null {
+  if (!batchKey) return null;
+  const row = db
+    .prepare("SELECT task_identity FROM briefing_batches WHERE batch_key = ?")
+    .get(batchKey) as { task_identity: string } | undefined;
+  return row?.task_identity ?? null;
+}
+
 export interface BriefingQueueOptions {
   source?: string;
   limit?: number;
@@ -518,6 +527,11 @@ export function listBriefingQueue(
       revision: projectRevision(revision),
       revision_count: revisionCount,
       occurrences: occurrenceStats(db, revision.id),
+      // The revision carries `batch_key` but not the identity behind it, and a
+      // client cannot resolve one from the other. Resolving it here is what
+      // makes "who produced this finding" answerable per entry instead of only
+      // per source; see `BriefingQueueEntry.task_identity`.
+      task_identity: batchTaskIdentity(db, revision.batch_key),
     };
   });
 
