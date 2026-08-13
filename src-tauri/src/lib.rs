@@ -19,7 +19,7 @@ const CREDENTIAL_QUERY_PARAM: &str = "mandible_auth";
 /// Cap on a handshake response before it is treated as untrustworthy.
 const MAX_HANDSHAKE_RESPONSE_BYTES: usize = 64 * 1024;
 static CLIENT_AUTH_BOOTSTRAP_CONSUMED: AtomicBool = AtomicBool::new(false);
-static CLIENT_AUTH_KEYCHAIN_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static CLIENT_AUTH_KEYCHAIN_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,9 +141,9 @@ enum Enrollment {
 ///   4. exchange it for a bounded dashboard session, scrubbing it afterwards.
 ///
 /// A route rejected in step 1 therefore performs zero keychain reads and zero
-/// network calls, and cannot consume a bootstrap proof or rotate the daemon's
-/// single dashboard session. The effects are injected so that ordering is
-/// unit-testable without a Tauri app or a daemon.
+/// network calls, and cannot consume a bootstrap proof or mint a new bounded
+/// dashboard session. The effects are injected so that ordering is unit-testable
+/// without a Tauri app or a daemon.
 fn run_enrollment<P, C, E>(
     route: Option<&str>,
     precheck: P,
@@ -265,34 +265,27 @@ fn client_auth_enroll(app: AppHandle) -> Result<bool, String> {
 /// the webview. That containment is what makes the command safe to expose to
 /// renderer JavaScript at all: the dashboard origin is a Tauri-capable remote
 /// origin, so dashboard script (including injected script after an XSS) can
-/// invoke this command and pass any `force` it likes. What it can obtain is
-/// therefore at most a bounded operator dashboard session — the credential it
-/// already holds — and the residual abuse is rotation denial-of-service:
-/// repeated calls churn the single dashboard session and knock other surfaces
-/// out. It can never read the durable keychain token.
+/// invoke this command. What it can obtain is therefore at most a bounded
+/// operator dashboard session — the credential it already holds — and the
+/// residual abuse is bounded-session minting by already-authorized dashboard
+/// script. Independent dashboard sessions may coexist; this command neither
+/// names nor selects another surface. It can never read the durable keychain
+/// token.
 ///
-/// `Ok(false)` means "nothing to enroll from" (no keychain item, or the
-/// automatic attempt was already spent) — a normal state, not a failure.
+/// `Ok(false)` means "nothing to enroll from" (no keychain item, or another
+/// keychain attempt is already in flight) — a normal state, not a failure.
 ///
-/// Rotation semantics: the daemon keeps exactly ONE operator dashboard session
-/// (`ClientAuthenticator.issueDashboardToken` drops every existing
-/// `dashboard_handshake` entry before minting the next one), so enrolling here
-/// revokes a session held by a regular browser profile, and a browser enrolling
-/// later revokes this one. Enrollment is therefore only attempted when this
-/// webview has no working session of its own, or when the operator explicitly
-/// asks to log in.
+/// Enrollment is attempted only when this webview has no working session of its
+/// own, or when the operator explicitly retries after an honest failure. The
+/// server contract may keep independent bounded dashboard sessions; this bridge
+/// deliberately supplies no surface identity and assumes no rotation policy.
 #[command]
-fn client_auth_keychain_enroll(
-    app: AppHandle,
-    route: Option<String>,
-    force: Option<bool>,
-) -> Result<bool, String> {
-    // One automatic attempt per app process: a credential that does not produce
-    // a session must not loop through enroll -> navigate -> enroll. An explicit
-    // "Log in" action passes force and retries deliberately. `force` is
-    // untrusted renderer input and is deliberately not a security control — it
-    // only lifts the loop guard, bounded by the rotation-DoS residual above.
-    if CLIENT_AUTH_KEYCHAIN_ATTEMPTED.swap(true, Ordering::AcqRel) && !force.unwrap_or(false) {
+fn client_auth_keychain_enroll(app: AppHandle, route: Option<String>) -> Result<bool, String> {
+    // Rust prevents concurrent reads/exchanges but does not accept renderer
+    // retry policy as an argument. The UI owns its one-attempt-per-episode state
+    // machine; releasing this guard after every result lets a later genuine 401
+    // recover without restarting the app.
+    if CLIENT_AUTH_KEYCHAIN_IN_FLIGHT.swap(true, Ordering::AcqRel) {
         return Ok(false);
     }
     let enrollment = run_enrollment(
@@ -301,19 +294,16 @@ fn client_auth_keychain_enroll(
         || read_keychain_operator_token(KEYCHAIN_OPERATOR_SERVICE),
         exchange_credential_for_dashboard_session,
     );
-    match enrollment {
+    let result = match enrollment {
         Ok(Enrollment::Session { route, token }) => {
-            navigate_to_enrolled_dashboard(&app, &token, &route)?;
-            Ok(true)
+            navigate_to_enrolled_dashboard(&app, &token, &route).map(|()| true)
         }
         Ok(Enrollment::Missing) => Ok(false),
         Ok(Enrollment::Refused(message)) => Err(message),
-        // Nothing was spent, so let the next attempt run without a restart.
-        Ok(Enrollment::Unreachable(message)) | Err(message) => {
-            CLIENT_AUTH_KEYCHAIN_ATTEMPTED.store(false, Ordering::Release);
-            Err(message)
-        }
-    }
+        Ok(Enrollment::Unreachable(message)) | Err(message) => Err(message),
+    };
+    CLIENT_AUTH_KEYCHAIN_IN_FLIGHT.store(false, Ordering::Release);
+    result
 }
 
 /// Read the operator's durable bearer credential from the login keychain. An
@@ -1297,7 +1287,7 @@ mod tests {
 
         assert!(rejected.is_err());
         // A rejected route spends nothing: no daemon probe, no keychain read,
-        // no handshake, so no one-shot proof and no session rotation is lost.
+        // no handshake, so no one-shot proof and no bounded session is lost.
         assert!(!prechecked.get());
         assert!(!read.get());
         assert!(!exchanged.get());

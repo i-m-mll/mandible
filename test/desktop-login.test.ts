@@ -6,14 +6,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/preact";
+import { h } from "preact";
 
 import {
   AUTOMATIC_ENROLLMENT_SOURCES,
+  DesktopLoginRecoveryCoordinator,
   MANUAL_ENROLLMENT_SOURCES,
   attemptDesktopLogin,
+  recoverDesktopLoginAutomatically,
+  resetDesktopLoginRecoveryEpisode,
   sanitizeEnrollmentHash,
   type DesktopLoginDeps,
 } from "../ui/src/desktop-login.js";
+import { DesktopLoginStatus } from "../ui/src/components/DesktopLoginStatus.js";
 import {
   enrollDesktopClientAuth,
   isDesktopShell,
@@ -48,13 +54,50 @@ function deps(overrides: Partial<DesktopLoginDeps> = {}): DesktopLoginDeps {
 }
 
 beforeEach(() => {
+  resetDesktopLoginRecoveryEpisode();
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: new MemoryStorage(),
   });
 });
 
+describe("desktop recovery episodes", () => {
+  it("shares one automatic attempt and rearms only after an enrolled episode", async () => {
+    const coordinator = new DesktopLoginRecoveryCoordinator();
+    let resolve!: (outcome: "enrolled") => void;
+    const run = vi.fn(() => new Promise<"enrolled">((done) => { resolve = done; }));
+
+    const first = coordinator.recover(run);
+    const concurrent = coordinator.recover(run);
+    expect(first).toBe(concurrent);
+    expect(run).toHaveBeenCalledTimes(1);
+    resolve("enrolled");
+    await expect(first).resolves.toBe("enrolled");
+
+    // The same episode remains spent until an authenticated state explicitly
+    // closes it; then a later 401 can start exactly one new attempt.
+    await coordinator.recover(run);
+    expect(run).toHaveBeenCalledTimes(1);
+    coordinator.reset();
+    await coordinator.recover(async () => "enrolled");
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("permits manual retry only after a real automatic failure or absence", async () => {
+    const coordinator = new DesktopLoginRecoveryCoordinator();
+    const manual = vi.fn(async () => "enrolled" as const);
+
+    await expect(coordinator.retry(manual)).resolves.toBe("unavailable");
+    expect(manual).not.toHaveBeenCalled();
+    await expect(coordinator.recover(async () => "failed")).resolves.toBe("failed");
+    expect(coordinator.canRetryManually()).toBe(true);
+    await expect(coordinator.retry(manual)).resolves.toBe("enrolled");
+    expect(manual).toHaveBeenCalledTimes(1);
+  });
+});
+
 afterEach(() => {
+  cleanup();
   window.localStorage.clear();
   window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
@@ -164,7 +207,7 @@ describe("desktop shell command bridge", () => {
     expect(isDesktopShell()).toBe(true);
     await expect(enrollDesktopClientAuth("keychain", { route: "/issues" })).resolves.toBe(true);
     expect(calls).toEqual([
-      { command: "client_auth_keychain_enroll", args: { route: "/issues", force: false } },
+      { command: "client_auth_keychain_enroll", args: { route: "/issues" } },
     ]);
   });
 
@@ -187,6 +230,7 @@ describe("desktop shell command bridge", () => {
 
   it("reports a plain browser instead of failing to resolve a module", async () => {
     expect(isDesktopShell()).toBe(false);
+    await expect(recoverDesktopLoginAutomatically()).resolves.toBe("unavailable");
     await expect(startDesktopDaemon()).rejects.toThrow(
       "Desktop daemon controls are only available in the Tauri app.",
     );
@@ -277,6 +321,90 @@ describe("losing a dashboard session mid-session", () => {
     expect(states).toContain("unauthenticated");
     unsubscribe();
   });
+
+  it("automatically recovers one time after a mid-session 401 without losing the route", async () => {
+    type TauriTestWindow = typeof window & { __TAURI__?: unknown };
+    window.history.replaceState(null, "", "/#/timeline?repo=mandible");
+    window.localStorage.setItem("mandible.client_auth.token", "working-session");
+    window.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ token: "working-session-2" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof window.fetch;
+    await ensureClientAuthToken();
+
+    const invokes: string[] = [];
+    (window as TauriTestWindow).__TAURI__ = {
+      core: {
+        invoke: async (command: string) => {
+          invokes.push(command);
+          if (command === "client_auth_keychain_enroll") {
+            window.location.hash = "/timeline?repo=mandible&mandible_auth=recovered-session";
+            return true;
+          }
+          return false;
+        },
+      },
+    };
+    render(h(DesktopLoginStatus, {}));
+
+    window.fetch = vi.fn(async () => new Response(null, { status: 401 })) as typeof window.fetch;
+    await ensureClientAuthToken();
+    // Two unauthenticated observations in the same episode still share one
+    // automatic recovery attempt.
+    await ensureClientAuthToken();
+
+    window.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ token: "recovered-session-2" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof window.fetch;
+
+    await waitFor(() => expect(getClientAuthSessionState()).toBe("enrolled"));
+    expect(invokes.filter((command) => command === "client_auth_keychain_enroll")).toHaveLength(1);
+    expect(window.location.hash).toBe("#/timeline?repo=mandible");
+    expect(screen.queryByRole("button", { name: "Log in" })).toBeNull();
+    delete (window as TauriTestWindow).__TAURI__;
+  });
+
+  it("offers a manual retry only after the automatic keychain attempt fails", async () => {
+    type TauriTestWindow = typeof window & { __TAURI__?: unknown };
+    window.localStorage.setItem("mandible.client_auth.token", "working-session");
+    window.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ token: "working-session-2" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof window.fetch;
+    await ensureClientAuthToken();
+
+    let keychainAttempts = 0;
+    (window as TauriTestWindow).__TAURI__ = {
+      core: {
+        invoke: async (command: string) => {
+          if (command === "client_auth_keychain_enroll") {
+            keychainAttempts += 1;
+            if (keychainAttempts === 1) throw new Error("login keychain is locked");
+            window.location.hash = "/?mandible_auth=recovered-session";
+            return true;
+          }
+          return false;
+        },
+      },
+    };
+    render(h(DesktopLoginStatus, {}));
+    expect(screen.queryByRole("button", { name: "Log in" })).toBeNull();
+
+    window.fetch = vi.fn(async () => new Response(null, { status: 401 })) as typeof window.fetch;
+    await ensureClientAuthToken();
+    const retry = await screen.findByRole("button", { name: "Log in" });
+    expect(keychainAttempts).toBe(1);
+
+    window.fetch = vi.fn(async () => new Response(
+      JSON.stringify({ token: "recovered-session-2" }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    )) as typeof window.fetch;
+    fireEvent.click(retry);
+    await waitFor(() => expect(getClientAuthSessionState()).toBe("enrolled"));
+    expect(keychainAttempts).toBe(2);
+    delete (window as TauriTestWindow).__TAURI__;
+  });
 });
 
 describe("desktop shell keychain command", () => {
@@ -293,9 +421,12 @@ describe("desktop shell keychain command", () => {
     // Same keychain item the CLI falls back to, read through `security`.
     expect(rust).toContain('const KEYCHAIN_OPERATOR_SERVICE: &str = "mandible-operator"');
     expect(rust).toContain('.args(["find-generic-password", "-s", service, "-w"])');
-    // Re-entrancy guard, with an explicit-action escape hatch.
-    expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_ATTEMPTED.swap(true");
-    expect(rust).toContain("&& !force.unwrap_or(false)");
+    // Rust bounds concurrent keychain reads without accepting renderer retry
+    // policy as an IPC argument. The guard is released after every result so a
+    // later unauthenticated episode can recover.
+    expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_IN_FLIGHT.swap(true");
+    expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_IN_FLIGHT.store(false, Ordering::Release)");
+    expect(rust).not.toContain("force: Option<bool>");
     // The durable credential is exchanged for a bounded session and scrubbed,
     // so only the session reaches the fragment both enrollment paths inject.
     expect(rust).toContain("fn exchange_credential_for_dashboard_session(credential: &[u8])");
@@ -333,13 +464,37 @@ describe("desktop shell keychain command", () => {
     expect(bootstrap).toContain("|| read_client_auth_bootstrap(&path)");
     expect(bootstrap.match(/discard_spent_proof\(&path\)/g)).toHaveLength(2);
     expect(bootstrap).toContain("CLIENT_AUTH_BOOTSTRAP_CONSUMED.store(false, Ordering::Release)");
-    // A transient failure must not require an app restart to retry.
-    expect(rust).toContain("CLIENT_AUTH_KEYCHAIN_ATTEMPTED.store(false, Ordering::Release)");
     // An undeletable proof would fail every later launch, so say so rather
     // than swallowing the error — without ever naming the file's contents.
     expect(rust).toContain("fn discard_spent_proof(path: &Path)");
     expect(rust).toContain("eprintln!(");
     expect(rust).toContain("until it can be deleted");
+  });
+
+  it("allowlists every registered application command for the loopback remote origin", () => {
+    const rust = fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "src", "lib.rs"),
+      "utf8",
+    );
+    const permission = fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "permissions", "desktop.toml"),
+      "utf8",
+    );
+    const capability = JSON.parse(fs.readFileSync(
+      path.join(process.cwd(), "src-tauri", "capabilities", "default.json"),
+      "utf8",
+    )) as { remote?: { urls?: string[] }; permissions?: string[] };
+    expect(permission).toContain('identifier = "allow-desktop-commands"');
+    const registered = rust.match(/generate_handler!\[([\s\S]*?)\]\)/)?.[1]
+      .split(",").map((command) => command.trim()).filter(Boolean);
+    const permitted = permission.match(/commands\.allow = \[([\s\S]*?)\]/)?.[1]
+      .match(/"([^"]+)"/g)?.map((command) => command.slice(1, -1));
+    expect(permitted).toEqual(registered);
+    expect(capability.remote?.urls).toEqual([
+      "http://127.0.0.1:19420",
+      "http://localhost:19420",
+    ]);
+    expect(capability.permissions).toContain("allow-desktop-commands");
   });
 
   it("requires a successful handshake response to declare its own framing", () => {

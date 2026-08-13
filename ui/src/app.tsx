@@ -37,7 +37,7 @@ import {
   getClientAuthSessionState,
   installClientAuthFetch,
 } from './client-auth-token';
-import { runDesktopLogin } from './desktop-login';
+import { recoverDesktopLoginAutomatically } from './desktop-login';
 import { DesktopLoginStatus } from './components/DesktopLoginStatus';
 import {
   daemonEpochChanged,
@@ -2207,9 +2207,9 @@ if (mountNode) {
       // gone, so a webview without an operator session asks the shell to enroll
       // it (bootstrap file first, then the operator keychain credential). This
       // is a no-op in a browser and when a session is already working, so an
-      // enrolled dashboard never rotates its session just by starting up.
+      // enrolled dashboard never mints a redundant session just by starting up.
       if (getClientAuthSessionState() === 'enrolled') return undefined;
-      return runDesktopLogin();
+      return recoverDesktopLoginAutomatically();
     })
     .catch(() => undefined)
     .finally(() => {
