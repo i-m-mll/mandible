@@ -785,6 +785,8 @@ if [[ $change_message_set -eq 1 ]]; then
     exit 1
   fi
   canonical_message="true"
+else
+  echo "Warning: no canonical change message (--message-file / --message); the merge commit will get a bare 'Merge branch ...' subject. See the change-message contract." >&2
 fi
 
 # --- Build command and metadata ---
