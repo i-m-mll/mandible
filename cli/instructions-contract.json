@@ -92,7 +92,7 @@
     },
     {
       "name": "mandible auth request <branch> --title <text> --issue <id> [--closes-issue <id>] [--message <text> | --message-file <file>] [--verification <text>] [--spec <text>] [--no-watch]",
-      "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure. --message/--message-file supply the agent-authored canonical change message the merge commits verbatim; --verification fills its machine-owned Verification section (default \"Not recorded\")."
+      "description": "Submit protected-branch auth work. Use --issue for reference context and --closes-issue only for intended closure. --message/--message-file supply the agent-authored canonical change message the merge commits verbatim; --verification fills its machine-owned Verification section (default \"Not recorded\") and is validated against the message at the daemon boundary."
     },
     {
       "name": "mandible auth replay-archives <request-id> [--json]",
@@ -272,7 +272,7 @@
     "Protected-branch merges are asynchronous: submit an auth request, stop, and let the user approve in Mandible.",
     "Approval and merge execution are user actions. Agents do not approve, merge, or bypass the auth queue.",
     "Multiple pending merge requests may coexist when they are pairwise independent. Run `mandible auth check` before submitting when unsure; submission rejects clashes with file-level conflict context. Planned related branches still integrate first.",
-    "A request may carry one canonical change message: the agent authors the outcome line, a `Why:` paragraph, and optional `Caveats:`, while the CLI owns the `Merge <branch>: ` subject prefix, the `Verification:` section, and the `Mandible-Issue:` / `Closes-Mandible-Issue:` trailers derived from --issue and --closes-issue. The daemon stores the canonical bytes with their SHA-256 and freezes both once the request leaves pending; `mandible auth merge` verifies that digest and commits those exact bytes, or aborts. Without a message the merge keeps git's own default merge message."
+    "A request may carry one canonical change message: the agent authors the outcome line, a `Why:` paragraph, and optional `Caveats:`, while the CLI owns the `Merge <branch>: ` subject prefix, the `Verification:` section, and the trailers. Trailers are reference-only `Mandible-Issue:` lines for every --issue and --closes-issue ref; a canonical message never carries `Closes-Mandible-Issue:`, so closure is carried solely by the structured issue_closures field and a frozen signed message can never disagree with the authorization that runs. The daemon validates that envelope against the structured fields before digesting, stores the canonical bytes with their SHA-256, and freezes both once the request leaves pending; `mandible auth merge` verifies that digest against the exact stored bytes and commits them, or aborts. Without a message the merge keeps git's own default merge message."
   ],
   "coordination": [
     "The umbrella issue is the coordinator; sessions are disposable role holders.",

@@ -3428,8 +3428,14 @@ export const MIGRATIONS: readonly Migration[] = [
     // Its presence is the discriminator: a request with a digest carries a
     // canonical message that cli/auth-merge.sh must use verbatim as the merge
     // commit message, and a request without one keeps the legacy
-    // `git fmt-merge-msg` behaviour. Applied through a guarded helper so a
-    // version-rewind fixture re-running migrate is a no-op.
+    // `git fmt-merge-msg` behaviour.
+    //
+    // Applied through a guarded helper rather than a bare ALTER because this
+    // repo's migration fixtures deliberately rewind schema_version and replay
+    // over databases that already carry later columns; a bare ALTER fails those
+    // replays with "duplicate column name". Unlike a plain existence check, the
+    // helper verifies the existing column's exact declared shape and throws on
+    // divergence, so a replay can never silently accept a different column.
     statements: []
   }
 ];
@@ -6657,16 +6663,6 @@ function ensureAuthRequestAtomicMergeColumns(db: Db): void {
   }
 }
 
-// Issue 7d64d8f (migration 123) — additive nullable digest column binding an
-// auth request to the exact canonical change message bytes the merge must use.
-function ensureAuthRequestCanonicalChangeMessageColumn(db: Db): void {
-  if (!tableExists(db, "auth_requests")) return;
-  const columns = tableColumnNames(db, "auth_requests");
-  if (!columns.has("commit_message_digest")) {
-    db.exec("ALTER TABLE auth_requests ADD COLUMN commit_message_digest TEXT");
-  }
-}
-
 // Integration reconciliation (umbrella c16807e): true when any renumbered
 // additive column (v112 branches.has_upstream/upstream, v113
 // work_units.merge_scan_retired_at, v114 auth_requests.merge_finalizer_state) is
@@ -6811,6 +6807,31 @@ function ensureAuthRequestActionPrerequisites(db: Db): void {
     if (!columns.has(name)) {
       db.exec(`ALTER TABLE auth_requests ADD COLUMN ${name} ${definition}`);
     }
+  }
+}
+
+// Issue 7d64d8f (migration 123) — additive nullable digest column binding an
+// auth request to the exact canonical change message bytes the merge commits.
+function ensureAuthRequestCanonicalChangeMessageColumn(db: Db): void {
+  if (!tableExists(db, "auth_requests")) return;
+  const existing = (db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{
+    name: string;
+    type: string;
+    notnull: number;
+    dflt_value: string | null;
+  }>).find((column) => column.name === "commit_message_digest");
+  if (!existing) {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN commit_message_digest TEXT");
+    return;
+  }
+  if (
+    existing.type.toUpperCase() !== "TEXT" ||
+    existing.notnull !== 0 ||
+    existing.dflt_value !== null
+  ) {
+    throw new Error(
+      "migration 123 verification: auth_requests.commit_message_digest has a divergent definition",
+    );
   }
 }
 

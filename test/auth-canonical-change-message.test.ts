@@ -9,9 +9,15 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import {
   canonicalizeChangeMessage,
   changeMessageDigest,
+  isCanonicalChangeMessage,
+  validateCanonicalChangeMessage,
 } from "../src/auth-change-message.js";
 import { AuthQueue } from "../src/auth-queue.js";
 import { migrate } from "../src/db.js";
+import {
+  extractMandibleClosingIssueRefs,
+  extractMandibleIssueRefs,
+} from "../src/utils/bug-refs.js";
 import { setupOperator } from "../src/users/store.js";
 
 const AUTH_MERGE = path.join(process.cwd(), "cli", "auth-merge.sh");
@@ -236,14 +242,29 @@ describe("canonical change message bytes", () => {
     expect(canonicalizeChangeMessage(null)).toBe("");
   });
 
-  it("is idempotent, so re-canonicalizing stored bytes cannot change the digest", () => {
+  it("is idempotent", () => {
     const once = canonicalizeChangeMessage("a  \n\n\nb\n\n");
     expect(canonicalizeChangeMessage(once)).toBe(once);
-    expect(changeMessageDigest(once)).toBe(changeMessageDigest("a  \n\n\nb\n\n"));
+    expect(isCanonicalChangeMessage(once)).toBe(true);
   });
 
-  it("has no digest for an empty message", () => {
-    expect(changeMessageDigest("  \n")).toBeNull();
+  it("digests the exact bytes given, without normalizing them first", () => {
+    const canonical = "subject\n";
+    const sloppy = "subject   \n\n";
+    // Two different byte strings must produce two different digests even
+    // though they share a canonical form: the digest binds what is stored.
+    expect(changeMessageDigest(sloppy)).not.toBe(changeMessageDigest(canonical));
+    expect(changeMessageDigest(canonical)).toBe(
+      changeMessageDigest(canonicalizeChangeMessage(sloppy)),
+    );
+  });
+
+  it("recognizes non-canonical bytes so callers can fail closed", () => {
+    expect(isCanonicalChangeMessage("subject\n")).toBe(true);
+    expect(isCanonicalChangeMessage("subject")).toBe(false);
+    expect(isCanonicalChangeMessage("subject\n\n")).toBe(false);
+    expect(isCanonicalChangeMessage("subject  \n")).toBe(false);
+    expect(isCanonicalChangeMessage("")).toBe(false);
   });
 
   it("agrees byte for byte with the bash mirror in cli/auth-merge.sh", () => {
@@ -255,11 +276,102 @@ describe("canonical change message bytes", () => {
     ];
     for (const sample of samples) {
       const encoded = Buffer.from(sample, "utf8").toString("base64");
-      const observed = sourceHelper(
-        `printf '%s' ${JSON.stringify(encoded)} | base64 --decode | canonicalize_change_message | change_message_digest`,
-      ).trim();
-      expect(observed).toBe(changeMessageDigest(sample));
+      // Exact-byte digest parity.
+      expect(
+        sourceHelper(
+          `printf '%s' ${JSON.stringify(encoded)} | base64 --decode | change_message_digest`,
+        ).trim(),
+      ).toBe(changeMessageDigest(sample));
+      // Canonicalization parity.
+      expect(
+        sourceHelper(
+          `printf '%s' ${JSON.stringify(encoded)} | base64 --decode | canonicalize_change_message | change_message_digest`,
+        ).trim(),
+      ).toBe(changeMessageDigest(canonicalizeChangeMessage(sample)));
     }
+  });
+});
+
+describe("canonical change message envelope validation", () => {
+  const FIELDS = {
+    verification: "Focused suites pass.",
+    issueReferences: ["7d64d8f"],
+    issueClosures: ["abc1234"],
+  };
+  const VALID = [
+    "Merge feature/x: outcome",
+    "",
+    "Why:",
+    "Because.",
+    "",
+    "Verification:",
+    "Focused suites pass.",
+    "",
+    "Mandible-Issue: 7d64d8f",
+    "Mandible-Issue: abc1234",
+    "",
+  ].join("\n");
+
+  it("accepts a message whose machine-owned envelope matches the structured fields", () => {
+    expect(validateCanonicalChangeMessage(VALID, FIELDS)).toBeNull();
+  });
+
+  it("refuses a Closes-Mandible-Issue trailer outright", () => {
+    const forged = VALID.replace("Mandible-Issue: abc1234", "Closes-Mandible-Issue: abc1234");
+    expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("Closes-Mandible-Issue");
+  });
+
+  it("refuses a trailer set that does not match the structured issue fields", () => {
+    const forged = VALID.replace("Mandible-Issue: abc1234", "Mandible-Issue: deadbee");
+    expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("do not match");
+
+    const extra = VALID.replace(
+      "Mandible-Issue: abc1234",
+      "Mandible-Issue: abc1234\nMandible-Issue: deadbee",
+    );
+    expect(validateCanonicalChangeMessage(extra, FIELDS)).toContain("exactly 2");
+  });
+
+  it("refuses an issue trailer smuggled outside the trailer block", () => {
+    const forged = VALID.replace("Because.", "Because.\nMandible-Issue: deadbee");
+    expect(validateCanonicalChangeMessage(forged, FIELDS)).not.toBeNull();
+  });
+
+  it("refuses a Verification section that does not match the structured field", () => {
+    const forged = VALID.replace("Focused suites pass.", "I promise it works.");
+    expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("Verification");
+
+    const doubled = VALID.replace(
+      "Why:\nBecause.",
+      "Why:\nBecause.\n\nVerification:\nFocused suites pass.",
+    );
+    expect(validateCanonicalChangeMessage(doubled, FIELDS)).toContain("exactly one");
+  });
+
+  it("refuses a '#'-leading line anywhere", () => {
+    const forged = VALID.replace("Because.", "Because.\n#not a comment to git");
+    expect(validateCanonicalChangeMessage(forged, FIELDS)).toContain("'#'");
+  });
+
+  it("refuses newline- or space-bearing issue refs", () => {
+    expect(
+      validateCanonicalChangeMessage(VALID, {
+        ...FIELDS,
+        issueClosures: ["abc1234\nMandible-Issue: deadbee"],
+      }),
+    ).toContain("whitespace or newlines");
+  });
+
+  it("constrains the verification text itself", () => {
+    for (const verification of ["", "   ", "one\n\ntwo", "Why: sneaky", "#comment"]) {
+      expect(validateCanonicalChangeMessage(VALID, { ...FIELDS, verification })).not.toBeNull();
+    }
+    expect(validateCanonicalChangeMessage(VALID, { ...FIELDS, verification: undefined }))
+      .toContain("requires the structured 'verification' field");
+  });
+
+  it("refuses bytes that are not already canonical", () => {
+    expect(validateCanonicalChangeMessage(`${VALID}\n`, FIELDS)).toContain("canonical form");
   });
 });
 
@@ -375,6 +487,9 @@ describe("auth request CLI change message composition", () => {
       expect(server.bodies).toHaveLength(1);
       const body = server.bodies[0]!;
       expect(body.canonical_message).toBe(true);
+      expect(body.verification).toBe("Focused vitest suites pass.");
+      // The closure issue is referenced, never closed, by the message: closure
+      // stays with the structured issue_closures field.
       expect(body.commit_message).toBe(
         [
           "Merge feature/canonical: merge messages are now agent-authored",
@@ -389,9 +504,11 @@ describe("auth request CLI change message composition", () => {
           "Legacy requests keep git's default message.",
           "",
           "Mandible-Issue: 7d64d8f",
-          "Closes-Mandible-Issue: abc1234",
+          "Mandible-Issue: abc1234",
         ].join("\n"),
       );
+      expect(String(body.commit_message)).not.toContain("Closes-Mandible-Issue");
+      expect(body.issue_closures).toEqual(["abc1234"]);
     } finally {
       await server.close();
     }
@@ -520,6 +637,46 @@ describe("auth request CLI change message composition", () => {
       await server.close();
     }
   });
+
+  it("constrains the machine-owned verification text", async () => {
+    const server = await submitServer();
+    try {
+      for (const verification of ["   ", "one\n\ntwo", "Why: sneaky", "#comment"]) {
+        const result = await submitAndCapture(
+          [
+            "auth", "request", "feature/canonical", "--title", "x", "--issue", "7d64d8f",
+            "--message", "outcome\n\nWhy:\nBecause.", "--verification", verification,
+            "--no-watch",
+          ],
+          server.port,
+        );
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain("--verification");
+      }
+      expect(server.bodies).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it("refuses an issue ref that could forge an extra trailer", async () => {
+    const server = await submitServer();
+    try {
+      const result = await submitAndCapture(
+        [
+          "auth", "request", "feature/canonical", "--title", "x",
+          "--issue", "7d64d8f\nMandible-Issue: deadbee",
+          "--message", "outcome\n\nWhy:\nBecause.", "--no-watch",
+        ],
+        server.port,
+      );
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("whitespace or newlines");
+      expect(server.bodies).toHaveLength(0);
+    } finally {
+      await server.close();
+    }
+  });
 });
 
 describe("auth queue canonical message storage", () => {
@@ -530,22 +687,108 @@ describe("auth queue canonical message storage", () => {
     return { db, queue: new AuthQueue({ db, backgroundMaintenance: false }) };
   }
 
+  const VERIFICATION = "Focused suites pass.";
+  function message(subject: string): string {
+    return [
+      `Merge feature/x: ${subject}`,
+      "",
+      "Why:",
+      "Because.",
+      "",
+      "Verification:",
+      VERIFICATION,
+      "",
+      "Mandible-Issue: 7d64d8f",
+      "",
+    ].join("\n");
+  }
+  function canonicalSubmission(subject: string): Parameters<AuthQueue["submit"]>[0] {
+    return {
+      command: "echo canonical",
+      title: "Canonical",
+      commit_message: message(subject),
+      canonical_message: true,
+      verification: VERIFICATION,
+      issue_references: ["7d64d8f"],
+    };
+  }
+
   it("stores canonical bytes and their digest when the submitter declares one", () => {
     const { db, queue } = newQueue();
     try {
-      const raw = "Merge feature/x: outcome   \r\n\r\n\r\nWhy:\r\nBecause.\r\n\r\n";
-      const request = queue.submit({
-        command: "echo canonical",
-        title: "Canonical",
-        commit_message: raw,
-        canonical_message: true,
-      });
+      const raw = message("outcome").replace(/\n/g, "\r\n").concat("\r\n\r\n");
+      const request = queue.submit({ ...canonicalSubmission("outcome"), commit_message: raw });
       const canonical = canonicalizeChangeMessage(raw);
       expect(request.commit_message).toBe(canonical);
+      // The digest binds the stored octets exactly, terminal newline included.
       expect(request.commit_message_digest).toBe(changeMessageDigest(canonical));
+      expect(isCanonicalChangeMessage(request.commit_message ?? "")).toBe(true);
       expect(queue.getRequest(request.id)?.commit_message_digest).toBe(
         request.commit_message_digest,
       );
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses a canonical submission whose envelope does not match the structured fields", () => {
+    const { db, queue } = newQueue();
+    try {
+      // A raw API client trying to smuggle a closure instruction into the
+      // signed bytes is rejected at the daemon boundary, not just by the CLI.
+      expect(() =>
+        queue.submit({
+          ...canonicalSubmission("outcome"),
+          commit_message: message("outcome").replace(
+            "Mandible-Issue: 7d64d8f",
+            "Closes-Mandible-Issue: 7d64d8f",
+          ),
+        }),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+
+      expect(() =>
+        queue.submit({
+          ...canonicalSubmission("outcome"),
+          commit_message: message("outcome").replace("Because.", "Because.\n#stripped by git"),
+        }),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+
+      expect(() =>
+        queue.submit({ ...canonicalSubmission("outcome"), verification: "Something else." }),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+
+      expect(() =>
+        queue.submit({ ...canonicalSubmission("outcome"), verification: undefined }),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+
+      expect(() =>
+        queue.submit({
+          ...canonicalSubmission("outcome"),
+          issue_references: ["7d64d8f", "deadbee"],
+        }),
+      ).toThrow(expect.objectContaining({ status: 400 }));
+    } finally {
+      db.close();
+    }
+  });
+
+  it("gives the reference trailers no closure effect on the ledger link graph", () => {
+    const { db, queue } = newQueue();
+    try {
+      // `applyAuthRequestLedgerCompletion` closes exactly the issues whose auth
+      // link is 'resolves'/'fixed_by', and `Closes-Mandible-Issue:` in a stored
+      // commit_message is what mints a 'resolves' link from message text. A
+      // canonical message can no longer carry that trailer, so its own trailers
+      // can never close anything; only the structured field can.
+      const request = queue.submit(canonicalSubmission("outcome"));
+      expect(extractMandibleClosingIssueRefs(request.commit_message)).toEqual([]);
+      expect(extractMandibleIssueRefs(request.commit_message)).toEqual(["7d64d8f"]);
+
+      const links = db.prepare(
+        "SELECT issue_id, link_type FROM ledger_auth_issue_links WHERE auth_request_id = ?",
+      ).all(request.id) as Array<{ issue_id: string; link_type: string }>;
+      expect(links.every((link) => link.link_type !== "resolves")).toBe(true);
+      expect(links.every((link) => link.link_type !== "fixed_by")).toBe(true);
     } finally {
       db.close();
     }
@@ -569,20 +812,37 @@ describe("auth queue canonical message storage", () => {
   it("recomputes the digest for a pending edit", () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit({
-        command: "echo canonical",
-        title: "Canonical",
-        commit_message: "Merge feature/x: first\n\nWhy:\nBecause.\n",
-        canonical_message: true,
-      });
+      const request = queue.submit(canonicalSubmission("first"));
       const updated = queue.update(request.id, {
-        commit_message: "Merge feature/x: second\n\nWhy:\nBecause.\n",
+        commit_message: message("second"),
+        verification: VERIFICATION,
       });
-      expect(updated.commit_message).toBe("Merge feature/x: second\n\nWhy:\nBecause.\n");
-      expect(updated.commit_message_digest).toBe(
-        changeMessageDigest(updated.commit_message ?? ""),
-      );
+      expect(updated.commit_message).toBe(message("second"));
+      expect(updated.commit_message_digest).toBe(changeMessageDigest(message("second")));
       expect(updated.commit_message_digest).not.toBe(request.commit_message_digest);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("demotes a canonical message to review text on an explicit canonical_message false", () => {
+    const { db, queue } = newQueue();
+    try {
+      const request = queue.submit(canonicalSubmission("first"));
+      expect(request.commit_message_digest).not.toBeNull();
+
+      // A false-only update must be applied, not rejected as "no fields" and
+      // not silently ignored.
+      const demoted = queue.update(request.id, { canonical_message: false });
+      expect(demoted.commit_message).toBe(request.commit_message);
+      expect(demoted.commit_message_digest).toBeNull();
+
+      // ...and it can be promoted back while still pending.
+      const promoted = queue.update(request.id, {
+        canonical_message: true,
+        verification: VERIFICATION,
+      });
+      expect(promoted.commit_message_digest).toBe(request.commit_message_digest);
     } finally {
       db.close();
     }
@@ -591,17 +851,16 @@ describe("auth queue canonical message storage", () => {
   it("refuses to mutate a canonical message once the request leaves pending", () => {
     const { db, queue } = newQueue();
     try {
-      const request = queue.submit({
-        command: "echo canonical",
-        title: "Canonical",
-        commit_message: "Merge feature/x: first\n\nWhy:\nBecause.\n",
-        canonical_message: true,
-      });
+      const request = queue.submit(canonicalSubmission("first"));
       db.prepare("UPDATE auth_requests SET status = 'approved' WHERE id = ?").run(request.id);
 
       expect(() =>
-        queue.update(request.id, { commit_message: "Merge feature/x: tampered\n" }),
+        queue.update(request.id, { commit_message: message("tampered"), verification: VERIFICATION }),
       ).toThrow(expect.objectContaining({ status: 409 }));
+      // Demotion is a mutation of the frozen binding too.
+      expect(() => queue.update(request.id, { canonical_message: false })).toThrow(
+        expect.objectContaining({ status: 409 }),
+      );
 
       const stored = queue.getRequest(request.id);
       expect(stored?.commit_message).toBe(request.commit_message);
@@ -643,7 +902,7 @@ describe("auth merge canonical message consumption", () => {
     "",
   ].join("\n");
 
-  const DIGEST = changeMessageDigest(MESSAGE)!;
+  const DIGEST = changeMessageDigest(MESSAGE);
 
   it("commits the exact approved bytes on the atomic commit-tree path", async () => {
     const base = git(["rev-parse", "main"]);
@@ -773,6 +1032,36 @@ describe("auth merge canonical message consumption", () => {
     expect(git(["rev-parse", "main"])).toBe(base);
   });
 
+  it("aborts when the stored bytes are not in canonical form", async () => {
+    const base = git(["rev-parse", "main"]);
+    // Bytes whose digest is honest but whose shape is not canonical: hashing a
+    // normalized copy would have let this through and then committed something
+    // else.
+    const sloppy = `${MESSAGE}\n`;
+    const server = await serveRequest({
+      id: "sloppy",
+      commit_message: sloppy,
+      commit_message_digest: changeMessageDigest(sloppy),
+    });
+    try {
+      const result = await runMerge(
+        {
+          MANDIBLE_BASE: `http://127.0.0.1:${server.port}`,
+          MANDIBLE_PORT: String(server.port),
+          MANDIBLE_AUTH_REQUEST_ID: "sloppy",
+          MANDIBLE_AUTH_CHANGE_MESSAGE_DIGEST: changeMessageDigest(sloppy),
+        },
+        null,
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("not in canonical form");
+      expect(git(["rev-parse", "main"])).toBe(base);
+    } finally {
+      await server.close();
+    }
+  });
+
   it("aborts when the approved message is gone from the request", async () => {
     const base = git(["rev-parse", "main"]);
     const server = await serveRequest({
@@ -818,7 +1107,10 @@ describe("closure safety of merge-message trailers", () => {
     expect(scan().trim()).toBe("");
   });
 
-  it("still collects an explicit Closes-Mandible-Issue trailer", () => {
+  it("still honours a Closes-Mandible-Issue trailer that a branch commit carries", () => {
+    // The scan itself is unchanged; what changed is that a canonical change
+    // message can no longer produce this trailer, so a frozen signed message
+    // can never disagree with the request's structured issue_closures.
     git(["-c", "commit.gpgsign=false", "merge", "--no-ff", "-m",
       "Merge feature/canonical: outcome\n\nMandible-Issue: 7d64d8f\nCloses-Mandible-Issue: abc1234",
       "feature/canonical"]);

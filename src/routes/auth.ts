@@ -632,6 +632,7 @@ function parseAuthRequestPayload(body: Record<string, unknown>): AuthRequestInpu
     // Issue 7d64d8f — the submitter declares an agent-authored canonical change
     // message; the queue canonicalizes it and binds it to a digest.
     canonical_message: body.canonical_message === true,
+    verification: typeof body.verification === "string" ? body.verification : null,
     spec_content: typeof body.spec_content === "string" ? body.spec_content : null,
     repo: typeof body.repo === "string" ? body.repo : undefined,
     base_branch: typeof body.base_branch === "string" ? body.base_branch : undefined,
@@ -810,6 +811,14 @@ function parseAuthRequestUpdatePayload(
       return { ok: false, error: "Invalid 'canonical_message' — must be a boolean" };
     }
     payload.canonical_message = body.canonical_message;
+  }
+
+  if (hasKey("verification")) {
+    if (body.verification === null || typeof body.verification === "string") {
+      payload.verification = body.verification as string | null;
+    } else {
+      return { ok: false, error: "Invalid 'verification' — must be a string or null" };
+    }
   }
 
   if (hasKey("spec_content")) {

@@ -304,16 +304,27 @@ The script auto-detects:
 the outcome, and the rest is the body where the agent writes `Why:` and an
 optional `Caveats:` section. The CLI owns the rest of the template — the
 `Merge <branch>: ` subject prefix, the `Verification:` section from
-`--verification` (default `Not recorded`), and the `Mandible-Issue:` /
-`Closes-Mandible-Issue:` trailers derived from `--issue` and `--closes-issue`.
-Authoring those machine-owned lines (or any `#`-leading line, which git's
-message cleanup would strip) is refused.
+`--verification` (default `Not recorded`), and the trailers derived from
+`--issue` and `--closes-issue`. Authoring those machine-owned lines (or any
+`#`-leading line, which git's message cleanup would strip) is refused.
 
-The daemon canonicalizes the composed bytes, records their SHA-256, and freezes
-both once the request leaves `pending`. `mandible auth merge` re-verifies the
-digest and commits exactly those bytes on both merge paths, aborting on a
-mismatch rather than falling back. With no message flag, nothing is stored and
-the merge keeps git's own default merge message.
+Trailers are **reference-only** `Mandible-Issue:` lines, for closure issues as
+well as reference issues. A canonical change message never carries
+`Closes-Mandible-Issue:`: closure is carried solely by the request's structured
+`issue_closures` field, which stays editable after approval while the message is
+frozen. Since `auth-merge` reads `Closes-Mandible-Issue:` out of commit messages
+as a live closure instruction, allowing that trailer inside a frozen signed
+message would let the signed text and the executed authorization disagree.
+
+The daemon validates that machine-owned envelope against the structured fields —
+trailer set, `Verification:` section, no `#`-leading lines, no whitespace inside
+issue refs — before anything is digested, so a raw API client cannot smuggle
+control text past the CLI. It then records the SHA-256 of the exact stored bytes
+and freezes both once the request leaves `pending`. `mandible auth merge`
+re-verifies that digest against the exact bytes it fetched, asserts they are
+already canonical, and commits them on every merge path, aborting rather than
+falling back. With no message flag, nothing is stored and the merge keeps git's
+own default merge message.
 
 **Pre-flight checks:**
 

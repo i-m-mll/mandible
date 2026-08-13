@@ -63,7 +63,8 @@ Key optional fields:
 - `repo`, `base_branch`, `head_branch` — Branch metadata for merge requests.
 - `diff_summary` — A text summary of the changes being merged.
 - `commit_message` — The proposed merge commit message. `Mandible-Issue:` trailers are work-tracking references, not closure signals.
-- `canonical_message` — Declares `commit_message` to be the agent-authored canonical change message. The daemon canonicalizes the bytes, stores them back, and records their SHA-256 in `commit_message_digest`; `mandible auth merge` then commits exactly those bytes. Immutable once the request leaves `pending`.
+- `canonical_message` — Declares `commit_message` to be the agent-authored canonical change message. The daemon validates the machine-owned envelope (reference-only `Mandible-Issue:` trailer set matching the structured issue fields, a `Verification:` section matching the `verification` field, no `Closes-Mandible-Issue:` trailer, no `#`-leading lines), canonicalizes the bytes, stores them back, and records the SHA-256 of those exact bytes in `commit_message_digest`; `mandible auth merge` then commits exactly those bytes. Both are immutable once the request leaves `pending`; an explicit `canonical_message: false` demotes the message back to free-form review text while still pending.
+- `verification` — The `Verification:` section text. Required whenever `canonical_message` is true.
 - `spec_content` — A specification explaining the intent and design decisions.
 - `issue_references` — Issue IDs attached for review context/provenance; these do not close on merge.
 - `issue_closures` — Issue IDs to close on successful merge.

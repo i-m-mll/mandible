@@ -297,6 +297,11 @@ export interface AuthRequestInput {
   // back, and records their digest; only then does the merge consume them
   // verbatim. Absent/false keeps the legacy free-form review-text behaviour.
   canonical_message?: boolean;
+  // Issue 7d64d8f — the machine-owned `Verification:` section text. Required
+  // whenever `canonical_message` is true: the daemon validates the message's
+  // Verification section against this structured field rather than trusting
+  // whatever prose the message happens to contain.
+  verification?: string | null;
   spec_content?: string | null;
   repo?: string;
   base_branch?: string;

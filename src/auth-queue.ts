@@ -35,6 +35,9 @@ import {
 import {
   canonicalizeChangeMessage,
   changeMessageDigest,
+  isCanonicalChangeMessage,
+  validateCanonicalChangeMessage,
+  type CanonicalChangeMessageFields,
 } from "./auth-change-message.js";
 import { AuthHookManager, type AuthHookExecutionResult } from "./auth-hooks.js";
 import {
@@ -1490,6 +1493,11 @@ export class AuthQueue {
     const canonical = this.resolveCanonicalChangeMessage(
       payload.commit_message ?? null,
       payload.canonical_message === true,
+      {
+        verification: payload.verification,
+        issueReferences: payload.issue_references,
+        issueClosures: payload.issue_closures ?? payload.issues,
+      },
     );
     const request: AuthRequest = {
       id: randomUUID(),
@@ -2045,6 +2053,7 @@ export class AuthQueue {
   private resolveCanonicalChangeMessage(
     message: string | null,
     declaredCanonical: boolean,
+    fields: CanonicalChangeMessageFields,
   ): { message: string | null; digest: string | null } {
     if (!declaredCanonical) {
       return { message: message ?? null, digest: null };
@@ -2055,6 +2064,17 @@ export class AuthQueue {
         status: 400,
         message: "canonical_message was declared but commit_message is empty.",
       };
+    }
+    // Validate the machine-owned envelope at the daemon boundary, before the
+    // bytes are digested and become immutable. The CLI runs the same checks for
+    // fast feedback, but this is the one that binds every submitter.
+    const invalid = validateCanonicalChangeMessage(canonical, fields);
+    if (invalid) {
+      throw { status: 400, message: invalid };
+    }
+    // Digest the exact stored octets, not a re-normalized copy.
+    if (!isCanonicalChangeMessage(canonical)) {
+      throw { status: 500, message: "Canonicalization did not produce canonical bytes." };
     }
     return { message: canonical, digest: changeMessageDigest(canonical) };
   }
@@ -2157,10 +2177,13 @@ export class AuthQueue {
     // already executed), the reviewed bytes are the bytes the merge uses, so
     // they can no longer be edited in place; requeue the request to pending
     // first and re-review. Free-form review text keeps its prior edit surface.
-    const touchesMessage =
-      ("commit_message" in payload && payload.commit_message !== undefined) ||
-      payload.canonical_message === true;
-    if (touchesMessage) {
+    // `canonical_message` is honoured on presence, not truthiness: an explicit
+    // `false` is a demotion back to free-form review text and must take the
+    // same pending-only path (and must not fall through as "no fields to
+    // update"), not be silently ignored.
+    const editsMessageBytes = "commit_message" in payload && payload.commit_message !== undefined;
+    const declaresCanonicalFlag = "canonical_message" in payload;
+    if (editsMessageBytes || declaresCanonicalFlag) {
       if (request.commit_message_digest && request.status !== "pending") {
         throw {
           status: 409,
@@ -2169,16 +2192,28 @@ export class AuthQueue {
             "requeue the request to pending before editing it.",
         };
       }
-      const nextRaw =
-        "commit_message" in payload && payload.commit_message !== undefined
-          ? (payload.commit_message as string | null)
-          : request.commit_message;
-      const declaredCanonical =
-        payload.canonical_message === true ||
-        (request.commit_message_digest != null && payload.canonical_message !== false);
+      const nextRaw = editsMessageBytes
+        ? (payload.commit_message as string | null)
+        : request.commit_message;
+      const declaredCanonical = declaresCanonicalFlag
+        ? payload.canonical_message === true
+        : request.commit_message_digest != null;
       const resolved = this.resolveCanonicalChangeMessage(
         nextRaw ?? null,
         declaredCanonical && (nextRaw ?? "").length > 0,
+        {
+          verification: payload.verification as string | null | undefined,
+          issueReferences:
+            "issue_references" in payload
+              ? (payload.issue_references as string[] | null)
+              : request.issue_references,
+          issueClosures:
+            "issue_closures" in payload
+              ? (payload.issue_closures as string[] | null)
+              : "issues" in payload
+                ? (payload.issues as string[] | null)
+                : request.issue_closures,
+        },
       );
       updates.push("commit_message = ?");
       values.push(resolved.message);

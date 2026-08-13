@@ -37,9 +37,12 @@
 #   The machine-owned "Verification:" section is inserted immediately before a
 #   "Caveats:" heading when one is present, otherwise appended after the body.
 #   Trailers are derived from --issue / --closes-issue only, never parsed from
-#   prose: --issue emits "Mandible-Issue:" and --closes-issue emits
-#   "Closes-Mandible-Issue:". Authoring a "Verification:" heading or any
-#   Mandible issue trailer inside the message is an error.
+#   prose, and are always reference-only "Mandible-Issue:" lines. A canonical
+#   message never carries "Closes-Mandible-Issue:": closure is carried solely by
+#   the request's structured issue_closures field, so the frozen signed message
+#   can never disagree with the authorization that actually runs (issue
+#   529f0f2). Authoring a "Verification:" heading or any Mandible issue trailer
+#   inside the message is an error, as is a "#"-leading line.
 #
 #   With no message flag, no change message is submitted and the merge keeps
 #   git's own default merge message.
@@ -244,18 +247,77 @@ read_mandible_toml_value() {
 # agent cannot smuggle a closure trailer or a forged verification claim into
 # the durable merge record through the message body.
 
+# Trailers are reference-only. Closure is carried exclusively by the request's
+# structured issue_closures field: it stays editable after approval while the
+# message is frozen, and cli/auth-merge.sh reads `Closes-Mandible-Issue:` out of
+# commit messages as a live closure instruction, so a closure trailer inside a
+# signed message could disagree with the authorization actually executed.
+# Issue 529f0f2 tracks freezing the structured field; until then the trailer
+# must not exist. A plain `Mandible-Issue:` trailer has no control effect.
 change_message_trailers() {
   local ref
-  if [[ ${#ISSUE_REFERENCES[@]} -gt 0 ]]; then
-    for ref in "${ISSUE_REFERENCES[@]}"; do
-      printf 'Mandible-Issue: %s\n' "$ref"
-    done
+  local emitted=""
+  for ref in ${ISSUE_REFERENCES[@]+"${ISSUE_REFERENCES[@]}"} ${ISSUE_CLOSURES[@]+"${ISSUE_CLOSURES[@]}"}; do
+    case "
+${emitted}" in
+      *"
+${ref}
+"*) continue ;;
+    esac
+    emitted="${emitted}${ref}
+"
+    printf 'Mandible-Issue: %s\n' "$ref"
+  done
+}
+
+# A ref carrying whitespace or a newline could forge extra trailer lines.
+validate_issue_ref_tokens() {
+  local ref
+  for ref in ${ISSUE_REFERENCES[@]+"${ISSUE_REFERENCES[@]}"} ${ISSUE_CLOSURES[@]+"${ISSUE_CLOSURES[@]}"}; do
+    if [[ -z "$ref" || "$ref" =~ [[:space:]] ]]; then
+      echo "Error: issue ref '${ref}' must be a single token with no whitespace or newlines." >&2
+      exit 2
+    fi
+  done
+}
+
+# The Verification section is machine-owned: single non-empty paragraph, no
+# trailer-shaped lines, no '#'-leading lines. Mirrors the daemon-side check in
+# src/auth-change-message.ts.
+validate_verification_text() {
+  local text="$1"
+  if [[ -z "${text//[[:space:]]/}" ]]; then
+    echo "Error: --verification text must not be empty." >&2
+    exit 2
   fi
-  if [[ ${#ISSUE_CLOSURES[@]} -gt 0 ]]; then
-    for ref in "${ISSUE_CLOSURES[@]}"; do
-      printf 'Closes-Mandible-Issue: %s\n' "$ref"
-    done
+  local trimmed
+  trimmed=$(printf '%s\n' "$text" | canonicalize_verification_text)
+  if printf '%s\n' "$trimmed" | grep -qE '^[[:space:]]*$'; then
+    echo "Error: --verification text must be a single paragraph." >&2
+    exit 2
   fi
+  local offending
+  offending=$(printf '%s\n' "$trimmed" | grep -nE '^#|^[A-Za-z][A-Za-z0-9_-]*:([[:space:]].*)?$' || true)
+  if [[ -n "$offending" ]]; then
+    echo "Error: --verification text must not contain '#'-leading or trailer-shaped lines:" >&2
+    printf '%s\n' "$offending" >&2
+    exit 2
+  fi
+}
+
+# Strip trailing whitespace per line and drop leading/trailing blank lines, so
+# the CLI checks and the composed section see the same text the daemon will.
+canonicalize_verification_text() {
+  LC_ALL=C awk '
+    { sub(/\r$/, ""); sub(/[ \t]+$/, ""); lines[++n] = $0 }
+    END {
+      s = 1
+      while (s <= n && lines[s] == "") s++
+      e = n
+      while (e >= s && lines[e] == "") e--
+      for (i = s; i <= e; i++) printf "%s\n", lines[i]
+    }
+  '
 }
 
 # Refuse agent-authored text that claims a machine-owned section or trailer.
@@ -712,6 +774,9 @@ if [[ $change_message_set -eq 1 ]]; then
   if [[ -z "$verification_text" ]]; then
     verification_text="Not recorded"
   fi
+  validate_verification_text "$verification_text"
+  validate_issue_ref_tokens
+  verification_text=$(printf '%s\n' "$verification_text" | canonicalize_verification_text)
 
   commit_message=$(compose_change_message \
     "$branch" "$change_message_body" "$verification_text" "$(change_message_trailers)")
@@ -786,6 +851,7 @@ payload=$(jq -nc \
   --arg diff_summary "$diff_summary" \
   --arg commit_message "$commit_message" \
   --argjson canonical_message "$canonical_message" \
+  --arg verification "$verification_text" \
   --arg spec_content "$spec_content" \
   --arg post_merge_handoff "$post_merge_handoff" \
   --arg depends_on_id "$depends_on_id" \
@@ -812,6 +878,7 @@ payload=$(jq -nc \
     diff_summary: $diff_summary,
     commit_message: (if $commit_message == "" then null else $commit_message end),
     canonical_message: $canonical_message,
+    verification: (if $verification == "" then null else $verification end),
     spec_content: $spec_content,
     post_merge_handoff: (if $post_merge_handoff == "" then null else $post_merge_handoff end),
     issue_references: $issue_references,

@@ -54,7 +54,9 @@ describe("migration v123: canonical change message digest", () => {
     ).toEqual({ commit_message: "- a bullet dump", commit_message_digest: null });
   });
 
-  it("is a no-op when the column already exists", () => {
+  it("replays over a database that already has the column", () => {
+    // The suite's version-rewind fixtures replay migrations over databases that
+    // already carry later columns, so v123 must be idempotent.
     migrate(db);
     db.exec("UPDATE meta SET value = '122' WHERE key = 'schema_version'");
 
@@ -62,5 +64,11 @@ describe("migration v123: canonical change message digest", () => {
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
       value: "123",
     });
+  });
+
+  it("refuses to advance over a divergent column definition", () => {
+    db.exec("ALTER TABLE auth_requests ADD COLUMN commit_message_digest INTEGER");
+
+    expect(() => migrate(db)).toThrow(/divergent definition/);
   });
 });

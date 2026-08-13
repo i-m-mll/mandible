@@ -535,6 +535,7 @@ current_branch_sha() {
 # message-cleanup normalizations, so `git merge -m` cannot alter the approved
 # bytes.
 AUTH_MERGE_CANONICAL_MESSAGE=""
+AUTH_MERGE_CANONICAL_MESSAGE_FILE=""
 AUTH_MERGE_HAS_CANONICAL_MESSAGE=0
 
 canonicalize_change_message() {
@@ -608,20 +609,44 @@ load_canonical_change_message() {
     return 1
   fi
 
-  local message canonical actual
-  message=$(printf '%s' "$response" | jq -r '.commit_message // empty' 2>/dev/null || true)
-  canonical=$(printf '%s\n' "$message" | canonicalize_change_message)
-  if [[ -z "$canonical" ]]; then
+  # The digest binds the exact stored octets, terminal newline included, so the
+  # bytes are captured verbatim (jq -j, no added newline) and hashed as-is.
+  # Canonical form is asserted separately and fails closed; re-canonicalizing
+  # before hashing would let a non-canonical stored message pass by digesting a
+  # normalized copy of something the merge would not commit.
+  local message_file canonical_file actual
+  message_file=$(mktemp "${TMPDIR:-/tmp}/mandible-canonical-message.XXXXXX") || return 1
+  AUTH_MERGE_CANONICAL_MESSAGE_FILE="$message_file"
+  trap 'rm -f "$AUTH_MERGE_CANONICAL_MESSAGE_FILE"' EXIT
+  if ! printf '%s' "$response" | jq -j '.commit_message // ""' > "$message_file" 2>/dev/null; then
+    err "${RED}Could not read the canonical change message bytes for auth request ${request_id}; no ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  if [[ ! -s "$message_file" ]]; then
     err "${RED}Auth request ${request_id} records a canonical change message digest but no message bytes; no ref or worktree was changed.${RESET}"
     return 1
   fi
-  actual=$(printf '%s\n' "$canonical" | change_message_digest)
+
+  canonical_file="${message_file}.canonical"
+  canonicalize_change_message < "$message_file" > "$canonical_file"
+  if ! cmp -s "$message_file" "$canonical_file"; then
+    rm -f "$canonical_file"
+    err "${RED}The stored change message for auth request ${request_id} is not in canonical form; requeue and reapprove. No ref or worktree was changed.${RESET}"
+    return 1
+  fi
+  rm -f "$canonical_file"
+
+  actual=$(change_message_digest < "$message_file")
   if [[ "$actual" != "$stored_digest" ]]; then
     err "${RED}Canonical change message digest mismatch (expected sha256 ${stored_digest}, computed sha256 ${actual}); no ref or worktree was changed.${RESET}"
     return 1
   fi
 
-  AUTH_MERGE_CANONICAL_MESSAGE="$canonical"
+  # `git merge -m` takes the message as an argument, and git's own cleanup
+  # normalizes exactly the way canonical form already is, so dropping the
+  # terminal newline here is byte-equivalent in the resulting commit. The
+  # commit-tree path feeds the file itself and never goes through a variable.
+  AUTH_MERGE_CANONICAL_MESSAGE=$(cat "$message_file")
   AUTH_MERGE_HAS_CANONICAL_MESSAGE=1
   auth_phase "using the approved canonical change message (sha256 ${stored_digest})."
   return 0
@@ -749,10 +774,22 @@ create_signed_merge_commit() {
   # Issue 7d64d8f — the atomic path commits the same approved bytes as the
   # non-atomic path; commit-tree reads them verbatim from stdin.
   if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
-    message="$AUTH_MERGE_CANONICAL_MESSAGE"
-  else
-    message=$(printf "%s\t\tbranch '%s' of .\n" "$second_parent" "$source_branch" | git fmt-merge-msg) || return 1
+    # Feed the approved file directly: the commit body is these exact octets.
+    if ! merge_sha=$(run_signing_git commit-tree "$tree_sha" -p "$first_parent" -p "$second_parent" -S -F - \
+      < "$AUTH_MERGE_CANONICAL_MESSAGE_FILE"); then
+      report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
+      err "${RED}Signed commit creation failed; no ref or worktree was changed.${RESET}"
+      return 1
+    fi
+    merge_sha=$(printf '%s' "$merge_sha" | tail -n 1 | tr -d '[:space:]')
+    [[ "$merge_sha" =~ ^[0-9a-fA-F]{40,64}$ ]] || {
+      err "${RED}git commit-tree did not return a commit object.${RESET}"
+      return 1
+    }
+    printf '%s' "$merge_sha"
+    return 0
   fi
+  message=$(printf "%s\t\tbranch '%s' of .\n" "$second_parent" "$source_branch" | git fmt-merge-msg) || return 1
   if ! merge_sha=$(printf '%s\n' "$message" |
     run_signing_git commit-tree "$tree_sha" -p "$first_parent" -p "$second_parent" -S -F -); then
     report_daemon_sk_signing_failure "$AUTH_MERGE_LAST_GIT_STDERR" || true
@@ -1455,7 +1492,7 @@ main() {
       exit 1
     fi
     if (( AUTH_MERGE_HAS_CANONICAL_MESSAGE )); then
-      printf '%s\n' "$AUTH_MERGE_CANONICAL_MESSAGE" > "$(git rev-parse --git-dir)/MERGE_MSG"
+      cp "$AUTH_MERGE_CANONICAL_MESSAGE_FILE" "$(git rev-parse --git-dir)/MERGE_MSG"
     fi
 
     err ""
