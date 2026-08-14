@@ -166,6 +166,28 @@ describe("operator command creation and cancellation", () => {
       Array<{ name: string }>).map((column) => column.name);
     expect(columns).not.toContain("expires_at");
   });
+
+  it("returns the complete pending safety queue instead of truncating at the operator history limit", async () => {
+    for (let index = 0; index < 101; index += 1) {
+      const result = await create("operator", createBody({ request_key: `disable-${index}` }));
+      expect(result.status).toBe(200);
+    }
+    const pending = await router.invoke({
+      method: "GET",
+      url: "/api/tasks/commands/pending?executor=agent-schedule",
+      credential: "agent-schedule",
+    });
+    expect(pending.status).toBe(200);
+    expect((pending.body as { commands: unknown[] }).commands).toHaveLength(101);
+
+    const selectedTaskHistory = await router.invoke({
+      method: "GET",
+      url: "/api/tasks/commands?executor=agent-schedule&task_id=daily-digest",
+      credential: "operator",
+    });
+    expect(selectedTaskHistory.status).toBe(200);
+    expect((selectedTaskHistory.body as { commands: unknown[] }).commands).toHaveLength(101);
+  });
 });
 
 describe("executor authority, receipts, and conflicts", () => {

@@ -4737,8 +4737,9 @@ export async function getAgentDispatchEvents(
 //   POST /api/tasks/inventory   (registered executors only; never from the UI)
 //   GET  /api/tasks             (read-only projection)
 //
-// The Tasks view is a READ SURFACE over facts an executor reported. The UI has
-// no write path here at all, which is why only the GET has a client below.
+// The inventory portion of the Tasks view is a READ SURFACE over facts an
+// executor reported. Disable requests are a separate operator-authored command
+// protocol below; they never mutate inventory telemetry in place.
 //
 // NORMALIZATION IS DELIBERATELY LOSSY TOWARD `'unknown'`. Every optional field
 // the server may carry is either its typed value or the contract's explicit

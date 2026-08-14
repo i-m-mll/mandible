@@ -273,7 +273,13 @@ export function getTaskCommand(
 
 export function listTaskCommands(
   db: Db = getDb(),
-  filters: { executor?: string; taskId?: string; pendingOnly?: boolean; limit?: number } = {},
+  filters: {
+    executor?: string;
+    taskId?: string;
+    pendingOnly?: boolean;
+    /** `null` requests a complete, already-authorized targeted result set. */
+    limit?: number | null;
+  } = {},
 ): TaskCommand[] {
   const clauses: string[] = [];
   const values: unknown[] = [];
@@ -292,15 +298,17 @@ export function listTaskCommands(
          AND terminal.event_type IN ('applied','rejected','cancelled')
     )`);
   }
-  const limit = Math.max(1, Math.min(filters.limit ?? 100, 500));
+  const limit = filters.limit === null
+    ? null
+    : Math.max(1, Math.min(filters.limit ?? 100, 500));
   const rows = db.prepare(
     `SELECT r.*, u.slug AS requested_by_slug
        FROM task_command_requests AS r
        LEFT JOIN users AS u ON u.id = r.requested_by_user_id
       ${clauses.length > 0 ? `WHERE ${clauses.join(" AND ")}` : ""}
       ORDER BY r.requested_at DESC, r.rowid DESC
-      LIMIT ?`,
-  ).all(...values, limit) as RequestRow[];
+      ${limit === null ? "" : "LIMIT ?"}`,
+  ).all(...values, ...(limit === null ? [] : [limit])) as RequestRow[];
   return rows.map((row) => projectCommand(row, eventRows(db, row.id)));
 }
 

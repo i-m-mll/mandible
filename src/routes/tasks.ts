@@ -102,10 +102,16 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
   server.get("/api/tasks/commands", (req, res) => {
     try {
       requireOperator(db, req);
+      const executor = req.query.executor?.trim() || undefined;
+      const taskId = req.query.task_id?.trim() || undefined;
       sendJson(res, 200, {
         commands: listTaskCommands(db, {
-          executor: req.query.executor?.trim() || undefined,
-          taskId: req.query.task_id?.trim() || undefined,
+          executor,
+          taskId,
+          // The selected-task UI must see unresolved commands even when that
+          // task has more than one history page. The unfiltered audit surface
+          // remains capped.
+          limit: executor && taskId ? null : undefined,
         }),
         polling: "tick_aligned",
       });
@@ -148,7 +154,10 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
       if (!executor) throw new TaskCommandError("executor query parameter is required");
       requireMappedTaskExecutor(db, req, executor);
       sendJson(res, 200, {
-        commands: listTaskCommands(db, { executor, pendingOnly: true }),
+        // A disable is a safety action and must not disappear behind a history
+        // page boundary. Only the configured operator can create rows, and
+        // terminal rows are excluded, so return the complete pending queue.
+        commands: listTaskCommands(db, { executor, pendingOnly: true, limit: null }),
         polling: "tick_aligned",
       });
     } catch (error) {

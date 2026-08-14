@@ -74,7 +74,8 @@ only while the command is requested; cancellation after acceptance returns
 accepted commands. Fetching is tick-aligned: executors poll once per scheduler
 tick, before due work. There is no long poll. Accepted commands remain in this
 response until an applied or rejected receipt is durable, permitting retries
-after transient local failures.
+after transient local failures. The pending safety queue is complete rather
+than page-limited, so an older disable cannot be hidden by newer requests.
 
 `POST /api/tasks/commands/:id/events` accepts one of these exact bodies:
 
