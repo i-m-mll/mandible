@@ -288,14 +288,24 @@ describe('browser-local collection view state', () => {
     expect(screen.getByRole('button', { name: 'Unpin alpha' }).getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('hides the sidebar without deleting its stored state', async () => {
+  it('uses the shared sidebar frame and hides it without deleting stored state', async () => {
     window.localStorage.setItem(BRIEFING_VIEW_STATE_KEY, JSON.stringify({
       ...DEFAULT_BRIEFING_COLLECTION_VIEW_STATE,
       collectionSourceFilter: 'alpha',
       pinnedCollectionIds: ['recurring_feed:alpha'],
     }));
-    render(<ViewStateHarness collections={[recurring('alpha')]} sidebarHidden />);
+    const view = render(<ViewStateHarness collections={[recurring('alpha')]} />);
+    const frame = screen.getByRole('complementary', { name: 'Feedback collections' });
+    expect(frame.classList.contains('view-sidebar')).toBe(true);
+    expect(frame.classList.contains('feedback-collections-sidebar')).toBe(true);
+    expect(screen.getByTestId('feedback-collections-sidebar')).toBeTruthy();
+    expect(frame.querySelector('.view-sidebar__resize-handle')).toBeTruthy();
+
+    view.rerender(<ViewStateHarness collections={[recurring('alpha')]} sidebarHidden />);
     expect(screen.queryByTestId('feedback-collections-sidebar')).toBeNull();
+    expect(screen.queryByRole('complementary', { name: 'Feedback collections' })).toBeNull();
+    expect(view.container.querySelector('.view-sidebar')).toBeNull();
+    expect(view.container.querySelector('.view-sidebar__resize-handle')).toBeNull();
     expect(JSON.parse(screen.getByTestId('view-state').textContent ?? '{}')).toMatchObject({
       collectionSourceFilter: 'alpha',
       pinnedCollectionIds: ['recurring_feed:alpha'],

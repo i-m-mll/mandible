@@ -1,5 +1,6 @@
 import type { Dispatch, StateUpdater } from 'preact/hooks';
 
+import { ViewSidebar } from '../../components/ViewSidebar';
 import {
   filterFeedbackCollections,
   orderFeedbackCollections,
@@ -9,6 +10,7 @@ import type { BriefingCollectionViewState } from './collection-view-state';
 
 export type CollectionsSidebarProps = {
   collections: readonly FeedbackCollection[];
+  hidden?: boolean;
   selectedCollectionId: string | null;
   viewState: BriefingCollectionViewState;
   setViewState: Dispatch<StateUpdater<BriefingCollectionViewState>>;
@@ -32,6 +34,7 @@ function recurringFact(collection: FeedbackCollection): string | null {
 
 export function CollectionsSidebar({
   collections,
+  hidden = false,
   selectedCollectionId,
   viewState,
   setViewState,
@@ -58,8 +61,14 @@ export function CollectionsSidebar({
   };
 
   return (
-    <aside className="feedback-collections-sidebar" aria-label="Feedback collections" data-testid="feedback-collections-sidebar">
-      <div className="feedback-collections-sidebar__filters" aria-label="Collection filters">
+    <ViewSidebar
+      hidden={hidden}
+      storageKey="sidebar-width:briefing"
+      defaultWidth={290}
+      minWidth={230}
+      ariaLabel="Feedback collections"
+      className="feedback-collections-sidebar"
+      header={<div className="feedback-collections-sidebar__filters" aria-label="Collection filters">
         <label>
           <span>Kind</span>
           <select
@@ -106,49 +115,51 @@ export function CollectionsSidebar({
             <option value="closed">Closed</option>
           </select>
         </label>
+      </div>}
+    >
+      <div data-testid="feedback-collections-sidebar">
+        {ordered.length === 0 ? (
+          <p className="feedback-collections-sidebar__empty" role="status">No collections match these filters.</p>
+        ) : (
+          <ul className="feedback-collections-sidebar__list">
+            {ordered.map((collection) => {
+              const isPinned = pinned.has(collection.id);
+              const fact = recurringFact(collection);
+              return (
+                <li key={collection.id} className="feedback-collection-row">
+                  <button
+                    type="button"
+                    className={`feedback-collection-row__select${selectedCollectionId === collection.id ? ' feedback-collection-row__select--active' : ''}`}
+                    aria-label={`Select collection ${collection.label}`}
+                    aria-current={selectedCollectionId === collection.id ? 'page' : undefined}
+                    onClick={() => onSelect(collection)}
+                  >
+                    <span className="feedback-collection-row__label">{collection.label}</span>
+                    <span className="feedback-collection-row__facts">
+                      <span>{kindLabel(collection.kind)}</span>
+                      {collection.source ? <span>Source: {collection.source}</span> : null}
+                      <span>State: {collection.state}</span>
+                      {collection.recurring ? <span>Health: {collection.recurring.health}</span> : null}
+                      {collection.pendingCount !== undefined ? <span>{collection.pendingCount} pending</span> : null}
+                      {fact ? <span>{fact}</span> : null}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="feedback-collection-row__pin"
+                    aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${collection.label}`}
+                    aria-pressed={isPinned}
+                    onClick={() => togglePin(collection.id)}
+                  >
+                    {isPinned ? 'Pinned' : 'Pin'}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
-
-      {ordered.length === 0 ? (
-        <p className="feedback-collections-sidebar__empty" role="status">No collections match these filters.</p>
-      ) : (
-        <ul className="feedback-collections-sidebar__list">
-          {ordered.map((collection) => {
-            const isPinned = pinned.has(collection.id);
-            const fact = recurringFact(collection);
-            return (
-              <li key={collection.id} className="feedback-collection-row">
-                <button
-                  type="button"
-                  className={`feedback-collection-row__select${selectedCollectionId === collection.id ? ' feedback-collection-row__select--active' : ''}`}
-                  aria-label={`Select collection ${collection.label}`}
-                  aria-current={selectedCollectionId === collection.id ? 'page' : undefined}
-                  onClick={() => onSelect(collection)}
-                >
-                  <span className="feedback-collection-row__label">{collection.label}</span>
-                  <span className="feedback-collection-row__facts">
-                    <span>{kindLabel(collection.kind)}</span>
-                    {collection.source ? <span>Source: {collection.source}</span> : null}
-                    <span>State: {collection.state}</span>
-                    {collection.recurring ? <span>Health: {collection.recurring.health}</span> : null}
-                    {collection.pendingCount !== undefined ? <span>{collection.pendingCount} pending</span> : null}
-                    {fact ? <span>{fact}</span> : null}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="feedback-collection-row__pin"
-                  aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${collection.label}`}
-                  aria-pressed={isPinned}
-                  onClick={() => togglePin(collection.id)}
-                >
-                  {isPinned ? 'Pinned' : 'Pin'}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </aside>
+    </ViewSidebar>
   );
 }
 
