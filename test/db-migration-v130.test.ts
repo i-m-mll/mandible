@@ -23,12 +23,18 @@ describe("migration v130-v131 managed reminder core and Inbox acknowledgement", 
       ]);
       expect(db.pragma("foreign_key_check")).toEqual([]);
       expect(METADATA_BACKUP_TABLES).toEqual(expect.arrayContaining([
+        "auth_request_merge_succeeded_facts",
         "managed_tasks",
         "managed_task_revisions",
         "managed_task_create_requests",
         "managed_task_occurrences",
         "managed_task_events",
       ]));
+      const backupIndex = (table: string) => METADATA_BACKUP_TABLES.indexOf(table as never);
+      expect(backupIndex("auth_request_merge_succeeded_facts"))
+        .toBeGreaterThan(backupIndex("ledger_projects"));
+      expect(backupIndex("managed_tasks"))
+        .toBeGreaterThan(backupIndex("auth_request_merge_succeeded_facts"));
       expect(db.pragma("table_info(managed_task_occurrences)")).toEqual(expect.arrayContaining([
         expect.objectContaining({ name: "acknowledged_by", type: "TEXT" }),
         expect.objectContaining({ name: "acknowledged_at", type: "INTEGER" }),

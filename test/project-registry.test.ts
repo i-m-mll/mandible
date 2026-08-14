@@ -769,6 +769,9 @@ describe("merge move-list schema coverage (codex review #1)", () => {
     expect(moveSet.has("ledger_sync_jobs.project_id")).toBe(true);
     expect(moveSet.has("ledger_reconciliation_mismatches.project_id")).toBe(true);
     expect(moveSet.has("trash_entries.project_id")).toBe(true);
+    expect(moveSet.has("auth_request_merge_succeeded_facts.project_id")).toBe(true);
+    expect(moveSet.has("managed_tasks.project_id")).toBe(true);
+    expect(moveSet.has("managed_task_events.project_id")).toBe(true);
   });
 
   it("merges a source project WITH commit links cleanly (FK ON DELETE RESTRICT)", () => {
