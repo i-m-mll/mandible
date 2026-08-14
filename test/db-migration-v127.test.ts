@@ -30,7 +30,7 @@ describe("migration 127 briefing ingest replay identity", () => {
     `);
     migrate(db);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "127" });
+      .toEqual({ value: "128" });
     expect((db.prepare("PRAGMA table_info(feedback_publications)").all() as Array<{ name: string }>)
       .map((column) => column.name)).toContain("ingest_request_id");
 

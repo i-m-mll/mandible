@@ -11,9 +11,9 @@
 //     zero, never as a plausible-looking default. The contract makes a
 //     publisher state its ignorance explicitly (docs/executor-inventory-
 //     contract.md §3) precisely so this view can show it.
-//  3. NOTHING IS ACTIONABLE. No commands, no editing, no '+' button. Mandible
-//     does not manage these tasks yet, so offering a control would be a lie
-//     about where authority lives.
+//  3. DISABLE IS A REQUEST, NOT A LOCAL TOGGLE. The lifecycle shown here is
+//     backed by immutable operator intent and executor receipts. "requested"
+//     never renders as though the task has already stopped.
 //
 // The one judgment the page adds is FRESHNESS, and it is the server's: how old
 // the executor's snapshot is. It is shown next to the executor, not next to the
@@ -23,6 +23,9 @@ import type { JSX } from 'preact';
 
 import {
   getTaskInventory,
+  getTaskCommands,
+  requestTaskDisable,
+  cancelTaskDisable,
   TASK_INVENTORY_UNKNOWN,
   type TaskActivationFacts,
   type TaskBundleFacts,
@@ -31,6 +34,7 @@ import {
   type TaskGuardFacts,
   type TaskInventory,
   type TaskInventoryItem,
+  type TaskCommand,
   type TaskRunFacts,
   type TaskRunSlot,
 } from '../api';
@@ -225,12 +229,98 @@ function ExecutorFooter({ executor }: { executor: TaskExecutorSummary | null }):
   );
 }
 
+function commandStatusText(command: TaskCommand): string {
+  if (command.state === 'requested') return 'Requested, not yet seen by executor.';
+  if (command.state === 'accepted') {
+    return 'Accepted by executor and durably journaled; application is still pending.';
+  }
+  if (command.state === 'applied') {
+    return command.no_op
+      ? 'Applied. The executor reported the task was already disabled (no-op).'
+      : 'Applied. The executor reported the local task disabled.';
+  }
+  if (command.state === 'rejected') {
+    return `Rejected permanently by executor: ${command.rejection_reason ?? 'unknown'}.`;
+  }
+  return 'Cancelled before executor acceptance.';
+}
+
+function CommandSection({
+  commands,
+  available,
+  busy,
+  error,
+  onRequest,
+  onCancel,
+}: {
+  commands: TaskCommand[];
+  available: boolean;
+  busy: boolean;
+  error: string | null;
+  onRequest: () => void;
+  onCancel: (commandId: string) => void;
+}): JSX.Element {
+  const latest = commands[0] ?? null;
+  const active = latest?.state === 'requested' || latest?.state === 'accepted';
+  return (
+    <section className="tasks-section tasks-command">
+      <h3 className="tasks-section__title">Disable command</h3>
+      <p className="tasks-note">
+        Commands are fetched at executor tick boundaries. A request may take up to one scheduler
+        tick to be seen; requested and applied are deliberately different states.
+      </p>
+      {latest ? (
+        <div className={`tasks-command__receipt tasks-command__receipt--${latest.state}`}>
+          <span className="tasks-command__state">{latest.state}</span>
+          <span>{commandStatusText(latest)}</span>
+          <span className="tasks-command__time">Requested {formatRelativeTime(latest.requested_at, { style: 'recent' })}</span>
+        </div>
+      ) : (
+        <p className="tasks-note">No disable request has been recorded for this task.</p>
+      )}
+      {error ? <p className="tasks-command__error" role="alert">{error}</p> : null}
+      <div className="tasks-command__actions">
+        <button
+          type="button"
+          className="btn btn--danger"
+          disabled={busy || active || !available}
+          onClick={onRequest}
+        >
+          {busy ? 'Recording…' : 'Request disable'}
+        </button>
+        {latest?.state === 'requested' ? (
+          <button
+            type="button"
+            className="btn"
+            disabled={busy || !available}
+            onClick={() => onCancel(latest.id)}
+          >
+            Cancel unseen request
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 function TaskDetail({
   item,
   executor,
+  commands,
+  commandAvailable,
+  commandBusy,
+  commandError,
+  onRequestDisable,
+  onCancelDisable,
 }: {
   item: TaskInventoryItem;
   executor: TaskExecutorSummary | null;
+  commands: TaskCommand[];
+  commandAvailable: boolean;
+  commandBusy: boolean;
+  commandError: string | null;
+  onRequestDisable: () => void;
+  onCancelDisable: (commandId: string) => void;
 }): JSX.Element {
   const { task } = item;
   return (
@@ -259,6 +349,15 @@ function TaskDetail({
           </p>
         ) : null}
       </section>
+
+      <CommandSection
+        commands={commands}
+        available={commandAvailable}
+        busy={commandBusy}
+        error={commandError}
+        onRequest={onRequestDisable}
+        onCancel={onCancelDisable}
+      />
 
       <section className="tasks-section">
         <h3 className="tasks-section__title">Active bundle</h3>
@@ -291,6 +390,10 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
   const [inventory, setInventory] = useState<TaskInventory | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [commands, setCommands] = useState<TaskCommand[]>([]);
+  const [commandAvailable, setCommandAvailable] = useState(false);
+  const [commandBusy, setCommandBusy] = useState(false);
+  const [commandError, setCommandError] = useState<string | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(initialTaskKey ?? null);
   const mounted = useRef(true);
 
@@ -300,6 +403,19 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
       if (!mounted.current) return;
       setInventory(next);
       setError(null);
+      try {
+        const commandList = await getTaskCommands({}, signal);
+        if (!mounted.current) return;
+        setCommands(commandList.commands);
+        setCommandAvailable(true);
+        setCommandError(null);
+      } catch (commandLoadError) {
+        if (!mounted.current) return;
+        setCommandAvailable(false);
+        setCommandError(
+          commandLoadError instanceof Error ? commandLoadError.message : String(commandLoadError),
+        );
+      }
     } catch (loadError) {
       if (!mounted.current) return;
       setError(loadError instanceof Error ? loadError.message : String(loadError));
@@ -331,6 +447,44 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
     () => executors.find((entry) => entry.name === selected?.executor) ?? null,
     [executors, selected],
   );
+  const selectedCommands = useMemo(
+    () => commands.filter((command) =>
+      command.executor === selected?.executor && command.task_id === selected?.task.task_id),
+    [commands, selected],
+  );
+
+  const requestDisable = useCallback(async () => {
+    if (!selected) return;
+    setCommandBusy(true);
+    setCommandError(null);
+    try {
+      const result = await requestTaskDisable(selected.executor, selected.task.task_id);
+      if (!mounted.current) return;
+      setCommands((current) => [result.command, ...current.filter((row) => row.id !== result.command.id)]);
+    } catch (mutationError) {
+      if (mounted.current) {
+        setCommandError(mutationError instanceof Error ? mutationError.message : String(mutationError));
+      }
+    } finally {
+      if (mounted.current) setCommandBusy(false);
+    }
+  }, [selected]);
+
+  const cancelDisable = useCallback(async (commandId: string) => {
+    setCommandBusy(true);
+    setCommandError(null);
+    try {
+      const result = await cancelTaskDisable(commandId);
+      if (!mounted.current) return;
+      setCommands((current) => current.map((row) => row.id === result.command.id ? result.command : row));
+    } catch (mutationError) {
+      if (mounted.current) {
+        setCommandError(mutationError instanceof Error ? mutationError.message : String(mutationError));
+      }
+    } finally {
+      if (mounted.current) setCommandBusy(false);
+    }
+  }, []);
 
   // "No executor has ever posted" and "an executor posted an empty inventory"
   // are different facts and must not share a message.
@@ -415,7 +569,16 @@ export function TasksView({ sidebarHidden, initialTaskKey }: TasksViewProps): JS
             </span>
           </div>
         ) : (
-          <TaskDetail item={selected} executor={selectedExecutor} />
+          <TaskDetail
+            item={selected}
+            executor={selectedExecutor}
+            commands={selectedCommands}
+            commandAvailable={commandAvailable}
+            commandBusy={commandBusy}
+            commandError={commandError}
+            onRequestDisable={() => { void requestDisable(); }}
+            onCancelDisable={(commandId) => { void cancelDisable(commandId); }}
+          />
         )}
       </div>
     </div>
