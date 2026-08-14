@@ -5,10 +5,15 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+
+// Issue 24f0316 — the ledger database lives under the durable root now.
+// Previews stay in the disposable cache root: they are regenerable copies.
+const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
 
 const DEFAULT_PORT_START = 19421;
 const DEFAULT_PORT_END = 19499;
-const DEFAULT_DB_PATH = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+const DEFAULT_DB_PATH = liveDbPath();
 const DEFAULT_PREVIEW_BASE_DIR = path.join(os.homedir(), ".cache", "mandible", "previews");
 const HEALTH_TIMEOUT_MS = 30_000;
 const DB_SNAPSHOT_PATTERN = /^mandible-\d{8}-\d{6}\.db$/;
@@ -407,7 +412,7 @@ Create or reuse an isolated Mandible integration preview instance.
 Options:
   --json           Print machine-readable result JSON.
   --branch NAME    Use an explicit integration branch name.
-  --db PATH        Source database to copy. Defaults to MANDIBLE_DB or ~/.cache/mandible/mandible.db.
+  --db PATH        Source database to copy. Defaults to MANDIBLE_DB or ~/.mandible/mandible.db.
   --port PORT      Use an explicit preview port.
   --force-new      Do not reuse the current integration preview; create a new default branch/instance.
   --no-build       Skip dependency checks and npm run build.

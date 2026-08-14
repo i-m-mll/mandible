@@ -159,6 +159,67 @@ describe("backup routes", () => {
     expect(dump).not.toContain("large operational telemetry");
   });
 
+  // Issue 24f0316 — backups are durable state, so they are written under the
+  // durable root rather than the disposable cache root. The read side stays
+  // aware of the old location: the existing backup directory holds gigabytes,
+  // and relocating it at startup would be a large unrequested copy.
+  it("defaults the backup destination to the durable root", async () => {
+    await setupBackupRoutes();
+    const { getDefaultMetadataBackupPath, getLegacyMetadataBackupPath } = await import(
+      "../src/ledger/backup.js"
+    );
+
+    expect(getDefaultMetadataBackupPath()).toBe(
+      path.join(tempHome, ".mandible", "backups", "mandible-metadata.sql"),
+    );
+    expect(getLegacyMetadataBackupPath()).toBe(
+      path.join(tempHome, ".cache", "mandible", "backups", "mandible-metadata.sql"),
+    );
+  });
+
+  it("reports a backup left at the pre-split location without moving it", async () => {
+    const { routes } = await setupBackupRoutes();
+    const { getLegacyMetadataBackupPath } = await import("../src/ledger/backup.js");
+    const legacyBackup = getLegacyMetadataBackupPath();
+    fs.mkdirSync(path.dirname(legacyBackup), { recursive: true });
+    fs.writeFileSync(legacyBackup, "-- legacy dump\n", "utf8");
+
+    const statusRes = createResponse();
+    await routes.handler("GET", "/api/backup/status")(
+      request("GET", "/api/backup/status"),
+      statusRes,
+    );
+
+    expect((statusRes.payload as { existing_backup_paths: string[] }).existing_backup_paths).toEqual(
+      [legacyBackup],
+    );
+    // Report-only: the bytes stay exactly where they were found.
+    expect(fs.readFileSync(legacyBackup, "utf8")).toBe("-- legacy dump\n");
+  });
+
+  it("writes new backups to the durable root and then reports both locations", async () => {
+    const { routes } = await setupBackupRoutes();
+    const { getDefaultMetadataBackupPath, getLegacyMetadataBackupPath } = await import(
+      "../src/ledger/backup.js"
+    );
+    const legacyBackup = getLegacyMetadataBackupPath();
+    fs.mkdirSync(path.dirname(legacyBackup), { recursive: true });
+    fs.writeFileSync(legacyBackup, "-- legacy dump\n", "utf8");
+
+    const runRes = createResponse();
+    await routes.handler("POST", "/api/backup/run")(request("POST", "/api/backup/run"), runRes);
+    expect(runRes.payload).toMatchObject({ ok: true, path: getDefaultMetadataBackupPath() });
+
+    const statusRes = createResponse();
+    await routes.handler("GET", "/api/backup/status")(
+      request("GET", "/api/backup/status"),
+      statusRes,
+    );
+    expect((statusRes.payload as { existing_backup_paths: string[] }).existing_backup_paths).toEqual(
+      [getDefaultMetadataBackupPath(), legacyBackup],
+    );
+  });
+
   it("uses a non-dotfiles default destination and accepts a settings override", async () => {
     const { routes } = await setupBackupRoutes();
 

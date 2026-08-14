@@ -36,7 +36,19 @@ function realSystemHomeDir() {
   return os.homedir();
 }
 
-const PRODUCTION_DB_PATH = path.join(realSystemHomeDir(), ".cache", "mandible", "mandible.db");
+// Issue 24f0316 — the ledger database moved from the disposable cache root to
+// the durable root. The copy-forward shim deliberately never deletes the old
+// files, so BOTH paths can hold live bytes and both must stay guarded; a guard
+// that only knew the new path would silently protect nothing on a machine that
+// has not restarted into the new layout yet.
+const PRODUCTION_DB_PATH = path.join(realSystemHomeDir(), ".mandible", "mandible.db");
+const LEGACY_PRODUCTION_DB_PATH = path.join(
+  realSystemHomeDir(),
+  ".cache",
+  "mandible",
+  "mandible.db",
+);
+const PRODUCTION_DB_PATHS = Object.freeze([PRODUCTION_DB_PATH, LEGACY_PRODUCTION_DB_PATH]);
 
 function isUnderTestRunner() {
   return (
@@ -74,13 +86,24 @@ function resolvesToProductionDbPath(dbPath, productionPath = PRODUCTION_DB_PATH)
   return sameFile(dbPath, productionPath);
 }
 
-function assertNotProductionDbUnderTest(dbPath, productionPath = PRODUCTION_DB_PATH) {
+function resolvesToAnyProductionDbPath(dbPath, productionPaths = PRODUCTION_DB_PATHS) {
+  for (const productionPath of productionPaths) {
+    if (resolvesToProductionDbPath(dbPath, productionPath)) return productionPath;
+  }
+  return null;
+}
+
+function assertNotProductionDbUnderTest(dbPath, productionPaths = PRODUCTION_DB_PATHS) {
   if (process.env.MANDIBLE_ALLOW_REAL_DB === "1") return;
   if (!isUnderTestRunner()) return;
-  if (resolvesToProductionDbPath(dbPath, productionPath)) {
+  const matched = resolvesToAnyProductionDbPath(
+    dbPath,
+    Array.isArray(productionPaths) ? productionPaths : [productionPaths],
+  );
+  if (matched) {
     throw new Error(
       "Refusing to open the production Mandible database under the test runner: " +
-        canonicalizePath(productionPath) +
+        canonicalizePath(matched) +
         ". Tests must open an explicit temp/fixture path, never the real DB. This guard " +
         "prevents a test or test-invoked tool from writing or migrating live data " +
         "(issue 07edc0d). To deliberately override, set MANDIBLE_ALLOW_REAL_DB=1.",
@@ -90,6 +113,9 @@ function assertNotProductionDbUnderTest(dbPath, productionPath = PRODUCTION_DB_P
 
 module.exports = {
   PRODUCTION_DB_PATH,
+  LEGACY_PRODUCTION_DB_PATH,
+  PRODUCTION_DB_PATHS,
   resolvesToProductionDbPath,
+  resolvesToAnyProductionDbPath,
   assertNotProductionDbUnderTest,
 };

@@ -2,7 +2,6 @@
 
 import Database from "better-sqlite3";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
 
@@ -11,6 +10,11 @@ import { createRequire } from "node:module";
 // cannot touch live data when invoked under the vitest test runner.
 const { assertNotProductionDbUnderTest } = createRequire(import.meta.url)(
   "../cli/production-db-guard.cjs",
+);
+// Issue 24f0316 — the ledger database and the audit evidence this script
+// emits are durable state, so both live under the durable root.
+const { liveDbPath, mandibleHomePath } = createRequire(import.meta.url)(
+  "../cli/mandible-paths.cjs",
 );
 
 const KINDS = new Set(["bug", "feature", "umbrella", "task", "question", "maintenance", "deferred", "unknown"]);
@@ -21,13 +25,11 @@ const ISSUE_CONTEXT_PATTERN = /\b(issue|issues|bug|bugs|plan|umbrella|blocking|b
 const NON_ISSUE_CONTEXT_PATTERN = /\b(commit|commits|sha|branch|branches|tag|version|diff|patch|tree|blob|object)\b/i;
 
 const args = parseArgs(process.argv.slice(2));
-const dbPath = args.db ?? process.env.MANDIBLE_DB ?? path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+const dbPath = args.db ?? process.env.MANDIBLE_DB ?? liveDbPath();
 assertNotProductionDbUnderTest(dbPath);
 const apply = Boolean(args.apply);
-const reportPath = args.report ?? path.join(
-  os.homedir(),
-  ".cache",
-  "mandible",
+const reportPath = args.report ?? mandibleHomePath(
+  "repairs",
   `ledger-issue-audit-${timestamp()}.json`,
 );
 

@@ -103,7 +103,11 @@ try {
   Database = require(require.resolve("better-sqlite3", { paths: searchPaths }));
 }
 
-const dbPath = process.env.MANDIBLE_DB || path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+// Issue 24f0316 — the ledger database lives under the durable root, but this
+// helper must never create one: an empty file there would be adopted by the
+// daemon's startup copy-forward as though it were the relocated ledger.
+const dbPath = process.env.MANDIBLE_DB
+  || require(path.join(root, "cli", "mandible-paths.cjs")).liveDbPath();
 // Issue 07edc0d — this helper opens the production DB directly (and writes to
 // the settings table), bypassing openDb()'s guard. Apply the shared refusal so
 // an instructions-CLI test invoked under vitest cannot mutate live settings.

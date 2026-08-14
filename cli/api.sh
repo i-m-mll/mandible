@@ -3,6 +3,56 @@
 : "${MANDIBLE_PORT:=19420}"
 : "${MANDIBLE_BASE:=http://127.0.0.1:${MANDIBLE_PORT}}"
 
+# Issue 24f0316 — Mandible splits its state by lifetime, and the CLI must agree
+# with the daemon on where each half lives:
+#
+#   ~/.mandible       durable: mandible.db (+ -wal/-shm), backups/, config/,
+#                     artifacts/. Overridable wholesale with MANDIBLE_HOME.
+#   ~/.cache/mandible disposable: the CLI mirror, previews, agent-rpc, logs,
+#                     daemon.pid, restart-availability.json.
+#
+# Mirrors getMandibleHome()/getDefaultDbPath() in src/platform-paths.ts and
+# src/db.ts. A shell script that keeps the old ~/.cache database literal would
+# silently read the pre-split file, which the copy-forward shim deliberately
+# leaves on disk.
+api_mandible_home() {
+  if [[ -n "${MANDIBLE_HOME:-}" ]]; then
+    printf '%s' "${MANDIBLE_HOME/#\~\//$HOME/}"
+    return
+  fi
+  printf '%s/.mandible' "$HOME"
+}
+
+api_default_db_path() {
+  printf '%s/mandible.db' "$(api_mandible_home)"
+}
+
+# The database a CLI command should actually read.
+#
+# Unlike the daemon, the CLI must never create one: an empty file at the durable
+# path would be adopted by the startup copy-forward as though it were the
+# relocated ledger, stranding the real one. Resolution is therefore
+# existence-based — durable first, then the pre-split location — and only names
+# the durable path when neither exists, which is a fresh install.
+api_live_db_path() {
+  if [[ -n "${MANDIBLE_DB:-}" ]]; then
+    printf '%s' "$MANDIBLE_DB"
+    return
+  fi
+  local durable legacy
+  durable="$(api_default_db_path)"
+  if [[ -f "$durable" ]]; then
+    printf '%s' "$durable"
+    return
+  fi
+  legacy="${HOME}/.cache/mandible/mandible.db"
+  if [[ -f "$legacy" ]]; then
+    printf '%s' "$legacy"
+    return
+  fi
+  printf '%s' "$durable"
+}
+
 # Command-scoped custody for every CLI temporary file. The manifest also tracks
 # spool-local staging paths, so EXIT/INT/TERM cleanup removes bearer/config or
 # capability-token material even when a command is interrupted mid-exchange.
@@ -86,15 +136,17 @@ api_is_file_rpc() {
 # Issue 708dc4c — resolve the client-auth config dir, mirroring the daemon's
 # getMandibleConfigDir (src/platform-paths.ts). Used only to locate the operator
 # bootstrap-token file; the MANDIBLE_CONFIG_DIR override is honored first.
+#
+# Issue 24f0316 — config folded into the durable root, so this is now the same
+# path on every platform. That also retires the Mandible/mandible casing split
+# between this function and its TypeScript counterpart, which only ever went
+# unnoticed because macOS filesystems are case-insensitive by default.
 api_client_auth_config_dir() {
   if [[ -n "${MANDIBLE_CONFIG_DIR:-}" ]]; then
     printf '%s' "$MANDIBLE_CONFIG_DIR"
     return
   fi
-  case "$(uname -s)" in
-    Darwin) printf '%s/Library/Application Support/Mandible/config' "$HOME" ;;
-    *) printf '%s' "${XDG_CONFIG_HOME:-$HOME/.config}/mandible" ;;
-  esac
+  printf '%s/config' "$(api_mandible_home)"
 }
 
 # Managed-session marker guard for the durable operator keychain credential: any

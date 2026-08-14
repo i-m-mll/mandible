@@ -123,7 +123,7 @@ Collects continuations (handoff notes from ended sessions), auth results (merge 
 Mandible's runtime is split into two zones:
 
 - **Zone 1** (immutable): the installed binary or repo checkout — never modified at runtime.
-- **Zone 2** (mutable): a separate runtime directory (`~/Library/Application Support/Mandible/runtime/` on macOS, `~/.local/share/mandible/runtime/` on Linux) that can receive patches from agents.
+- **Zone 2** (mutable): a separate runtime directory (`~/.mandible/runtime/`) that can receive patches from agents.
 
 Zone 2 patches are tracked in the database with fingerprint, commit hash, diff summary, source (agent/known_fix/manual/upstream_update), and session linkage. Patches can be applied, reverted, and submitted upstream.
 
@@ -166,7 +166,19 @@ node dist/index.js
 open http://localhost:19420
 ```
 
-The daemon creates a SQLite database at `~/.cache/mandible/mandible.db` on first run and applies all schema migrations automatically.
+The daemon creates a SQLite database at `~/.mandible/mandible.db` on first run and applies all schema migrations automatically.
+
+Mandible splits its on-disk state by lifetime:
+
+| Root | Contract | Contents |
+|------|----------|----------|
+| `~/.mandible` | durable — losing it is data loss | `mandible.db` (+ `-wal`/`-shm`), `backups/`, `config/`, `artifacts/`, `runtime/`, `repairs/` |
+| `~/.cache/mandible` | disposable — safe to delete | previews, `agent-rpc/`, the cowork CLI mirror, `claude-hooks/`, logs, `daemon.pid`, `restart-availability.json` |
+
+`MANDIBLE_HOME` relocates the durable root wholesale. A database left at the
+pre-split location (`~/.cache/mandible/mandible.db`) is copied forward to the
+durable root, with its `-wal`/`-shm` sidecars, on the first daemon start after
+upgrading; the originals are retained and a receipt is written beside them.
 
 ### Operator setup and the signing credential
 
@@ -232,7 +244,7 @@ Channel-connected sessions get tool-mediated access to inbox, issues, work units
 +--------------------------------------------------+
 
 Zone 2 Runtime (mutable, outside repo):
-  ~/Library/Application Support/Mandible/runtime/
+  ~/.mandible/runtime/
     dist/index.js   <- patched daemon entry point
     patches/        <- tracked patch metadata
 ```
@@ -265,7 +277,8 @@ Mandible interacts with agents at four integration tiers:
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `MANDIBLE_PORT` | `19420` | Daemon HTTP/SSE port |
-| `MANDIBLE_DB` | `~/.cache/mandible/mandible.db` | SQLite database path |
+| `MANDIBLE_DB` | `~/.mandible/mandible.db` | SQLite database path |
+| `MANDIBLE_HOME` | `~/.mandible` | Durable-state root (database, backups, config, artifacts) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 
 ### Dashboard Settings

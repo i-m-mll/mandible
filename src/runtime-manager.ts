@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -11,6 +10,7 @@ import {
   buildGitReadTransportPlan,
   readGitReadTransportPolicy,
 } from "./git-read-transport.js";
+import { getMandibleHomePath } from "./platform-paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -56,23 +56,16 @@ const REPO_URL = "git@github.com:i-m-mll/mandible.git";
 const RUNTIME_BRANCH = "main";
 
 /**
- * Compute the platform-specific Zone 2 runtime path.
+ * The Zone 2 runtime path: `~/.mandible/runtime/`.
  *
- * - macOS: ~/Library/Application Support/Mandible/runtime/
- * - Linux: ~/.local/share/mandible/runtime/
- * - Windows: %APPDATA%/Mandible/runtime/
+ * Agent-authored patches land here, so this is durable state and belongs under
+ * the durable root with the rest of it (issue 24f0316). It used to follow
+ * per-platform convention — Application Support on macOS, `~/.local/share` on
+ * Linux, `%APPDATA%` on Windows — which was the last thing keeping Mandible's
+ * durable state spread across separate roots.
  */
 function computeZone2Path(): string {
-  const home = os.homedir();
-  switch (process.platform) {
-    case "darwin":
-      return path.join(home, "Library", "Application Support", "Mandible", "runtime");
-    case "win32":
-      return path.join(process.env.APPDATA ?? path.join(home, "AppData", "Roaming"), "Mandible", "runtime");
-    default:
-      // Linux and other Unix
-      return path.join(home, ".local", "share", "mandible", "runtime");
-  }
+  return getMandibleHomePath("runtime");
 }
 
 function currentEntryDir(): string {

@@ -15,8 +15,10 @@ import Database from "better-sqlite3";
 const { assertNotProductionDbUnderTest } = createRequire(import.meta.url)(
   "../cli/production-db-guard.cjs",
 );
+// Issue 24f0316 — the ledger database lives under the durable root.
+const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
 
-const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+const DEFAULT_DB = liveDbPath();
 const DEFAULT_REPORT_NAME = "artifact-ref-repair-report.json";
 const HASH_RE = "[a-f0-9]{7,64}";
 const OLD_REF_PATTERN = new RegExp(
