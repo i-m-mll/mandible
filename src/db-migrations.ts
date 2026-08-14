@@ -3993,8 +3993,6 @@ export const MIGRATIONS: readonly Migration[] = [
     // Issue c94c6d0 — Inbox acknowledgement dismisses a projected occurrence
     // without deleting or rewriting the durable delivery record.
     statements: [
-      `ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_by TEXT`,
-      `ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_at INTEGER`,
       `CREATE INDEX IF NOT EXISTS idx_managed_task_occurrences_inbox
         ON managed_task_occurrences(acknowledged_at, created_at DESC, id DESC)`,
     ],
@@ -4110,6 +4108,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 125) {
         ensureAskCreateGlobalCapability(db);
+      }
+      if (migration.version === 131) {
+        ensureManagedReminderOccurrenceAcknowledgementColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -8124,6 +8125,22 @@ function ensureAuthRequestCanonicalChangeMessageColumn(db: Db): void {
   }
 }
 
+// Issue c94c6d0 (migration 131): schema-rewind fixtures may already have the
+// acknowledgement columns from the current baseline while recording v130.
+// Guard each additive column so replay converges instead of failing with a
+// duplicate-column error; the migration statement then creates the dependent
+// index after both columns are known to exist.
+function ensureManagedReminderOccurrenceAcknowledgementColumns(db: Db): void {
+  if (!tableExists(db, "managed_task_occurrences")) return;
+  const columns = tableColumnNames(db, "managed_task_occurrences");
+  if (!columns.has("acknowledged_by")) {
+    db.exec("ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_by TEXT");
+  }
+  if (!columns.has("acknowledged_at")) {
+    db.exec("ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_at INTEGER");
+  }
+}
+
 function ensureAuthRequestMergeFinalizerColumns(db: Db): void {
   if (!tableExists(db, "auth_requests")) return;
   const columns = tableColumnNames(db, "auth_requests");
@@ -9312,6 +9329,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "ledger_projects",
     "ledger_relationship_edges",
     "message_params",
+    "managed_task_occurrences",
     "project_artifact_associations",
     "session_instruction_artifacts",
     "session_projects",
