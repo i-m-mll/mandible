@@ -30,7 +30,7 @@ SINCE=""
 LIMIT=20
 TITLE_ONLY=0
 
-MANDIBLE_DB="${MANDIBLE_DB:-${HOME}/.cache/mandible/mandible.db}"
+MANDIBLE_DB="$(api_live_db_path)"
 
 usage() {
   cat <<'EOF'

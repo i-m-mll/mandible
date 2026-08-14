@@ -16,9 +16,14 @@ import Database from "better-sqlite3";
 const { assertNotProductionDbUnderTest } = createRequire(import.meta.url)(
   "../cli/production-db-guard.cjs",
 );
+// Issue 24f0316 — the ledger database and the repair/audit evidence this
+// script emits are both durable state, so both live under the durable root.
+const { liveDbPath, mandibleHomePath } = createRequire(import.meta.url)(
+  "../cli/mandible-paths.cjs",
+);
 
-const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
-const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), ".cache", "mandible", "artifact-repo-identity-audit");
+const DEFAULT_DB = liveDbPath();
+const DEFAULT_OUTPUT_ROOT = mandibleHomePath("repairs", "artifact-repo-identity-audit");
 const GIT_BLOB_MAX_BUFFER = 64 * 1024 * 1024;
 const REPO_URI_PATTERN = /^repo:\/\/([^/@]+)(?:@([^/]+))?(?:\/(.*))?$/;
 const REPO_ID_KEYS = new Set(["repo_id", "home_repo_id"]);

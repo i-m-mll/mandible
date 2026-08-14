@@ -8,6 +8,7 @@ import {
   migrate,
 } from "./db-migrations.js";
 import type { Migration } from "./db-migrations.js";
+import { getMandibleHome, getUserHome } from "./platform-paths.js";
 
 export type Db = Database.Database;
 export { assertMigrationSequence, CURRENT_SCHEMA_VERSION, migrate };
@@ -24,19 +25,37 @@ export interface OpenDbOptions {
   busyTimeoutMs?: number;
 }
 
-const DEFAULT_CACHE_DIR = path.join(os.homedir(), ".cache", "mandible");
-const DEFAULT_DB_PATH = path.join(DEFAULT_CACHE_DIR, "mandible.db");
+/** SQLite writes these next to the database file; they travel with it. */
+export const DB_SIDECAR_SUFFIXES = Object.freeze(["-wal", "-shm"] as const);
 
-export function getDbPath(): string {
-  return process.env.MANDIBLE_DB ?? DEFAULT_DB_PATH;
+/**
+ * The ledger database lives under the durable root (issue 24f0316), not under
+ * `~/.cache`. `getMandibleHome()` owns the root and honors `MANDIBLE_HOME`, so
+ * this is resolved per call rather than frozen at module load.
+ */
+export function getDefaultDbPath(): string {
+  return path.join(getMandibleHome(), "mandible.db");
 }
 
-// The guard anchors the production path on the REAL system home
+/**
+ * Where the ledger database lived before the durable/cache split: directly
+ * under the disposable cache root. Still read at startup so an existing install
+ * is copied forward exactly once; never written to after that.
+ */
+export function getLegacyCacheDbPath(home: string = getUserHome()): string {
+  return path.join(home, ".cache", "mandible", "mandible.db");
+}
+
+export function getDbPath(): string {
+  return process.env.MANDIBLE_DB ?? getDefaultDbPath();
+}
+
+// The guard anchors the production paths on the REAL system home
 // (os.userInfo().homedir, read from the password database) rather than
 // os.homedir(), which honors a $HOME override. Tests routinely isolate by
 // pointing HOME (and MANDIBLE_DB) at a throwaway temp home; that temp DB is not
-// production and must be allowed, while the real user's ~/.cache database stays
-// guarded regardless of $HOME. Falls back to os.homedir() only if userInfo is
+// production and must be allowed, while the real user's database stays guarded
+// regardless of $HOME. Falls back to os.homedir() only if userInfo is
 // unavailable.
 function realSystemHomeDir(): string {
   try {
@@ -50,12 +69,32 @@ function realSystemHomeDir(): string {
   return os.homedir();
 }
 
+/** The durable production database path (issue 24f0316). */
 export const PRODUCTION_DB_PATH = path.join(
+  realSystemHomeDir(),
+  ".mandible",
+  "mandible.db",
+);
+
+/**
+ * The pre-split production database path. It stays guarded for as long as the
+ * file can exist: the copy-forward shim deliberately never deletes it, so a
+ * test that resolved the old literal would still be pointing at live bytes. A
+ * guard that only knew the new path would silently protect nothing on any
+ * machine that has not restarted into the new layout yet.
+ */
+export const LEGACY_PRODUCTION_DB_PATH = path.join(
   realSystemHomeDir(),
   ".cache",
   "mandible",
   "mandible.db",
 );
+
+/** Every path that must never be opened under the test runner. */
+export const PRODUCTION_DB_PATHS: readonly string[] = Object.freeze([
+  PRODUCTION_DB_PATH,
+  LEGACY_PRODUCTION_DB_PATH,
+]);
 
 // Issue 07edc0d — structural isolation guard. On 2026-07-23 an unmerged
 // feature branch's schema migration executed against the live production
@@ -84,10 +123,16 @@ function isUnderTestRunner(): boolean {
 // compare. Falls back to a resolved (non-real) path when the file does not
 // exist yet.
 function canonicalizePath(target: string): string {
+  const expanded =
+    target === "~"
+      ? realSystemHomeDir()
+      : target.startsWith("~/") || target.startsWith("~\\")
+        ? path.join(realSystemHomeDir(), target.slice(2))
+        : target;
   try {
-    return fs.realpathSync.native(target);
+    return fs.realpathSync.native(expanded);
   } catch {
-    return path.resolve(target);
+    return path.resolve(expanded);
   }
 }
 
@@ -96,8 +141,8 @@ function canonicalizePath(target: string): string {
 // strings differ. Returns false when either side is absent.
 function sameFile(a: string, b: string): boolean {
   try {
-    const sa = fs.statSync(a);
-    const sb = fs.statSync(b);
+    const sa = fs.statSync(canonicalizePath(a));
+    const sb = fs.statSync(canonicalizePath(b));
     return sa.dev === sb.dev && sa.ino === sb.ino;
   } catch {
     return false;
@@ -117,12 +162,27 @@ export function resolvesToProductionDbPath(
   return sameFile(dbPath, productionPath);
 }
 
+/**
+ * The production path `dbPath` resolves to, or null when it resolves to none of
+ * them. Both the durable path and the retained pre-split path count.
+ */
+export function resolvesToAnyProductionDbPath(
+  dbPath: string,
+  productionPaths: readonly string[] = PRODUCTION_DB_PATHS,
+): string | null {
+  for (const productionPath of productionPaths) {
+    if (resolvesToProductionDbPath(dbPath, productionPath)) return productionPath;
+  }
+  return null;
+}
+
 export function assertNotProductionDbUnderTest(dbPath: string): void {
   if (process.env.MANDIBLE_ALLOW_REAL_DB === "1") return;
   if (!isUnderTestRunner()) return;
-  if (resolvesToProductionDbPath(dbPath)) {
+  const matched = resolvesToAnyProductionDbPath(dbPath);
+  if (matched) {
     throw new Error(
-      `Refusing to open the production Mandible database under the test runner: ${canonicalizePath(PRODUCTION_DB_PATH)}. ` +
+      `Refusing to open the production Mandible database under the test runner: ${canonicalizePath(matched)}. ` +
         `Tests must open an explicit temp/fixture path or an in-memory database, never the real DB. ` +
         `This guard prevents a test or test-invoked tool from executing schema migrations or writes ` +
         `against live data (issue 07edc0d). To deliberately override, set MANDIBLE_ALLOW_REAL_DB=1.`,
@@ -130,31 +190,295 @@ export function assertNotProductionDbUnderTest(dbPath: string): void {
   }
 }
 
+// --- Startup copy-forward: ~/.cache/mandible → ~/.mandible (issue 24f0316) ---
+
+/** Written beside the destination while a copy is in flight. */
+const COPY_FORWARD_MARKER_SUFFIX = ".copy-forward-in-progress";
+/** Written beside the source once the copy is verified. The source is kept. */
+const COPY_FORWARD_RECEIPT_SUFFIX = ".moved-to-mandible-home";
+/** Free space demanded on top of the bytes being copied. */
+const COPY_FORWARD_HEADROOM_MARGIN_BYTES = 512 * 1024 * 1024;
+
+export type CopyForwardAction =
+  /** A database already exists at the durable path; nothing to do. */
+  | "target-present"
+  /** No legacy database to copy; this is a fresh install. */
+  | "no-legacy"
+  /** The legacy database was copied and verified at the durable path. */
+  | "copied"
+  /** The copy could not be completed; the legacy path stays authoritative. */
+  | "kept-legacy";
+
+export interface CopyForwardOutcome {
+  /** The path the caller should actually open. */
+  dbPath: string;
+  action: CopyForwardAction;
+  reason?: string;
+  /** Files written under the durable root, in copy order. */
+  copied?: string[];
+}
+
+export interface CopyForwardOptions {
+  /** Defaults to stderr. Every non-trivial outcome logs exactly one line. */
+  log?: (message: string) => void;
+  headroomMarginBytes?: number;
+}
+
+function removeDbFiles(dbPath: string): void {
+  for (const suffix of ["", ...DB_SIDECAR_SUFFIXES]) {
+    fs.rmSync(dbPath + suffix, { force: true });
+  }
+}
+
+function fileSizeOrZero(target: string): number {
+  try {
+    return fs.statSync(target).size;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Free bytes on the filesystem that would hold `dir`, or null when the platform
+ * cannot answer. `dir` need not exist yet — the nearest existing ancestor is on
+ * the same filesystem for every case that matters here.
+ */
+function availableBytes(dir: string): number | null {
+  const statfsSync = (fs as unknown as {
+    statfsSync?: (target: string) => { bsize: number; bavail: number };
+  }).statfsSync;
+  if (typeof statfsSync !== "function") return null;
+  try {
+    let probe = path.resolve(dir);
+    while (!fs.existsSync(probe)) {
+      const parent = path.dirname(probe);
+      if (parent === probe) return null;
+      probe = parent;
+    }
+    const stats = statfsSync(probe);
+    if (!stats || !Number.isFinite(stats.bsize) || !Number.isFinite(stats.bavail)) return null;
+    return stats.bsize * stats.bavail;
+  } catch {
+    return null;
+  }
+}
+
+/** Open the copy the way the daemon will and read its schema catalog. */
+function assertDbOpenable(dbPath: string): number {
+  const probe = new Database(dbPath, { fileMustExist: true });
+  try {
+    const row = probe.prepare("SELECT count(*) AS n FROM sqlite_master").get() as { n: number };
+    return row.n;
+  } finally {
+    probe.close();
+  }
+}
+
+/**
+ * One-time relocation of the ledger database from the disposable cache root to
+ * the durable root (issue 24f0316), run at daemon startup before the database
+ * is opened.
+ *
+ * Design constraints, in the order they bind:
+ *
+ *  1. **Never destructive.** The legacy `.db`/`-wal`/`-shm` files are left
+ *     exactly as found, whatever happens. A verified copy leaves a receipt file
+ *     beside them naming the new location; reclaiming the ~7.5 GB is a separate,
+ *     explicitly authorized act.
+ *  2. **Never half-done.** A marker file is written before the first byte and
+ *     removed only after verification. If the process dies mid-copy, the next
+ *     startup sees the marker, discards the unverified destination files, and
+ *     starts over — rather than adopting a truncated database as authoritative.
+ *  3. **Fails to the old path, not to an empty one.** Insufficient headroom, a
+ *     copy error, a size mismatch, or a destination SQLite refuses to open all
+ *     produce the same result: partial output is removed, one loud line is
+ *     logged, and the caller keeps using the legacy database. Starting fresh on
+ *     a machine that has a 7.5 GB ledger would look exactly like data loss.
+ *  4. **Sidecars travel with the database.** `-wal` holds committed frames that
+ *     are not yet in the main file, so copying `.db` alone can silently drop the
+ *     most recent transactions.
+ *
+ * The daemon is by construction not running when this executes (it runs during
+ * its own startup, after the previous process exited), so the legacy files are
+ * quiescent.
+ */
+export function copyForwardLegacyDb(
+  targetPath: string,
+  legacyPath: string,
+  options: CopyForwardOptions = {},
+): CopyForwardOutcome {
+  const log = options.log ?? ((message: string) => console.error(message));
+  const marker = targetPath + COPY_FORWARD_MARKER_SUFFIX;
+
+  if (fs.existsSync(marker)) {
+    log(
+      `[mandible] discarding an unverified partial database copy at ${targetPath}: ` +
+        `a previous copy-forward attempt did not finish (issue 24f0316).`,
+    );
+    removeDbFiles(targetPath);
+    fs.rmSync(marker, { force: true });
+  }
+
+  if (fs.existsSync(targetPath)) {
+    if (fs.existsSync(legacyPath)) {
+      let invalidReason: string | null = null;
+      const targetSize = fileSizeOrZero(targetPath);
+      if (targetSize === 0) {
+        invalidReason = "the durable database is zero bytes";
+      } else {
+        try {
+          if (assertDbOpenable(targetPath) === 0) {
+            invalidReason = "the durable database has no SQLite schema";
+          }
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          invalidReason = `the durable database is not openable (${detail})`;
+        }
+      }
+      if (invalidReason) {
+        const legacySize = fileSizeOrZero(legacyPath);
+        log(
+          `[mandible] REFUSING to adopt ${targetPath}: ${invalidReason}, while the ` +
+            `legacy database at ${legacyPath} is ${legacySize} bytes. Continuing to use ` +
+            `the legacy database; remove or repair the invalid durable file before ` +
+            `restarting to complete the move (issue 24f0316).`,
+        );
+        return {
+          dbPath: legacyPath,
+          action: "kept-legacy",
+          reason: `invalid-target: ${invalidReason}`,
+        };
+      }
+    }
+    return { dbPath: targetPath, action: "target-present" };
+  }
+  if (!fs.existsSync(legacyPath)) {
+    return { dbPath: targetPath, action: "no-legacy" };
+  }
+
+  // Reading the real production database is exactly what the isolation guard
+  // exists to stop, and a 7.5 GB copy is the worst possible way to discover a
+  // test resolved the live path.
+  assertNotProductionDbUnderTest(legacyPath);
+
+  const sourceFiles = ["", ...DB_SIDECAR_SUFFIXES]
+    .map((suffix) => ({ suffix, source: legacyPath + suffix }))
+    .filter((entry) => fs.existsSync(entry.source));
+  const requiredBytes =
+    sourceFiles.reduce((total, entry) => total + fileSizeOrZero(entry.source), 0) +
+    (options.headroomMarginBytes ?? COPY_FORWARD_HEADROOM_MARGIN_BYTES);
+
+  const free = availableBytes(path.dirname(targetPath));
+  if (free !== null && free < requiredBytes) {
+    log(
+      `[mandible] NOT relocating the ledger database to ${targetPath}: needs ` +
+        `${requiredBytes} bytes free, filesystem has ${free}. Continuing to use ` +
+        `${legacyPath}. Free space and restart to complete the move (issue 24f0316).`,
+    );
+    return {
+      dbPath: legacyPath,
+      action: "kept-legacy",
+      reason: `insufficient-space: need ${requiredBytes}, have ${free}`,
+    };
+  }
+
+  ensureDir(path.dirname(targetPath));
+  fs.writeFileSync(
+    marker,
+    `copy-forward started ${new Date().toISOString()} from ${legacyPath} (issue 24f0316)\n`,
+    "utf8",
+  );
+
+  const copied: string[] = [];
+  try {
+    for (const entry of sourceFiles) {
+      const destination = targetPath + entry.suffix;
+      fs.copyFileSync(entry.source, destination);
+      copied.push(destination);
+      const sourceSize = fileSizeOrZero(entry.source);
+      const destinationSize = fileSizeOrZero(destination);
+      if (destinationSize !== sourceSize) {
+        throw new Error(
+          `size mismatch for ${destination}: copied ${destinationSize} of ${sourceSize} bytes`,
+        );
+      }
+    }
+    assertDbOpenable(targetPath);
+  } catch (error) {
+    removeDbFiles(targetPath);
+    fs.rmSync(marker, { force: true });
+    const detail = error instanceof Error ? error.message : String(error);
+    log(
+      `[mandible] failed to relocate the ledger database to ${targetPath}: ${detail}. ` +
+        `Partial copies removed; continuing to use ${legacyPath} (issue 24f0316).`,
+    );
+    return { dbPath: legacyPath, action: "kept-legacy", reason: `copy-failed: ${detail}` };
+  }
+
+  fs.rmSync(marker, { force: true });
+
+  // The source is retained on purpose. The receipt is the only thing written
+  // back to the cache root, and it exists so a human who finds a 7.5 GB file
+  // there knows it is a superseded copy rather than the live ledger.
+  try {
+    fs.writeFileSync(
+      legacyPath + COPY_FORWARD_RECEIPT_SUFFIX,
+      `This database was copied to ${targetPath} on ${new Date().toISOString()}.\n` +
+        `Mandible now reads and writes the copy under the durable root (issue 24f0316).\n` +
+        `These files are retained deliberately and are safe to delete once the new\n` +
+        `location has been confirmed good.\n`,
+      "utf8",
+    );
+  } catch {
+    // A receipt we cannot write is not a reason to reject a verified copy.
+  }
+
+  log(
+    `[mandible] relocated the ledger database from ${legacyPath} to ${targetPath} ` +
+      `(${copied.length} file(s); originals retained, see ${legacyPath}${COPY_FORWARD_RECEIPT_SUFFIX}).`,
+  );
+  return { dbPath: targetPath, action: "copied", copied };
+}
+
 export function openDb(dbPath: string = getDbPath(), options: OpenDbOptions = {}): Db {
   assertNotProductionDbUnderTest(dbPath);
-  // Bug: 727a44b — one-time migration from control-plane to mandible cache dir.
-  // If the mandible DB doesn't exist yet but the old control-plane DB does, copy it.
-  const shouldAttemptLegacyCopy = !process.env.MANDIBLE_DB && dbPath === DEFAULT_DB_PATH;
-  if (!fs.existsSync(dbPath) && shouldAttemptLegacyCopy) {
-    const oldPath = path.join(os.homedir(), ".cache", "control-plane", "control-plane.db");
-    if (fs.existsSync(oldPath)) {
-      ensureDir(path.dirname(dbPath));
-      try {
-        fs.copyFileSync(oldPath, dbPath);
-        // Also copy WAL/SHM if present (preserves in-progress transactions)
-        for (const ext of ["-wal", "-shm"]) {
-          if (fs.existsSync(oldPath + ext)) {
-            fs.copyFileSync(oldPath + ext, dbPath + ext);
+
+  // Legacy relocation runs only for the unconfigured default path. An explicit
+  // MANDIBLE_DB (or any caller-supplied path) means the caller already decided
+  // where the database lives, and moving bytes underneath that decision would
+  // be a surprise.
+  let effectivePath = dbPath;
+  if (!process.env.MANDIBLE_DB && dbPath === getDefaultDbPath()) {
+    effectivePath = copyForwardLegacyDb(dbPath, getLegacyCacheDbPath()).dbPath;
+    if (effectivePath !== dbPath) {
+      assertNotProductionDbUnderTest(effectivePath);
+    }
+
+    // Bug: 727a44b — one-time migration from the control-plane cache dir. Only
+    // reachable when neither the durable nor the pre-split location has a
+    // database, i.e. an install that predates both.
+    if (!fs.existsSync(effectivePath)) {
+      const oldPath = path.join(getUserHome(), ".cache", "control-plane", "control-plane.db");
+      if (fs.existsSync(oldPath)) {
+        assertNotProductionDbUnderTest(oldPath);
+        ensureDir(path.dirname(effectivePath));
+        try {
+          fs.copyFileSync(oldPath, effectivePath);
+          // Also copy WAL/SHM if present (preserves in-progress transactions)
+          for (const ext of DB_SIDECAR_SUFFIXES) {
+            if (fs.existsSync(oldPath + ext)) {
+              fs.copyFileSync(oldPath + ext, effectivePath + ext);
+            }
           }
+        } catch {
+          // Non-fatal: if copy fails, start fresh
         }
-      } catch {
-        // Non-fatal: if copy fails, start fresh
       }
     }
   }
 
-  ensureDir(path.dirname(dbPath));
-  const db = new Database(dbPath);
+  ensureDir(path.dirname(effectivePath));
+  const db = new Database(effectivePath);
   db.pragma("journal_mode = WAL");
   db.pragma("foreign_keys = ON");
   db.pragma(`busy_timeout = ${options.busyTimeoutMs ?? 5000}`);

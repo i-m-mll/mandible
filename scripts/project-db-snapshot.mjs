@@ -4,11 +4,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import Database from "better-sqlite3";
+
+// Issue 24f0316 — the ledger database lives under the durable root.
+const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
-const DEFAULT_SOURCE = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+const DEFAULT_SOURCE = liveDbPath();
 const PROJECTED_TABLES = new Set(["daemon_log", "conversations", "conversation_blocks"]);
 const LOG_ALL_WINDOW_MS = DAY_MS;
 const LOG_SEVERE_WINDOW_MS = 7 * DAY_MS;
@@ -505,7 +509,7 @@ function printUsage() {
 Create a deterministic compact Mandible database projection.
 
 Options:
-  --source PATH       Source database. Defaults to ~/.cache/mandible/mandible.db.
+  --source PATH       Source database. Defaults to ~/.mandible/mandible.db.
   --output PATH       Final projected database path (required).
   --manifest PATH     Projection manifest path. Defaults to OUTPUT.manifest.json.
   --cutoff-ms VALUE   Explicit projection cutoff. Defaults to the source's newest log/conversation time.

@@ -43,9 +43,11 @@ function runHookAfterMerge(changedPath: string, failGitDiff = false): HookResult
   copyCliFile("post-merge-build-dist.sh", cliDir);
   copyCliFile("instructions.sh", cliDir);
   copyCliFile("instructions-contract.json", cliDir);
-  // instructions.sh's settings helper requires the shared production-DB guard
-  // from the same cli/ directory (issue 07edc0d); ship it into the temp repo.
+  // instructions.sh's settings helper requires two shared modules from the same
+  // cli/ directory: the production-DB guard (issue 07edc0d) and the durable-root
+  // path resolver (issue 24f0316). Ship both into the temp repo.
   copyCliFile("production-db-guard.cjs", cliDir);
+  copyCliFile("mandible-paths.cjs", cliDir);
 
   runGit(repo, ["init", "-b", "main"]);
   runGit(repo, ["config", "user.name", "Mandible Test"]);

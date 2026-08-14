@@ -1,7 +1,7 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { Db } from "../db.js";
+import { getMandibleHomePath, getUserHome } from "../platform-paths.js";
 
 export const LEDGER_BACKUP_TABLES = [
   "ledger_projects",
@@ -201,8 +201,39 @@ type TableColumn = {
   name: string;
 };
 
+/**
+ * Backups are durable state, so they belong under the durable root rather than
+ * the disposable cache root (issue 24f0316). The write side only ever targets
+ * this path (or an explicit configured destination); the read side stays aware
+ * of the old location — see `findExistingMetadataBackupPaths`.
+ */
 export function getDefaultMetadataBackupPath(): string {
-  return path.join(os.homedir(), ".cache", "mandible", "backups", "mandible-metadata.sql");
+  return getMandibleHomePath("backups", "mandible-metadata.sql");
+}
+
+/**
+ * Where backups were written before the durable/cache split. Existing backups
+ * are deliberately left where they are: the directory holds gigabytes, and
+ * silently relocating it at startup would be a large unrequested copy. This
+ * exists so status output can report them instead of implying they vanished.
+ */
+export function getLegacyMetadataBackupPath(): string {
+  return path.join(getUserHome(), ".cache", "mandible", "backups", "mandible-metadata.sql");
+}
+
+/**
+ * Every location a previously written metadata backup may still be sitting at,
+ * newest layout first. Report-only: nothing here moves or deletes a file.
+ */
+export function findExistingMetadataBackupPaths(): string[] {
+  const candidates = [getDefaultMetadataBackupPath(), getLegacyMetadataBackupPath()];
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const resolved = path.resolve(candidate);
+    if (seen.has(resolved)) return false;
+    seen.add(resolved);
+    return fs.existsSync(resolved);
+  });
 }
 
 export function resolveMetadataBackupPath(destination?: string | null): string {

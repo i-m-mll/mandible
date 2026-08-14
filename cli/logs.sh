@@ -166,6 +166,10 @@ if [[ $# -eq 0 || "${1:-}" == "-h" || "${1:-}" == "--help" || "${1:-}" == "help"
   exit 0
 fi
 
+# Issue 24f0316 — resolve the live ledger database in bash (the embedded
+# python cannot call api_live_db_path) and hand it down through the env.
+export MANDIBLE_DB="$(api_live_db_path)"
+
 exec python3 - "$@" <<'PY'
 from __future__ import annotations
 
@@ -182,7 +186,7 @@ from typing import Any
 
 
 HOME = pathlib.Path.home()
-MANDIBLE_DB = pathlib.Path(os.environ.get("MANDIBLE_DB", str(HOME / ".cache" / "mandible" / "mandible.db")))
+MANDIBLE_DB = pathlib.Path(os.environ["MANDIBLE_DB"])
 
 
 def parse_since(value: str | None) -> float | None:

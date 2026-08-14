@@ -1,5 +1,6 @@
 import { getDb } from "../db.js";
 import {
+  findExistingMetadataBackupPaths,
   getDefaultMetadataBackupPath,
   writeMetadataBackup,
 } from "../ledger/backup.js";
@@ -16,6 +17,12 @@ export type BackupStatus = {
   last_run_at: number | null;
   last_size_bytes: number | null;
   last_error: string | null;
+  /**
+   * Backups found on disk, newest layout first (issue 24f0316). Backups written
+   * before the durable/cache split are still under `~/.cache/mandible/backups`
+   * and are reported, not moved.
+   */
+  existing_backup_paths: string[];
 };
 
 function getBackupStatus(): BackupStatus {
@@ -31,7 +38,15 @@ function getBackupStatus(): BackupStatus {
 
   const last_error = getStrSetting("backup.last_error", "") || null;
 
-  return { enabled, interval_hours, destination, last_run_at, last_size_bytes, last_error };
+  return {
+    enabled,
+    interval_hours,
+    destination,
+    last_run_at,
+    last_size_bytes,
+    last_error,
+    existing_backup_paths: findExistingMetadataBackupPaths(),
+  };
 }
 
 function writeSetting(key: string, value: string): void {

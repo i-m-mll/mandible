@@ -728,40 +728,57 @@ fn client_auth_bootstrap_path() -> PathBuf {
         .join("bootstrap-token")
 }
 
+/// Issue 24f0316 — Mandible config lives under the durable root `~/.mandible`
+/// on every platform now, so the desktop shell, the daemon
+/// (`src/platform-paths.ts`) and the CLI (`cli/api.sh`) all derive one path.
+/// The per-platform split this replaced also carried a `Mandible`/`mandible`
+/// casing mismatch that only went unnoticed because macOS filesystems are
+/// case-insensitive by default.
 fn mandible_config_dir() -> PathBuf {
     if let Ok(path) = std::env::var("MANDIBLE_CONFIG_DIR") {
         if !path.trim().is_empty() {
-            return PathBuf::from(path);
+            return resolve_user_path(&path);
         }
     }
+    mandible_home().join("config")
+}
+
+/// The durable-state root. `MANDIBLE_HOME` overrides it wholesale, matching
+/// `getMandibleHome()` in `src/platform-paths.ts`.
+fn mandible_home() -> PathBuf {
+    if let Ok(path) = std::env::var("MANDIBLE_HOME") {
+        if !path.trim().is_empty() {
+            return resolve_user_path(&path);
+        }
+    }
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".mandible")
+}
+
+fn resolve_user_path(raw: &str) -> PathBuf {
     let home = std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
-    #[cfg(target_os = "macos")]
-    {
-        home.join("Library")
-            .join("Application Support")
-            .join("Mandible")
-            .join("config")
-    }
-    #[cfg(target_os = "linux")]
-    {
-        std::env::var("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join(".config"))
-            .join("mandible")
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join("AppData").join("Roaming"))
-            .join("Mandible")
-            .join("config")
-    }
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        home.join(".config").join("mandible")
+    resolve_user_path_from(raw, &home)
+}
+
+fn resolve_user_path_from(raw: &str, home: &std::path::Path) -> PathBuf {
+    let trimmed = raw.trim();
+    let expanded = if trimmed == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = trimmed.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        PathBuf::from(trimmed)
+    };
+    if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(expanded)
     }
 }
 
@@ -880,45 +897,13 @@ fn resolve_daemon_entry(app: &AppHandle) -> Result<PathBuf, String> {
     Err("dist/index.js not found; build the daemon before launching the desktop shell".to_string())
 }
 
-/// Platform-specific Zone 2 runtime path.
+/// The Zone 2 runtime path: `~/.mandible/runtime/`.
 /// Bug: cc4688b — Zone 2 mutable runtime infrastructure
+/// Issue 24f0316 — Zone 2 holds agent-authored patches, which is durable
+/// state, so it moved under the durable root along with the rest of it.
+/// Mirrors `computeZone2Path()` in `src/runtime-manager.ts`.
 fn zone2_runtime_path() -> PathBuf {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."));
-
-    #[cfg(target_os = "macos")]
-    {
-        home.join("Library")
-            .join("Application Support")
-            .join("Mandible")
-            .join("runtime")
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        home.join(".local")
-            .join("share")
-            .join("mandible")
-            .join("runtime")
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        std::env::var("APPDATA")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| home.join("AppData").join("Roaming"))
-            .join("Mandible")
-            .join("runtime")
-    }
-
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    {
-        home.join(".local")
-            .join("share")
-            .join("mandible")
-            .join("runtime")
-    }
+    mandible_home().join("runtime")
 }
 
 /// Bug: cc4688b — Zone 2 status: returns path and whether it exists
@@ -1139,7 +1124,7 @@ mod tests {
     use super::{
         build_handshake_request, extract_credential, interpret_handshake_response,
         is_url_fragment_safe, normalize_enrollment_route, read_client_auth_bootstrap,
-        run_enrollment, Enrollment, MAX_HANDSHAKE_RESPONSE_BYTES,
+        resolve_user_path_from, run_enrollment, Enrollment, MAX_HANDSHAKE_RESPONSE_BYTES,
     };
     use std::cell::Cell;
     use std::fs;
@@ -1165,6 +1150,20 @@ mod tests {
             .expect("clock")
             .as_nanos();
         std::env::temp_dir().join(format!("mandible-tauri-auth-{name}-{nonce}"))
+    }
+
+    #[test]
+    fn resolves_mandible_home_overrides_like_the_typescript_and_shell_mirrors() {
+        let home = std::path::Path::new("/tmp/home with spaces");
+        assert_eq!(resolve_user_path_from("~", home), home);
+        assert_eq!(
+            resolve_user_path_from("~/tilde-root/", home),
+            home.join("tilde-root")
+        );
+        assert_eq!(
+            resolve_user_path_from("  /tmp/durable root/  ", home),
+            std::path::PathBuf::from("/tmp/durable root")
+        );
     }
 
     #[test]

@@ -6,11 +6,16 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { createRequire } from "node:module";
 import Database from "better-sqlite3";
+
+// Issue 24f0316 — the ledger database lives under the durable root. The
+// output root stays in the cache: it holds rewritten throwaway DB copies.
+const { liveDbPath } = createRequire(import.meta.url)("../cli/mandible-paths.cjs");
 
 const MIN_ARTIFACT_PREFIX_LENGTH = 7;
 const SAMPLE_LIMIT = 40;
-const DEFAULT_DB = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
+const DEFAULT_DB = liveDbPath();
 const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), ".cache", "mandible", "db-ref-cleanup");
 const LEGACY_ISS_REF_PATTERN = /\biss_[A-Za-z0-9_-]{4,}\b/g;
 const LEGACY_ISS_EXACT_PATTERN = /^iss_[A-Za-z0-9_-]{4,}$/;

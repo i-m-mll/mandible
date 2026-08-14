@@ -88,7 +88,9 @@ dependency_command="${MANDIBLE_DESKTOP_DEPENDENCY_COMMAND:-npm install --ignore-
 build_command="${MANDIBLE_DESKTOP_BUILD_COMMAND:-npm run tauri:build -- --bundles app}"
 built_app="${MANDIBLE_DESKTOP_BUNDLE_PATH:-$repo_root/src-tauri/target/release/bundle/macos/Mandible.app}"
 install_app="${MANDIBLE_DESKTOP_INSTALL_PATH:-/Applications/Mandible.app}"
-backup_dir="${MANDIBLE_DESKTOP_BACKUP_DIR:-${HOME}/Library/Application Support/Mandible/app-backups}"
+# Issue 24f0316 — app backups are durable state, so they live under the
+# durable root with the rest of it rather than under Application Support.
+backup_dir="${MANDIBLE_DESKTOP_BACKUP_DIR:-${MANDIBLE_HOME:-${HOME}/.mandible}/app-backups}"
 expected_bundle_id="${MANDIBLE_DESKTOP_BUNDLE_ID:-bio.mll.mandible}"
 expected_executable="${MANDIBLE_DESKTOP_EXECUTABLE:-mandible-app}"
 codesign_command="${MANDIBLE_DESKTOP_CODESIGN:-/usr/bin/codesign}"

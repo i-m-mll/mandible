@@ -1,7 +1,5 @@
 #!/usr/bin/env node
-import os from "node:os";
-import path from "node:path";
-import { openDb } from "../db.js";
+import { getDbPath, openDb } from "../db.js";
 import {
   auditEscapedMarkdownBodies,
   normalizeEscapedMarkdownBodies,
@@ -12,8 +10,6 @@ import {
   exportIssueMarkdownFiles,
   type IssueMarkdownExportOptions,
 } from "../ledger/issue-markdown-export.js";
-
-const DEFAULT_DB_PATH = path.join(os.homedir(), ".cache", "mandible", "mandible.db");
 
 interface ParsedArgs {
   command: string;
@@ -86,7 +82,7 @@ function main(argv: string[]): number {
 function parseArgs(argv: string[]): ParsedArgs {
   const parsed: ParsedArgs = {
     command: argv[0] ?? "",
-    dbPath: process.env.MANDIBLE_DB || DEFAULT_DB_PATH,
+    dbPath: getDbPath(),
     json: false,
     apply: false,
     allConfigured: false,

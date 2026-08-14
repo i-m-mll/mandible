@@ -137,7 +137,7 @@ Get backup scheduler status.
 {
   "enabled": true,
   "interval_hours": 6,
-  "destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql",
+  "destination": "/Users/user/.mandible/backups/mandible-metadata.sql",
   "last_run_at": 1711234567890,
   "last_size_bytes": 524288,
   "last_error": null
@@ -151,7 +151,7 @@ Trigger an immediate in-process metadata backup.
 **Response:** `200 OK`
 
 ```json
-{ "ok": true, "size_bytes": 524288, "path": "/Users/user/.cache/mandible/backups/mandible-metadata.sql", "destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql" }
+{ "ok": true, "size_bytes": 524288, "path": "/Users/user/.mandible/backups/mandible-metadata.sql", "destination": "/Users/user/.mandible/backups/mandible-metadata.sql" }
 ```
 
 Or on failure:
@@ -185,7 +185,7 @@ Update backup configuration. Reschedules the backup timer.
 ```bash
 curl -X PUT http://localhost:19420/api/backup/settings \
   -H 'Content-Type: application/json' \
-  -d '{"enabled": true, "interval_hours": 12, "destination": "/Users/user/.cache/mandible/backups/mandible-metadata.sql"}'
+  -d '{"enabled": true, "interval_hours": 12, "destination": "/Users/user/.mandible/backups/mandible-metadata.sql"}'
 ```
 
 ## Administrative

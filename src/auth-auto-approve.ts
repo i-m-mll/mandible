@@ -7,7 +7,7 @@ import { promisify } from "node:util";
 import type Database from "better-sqlite3";
 
 import { getDb } from "./db.js";
-import { getMandibleConfigPath } from "./platform-paths.js";
+import { ensureMandibleConfigEntry } from "./platform-paths.js";
 import { broadcast as defaultBroadcast } from "./sse.js";
 import type { SseEvent } from "./types.js";
 import {
@@ -97,7 +97,9 @@ export class AuthAutoApproveManager implements AuthAutoApprover {
     this.db = options.db ?? getDb();
     this.now = options.now ?? (() => Date.now());
     this.broadcast = options.broadcast ?? defaultBroadcast;
-    this.configDir = options.configDir ?? getMandibleConfigPath("delegated-signing");
+    // Copied forward from the pre-durable-root config location on first use
+    // (issue 24f0316); the delegated signing key material cannot be regenerated.
+    this.configDir = options.configDir ?? ensureMandibleConfigEntry("delegated-signing");
     this.presenceCommandTimeoutMs = Math.max(
       1,
       options.presenceCommandTimeoutMs ?? DEFAULT_PRESENCE_COMMAND_TIMEOUT_MS,

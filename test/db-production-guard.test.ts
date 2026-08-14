@@ -1,12 +1,16 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  LEGACY_PRODUCTION_DB_PATH,
   PRODUCTION_DB_PATH,
+  PRODUCTION_DB_PATHS,
   assertNotProductionDbUnderTest,
   openDb,
+  resolvesToAnyProductionDbPath,
   resolvesToProductionDbPath,
   type Db,
 } from "../src/db.js";
@@ -35,8 +39,31 @@ describe("production database isolation guard (issue 07edc0d)", () => {
     );
   });
 
-  it("refuses even when the production path is reached via a non-canonical form", () => {
-    const nonCanonical = path.join(
+  // Issue 24f0316 — the database moved from ~/.cache/mandible to ~/.mandible,
+  // and the copy-forward shim deliberately never deletes the originals. Both
+  // paths can therefore hold live bytes, so a guard that tracked only the new
+  // location would silently protect nothing on any machine that has not
+  // restarted into the new layout yet.
+  it("refuses BOTH the durable and the pre-split production paths", () => {
+    expect(PRODUCTION_DB_PATH).toMatch(/[/\\]\.mandible[/\\]mandible\.db$/);
+    expect(LEGACY_PRODUCTION_DB_PATH).toMatch(/[/\\]\.cache[/\\]mandible[/\\]mandible\.db$/);
+    expect(PRODUCTION_DB_PATHS).toEqual([PRODUCTION_DB_PATH, LEGACY_PRODUCTION_DB_PATH]);
+    for (const guarded of PRODUCTION_DB_PATHS) {
+      expect(() => assertNotProductionDbUnderTest(guarded)).toThrow(
+        /production Mandible database/i,
+      );
+      expect(resolvesToAnyProductionDbPath(guarded)).toBe(guarded);
+    }
+  });
+
+  it("names the specific production path it refused", () => {
+    expect(() => assertNotProductionDbUnderTest(LEGACY_PRODUCTION_DB_PATH)).toThrow(
+      /\.cache/,
+    );
+  });
+
+  it("refuses even when a production path is reached via a non-canonical form", () => {
+    const nonCanonicalLegacy = path.join(
       os.homedir(),
       ".cache",
       "mandible",
@@ -44,7 +71,27 @@ describe("production database isolation guard (issue 07edc0d)", () => {
       "mandible",
       "mandible.db",
     );
-    expect(() => assertNotProductionDbUnderTest(nonCanonical)).toThrow(
+    expect(() => assertNotProductionDbUnderTest(nonCanonicalLegacy)).toThrow(
+      /production Mandible database/i,
+    );
+
+    const nonCanonicalDurable = path.join(
+      os.homedir(),
+      ".mandible",
+      "..",
+      ".mandible",
+      "mandible.db",
+    );
+    expect(() => assertNotProductionDbUnderTest(nonCanonicalDurable)).toThrow(
+      /production Mandible database/i,
+    );
+  });
+
+  it("refuses literal unexpanded-tilde spellings of both production paths", () => {
+    expect(() => assertNotProductionDbUnderTest("~/.mandible/mandible.db")).toThrow(
+      /production Mandible database/i,
+    );
+    expect(() => assertNotProductionDbUnderTest("~/.cache/mandible/mandible.db")).toThrow(
       /production Mandible database/i,
     );
   });
@@ -67,7 +114,13 @@ describe("production database isolation guard (issue 07edc0d)", () => {
 
   it("honors the MANDIBLE_ALLOW_REAL_DB explicit opt-out", () => {
     process.env.MANDIBLE_ALLOW_REAL_DB = "1";
-    expect(() => assertNotProductionDbUnderTest(PRODUCTION_DB_PATH)).not.toThrow();
+    for (const guarded of PRODUCTION_DB_PATHS) {
+      expect(() => assertNotProductionDbUnderTest(guarded)).not.toThrow();
+    }
+  });
+
+  it("does not flag a path that resolves to no production location", () => {
+    expect(resolvesToAnyProductionDbPath(path.join(tempDir, "mandible.db"))).toBeNull();
   });
 
   // F2 regression: a string compare (path.resolve only) is defeated by a
@@ -107,16 +160,67 @@ describe("production database isolation guard (issue 07edc0d)", () => {
       expect(resolvesToProductionDbPath(other, prod)).toBe(false);
     });
 
-    it("refuses a symlink that resolves to the real production DB (MANDIBLE_DB=/tmp/link scenario)", () => {
-      // Exercises the full guard against the real production path, but only when
-      // that file exists on this machine. The guard resolves the symlink and
-      // refuses without ever opening or writing the database.
-      if (!fs.existsSync(PRODUCTION_DB_PATH)) return;
-      const link = path.join(tempDir, "link-to-live.db");
-      fs.symlinkSync(PRODUCTION_DB_PATH, link);
-      expect(() => assertNotProductionDbUnderTest(link)).toThrow(
+    it("refuses a symlink that resolves to a real production DB (MANDIBLE_DB=/tmp/link scenario)", () => {
+      // Exercises the full guard against the real production paths, but only
+      // for those that exist on this machine. The guard resolves the symlink
+      // and refuses without ever opening or writing the database. During the
+      // transition both locations can be present at once.
+      let exercised = 0;
+      for (const [index, guarded] of PRODUCTION_DB_PATHS.entries()) {
+        if (!fs.existsSync(guarded)) continue;
+        exercised += 1;
+        const link = path.join(tempDir, `link-to-live-${index}.db`);
+        fs.symlinkSync(guarded, link);
+        expect(() => assertNotProductionDbUnderTest(link)).toThrow(
+          /production Mandible database/i,
+        );
+      }
+      expect(exercised).toBeGreaterThanOrEqual(0);
+    });
+  });
+});
+
+// The CommonJS twin at cli/production-db-guard.cjs is what the bash-embedded
+// node helper and the standalone .mjs maintenance scripts apply, so a guard
+// that drifts from src/db.ts leaves every non-TypeScript entry point
+// unprotected. Issue 24f0316 widened both to two production paths at once;
+// this pins them together.
+describe("CommonJS guard twin (cli/production-db-guard.cjs)", () => {
+  const guard = createRequire(import.meta.url)(
+    "../cli/production-db-guard.cjs",
+  ) as {
+    PRODUCTION_DB_PATH: string;
+    LEGACY_PRODUCTION_DB_PATH: string;
+    PRODUCTION_DB_PATHS: string[];
+    assertNotProductionDbUnderTest: (dbPath: string) => void;
+    resolvesToAnyProductionDbPath: (dbPath: string) => string | null;
+  };
+
+  it("guards the same production paths as the TypeScript implementation", () => {
+    expect(guard.PRODUCTION_DB_PATH).toBe(PRODUCTION_DB_PATH);
+    expect(guard.LEGACY_PRODUCTION_DB_PATH).toBe(LEGACY_PRODUCTION_DB_PATH);
+    expect(guard.PRODUCTION_DB_PATHS).toEqual([...PRODUCTION_DB_PATHS]);
+  });
+
+  it("refuses both of them under the test runner", () => {
+    for (const guarded of guard.PRODUCTION_DB_PATHS) {
+      expect(() => guard.assertNotProductionDbUnderTest(guarded)).toThrow(
         /production Mandible database/i,
       );
-    });
+    }
+  });
+
+  it("refuses the same unexpanded-tilde spellings as the TypeScript guard", () => {
+    for (const guarded of ["~/.mandible/mandible.db", "~/.cache/mandible/mandible.db"]) {
+      expect(() => guard.assertNotProductionDbUnderTest(guarded)).toThrow(
+        /production Mandible database/i,
+      );
+    }
+  });
+
+  it("allows an explicit temp path", () => {
+    const temp = path.join(os.tmpdir(), "mandible-cjs-guard-allowed.db");
+    expect(() => guard.assertNotProductionDbUnderTest(temp)).not.toThrow();
+    expect(guard.resolvesToAnyProductionDbPath(temp)).toBeNull();
   });
 });
