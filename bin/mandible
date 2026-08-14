@@ -19,6 +19,7 @@
 #   logs <subcommand>                Inspect provider-native source logs
 #   conversations <subcommand>       Inspect DB-backed conversations
 #   artifact <subcommand>            Register, resolve, link, and check artifacts
+#   ask <subcommand>                 Submit and await bounded asks
 #   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
 #   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
 #   user <subcommand>                User registry (setup, list, show, credential, token, binding)
@@ -63,6 +64,7 @@ Commands:
   logs <subcommand>                Inspect provider-native source logs
   conversations <subcommand>       Inspect DB-backed conversations
   artifact <subcommand>            Register, resolve, link, and check artifacts
+  ask submit|wait|result           Submit and await bounded asks
   space <subcommand>               Authored organizing surfaces (create, items, edges, seed)
   project <subcommand>             Canonical project registry (list, show, add, audit, repair)
   user <subcommand>                User registry (setup, list, show, credential, token, binding)
@@ -117,6 +119,7 @@ case "${1:-}" in
   logs)    shift; exec "$MANDIBLE_CLI_DIR/logs.sh" "$@" ;;
   conversations) shift; exec "$MANDIBLE_CLI_DIR/conversations.sh" "$@" ;;
   artifact) shift; exec "$MANDIBLE_CLI_DIR/artifact.sh" "$@" ;;
+  ask) shift; exec "$MANDIBLE_CLI_DIR/ask.sh" "$@" ;;
   space) shift; exec "$MANDIBLE_CLI_DIR/space.sh" "$@" ;;
   project) shift; exec "$MANDIBLE_CLI_DIR/project.sh" "$@" ;;
   user) shift; exec "$MANDIBLE_CLI_DIR/user.sh" "$@" ;;
