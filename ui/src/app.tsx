@@ -939,6 +939,17 @@ function App(): JSX.Element {
       dispatch({ type: 'sse', payload });
       scheduleBadgeRefresh();
     };
+    // Feedback lifecycle events carry only a topic across this bridge. The
+    // active renderer refetches its normalized snapshot; question bodies and
+    // answer values are never consumed from SSE payloads.
+    const feedbackHandler = (payload: SSEPayload) => {
+      lastDashboardSseAtRef.current = Date.now();
+      invalidateDashboardApiCacheForEvent(payload.type);
+      window.dispatchEvent(new CustomEvent('feedback:sse', {
+        detail: { type: payload.type },
+      }));
+      scheduleBadgeRefresh();
+    };
     // Heartbeat: liveness signal only — bump freshness, never cache-invalidate,
     // badge-fetch, or dispatch.
     const heartbeatHandler = () => {
@@ -1106,6 +1117,14 @@ function App(): JSX.Element {
       client.on('work:branch:updated', handler),
       client.on('conversation:new', conversationHandler),
       client.on('conversation:updated', conversationHandler),
+      client.on('briefing:ingested', feedbackHandler),
+      client.on('briefing:decided', feedbackHandler),
+      client.on('briefing:commented', feedbackHandler),
+      client.on('briefing:expired', feedbackHandler),
+      client.on('ask:created', feedbackHandler),
+      client.on('ask:submitted', feedbackHandler),
+      client.on('ask:cancelled', feedbackHandler),
+      client.on('ask:expired', feedbackHandler),
       client.on('heartbeat', heartbeatHandler),
       client.on('ledger:issue:created', ledgerHandler),
       client.on('ledger:issue:updated', ledgerHandler),
@@ -1164,6 +1183,9 @@ function App(): JSX.Element {
       lastDashboardSseAtRef.current = Date.now();
       void loadVisibleRouteDataRef.current(routeTabRef.current);
       void loadDashboardBadges();
+      window.dispatchEvent(new CustomEvent('feedback:sse', {
+        detail: { type: 'reconnected' },
+      }));
       // A reconnect gap may have missed graph-affecting events; converge the
       // graph too (bump now if active/visible, else mark dirty).
       if (routeTabRef.current === 'graph' && document.visibilityState === 'visible') {
@@ -2175,6 +2197,7 @@ function App(): JSX.Element {
               instance={instanceInfo}
               initialFilter={tabRoute.params.filter}
               initialCandidateId={tabRoute.params.candidate ?? null}
+              sidebarHidden={isViewSidebarHidden(tabRoute)}
             />
           );
         })())}

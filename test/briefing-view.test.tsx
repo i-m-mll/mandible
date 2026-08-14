@@ -224,9 +224,9 @@ function stubFetch(options: StubOptions = {}): { calls: FetchCall[] } {
       const decision: BriefingDecisionResponse = {
         candidate_id: 'cand-1',
         revision_id: 'rev-cand-1',
-        action: 'keep',
+        action: (body as { action?: BriefingDecisionResponse['action'] }).action ?? 'keep',
         event_id: 'dec-1',
-        state: 'kept',
+        state: (body as { action?: string }).action === 'dismiss' ? 'dismissed' : 'kept',
       };
       return Promise.resolve(jsonResponse(decision));
     }
@@ -823,20 +823,24 @@ describe('BriefingView decisions against the real store', () => {
   }
 
   function candidateId(): string {
-    return (db.prepare('SELECT id FROM review_candidates LIMIT 1').get() as { id: string }).id;
+    return (db.prepare('SELECT id FROM feedback_items LIMIT 1').get() as { id: string }).id;
   }
 
   function revisionIdByTitle(title: string): string {
     return (db
-      .prepare('SELECT id FROM candidate_revisions WHERE title = ?')
+      .prepare('SELECT id FROM feedback_item_revisions WHERE title = ?')
       .get(title) as { id: string }).id;
   }
 
   function lastActionOn(revisionId: string): string | null {
     const row = db
       .prepare(
-        `SELECT action FROM decision_events
-          WHERE revision_id = ?
+        `SELECT CASE operation
+                  WHEN 'retract' THEN 'undo'
+                  ELSE json_extract(value_json, '$.verdict')
+                END AS action
+           FROM feedback_response_events
+          WHERE item_revision_id = ?
           ORDER BY created_at DESC, rowid DESC
           LIMIT 1`,
       )
@@ -1022,8 +1026,8 @@ describe('BriefingView decisions against the real store', () => {
     const revisionA = revisionIdByTitle('Finding A');
     const pageDismissId = (db
       .prepare(
-        `SELECT id FROM decision_events
-          WHERE revision_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+        `SELECT id FROM feedback_response_events
+          WHERE item_revision_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(revisionA) as { id: string }).id;
 
@@ -1312,6 +1316,22 @@ describe('BriefingView keyboard triage', () => {
     // can only retract that judgment and never a newer one on the same revision.
     expect(calls.filter((call) => call.url.includes('/decision')).at(-1)?.body)
       .toEqual({ action: 'undo', revision_id: 'rev-a', expected_event_id: 'dec-1' });
+
+  });
+
+  it('dismisses the selected finding with n', async () => {
+    const { calls } = stubFetch();
+    renderBriefing();
+    await screen.findByTestId('briefing-row-cand-1');
+    await awaitSelection('cand-1');
+
+    fireEvent.keyDown(window, { key: 'n' });
+    await waitFor(() => {
+      expect(screen.queryByTestId('briefing-row-cand-1')).toBeNull();
+    });
+    expect(calls.find((call) => call.url.includes('/decision'))?.body)
+      .toEqual({ action: 'dismiss', revision_id: 'rev-cand-1' });
+    expect(screen.getByTestId('briefing-undo-toast').textContent).toContain('Dismissed');
   });
 
   it('opens the fold-out from the keyboard, inline and not on hover', async () => {
@@ -1334,7 +1354,7 @@ describe('BriefingView keyboard triage', () => {
     });
   });
 
-  it('ignores triage keys typed into a text field', async () => {
+  it('ignores triage keys from form controls, buttons, and modal content', async () => {
     const { calls } = stubFetch();
     renderBriefing();
 
@@ -1344,6 +1364,14 @@ describe('BriefingView keyboard triage', () => {
     const detail = await screen.findByTestId('briefing-detail-cand-1');
     const textarea = within(detail).getByRole('textbox');
     fireEvent.keyDown(textarea, { key: 'n' });
+    fireEvent.keyDown(within(detail).getByRole('button', { name: 'Save note' }), { key: 'y' });
+    const dialog = document.createElement('div');
+    dialog.setAttribute('role', 'dialog');
+    const dialogButton = document.createElement('button');
+    dialog.append(dialogButton);
+    document.body.append(dialog);
+    fireEvent.keyDown(dialogButton, { key: 'n' });
+    dialog.remove();
     expect(calls.some((call) => call.url.includes('/decision'))).toBe(false);
   });
 

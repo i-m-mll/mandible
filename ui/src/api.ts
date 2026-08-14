@@ -461,7 +461,40 @@ export function invalidateApiGetCache(
   }
 }
 
+const BRIEFING_FEEDBACK_EVENTS = new Set([
+  'briefing:ingested',
+  'briefing:decided',
+  'briefing:commented',
+  'briefing:expired',
+]);
+
+const ASK_FEEDBACK_EVENTS = new Set([
+  'ask:created',
+  'ask:submitted',
+  'ask:cancelled',
+  'ask:expired',
+]);
+
+/** Exact cache families affected by a feedback lifecycle event. */
+export function feedbackApiCacheFamiliesForEvent(type: string): readonly string[] {
+  if (BRIEFING_FEEDBACK_EVENTS.has(type)) {
+    return ['/api/briefing', '/api/dashboard/badges'];
+  }
+  if (ASK_FEEDBACK_EVENTS.has(type)) {
+    return ['/api/asks', '/api/dashboard/badges'];
+  }
+  return [];
+}
+
+/** Narrow feedback invalidation; returns whether the event was handled. */
+export function invalidateFeedbackApiCacheForEvent(type: string): boolean {
+  const families = feedbackApiCacheFamiliesForEvent(type);
+  for (const family of families) invalidateApiGetCache(family);
+  return families.length > 0;
+}
+
 export function invalidateDashboardApiCacheForEvent(type: string): void {
+  if (invalidateFeedbackApiCacheForEvent(type)) return;
   // Streamed auth output does not change any dashboard count, so the badge
   // cache is left intact for that event; every other family below can move a
   // count and refreshes the badges key.
@@ -486,9 +519,6 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/spaces');
   } else if (type.startsWith('artifact:')) {
     invalidateApiGetCache('/api/artifacts');
-  } else if (type.startsWith('briefing:')) {
-    // Ingest, decision, comment, and expiry events all move the review queue.
-    invalidateApiGetCache('/api/briefing');
   }
 }
 
@@ -3617,6 +3647,14 @@ import type {
   SpaceFindingResolution as ContractSpaceFindingResolution,
   SpaceFindingResolveResponse,
 } from '../../src/contracts';
+import {
+  feedbackCollectionIdentity,
+  filterFeedbackCollections,
+  orderFeedbackCollections,
+  type FeedbackCollection,
+} from './views/feedback/collection-model';
+
+export { filterFeedbackCollections, orderFeedbackCollections };
 
 export type {
   FindingReviewState,
@@ -4024,6 +4062,64 @@ export function normalizeBriefingQueue(payload: unknown, now: number = Date.now(
       .filter((entry): entry is BriefingQueueItem => entry !== null),
     sources: rawSources.map((entry) => normalizeBriefingSourceHealth(entry, now)),
   };
+}
+
+/**
+ * Project the complete normalized queue into one recurring collection per
+ * source. Health-only sources remain visible; queue-only sources degrade to an
+ * honest unknown collection instead of disappearing.
+ */
+export function projectBriefingRecurringCollections(
+  queue: Readonly<BriefingQueue>,
+): FeedbackCollection[] {
+  const pendingBySource = new Map<string, number>();
+  for (const candidate of queue.candidates) {
+    pendingBySource.set(candidate.source, (pendingBySource.get(candidate.source) ?? 0) + 1);
+  }
+
+  const collections = new Map<string, FeedbackCollection>();
+  for (const source of queue.sources) {
+    const publicationRecorded = source.last_ingested_at !== null
+      || source.last_ingest_age_ms !== null
+      || source.last_task_identity !== null
+      || source.last_run_id !== null
+      || source.last_digest_version !== null
+      || source.last_batch_item_count !== null;
+    collections.set(source.source, {
+      id: feedbackCollectionIdentity('recurring_feed', source.source),
+      kind: 'recurring_feed',
+      state: 'open',
+      source: source.source,
+      label: source.source,
+      pendingCount: pendingBySource.get(source.source) ?? source.pending_count ?? 0,
+      recurring: {
+        health: source.status,
+        publicationRecorded,
+        lastPublicationItemCount: source.last_batch_item_count,
+        lastTaskIdentity: source.last_task_identity,
+      },
+    });
+  }
+
+  for (const [source, pendingCount] of pendingBySource) {
+    if (collections.has(source)) continue;
+    collections.set(source, {
+      id: feedbackCollectionIdentity('recurring_feed', source),
+      kind: 'recurring_feed',
+      state: 'open',
+      source,
+      label: source,
+      pendingCount,
+      recurring: {
+        health: 'unknown',
+        publicationRecorded: false,
+        lastPublicationItemCount: null,
+        lastTaskIdentity: null,
+      },
+    });
+  }
+
+  return orderFeedbackCollections([...collections.values()], []);
 }
 
 /** Normalize a raw `/api/briefing/candidates/:id/history` payload. */

@@ -2,11 +2,60 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   addSpaceItem,
+  feedbackApiCacheFamiliesForEvent,
   getSpace,
   getSpaceFactPacket,
   getSessions,
   invalidateApiGetCache,
 } from '../ui/src/api';
+
+describe('feedback SSE cache invalidation matrix', () => {
+  it.each([
+    'briefing:ingested',
+    'briefing:decided',
+    'briefing:commented',
+    'briefing:expired',
+  ])('%s invalidates only Briefing and badge caches', (topic) => {
+    expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
+      '/api/briefing',
+      '/api/dashboard/badges',
+    ]);
+  });
+
+  it.each([
+    'ask:created',
+    'ask:submitted',
+    'ask:cancelled',
+    'ask:expired',
+  ])('%s invalidates only ask and badge caches', (topic) => {
+    expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([
+      '/api/asks',
+      '/api/dashboard/badges',
+    ]);
+  });
+
+  it('does not classify unrelated or merely prefix-matching topics as feedback', () => {
+    for (const topic of ['ledger:issue:updated', 'auth:new', 'briefing:unknown', 'ask:answered']) {
+      expect(feedbackApiCacheFamiliesForEvent(topic)).toEqual([]);
+    }
+  });
+
+  it('keeps event bursts bounded to the union of their declared families', () => {
+    const burst = [
+      'briefing:ingested',
+      'briefing:decided',
+      'ask:created',
+      'ask:submitted',
+      'briefing:expired',
+    ];
+    const families = new Set(burst.flatMap((topic) => feedbackApiCacheFamiliesForEvent(topic)));
+    expect([...families].sort()).toEqual([
+      '/api/asks',
+      '/api/briefing',
+      '/api/dashboard/badges',
+    ]);
+  });
+});
 
 function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
