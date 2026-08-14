@@ -1,4 +1,7 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -6,10 +9,19 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 // ingestion inside a mapped source namespace, human-only decisions and
 // comments, file-RPC policy, and the read-only instance gate.
 
-import { countPendingBriefingCandidates, ingestBriefingBatch } from "../src/briefing.js";
+import {
+  countPendingBriefingCandidates,
+  ingestBriefingBatch,
+  listBriefingQueue,
+} from "../src/briefing.js";
 import { setSetting } from "../src/client-auth/settings-kv.js";
-import { BRIEFING_INGEST_SCHEMA, type BriefingIngestRequest } from "../src/contracts.js";
+import {
+  BRIEFING_INGEST_SCHEMA,
+  BRIEFING_INGEST_SCHEMA_V2,
+  type BriefingIngestRequest,
+} from "../src/contracts.js";
 import { migrate, setDb, type Db } from "../src/db.js";
+import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { resolveInstanceInfo } from "../src/instance-policy.js";
 import { registerBriefingRoutes } from "../src/routes/briefing.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
@@ -26,14 +38,16 @@ class SlugGate implements ClientAuthGate {
 
   authenticate(credential: string | null | undefined): ResolvedClientIdentity | null {
     if (!credential) return null;
+    const ephemeral = credential.startsWith("session:");
+    const slug = ephemeral ? credential.slice("session:".length) : credential;
     const row = this.lookup()
       .prepare("SELECT id, slug FROM users WHERE slug = ? AND status = 'active'")
-      .get(credential) as { id: string; slug: string } | undefined;
+      .get(slug) as { id: string; slug: string } | undefined;
     if (!row) return null;
     return {
       user_id: row.id,
       slug: row.slug,
-      method: "api_token",
+      method: ephemeral ? "ephemeral" : "api_token",
       credential_id: null,
       source: "in_process",
     };
@@ -54,7 +68,7 @@ function candidateKey(source: string, ref: string): string {
 
 function batch(overrides: Partial<BriefingIngestRequest> = {}): BriefingIngestRequest {
   return {
-    schema: BRIEFING_INGEST_SCHEMA,
+    schema: overrides.schema ?? BRIEFING_INGEST_SCHEMA,
     task_identity: overrides.task_identity ?? "agent-schedule/daily-digest",
     run_id: overrides.run_id ?? "run-1",
     digest: overrides.digest ?? { series_ref: "artifact-series:abc123", version: 1 },
@@ -139,7 +153,9 @@ describe("briefing ingest route", () => {
     expect(
       (db.prepare("SELECT COUNT(*) AS n FROM feedback_item_revisions").get() as { n: number }).n,
     ).toBe(1);
-    expect(publisherId).toBeTruthy();
+    expect(db.prepare(
+      "SELECT publisher_user_id FROM feedback_publications",
+    ).get()).toEqual({ publisher_user_id: publisherId });
   });
 
   it("rejects an unauthenticated caller and an unmapped source namespace", async () => {
@@ -164,7 +180,12 @@ describe("briefing ingest route", () => {
   });
 
   it("honors an operator-configured publisher mapping", async () => {
-    setSetting(db, "briefing.ingest.publishers", JSON.stringify({ codex: ["research/"] }));
+    setSetting(db, "briefing.ingest.publishers", JSON.stringify({
+      codex: [{
+        task_identity: "agent-schedule/daily-digest",
+        sources: ["research"],
+      }],
+    }));
     createUser(db, { slug: "codex", kind: "agent", display_name: "Codex" });
 
     const denied = await router.invoke({
@@ -178,17 +199,285 @@ describe("briefing ingest route", () => {
     const allowed = await router.invoke({
       method: "POST",
       url: "/api/briefing/ingest",
-      body: batch({ task_identity: "research/paper-scan", batch_key: "batch-research" }),
+      body: batch({
+        batch_key: "batch-research",
+        items: [{ ...batch().items[0], source: "research" }],
+      }),
       credential: "codex",
     });
     expect(allowed.status).toBe(200);
+  });
+
+  it("rejects prefix bypasses, session credentials, non-agents, and malformed overrides", async () => {
+    expect((await router.invoke({
+      method: "POST",
+      url: "/api/briefing/ingest",
+      body: batch({ task_identity: "agent-schedule/daily-digest/extra" }),
+      credential: "agent-schedule",
+    })).status).toBe(403);
+
+    const session = await router.invoke({
+      method: "POST",
+      url: "/api/briefing/ingest",
+      body: batch(),
+      credential: "session:agent-schedule",
+    });
+    expect(session).toMatchObject({
+      status: 403,
+      body: { code: "briefing_publisher_credential_required" },
+    });
+
+    createUser(db, { slug: "human-publisher", kind: "human", display_name: "Human" });
+    setSetting(db, "briefing.ingest.publishers", JSON.stringify({
+      "human-publisher": [{
+        task_identity: "agent-schedule/daily-digest",
+        sources: ["arxiv-scan"],
+      }],
+    }));
+    const human = await router.invoke({
+      method: "POST",
+      url: "/api/briefing/ingest",
+      body: batch(),
+      credential: "human-publisher",
+    });
+    expect(human).toMatchObject({
+      status: 403,
+      body: { code: "briefing_publisher_agent_required" },
+    });
+
+    for (const override of [
+      { "agent-schedule": [{ task_identity: "", sources: ["arxiv-scan"] }] },
+      { "agent-schedule": [{ task_identity: "agent-schedule/daily-digest", sources: [""] }] },
+      { "agent-schedule": [{ task_identity: "agent-schedule/daily-digest", sources: ["arxiv-scan"], extra: true }] },
+    ]) {
+      setSetting(db, "briefing.ingest.publishers", JSON.stringify(override));
+      expect((await router.invoke({
+        method: "POST",
+        url: "/api/briefing/ingest",
+        body: batch({ batch_key: `malformed-${JSON.stringify(override)}` }),
+        credential: "agent-schedule",
+      })).status).toBe(403);
+    }
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n)
+      .toBe(0);
+  });
+
+  it("authorizes every source before writing a multi-source batch", async () => {
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/briefing/ingest",
+      credential: "agent-schedule",
+      body: batch({
+        items: [
+          batch().items[0],
+          { ...batch().items[0], candidate_key: "other", source: "not-allowed" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(403);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n)
+      .toBe(0);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_items").get() as { n: number }).n)
+      .toBe(0);
+  });
+
+  it("enforces the same durable-agent boundary through file-RPC", async () => {
+    const spool = fs.mkdtempSync(path.join(os.tmpdir(), "mandible-briefing-file-rpc-"));
+    try {
+      const transport = new FileRpcTransport({ router, dir: spool, responseTtlMs: 60_000 });
+      for (const [id, capability_token] of [
+        ["session", "session:agent-schedule"],
+        ["mapped", "agent-schedule"],
+      ]) {
+        fs.writeFileSync(path.join(spool, `${id}.request.json`), JSON.stringify({
+          id,
+          capability_token,
+          method: "POST",
+          path: "/api/briefing/ingest",
+          body: batch({ batch_key: `file-${id}` }),
+        }));
+      }
+      await transport.processOnce();
+      const response = (id: string) => JSON.parse(
+        fs.readFileSync(path.join(spool, `${id}.response.json`), "utf8"),
+      ) as { status: number; body: Record<string, unknown> };
+      expect(response("session")).toMatchObject({
+        status: 403,
+        body: { code: "briefing_publisher_credential_required" },
+      });
+      expect(response("mapped").status).toBe(200);
+    } finally {
+      fs.rmSync(spool, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown keys exactly in both versions", async () => {
+    for (const body of [
+      { ...batch(), invented: true },
+      { ...batch(), items: [{ ...batch().items[0], publisher_advisory: null }] },
+      { ...batch({ schema: BRIEFING_INGEST_SCHEMA_V2 }), items: [{
+        ...batch().items[0], item_kind: "item", parent: null, publisher_advisory: null, invented: true,
+      }] },
+    ]) {
+      const response = await router.invoke({
+        method: "POST",
+        url: "/api/briefing/ingest",
+        body,
+        credential: "agent-schedule",
+      });
+      expect(response.status).toBe(400);
+    }
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n)
+      .toBe(0);
+  });
+
+  it("stores v2 groups and advisory metadata without creating response events", async () => {
+    setSetting(db, "briefing.ingest.publishers", JSON.stringify({
+      "agent-schedule": [{
+        task_identity: "agent-schedule/task-health",
+        sources: ["task-health"],
+      }],
+    }));
+    const group = {
+      ...batch().items[0],
+      candidate_key: "quarantine",
+      source: "task-health",
+      title: "Quarantined by admission gate",
+      evidence_hash: "group-evidence",
+      item_kind: "group" as const,
+      parent: null,
+      publisher_advisory: null,
+    };
+    const leaf = {
+      ...batch().items[0],
+      candidate_key: "card-1",
+      source: "task-health",
+      evidence_hash: "leaf-evidence",
+      item_kind: "item" as const,
+      parent: "quarantine",
+      publisher_advisory: {
+        code: "admission_gate_rejected" as const,
+        reason: "missing evidence",
+      },
+    };
+    const body = batch({
+      schema: BRIEFING_INGEST_SCHEMA_V2,
+      task_identity: "agent-schedule/task-health",
+      items: [leaf, group],
+    });
+    const first = await router.invoke({
+      method: "POST", url: "/api/briefing/ingest", body, credential: "agent-schedule",
+    });
+    expect(first.status).toBe(200);
+    const queue = listBriefingQueue(db);
+    expect(queue.candidates).toHaveLength(1);
+    expect(queue.candidates[0]).toMatchObject({
+      state: "pending",
+      group: { candidate_key: "quarantine", title: "Quarantined by admission gate" },
+      revision: {
+        publisher_advisory: { code: "admission_gate_rejected", reason: "missing evidence" },
+      },
+    });
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_response_events").get() as { n: number }).n)
+      .toBe(0);
+    expect(db.prepare(
+      "SELECT DISTINCT publisher_user_id FROM feedback_publications",
+    ).all()).toEqual([{ publisher_user_id: publisherId }]);
+
+    const replay = await router.invoke({
+      method: "POST", url: "/api/briefing/ingest", body, credential: "agent-schedule",
+    });
+    expect(replay).toEqual(first);
+    const conflict = await router.invoke({
+      method: "POST",
+      url: "/api/briefing/ingest",
+      body: { ...body, run_id: "different-run" },
+      credential: "agent-schedule",
+    });
+    expect(conflict.status).toBe(409);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_ingest_requests").get() as { n: number }).n)
+      .toBe(1);
+  });
+
+  it("scopes the same task and batch key to the authenticated publisher", async () => {
+    createUser(db, { slug: "codex", kind: "agent", display_name: "Codex" });
+    setSetting(db, "briefing.ingest.publishers", JSON.stringify({
+      "agent-schedule": [{
+        task_identity: "agent-schedule/daily-digest",
+        sources: ["arxiv-scan"],
+      }],
+      codex: [{
+        task_identity: "agent-schedule/daily-digest",
+        sources: ["arxiv-scan"],
+      }],
+    }));
+    const body = batch();
+    expect((await router.invoke({
+      method: "POST", url: "/api/briefing/ingest", body, credential: "agent-schedule",
+    })).status).toBe(200);
+    expect((await router.invoke({
+      method: "POST", url: "/api/briefing/ingest", body, credential: "codex",
+    })).status).toBe(200);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_ingest_requests").get() as { n: number }).n)
+      .toBe(2);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n)
+      .toBe(2);
+  });
+
+  it("rejects group-under-group and leaf-as-parent without writes", async () => {
+    const baseItem = batch().items[0];
+    for (const items of [
+      [
+        { ...baseItem, candidate_key: "outer", item_kind: "group", parent: null },
+        { ...baseItem, candidate_key: "inner", item_kind: "group", parent: "outer" },
+      ],
+      [
+        { ...baseItem, candidate_key: "leaf", item_kind: "item", parent: null },
+        { ...baseItem, candidate_key: "child", item_kind: "item", parent: "leaf" },
+      ],
+    ]) {
+      const response = await router.invoke({
+        method: "POST",
+        url: "/api/briefing/ingest",
+        body: batch({ schema: BRIEFING_INGEST_SCHEMA_V2, batch_key: `bad-${items[0].candidate_key}`, items }),
+        credential: "agent-schedule",
+      });
+      expect(response.status).toBe(400);
+    }
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_items").get() as { n: number }).n)
+      .toBe(0);
+  });
+
+  it("rejects a parent group from a different source collection", async () => {
+    setSetting(db, "briefing.ingest.publishers", JSON.stringify({
+      "agent-schedule": [{
+        task_identity: "agent-schedule/daily-digest",
+        sources: ["alpha", "beta"],
+      }],
+    }));
+    const baseItem = batch().items[0];
+    const response = await router.invoke({
+      method: "POST",
+      url: "/api/briefing/ingest",
+      credential: "agent-schedule",
+      body: batch({
+        schema: BRIEFING_INGEST_SCHEMA_V2,
+        items: [
+          { ...baseItem, source: "alpha", candidate_key: "group", item_kind: "group", parent: null },
+          { ...baseItem, source: "beta", candidate_key: "leaf", item_kind: "item", parent: "group" },
+        ],
+      }),
+    });
+    expect(response.status).toBe(400);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM feedback_items").get() as { n: number }).n)
+      .toBe(0);
   });
 
   it("rejects a malformed batch with 400 and writes nothing", async () => {
     const response = await router.invoke({
       method: "POST",
       url: "/api/briefing/ingest",
-      body: { ...batch(), schema: "briefing-ingest@2" },
+      body: { ...batch(), schema: "briefing-ingest@3" },
       credential: "agent-schedule",
     });
     expect(response.status).toBe(400);

@@ -3808,6 +3808,10 @@ export type BriefingRevision = {
   digest_series_ref: string | null;
   digest_version: number | null;
   rank: number | null;
+  publisher_advisory: {
+    code: 'admission_gate_rejected';
+    reason: string;
+  } | null;
   batch_key: string | null;
   ingested_at: number | null;
 };
@@ -3862,6 +3866,7 @@ export type BriefingQueueItem = {
    * is also the one that carried this revision.
    */
   task_identity: string | null;
+  group: { id: string; candidate_key: string; title: string } | null;
 };
 
 /**
@@ -3977,6 +3982,12 @@ function briefingStringArray(value: unknown): string[] {
 function normalizeBriefingRevision(value: unknown, candidateId: string): BriefingRevision {
   const row = briefingContractRecord<ContractBriefingRevision>(value);
   const evidenceKind = briefingOptionalString(row.evidence_kind);
+  const advisory = briefingRecord(row.publisher_advisory);
+  const publisherAdvisory = advisory.code === 'admission_gate_rejected'
+    && typeof advisory.reason === 'string'
+    && advisory.reason !== ''
+    ? { code: 'admission_gate_rejected' as const, reason: advisory.reason }
+    : null;
   return {
     id: briefingString(row.id),
     candidate_id: briefingString(row.candidate_id, candidateId),
@@ -3992,6 +4003,7 @@ function normalizeBriefingRevision(value: unknown, candidateId: string): Briefin
     digest_series_ref: briefingOptionalString(row.digest_series_ref),
     digest_version: briefingOptionalNumber(row.digest_version),
     rank: briefingOptionalNumber(row.rank),
+    publisher_advisory: publisherAdvisory,
     batch_key: briefingOptionalString(row.batch_key),
     ingested_at: briefingOptionalNumber(row.ingested_at),
   };
@@ -4017,6 +4029,14 @@ function normalizeBriefingQueueItem(value: unknown): BriefingQueueItem | null {
   const row = briefingContractRecord<ContractBriefingQueueEntry>(value);
   const candidateId = briefingString(row.id);
   if (!candidateId) return null;
+  const group = briefingRecord(row.group);
+  const normalizedGroup = briefingString(group.id) && briefingString(group.candidate_key)
+    ? {
+      id: briefingString(group.id),
+      candidate_key: briefingString(group.candidate_key),
+      title: briefingString(group.title),
+    }
+    : null;
   return {
     candidate_id: candidateId,
     source: briefingString(row.source, 'unknown'),
@@ -4027,6 +4047,7 @@ function normalizeBriefingQueueItem(value: unknown): BriefingQueueItem | null {
     revision_count: briefingOptionalNumber(row.revision_count),
     occurrences: normalizeBriefingOccurrenceStats(row.occurrences),
     task_identity: briefingOptionalString(row.task_identity),
+    group: normalizedGroup,
   };
 }
 

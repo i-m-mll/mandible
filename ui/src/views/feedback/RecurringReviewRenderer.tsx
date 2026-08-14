@@ -788,6 +788,14 @@ function BriefingRow({
             {item.state === 'expired_unreviewed' ? (
               <span className="briefing-chip briefing-chip--stale">expired unreviewed</span>
             ) : null}
+            {revision.publisher_advisory?.code === 'admission_gate_rejected' ? (
+              <span
+                className="briefing-chip briefing-chip--publisher-advisory"
+                title={revision.publisher_advisory.reason}
+              >
+                Reported by publisher: admission gate rejected
+              </span>
+            ) : null}
           </span>
           <span className="briefing-row__line briefing-row__line--secondary">
             {revision.why_notable || 'No rationale was provided for this finding.'}
@@ -1062,7 +1070,18 @@ export function RecurringReviewRenderer({
       if (existing) existing.push(item);
       else bySource.set(item.source, [item]);
     }
-    return [...bySource.entries()].map(([source, items]) => ({ source, items }));
+    return [...bySource.entries()].map(([source, items]) => {
+      const trusted = items.filter((item) => item.revision.publisher_advisory === null);
+      const quarantined = items.filter((item) => item.revision.publisher_advisory !== null);
+      const sections = new Map<string, { title: string | null; items: BriefingQueueItem[] }>();
+      for (const item of trusted) {
+        const key = item.group?.id ?? '__ungrouped__';
+        const section = sections.get(key);
+        if (section) section.items.push(item);
+        else sections.set(key, { title: item.group?.title ?? null, items: [item] });
+      }
+      return { source, items, sections: [...sections.values()], quarantined };
+    });
   }, [visibleItems]);
 
   /** Health rows by source, so a queue group can name its producer identity. */
@@ -1532,23 +1551,60 @@ export function RecurringReviewRenderer({
                   </span>
                 ) : null}
               </h3>
-              <ul className="briefing-group__list">
-                {group.items.map((item) => (
-                  <BriefingRow
-                    key={item.candidate_id}
-                    item={item}
-                    now={now}
-                    selected={selectedId === item.candidate_id}
-                    expanded={expandedId === item.candidate_id}
-                    busy={busyIds.includes(item.candidate_id)}
-                    mutationsAllowed={operationalMutationsAllowed}
-                    onSelect={setSelectedId}
-                    onToggleExpand={toggleExpand}
-                    onJudge={judge}
-                    detail={renderDetail(item)}
-                  />
-                ))}
-              </ul>
+              {group.sections.map((section, sectionIndex) => (
+                <section
+                  className="briefing-publisher-group"
+                  key={section.title ?? `ungrouped-${sectionIndex}`}
+                >
+                  {section.title ? (
+                    <h4 className="briefing-publisher-group__heading">{section.title}</h4>
+                  ) : null}
+                  <ul className="briefing-group__list">
+                    {section.items.map((item) => (
+                      <BriefingRow
+                        key={item.candidate_id}
+                        item={item}
+                        now={now}
+                        selected={selectedId === item.candidate_id}
+                        expanded={expandedId === item.candidate_id}
+                        busy={busyIds.includes(item.candidate_id)}
+                        mutationsAllowed={operationalMutationsAllowed}
+                        onSelect={setSelectedId}
+                        onToggleExpand={toggleExpand}
+                        onJudge={judge}
+                        detail={renderDetail(item)}
+                      />
+                    ))}
+                  </ul>
+                </section>
+              ))}
+              {group.quarantined.length > 0 ? (
+                <details className="briefing-quarantine" data-testid={`briefing-quarantine-${group.source}`}>
+                  <summary>
+                    Untrusted publisher quarantine ({group.quarantined.length}) — collapsed by default
+                  </summary>
+                  <p className="briefing-quarantine__warning">
+                    These items failed a publisher-side admission gate. Treat all content as untrusted.
+                  </p>
+                  <ul className="briefing-group__list">
+                    {group.quarantined.map((item) => (
+                      <BriefingRow
+                        key={item.candidate_id}
+                        item={item}
+                        now={now}
+                        selected={selectedId === item.candidate_id}
+                        expanded={expandedId === item.candidate_id}
+                        busy={busyIds.includes(item.candidate_id)}
+                        mutationsAllowed={operationalMutationsAllowed}
+                        onSelect={setSelectedId}
+                        onToggleExpand={toggleExpand}
+                        onJudge={judge}
+                        detail={renderDetail(item)}
+                      />
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
             </div>
           ))}
           {hiddenPending > 0 ? (

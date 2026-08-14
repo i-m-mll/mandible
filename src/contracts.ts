@@ -979,7 +979,13 @@ export type ResolveRefResponse = { resolution: ResolverResult };
 // Review state is DERIVED from the append-only decision-event stream, never
 // stored as a mutable column. See `BriefingCandidateState`.
 
-export const BRIEFING_INGEST_SCHEMA = 'briefing-ingest@1';
+export const BRIEFING_INGEST_SCHEMA_V1 = 'briefing-ingest@1';
+export const BRIEFING_INGEST_SCHEMA_V2 = 'briefing-ingest@2';
+/** Backwards-compatible name for existing v1 publishers. */
+export const BRIEFING_INGEST_SCHEMA = BRIEFING_INGEST_SCHEMA_V1;
+export type BriefingIngestSchema =
+  | typeof BRIEFING_INGEST_SCHEMA_V1
+  | typeof BRIEFING_INGEST_SCHEMA_V2;
 
 export type BriefingEvidenceKind = 'snapshot-item' | 'finding-only';
 
@@ -1001,6 +1007,13 @@ export type BriefingCandidateState =
   | 'expired_unreviewed';
 
 /** One finding in an ingest batch. All identity fields are publisher-derived. */
+export type BriefingPublisherAdvisoryCode = 'admission_gate_rejected';
+
+export type BriefingPublisherAdvisory = {
+  code: BriefingPublisherAdvisoryCode;
+  reason: string;
+};
+
 export type BriefingIngestItem = {
   candidate_key: string;
   source: string;
@@ -1012,10 +1025,16 @@ export type BriefingIngestItem = {
   evidence_kind: BriefingEvidenceKind;
   captured_at?: string | null;
   rank?: number | null;
+  /** v2 only; absent means a leaf item. */
+  item_kind?: 'item' | 'group';
+  /** v2 only; exact candidate_key of a group in the same source collection. */
+  parent?: string | null;
+  /** v2 only; publisher-authored metadata, never a human response event. */
+  publisher_advisory?: BriefingPublisherAdvisory | null;
 };
 
 export type BriefingIngestRequest = {
-  schema: typeof BRIEFING_INGEST_SCHEMA;
+  schema: BriefingIngestSchema;
   task_identity: string;
   run_id: string;
   digest: { series_ref: string; version: number };
@@ -1048,8 +1067,15 @@ export type BriefingRevision = {
   digest_series_ref: string | null;
   digest_version: number | null;
   rank: number | null;
+  publisher_advisory: BriefingPublisherAdvisory | null;
   batch_key: string;
   ingested_at: number;
+};
+
+export type BriefingGroup = {
+  id: string;
+  candidate_key: string;
+  title: string;
 };
 
 export type BriefingOccurrenceStats = {
@@ -1094,6 +1120,8 @@ export type BriefingQueueEntry = {
    * fact and may name a different task. NULL only when the batch row is gone.
    */
   task_identity: string | null;
+  /** v2 parent group; null for v1 and ungrouped v2 items. */
+  group: BriefingGroup | null;
 };
 
 /** Per-source ingest health, pulled from the batch ledger. */

@@ -18,6 +18,7 @@ import type {
   BriefingIngestRequest,
   BriefingIngestResult,
   BriefingOccurrenceStats,
+  BriefingPublisherAdvisory,
   BriefingQueueEntry,
   BriefingQueueResponse,
   BriefingRevision,
@@ -27,16 +28,18 @@ import type {
 import type { Db } from "../db.js";
 
 export const RECURRING_REVISION_CONTENT_SCHEMA = "mandible.feedback.recurring_revision.v1";
+export const RECURRING_REVISION_CONTENT_SCHEMA_V2 = "mandible.feedback.recurring_revision.v2";
 const EMPTY_BRIEFING_BATCH_SOURCE = "mandible.internal/briefing-empty-batches";
 
 export interface RecurringRevisionContent {
-  schema: typeof RECURRING_REVISION_CONTENT_SCHEMA;
+  schema: typeof RECURRING_REVISION_CONTENT_SCHEMA | typeof RECURRING_REVISION_CONTENT_SCHEMA_V2;
   why_notable: string | null;
   refs: string[];
   source_ref: string | null;
   evidence_kind: BriefingEvidenceKind;
   captured_at: string | null;
   rank: number | null;
+  publisher_advisory: BriefingPublisherAdvisory | null;
 }
 
 export interface RecurringCandidateRow {
@@ -71,9 +74,15 @@ export class FeedbackStoreError extends Error {
 }
 
 export function encodeRecurringRevisionContent(
-  value: Omit<RecurringRevisionContent, "schema">,
+  value: Omit<RecurringRevisionContent, "schema" | "publisher_advisory">,
 ): string {
   return JSON.stringify({ schema: RECURRING_REVISION_CONTENT_SCHEMA, ...value });
+}
+
+export function encodeRecurringRevisionContentV2(
+  value: Omit<RecurringRevisionContent, "schema">,
+): string {
+  return JSON.stringify({ schema: RECURRING_REVISION_CONTENT_SCHEMA_V2, ...value });
 }
 
 export function decodeRecurringRevisionContent(json: string): RecurringRevisionContent {
@@ -88,7 +97,8 @@ export function decodeRecurringRevisionContent(json: string): RecurringRevisionC
   }
   const record = value as Record<string, unknown>;
   if (
-    record.schema !== RECURRING_REVISION_CONTENT_SCHEMA
+    (record.schema !== RECURRING_REVISION_CONTENT_SCHEMA
+      && record.schema !== RECURRING_REVISION_CONTENT_SCHEMA_V2)
     || (record.why_notable !== null && typeof record.why_notable !== "string")
     || !Array.isArray(record.refs)
     || record.refs.some((entry) => typeof entry !== "string")
@@ -96,6 +106,26 @@ export function decodeRecurringRevisionContent(json: string): RecurringRevisionC
     || (record.evidence_kind !== "snapshot-item" && record.evidence_kind !== "finding-only")
     || (record.captured_at !== null && typeof record.captured_at !== "string")
     || (record.rank !== null && !Number.isInteger(record.rank))
+  ) {
+    throw new Error("invalid recurring feedback revision content_json");
+  }
+  if (record.schema === RECURRING_REVISION_CONTENT_SCHEMA) {
+    if (Object.hasOwn(record, "publisher_advisory")) {
+      throw new Error("invalid recurring feedback revision content_json");
+    }
+    return { ...record, publisher_advisory: null } as unknown as RecurringRevisionContent;
+  }
+  const advisory = record.publisher_advisory;
+  if (
+    advisory !== null
+    && (
+      !advisory
+      || typeof advisory !== "object"
+      || Array.isArray(advisory)
+      || (advisory as Record<string, unknown>).code !== "admission_gate_rejected"
+      || typeof (advisory as Record<string, unknown>).reason !== "string"
+      || !(advisory as Record<string, unknown>).reason
+    )
   ) {
     throw new Error("invalid recurring feedback revision content_json");
   }
@@ -118,6 +148,7 @@ function projectRevision(row: KernelRevisionRow): BriefingRevision {
     digest_series_ref: row.digest_series_ref,
     digest_version: row.digest_version,
     rank: content.rank,
+    publisher_advisory: content.publisher_advisory,
     batch_key: row.publication_key ?? "",
     ingested_at: row.created_at,
   };
@@ -126,7 +157,9 @@ function projectRevision(row: KernelRevisionRow): BriefingRevision {
 function revisionSelect(alias = "r"): string {
   return `${alias}.id, ${alias}.item_id, ${alias}.ordinal, ${alias}.title,
           ${alias}.content_json, ${alias}.evidence_digest, ${alias}.publication_id,
-          ${alias}.created_at, p.publication_key, p.task_identity, p.run_id,
+          ${alias}.created_at,
+          COALESCE(ir.batch_key, p.publication_key) AS publication_key,
+          p.task_identity, p.run_id,
           p.digest_series_ref, p.digest_version`;
 }
 
@@ -173,7 +206,8 @@ export function lastRecurringActionForRevision(db: Db, revisionId: string): stri
 }
 
 const PENDING_PREDICATE = `
-  i.current_revision_id IS NOT NULL
+  i.item_kind = 'item'
+  AND i.current_revision_id IS NOT NULL
   AND COALESCE((
     SELECT event.action
       FROM (
@@ -229,23 +263,70 @@ function ensureRecurringCollection(
 export function ingestRecurringBatch(
   db: Db,
   batch: BriefingIngestRequest,
-  options: { now: number; expiryMs: number },
+  options: {
+    now: number;
+    expiryMs: number;
+    publisherUserId: string | null;
+    requestDigest: string;
+  },
 ): BriefingIngestResult {
   return db.transaction(() => {
-    const replay = db.prepare(
-      `SELECT 1 AS present
-         FROM feedback_publications p
-         JOIN feedback_collections c ON c.id = p.collection_id
-        WHERE c.kind = 'recurring_feed' AND p.publication_key = ? LIMIT 1`,
-    ).get(batch.batch_key);
-    if (replay) return summarizeRecurringBatch(db, batch.batch_key);
+    let requestId: string | null = null;
+    if (options.publisherUserId) {
+      const replay = db.prepare(
+        `SELECT id, request_digest, result_json
+           FROM feedback_ingest_requests
+          WHERE publisher_user_id = ? AND task_identity = ? AND batch_key = ?`,
+      ).get(options.publisherUserId, batch.task_identity, batch.batch_key) as
+        | { id: string; request_digest: string; result_json: string }
+        | undefined;
+      if (replay) {
+        if (replay.request_digest !== options.requestDigest) {
+          throw new FeedbackStoreError(
+            "batch replay conflicts with the previously stored request body",
+            409,
+          );
+        }
+        return JSON.parse(replay.result_json) as BriefingIngestResult;
+      }
+      requestId = randomUUID();
+    } else {
+      const replay = db.prepare(
+        `SELECT 1 AS present
+           FROM feedback_publications p
+           JOIN feedback_collections c ON c.id = p.collection_id
+          WHERE c.kind = 'recurring_feed' AND p.publication_key = ? LIMIT 1`,
+      ).get(batch.batch_key);
+      if (replay) return summarizeRecurringBatch(db, batch.batch_key);
+    }
+
+    validateRecurringBatchGraph(db, batch);
+
+    if (requestId && options.publisherUserId) {
+      db.prepare(
+        `INSERT INTO feedback_ingest_requests (
+           id, publisher_user_id, task_identity, batch_key, request_digest,
+           schema_id, result_json, received_at
+         ) VALUES (?, ?, ?, ?, ?, ?, '{}', ?)`,
+      ).run(
+        requestId,
+        options.publisherUserId,
+        batch.task_identity,
+        batch.batch_key,
+        options.requestDigest,
+        batch.schema,
+        options.now,
+      );
+    }
 
     const priorMax = (db.prepare(
       `SELECT MAX(p.digest_version) AS version
          FROM feedback_publications p
          JOIN feedback_collections c ON c.id = p.collection_id
-        WHERE c.kind = 'recurring_feed' AND p.task_identity = ?`,
-    ).get(batch.task_identity) as { version: number | null } | undefined)?.version ?? null;
+        WHERE c.kind = 'recurring_feed' AND p.task_identity = ?
+          AND (? IS NULL OR p.publisher_user_id = ?)`,
+    ).get(batch.task_identity, options.publisherUserId, options.publisherUserId) as
+      { version: number | null } | undefined)?.version ?? null;
     const stale = priorMax !== null && batch.digest.version <= priorMax;
 
     const publications = new Map<string, { collectionId: string; publicationId: string }>();
@@ -257,44 +338,145 @@ export function ingestRecurringBatch(
         options.now,
       );
       db.prepare(
-        `INSERT INTO feedback_publications (
+         `INSERT INTO feedback_publications (
            id, collection_id, publication_key, publisher_user_id, task_identity,
-           run_id, digest_series_ref, digest_version, item_count, received_at
-         ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?)`,
+           run_id, digest_series_ref, digest_version, item_count, received_at,
+           ingest_request_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       ).run(
-        randomUUID(), collectionId, batch.batch_key, batch.task_identity,
-        batch.run_id, batch.digest.series_ref, batch.digest.version, options.now,
+        randomUUID(), collectionId, requestId ?? batch.batch_key, options.publisherUserId,
+        batch.task_identity, batch.run_id, batch.digest.series_ref, batch.digest.version,
+        options.now, requestId,
       );
-      return summarizeRecurringBatch(db, batch.batch_key);
+      const result = requestId
+        ? summarizeRecurringRequest(db, requestId, batch.items.length)
+        : summarizeRecurringBatch(db, batch.batch_key);
+      if (requestId) {
+        db.prepare("UPDATE feedback_ingest_requests SET result_json = ? WHERE id = ?")
+          .run(JSON.stringify(result), requestId);
+      }
+      return result;
     }
     for (const source of new Set(batch.items.map((item) => item.source))) {
       const collectionId = ensureRecurringCollection(db, source, options.expiryMs, options.now);
       const publicationId = randomUUID();
       db.prepare(
-        `INSERT INTO feedback_publications (
+         `INSERT INTO feedback_publications (
            id, collection_id, publication_key, publisher_user_id, task_identity,
-           run_id, digest_series_ref, digest_version, item_count, received_at
-         ) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)`,
+           run_id, digest_series_ref, digest_version, item_count, received_at,
+           ingest_request_id
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
-        publicationId, collectionId, batch.batch_key, batch.task_identity,
+        publicationId, collectionId, requestId ?? batch.batch_key, options.publisherUserId,
+        batch.task_identity,
         batch.run_id, batch.digest.series_ref, batch.digest.version,
-        batch.items.length, options.now,
+        batch.items.length, options.now, requestId,
       );
       publications.set(source, { collectionId, publicationId });
     }
 
-    batch.items.forEach((item, position) => {
+    const itemIds = new Map<string, string>();
+    const ordered = [...batch.items.entries()].sort(([, left], [, right]) =>
+      (left.item_kind === "group" ? 0 : 1) - (right.item_kind === "group" ? 0 : 1));
+    ordered.forEach(([position, item]) => {
       const publication = publications.get(item.source);
       if (!publication) throw new Error("missing recurring publication");
-      ingestRecurringItem(db, batch, item, {
+      let parentItemId: string | null = null;
+      if (item.parent) {
+        parentItemId = itemIds.get(`${item.source}\u0000${item.parent}`) ?? null;
+        if (!parentItemId) {
+          parentItemId = (db.prepare(
+            `SELECT i.id
+               FROM feedback_items i
+               JOIN feedback_collections c ON c.id = i.collection_id
+              WHERE c.kind = 'recurring_feed' AND c.source = ?
+                AND i.external_key = ? AND i.item_kind = 'group'`,
+          ).get(item.source, item.parent) as { id: string } | undefined)?.id ?? null;
+        }
+        if (!parentItemId) throw new FeedbackStoreError("parent group not found", 400);
+      }
+      const itemId = ingestRecurringItem(db, batch, item, {
         ...publication,
         now: options.now,
         stale,
         position,
+        parentItemId,
       });
+      itemIds.set(`${item.source}\u0000${item.candidate_key}`, itemId);
     });
-    return summarizeRecurringBatch(db, batch.batch_key);
-  })();
+    const result = requestId
+      ? summarizeRecurringRequest(db, requestId, batch.items.length)
+      : summarizeRecurringBatch(db, batch.batch_key);
+    if (requestId) {
+      db.prepare("UPDATE feedback_ingest_requests SET result_json = ? WHERE id = ?")
+        .run(JSON.stringify(result), requestId);
+    }
+    return result;
+  }).immediate();
+}
+
+function validateRecurringBatchGraph(db: Db, batch: BriefingIngestRequest): void {
+  const items = new Map<string, BriefingIngestItem>();
+  for (const item of batch.items) {
+    const key = `${item.source}\u0000${item.candidate_key}`;
+    if (items.has(key)) {
+      throw new FeedbackStoreError(
+        `duplicate candidate_key '${item.candidate_key}' in source '${item.source}'`,
+      );
+    }
+    items.set(key, item);
+    const existing = db.prepare(
+      `SELECT i.item_kind, i.parent_item_id,
+              parent.external_key AS parent_candidate_key
+         FROM feedback_items i
+         JOIN feedback_collections c ON c.id = i.collection_id
+         LEFT JOIN feedback_items parent ON parent.id = i.parent_item_id
+        WHERE c.kind = 'recurring_feed' AND c.source = ? AND i.external_key = ?`,
+    ).get(item.source, item.candidate_key) as
+      {
+        item_kind: string;
+        parent_item_id: string | null;
+        parent_candidate_key: string | null;
+      } | undefined;
+    const itemKind = item.item_kind ?? "item";
+    if (existing && existing.item_kind !== itemKind) {
+      throw new FeedbackStoreError(
+        `candidate '${item.candidate_key}' cannot change item_kind`,
+        409,
+      );
+    }
+    if (itemKind === "group" && existing?.parent_item_id) {
+      throw new FeedbackStoreError(`group '${item.candidate_key}' cannot be nested`);
+    }
+    if (existing && existing.parent_candidate_key !== (item.parent ?? null)) {
+      throw new FeedbackStoreError(
+        `candidate '${item.candidate_key}' cannot change parent group`,
+        409,
+      );
+    }
+  }
+  for (const item of batch.items) {
+    if (!item.parent) continue;
+    const parent = items.get(`${item.source}\u0000${item.parent}`);
+    if (parent) {
+      if ((parent.item_kind ?? "item") !== "group") {
+        throw new FeedbackStoreError(`parent '${item.parent}' must be a group`);
+      }
+      continue;
+    }
+    const existing = db.prepare(
+      `SELECT i.item_kind, i.parent_item_id
+         FROM feedback_items i
+         JOIN feedback_collections c ON c.id = i.collection_id
+        WHERE c.kind = 'recurring_feed' AND c.source = ? AND i.external_key = ?`,
+    ).get(item.source, item.parent) as
+      { item_kind: string; parent_item_id: string | null } | undefined;
+    if (!existing || existing.item_kind !== "group" || existing.parent_item_id !== null) {
+      throw new FeedbackStoreError(
+        `parent '${item.parent}' must be a top-level group in source '${item.source}'`,
+      );
+    }
+  }
 }
 
 function ingestRecurringItem(
@@ -307,8 +489,9 @@ function ingestRecurringItem(
     now: number;
     stale: boolean;
     position: number;
+    parentItemId: string | null;
   },
-): void {
+): string {
   let candidate = db.prepare(
     `SELECT id, current_revision_id, created_at
        FROM feedback_items
@@ -322,8 +505,15 @@ function ingestRecurringItem(
       `INSERT INTO feedback_items (
          id, collection_id, parent_item_id, item_kind, identity_mode, external_key,
          client_item_key, current_revision_id, created_at, tombstoned_at
-       ) VALUES (?, ?, NULL, 'item', 'publisher_dedup', ?, NULL, NULL, ?, NULL)`,
-    ).run(id, context.collectionId, item.candidate_key, context.now);
+         ) VALUES (?, ?, ?, ?, 'publisher_dedup', ?, NULL, NULL, ?, NULL)`,
+    ).run(
+      id,
+      context.collectionId,
+      context.parentItemId,
+      item.item_kind ?? "item",
+      item.candidate_key,
+      context.now,
+    );
     candidate = { id, current_revision_id: null, created_at: context.now };
   }
 
@@ -342,7 +532,7 @@ function ingestRecurringItem(
       `INSERT INTO feedback_item_revisions (
          id, item_id, ordinal, title, prompt, description, response_type, required,
          content_json, evidence_digest, publication_id, position, created_at
-       ) VALUES (?, ?, ?, ?, ?, ?, 'verdict', 0, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
     ).run(
       id,
       candidate.id,
@@ -350,14 +540,25 @@ function ingestRecurringItem(
       item.title,
       item.title,
       item.why_notable ?? null,
-      encodeRecurringRevisionContent({
-        why_notable: item.why_notable ?? null,
-        refs: item.refs ?? [],
-        source_ref: item.ref,
-        evidence_kind: item.evidence_kind,
-        captured_at: item.captured_at ?? null,
-        rank: item.rank ?? null,
-      }),
+      (item.item_kind ?? "item") === "group" ? null : "verdict",
+      batch.schema === "briefing-ingest@2"
+        ? encodeRecurringRevisionContentV2({
+          why_notable: item.why_notable ?? null,
+          refs: item.refs ?? [],
+          source_ref: item.ref,
+          evidence_kind: item.evidence_kind,
+          captured_at: item.captured_at ?? null,
+          rank: item.rank ?? null,
+          publisher_advisory: item.publisher_advisory ?? null,
+        })
+        : encodeRecurringRevisionContent({
+          why_notable: item.why_notable ?? null,
+          refs: item.refs ?? [],
+          source_ref: item.ref,
+          evidence_kind: item.evidence_kind,
+          captured_at: item.captured_at ?? null,
+          rank: item.rank ?? null,
+        }),
       item.evidence_hash,
       context.publicationId,
       Math.max(0, item.rank ?? context.position),
@@ -385,6 +586,32 @@ function ingestRecurringItem(
        (id, publication_id, item_revision_id, position, seen_at)
      VALUES (?, ?, ?, ?, ?)`,
   ).run(randomUUID(), context.publicationId, revision.id, context.position, context.now);
+  return candidate.id;
+}
+
+function summarizeRecurringRequest(
+  db: Db,
+  requestId: string,
+  accepted: number,
+): BriefingIngestResult {
+  const written = (db.prepare(
+    `SELECT COUNT(*) AS n
+       FROM feedback_item_revisions r
+       JOIN feedback_publications p ON p.id = r.publication_id
+      WHERE p.ingest_request_id = ?`,
+  ).get(requestId) as { n: number }).n;
+  const created = (db.prepare(
+    `SELECT COUNT(*) AS n
+       FROM feedback_item_revisions r
+       JOIN feedback_publications p ON p.id = r.publication_id
+      WHERE p.ingest_request_id = ? AND r.ordinal = 1`,
+  ).get(requestId) as { n: number }).n;
+  return {
+    accepted,
+    created,
+    revised: written - created,
+    unchanged: Math.max(0, accepted - written),
+  };
 }
 
 export function summarizeRecurringBatch(db: Db, batchKey: string): BriefingIngestResult {
@@ -420,9 +647,9 @@ export function getRecurringCandidate(db: Db, candidateId: string): RecurringCan
   return (db.prepare(
     `SELECT i.id, c.source, i.external_key AS candidate_key,
             i.current_revision_id, i.created_at
-       FROM feedback_items i
-       JOIN feedback_collections c ON c.id = i.collection_id
-      WHERE i.id = ? AND c.kind = 'recurring_feed'`,
+      FROM feedback_items i
+      JOIN feedback_collections c ON c.id = i.collection_id
+      WHERE i.id = ? AND i.item_kind = 'item' AND c.kind = 'recurring_feed'`,
   ).get(candidateId) as RecurringCandidateRow | undefined) ?? null;
 }
 
@@ -466,6 +693,7 @@ export function listRecurringQueue(
     `SELECT ${revisionSelect("r")}
        FROM feedback_item_revisions r
        LEFT JOIN feedback_publications p ON p.id = r.publication_id
+       LEFT JOIN feedback_ingest_requests ir ON ir.id = p.ingest_request_id
       WHERE r.id IN (${revisionPlaceholders})`,
   ).all(...revisionIds) as KernelRevisionRow[];
   const revisionsById = new Map(revisions.map((revision) => [revision.id, revision]));
@@ -490,6 +718,24 @@ export function listRecurringQueue(
       last_seen_at: row.last_seen_at,
     }]),
   );
+  const groupRows = db.prepare(
+    `SELECT child.id AS child_id, parent.id,
+            parent.external_key AS candidate_key, parent_revision.title
+       FROM feedback_items child
+       JOIN feedback_items parent ON parent.id = child.parent_item_id
+       JOIN feedback_item_revisions parent_revision ON parent_revision.id = parent.current_revision_id
+      WHERE child.id IN (${itemPlaceholders})`,
+  ).all(...rows.map((row) => row.id)) as Array<{
+    child_id: string;
+    id: string;
+    candidate_key: string;
+    title: string;
+  }>;
+  const groupByItem = new Map(groupRows.map((group) => [group.child_id, {
+    id: group.id,
+    candidate_key: group.candidate_key,
+    title: group.title,
+  }]));
   const candidates: BriefingQueueEntry[] = rows.map((row) => {
     const revision = revisionsById.get(row.current_revision_id as string);
     if (!revision) throw new Error(`missing current feedback revision for ${row.id}`);
@@ -504,6 +750,7 @@ export function listRecurringQueue(
       occurrences: occurrencesByRevision.get(revision.id)
         ?? { count: 0, first_seen_at: null, last_seen_at: null },
       task_identity: revision.task_identity,
+      group: groupByItem.get(row.id) ?? null,
     };
   });
   return { candidates, sources: listRecurringSourceHealth(db, options.now) };
@@ -516,7 +763,7 @@ export function listRecurringSourceHealth(db: Db, now: number): BriefingSourceHe
          SELECT c.source AS source, CASE WHEN ${PENDING_PREDICATE} THEN 1 ELSE 0 END AS is_pending
            FROM feedback_items i
            JOIN feedback_collections c ON c.id = i.collection_id
-          WHERE c.kind = 'recurring_feed'
+          WHERE c.kind = 'recurring_feed' AND i.item_kind = 'item'
        )
       GROUP BY source ORDER BY source ASC`,
   ).all() as Array<{ source: string; candidate_count: number; pending_count: number }>;
@@ -569,6 +816,7 @@ export function getRecurringCandidateHistory(
     `SELECT ${revisionSelect("r")}
        FROM feedback_item_revisions r
        LEFT JOIN feedback_publications p ON p.id = r.publication_id
+       LEFT JOIN feedback_ingest_requests ir ON ir.id = p.ingest_request_id
       WHERE r.item_id = ? ORDER BY r.ordinal ASC`,
   ).all(candidateId) as KernelRevisionRow[]).map(projectRevision);
   const decisions = db.prepare(
@@ -773,6 +1021,7 @@ export function getRecurringRevision(db: Db, revisionId: string): BriefingRevisi
     `SELECT ${revisionSelect("r")}
        FROM feedback_item_revisions r
        LEFT JOIN feedback_publications p ON p.id = r.publication_id
+       LEFT JOIN feedback_ingest_requests ir ON ir.id = p.ingest_request_id
        JOIN feedback_items i ON i.id = r.item_id
        JOIN feedback_collections c ON c.id = i.collection_id
       WHERE r.id = ? AND c.kind = 'recurring_feed'`,
