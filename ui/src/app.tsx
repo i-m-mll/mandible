@@ -396,6 +396,7 @@ const VIEW_SIDEBAR_TABS = new Set<Route['tab']>([
 const RESIZE_RAIL_TABS = new Set<Route['tab']>([
   'auth',
   'artifacts',
+  'briefing',
   'console',
   'graph',
   'inbox',

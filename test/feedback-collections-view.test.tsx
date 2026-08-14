@@ -316,6 +316,20 @@ describe('browser-local collection view state', () => {
 });
 
 describe('collection shell accessibility and reconciliation', () => {
+  it('renders a full-height split shell with content isolated in its scroll pane', () => {
+    const view = render(<ViewStateHarness collections={[recurring('alpha')]} />);
+    const shell = screen.getByTestId('feedback-collection-shell');
+    const sidebar = shell.querySelector(':scope > .view-sidebar.feedback-collections-sidebar');
+    const content = shell.querySelector(':scope > .feedback-collection-shell__content');
+    const readingWidth = content?.querySelector(':scope > .feedback-collection-shell__content-inner');
+
+    expect(sidebar).toBeTruthy();
+    expect(content).toBeTruthy();
+    expect(readingWidth).toBeTruthy();
+    expect(readingWidth?.contains(screen.getByRole('button', { name: 'Reconcile' }))).toBe(true);
+    expect(view.container.querySelector('.feedback-collection-shell__content-inner > .view-sidebar')).toBeNull();
+  });
+
   it('provides accessible selection and pressed pin controls with an honest empty state', () => {
     render(<ViewStateHarness collections={[recurring('alpha'), ask]} />);
     const sidebar = screen.getByTestId('feedback-collections-sidebar');

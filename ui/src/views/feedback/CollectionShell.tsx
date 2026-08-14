@@ -41,7 +41,9 @@ export function CollectionShell({
         onSelect={selectCollection}
       />
       <section className="feedback-collection-shell__content" aria-label="Selected feedback collection">
-        {children}
+        <div className="feedback-collection-shell__content-inner">
+          {children}
+        </div>
       </section>
     </div>
   );
