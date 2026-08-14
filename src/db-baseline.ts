@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v127 migration replay.
+ * Schema snapshot generated from a full v1-v128 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 127;
+export const BASELINE_SCHEMA_VERSION = 128;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -370,6 +370,60 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
   `CREATE INDEX idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`,
+  `CREATE TABLE task_command_requests (
+        id                   TEXT PRIMARY KEY,
+        schema_id            TEXT NOT NULL CHECK(schema_id = 'task-command@1'),
+        request_key          TEXT NOT NULL CHECK(trim(request_key) != ''),
+        request_digest       TEXT NOT NULL
+                             CHECK(length(request_digest) = 64
+                               AND request_digest NOT GLOB '*[^0-9a-f]*'),
+        executor_name        TEXT NOT NULL CHECK(trim(executor_name) != ''),
+        task_id              TEXT NOT NULL CHECK(trim(task_id) != ''),
+        verb                 TEXT NOT NULL CHECK(verb = 'disable'),
+        payload_json         TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(payload_json)
+                               AND json_type(payload_json) = 'object'
+                               AND payload_json = '{}'),
+        requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        requested_at         INTEGER NOT NULL,
+        UNIQUE(requested_by_user_id, request_key)
+      )`,
+  `CREATE INDEX idx_task_command_requests_target
+        ON task_command_requests(executor_name, task_id, requested_at DESC)`,
+  `CREATE TABLE task_command_events (
+        id            TEXT PRIMARY KEY,
+        command_id    TEXT NOT NULL
+                      REFERENCES task_command_requests(id) ON DELETE RESTRICT,
+        event_digest  TEXT NOT NULL
+                      CHECK(length(event_digest) = 64
+                        AND event_digest NOT GLOB '*[^0-9a-f]*'),
+        event_type    TEXT NOT NULL
+                      CHECK(event_type IN ('accepted','applied','rejected','cancelled')),
+        payload_json  TEXT NOT NULL DEFAULT '{}'
+                      CHECK(json_valid(payload_json)
+                        AND json_type(payload_json) = 'object'),
+        no_op         INTEGER CHECK(no_op IS NULL OR no_op IN (0,1)),
+        rejection_reason TEXT CHECK(rejection_reason IS NULL OR rejection_reason IN (
+                           'unknown_task','unsupported_verb','invalid_payload',
+                           'stale_target','policy_refused','unknown'
+                         )),
+        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at    INTEGER NOT NULL,
+        UNIQUE(command_id, event_digest),
+        CHECK (
+          (event_type IN ('accepted','cancelled')
+            AND no_op IS NULL AND rejection_reason IS NULL)
+          OR (event_type = 'applied' AND no_op IS NOT NULL AND rejection_reason IS NULL)
+          OR (event_type = 'rejected' AND no_op IS NULL AND rejection_reason IS NOT NULL)
+        )
+      )`,
+  `CREATE UNIQUE INDEX uq_task_command_events_accepted
+        ON task_command_events(command_id) WHERE event_type = 'accepted'`,
+  `CREATE UNIQUE INDEX uq_task_command_events_terminal
+        ON task_command_events(command_id)
+        WHERE event_type IN ('applied','rejected','cancelled')`,
+  `CREATE INDEX idx_task_command_events_command
+        ON task_command_events(command_id, created_at, id)`,
   `CREATE TABLE feedback_collections (
         id                TEXT PRIMARY KEY,
         kind              TEXT NOT NULL

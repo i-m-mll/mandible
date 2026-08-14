@@ -8,23 +8,32 @@
 // authenticated fine. fileRpc is allowed so a sandboxed publisher can reach the
 // route over the file transport.
 //
-// Reads are open like the rest of the dashboard read surface, and there is no
-// write surface beyond ingestion: this slice has no commands, no edits, and no
-// creation route, because Mandible does not manage these tasks yet.
+// Inventory reads remain open like the rest of the dashboard read surface.
+// The only management surface is the disable command protocol below: operator
+// intent plus executor receipts, never an in-daemon task mutation.
 
-import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
-import { TASK_INVENTORY_EVENTS } from "../contracts.js";
+import { requireIdentity, requireOperator, ClientAuthzError } from "../client-auth/authz.js";
+import { TASK_COMMAND_EVENTS, TASK_INVENTORY_EVENTS } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import {
   getTaskInventoryView,
   parseTaskInventoryGeneration,
-  publisherMayPostInventory,
   recordTaskInventoryGeneration,
   TaskInventoryValidationError,
 } from "../task-inventory.js";
-import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
+import {
+  appendTaskCommandExecutorEvent,
+  cancelTaskCommand,
+  createTaskCommand,
+  getTaskCommand,
+  listTaskCommands,
+  parseTaskCommandCreateRequest,
+  parseTaskCommandExecutorEvent,
+  TaskCommandError,
+} from "../task-commands.js";
+import { requireMappedTaskExecutor } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
@@ -34,6 +43,10 @@ function handleError(res: ResponseLike, error: unknown): void {
   }
   if (error instanceof TaskInventoryValidationError) {
     sendJson(res, error.status, { error: error.message });
+    return;
+  }
+  if (error instanceof TaskCommandError) {
+    sendJson(res, error.status, { error: error.message, code: error.code });
     return;
   }
   const message = error instanceof Error ? error.message : String(error);
@@ -46,22 +59,7 @@ function handleError(res: ResponseLike, error: unknown): void {
  * authenticated identity alone — nothing in the payload can name a publisher.
  */
 function requireExecutorPublisher(db: Db, req: RequestLike, executorName: string): string {
-  const publisher = requireDurableAgentPublisher(db, req, {
-    credentialCode: "executor_credential_required",
-    credentialMessage:
-      "Executor inventory publication requires a durable API token, not a session credential.",
-    agentCode: "executor_agent_required",
-    agentMessage: "Executor inventory publication requires an agent identity.",
-    allowOperator: true,
-  });
-  if (!publisher.administrative && !publisherMayPostInventory(db, publisher.slug, executorName)) {
-    throw new ClientAuthzError(
-      403,
-      "executor_identity_forbidden",
-      `Identity '${publisher.slug}' is not a registered publisher for executor '${executorName}'.`,
-    );
-  }
-  return publisher.userId;
+  return requireMappedTaskExecutor(db, req, executorName, { allowOperator: true }).userId;
 }
 
 export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): void {
@@ -94,6 +92,93 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
   server.get("/api/tasks", (_req, res) => {
     try {
       sendJson(res, 200, getTaskInventoryView(db));
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  // Operator command read/create/cancel surface. Disable is the only verb in
+  // v1; cancellation is legal only before an executor accepts the request.
+  server.get("/api/tasks/commands", (req, res) => {
+    try {
+      requireOperator(db, req);
+      const executor = req.query.executor?.trim() || undefined;
+      const taskId = req.query.task_id?.trim() || undefined;
+      sendJson(res, 200, {
+        commands: listTaskCommands(db, {
+          executor,
+          taskId,
+          // The selected-task UI must see unresolved commands even when that
+          // task has more than one history page. The unfiltered audit surface
+          // remains capped.
+          limit: executor && taskId ? null : undefined,
+        }),
+        polling: "tick_aligned",
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.post("/api/tasks/commands", (req, res) => {
+    try {
+      const operator = requireOperator(db, req);
+      const result = createTaskCommand(
+        db,
+        parseTaskCommandCreateRequest(req.body),
+        operator.user_id,
+      );
+      if (result.stored) broadcast(TASK_COMMAND_EVENTS.changed, { command_id: result.command.id });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  server.post("/api/tasks/commands/:id/cancel", (req, res) => {
+    try {
+      const operator = requireOperator(db, req);
+      const result = cancelTaskCommand(db, req.params.id, operator.user_id);
+      if (result.stored) broadcast(TASK_COMMAND_EVENTS.changed, { command_id: result.command.id });
+      sendJson(res, 200, result);
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "deny" });
+
+  // Executor polling is tick-aligned. Accepted commands remain pending until a
+  // terminal receipt so an executor can retry a transient local apply failure.
+  server.get("/api/tasks/commands/pending", (req, res) => {
+    try {
+      const executor = req.query.executor?.trim();
+      if (!executor) throw new TaskCommandError("executor query parameter is required");
+      requireMappedTaskExecutor(db, req, executor);
+      sendJson(res, 200, {
+        // A disable is a safety action and must not disappear behind a history
+        // page boundary. Only the configured operator can create rows, and
+        // terminal rows are excluded, so return the complete pending queue.
+        commands: listTaskCommands(db, { executor, pendingOnly: true, limit: null }),
+        polling: "tick_aligned",
+      });
+    } catch (error) {
+      handleError(res, error);
+    }
+  }, { fileRpc: "allow" });
+
+  server.post("/api/tasks/commands/:id/events", (req, res) => {
+    try {
+      requireIdentity(req);
+      const command = getTaskCommand(db, req.params.id);
+      const executor = requireMappedTaskExecutor(db, req, command.executor);
+      const event = parseTaskCommandExecutorEvent(command.id, req.body);
+      const result = appendTaskCommandExecutorEvent(
+        db,
+        command.id,
+        event,
+        executor.userId,
+      );
+      if (result.stored) broadcast(TASK_COMMAND_EVENTS.changed, { command_id: result.command.id });
+      sendJson(res, 200, result);
     } catch (error) {
       handleError(res, error);
     }

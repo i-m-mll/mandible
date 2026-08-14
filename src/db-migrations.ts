@@ -3781,6 +3781,69 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_feedback_ingest_requests_received
         ON feedback_ingest_requests(received_at DESC)`,
     ],
+  },
+  {
+    version: 128,
+    name: "task_disable_command_protocol",
+    // Issue 548bd73 — immutable operator-authored disable requests and
+    // append-only executor receipts. Lifecycle is derived from events; no
+    // expiry or mutable state column exists by design.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS task_command_requests (
+        id                   TEXT PRIMARY KEY,
+        schema_id            TEXT NOT NULL CHECK(schema_id = 'task-command@1'),
+        request_key          TEXT NOT NULL CHECK(trim(request_key) != ''),
+        request_digest       TEXT NOT NULL
+                             CHECK(length(request_digest) = 64
+                               AND request_digest NOT GLOB '*[^0-9a-f]*'),
+        executor_name        TEXT NOT NULL CHECK(trim(executor_name) != ''),
+        task_id              TEXT NOT NULL CHECK(trim(task_id) != ''),
+        verb                 TEXT NOT NULL CHECK(verb = 'disable'),
+        payload_json         TEXT NOT NULL DEFAULT '{}'
+                             CHECK(json_valid(payload_json)
+                               AND json_type(payload_json) = 'object'
+                               AND payload_json = '{}'),
+        requested_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        requested_at         INTEGER NOT NULL,
+        UNIQUE(requested_by_user_id, request_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_task_command_requests_target
+        ON task_command_requests(executor_name, task_id, requested_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS task_command_events (
+        id            TEXT PRIMARY KEY,
+        command_id    TEXT NOT NULL
+                      REFERENCES task_command_requests(id) ON DELETE RESTRICT,
+        event_digest  TEXT NOT NULL
+                      CHECK(length(event_digest) = 64
+                        AND event_digest NOT GLOB '*[^0-9a-f]*'),
+        event_type    TEXT NOT NULL
+                      CHECK(event_type IN ('accepted','applied','rejected','cancelled')),
+        payload_json  TEXT NOT NULL DEFAULT '{}'
+                      CHECK(json_valid(payload_json)
+                        AND json_type(payload_json) = 'object'),
+        no_op         INTEGER CHECK(no_op IS NULL OR no_op IN (0,1)),
+        rejection_reason TEXT CHECK(rejection_reason IS NULL OR rejection_reason IN (
+                           'unknown_task','unsupported_verb','invalid_payload',
+                           'stale_target','policy_refused','unknown'
+                         )),
+        actor_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at    INTEGER NOT NULL,
+        UNIQUE(command_id, event_digest),
+        CHECK (
+          (event_type IN ('accepted','cancelled')
+            AND no_op IS NULL AND rejection_reason IS NULL)
+          OR (event_type = 'applied' AND no_op IS NOT NULL AND rejection_reason IS NULL)
+          OR (event_type = 'rejected' AND no_op IS NULL AND rejection_reason IS NOT NULL)
+        )
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_task_command_events_accepted
+        ON task_command_events(command_id) WHERE event_type = 'accepted'`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_task_command_events_terminal
+        ON task_command_events(command_id)
+        WHERE event_type IN ('applied','rejected','cancelled')`,
+      `CREATE INDEX IF NOT EXISTS idx_task_command_events_command
+        ON task_command_events(command_id, created_at, id)`,
+    ],
   }
 ];
 

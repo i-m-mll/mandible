@@ -106,6 +106,12 @@ function stubInventory(payload: TaskInventoryResponse | (() => TaskInventoryResp
         headers: { 'Content-Type': 'application/json' },
       }));
     }
+    if (String(input).startsWith('/api/tasks/commands?')) {
+      return Promise.resolve(new Response(JSON.stringify({ commands: [], polling: 'tick_aligned' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    }
     return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
   }));
 }
@@ -209,6 +215,231 @@ describe('TasksView', () => {
 
     // `never` is a claim, not an unknown.
     expect(within(detail).getByText(/never having happened/i)).toBeTruthy();
+    expect(within(detail).getByText(/take up to one scheduler tick/i)).toBeTruthy();
+    expect(within(detail).getByRole('button', { name: 'Request disable' })).toBeTruthy();
+  });
+
+  it('renders a new disable as requested rather than applied', async () => {
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/tasks') {
+        return Promise.resolve(new Response(JSON.stringify(inventory), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/tasks/commands?') && !init?.method) {
+        return Promise.resolve(new Response(JSON.stringify({ commands: [], polling: 'tick_aligned' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/tasks/commands' && init?.method === 'POST') {
+        return Promise.resolve(new Response(JSON.stringify({
+          stored: true,
+          command: {
+            id: 'command-1',
+            schema: 'task-command@1',
+            request_key: 'request-1',
+            request_digest: 'a'.repeat(64),
+            executor: 'agent-schedule',
+            task_id: 'daily-digest',
+            verb: 'disable',
+            payload: {},
+            requested_by_user_id: 'operator',
+            requested_by_slug: 'operator',
+            requested_at: Date.now(),
+            state: 'requested',
+            no_op: null,
+            rejection_reason: null,
+            events: [],
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    }));
+
+    render(<TasksView />);
+    const button = await screen.findByRole('button', { name: 'Request disable' });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    button.click();
+    await waitFor(() => {
+      expect(screen.getByText(/Requested, not yet seen by executor/i)).toBeTruthy();
+    });
+    expect(screen.queryByText(/executor reported the local task disabled/i)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Request disable' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    expect(screen.getByRole('button', { name: 'Cancel unseen request' })).toBeTruthy();
+  });
+
+  it('keeps inventory readable when operator command authorization is unavailable', async () => {
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      if (String(input) === '/api/tasks') {
+        return Promise.resolve(new Response(JSON.stringify(inventory), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (String(input).startsWith('/api/tasks/commands?')) {
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Only the local operator may perform this action.' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+    }));
+
+    render(<TasksView />);
+    await waitFor(() => expect(screen.getAllByText('Daily digest')).toHaveLength(2));
+    await waitFor(() => {
+      expect(screen.getByRole('alert').textContent).toMatch(/Only the local operator/i);
+    });
+    expect((screen.getByRole('button', { name: 'Request disable' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+  });
+
+  it('reuses the request key after an ambiguous transport failure', async () => {
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    const postedBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/tasks') {
+        return Promise.resolve(new Response(JSON.stringify(inventory), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/tasks/commands?') && !init?.method) {
+        return Promise.resolve(new Response(JSON.stringify({ commands: [], polling: 'tick_aligned' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/tasks/commands' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        postedBodies.push(body);
+        if (postedBodies.length === 1) return Promise.reject(new Error('connection reset'));
+        return Promise.resolve(new Response(JSON.stringify({
+          stored: false,
+          command: {
+            id: 'command-replayed',
+            schema: 'task-command@1',
+            request_key: body.request_key,
+            request_digest: 'a'.repeat(64),
+            executor: 'agent-schedule',
+            task_id: 'daily-digest',
+            verb: 'disable',
+            payload: {},
+            requested_by_user_id: 'operator',
+            requested_by_slug: 'operator',
+            requested_at: Date.now(),
+            state: 'requested',
+            no_op: null,
+            rejection_reason: null,
+            events: [],
+          },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    }));
+
+    render(<TasksView />);
+    const button = await screen.findByRole('button', { name: 'Request disable' });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    button.click();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('connection reset'));
+    button.click();
+    await waitFor(() => expect(screen.getByText(/Requested, not yet seen by executor/i)).toBeTruthy());
+    expect(postedBodies).toHaveLength(2);
+    expect(postedBodies[1].request_key).toBe(postedBodies[0].request_key);
+  });
+
+  it('uses a fresh request key after a definitive client refusal', async () => {
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    const postedKeys: string[] = [];
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/tasks') {
+        return Promise.resolve(new Response(JSON.stringify(inventory), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/tasks/commands?') && !init?.method) {
+        return Promise.resolve(new Response(JSON.stringify({ commands: [], polling: 'tick_aligned' }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url === '/api/tasks/commands' && init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { request_key: string };
+        postedKeys.push(body.request_key);
+        return Promise.resolve(new Response(JSON.stringify({ error: 'definitive refusal' }), {
+          status: 403,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    }));
+
+    render(<TasksView />);
+    const button = await screen.findByRole('button', { name: 'Request disable' });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    button.click();
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toContain('definitive refusal'));
+    button.click();
+    await waitFor(() => expect(postedKeys).toHaveLength(2));
+    expect(postedKeys[1]).not.toBe(postedKeys[0]);
+  });
+
+  it('surfaces an unresolved command ahead of newer terminal history', async () => {
+    post([knownTask()]);
+    const inventory = normalizeTaskInventory(getTaskInventoryView(db));
+    const command = (id: string, state: 'accepted' | 'applied', requestedAt: number) => ({
+      id,
+      schema: 'task-command@1',
+      request_key: `request-${id}`,
+      request_digest: 'a'.repeat(64),
+      executor: 'agent-schedule',
+      task_id: 'daily-digest',
+      verb: 'disable',
+      payload: {},
+      requested_by_user_id: 'operator',
+      requested_by_slug: 'operator',
+      requested_at: requestedAt,
+      state,
+      no_op: state === 'applied' ? false : null,
+      rejection_reason: null,
+      events: [],
+    });
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/api/tasks') {
+        return Promise.resolve(new Response(JSON.stringify(inventory), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      if (url.startsWith('/api/tasks/commands?')) {
+        return Promise.resolve(new Response(JSON.stringify({
+          commands: [command('newer-terminal', 'applied', 2), command('older-active', 'accepted', 1)],
+          polling: 'tick_aligned',
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    }));
+
+    render(<TasksView />);
+    await waitFor(() => expect(screen.getByText(/Accepted by executor and durably journaled/i)).toBeTruthy());
+    expect(screen.queryByText(/executor reported the local task disabled/i)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Request disable' }) as HTMLButtonElement).disabled)
+      .toBe(true);
   });
 
   it('marks a stale executor report in the sidebar list', async () => {

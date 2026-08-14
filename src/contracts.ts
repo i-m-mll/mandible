@@ -1579,3 +1579,80 @@ export type TaskInventoryResponse = {
 export const TASK_INVENTORY_EVENTS = Object.freeze({
   posted: 'tasks.inventory.posted',
 } as const);
+
+// Immutable operator requests plus append-only executor receipts — issue
+// 548bd73. These are deliberately separate from inventory telemetry: Mandible
+// records the desired safety action, while only the addressed executor may
+// attest acceptance and application.
+export const TASK_COMMAND_SCHEMA = 'task-command@1';
+export const TASK_COMMAND_EVENT_SCHEMA = 'task-command-event@1';
+
+export type TaskCommandVerb = 'disable';
+export type TaskCommandState = 'requested' | 'accepted' | 'applied' | 'rejected' | 'cancelled';
+export type TaskCommandExecutorEventType = 'accepted' | 'applied' | 'rejected';
+export type TaskCommandRejectionReason =
+  | 'unknown_task'
+  | 'unsupported_verb'
+  | 'invalid_payload'
+  | 'stale_target'
+  | 'policy_refused'
+  | 'unknown';
+
+export type TaskCommandCreateRequest = {
+  schema: typeof TASK_COMMAND_SCHEMA;
+  request_key: string;
+  executor: string;
+  task_id: string;
+  verb: TaskCommandVerb;
+  payload: Record<string, never>;
+};
+
+export type TaskCommandExecutorEventRequest = {
+  schema: typeof TASK_COMMAND_EVENT_SCHEMA;
+  event: TaskCommandExecutorEventType;
+  event_digest: string;
+  no_op?: boolean;
+  reason?: TaskCommandRejectionReason;
+};
+
+export type TaskCommandEvent = {
+  id: string;
+  event: TaskCommandState;
+  event_digest: string;
+  payload: Record<string, unknown>;
+  actor_user_id: string;
+  actor_slug: string | null;
+  created_at: number;
+};
+
+export type TaskCommand = {
+  id: string;
+  schema: typeof TASK_COMMAND_SCHEMA;
+  request_key: string;
+  request_digest: string;
+  executor: string;
+  task_id: string;
+  verb: TaskCommandVerb;
+  payload: Record<string, never>;
+  requested_by_user_id: string;
+  requested_by_slug: string | null;
+  requested_at: number;
+  state: TaskCommandState;
+  no_op: boolean | null;
+  rejection_reason: TaskCommandRejectionReason | null;
+  events: TaskCommandEvent[];
+};
+
+export type TaskCommandMutationResult = {
+  command: TaskCommand;
+  stored: boolean;
+};
+
+export type TaskCommandListResponse = {
+  commands: TaskCommand[];
+  polling: 'tick_aligned';
+};
+
+export const TASK_COMMAND_EVENTS = Object.freeze({
+  changed: 'tasks.commands.changed',
+} as const);

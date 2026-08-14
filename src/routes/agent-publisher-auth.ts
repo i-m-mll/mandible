@@ -1,6 +1,7 @@
 import { ClientAuthzError, isOperator, requireIdentity } from "../client-auth/authz.js";
 import type { Db } from "../db.js";
 import type { RequestLike } from "../server.js";
+import { publisherMayPostInventory } from "../task-inventory.js";
 import { getUserById } from "../users/store.js";
 
 export interface DurableAgentPublisherOptions {
@@ -43,4 +44,40 @@ export function requireDurableAgentPublisher(
     throw new ClientAuthzError(403, options.agentCode, options.agentMessage);
   }
   return { userId: user.id, slug: user.slug, administrative: false };
+}
+
+export interface MappedTaskExecutorOptions {
+  allowOperator?: boolean;
+}
+
+/**
+ * Inventory and command receipts share one exact executor boundary.
+ *
+ * A durable token must resolve to an active agent and that agent's slug must be
+ * explicitly mapped to the exact executor name. Inventory retains its existing
+ * operator administrative exception; command fetch/events do not enable it.
+ */
+export function requireMappedTaskExecutor(
+  db: Db,
+  req: RequestLike,
+  executorName: string,
+  options: MappedTaskExecutorOptions = {},
+): { userId: string; slug: string; administrative: boolean } {
+  const publisher = requireDurableAgentPublisher(db, req, {
+    credentialCode: "executor_credential_required",
+    credentialMessage:
+      "Executor access requires a durable API token, not a session credential.",
+    agentCode: "executor_agent_required",
+    agentMessage: "Executor access requires an agent identity.",
+    allowOperator: options.allowOperator === true,
+  });
+  if (!publisher.administrative
+    && !publisherMayPostInventory(db, publisher.slug, executorName)) {
+    throw new ClientAuthzError(
+      403,
+      "executor_identity_forbidden",
+      `Identity '${publisher.slug}' is not mapped to executor '${executorName}'.`,
+    );
+  }
+  return publisher;
 }

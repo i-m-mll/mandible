@@ -165,6 +165,11 @@ export const METADATA_BACKUP_TABLES = [
   // the newest one, so losing the receipts loses the view. References `users`
   // (the posting principal), already emitted above.
   "task_inventory_generations",
+  // Disable command protocol (issue 548bd73, migration 128). Operator requests
+  // and executor receipts are immutable authority/audit facts, not
+  // reproducible runtime state. Keep requests before their event children.
+  "task_command_requests",
+  "task_command_events",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];
