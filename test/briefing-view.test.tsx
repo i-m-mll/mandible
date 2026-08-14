@@ -85,6 +85,7 @@ function makeItem(overrides: Partial<BriefingQueueEntry> = {}): BriefingQueueEnt
       digest_series_ref: 'artifact-series:abcdef123456',
       digest_version: 7,
       rank: 1,
+      publisher_advisory: null,
       batch_key: 'b'.repeat(64),
       ingested_at: Date.now() - HOUR,
     },
@@ -93,6 +94,7 @@ function makeItem(overrides: Partial<BriefingQueueEntry> = {}): BriefingQueueEnt
     // The producer of THIS entry's revision — a per-entry contract field, not
     // the source's most recent batch identity.
     task_identity: 'agent-schedule/daily-digest',
+    group: null,
     ...overrides,
   };
 }
@@ -497,6 +499,39 @@ describe('BriefingView page composition', () => {
     expect(within(row).getByText('Why a matters.')).toBeTruthy();
     expect(within(row).getByText(/ago$/)).toBeTruthy();
     expect(screen.getAllByRole('heading', { level: 3 }).length).toBe(2);
+  });
+
+  it('renders publisher groups and keeps advisory quarantine collapsed and explicitly untrusted', async () => {
+    const normal = makeItem({
+      id: 'proposal',
+      group: { id: 'group-proposals', candidate_key: 'proposals', title: 'Proposals' },
+    });
+    const quarantined = makeItem({
+      id: 'quarantined',
+      group: { id: 'group-quarantine', candidate_key: 'quarantine', title: 'Quarantine' },
+      revision: {
+        ...makeItem().revision,
+        id: 'rev-quarantined',
+        candidate_id: 'quarantined',
+        title: 'Rejected card',
+        publisher_advisory: {
+          code: 'admission_gate_rejected',
+          reason: '<img src=x onerror=alert(1)> missing evidence',
+        },
+      },
+    });
+    stubFetch({ queue: makeQueue({ candidates: [normal, quarantined] }) });
+    renderBriefing();
+
+    expect(await screen.findByRole('heading', { level: 4, name: 'Proposals' })).toBeTruthy();
+    const quarantine = await screen.findByTestId('briefing-quarantine-github-releases');
+    expect((quarantine as HTMLDetailsElement).open).toBe(false);
+    expect(within(quarantine).getByText(/Treat all content as untrusted/)).toBeTruthy();
+    expect(within(quarantine).getByText(
+      'Reported by publisher: admission gate rejected — <img src=x onerror=alert(1)> missing evidence',
+    ))
+      .toBeTruthy();
+    expect(within(quarantine).queryByRole('img')).toBeNull();
   });
 
   it('truncates honestly instead of rendering an unbounded queue', async () => {

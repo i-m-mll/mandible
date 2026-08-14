@@ -39,7 +39,7 @@ describe("migration v114: auth-request finalizer state", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-      value: "126",
+      value: "127",
     });
     const columns = db.prepare("PRAGMA table_info(auth_requests)").all() as Array<{
       name: string;
@@ -64,13 +64,13 @@ describe("migration v114: auth-request finalizer state", () => {
     expect(columns.filter((entry) => entry.name === "merge_finalizer_state")).toHaveLength(1);
   });
 
-  it("leaves a freshly migrated database at head (v126) with the column present", () => {
+  it("leaves a freshly migrated database at head (v127) with the column present", () => {
     const fresh = openDb(path.join(tempDir, "fresh.db"));
     try {
       const columns = fresh.prepare("PRAGMA table_info(auth_requests)").all() as Array<{ name: string }>;
       expect(columns.map((entry) => entry.name)).toContain("merge_finalizer_state");
       expect(fresh.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get()).toEqual({
-        value: "126",
+        value: "127",
       });
     } finally {
       fresh.close();

@@ -3757,6 +3757,30 @@ export const MIGRATIONS: readonly Migration[] = [
     // The destructive work runs in the guarded migration helper, outside the
     // generic transaction, so PRAGMA foreign_keys=OFF takes effect first.
     statements: [],
+  },
+  {
+    version: 127,
+    name: "briefing_ingest_v2_replay_identity",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS feedback_ingest_requests (
+        id                 TEXT PRIMARY KEY,
+        publisher_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        task_identity      TEXT NOT NULL CHECK(trim(task_identity) != ''),
+        batch_key          TEXT NOT NULL CHECK(trim(batch_key) != ''),
+        request_digest     TEXT NOT NULL
+                           CHECK(length(request_digest) = 64
+                             AND request_digest NOT GLOB '*[^0-9a-f]*'),
+        schema_id          TEXT NOT NULL
+                           CHECK(schema_id IN ('briefing-ingest@1','briefing-ingest@2')),
+        result_json        TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(result_json)
+                             AND json_type(result_json) = 'object'),
+        received_at        INTEGER NOT NULL,
+        UNIQUE(publisher_user_id, task_identity, batch_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_ingest_requests_received
+        ON feedback_ingest_requests(received_at DESC)`,
+    ],
   }
 ];
 
@@ -3875,6 +3899,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 103) {
         verifyConversationEmptyIngestSchema(db);
+      }
+      if (migration.version === 127) {
+        ensureBriefingIngestRequestColumn(db);
       }
       setMeta(db, SCHEMA_VERSION_KEY, String(migration.version));
     }
@@ -8907,6 +8934,22 @@ function migrateSpaceExportCanonicalArtifacts(db: Db): void {
   if (integrity.length !== 1 || integrity[0]?.integrity_check !== "ok") {
     throw new Error("migration 105 verification: integrity_check failed");
   }
+}
+
+function ensureBriefingIngestRequestColumn(db: Db): void {
+  const columns = db.prepare("PRAGMA table_info(feedback_publications)").all() as
+    Array<{ name: string }>;
+  if (!columns.some((column) => column.name === "ingest_request_id")) {
+    db.exec(
+      `ALTER TABLE feedback_publications ADD COLUMN ingest_request_id TEXT
+        REFERENCES feedback_ingest_requests(id) ON DELETE RESTRICT`,
+    );
+  }
+  db.exec(
+    `CREATE INDEX IF NOT EXISTS idx_feedback_publications_ingest_request
+      ON feedback_publications(ingest_request_id)
+      WHERE ingest_request_id IS NOT NULL`,
+  );
 }
 
 function tableColumnNames(db: Db, table: string): Set<string> {

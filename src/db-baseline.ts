@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v126 migration replay.
+ * Schema snapshot generated from a full v1-v127 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 126;
+export const BASELINE_SCHEMA_VERSION = 127;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -426,6 +426,24 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC)`,
   `CREATE INDEX idx_feedback_ask_sessions_expiry
         ON feedback_ask_sessions(expires_at)`,
+  `CREATE TABLE feedback_ingest_requests (
+        id                 TEXT PRIMARY KEY,
+        publisher_user_id  TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        task_identity      TEXT NOT NULL CHECK(trim(task_identity) != ''),
+        batch_key          TEXT NOT NULL CHECK(trim(batch_key) != ''),
+        request_digest     TEXT NOT NULL
+                           CHECK(length(request_digest) = 64
+                             AND request_digest NOT GLOB '*[^0-9a-f]*'),
+        schema_id          TEXT NOT NULL
+                           CHECK(schema_id IN ('briefing-ingest@1','briefing-ingest@2')),
+        result_json        TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(result_json)
+                             AND json_type(result_json) = 'object'),
+        received_at        INTEGER NOT NULL,
+        UNIQUE(publisher_user_id, task_identity, batch_key)
+      )`,
+  `CREATE INDEX idx_feedback_ingest_requests_received
+        ON feedback_ingest_requests(received_at DESC)`,
   `CREATE TABLE feedback_publications (
         id                  TEXT PRIMARY KEY,
         collection_id       TEXT NOT NULL
@@ -438,12 +456,17 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
         digest_version      INTEGER,
         item_count          INTEGER NOT NULL DEFAULT 0 CHECK(item_count >= 0),
         received_at         INTEGER NOT NULL,
+        ingest_request_id   TEXT
+                            REFERENCES feedback_ingest_requests(id) ON DELETE RESTRICT,
         UNIQUE(collection_id, publication_key)
       )`,
   `CREATE INDEX idx_feedback_publications_collection
         ON feedback_publications(collection_id, received_at DESC)`,
   `CREATE INDEX idx_feedback_publications_task_digest
         ON feedback_publications(task_identity, digest_version)`,
+  `CREATE INDEX idx_feedback_publications_ingest_request
+        ON feedback_publications(ingest_request_id)
+        WHERE ingest_request_id IS NOT NULL`,
   `CREATE TABLE feedback_items (
         id                   TEXT PRIMARY KEY,
         collection_id        TEXT NOT NULL

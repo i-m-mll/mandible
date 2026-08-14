@@ -109,13 +109,14 @@ afterEach(() => {
 
 describe("briefing schema", () => {
   it("applies the briefing migrations cleanly from the current head", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(126);
+    expect(CURRENT_SCHEMA_VERSION).toBe(127);
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master
           WHERE type = 'table'
             AND name IN ('feedback_collections','feedback_recurring_profiles',
-                         'feedback_publications','feedback_items','feedback_item_revisions',
+                         'feedback_ingest_requests','feedback_publications',
+                         'feedback_items','feedback_item_revisions',
                          'feedback_publication_items','feedback_response_events',
                          'feedback_item_events','feedback_comments')
           ORDER BY name`,
@@ -124,6 +125,7 @@ describe("briefing schema", () => {
     expect(tables.map((row) => row.name)).toEqual([
       "feedback_collections",
       "feedback_comments",
+      "feedback_ingest_requests",
       "feedback_item_events",
       "feedback_item_revisions",
       "feedback_items",
@@ -208,7 +210,7 @@ describe("briefing schema", () => {
   });
 
   it("rejects an unsupported ingest schema and malformed items", () => {
-    expect(() => parseBriefingIngestRequest({ ...batch(), schema: "briefing-ingest@2" }))
+    expect(() => parseBriefingIngestRequest({ ...batch(), schema: "briefing-ingest@3" }))
       .toThrow(BriefingValidationError);
     expect(() => parseBriefingIngestRequest({
       ...batch(),
@@ -405,9 +407,18 @@ describe("briefing ingestion", () => {
   });
 
   it("maps publishers to their permitted source namespace", () => {
-    expect(publisherMayIngest(db, "agent-schedule", "agent-schedule/daily-digest")).toBe(true);
-    expect(publisherMayIngest(db, "agent-schedule", "other-scheduler/daily-digest")).toBe(false);
-    expect(publisherMayIngest(db, "codex", "agent-schedule/daily-digest")).toBe(false);
+    expect(publisherMayIngest(
+      db, "agent-schedule", "agent-schedule/daily-digest", ["arxiv-scan"],
+    )).toBe(true);
+    expect(publisherMayIngest(
+      db, "agent-schedule", "agent-schedule/daily-digest", ["other-source"],
+    )).toBe(false);
+    expect(publisherMayIngest(
+      db, "agent-schedule", "other-scheduler/daily-digest", ["arxiv-scan"],
+    )).toBe(false);
+    expect(publisherMayIngest(
+      db, "codex", "agent-schedule/daily-digest", ["arxiv-scan"],
+    )).toBe(false);
   });
 });
 
@@ -777,12 +788,14 @@ describe("briefing review state", () => {
           digest_series_ref: "artifact-series:abc123",
           digest_version: 1,
           rank: 1,
+          publisher_advisory: null,
           batch_key: "batch-1",
           ingested_at: 1_000,
         },
         revision_count: 1,
         occurrences: { count: 1, first_seen_at: 1_000, last_seen_at: 1_000 },
         task_identity: "agent-schedule/daily-digest",
+        group: null,
       },
       {
         id: betaId,
@@ -804,12 +817,14 @@ describe("briefing review state", () => {
           digest_series_ref: "artifact-series:abc123",
           digest_version: 1,
           rank: 1,
+          publisher_advisory: null,
           batch_key: "batch-1",
           ingested_at: 1_000,
         },
         revision_count: 1,
         occurrences: { count: 1, first_seen_at: 1_000, last_seen_at: 1_000 },
         task_identity: "agent-schedule/daily-digest",
+        group: null,
       },
     ]);
     expect(queue.sources).toEqual([

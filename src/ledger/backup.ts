@@ -134,7 +134,8 @@ export const METADATA_BACKUP_TABLES = [
   "user_groups",
   "user_group_members",
   "permission_grants",
-  // Shared feedback kernel (migration 125 foundation, v126 recurring cutover).
+  // Shared feedback kernel (migration 125 foundation, v126 recurring cutover,
+  // v127 publisher-scoped replay identity).
   // All rows are durable human-feedback or idempotency/lifecycle facts. Keep
   // parents before children; restore runs with foreign keys disabled to handle
   // the intentional items.current_revision_id <-> revisions cycle, then callers
@@ -142,6 +143,7 @@ export const METADATA_BACKUP_TABLES = [
   "feedback_collections",
   "feedback_recurring_profiles",
   "feedback_ask_sessions",
+  "feedback_ingest_requests",
   "feedback_publications",
   "feedback_items",
   "feedback_item_revisions",

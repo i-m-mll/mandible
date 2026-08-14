@@ -24,12 +24,13 @@ import {
   publisherMayIngest,
   recordBriefingDecision,
 } from "../briefing.js";
-import { requireIdentity, ClientAuthzError, isOperator } from "../client-auth/authz.js";
+import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
 import { BRIEFING_EVENTS, type BriefingReviewAction } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
 import { getUserById } from "../users/store.js";
+import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
 const REVIEW_ACTIONS: readonly BriefingReviewAction[] = ["keep", "dismiss", "undo"];
@@ -71,23 +72,28 @@ function requireHumanReviewer(db: Db, req: RequestLike): string {
 }
 
 /** Admit a publisher mapped to the batch's task-identity namespace. */
-function requirePublisher(db: Db, req: RequestLike, taskIdentity: string): string {
-  const identity = requireIdentity(req);
-  const user = getUserById(db, identity.user_id);
-  if (!user || user.status !== "active") {
-    throw new ClientAuthzError(403, "forbidden", "The authenticated user is not active.");
-  }
-  // The local operator is the administrative principal for every namespace; a
-  // non-operator must be explicitly mapped in `briefing.ingest.publishers`.
-  if (isOperator(db, identity)) return user.id;
-  if (!publisherMayIngest(db, user.slug, taskIdentity)) {
+function requirePublisher(
+  db: Db,
+  req: RequestLike,
+  taskIdentity: string,
+  sources: readonly string[],
+): string {
+  const publisher = requireDurableAgentPublisher(db, req, {
+    credentialCode: "briefing_publisher_credential_required",
+    credentialMessage:
+      "Briefing publication requires a durable API token, not a session credential.",
+    agentCode: "briefing_publisher_agent_required",
+    agentMessage: "Briefing publication requires an agent identity.",
+  });
+  if (!publisherMayIngest(db, publisher.slug, taskIdentity, sources)) {
     throw new ClientAuthzError(
       403,
       "source_namespace_forbidden",
-      `Identity '${user.slug}' is not permitted to publish '${taskIdentity}'.`,
+      `Identity '${publisher.slug}' is not permitted to publish '${taskIdentity}' `
+        + `to sources: ${sources.join(", ") || "(empty batch)"}.`,
     );
   }
-  return user.id;
+  return publisher.userId;
 }
 
 function bodyRecord(req: RequestLike): Record<string, unknown> {
@@ -104,8 +110,9 @@ export function registerBriefingRoutes(server: RouteRegistrar, db: Db = getDb())
       // batch validation; the namespace check needs the parsed task identity.
       requireIdentity(req);
       const batch = parseBriefingIngestRequest(req.body);
-      requirePublisher(db, req, batch.task_identity);
-      const result = ingestBriefingBatch(db, batch);
+      const sources = [...new Set(batch.items.map((item) => item.source))];
+      const publisherUserId = requirePublisher(db, req, batch.task_identity, sources);
+      const result = ingestBriefingBatch(db, batch, Date.now(), publisherUserId);
       broadcast(BRIEFING_EVENTS.ingested, {
         task_identity: batch.task_identity,
         batch_key: batch.batch_key,

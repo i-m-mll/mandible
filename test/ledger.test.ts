@@ -1145,6 +1145,7 @@ describe("ledger backup contract", () => {
       .filter((table) => !backedUp.has(table) && !excluded.has(table));
 
     expect(unclassified, "metadata backup table classification drift").toEqual([]);
+    expect(backedUp.has("feedback_ingest_requests")).toBe(true);
     expect(backedUp.has("conversation_blocks")).toBe(false);
     expect(excluded.has("conversation_blocks")).toBe(true);
     expect(backedUp.has("daemon_log")).toBe(false);

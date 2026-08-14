@@ -521,6 +521,37 @@
   gap: var(--space-1);
 }
 
+.briefing-publisher-group + .briefing-publisher-group,
+.briefing-quarantine {
+  margin-top: var(--space-3);
+}
+
+.briefing-publisher-group__heading {
+  margin: 0 0 var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: 500;
+}
+
+.briefing-quarantine {
+  border: 1px solid var(--status-warning-border);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+  padding: var(--space-2) var(--space-3);
+}
+
+.briefing-quarantine > summary {
+  color: var(--status-warning-fg);
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: 600;
+}
+
+.briefing-quarantine__warning {
+  color: var(--status-warning-fg);
+  font-size: var(--text-xs);
+}
+
 .briefing-row {
   border: 1px solid var(--border-faint);
   border-radius: var(--radius-md);
@@ -625,6 +656,12 @@
 .briefing-chip--dismiss {
   border-color: var(--status-danger-border);
   color: var(--status-danger-fg);
+}
+
+.briefing-chip--publisher-advisory {
+  border-color: var(--status-warning-border);
+  color: var(--status-warning-fg);
+  white-space: normal;
 }
 
 /* --- inline fold-out ------------------------------------------------------ */

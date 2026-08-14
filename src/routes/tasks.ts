@@ -12,7 +12,7 @@
 // write surface beyond ingestion: this slice has no commands, no edits, and no
 // creation route, because Mandible does not manage these tasks yet.
 
-import { requireIdentity, ClientAuthzError, isOperator } from "../client-auth/authz.js";
+import { requireIdentity, ClientAuthzError } from "../client-auth/authz.js";
 import { TASK_INVENTORY_EVENTS } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
@@ -24,7 +24,7 @@ import {
   recordTaskInventoryGeneration,
   TaskInventoryValidationError,
 } from "../task-inventory.js";
-import { getUserById } from "../users/store.js";
+import { requireDurableAgentPublisher } from "./agent-publisher-auth.js";
 import { sendJson } from "./http.js";
 
 function handleError(res: ResponseLike, error: unknown): void {
@@ -46,34 +46,22 @@ function handleError(res: ResponseLike, error: unknown): void {
  * authenticated identity alone — nothing in the payload can name a publisher.
  */
 function requireExecutorPublisher(db: Db, req: RequestLike, executorName: string): string {
-  const identity = requireIdentity(req);
-  if (identity.method !== "api_token") {
-    throw new ClientAuthzError(
-      403,
-      "executor_credential_required",
+  const publisher = requireDurableAgentPublisher(db, req, {
+    credentialCode: "executor_credential_required",
+    credentialMessage:
       "Executor inventory publication requires a durable API token, not a session credential.",
-    );
-  }
-  const user = getUserById(db, identity.user_id);
-  if (!user || user.status !== "active") {
-    throw new ClientAuthzError(403, "forbidden", "The authenticated user is not active.");
-  }
-  if (isOperator(db, identity)) return user.id;
-  if (user.kind !== "agent") {
-    throw new ClientAuthzError(
-      403,
-      "executor_agent_required",
-      "Executor inventory publication requires an agent identity.",
-    );
-  }
-  if (!publisherMayPostInventory(db, user.slug, executorName)) {
+    agentCode: "executor_agent_required",
+    agentMessage: "Executor inventory publication requires an agent identity.",
+    allowOperator: true,
+  });
+  if (!publisher.administrative && !publisherMayPostInventory(db, publisher.slug, executorName)) {
     throw new ClientAuthzError(
       403,
       "executor_identity_forbidden",
-      `Identity '${user.slug}' is not a registered publisher for executor '${executorName}'.`,
+      `Identity '${publisher.slug}' is not a registered publisher for executor '${executorName}'.`,
     );
   }
-  return user.id;
+  return publisher.userId;
 }
 
 export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): void {
