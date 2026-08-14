@@ -170,6 +170,19 @@ export const METADATA_BACKUP_TABLES = [
   // reproducible runtime state. Keep requests before their event children.
   "task_command_requests",
   "task_command_events",
+  // Durable successful-merge facts (migration 129). These are retained
+  // predicate evidence and cannot be reconstructed after auth-request pruning.
+  // The ledger_projects parent is emitted above; keep these facts before the
+  // managed reminders whose predicates may depend on them.
+  "auth_request_merge_succeeded_facts",
+  // Managed reminders (issue e257e5c, migration 130). Stable tasks own one
+  // immutable revision; idempotency receipts, bounded inbox occurrences, and
+  // audit events are all durable and non-reproducible. Keep parents first.
+  "managed_tasks",
+  "managed_task_revisions",
+  "managed_task_create_requests",
+  "managed_task_occurrences",
+  "managed_task_events",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];

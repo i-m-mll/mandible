@@ -257,7 +257,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "128" });
+      .toEqual({ value: "131" });
     expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
     expect(definitions(db, [...FEEDBACK_TABLES, ...FEEDBACK_INDEXES]).map((row) => row.name).sort())
       .toEqual([...FEEDBACK_TABLES, ...FEEDBACK_INDEXES].sort());
@@ -377,7 +377,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
       .toEqual(definitionsBefore);
     expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "128" });
+      .toEqual({ value: "131" });
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
   });
@@ -396,7 +396,7 @@ describe.sequential("migration v126: recurring feedback cutover", () => {
     migrate(db);
 
     expect(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get())
-      .toEqual({ value: "128" });
+      .toEqual({ value: "131" });
     expect(definitions(db, [...LEGACY_TABLES, ...LEGACY_INDEXES])).toEqual([]);
     expect(db.prepare("SELECT id FROM feedback_items ORDER BY id").all()).toEqual([
       { id: "candidate-a" }, { id: "candidate-b" },

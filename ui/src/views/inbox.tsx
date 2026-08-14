@@ -43,6 +43,10 @@ const INBOX_TONES = {
     fg: appColors.authResultProblem,
     bg: appColors.authResultProblemBg,
   },
+  reminder: {
+    fg: appColors.inboxHandoff,
+    bg: appColors.inboxHandoffBg,
+  },
 } as const;
 
 export interface InboxContinuation {
@@ -97,6 +101,21 @@ export interface InboxWebhookEvent {
   data?: CredentialLeakEventData | Record<string, unknown> | null;
 }
 
+export interface InboxManagedReminderOccurrence {
+  id: string;
+  task_id: string;
+  revision_id: string;
+  message: string;
+  project_id: string;
+  project_key: string;
+  predicate: Record<string, unknown> & { kind: string };
+  payload_digest: string;
+  created_by_user_id: string;
+  fired_by_user_id: string;
+  triggering_evidence: Record<string, unknown> & { kind?: string };
+  created_at: number;
+}
+
 export interface CredentialLeakEventData {
   credential_id?: string;
   credential_label?: string | null;
@@ -124,6 +143,7 @@ export interface InboxData {
   preset_diffs?: InboxPresetDiff[];
   // Issue 71a287e — pending webhook events (credential-leak alerts and others)
   pending_webhooks?: InboxWebhookEvent[];
+  managed_reminder_occurrences?: InboxManagedReminderOccurrence[];
   total: number;
 }
 
@@ -135,6 +155,7 @@ export interface InboxViewProps {
   onSelectItem?: (id: string | null) => void;
   onAckContinuation: (sessionId: string) => Promise<void>;
   onAckAuthResult: (requestId: string) => Promise<void>;
+  onAckManagedReminderOccurrence: (occurrenceId: string) => Promise<void>;
   onAckAll: () => Promise<void>;
   onRefresh: () => void;
 }
@@ -143,7 +164,7 @@ export interface InboxViewProps {
 
 // Bug: cbbb3d9 — added 'work_unit_continuation' type for work-unit handoff notes
 // Issue 71a287e — added 'credential_leak' for leaked-credential alerts
-type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation' | 'preset_diff' | 'credential_leak';
+type ItemType = 'continuation' | 'auth_result' | 'issue' | 'work_unit_continuation' | 'preset_diff' | 'credential_leak' | 'managed_reminder_occurrence';
 
 interface UnifiedItem {
   id: string;
@@ -152,7 +173,7 @@ interface UnifiedItem {
   repo: string | null;
   branch: string | null;
   time: number | null;
-  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness | InboxPresetDiff | InboxWebhookEvent;
+  raw: InboxContinuation | InboxAuthResult | InboxIssue | import('../api').WorkUnitWithLiveness | InboxPresetDiff | InboxWebhookEvent | InboxManagedReminderOccurrence;
 }
 
 // ── Helpers ──
@@ -163,6 +184,7 @@ function itemBorderColor(item: UnifiedItem): string {
   if (item.type === 'issue') return INBOX_TONES.issue.fg;
   if (item.type === 'preset_diff') return INBOX_TONES.presetDiff.fg;
   if (item.type === 'credential_leak') return INBOX_TONES.credentialLeak.fg;
+  if (item.type === 'managed_reminder_occurrence') return INBOX_TONES.reminder.fg;
   const ar = item.raw as InboxAuthResult;
   if (ar.status === 'completed') return INBOX_TONES.authCompleted.fg;
   if (ar.status === 'rejected' || ar.status === 'expired' || ar.status === 'needs_rebase') return INBOX_TONES.authProblem.fg;
@@ -176,6 +198,7 @@ function itemTypeBadge(item: UnifiedItem): string {
   if (item.type === 'issue') return 'Issue';
   if (item.type === 'preset_diff') return 'Preset Diff';
   if (item.type === 'credential_leak') return 'Credential Leak';
+  if (item.type === 'managed_reminder_occurrence') return 'Reminder';
   const ar = item.raw as InboxAuthResult;
   return ar.status.charAt(0).toUpperCase() + ar.status.slice(1);
 }
@@ -280,6 +303,18 @@ function buildUnifiedItems(data: InboxData): UnifiedItem[] {
       branch: event.target_branch,
       time: event.created_at,
       raw: event,
+    });
+  }
+
+  for (const occurrence of (data.managed_reminder_occurrences ?? [])) {
+    items.push({
+      id: `managed_reminder_occurrence:${occurrence.id}`,
+      type: 'managed_reminder_occurrence',
+      title: occurrence.message,
+      repo: occurrence.project_key,
+      branch: null,
+      time: occurrence.created_at,
+      raw: occurrence,
     });
   }
 
@@ -882,6 +917,93 @@ function PresetDiffDetail({ item }: { item: InboxPresetDiff }): JSX.Element {
   );
 }
 
+function ManagedReminderOccurrenceDetail({
+  item,
+  onAck,
+}: {
+  item: InboxManagedReminderOccurrence;
+  onAck: (id: string) => Promise<void>;
+}): JSX.Element {
+  const evidence = item.triggering_evidence;
+  const predicate = item.predicate;
+  return (
+    <div className="inbox-detail__content">
+      <div className="inbox-detail__header">
+        <span
+          className="inbox-detail__type-badge"
+          style={{ color: INBOX_TONES.reminder.fg, background: INBOX_TONES.reminder.bg }}
+        >
+          Reminder
+        </span>
+        <h2 className="inbox-detail__title">{item.message}</h2>
+      </div>
+      <div className="inbox-detail__meta">
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Project</span>
+          <span className="inbox-detail__meta-value">{item.project_key}</span>
+        </div>
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Triggered by</span>
+          <span className="inbox-detail__meta-value">{evidence.kind ?? predicate.kind}</span>
+        </div>
+        {typeof evidence.observed_count === 'number' && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Observed count</span>
+            <span className="inbox-detail__meta-value">{evidence.observed_count}</span>
+          </div>
+        )}
+        {typeof evidence.issue_id === 'string' && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Issue</span>
+            <code className="inbox-detail__meta-value">{evidence.issue_id}</code>
+          </div>
+        )}
+        {typeof evidence.at === 'string' && (
+          <div className="inbox-detail__meta-row">
+            <span className="inbox-detail__meta-label">Scheduled for</span>
+            <span className="inbox-detail__meta-value">{evidence.at}</span>
+          </div>
+        )}
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Fired</span>
+          <span className="inbox-detail__meta-value">{formatRelativeTime(item.created_at)}</span>
+        </div>
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Created by</span>
+          <code className="inbox-detail__meta-value">{item.created_by_user_id}</code>
+        </div>
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Fired by</span>
+          <code className="inbox-detail__meta-value">{item.fired_by_user_id}</code>
+        </div>
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Reminder</span>
+          <code className="inbox-detail__meta-value">{item.task_id}</code>
+        </div>
+        <div className="inbox-detail__meta-row">
+          <span className="inbox-detail__meta-label">Revision evidence</span>
+          <code className="inbox-detail__meta-value">{item.payload_digest.slice(0, 16)}</code>
+        </div>
+      </div>
+      <div className="inbox-detail__actions">
+        <a
+          href={`#/tasks?task=${encodeURIComponent(`mandible-reminder:${item.task_id}`)}`}
+          className="btn btn--ghost"
+        >
+          View in Tasks &rarr;
+        </a>
+        <button
+          type="button"
+          className="btn btn--ghost"
+          onClick={() => void onAck(item.id)}
+        >
+          Acknowledge
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Main view ──
 
 export function InboxView({
@@ -892,6 +1014,7 @@ export function InboxView({
   onSelectItem,
   onAckContinuation,
   onAckAuthResult,
+  onAckManagedReminderOccurrence,
   onAckAll,
   onRefresh,
 }: InboxViewProps): JSX.Element {
@@ -983,7 +1106,9 @@ export function InboxView({
                   className="btn btn--ghost"
                   style={{ fontSize: '11px', padding: '3px 10px' }}
                   onClick={() => void handleAckAll()}
-                  disabled={(data?.continuations.length ?? 0) + (data?.auth_results.length ?? 0) === 0}
+                  disabled={(data?.continuations.length ?? 0)
+                    + (data?.auth_results.length ?? 0)
+                    + (data?.managed_reminder_occurrences?.length ?? 0) === 0}
                 >
                   Ack All
                 </button>
@@ -1043,6 +1168,11 @@ export function InboxView({
           <PresetDiffDetail item={selectedItem.raw as InboxPresetDiff} />
         ) : selectedItem.type === 'credential_leak' ? (
           <CredentialLeakDetail item={selectedItem.raw as InboxWebhookEvent} />
+        ) : selectedItem.type === 'managed_reminder_occurrence' ? (
+          <ManagedReminderOccurrenceDetail
+            item={selectedItem.raw as InboxManagedReminderOccurrence}
+            onAck={onAckManagedReminderOccurrence}
+          />
         ) : (
           <IssueDetail item={selectedItem.raw as InboxIssue} />
         )}

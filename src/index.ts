@@ -61,6 +61,11 @@ import { startBriefingExpirySweep, stopBriefingExpirySweep } from "./briefing-sc
 import { registerAgentDispatchRoutes } from "./routes/agent-dispatch.js";
 // Issue 0bc2279 — executor task inventory receipts and read-only projection.
 import { registerTaskRoutes } from "./routes/tasks.js";
+import { registerManagedReminderRoutes } from "./routes/reminders.js";
+import {
+  startManagedReminderScheduler,
+  stopManagedReminderScheduler,
+} from "./managed-reminder-scheduler.js";
 import { registerProjectRoutes } from "./routes/projects.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerClientAuthRoutes } from "./routes/client-auth.js";
@@ -245,6 +250,8 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
   registerAgentDispatchRoutes(router, db);
   // Issue: 0bc2279 — executor task inventory (registered-publisher POST, read projection)
   registerTaskRoutes(router, db);
+  // Issue e257e5c — bounded, attributable, first-party reminder mutations.
+  registerManagedReminderRoutes(router, db);
   // Issue: 3d85f43 — canonical project registry CLI/API
   registerProjectRoutes(router);
   // Issue: e89c2b0 — user registry core (users, credentials, bindings, evidence)
@@ -564,6 +571,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     startTrashGcScheduler(db, (level, event, fields) => logger(level, event, fields));
     // Issue ce22a3a — retire unreviewed briefing candidates on a slow cadence.
     startBriefingExpirySweep(db, (level, event, fields) => logger(level, event, fields));
+    startManagedReminderScheduler(db, (level, event, fields) => logger(level, event, fields));
   }
 
   // Issue: a8d8a31 — prune persisted daemon logs after readiness in bounded,
@@ -603,6 +611,7 @@ export async function startDaemon(options: StartOptions = {}): Promise<DaemonHan
     stopBackupScheduler();
     stopTrashGcScheduler();
     stopBriefingExpirySweep();
+    stopManagedReminderScheduler();
     daemonLogRetention.stop();
     reaperTimer.stop();
     workUnitReconciler.stop();

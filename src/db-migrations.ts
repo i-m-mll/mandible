@@ -3844,6 +3844,158 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_task_command_events_command
         ON task_command_events(command_id, created_at, id)`,
     ],
+  },
+  {
+    version: 129,
+    name: "auth_request_merge_succeeded_facts",
+    // Issue 3df7357 — one retained success fact per merge auth request. This is
+    // deliberately separate from auth_request.completed ledger events: those
+    // remain per linked issue, while this row survives auth-request deletion and
+    // is the stable input for aggregate predicates such as recorded merge count.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_request_merge_succeeded_facts (
+        auth_request_id   TEXT PRIMARY KEY,
+        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        base_branch       TEXT NOT NULL,
+        completed_at      INTEGER NOT NULL,
+        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),
+        recorded_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_merge_succeeded_project
+        ON auth_request_merge_succeeded_facts(
+          project_id, base_branch, canonical_message, completed_at, auth_request_id
+      )`,
+    ],
+  },
+  {
+    version: 130,
+    name: "managed_reminder_core",
+    // Issue e257e5c — immutable one-shot reminder revisions, bounded inbox
+    // occurrences, attributable idempotent creation, and append-only audit.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS managed_tasks (
+        id                 TEXT PRIMARY KEY,
+        project_id         TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        kind               TEXT NOT NULL CHECK(kind = 'mandible-reminder'),
+        lifecycle          TEXT NOT NULL CHECK(lifecycle IN ('armed','completed','cancelled')),
+        active_revision_id TEXT NOT NULL
+                           REFERENCES managed_task_revisions(id) ON DELETE RESTRICT
+                           DEFERRABLE INITIALLY DEFERRED,
+        created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at         INTEGER NOT NULL,
+        updated_at         INTEGER NOT NULL,
+        completed_at       INTEGER,
+        cancelled_at       INTEGER,
+        CHECK (
+          (lifecycle = 'armed' AND completed_at IS NULL AND cancelled_at IS NULL) OR
+          (lifecycle = 'completed' AND completed_at IS NOT NULL AND cancelled_at IS NULL) OR
+          (lifecycle = 'cancelled' AND completed_at IS NULL AND cancelled_at IS NOT NULL)
+        )
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_tasks_reconcile
+        ON managed_tasks(lifecycle, created_at, id)`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_tasks_project
+        ON managed_tasks(project_id, created_at DESC, id DESC)`,
+      `CREATE TABLE IF NOT EXISTS managed_task_revisions (
+        id                 TEXT PRIMARY KEY,
+        task_id            TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_no        INTEGER NOT NULL CHECK(revision_no = 1),
+        schema_id          TEXT NOT NULL CHECK(schema_id = 'mandible-reminder@1'),
+        payload_json       TEXT NOT NULL CHECK(
+                             json_valid(payload_json)
+                             AND json_type(payload_json) = 'object'
+                             AND json_extract(payload_json, '$.schema') = 'mandible-reminder@1'
+                             AND json_extract(payload_json, '$.effect.kind') = 'inbox_occurrence'
+                           ),
+        payload_digest     TEXT NOT NULL CHECK(
+                             length(payload_digest) = 64
+                             AND payload_digest NOT GLOB '*[^0-9a-f]*'
+                           ),
+        created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at         INTEGER NOT NULL,
+        UNIQUE(task_id),
+        UNIQUE(task_id, id),
+        UNIQUE(task_id, revision_no)
+      )`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_revision_matches_task
+        AFTER INSERT ON managed_task_revisions
+        WHEN (SELECT active_revision_id FROM managed_tasks WHERE id = NEW.task_id) != NEW.id
+        BEGIN SELECT RAISE(ABORT, 'managed task active revision mismatch'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_active_revision_immutable
+        BEFORE UPDATE OF active_revision_id ON managed_tasks
+        BEGIN SELECT RAISE(ABORT, 'managed task active revision is immutable'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_revisions_immutable_update
+        BEFORE UPDATE ON managed_task_revisions
+        BEGIN SELECT RAISE(ABORT, 'managed task revisions are immutable'); END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_managed_task_revisions_immutable_delete
+        BEFORE DELETE ON managed_task_revisions
+        BEGIN SELECT RAISE(ABORT, 'managed task revisions are immutable'); END`,
+      `CREATE TABLE IF NOT EXISTS managed_task_create_requests (
+        id                 TEXT PRIMARY KEY,
+        created_by_user_id TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        idempotency_key    TEXT NOT NULL CHECK(trim(idempotency_key) != ''),
+        request_digest     TEXT NOT NULL CHECK(
+                             length(request_digest) = 64
+                             AND request_digest NOT GLOB '*[^0-9a-f]*'
+                           ),
+        task_id            TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        result_json        TEXT NOT NULL CHECK(
+                             json_valid(result_json) AND json_type(result_json) = 'object'
+                           ),
+        created_at         INTEGER NOT NULL,
+        UNIQUE(created_by_user_id, idempotency_key),
+        UNIQUE(task_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS managed_task_occurrences (
+        id                        TEXT PRIMARY KEY,
+        task_id                   TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_id               TEXT NOT NULL,
+        occurrence_key            TEXT NOT NULL CHECK(trim(occurrence_key) != ''),
+        kind                      TEXT NOT NULL CHECK(kind = 'inbox_occurrence'),
+        payload_json              TEXT NOT NULL CHECK(
+                                    json_valid(payload_json) AND json_type(payload_json) = 'object'
+                                  ),
+        triggering_evidence_json TEXT NOT NULL CHECK(
+                                    json_valid(triggering_evidence_json)
+                                    AND json_type(triggering_evidence_json) = 'object'
+                                  ),
+        created_by_user_id        TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        fired_by_user_id          TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at                INTEGER NOT NULL,
+        UNIQUE(task_id, revision_id, occurrence_key),
+        FOREIGN KEY(task_id, revision_id)
+          REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_task_occurrences_created
+        ON managed_task_occurrences(created_at DESC, id DESC)`,
+      `CREATE TABLE IF NOT EXISTS managed_task_events (
+        id              TEXT PRIMARY KEY,
+        task_id         TEXT NOT NULL REFERENCES managed_tasks(id) ON DELETE RESTRICT,
+        revision_id     TEXT NOT NULL,
+        project_id      TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        event_type      TEXT NOT NULL CHECK(event_type IN ('created','completed','cancelled')),
+        actor_user_id   TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        evidence_method TEXT NOT NULL CHECK(evidence_method IN ('api_token','ephemeral','system_internal')),
+        payload_json    TEXT NOT NULL DEFAULT '{}' CHECK(
+                          json_valid(payload_json) AND json_type(payload_json) = 'object'
+                        ),
+        occurred_at     INTEGER NOT NULL,
+        FOREIGN KEY(task_id, revision_id)
+          REFERENCES managed_task_revisions(task_id, id) ON DELETE RESTRICT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_managed_task_events_task
+        ON managed_task_events(task_id, occurred_at, id)`,
+    ],
+  },
+  {
+    version: 131,
+    name: "managed_reminder_occurrence_acknowledgement",
+    // Issue c94c6d0 — Inbox acknowledgement dismisses a projected occurrence
+    // without deleting or rewriting the durable delivery record.
+    statements: [
+      `CREATE INDEX IF NOT EXISTS idx_managed_task_occurrences_inbox
+        ON managed_task_occurrences(acknowledged_at, created_at DESC, id DESC)`,
+    ],
   }
 ];
 
@@ -3956,6 +4108,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 125) {
         ensureAskCreateGlobalCapability(db);
+      }
+      if (migration.version === 131) {
+        ensureManagedReminderOccurrenceAcknowledgementColumns(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -4260,6 +4415,22 @@ export function migrate(db: Db): void {
   }
   applySchemaMigrations(db, afterV126);
 
+  if (
+    tableExists(db, "ledger_projects") &&
+    tableExists(db, "ledger_project_checkouts") &&
+    shouldRunPostMigration(
+      db,
+      "v129_backfill_auth_merge_succeeded_facts",
+      pending,
+      129,
+      () => hasAuthMergeSucceededFactBackfillWork(db),
+    )
+  ) {
+    runPostMigration(db, "v129_backfill_auth_merge_succeeded_facts", () => {
+      backfillAuthMergeSucceededFacts(db);
+    });
+  }
+
   // Integration reconciliation (umbrella c16807e): the additive-column hooks for
   // v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
   // and v114 (auth_requests.merge_finalizer_state) were renumbered during
@@ -4298,6 +4469,110 @@ export function migrate(db: Db): void {
       rebuildSpaceItemsWithFindingRefType(db);
     });
   }
+}
+
+function hasAuthMergeSucceededFactBackfillWork(db: Db): boolean {
+  // Historical partial-schema fixtures can legitimately lack the ledger
+  // substrate. A normal supported replay has ledger_projects before v129.
+  if (
+    !tableExists(db, "auth_request_merge_succeeded_facts") ||
+    !tableExists(db, "ledger_projects") ||
+    !tableExists(db, "ledger_project_checkouts")
+  ) return false;
+  return db.prepare(
+    `SELECT 1
+       FROM auth_requests a
+      WHERE a.type = 'merge'
+        AND a.status = 'completed'
+        AND a.exit_code = 0
+        AND NOT EXISTS (
+          SELECT 1 FROM auth_request_merge_succeeded_facts f
+           WHERE f.auth_request_id = a.id
+        )
+      LIMIT 1`,
+  ).get() != null;
+}
+
+function backfillAuthMergeSucceededFacts(db: Db): void {
+  const rows = db.prepare(
+    `SELECT id, repo, cwd, target_repo_root, base_branch, resolved_at,
+            updated_at, commit_message_digest
+       FROM auth_requests
+      WHERE type = 'merge' AND status = 'completed' AND exit_code = 0
+      ORDER BY resolved_at, id`,
+  ).all() as Array<{
+    id: string;
+    repo: string | null;
+    cwd: string | null;
+    target_repo_root: string | null;
+    base_branch: string | null;
+    resolved_at: number | null;
+    updated_at: number;
+    commit_message_digest: string | null;
+  }>;
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO auth_request_merge_succeeded_facts (
+       auth_request_id, project_id, base_branch, completed_at,
+       canonical_message, recorded_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const run = db.transaction(() => {
+    for (const row of rows) {
+      const projectId = resolveAuthRequestProjectId(db, [
+        row.target_repo_root,
+        row.cwd,
+        row.repo,
+      ]);
+      if (!projectId) {
+        throw new Error(
+          `Migration v129 cannot resolve canonical project for successful auth request '${row.id}'`,
+        );
+      }
+      const completedAt = row.resolved_at ?? row.updated_at;
+      insert.run(
+        row.id,
+        projectId,
+        row.base_branch ?? "",
+        completedAt,
+        row.commit_message_digest == null ? 0 : 1,
+        completedAt,
+      );
+    }
+  });
+  run.immediate();
+}
+
+function resolveAuthRequestProjectId(db: Db, refs: Array<string | null>): string | null {
+  for (const ref of refs) {
+    const trimmed = ref?.trim();
+    if (!trimmed) continue;
+    const ids = new Set<string>();
+    const checkoutRows = db.prepare(
+      `SELECT project_id FROM ledger_project_checkouts
+        WHERE root = ? OR work_repo_id = ? OR name = ? OR project_id = ?`,
+    ).all(trimmed, trimmed, trimmed, trimmed) as Array<{ project_id: string }>;
+    for (const row of checkoutRows) ids.add(row.project_id);
+    const projectRows = db.prepare(
+      `SELECT id FROM ledger_projects
+        WHERE id = ? OR lower(project_key) = lower(?) OR display_name = ?
+           OR remote_identity = ? OR upstream_identity = ?`,
+    ).all(trimmed, trimmed, trimmed, trimmed, trimmed) as Array<{ id: string }>;
+    for (const row of projectRows) ids.add(row.id);
+    if (tableExists(db, "work_repos")) {
+      const roots = db.prepare(
+        `SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?`,
+      ).all(trimmed, trimmed, trimmed) as Array<{ root: string }>;
+      for (const root of roots) {
+        const mapped = db.prepare(
+          `SELECT project_id FROM ledger_project_checkouts WHERE root = ?`,
+        ).all(root.root) as Array<{ project_id: string }>;
+        for (const row of mapped) ids.add(row.project_id);
+      }
+    }
+    if (ids.size === 1) return [...ids][0]!;
+    if (ids.size > 1) return null;
+  }
+  return null;
 }
 
 function ensureAskCreateGlobalCapability(db: Db): void {
@@ -7850,6 +8125,22 @@ function ensureAuthRequestCanonicalChangeMessageColumn(db: Db): void {
   }
 }
 
+// Issue c94c6d0 (migration 131): schema-rewind fixtures may already have the
+// acknowledgement columns from the current baseline while recording v130.
+// Guard each additive column so replay converges instead of failing with a
+// duplicate-column error; the migration statement then creates the dependent
+// index after both columns are known to exist.
+function ensureManagedReminderOccurrenceAcknowledgementColumns(db: Db): void {
+  if (!tableExists(db, "managed_task_occurrences")) return;
+  const columns = tableColumnNames(db, "managed_task_occurrences");
+  if (!columns.has("acknowledged_by")) {
+    db.exec("ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_by TEXT");
+  }
+  if (!columns.has("acknowledged_at")) {
+    db.exec("ALTER TABLE managed_task_occurrences ADD COLUMN acknowledged_at INTEGER");
+  }
+}
+
 function ensureAuthRequestMergeFinalizerColumns(db: Db): void {
   if (!tableExists(db, "auth_requests")) return;
   const columns = tableColumnNames(db, "auth_requests");
@@ -9038,6 +9329,7 @@ function tableColumnNames(db: Db, table: string): Set<string> {
     "ledger_projects",
     "ledger_relationship_edges",
     "message_params",
+    "managed_task_occurrences",
     "project_artifact_associations",
     "session_instruction_artifacts",
     "session_projects",

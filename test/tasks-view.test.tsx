@@ -23,6 +23,9 @@ import {
   TASK_INVENTORY_STALE_AFTER_MS,
 } from '../src/task-inventory.js';
 import { createUser } from '../src/users/store.js';
+import { createManagedReminder } from '../src/managed-reminders.js';
+import { parseManagedReminderCreateRequest } from '../src/managed-reminder-parser.js';
+import { resolveProjectForCheckout } from '../src/ledger/projects.js';
 import { normalizeTaskInventory } from '../ui/src/api';
 import { parseRouteFromHash } from '../ui/src/routing';
 import { taskFact, TasksView } from '../ui/src/views/tasks';
@@ -31,6 +34,7 @@ const HOUR = 60 * 60 * 1000;
 
 let db: Db;
 let publisherId: string;
+let projectId: string;
 
 function knownTask(): Record<string, unknown> {
   return {
@@ -125,6 +129,12 @@ beforeEach(() => {
     kind: 'agent',
     display_name: 'Agent Schedule',
   }).id;
+  projectId = resolveProjectForCheckout(db, {
+    root: '/tmp/tasks-view-reminder-project',
+    name: 'tasks-view-reminder-project',
+    remoteUrl: 'https://example.test/tasks-view-reminder-project.git',
+    defaultBranch: 'develop',
+  }).project.id;
 });
 
 afterEach(() => {
@@ -151,6 +161,46 @@ describe('taskFact', () => {
 });
 
 describe('TasksView', () => {
+  it('renders a Mandible reminder as a read-only first-party row with exact provenance', async () => {
+    const created = createManagedReminder(
+      db,
+      parseManagedReminderCreateRequest({
+        schema: 'mandible-reminder@1',
+        idempotency_key: 'tasks-view-reminder',
+        project: 'tasks-view-reminder-project',
+        message: 'Review the twentieth canonical merge',
+        predicate: {
+          kind: 'auth_merge_count_gte',
+          project: 'tasks-view-reminder-project',
+          base_branch: 'develop',
+          canonical_message: true,
+          threshold: 20,
+        },
+      }),
+      { userId: publisherId, evidenceMethod: 'api_token' },
+      { projectId },
+    );
+    const response: TaskInventoryResponse = {
+      ...getTaskInventoryView(db),
+      tasks: [{
+        source_kind: 'mandible',
+        key: `mandible-reminder:${created.reminder.id}`,
+        reminder: created.reminder,
+      }],
+    };
+    stubInventory(normalizeTaskInventory(response));
+    render(<TasksView initialTaskKey={`mandible-reminder:${created.reminder.id}`} />);
+
+    await waitFor(() => expect(screen.getAllByText('Review the twentieth canonical merge')).toHaveLength(2));
+    const detail = document.querySelector('.tasks-detail') as HTMLElement;
+    expect(within(detail).getByText('Immutable predicate')).toBeTruthy();
+    expect(within(detail).getByText('20')).toBeTruthy();
+    expect(within(detail).getByText('develop')).toBeTruthy();
+    expect(within(detail).getByText(created.reminder.revision.payload_digest)).toBeTruthy();
+    expect(within(detail).getByText(created.reminder.created_by_user_id)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /request disable|new|create|edit|\+/i })).toBeNull();
+  });
+
   it('says plainly that no executor has registered an inventory', async () => {
     stubInventory(normalizeTaskInventory(getTaskInventoryView(db)));
     render(<TasksView />);
