@@ -17,6 +17,7 @@ import { TASK_COMMAND_EVENTS, TASK_INVENTORY_EVENTS } from "../contracts.js";
 import { getDb, type Db } from "../db.js";
 import type { RequestLike, ResponseLike, RouteRegistrar } from "../server.js";
 import { broadcast } from "../sse.js";
+import { listManagedReminders } from "../managed-reminders.js";
 import {
   getTaskInventoryView,
   parseTaskInventoryGeneration,
@@ -91,7 +92,16 @@ export function registerTaskRoutes(server: RouteRegistrar, db: Db = getDb()): vo
   // The whole read surface: latest generation per executor, projected.
   server.get("/api/tasks", (_req, res) => {
     try {
-      sendJson(res, 200, getTaskInventoryView(db));
+      const inventory = getTaskInventoryView(db);
+      const reminders = listManagedReminders(db).map((reminder) => ({
+        source_kind: "mandible" as const,
+        key: `mandible-reminder:${reminder.id}`,
+        reminder,
+      }));
+      sendJson(res, 200, {
+        ...inventory,
+        tasks: [...inventory.tasks, ...reminders].sort((a, b) => a.key.localeCompare(b.key)),
+      });
     } catch (error) {
       handleError(res, error);
     }

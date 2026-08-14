@@ -146,6 +146,7 @@ type Action =
   | { type: 'setInboxLoading'; loading: boolean }
   | { type: 'ackInboxContinuation'; sessionId: string }
   | { type: 'ackInboxAuthResult'; requestId: string }
+  | { type: 'ackInboxManagedReminderOccurrence'; occurrenceId: string }
   | { type: 'ackAllInboxItems' }
   | { type: 'setSelectedInboxItemId'; id: string | null }
   | { type: 'setConsoleSessions'; sessions: ConsoleSession[] }
@@ -353,7 +354,8 @@ function appReducer(state: AppState, action: AppAction): AppState {
       const inboxData = {
         ...state.inboxData,
         continuations,
-        total: continuations.length + state.inboxData.auth_results.length + state.inboxData.open_issues.length,
+        total: continuations.length + state.inboxData.auth_results.length + state.inboxData.open_issues.length
+          + (state.inboxData.managed_reminder_occurrences?.length ?? 0),
       };
       return { ...state, inboxData };
     }
@@ -365,7 +367,20 @@ function appReducer(state: AppState, action: AppAction): AppState {
       const inboxData = {
         ...state.inboxData,
         auth_results,
-        total: state.inboxData.continuations.length + auth_results.length + state.inboxData.open_issues.length,
+        total: state.inboxData.continuations.length + auth_results.length + state.inboxData.open_issues.length
+          + (state.inboxData.managed_reminder_occurrences?.length ?? 0),
+      };
+      return { ...state, inboxData };
+    }
+    case 'ackInboxManagedReminderOccurrence': {
+      if (!state.inboxData) return state;
+      const managed_reminder_occurrences = (state.inboxData.managed_reminder_occurrences ?? [])
+        .filter((occurrence) => occurrence.id !== action.occurrenceId);
+      const inboxData = {
+        ...state.inboxData,
+        managed_reminder_occurrences,
+        total: state.inboxData.continuations.length + state.inboxData.auth_results.length
+          + state.inboxData.open_issues.length + managed_reminder_occurrences.length,
       };
       return { ...state, inboxData };
     }
@@ -375,6 +390,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
         ...state.inboxData,
         continuations: [],
         auth_results: [],
+        managed_reminder_occurrences: [],
         total: state.inboxData.open_issues.length,
       };
       return { ...state, inboxData, selectedInboxItemId: null };
@@ -443,6 +459,9 @@ function selectBadgeCounts(state: AppState): {
   const inboxAuthResults = Array.isArray(inboxData?.auth_results)
     ? inboxData.auth_results.length
     : 0;
+  const inboxReminderOccurrences = Array.isArray(inboxData?.managed_reminder_occurrences)
+    ? inboxData.managed_reminder_occurrences.length
+    : 0;
   const consoleUnreadBadge =
     typeof state.consoleUnreadBadge === 'number' ? state.consoleUnreadBadge : 0;
 
@@ -462,7 +481,7 @@ function selectBadgeCounts(state: AppState): {
     });
     return total + dirtyBranches.length;
   }, 0);
-  const inbox = inboxContinuations + inboxAuthResults;
+  const inbox = inboxContinuations + inboxAuthResults + inboxReminderOccurrences;
   const console = consoleUnreadBadge;
   return { auth, work, inbox, console };
 }

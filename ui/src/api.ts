@@ -519,6 +519,9 @@ export function invalidateDashboardApiCacheForEvent(type: string): void {
     invalidateApiGetCache('/api/spaces');
   } else if (type.startsWith('artifact:')) {
     invalidateApiGetCache('/api/artifacts');
+  } else if (type.startsWith('managed-reminders.')) {
+    invalidateApiGetCache('/api/tasks');
+    invalidateApiGetCache('/api/inbox');
   }
 }
 
@@ -1110,7 +1113,7 @@ export async function getInboxGlobal(): Promise<InboxData> {
 }
 
 export async function acknowledgeInboxItem(
-  type: 'continuation' | 'auth_result',
+  type: 'continuation' | 'auth_result' | 'managed_reminder_occurrence',
   id: string,
 ): Promise<void> {
   await apiPost(`/api/inbox/${type}/${encodeURIComponent(id)}/ack`, {});
@@ -4768,6 +4771,10 @@ import {
   type TaskInventoryEntry,
   type TaskInventoryResponse as ContractTaskInventoryResponse,
   type TaskInventoryView as ContractTaskInventoryView,
+  type ExecutorTaskInventoryView,
+  type MandibleTaskInventoryView,
+  type ManagedReminder,
+  type ManagedReminderPredicate,
   type TaskKillSwitchState,
   type TaskManagementMode,
   type TaskRunFacts,
@@ -4787,10 +4794,14 @@ export type {
   TaskInventoryEntry,
   TaskRunFacts,
   TaskRunSlot,
+  ManagedReminder,
+  ManagedReminderPredicate,
 };
 
 export type TaskExecutorSummary = ContractTaskExecutorSummary;
 export type TaskInventoryItem = ContractTaskInventoryView;
+export type ExecutorTaskInventoryItem = ExecutorTaskInventoryView;
+export type MandibleTaskInventoryItem = MandibleTaskInventoryView;
 export type TaskInventory = ContractTaskInventoryResponse;
 export type TaskCommand = ContractTaskCommand;
 export type TaskCommandList = ContractTaskCommandListResponse;
@@ -4921,10 +4932,32 @@ function normalizeTaskExecutorSummary(value: unknown): TaskExecutorSummary | nul
 
 function normalizeTaskInventoryItem(value: unknown): TaskInventoryItem | null {
   const row = briefingContractRecord<ContractTaskInventoryView>(value);
+  if (row.source_kind === 'mandible') {
+    const reminder = briefingContractRecord<ManagedReminder>(row.reminder);
+    const revision = briefingContractRecord<ManagedReminder['revision']>(reminder.revision);
+    const payload = briefingContractRecord<ManagedReminder['revision']['payload']>(revision.payload);
+    const predicate = briefingRecord(payload.predicate);
+    const id = briefingOptionalString(reminder.id);
+    const projectId = briefingOptionalString(reminder.project_id);
+    const projectKey = briefingOptionalString(reminder.project_key);
+    const revisionId = briefingOptionalString(revision.id);
+    const predicateKind = briefingOptionalString(predicate.kind);
+    if (!id || !projectId || !projectKey || !revisionId
+      || !['at', 'issue_closed', 'auth_merge_count_gte'].includes(predicateKind ?? '')) {
+      return null;
+    }
+    return {
+      source_kind: 'mandible',
+      key: briefingOptionalString(row.key) ?? `mandible-reminder:${id}`,
+      reminder: reminder as ManagedReminder,
+    };
+  }
+  if (row.source_kind !== 'executor') return null;
   const task = normalizeTaskEntry(row.task);
   if (!task) return null;
   const executor = briefingOptionalString(row.executor) ?? 'unknown';
   return {
+    source_kind: 'executor',
     key: briefingOptionalString(row.key) ?? `${executor}/${task.task_id}`,
     executor,
     freshness: taskMaybeEnum(row.freshness, TASK_FRESHNESS) === TASK_INVENTORY_UNKNOWN

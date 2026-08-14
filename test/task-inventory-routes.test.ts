@@ -20,6 +20,9 @@ import { FileRpcTransport } from "../src/file-rpc-transport.js";
 import { registerTaskRoutes } from "../src/routes/tasks.js";
 import { Router, type ClientAuthGate, type ResolvedClientIdentity } from "../src/server.js";
 import { TASK_INVENTORY_EXECUTORS_KEY } from "../src/task-inventory.js";
+import { createManagedReminder } from "../src/managed-reminders.js";
+import { parseManagedReminderCreateRequest } from "../src/managed-reminder-parser.js";
+import { resolveProjectForCheckout } from "../src/ledger/projects.js";
 import { createUser, OPERATOR_SETTING_KEY } from "../src/users/store.js";
 
 const NOW = 1_786_650_000_000;
@@ -29,6 +32,7 @@ let db: Db;
 let router: Router;
 let publisherId: string;
 let operatorId: string;
+let projectId: string;
 
 /** Minimal gate: a credential string is a slug that resolves to a live user. */
 class SlugGate implements ClientAuthGate {
@@ -111,6 +115,12 @@ beforeEach(() => {
     display_name: "Agent Schedule",
   }).id;
   createUser(db, { slug: "some-agent", kind: "agent", display_name: "Some Agent" });
+  projectId = resolveProjectForCheckout(db, {
+    root: "/tmp/task-projection-project",
+    name: "task-projection-project",
+    remoteUrl: "https://example.test/task-projection.git",
+    defaultBranch: "develop",
+  }, NOW).project.id;
   router = new Router({
     clientAuth: new SlugGate(() => db),
     instance: resolveInstanceInfo({
@@ -322,6 +332,42 @@ describe("POST /api/tasks/inventory", () => {
 });
 
 describe("GET /api/tasks", () => {
+  it("discriminates executor rows from first-party reminder rows without identity collision", async () => {
+    await post(generation(), "agent-schedule");
+    const created = createManagedReminder(
+      db,
+      parseManagedReminderCreateRequest({
+        schema: "mandible-reminder@1",
+        idempotency_key: "projection-reminder",
+        project: "task-projection-project",
+        message: "Review the twentieth canonical merge",
+        predicate: { kind: "at", at: "2026-12-01T12:00:00Z" },
+      }),
+      { userId: publisherId, evidenceMethod: "api_token" },
+      { now: NOW, projectId },
+    );
+
+    const response = await router.invoke({ method: "GET", url: "/api/tasks" });
+    expect(response.status).toBe(200);
+    const tasks = (response.body as { tasks: Array<Record<string, unknown>> }).tasks;
+    expect(tasks).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        source_kind: "executor",
+        key: "agent-schedule/daily-digest",
+        executor: "agent-schedule",
+      }),
+      expect.objectContaining({
+        source_kind: "mandible",
+        key: `mandible-reminder:${created.reminder.id}`,
+        reminder: expect.objectContaining({
+          id: created.reminder.id,
+          project_key: "task-projection",
+          lifecycle: "armed",
+        }),
+      }),
+    ]));
+  });
+
   it("reports an empty surface before any executor has posted", async () => {
     const response = await router.invoke({ method: "GET", url: "/api/tasks" });
     expect(response.status).toBe(200);

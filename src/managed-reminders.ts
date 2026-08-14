@@ -62,6 +62,8 @@ type OccurrenceRow = {
   created_by_user_id: string;
   fired_by_user_id: string;
   created_at: number;
+  acknowledged_by: string | null;
+  acknowledged_at: number | null;
 };
 
 export function resolveManagedReminderProject(db: Db, ref: string): { id: string; project_key: string } {
@@ -144,22 +146,65 @@ function occurrenceFromRow(row: OccurrenceRow | undefined): ManagedReminderOccur
     created_by_user_id: row.created_by_user_id,
     fired_by_user_id: row.fired_by_user_id,
     created_at: row.created_at,
+    acknowledged_by: row.acknowledged_by,
+    acknowledged_at: row.acknowledged_at,
   };
 }
 
 /** Read seam for the Inbox projection lane; occurrence rows are the delivery. */
 export function listManagedReminderOccurrences(
   db: Db,
-  filter: { projectId?: string } = {},
+  filter: { projectId?: string; acknowledged?: boolean } = {},
 ): ManagedReminderOccurrence[] {
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  if (filter.projectId) {
+    clauses.push("task.project_id = ?");
+    params.push(filter.projectId);
+  }
+  if (filter.acknowledged === true) clauses.push("occurrence.acknowledged_at IS NOT NULL");
+  if (filter.acknowledged === false) clauses.push("occurrence.acknowledged_at IS NULL");
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = db.prepare(
     `SELECT occurrence.*
        FROM managed_task_occurrences occurrence
        JOIN managed_tasks task ON task.id = occurrence.task_id
-      ${filter.projectId ? "WHERE task.project_id = ?" : ""}
+      ${where}
       ORDER BY occurrence.created_at DESC, occurrence.id DESC`,
-  ).all(...(filter.projectId ? [filter.projectId] : [])) as OccurrenceRow[];
+  ).all(...params) as OccurrenceRow[];
   return rows.map((row) => occurrenceFromRow(row) as ManagedReminderOccurrence);
+}
+
+/** Inbox acknowledgement mutates only delivery state; the occurrence remains durable. */
+export function acknowledgeManagedReminderOccurrence(
+  db: Db,
+  ref: string,
+  acknowledgedBy: string,
+  now: number = Date.now(),
+): ManagedReminderOccurrence {
+  const exact = db.prepare("SELECT id FROM managed_task_occurrences WHERE id = ?").get(ref) as
+    { id: string } | undefined;
+  const matches = exact ? [exact] : db.prepare(
+    "SELECT id FROM managed_task_occurrences WHERE id LIKE ? ESCAPE '\\' ORDER BY id LIMIT 2",
+  ).all(`${ref.replace(/([%_\\])/g, "\\$1")}%`) as Array<{ id: string }>;
+  if (matches.length === 0) {
+    throw new ManagedReminderError(`reminder occurrence not found: ${ref}`, 404, "not_found");
+  }
+  if (matches.length > 1) {
+    throw new ManagedReminderError(`reminder occurrence reference is ambiguous: ${ref}`, 409, "ambiguous");
+  }
+  const id = matches[0].id;
+  const result = db.prepare(
+    `UPDATE managed_task_occurrences
+        SET acknowledged_by = ?, acknowledged_at = ?
+      WHERE id = ? AND acknowledged_at IS NULL`,
+  ).run(acknowledgedBy, now, id);
+  if (result.changes !== 1) {
+    throw new ManagedReminderError(`reminder occurrence already acknowledged: ${ref}`, 404, "not_found");
+  }
+  return occurrenceFromRow(
+    db.prepare("SELECT * FROM managed_task_occurrences WHERE id = ?").get(id) as OccurrenceRow,
+  ) as ManagedReminderOccurrence;
 }
 
 function reminderFromRow(db: Db, row: ReminderJoinedRow): ManagedReminder {
@@ -401,7 +446,19 @@ export function createManagedReminder(
         );
       }
       const original = JSON.parse(replay.result_json) as ManagedReminderCreateResult;
-      return { ...original, stored: false };
+      const occurrence = original.reminder.occurrence;
+      return {
+        ...original,
+        reminder: {
+          ...original.reminder,
+          occurrence: occurrence ? {
+            ...occurrence,
+            acknowledged_by: occurrence.acknowledged_by ?? null,
+            acknowledged_at: occurrence.acknowledged_at ?? null,
+          } : null,
+        },
+        stored: false,
+      };
     }
 
     const taskId = `rem_${ulid(now)}`;

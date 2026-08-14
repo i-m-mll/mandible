@@ -951,6 +951,15 @@ function App(): JSX.Element {
       }));
       scheduleBadgeRefresh();
     };
+    const managedReminderHandler = (payload: SSEPayload) => {
+      handler(payload);
+      window.dispatchEvent(new CustomEvent('managed-reminder:sse', {
+        detail: { type: payload.type },
+      }));
+      if (routeTabRef.current === 'inbox') {
+        void loadVisibleRouteDataRef.current('inbox');
+      }
+    };
     // Heartbeat: liveness signal only — bump freshness, never cache-invalidate,
     // badge-fetch, or dispatch.
     const heartbeatHandler = () => {
@@ -1126,6 +1135,8 @@ function App(): JSX.Element {
       client.on('ask:submitted', feedbackHandler),
       client.on('ask:cancelled', feedbackHandler),
       client.on('ask:expired', feedbackHandler),
+      client.on('managed-reminders.changed', managedReminderHandler),
+      client.on('managed-reminders.occurred', managedReminderHandler),
       client.on('heartbeat', heartbeatHandler),
       client.on('ledger:issue:created', ledgerHandler),
       client.on('ledger:issue:updated', ledgerHandler),
@@ -1570,6 +1581,16 @@ function App(): JSX.Element {
     try {
       await acknowledgeInboxItem('auth_result', requestId);
       dispatch({ type: 'ackInboxAuthResult', requestId });
+      void loadDashboardBadges();
+    } catch {
+      return;
+    }
+  };
+
+  const handleAckManagedReminderOccurrence = async (occurrenceId: string) => {
+    try {
+      await acknowledgeInboxItem('managed_reminder_occurrence', occurrenceId);
+      dispatch({ type: 'ackInboxManagedReminderOccurrence', occurrenceId });
       void loadDashboardBadges();
     } catch {
       return;
@@ -2129,6 +2150,7 @@ function App(): JSX.Element {
               onSelectItem={handleSelectInboxItem}
               onAckContinuation={handleAckContinuation}
               onAckAuthResult={handleAckAuthResult}
+              onAckManagedReminderOccurrence={handleAckManagedReminderOccurrence}
               onAckAll={handleAckAll}
               onRefresh={handleInboxRefresh}
             />
