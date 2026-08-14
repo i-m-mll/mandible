@@ -405,6 +405,57 @@ export function applyAuthRequestLedgerCompletion(
   return results;
 }
 
+/**
+ * Record the request-scoped successful-merge fact. Unlike
+ * auth_request.completed, this is not coupled to issue links and remains after
+ * the auth request itself is pruned.
+ */
+export function recordAuthRequestMergeSucceededFact(db: Db, authRequestId: string): void {
+  if (!tableExists(db, "auth_request_merge_succeeded_facts")) return;
+  const request = db.prepare(
+    `SELECT id, type, status, exit_code, repo, cwd, target_repo_root,
+            base_branch, resolved_at, updated_at, commit_message_digest
+       FROM auth_requests WHERE id = ?`,
+  ).get(authRequestId) as {
+    id: string;
+    type: string;
+    status: string;
+    exit_code: number | null;
+    repo: string | null;
+    cwd: string | null;
+    target_repo_root: string | null;
+    base_branch: string | null;
+    resolved_at: number | null;
+    updated_at: number;
+    commit_message_digest: string | null;
+  } | undefined;
+  if (!request || request.type !== "merge" || request.status !== "completed" || request.exit_code !== 0) {
+    return;
+  }
+  const projectId = resolveCanonicalProjectId(db, [
+    request.target_repo_root,
+    request.cwd,
+    request.repo,
+  ]);
+  if (!projectId) {
+    throw new Error(`Cannot resolve canonical project for successful auth request '${authRequestId}'`);
+  }
+  const completedAt = request.resolved_at ?? request.updated_at;
+  db.prepare(
+    `INSERT OR IGNORE INTO auth_request_merge_succeeded_facts (
+       auth_request_id, project_id, base_branch, completed_at,
+       canonical_message, recorded_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(
+    request.id,
+    projectId,
+    request.base_branch ?? "",
+    completedAt,
+    request.commit_message_digest == null ? 0 : 1,
+    completedAt,
+  );
+}
+
 function authFinalizationActor(
   db: Db,
   input: {
@@ -765,6 +816,24 @@ function candidateProjectIds(db: Db, repoRef?: string | null): string[] {
   ).all(...(hasProjectKey ? [trimmed, trimmed, trimmed, trimmed, trimmed] : [trimmed, trimmed, trimmed, trimmed])) as Array<{ id: string }>;
   for (const row of projectRows) ids.add(row.id);
   return Array.from(ids).sort();
+}
+
+function resolveCanonicalProjectId(db: Db, refs: Array<string | null>): string | null {
+  for (const ref of refs) {
+    const ids = new Set(candidateProjectIds(db, ref));
+    const trimmed = ref?.trim();
+    if (trimmed && tableExists(db, "work_repos")) {
+      const roots = db.prepare(
+        `SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?`,
+      ).all(trimmed, trimmed, trimmed) as Array<{ root: string }>;
+      for (const row of roots) {
+        for (const projectId of candidateProjectIds(db, row.root)) ids.add(projectId);
+      }
+    }
+    if (ids.size === 1) return [...ids][0]!;
+    if (ids.size > 1) return null;
+  }
+  return null;
 }
 
 function sourceFieldsForAuthRef(

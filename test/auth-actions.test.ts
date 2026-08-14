@@ -212,6 +212,9 @@ describe("auth request action execution", () => {
       );
 
       const finalized = queue.getRequest(request.id)!;
+      expect(db.prepare(
+        "SELECT COUNT(*) AS count FROM auth_request_merge_succeeded_facts WHERE auth_request_id = ?",
+      ).get(request.id)).toEqual({ count: 1 });
       const completionEvent = db.prepare(
         `SELECT actor_type, actor_user_id, evidence_method, evidence_id
          FROM ledger_events
@@ -270,6 +273,9 @@ describe("auth request action execution", () => {
         expect(
           db.prepare("SELECT COUNT(*) AS count FROM ledger_issue_checkpoints WHERE issue_id = ?").get(issue.id),
         ).toEqual({ count: 1 });
+        expect(db.prepare(
+          "SELECT COUNT(*) AS count FROM auth_request_merge_succeeded_facts WHERE auth_request_id = ?",
+        ).get(request.id)).toEqual({ count: 1 });
       } finally {
         restarted.dispose();
       }
