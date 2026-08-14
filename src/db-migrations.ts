@@ -3844,6 +3844,28 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_task_command_events_command
         ON task_command_events(command_id, created_at, id)`,
     ],
+  },
+  {
+    version: 129,
+    name: "auth_request_merge_succeeded_facts",
+    // Issue 3df7357 — one retained success fact per merge auth request. This is
+    // deliberately separate from auth_request.completed ledger events: those
+    // remain per linked issue, while this row survives auth-request deletion and
+    // is the stable input for aggregate predicates such as recorded merge count.
+    statements: [
+      `CREATE TABLE IF NOT EXISTS auth_request_merge_succeeded_facts (
+        auth_request_id   TEXT PRIMARY KEY,
+        project_id        TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,
+        base_branch       TEXT NOT NULL,
+        completed_at      INTEGER NOT NULL,
+        canonical_message INTEGER NOT NULL CHECK(canonical_message IN (0,1)),
+        recorded_at       INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_auth_merge_succeeded_project
+        ON auth_request_merge_succeeded_facts(
+          project_id, base_branch, canonical_message, completed_at, auth_request_id
+        )`,
+    ],
   }
 ];
 
@@ -4260,6 +4282,22 @@ export function migrate(db: Db): void {
   }
   applySchemaMigrations(db, afterV126);
 
+  if (
+    tableExists(db, "ledger_projects") &&
+    tableExists(db, "ledger_project_checkouts") &&
+    shouldRunPostMigration(
+      db,
+      "v129_backfill_auth_merge_succeeded_facts",
+      pending,
+      129,
+      () => hasAuthMergeSucceededFactBackfillWork(db),
+    )
+  ) {
+    runPostMigration(db, "v129_backfill_auth_merge_succeeded_facts", () => {
+      backfillAuthMergeSucceededFacts(db);
+    });
+  }
+
   // Integration reconciliation (umbrella c16807e): the additive-column hooks for
   // v112 (branches.has_upstream/upstream), v113 (work_units.merge_scan_retired_at),
   // and v114 (auth_requests.merge_finalizer_state) were renumbered during
@@ -4298,6 +4336,110 @@ export function migrate(db: Db): void {
       rebuildSpaceItemsWithFindingRefType(db);
     });
   }
+}
+
+function hasAuthMergeSucceededFactBackfillWork(db: Db): boolean {
+  // Historical partial-schema fixtures can legitimately lack the ledger
+  // substrate. A normal supported replay has ledger_projects before v129.
+  if (
+    !tableExists(db, "auth_request_merge_succeeded_facts") ||
+    !tableExists(db, "ledger_projects") ||
+    !tableExists(db, "ledger_project_checkouts")
+  ) return false;
+  return db.prepare(
+    `SELECT 1
+       FROM auth_requests a
+      WHERE a.type = 'merge'
+        AND a.status = 'completed'
+        AND a.exit_code = 0
+        AND NOT EXISTS (
+          SELECT 1 FROM auth_request_merge_succeeded_facts f
+           WHERE f.auth_request_id = a.id
+        )
+      LIMIT 1`,
+  ).get() != null;
+}
+
+function backfillAuthMergeSucceededFacts(db: Db): void {
+  const rows = db.prepare(
+    `SELECT id, repo, cwd, target_repo_root, base_branch, resolved_at,
+            updated_at, commit_message_digest
+       FROM auth_requests
+      WHERE type = 'merge' AND status = 'completed' AND exit_code = 0
+      ORDER BY resolved_at, id`,
+  ).all() as Array<{
+    id: string;
+    repo: string | null;
+    cwd: string | null;
+    target_repo_root: string | null;
+    base_branch: string | null;
+    resolved_at: number | null;
+    updated_at: number;
+    commit_message_digest: string | null;
+  }>;
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO auth_request_merge_succeeded_facts (
+       auth_request_id, project_id, base_branch, completed_at,
+       canonical_message, recorded_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const run = db.transaction(() => {
+    for (const row of rows) {
+      const projectId = resolveAuthRequestProjectId(db, [
+        row.target_repo_root,
+        row.cwd,
+        row.repo,
+      ]);
+      if (!projectId) {
+        throw new Error(
+          `Migration v129 cannot resolve canonical project for successful auth request '${row.id}'`,
+        );
+      }
+      const completedAt = row.resolved_at ?? row.updated_at;
+      insert.run(
+        row.id,
+        projectId,
+        row.base_branch ?? "",
+        completedAt,
+        row.commit_message_digest == null ? 0 : 1,
+        completedAt,
+      );
+    }
+  });
+  run.immediate();
+}
+
+function resolveAuthRequestProjectId(db: Db, refs: Array<string | null>): string | null {
+  for (const ref of refs) {
+    const trimmed = ref?.trim();
+    if (!trimmed) continue;
+    const ids = new Set<string>();
+    const checkoutRows = db.prepare(
+      `SELECT project_id FROM ledger_project_checkouts
+        WHERE root = ? OR work_repo_id = ? OR name = ? OR project_id = ?`,
+    ).all(trimmed, trimmed, trimmed, trimmed) as Array<{ project_id: string }>;
+    for (const row of checkoutRows) ids.add(row.project_id);
+    const projectRows = db.prepare(
+      `SELECT id FROM ledger_projects
+        WHERE id = ? OR lower(project_key) = lower(?) OR display_name = ?
+           OR remote_identity = ? OR upstream_identity = ?`,
+    ).all(trimmed, trimmed, trimmed, trimmed, trimmed) as Array<{ id: string }>;
+    for (const row of projectRows) ids.add(row.id);
+    if (tableExists(db, "work_repos")) {
+      const roots = db.prepare(
+        `SELECT root FROM work_repos WHERE id = ? OR name = ? OR root = ?`,
+      ).all(trimmed, trimmed, trimmed) as Array<{ root: string }>;
+      for (const root of roots) {
+        const mapped = db.prepare(
+          `SELECT project_id FROM ledger_project_checkouts WHERE root = ?`,
+        ).all(root.root) as Array<{ project_id: string }>;
+        for (const row of mapped) ids.add(row.project_id);
+      }
+    }
+    if (ids.size === 1) return [...ids][0]!;
+    if (ids.size > 1) return null;
+  }
+  return null;
 }
 
 function ensureAskCreateGlobalCapability(db: Db): void {

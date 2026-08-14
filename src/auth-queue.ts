@@ -56,6 +56,7 @@ import { getDb, resolvePrefix } from "./db.js";
 import type { RestartAvailabilityLifecycle } from "./restart-availability.js";
 import {
   applyAuthRequestLedgerCompletion,
+  recordAuthRequestMergeSucceededFact,
   resolveOperationalIssueRef,
   syncAuthRequestLedgerLinks,
 } from "./ledger/operational-links.js";
@@ -4931,6 +4932,17 @@ export class AuthQueue {
   }
 
   private applyLedgerCompletionForRequest(request: AuthRequest): void {
+    try {
+      // Issue 3df7357 — the request-scoped fact must not depend on deferred
+      // issue actions or on how many issues the request happens to link.
+      recordAuthRequestMergeSucceededFact(this.db, request.id);
+    } catch (error) {
+      authLog("warn", "auth_merge_succeeded_fact_failed", {
+        subsystem: "auth",
+        auth_request_id: request.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     try {
       this.executeDeferredLedgerActions(request);
       applyAuthRequestLedgerCompletion(this.db, {

@@ -9,6 +9,7 @@ import {
   linkAuthRequestToLedgerIssue,
   linkSessionToLedgerIssue,
   linkWorkUnitToLedgerIssue,
+  recordAuthRequestMergeSucceededFact,
   resolveOperationalIssueRef,
   runOperationalLinkBackfill,
   syncAuthRequestLedgerLinks,
@@ -97,6 +98,79 @@ function insertAuthRequest(input: {
 }
 
 describe("ledger operational links", () => {
+  it("records one request-scoped merge success fact without issue links and on retry", () => {
+    const project = createProject("unlinked");
+    insertAuthRequest({ id: "auth_unlinked", repo: project.checkout.root });
+    db.prepare(
+      `UPDATE auth_requests
+          SET status = 'completed', exit_code = 0, resolved_at = 12345,
+              updated_at = 12345, base_branch = 'develop',
+              commit_message_digest = ?
+        WHERE id = ?`,
+    ).run("a".repeat(64), "auth_unlinked");
+
+    const input = {
+      auth_request_id: "auth_unlinked",
+      repo_ref: project.checkout.root,
+    };
+    recordAuthRequestMergeSucceededFact(db, input.auth_request_id);
+    recordAuthRequestMergeSucceededFact(db, input.auth_request_id);
+
+    expect(db.prepare(
+      `SELECT auth_request_id, project_id, base_branch, completed_at, canonical_message
+         FROM auth_request_merge_succeeded_facts`,
+    ).all()).toEqual([{
+      auth_request_id: "auth_unlinked",
+      project_id: project.project.id,
+      base_branch: "develop",
+      completed_at: 12345,
+      canonical_message: 1,
+    }]);
+    expect(new LedgerStore(db).listEvents({
+      entity_type: "auth_request",
+      entity_id: "auth_unlinked",
+    })).toEqual([]);
+    db.prepare("DELETE FROM auth_requests WHERE id = ?").run("auth_unlinked");
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM auth_request_merge_succeeded_facts WHERE auth_request_id = ?",
+    ).get("auth_unlinked")).toEqual({ count: 1 });
+  });
+
+  it("keeps one merge success fact while preserving per-linked-issue completion events", () => {
+    const project = createProject("multi-linked");
+    const first = createIssue(project.project.id, "first11");
+    const second = createIssue(project.project.id, "second2");
+    insertAuthRequest({
+      id: "auth_multi",
+      repo: project.checkout.root,
+      issueClosures: ["first11", "second2"],
+    });
+    db.prepare(
+      `UPDATE auth_requests
+          SET status = 'completed', exit_code = 0, resolved_at = 23456,
+              updated_at = 23456, base_branch = 'main'
+        WHERE id = ?`,
+    ).run("auth_multi");
+
+    recordAuthRequestMergeSucceededFact(db, "auth_multi");
+    applyAuthRequestLedgerCompletion(db, {
+      auth_request_id: "auth_multi",
+      repo_ref: project.checkout.root,
+      issue_closures: ["first11", "second2"],
+    });
+
+    expect(db.prepare(
+      "SELECT COUNT(*) AS count FROM auth_request_merge_succeeded_facts WHERE auth_request_id = ?",
+    ).get("auth_multi")).toEqual({ count: 1 });
+    expect(db.prepare(
+      `SELECT COUNT(*) AS count FROM ledger_events
+        WHERE entity_type = 'auth_request' AND entity_id = ?
+          AND event_type = 'auth_request.completed'`,
+    ).get("auth_multi")).toEqual({ count: 2 });
+    expect(new LedgerStore(db).getIssue(first.id).status).toBe("closed");
+    expect(new LedgerStore(db).getIssue(second.id).status).toBe("closed");
+  });
+
   it("resolves issue refs by checkout scope and reports ambiguity without scope", () => {
     const first = createProject("alpha");
     const second = createProject("beta");
@@ -243,6 +317,12 @@ describe("ledger operational links", () => {
       repo: project.checkout.root,
       issueClosures: ["done123"],
     });
+    db.prepare(
+      `UPDATE auth_requests
+          SET status = 'completed', exit_code = 0, resolved_at = 34567,
+              updated_at = 34567, base_branch = 'main'
+        WHERE id = ?`,
+    ).run("auth_2");
     linkAuthRequestToLedgerIssue(db, {
       auth_request_id: "auth_2",
       issue_ref: "note123",
