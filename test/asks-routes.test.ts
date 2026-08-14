@@ -169,6 +169,23 @@ describe("ask routes", () => {
       },
     });
     expect(submitted.body).toMatchObject({ schema: "mandible-ask-result@1", state: "submitted" });
+    const submission = (submitted.body as any).submission;
+    const refreshed = await router.invoke({
+      method: "GET", url: `/api/asks/${askId}`, credential: "human", transport: "http",
+    });
+    expect(refreshed.status).toBe(200);
+    expect((refreshed.body as any).latest_submission).toEqual({ id: submission.id, ordinal: 1 });
+    expect((refreshed.body as any).lifecycle_event_id).not.toBe(submission.id);
+    expect(JSON.stringify((refreshed.body as any).latest_submission)).not.toContain("answer");
+    expect((await router.invoke({
+      method: "GET", url: `/api/asks/${askId}/result`, credential: "human", transport: "http",
+    })).status).toBe(404);
+    const requesterRead = await router.invoke({
+      method: "GET", url: `/api/asks/${askId}`, credential: "agent", transport: "http",
+    });
+    expect(requesterRead.status).toBe(200);
+    expect((requesterRead.body as any).latest_submission).toEqual({ id: submission.id, ordinal: 1 });
+    expect(JSON.stringify(requesterRead.body)).not.toContain("effective_response");
     const event = events.find((candidate) => candidate.type === "ask:submitted")!;
     expect(JSON.stringify(event)).not.toContain("answer");
   });

@@ -518,6 +518,10 @@ export type AskReadProjection = {
   retention_expires_at: number | null;
   created_at: number;
   lifecycle_event_id: string;
+  latest_submission: null | {
+    id: string;
+    ordinal: number;
+  };
   lifecycle: {
     id: string;
     operation: "opened" | "submitted" | "expired" | "cancelled" | "closed";
@@ -549,6 +553,13 @@ export function readAsk(
     if (!ask) return null;
     const transition = materializeExpiryInTransaction(db, ask, now);
     const head = lifecycleHead(db, askId);
+    const latestSubmission = db.prepare(
+      `SELECT id, ordinal
+         FROM feedback_submissions
+        WHERE collection_id = ?
+        ORDER BY ordinal DESC
+        LIMIT 1`,
+    ).get(askId) as { id: string; ordinal: number } | undefined;
     const rows = db.prepare(
       `SELECT i.id, i.client_item_key, i.parent_item_id, i.item_kind,
               r.id AS revision_id, r.ordinal, r.title, r.prompt, r.description,
@@ -583,6 +594,7 @@ export function readAsk(
         retention_expires_at: ask.retention_expires_at,
         created_at: ask.created_at,
         lifecycle_event_id: head.id,
+        latest_submission: latestSubmission ?? null,
         lifecycle: {
           id: head.id,
           operation: head.operation,

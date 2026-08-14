@@ -141,6 +141,7 @@ describe("bounded ask store", () => {
   it("appends immutable corrected submissions and expires only open bounded asks", () => {
     const created = createAsk(db, packet(), { requesterUserId: agentId, now: 1_000 });
     const projection = readAsk(db, created.ask_id, { now: 1_100 })!.ask;
+    expect(projection.latest_submission).toBeNull();
     const choice = projection.items.find((item) => item.client_item_key === "choice")!;
     const firstSet = applyAskAnswers(db, created.ask_id, humanId, [{
       item_id: choice.id, item_revision_id: choice.revision.id, operation: "set",
@@ -150,6 +151,10 @@ describe("bounded ask store", () => {
       expected_lifecycle_event_id: projection.lifecycle_event_id,
       answers: [{ item_id: choice.id, item_revision_id: choice.revision.id, response_event_id: firstSet }],
     }, 1_300);
+    const afterFirst = readAsk(db, created.ask_id, { answerActorUserId: humanId, now: 1_301 })!.ask;
+    expect(afterFirst.latest_submission).toEqual({ id: first.submission_id, ordinal: 1 });
+    expect(afterFirst.lifecycle_event_id).toBe(first.lifecycle_event_id);
+    expect(afterFirst.lifecycle_event_id).not.toBe(first.submission_id);
     const secondSet = applyAskAnswers(db, created.ask_id, humanId, [{
       item_id: choice.id, item_revision_id: choice.revision.id, operation: "set",
       value: { option_key: "b" }, expected_response_event_id: firstSet,
@@ -160,6 +165,10 @@ describe("bounded ask store", () => {
       answers: [{ item_id: choice.id, item_revision_id: choice.revision.id, response_event_id: secondSet }],
     }, 1_500);
     expect(second.result.submission).toMatchObject({ ordinal: 2, supersedes_submission_id: first.submission_id });
+    const afterSecond = readAsk(db, created.ask_id, { answerActorUserId: humanId, now: 1_501 })!.ask;
+    expect(afterSecond.latest_submission).toEqual({ id: second.submission_id, ordinal: 2 });
+    expect(afterSecond.lifecycle_event_id).toBe(second.lifecycle_event_id);
+    expect(afterSecond.lifecycle_event_id).not.toBe(second.submission_id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM feedback_submissions").get()).toEqual({ n: 2 });
     expect(observeAsk(db, created.ask_id, 5_000)!.result.state).toBe("submitted");
   });
