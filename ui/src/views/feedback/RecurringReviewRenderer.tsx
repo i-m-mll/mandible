@@ -793,7 +793,7 @@ function BriefingRow({
                 className="briefing-chip briefing-chip--publisher-advisory"
                 title={revision.publisher_advisory.reason}
               >
-                Reported by publisher: admission gate rejected
+                Reported by publisher: admission gate rejected — {revision.publisher_advisory.reason}
               </span>
             ) : null}
           </span>

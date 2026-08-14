@@ -246,15 +246,17 @@ describe("briefing ingest route", () => {
     });
 
     for (const override of [
-      { "agent-schedule": [{ task_identity: "", sources: ["arxiv-scan"] }] },
-      { "agent-schedule": [{ task_identity: "agent-schedule/daily-digest", sources: [""] }] },
-      { "agent-schedule": [{ task_identity: "agent-schedule/daily-digest", sources: ["arxiv-scan"], extra: true }] },
+      "",
+      "not-json",
+      JSON.stringify({ "agent-schedule": [{ task_identity: "", sources: ["arxiv-scan"] }] }),
+      JSON.stringify({ "agent-schedule": [{ task_identity: "agent-schedule/daily-digest", sources: [""] }] }),
+      JSON.stringify({ "agent-schedule": [{ task_identity: "agent-schedule/daily-digest", sources: ["arxiv-scan"], extra: true }] }),
     ]) {
-      setSetting(db, "briefing.ingest.publishers", JSON.stringify(override));
+      setSetting(db, "briefing.ingest.publishers", override);
       expect((await router.invoke({
         method: "POST",
         url: "/api/briefing/ingest",
-        body: batch({ batch_key: `malformed-${JSON.stringify(override)}` }),
+        body: batch({ batch_key: `malformed-${override}` }),
         credential: "agent-schedule",
       })).status).toBe(403);
     }

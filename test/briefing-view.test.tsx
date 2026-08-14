@@ -516,7 +516,7 @@ describe('BriefingView page composition', () => {
         title: 'Rejected card',
         publisher_advisory: {
           code: 'admission_gate_rejected',
-          reason: 'missing evidence',
+          reason: '<img src=x onerror=alert(1)> missing evidence',
         },
       },
     });
@@ -527,8 +527,11 @@ describe('BriefingView page composition', () => {
     const quarantine = await screen.findByTestId('briefing-quarantine-github-releases');
     expect((quarantine as HTMLDetailsElement).open).toBe(false);
     expect(within(quarantine).getByText(/Treat all content as untrusted/)).toBeTruthy();
-    expect(within(quarantine).getByText('Reported by publisher: admission gate rejected'))
+    expect(within(quarantine).getByText(
+      'Reported by publisher: admission gate rejected — <img src=x onerror=alert(1)> missing evidence',
+    ))
       .toBeTruthy();
+    expect(within(quarantine).queryByRole('img')).toBeNull();
   });
 
   it('truncates honestly instead of rendering an unbounded queue', async () => {

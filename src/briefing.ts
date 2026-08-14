@@ -233,7 +233,7 @@ export function readBriefingPublisherBindings(
   db: Db = getDb(),
 ): Record<string, BriefingPublisherBinding[]> {
   const raw = getSetting(db, BRIEFING_PUBLISHERS_KEY);
-  if (!raw) {
+  if (raw === null) {
     return Object.fromEntries(
       Object.entries(DEFAULT_BRIEFING_PUBLISHERS).map(([slug, bindings]) => [
         slug,
@@ -247,7 +247,8 @@ export function readBriefingPublisherBindings(
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const mapping: Record<string, BriefingPublisherBinding[]> = {};
+    const mapping: Record<string, BriefingPublisherBinding[]> = Object.create(null) as
+      Record<string, BriefingPublisherBinding[]>;
     for (const [slug, value] of Object.entries(parsed as Record<string, unknown>)) {
       if (!slug.trim() || slug !== slug.trim() || !Array.isArray(value)) return {};
       const bindings: BriefingPublisherBinding[] = [];
