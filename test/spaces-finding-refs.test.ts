@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { lastActionForRevision } from "../src/briefing.js";
 import { migrate, setDb, type Db } from "../src/db.js";
+import { encodeRecurringRevisionContent } from "../src/feedback/store.js";
 import {
   findingCandidateIdFromRef,
   findingStoreAvailable,
@@ -15,6 +16,7 @@ import {
 import { Router } from "../src/server.js";
 import { SPACE_ITEM_REF_TYPES } from "../src/contracts.js";
 import { SPACE_ITEM_REF_TYPES as BACKEND_REF_TYPES } from "../src/ledger/spaces.js";
+import { createUser } from "../src/users/store.js";
 
 // Issue d7e51a1 (umbrella 99b74d6): Space finding references — the `finding`
 // ref type, latest-vs-pinned revision semantics, and save-to-Space as a
@@ -37,54 +39,27 @@ let router: Router;
  * case the fixture only clears rows so each test starts empty.
  */
 function createBriefingStore(database: Db): void {
-  const live = database
-    .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'review_candidates'")
-    .get();
-  if (live) {
-    database.exec(`
-      DELETE FROM decision_events;
-      DELETE FROM candidate_revisions;
-      DELETE FROM review_candidates;
-    `);
-    return;
-  }
   database.exec(`
-    CREATE TABLE review_candidates (
-      id TEXT PRIMARY KEY,
-      source TEXT NOT NULL,
-      candidate_key TEXT NOT NULL,
-      current_revision_id TEXT,
-      created_at INTEGER NOT NULL,
-      UNIQUE(source, candidate_key)
-    );
-    CREATE TABLE candidate_revisions (
-      id TEXT PRIMARY KEY,
-      candidate_id TEXT NOT NULL,
-      title TEXT,
-      why_notable TEXT,
-      refs_json TEXT,
-      source_ref TEXT,
-      evidence_hash TEXT,
-      evidence_kind TEXT CHECK(evidence_kind IN ('snapshot-item','finding-only')),
-      captured_at TEXT,
-      run_id TEXT,
-      digest_series_ref TEXT,
-      digest_version INTEGER,
-      rank INTEGER NULL,
-      batch_key TEXT,
-      ingested_at INTEGER,
-      UNIQUE(candidate_id, evidence_hash)
-    );
-    CREATE TABLE decision_events (
-      id TEXT PRIMARY KEY,
-      candidate_id TEXT NOT NULL,
-      revision_id TEXT NOT NULL,
-      action TEXT NOT NULL CHECK(action IN ('keep','dismiss','undo','expire')),
-      actor_user_id TEXT NULL,
-      comment_id TEXT NULL,
-      created_at INTEGER NOT NULL
-    );
+    DELETE FROM agent_dispatch_events;
+    DELETE FROM feedback_submission_answers;
+    DELETE FROM feedback_submissions;
+    DELETE FROM feedback_comments;
+    DELETE FROM feedback_response_events;
+    DELETE FROM feedback_item_events;
+    DELETE FROM feedback_collection_events;
+    DELETE FROM feedback_publication_items;
+    DELETE FROM feedback_item_options;
+    UPDATE feedback_items SET current_revision_id = NULL;
+    DELETE FROM feedback_item_revisions;
+    DELETE FROM feedback_items;
+    DELETE FROM feedback_publications;
+    DELETE FROM feedback_ask_sessions;
+    DELETE FROM feedback_recurring_profiles;
+    DELETE FROM feedback_collections;
   `);
+  createUser(database, {
+    slug: "spaces-reviewer", kind: "human", display_name: "Spaces Reviewer",
+  });
 }
 
 function seedCandidate(
@@ -92,12 +67,21 @@ function seedCandidate(
   id: string,
   opts: { source?: string; candidateKey?: string } = {},
 ): void {
+  const source = opts.source ?? "daily-digest";
+  const collectionId = `collection-${source}`;
+  database.prepare(
+    `INSERT OR IGNORE INTO feedback_collections
+       (id, kind, interaction_mode, source, created_at)
+     VALUES (?, 'recurring_feed', 'immediate_per_item', ?, ?)`,
+  ).run(collectionId, source, Date.now());
   database
     .prepare(
-      `INSERT INTO review_candidates (id, source, candidate_key, current_revision_id, created_at)
-       VALUES (?, ?, ?, NULL, ?)`,
+      `INSERT INTO feedback_items (
+         id, collection_id, item_kind, identity_mode, external_key,
+         current_revision_id, created_at
+       ) VALUES (?, ?, 'item', 'publisher_dedup', ?, NULL, ?)`,
     )
-    .run(id, opts.source ?? "daily-digest", opts.candidateKey ?? `key-${id}`, Date.now());
+    .run(id, collectionId, opts.candidateKey ?? `key-${id}`, Date.now());
 }
 
 /** Append a revision and move the candidate's current revision (an ingest re-pend). */
@@ -107,32 +91,47 @@ function seedRevision(
   revisionId: string,
   opts: { title?: string; evidenceHash?: string; whyNotable?: string; refs?: string[] } = {},
 ): void {
+  const ordinal = (database.prepare(
+    "SELECT COALESCE(MAX(ordinal), 0) + 1 AS ordinal FROM feedback_item_revisions WHERE item_id = ?",
+  ).get(candidateId) as { ordinal: number }).ordinal;
+  const collectionId = (database.prepare(
+    "SELECT collection_id FROM feedback_items WHERE id = ?",
+  ).get(candidateId) as { collection_id: string }).collection_id;
+  const publicationId = `publication-${revisionId}`;
+  database.prepare(
+    `INSERT INTO feedback_publications (
+       id, collection_id, publication_key, task_identity, run_id,
+       digest_series_ref, digest_version, item_count, received_at
+     ) VALUES (?, ?, ?, 'task-1', 'run-1', 'artifact-series:abc', 7, 1, ?)`,
+  ).run(publicationId, collectionId, `batch-${revisionId}`, Date.now());
   database
     .prepare(
-      `INSERT INTO candidate_revisions (
-         id, candidate_id, title, why_notable, refs_json, source_ref, evidence_hash,
-         evidence_kind, captured_at, run_id, digest_series_ref, digest_version, rank,
-         batch_key, ingested_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, 'snapshot-item', ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO feedback_item_revisions (
+         id, item_id, ordinal, title, prompt, description, response_type, required,
+         content_json, evidence_digest, publication_id, position, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, 'verdict', 0, ?, ?, ?, 1, ?)`,
     )
     .run(
       revisionId,
       candidateId,
+      ordinal,
+      opts.title ?? `Title for ${revisionId}`,
       opts.title ?? `Title for ${revisionId}`,
       opts.whyNotable ?? "because it matters",
-      JSON.stringify(opts.refs ?? ["https://example.invalid/x"]),
-      "https://example.invalid/x",
+      encodeRecurringRevisionContent({
+        why_notable: opts.whyNotable ?? "because it matters",
+        refs: opts.refs ?? ["https://example.invalid/x"],
+        source_ref: "https://example.invalid/x",
+        evidence_kind: "snapshot-item",
+        captured_at: "2026-08-11T09:00:00Z",
+        rank: 1,
+      }),
       opts.evidenceHash ?? `hash-${revisionId}`,
-      "2026-08-11T09:00:00Z",
-      "run-1",
-      "artifact-series:abc",
-      7,
-      1,
-      "batch-1",
+      publicationId,
       Date.now(),
     );
   database
-    .prepare("UPDATE review_candidates SET current_revision_id = ? WHERE id = ?")
+    .prepare("UPDATE feedback_items SET current_revision_id = ? WHERE id = ?")
     .run(revisionId, candidateId);
 }
 
@@ -144,12 +143,43 @@ function seedDecision(
   createdAt: number,
   id?: string,
 ): void {
-  database
-    .prepare(
-      `INSERT INTO decision_events (id, candidate_id, revision_id, action, actor_user_id, comment_id, created_at)
-       VALUES (?, ?, ?, ?, NULL, NULL, ?)`,
-    )
-    .run(id ?? `de-${revisionId}-${action}-${createdAt}`, candidateId, revisionId, action, createdAt);
+  const eventId = id ?? `de-${revisionId}-${action}-${createdAt}`;
+  if (action === "expire") {
+    database.prepare(
+      `INSERT INTO feedback_item_events
+         (id, item_id, item_revision_id, operation, actor_user_id, created_at)
+       VALUES (?, ?, ?, 'expired', NULL, ?)`,
+    ).run(eventId, candidateId, revisionId, createdAt);
+    return;
+  }
+  const collectionId = (database.prepare(
+    "SELECT collection_id FROM feedback_items WHERE id = ?",
+  ).get(candidateId) as { collection_id: string }).collection_id;
+  const actorId = (database.prepare(
+    "SELECT id FROM users WHERE slug = 'spaces-reviewer'",
+  ).get() as { id: string }).id;
+  if (action === "undo") {
+    const target = database.prepare(
+      `SELECT id FROM feedback_response_events
+        WHERE item_revision_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1`,
+    ).get(revisionId) as { id: string };
+    database.prepare(
+      `INSERT INTO feedback_response_events (
+         id, collection_id, item_id, item_revision_id, operation, value_json,
+         retracts_event_id, actor_user_id, created_at
+       ) VALUES (?, ?, ?, ?, 'retract', NULL, ?, ?, ?)`,
+    ).run(eventId, collectionId, candidateId, revisionId, target.id, actorId, createdAt);
+    return;
+  }
+  database.prepare(
+    `INSERT INTO feedback_response_events (
+       id, collection_id, item_id, item_revision_id, operation, value_json,
+       retracts_event_id, actor_user_id, created_at
+     ) VALUES (?, ?, ?, ?, 'set', ?, NULL, ?, ?)`,
+  ).run(
+    eventId, collectionId, candidateId, revisionId,
+    JSON.stringify({ verdict: action }), actorId, createdAt,
+  );
 }
 
 /**
@@ -319,18 +349,10 @@ describe("finding resolution: latest vs pinned", () => {
     // Since the v120 briefing migration, a freshly migrated database always
     // carries the store; absence means a pre-v120 database, modelled here by
     // dropping the tables the resolver probes for. The v122 dispatch-event
-    // table references candidate_comments/candidate_revisions, so it goes
-    // first: a pre-v120 database predates it too.
+    // A pre-feedback database is modelled by removing one required kernel table.
     const fresh = new Database(":memory:") as unknown as Db;
     migrate(fresh);
-    fresh.exec(`
-      DROP TABLE IF EXISTS agent_dispatch_events;
-      DROP TABLE IF EXISTS decision_events;
-      DROP TABLE IF EXISTS candidate_comments;
-      DROP TABLE IF EXISTS candidate_occurrences;
-      DROP TABLE IF EXISTS candidate_revisions;
-      DROP TABLE IF EXISTS review_candidates;
-    `);
+    fresh.exec("DROP TABLE feedback_items");
     expect(findingStoreAvailable(fresh)).toBe(false);
     const resolution = resolveFindingReference(fresh, "cand-1", { revision_mode: "latest" });
     expect(resolution.resolved).toBe(false);
@@ -576,7 +598,10 @@ describe("finding routes", () => {
     expect(item.metadata).toEqual({ revision_mode: "latest" });
 
     // A placement creates NO decision event.
-    const decisions = db.prepare("SELECT COUNT(*) AS n FROM decision_events").get() as { n: number };
+    const decisions = db.prepare(
+      `SELECT (SELECT COUNT(*) FROM feedback_response_events)
+            + (SELECT COUNT(*) FROM feedback_item_events) AS n`,
+    ).get() as { n: number };
     expect(decisions.n).toBe(0);
 
     const resolved = await call("GET", `/api/spaces/${spaceId}/items/${item.id}/finding`);

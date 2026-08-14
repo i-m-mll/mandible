@@ -33,6 +33,7 @@ export const OPERATIONAL_ROUTE_CATEGORIES: ReadonlyArray<{ prefix: string; categ
   // able to launch a worker against a real working directory.
   { prefix: "/api/agent-dispatch", category: "agent_dispatch" },
   { prefix: "/api/artifacts", category: "artifacts" },
+  { prefix: "/api/asks", category: "asks" },
   { prefix: "/api/auth", category: "auth" },
   { prefix: "/api/backup", category: "backup" },
   { prefix: "/api/briefing", category: "briefing" },

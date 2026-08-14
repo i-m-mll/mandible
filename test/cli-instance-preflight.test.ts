@@ -538,6 +538,17 @@ describe("CLI instance mutation preflight", () => {
     expect(result.stdout).toBe("projects");
   });
 
+  it("classifies ask mutations through the built-in fallback table", async () => {
+    const result = await runBash([
+      "set -euo pipefail",
+      "source cli/api.sh",
+      "api_operational_mutation_category POST /api/asks/ask-1/submit",
+    ].join("\n"), 1, { MANDIBLE_ROUTE_MUTATION_CATEGORIES_FILE: "/missing/categories.json" });
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("asks");
+  });
+
   it("keeps auth check out of operational preflight even if generated data lists it", async () => {
     const categoryFile = writeRouteMutationCategories({
       schema: 1,

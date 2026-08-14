@@ -1189,6 +1189,67 @@ export function isBriefingEvent(value: unknown): value is BriefingEvent {
     && (BRIEFING_EVENT_VALUES as readonly string[]).includes(value);
 }
 
+// --- bounded asks (umbrella 669ef48 / issue 2a7aa03) -------------------------
+
+export type FeedbackResponseType =
+  | "verdict"
+  | "free_text"
+  | "single_choice"
+  | "multi_choice";
+
+export type FeedbackVerdictValue = { verdict: "keep" | "dismiss" };
+export type FeedbackFreeTextValue = { text: string };
+export type FeedbackSingleChoiceValue = { option_key: string };
+export type FeedbackMultiChoiceValue = { option_keys: string[] };
+export type FeedbackResponseValue =
+  | FeedbackVerdictValue
+  | FeedbackFreeTextValue
+  | FeedbackSingleChoiceValue
+  | FeedbackMultiChoiceValue;
+
+export const MANDIBLE_ASK_RESULT_SCHEMA = "mandible-ask-result@1" as const;
+
+export interface MandibleAskResult {
+  schema: typeof MANDIBLE_ASK_RESULT_SCHEMA;
+  ask_id: string;
+  state: "open" | "submitted" | "expired" | "cancelled";
+  request_digest: string;
+  expires_at: number;
+  submission: null | {
+    id: string;
+    ordinal: number;
+    supersedes_submission_id: string | null;
+    lifecycle_event_id: string;
+    actor_user_id: string;
+    created_at: number;
+    answers: Array<{
+      item_id: string;
+      client_item_key: string | null;
+      item_revision_id: string;
+      response_event_id: string;
+      response_type: FeedbackResponseType;
+      value: FeedbackResponseValue;
+      actor_user_id: string;
+    }>;
+  };
+  wait_timed_out?: true;
+}
+
+export const ASK_EVENTS = Object.freeze({
+  created: "ask:created",
+  submitted: "ask:submitted",
+  cancelled: "ask:cancelled",
+  expired: "ask:expired",
+} as const);
+
+export type AskEvent = (typeof ASK_EVENTS)[keyof typeof ASK_EVENTS];
+export const ASK_EVENT_VALUES: readonly AskEvent[] = Object.freeze(Object.values(ASK_EVENTS));
+
+export function isAskEvent(value: unknown): value is AskEvent {
+  return typeof value === "string"
+    && (ASK_EVENT_VALUES as readonly string[]).includes(value);
+}
+
 // ---------------------------------------------------------------------------
 // Space finding references (briefing umbrella 99b74d6, lane d7e51a1).
 //

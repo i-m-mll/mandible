@@ -134,23 +134,28 @@ export const METADATA_BACKUP_TABLES = [
   "user_groups",
   "user_group_members",
   "permission_grants",
-  // Briefing review store (umbrella 99b74d6 / issue ce22a3a, migration 120).
-  // Candidates and their revisions can only be reconstructed from digest runs
-  // that may no longer exist, and the decision/comment stream is irreplaceable
-  // human judgment, so the whole store is durable metadata rather than
-  // reproducible runtime state. Parent-before-child order: candidates, then
-  // revisions, then occurrences, then the decision and comment streams (which
-  // also reference `users`, already emitted above). `briefing_batches` is the
-  // ingestion idempotency ledger and has no foreign keys, so it comes last.
-  "review_candidates",
-  "candidate_revisions",
-  "candidate_occurrences",
-  "decision_events",
-  "candidate_comments",
-  "briefing_batches",
+  // Shared feedback kernel (migration 125 foundation, v126 recurring cutover).
+  // All rows are durable human-feedback or idempotency/lifecycle facts. Keep
+  // parents before children; restore runs with foreign keys disabled to handle
+  // the intentional items.current_revision_id <-> revisions cycle, then callers
+  // verify the restored graph before using it.
+  "feedback_collections",
+  "feedback_recurring_profiles",
+  "feedback_ask_sessions",
+  "feedback_publications",
+  "feedback_items",
+  "feedback_item_revisions",
+  "feedback_item_options",
+  "feedback_publication_items",
+  "feedback_collection_events",
+  "feedback_item_events",
+  "feedback_response_events",
+  "feedback_submissions",
+  "feedback_submission_answers",
+  "feedback_comments",
   // Agent-dispatch handling events are the audit chain (comment -> handling
   // event -> session handle) behind human-triggered dispatches; durable
-  // metadata. References candidate_comments and users, both emitted above.
+  // metadata. References feedback items/revisions/comments and users above.
   "agent_dispatch_events",
   // Executor task inventory receipts (issue 0bc2279, migration 124). Each row
   // is an immutable observation an executor made at a moment that has passed;

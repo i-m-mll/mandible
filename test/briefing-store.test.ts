@@ -66,14 +66,16 @@ function item(
 
 function candidateIdFor(source: string, ref: string): string {
   const row = db
-    .prepare("SELECT id FROM review_candidates WHERE source = ? AND candidate_key = ?")
+    .prepare(`SELECT i.id FROM feedback_items i
+      JOIN feedback_collections c ON c.id = i.collection_id
+      WHERE c.source = ? AND i.external_key = ?`)
     .get(source, candidateKey(source, ref)) as { id: string };
   return row.id;
 }
 
 function currentRevisionId(candidateId: string): string | null {
   return (db
-    .prepare("SELECT current_revision_id AS id FROM review_candidates WHERE id = ?")
+    .prepare("SELECT current_revision_id AS id FROM feedback_items WHERE id = ?")
     .get(candidateId) as { id: string | null }).id;
 }
 
@@ -83,17 +85,12 @@ function currentRevisionId(candidateId: string): string | null {
  * like afterwards.
  */
 function lastActionsByRevision(candidateId: string): Record<string, string> {
-  const rows = db
-    .prepare(
-      `SELECT r.id AS revision_id,
-              (SELECT d.action FROM decision_events AS d
-                WHERE d.revision_id = r.id
-                ORDER BY d.created_at DESC, d.rowid DESC
-                LIMIT 1) AS action
-         FROM candidate_revisions AS r
-        WHERE r.candidate_id = ?`,
-    )
-    .all(candidateId) as Array<{ revision_id: string; action: string | null }>;
+  const history = getBriefingCandidateHistory(db, candidateId);
+  const rows = (history?.revisions ?? []).map((revision) => ({
+    revision_id: revision.id,
+    action: [...(history?.decisions ?? [])].reverse()
+      .find((decision) => decision.revision_id === revision.id)?.action ?? null,
+  }));
   return Object.fromEntries(
     rows.filter((row) => row.action !== null).map((row) => [row.revision_id, row.action as string]),
   );
@@ -112,23 +109,28 @@ afterEach(() => {
 
 describe("briefing schema", () => {
   it("applies the briefing migrations cleanly from the current head", () => {
-    expect(CURRENT_SCHEMA_VERSION).toBe(124);
+    expect(CURRENT_SCHEMA_VERSION).toBe(126);
     const tables = db
       .prepare(
         `SELECT name FROM sqlite_master
           WHERE type = 'table'
-            AND name IN ('review_candidates','candidate_revisions','candidate_occurrences',
-                         'decision_events','candidate_comments','briefing_batches')
+            AND name IN ('feedback_collections','feedback_recurring_profiles',
+                         'feedback_publications','feedback_items','feedback_item_revisions',
+                         'feedback_publication_items','feedback_response_events',
+                         'feedback_item_events','feedback_comments')
           ORDER BY name`,
       )
       .all() as Array<{ name: string }>;
     expect(tables.map((row) => row.name)).toEqual([
-      "briefing_batches",
-      "candidate_comments",
-      "candidate_occurrences",
-      "candidate_revisions",
-      "decision_events",
-      "review_candidates",
+      "feedback_collections",
+      "feedback_comments",
+      "feedback_item_events",
+      "feedback_item_revisions",
+      "feedback_items",
+      "feedback_publication_items",
+      "feedback_publications",
+      "feedback_recurring_profiles",
+      "feedback_response_events",
     ]);
     expect(db.pragma("foreign_key_check")).toEqual([]);
     expect(db.pragma("integrity_check")).toEqual([{ integrity_check: "ok" }]);
@@ -227,7 +229,15 @@ describe("briefing ingestion", () => {
 
     const candidateId = candidateIdFor("arxiv-scan", "paper-1");
     const revision = db
-      .prepare("SELECT * FROM candidate_revisions WHERE candidate_id = ?")
+      .prepare(`SELECT r.id, r.title,
+          json_extract(r.content_json, '$.source_ref') AS source_ref,
+          r.evidence_digest AS evidence_hash,
+          json_extract(r.content_json, '$.evidence_kind') AS evidence_kind,
+          p.digest_version, json_extract(r.content_json, '$.rank') AS rank,
+          p.publication_key AS batch_key
+        FROM feedback_item_revisions r
+        JOIN feedback_publications p ON p.id = r.publication_id
+        WHERE r.item_id = ?`)
       .get(candidateId) as Record<string, unknown>;
     expect(revision).toMatchObject({
       title: "A notable finding",
@@ -247,10 +257,10 @@ describe("briefing ingestion", () => {
     expect(first).toEqual({ accepted: 2, created: 2, revised: 0, unchanged: 0 });
 
     const counts = () => ({
-      candidates: (db.prepare("SELECT COUNT(*) AS n FROM review_candidates").get() as { n: number }).n,
-      revisions: (db.prepare("SELECT COUNT(*) AS n FROM candidate_revisions").get() as { n: number }).n,
-      occurrences: (db.prepare("SELECT COUNT(*) AS n FROM candidate_occurrences").get() as { n: number }).n,
-      batches: (db.prepare("SELECT COUNT(*) AS n FROM briefing_batches").get() as { n: number }).n,
+      candidates: (db.prepare("SELECT COUNT(*) AS n FROM feedback_items").get() as { n: number }).n,
+      revisions: (db.prepare("SELECT COUNT(*) AS n FROM feedback_item_revisions").get() as { n: number }).n,
+      occurrences: (db.prepare("SELECT COUNT(*) AS n FROM feedback_publication_items").get() as { n: number }).n,
+      batches: (db.prepare("SELECT COUNT(*) AS n FROM feedback_publications").get() as { n: number }).n,
     });
     const before = counts();
 
@@ -261,6 +271,23 @@ describe("briefing ingestion", () => {
     );
     expect(replay).toEqual(first);
     expect(counts()).toEqual(before);
+  });
+
+  it("records and replays an empty batch without exposing a queue source", () => {
+    const empty = batch({ batch_key: "batch-empty", items: [] });
+    expect(ingestBriefingBatch(db, empty, 1_000)).toEqual({
+      accepted: 0, created: 0, revised: 0, unchanged: 0,
+    });
+    const before = (db.prepare(
+      "SELECT COUNT(*) AS n FROM feedback_publications",
+    ).get() as { n: number }).n;
+    expect(ingestBriefingBatch(db, empty, 2_000)).toEqual({
+      accepted: 0, created: 0, revised: 0, unchanged: 0,
+    });
+    expect((db.prepare(
+      "SELECT COUNT(*) AS n FROM feedback_publications",
+    ).get() as { n: number }).n).toBe(before);
+    expect(listBriefingQueue(db).sources).toEqual([]);
   });
 
   it("records only an occurrence for a re-ingested (candidate_key, evidence_hash) pair", () => {
@@ -285,13 +312,13 @@ describe("briefing ingestion", () => {
 
     // No new revision, no move, and — the point of the rule — no re-pend.
     expect(
-      (db.prepare("SELECT COUNT(*) AS n FROM candidate_revisions").get() as { n: number }).n,
+      (db.prepare("SELECT COUNT(*) AS n FROM feedback_item_revisions").get() as { n: number }).n,
     ).toBe(1);
     expect(currentRevisionId(candidateId)).toBe(revisionId);
     expect(countPendingBriefingCandidates(db)).toBe(0);
     expect(
       (db
-        .prepare("SELECT COUNT(*) AS n FROM candidate_occurrences WHERE revision_id = ?")
+        .prepare("SELECT COUNT(*) AS n FROM feedback_publication_items WHERE item_revision_id = ?")
         .get(revisionId) as { n: number }).n,
     ).toBe(2);
   });
@@ -339,7 +366,7 @@ describe("briefing ingestion", () => {
     expect(countPendingBriefingCandidates(db)).toBe(1);
     expect(
       (db
-        .prepare("SELECT COUNT(*) AS n FROM candidate_revisions WHERE candidate_id = ?")
+        .prepare("SELECT COUNT(*) AS n FROM feedback_item_revisions WHERE item_id = ?")
         .get(candidateId) as { n: number }).n,
     ).toBe(2);
   });
@@ -372,7 +399,7 @@ describe("briefing ingestion", () => {
     expect(currentRevisionId(candidateId)).toBe(currentAfterV5);
     expect(
       (db
-        .prepare("SELECT COUNT(*) AS n FROM candidate_revisions WHERE candidate_id = ?")
+        .prepare("SELECT COUNT(*) AS n FROM feedback_item_revisions WHERE item_id = ?")
         .get(candidateId) as { n: number }).n,
     ).toBe(3);
   });
@@ -420,7 +447,7 @@ describe("briefing review state", () => {
     expect(swept).toMatchObject({ expired: 1, candidate_ids: [candidateId] });
 
     const event = db
-      .prepare("SELECT action, actor_user_id FROM decision_events WHERE candidate_id = ?")
+      .prepare("SELECT 'expire' AS action, actor_user_id FROM feedback_item_events WHERE item_id = ?")
       .get(candidateId) as { action: string; actor_user_id: string | null };
     expect(event).toEqual({ action: "expire", actor_user_id: null });
 
@@ -578,7 +605,7 @@ describe("briefing review state", () => {
     })).toThrow(/revision not found for candidate/);
     expect(
       (db
-        .prepare("SELECT COUNT(*) AS n FROM decision_events WHERE revision_id = ?")
+        .prepare("SELECT COUNT(*) AS n FROM feedback_response_events WHERE item_revision_id = ?")
         .get(secondRevision) as { n: number }).n,
     ).toBe(0);
   });
@@ -624,7 +651,7 @@ describe("briefing review state", () => {
     // Nothing was appended and Bob's judgment stands.
     expect(
       (db
-        .prepare("SELECT COUNT(*) AS n FROM decision_events WHERE revision_id = ?")
+        .prepare("SELECT COUNT(*) AS n FROM feedback_response_events WHERE item_revision_id = ?")
         .get(revisionId) as { n: number }).n,
     ).toBe(2);
     expect(lastActionsByRevision(candidateId)).toEqual({ [revisionId]: "dismiss" });

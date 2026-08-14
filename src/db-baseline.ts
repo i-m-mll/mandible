@@ -1,7 +1,7 @@
 import type { Db } from "./db.js";
 
 /**
- * Schema snapshot generated from a full v1-v124 migration replay.
+ * Schema snapshot generated from a full v1-v126 migration replay.
  * Regenerate whenever a migration is appended; the equivalence test guards drift.
  *
  * Migrations 115 and 117 are data-only corrective passes (no DDL), so they leave
@@ -9,7 +9,7 @@ import type { Db } from "./db.js";
  * version. Migration 116 is additive DDL: it contributes the two nullable
  * sessions.identity_mismatch_* columns in the sessions CREATE TABLE below.
  */
-export const BASELINE_SCHEMA_VERSION = 124;
+export const BASELINE_SCHEMA_VERSION = 126;
 
 const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE artifact (\n        id                TEXT PRIMARY KEY,\n        identity_key      TEXT NOT NULL,\n        source_kind       TEXT NOT NULL DEFAULT 'managed'\n          CHECK(source_kind IN ('tracked_repo','local_only','managed','external','mixed')),\n        title             TEXT,\n        source_project_id TEXT REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        source_repo_id    TEXT,\n        logical_name      TEXT,\n        source_path       TEXT,\n        latest_version_id TEXT,\n        version_count     INTEGER NOT NULL DEFAULT 0,\n        metadata_json     TEXT NOT NULL DEFAULT '{}',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        UNIQUE(identity_key)\n      )",
@@ -70,7 +70,7 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE TABLE preset_nodes (\n        id          TEXT PRIMARY KEY,\n        preset_id   TEXT NOT NULL REFERENCES presets(id) ON DELETE CASCADE,\n        parent_id   TEXT REFERENCES preset_nodes(id) ON DELETE CASCADE,\n        position    INTEGER NOT NULL DEFAULT 0,\n        title       TEXT NOT NULL DEFAULT '',\n        body        TEXT NOT NULL DEFAULT '',\n        level       INTEGER NOT NULL DEFAULT 1,\n        created_at  INTEGER NOT NULL,\n        updated_at  INTEGER NOT NULL\n      )",
   "CREATE TABLE presets (\n        id          TEXT PRIMARY KEY,\n        name        TEXT NOT NULL,\n        description TEXT NOT NULL DEFAULT '',\n        source      TEXT NOT NULL DEFAULT 'manual'\n                    CHECK(source IN ('manual', 'claude_md_global', 'claude_md_project', 'claude_md_local')),\n        source_path TEXT,\n        content_hash TEXT NOT NULL DEFAULT '',\n        version     INTEGER NOT NULL DEFAULT 1,\n        created_at  INTEGER NOT NULL,\n        updated_at  INTEGER NOT NULL\n      )",
   "CREATE TABLE project_artifact_associations (\n        id               TEXT PRIMARY KEY,\n        project_id       TEXT NOT NULL REFERENCES ledger_projects(id) ON DELETE RESTRICT,\n        target_type      TEXT NOT NULL CHECK(target_type IN ('artifact','artifact_version')),\n        target_id        TEXT NOT NULL,\n        association_kind TEXT NOT NULL DEFAULT 'associated'\n          CHECK(association_kind IN ('associated','canonical')),\n        role             TEXT NOT NULL DEFAULT '',\n        title            TEXT,\n        description      TEXT,\n        rank             INTEGER,\n        status           TEXT NOT NULL DEFAULT 'active'\n          CHECK(status IN ('active','superseded','archived')),\n        source           TEXT NOT NULL DEFAULT 'user'\n          CHECK(source IN ('user','agent_explicit','space_rule','migration','system')),\n        source_ref_type  TEXT,\n        source_ref_id    TEXT,\n        metadata_json    TEXT NOT NULL DEFAULT '{}',\n        created_at       INTEGER NOT NULL,\n        updated_at       INTEGER NOT NULL,\n        UNIQUE(project_id, target_type, target_id, role)\n      )",
-  "CREATE TABLE permission_grants (\n        id            TEXT PRIMARY KEY,\n        subject_type  TEXT NOT NULL CHECK(subject_type IN ('user','group')),\n        subject_id    TEXT NOT NULL,\n        resource_type TEXT NOT NULL CHECK(resource_type IN ('project','global')),\n        resource_id   TEXT REFERENCES ledger_projects(id) ON DELETE CASCADE,\n        permission    TEXT NOT NULL,\n        created_at    INTEGER NOT NULL,\n        CHECK (\n          (resource_type = 'project' AND resource_id IS NOT NULL\n            AND permission IN ('read','write','admin')) OR\n          (resource_type = 'global' AND resource_id IS NULL\n            AND permission IN ('approve_auth','spawn_console','change_settings','backup','open_path'))\n        )\n      )",
+  "CREATE TABLE permission_grants (\n        id            TEXT PRIMARY KEY,\n        subject_type  TEXT NOT NULL CHECK(subject_type IN ('user','group')),\n        subject_id    TEXT NOT NULL,\n        resource_type TEXT NOT NULL CHECK(resource_type IN ('project','global')),\n        resource_id   TEXT REFERENCES ledger_projects(id) ON DELETE CASCADE,\n        permission    TEXT NOT NULL,\n        created_at    INTEGER NOT NULL,\n        CHECK (\n          (resource_type = 'project' AND resource_id IS NOT NULL\n            AND permission IN ('read','write','admin')) OR\n          (resource_type = 'global' AND resource_id IS NULL\n            AND permission IN (\n              'approve_auth','spawn_console','change_settings','backup','open_path','ask.create'\n            ))\n        )\n      )",
   "CREATE TABLE provider_manifests (\n        id            TEXT PRIMARY KEY,\n        provider_id   TEXT NOT NULL,\n        manifest_type TEXT NOT NULL DEFAULT 'provider_manifest',\n        version       TEXT,\n        content_hash  TEXT NOT NULL,\n        artifact_id   TEXT,\n        source        TEXT NOT NULL DEFAULT 'ingest',\n        content_json  TEXT NOT NULL,\n        created_at    INTEGER NOT NULL\n      )",
   "CREATE TABLE providers (\n        id                TEXT PRIMARY KEY,\n        display_name      TEXT NOT NULL,\n        version           TEXT,\n        status            TEXT NOT NULL DEFAULT 'active',\n        transport         TEXT NOT NULL DEFAULT 'manifest',\n        endpoint          TEXT,\n        capabilities_json TEXT NOT NULL DEFAULT '{}',\n        actions_json      TEXT NOT NULL DEFAULT '[]',\n        source            TEXT NOT NULL DEFAULT 'local',\n        created_at        INTEGER NOT NULL,\n        updated_at        INTEGER NOT NULL,\n        last_seen_at      INTEGER\n      )",
   "CREATE TABLE push_history (\n        id TEXT PRIMARY KEY,\n        repo_id TEXT NOT NULL,\n        repo_root TEXT NOT NULL,\n        scope TEXT NOT NULL,\n        status TEXT NOT NULL CHECK(status IN ('started','completed','failed')),\n        result_json TEXT,\n        started_at INTEGER NOT NULL,\n        completed_at INTEGER\n      )",
@@ -319,98 +319,15 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
   "CREATE UNIQUE INDEX work_repos_id_idx ON work_repos(id)",
   "CREATE TRIGGER trg_work_units_assigned_session_insert_normalize\n     AFTER INSERT ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
   "CREATE TRIGGER trg_work_units_assigned_session_update_normalize\n     AFTER UPDATE OF assigned_session_id ON work_units\n     WHEN NEW.assigned_session_id IS NOT NULL AND trim(NEW.assigned_session_id) = ''\n     BEGIN\n       UPDATE work_units SET assigned_session_id = NULL WHERE id = NEW.id;\n     END",
-  // Migration v120 (umbrella 99b74d6 / issue ce22a3a) — briefing review store.
-  // The equivalence test normalizes whitespace, so these read as ordinary DDL
-  // rather than the single-line dump form above.
-  `CREATE TABLE review_candidates (
-        id                  TEXT PRIMARY KEY,
-        source              TEXT NOT NULL,
-        candidate_key       TEXT NOT NULL,
-        current_revision_id TEXT,
-        created_at          INTEGER NOT NULL,
-        UNIQUE(source, candidate_key)
-      )`,
-  `CREATE TABLE candidate_revisions (
-        id                TEXT PRIMARY KEY,
-        candidate_id      TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
-        title             TEXT NOT NULL,
-        why_notable       TEXT,
-        refs_json         TEXT NOT NULL DEFAULT '[]'
-                            CHECK(json_valid(refs_json) AND json_type(refs_json)='array'),
-        source_ref        TEXT,
-        evidence_hash     TEXT NOT NULL,
-        evidence_kind     TEXT NOT NULL
-                            CHECK(evidence_kind IN ('snapshot-item','finding-only')),
-        captured_at       TEXT,
-        run_id            TEXT,
-        digest_series_ref TEXT,
-        digest_version    INTEGER,
-        rank              INTEGER,
-        batch_key         TEXT NOT NULL,
-        ingested_at       INTEGER NOT NULL,
-        UNIQUE(candidate_id, evidence_hash)
-      )`,
-  `CREATE TABLE candidate_occurrences (
-        id             TEXT PRIMARY KEY,
-        revision_id    TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        digest_version INTEGER,
-        batch_key      TEXT NOT NULL,
-        seen_at        INTEGER NOT NULL,
-        UNIQUE(revision_id, batch_key)
-      )`,
-  `CREATE TABLE decision_events (
-        id            TEXT PRIMARY KEY,
-        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
-        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        action        TEXT NOT NULL CHECK(action IN ('keep','dismiss','undo','expire')),
-        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        comment_id    TEXT,
-        created_at    INTEGER NOT NULL
-      )`,
-  `CREATE TABLE candidate_comments (
-        id            TEXT PRIMARY KEY,
-        candidate_id  TEXT NOT NULL REFERENCES review_candidates(id) ON DELETE CASCADE,
-        revision_id   TEXT NOT NULL REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        body          TEXT NOT NULL,
-        actor_user_id TEXT REFERENCES users(id) ON DELETE RESTRICT,
-        created_at    INTEGER NOT NULL
-      )`,
-  `CREATE TABLE briefing_batches (
-        batch_key         TEXT PRIMARY KEY,
-        task_identity     TEXT NOT NULL,
-        run_id            TEXT,
-        digest_series_ref TEXT,
-        digest_version    INTEGER,
-        item_count        INTEGER NOT NULL DEFAULT 0,
-        received_at       INTEGER NOT NULL
-      )`,
-  `CREATE INDEX idx_review_candidates_source
-         ON review_candidates(source, created_at DESC)`,
-  `CREATE INDEX idx_candidate_revisions_candidate
-         ON candidate_revisions(candidate_id, ingested_at DESC)`,
-  `CREATE INDEX idx_candidate_revisions_batch
-         ON candidate_revisions(batch_key)`,
-  `CREATE INDEX idx_candidate_occurrences_revision
-         ON candidate_occurrences(revision_id, seen_at DESC)`,
-  `CREATE INDEX idx_candidate_occurrences_batch
-         ON candidate_occurrences(batch_key)`,
-  `CREATE INDEX idx_decision_events_revision
-         ON decision_events(revision_id, created_at)`,
-  `CREATE INDEX idx_decision_events_candidate
-         ON decision_events(candidate_id, created_at)`,
-  `CREATE INDEX idx_candidate_comments_candidate
-         ON candidate_comments(candidate_id, created_at)`,
-  `CREATE INDEX idx_briefing_batches_task
-         ON briefing_batches(task_identity, digest_version)`,
   // Migration v122 (umbrella 99b74d6 / issue ce83a84) — agent dispatch
   // handling events: the audit chain comment -> handling event -> session
   // handle for human-initiated Claude dispatch.
-  `CREATE TABLE agent_dispatch_events (
+  `CREATE TABLE "agent_dispatch_events" (
         id             TEXT PRIMARY KEY,
         subject_kind   TEXT NOT NULL CHECK(subject_kind IN ('finding','issue')),
-        candidate_id   TEXT REFERENCES review_candidates(id) ON DELETE CASCADE,
-        revision_id    TEXT REFERENCES candidate_revisions(id) ON DELETE CASCADE,
-        comment_id     TEXT REFERENCES candidate_comments(id) ON DELETE SET NULL,
+        candidate_id   TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        revision_id    TEXT REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        comment_id     TEXT REFERENCES feedback_comments(id) ON DELETE RESTRICT,
         issue_id       TEXT,
         actor_user_id  TEXT REFERENCES users(id) ON DELETE RESTRICT,
         provider       TEXT NOT NULL DEFAULT 'claude',
@@ -453,6 +370,276 @@ const HEAD_SCHEMA_STATEMENTS: readonly string[] = [
          ON task_inventory_generations(executor_name, observed_at DESC, created_at DESC)`,
   `CREATE INDEX idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`,
+  `CREATE TABLE feedback_collections (
+        id                TEXT PRIMARY KEY,
+        kind              TEXT NOT NULL
+                          CHECK(kind IN ('recurring_feed','bounded_ask')),
+        interaction_mode  TEXT NOT NULL
+                          CHECK(interaction_mode IN ('immediate_per_item','explicit_submit')),
+        source            TEXT,
+        created_at        INTEGER NOT NULL,
+        tombstoned_at     INTEGER,
+        CHECK (
+          (kind = 'recurring_feed'
+            AND interaction_mode = 'immediate_per_item'
+            AND source IS NOT NULL
+            AND trim(source) != '')
+          OR
+          (kind = 'bounded_ask'
+            AND interaction_mode = 'explicit_submit'
+            AND source IS NULL)
+        )
+      )`,
+  `CREATE UNIQUE INDEX uq_feedback_collections_recurring_source
+        ON feedback_collections(kind, source)
+        WHERE kind = 'recurring_feed'`,
+  `CREATE INDEX idx_feedback_collections_kind_created
+        ON feedback_collections(kind, created_at DESC)`,
+  `CREATE TABLE feedback_recurring_profiles (
+        collection_id       TEXT PRIMARY KEY
+                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        source_namespace    TEXT NOT NULL CHECK(trim(source_namespace) != ''),
+        item_expiry_ms      INTEGER NOT NULL CHECK(item_expiry_ms > 0),
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      )`,
+  `CREATE TABLE feedback_ask_sessions (
+        collection_id             TEXT PRIMARY KEY
+                                  REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        requester_user_id         TEXT NOT NULL
+                                  REFERENCES users(id) ON DELETE RESTRICT,
+        requester_session_id      TEXT NOT NULL
+                                  REFERENCES sessions(id) ON DELETE RESTRICT,
+        request_key               TEXT NOT NULL CHECK(trim(request_key) != ''),
+        request_digest            TEXT NOT NULL CHECK(trim(request_digest) != ''),
+        responder_user_ids_json   TEXT NOT NULL
+                                  CHECK(json_valid(responder_user_ids_json)
+                                    AND json_type(responder_user_ids_json) = 'array'),
+        expires_at                INTEGER NOT NULL,
+        retention_expires_at      INTEGER,
+        created_at                INTEGER NOT NULL,
+        UNIQUE(requester_user_id, requester_session_id, request_key),
+        CHECK(expires_at > created_at),
+        CHECK(retention_expires_at IS NULL OR retention_expires_at >= expires_at)
+      )`,
+  `CREATE INDEX idx_feedback_ask_sessions_requester
+        ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC)`,
+  `CREATE INDEX idx_feedback_ask_sessions_expiry
+        ON feedback_ask_sessions(expires_at)`,
+  `CREATE TABLE feedback_publications (
+        id                  TEXT PRIMARY KEY,
+        collection_id       TEXT NOT NULL
+                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        publication_key     TEXT NOT NULL CHECK(trim(publication_key) != ''),
+        publisher_user_id   TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        task_identity       TEXT NOT NULL CHECK(trim(task_identity) != ''),
+        run_id              TEXT,
+        digest_series_ref   TEXT,
+        digest_version      INTEGER,
+        item_count          INTEGER NOT NULL DEFAULT 0 CHECK(item_count >= 0),
+        received_at         INTEGER NOT NULL,
+        UNIQUE(collection_id, publication_key)
+      )`,
+  `CREATE INDEX idx_feedback_publications_collection
+        ON feedback_publications(collection_id, received_at DESC)`,
+  `CREATE INDEX idx_feedback_publications_task_digest
+        ON feedback_publications(task_identity, digest_version)`,
+  `CREATE TABLE feedback_items (
+        id                   TEXT PRIMARY KEY,
+        collection_id        TEXT NOT NULL
+                             REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        parent_item_id       TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_kind            TEXT NOT NULL CHECK(item_kind IN ('item','group')),
+        identity_mode        TEXT NOT NULL
+                             CHECK(identity_mode IN ('publisher_dedup','opaque')),
+        external_key         TEXT,
+        client_item_key      TEXT,
+        current_revision_id  TEXT
+                             REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        created_at           INTEGER NOT NULL,
+        tombstoned_at        INTEGER,
+        CHECK(parent_item_id IS NULL OR parent_item_id != id),
+        CHECK(
+          (identity_mode = 'publisher_dedup'
+            AND external_key IS NOT NULL
+            AND trim(external_key) != '')
+          OR
+          (identity_mode = 'opaque' AND external_key IS NULL)
+        )
+      )`,
+  `CREATE UNIQUE INDEX uq_feedback_items_publisher_identity
+        ON feedback_items(collection_id, external_key)
+        WHERE identity_mode = 'publisher_dedup'`,
+  `CREATE UNIQUE INDEX uq_feedback_items_client_key
+        ON feedback_items(collection_id, client_item_key)
+        WHERE client_item_key IS NOT NULL`,
+  `CREATE INDEX idx_feedback_items_collection
+        ON feedback_items(collection_id, created_at, id)`,
+  `CREATE INDEX idx_feedback_items_parent
+        ON feedback_items(parent_item_id)
+        WHERE parent_item_id IS NOT NULL`,
+  `CREATE TABLE feedback_item_revisions (
+        id                TEXT PRIMARY KEY,
+        item_id           TEXT NOT NULL
+                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        ordinal           INTEGER NOT NULL CHECK(ordinal > 0),
+        title             TEXT NOT NULL,
+        prompt            TEXT NOT NULL,
+        description       TEXT,
+        response_type     TEXT
+                          CHECK(response_type IS NULL OR response_type IN (
+                            'verdict','free_text','single_choice','multi_choice'
+                          )),
+        required          INTEGER NOT NULL DEFAULT 0 CHECK(required IN (0,1)),
+        content_json      TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(content_json)
+                            AND json_type(content_json) = 'object'),
+        evidence_digest   TEXT,
+        publication_id    TEXT
+                          REFERENCES feedback_publications(id) ON DELETE RESTRICT,
+        position          INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
+        created_at        INTEGER NOT NULL,
+        UNIQUE(item_id, ordinal)
+      )`,
+  `CREATE UNIQUE INDEX uq_feedback_item_revisions_evidence
+        ON feedback_item_revisions(item_id, evidence_digest)
+        WHERE evidence_digest IS NOT NULL`,
+  `CREATE INDEX idx_feedback_item_revisions_item
+        ON feedback_item_revisions(item_id, ordinal DESC)`,
+  `CREATE INDEX idx_feedback_item_revisions_publication
+        ON feedback_item_revisions(publication_id)
+        WHERE publication_id IS NOT NULL`,
+  `CREATE TABLE feedback_item_options (
+        revision_id   TEXT NOT NULL
+                      REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        option_key    TEXT NOT NULL CHECK(trim(option_key) != ''),
+        label         TEXT NOT NULL,
+        description   TEXT,
+        position      INTEGER NOT NULL CHECK(position >= 0),
+        PRIMARY KEY(revision_id, option_key),
+        UNIQUE(revision_id, position)
+      )`,
+  `CREATE TABLE feedback_publication_items (
+        id                TEXT PRIMARY KEY,
+        publication_id    TEXT NOT NULL
+                          REFERENCES feedback_publications(id) ON DELETE RESTRICT,
+        item_revision_id  TEXT NOT NULL
+                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        position          INTEGER CHECK(position IS NULL OR position >= 0),
+        seen_at           INTEGER NOT NULL,
+        UNIQUE(publication_id, item_revision_id)
+      )`,
+  `CREATE INDEX idx_feedback_publication_items_revision
+        ON feedback_publication_items(item_revision_id, seen_at DESC)`,
+  `CREATE TABLE feedback_collection_events (
+        id                 TEXT PRIMARY KEY,
+        collection_id      TEXT NOT NULL
+                           REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        operation          TEXT NOT NULL
+                           CHECK(operation IN (
+                             'opened','submitted','expired','cancelled','closed'
+                           )),
+        previous_event_id  TEXT
+                           REFERENCES feedback_collection_events(id) ON DELETE RESTRICT,
+        actor_user_id      TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        metadata_json      TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(metadata_json)
+                             AND json_type(metadata_json) = 'object'),
+        created_at         INTEGER NOT NULL
+      )`,
+  `CREATE UNIQUE INDEX uq_feedback_collection_event_successor
+        ON feedback_collection_events(collection_id, previous_event_id)
+        WHERE previous_event_id IS NOT NULL`,
+  `CREATE INDEX idx_feedback_collection_events_head
+        ON feedback_collection_events(collection_id, created_at DESC)`,
+  `CREATE TABLE feedback_item_events (
+        id                TEXT PRIMARY KEY,
+        item_id           TEXT NOT NULL
+                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id  TEXT NOT NULL
+                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        operation         TEXT NOT NULL CHECK(operation IN ('expired')),
+        actor_user_id     TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        created_at        INTEGER NOT NULL
+      )`,
+  `CREATE INDEX idx_feedback_item_events_revision
+        ON feedback_item_events(item_revision_id, created_at DESC)`,
+  `CREATE TABLE feedback_response_events (
+        id                 TEXT PRIMARY KEY,
+        collection_id      TEXT NOT NULL
+                           REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        item_id            TEXT NOT NULL
+                           REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id   TEXT NOT NULL
+                           REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        operation          TEXT NOT NULL CHECK(operation IN ('set','retract')),
+        value_json         TEXT,
+        retracts_event_id  TEXT
+                           REFERENCES feedback_response_events(id) ON DELETE RESTRICT,
+        actor_user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at         INTEGER NOT NULL,
+        CHECK(
+          (operation = 'set'
+            AND value_json IS NOT NULL
+            AND json_valid(value_json)
+            AND json_type(value_json) = 'object'
+            AND retracts_event_id IS NULL)
+          OR
+          (operation = 'retract'
+            AND value_json IS NULL
+            AND retracts_event_id IS NOT NULL)
+        )
+      )`,
+  `CREATE UNIQUE INDEX uq_feedback_response_retraction
+        ON feedback_response_events(retracts_event_id)
+        WHERE operation = 'retract'`,
+  `CREATE INDEX idx_feedback_response_events_revision
+        ON feedback_response_events(item_revision_id, created_at DESC)`,
+  `CREATE INDEX idx_feedback_response_events_collection_actor
+        ON feedback_response_events(collection_id, actor_user_id, created_at DESC)`,
+  `CREATE TABLE feedback_submissions (
+        id                         TEXT PRIMARY KEY,
+        collection_id              TEXT NOT NULL
+                                   REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        ordinal                    INTEGER NOT NULL CHECK(ordinal > 0),
+        supersedes_submission_id   TEXT
+                                   REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
+        lifecycle_event_id         TEXT NOT NULL UNIQUE
+                                   REFERENCES feedback_collection_events(id) ON DELETE RESTRICT,
+        actor_user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at                 INTEGER NOT NULL,
+        UNIQUE(collection_id, ordinal)
+      )`,
+  `CREATE UNIQUE INDEX uq_feedback_submission_superseded_once
+        ON feedback_submissions(supersedes_submission_id)
+        WHERE supersedes_submission_id IS NOT NULL`,
+  `CREATE TABLE feedback_submission_answers (
+        submission_id      TEXT NOT NULL
+                           REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
+        item_id            TEXT NOT NULL
+                           REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id   TEXT NOT NULL
+                           REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        response_event_id  TEXT NOT NULL
+                           REFERENCES feedback_response_events(id) ON DELETE RESTRICT,
+        position           INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
+        PRIMARY KEY(submission_id, item_id),
+        UNIQUE(submission_id, response_event_id)
+      )`,
+  `CREATE TABLE feedback_comments (
+        id                TEXT PRIMARY KEY,
+        collection_id     TEXT NOT NULL
+                          REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        item_id           TEXT NOT NULL
+                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id  TEXT NOT NULL
+                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        body              TEXT NOT NULL CHECK(trim(body) != ''),
+        actor_user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at        INTEGER NOT NULL
+      )`,
+  `CREATE INDEX idx_feedback_comments_item
+        ON feedback_comments(item_id, created_at)`,
 ];
 
 const COMPLETED_POST_MIGRATIONS: readonly string[] = [

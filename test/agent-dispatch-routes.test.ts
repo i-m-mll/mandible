@@ -98,7 +98,7 @@ function makeRouter(options: { readOnly?: boolean } = {}): Router {
 }
 
 function onlyCandidateId(): string {
-  return (db.prepare("SELECT id FROM review_candidates LIMIT 1").get() as { id: string }).id;
+  return (db.prepare("SELECT id FROM feedback_items LIMIT 1").get() as { id: string }).id;
 }
 
 function countRows(table: string): number {
@@ -152,7 +152,7 @@ describe("agent dispatch authorization", () => {
       expect(response.body).toMatchObject({ code: "human_dispatcher_required" });
     }
     expect(countRows("agent_dispatch_events")).toBe(0);
-    expect(countRows("candidate_comments")).toBe(0);
+    expect(countRows("feedback_comments")).toBe(0);
   });
 
   it("rejects an unauthenticated caller", async () => {
@@ -221,7 +221,7 @@ describe("agent dispatch authorization", () => {
     });
     expect(blank.status).toBe(400);
     expect(countRows("agent_dispatch_events")).toBe(0);
-    expect(countRows("candidate_comments")).toBe(0);
+    expect(countRows("feedback_comments")).toBe(0);
   });
 });
 
@@ -252,7 +252,7 @@ describe("agent dispatch execution", () => {
     expect(Array.isArray(plan.capability_surface)).toBe(true);
 
     // Declining here would end the story: the preview wrote nothing.
-    expect(countRows("candidate_comments")).toBe(0);
+    expect(countRows("feedback_comments")).toBe(0);
     expect(countRows("agent_dispatch_events")).toBe(0);
     expect(fs.existsSync(argsLog)).toBe(false);
 
@@ -320,7 +320,7 @@ describe("agent dispatch execution", () => {
     expect(payload.event.session_handle).toBeNull();
     expect(payload.event.error).toContain("dedicated tmux server is not running");
     // The instruction survives the failure as an immutable candidate comment.
-    expect(countRows("candidate_comments")).toBe(1);
+    expect(countRows("feedback_comments")).toBe(1);
   });
 
   it("reports a missing claude-spawn binary as a recorded failure, not a crash", async () => {
