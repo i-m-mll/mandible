@@ -3473,6 +3473,282 @@ export const MIGRATIONS: readonly Migration[] = [
       `CREATE INDEX IF NOT EXISTS idx_task_inventory_generations_received
          ON task_inventory_generations(created_at DESC)`
     ]
+  },
+  {
+    version: 125,
+    name: "feedback_schema_foundation",
+    statements: [
+      `CREATE TABLE IF NOT EXISTS feedback_collections (
+        id                TEXT PRIMARY KEY,
+        kind              TEXT NOT NULL
+                          CHECK(kind IN ('recurring_feed','bounded_ask')),
+        interaction_mode  TEXT NOT NULL
+                          CHECK(interaction_mode IN ('immediate_per_item','explicit_submit')),
+        source            TEXT,
+        created_at        INTEGER NOT NULL,
+        tombstoned_at     INTEGER,
+        CHECK (
+          (kind = 'recurring_feed'
+            AND interaction_mode = 'immediate_per_item'
+            AND source IS NOT NULL
+            AND trim(source) != '')
+          OR
+          (kind = 'bounded_ask'
+            AND interaction_mode = 'explicit_submit'
+            AND source IS NULL)
+        )
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_collections_recurring_source
+        ON feedback_collections(kind, source)
+        WHERE kind = 'recurring_feed'`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_collections_kind_created
+        ON feedback_collections(kind, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS feedback_recurring_profiles (
+        collection_id       TEXT PRIMARY KEY
+                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        source_namespace    TEXT NOT NULL CHECK(trim(source_namespace) != ''),
+        item_expiry_ms      INTEGER NOT NULL CHECK(item_expiry_ms > 0),
+        created_at          INTEGER NOT NULL,
+        updated_at          INTEGER NOT NULL
+      )`,
+      `CREATE TABLE IF NOT EXISTS feedback_ask_sessions (
+        collection_id             TEXT PRIMARY KEY
+                                  REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        requester_user_id         TEXT NOT NULL
+                                  REFERENCES users(id) ON DELETE RESTRICT,
+        requester_session_id      TEXT NOT NULL
+                                  REFERENCES sessions(id) ON DELETE RESTRICT,
+        request_key               TEXT NOT NULL CHECK(trim(request_key) != ''),
+        request_digest            TEXT NOT NULL CHECK(trim(request_digest) != ''),
+        responder_user_ids_json   TEXT NOT NULL
+                                  CHECK(json_valid(responder_user_ids_json)
+                                    AND json_type(responder_user_ids_json) = 'array'),
+        expires_at                INTEGER NOT NULL,
+        retention_expires_at      INTEGER,
+        created_at                INTEGER NOT NULL,
+        UNIQUE(requester_user_id, requester_session_id, request_key),
+        CHECK(expires_at > created_at),
+        CHECK(retention_expires_at IS NULL OR retention_expires_at >= expires_at)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_ask_sessions_requester
+        ON feedback_ask_sessions(requester_user_id, requester_session_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_ask_sessions_expiry
+        ON feedback_ask_sessions(expires_at)`,
+      `CREATE TABLE IF NOT EXISTS feedback_publications (
+        id                  TEXT PRIMARY KEY,
+        collection_id       TEXT NOT NULL
+                            REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        publication_key     TEXT NOT NULL CHECK(trim(publication_key) != ''),
+        publisher_user_id   TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        task_identity       TEXT NOT NULL CHECK(trim(task_identity) != ''),
+        run_id              TEXT,
+        digest_series_ref   TEXT,
+        digest_version      INTEGER,
+        item_count          INTEGER NOT NULL DEFAULT 0 CHECK(item_count >= 0),
+        received_at         INTEGER NOT NULL,
+        UNIQUE(collection_id, publication_key)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_publications_collection
+        ON feedback_publications(collection_id, received_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_publications_task_digest
+        ON feedback_publications(task_identity, digest_version)`,
+      `CREATE TABLE IF NOT EXISTS feedback_items (
+        id                   TEXT PRIMARY KEY,
+        collection_id        TEXT NOT NULL
+                             REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        parent_item_id       TEXT REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_kind            TEXT NOT NULL CHECK(item_kind IN ('item','group')),
+        identity_mode        TEXT NOT NULL
+                             CHECK(identity_mode IN ('publisher_dedup','opaque')),
+        external_key         TEXT,
+        client_item_key      TEXT,
+        current_revision_id  TEXT
+                             REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        created_at           INTEGER NOT NULL,
+        tombstoned_at        INTEGER,
+        CHECK(parent_item_id IS NULL OR parent_item_id != id),
+        CHECK(
+          (identity_mode = 'publisher_dedup'
+            AND external_key IS NOT NULL
+            AND trim(external_key) != '')
+          OR
+          (identity_mode = 'opaque' AND external_key IS NULL)
+        )
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_items_publisher_identity
+        ON feedback_items(collection_id, external_key)
+        WHERE identity_mode = 'publisher_dedup'`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_items_client_key
+        ON feedback_items(collection_id, client_item_key)
+        WHERE client_item_key IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_items_collection
+        ON feedback_items(collection_id, created_at, id)`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_items_parent
+        ON feedback_items(parent_item_id)
+        WHERE parent_item_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS feedback_item_revisions (
+        id                TEXT PRIMARY KEY,
+        item_id           TEXT NOT NULL
+                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        ordinal           INTEGER NOT NULL CHECK(ordinal > 0),
+        title             TEXT NOT NULL,
+        prompt            TEXT NOT NULL,
+        description       TEXT,
+        response_type     TEXT
+                          CHECK(response_type IS NULL OR response_type IN (
+                            'verdict','free_text','single_choice','multi_choice'
+                          )),
+        required          INTEGER NOT NULL DEFAULT 0 CHECK(required IN (0,1)),
+        content_json      TEXT NOT NULL DEFAULT '{}'
+                          CHECK(json_valid(content_json)
+                            AND json_type(content_json) = 'object'),
+        evidence_digest   TEXT,
+        publication_id    TEXT
+                          REFERENCES feedback_publications(id) ON DELETE RESTRICT,
+        position          INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
+        created_at        INTEGER NOT NULL,
+        UNIQUE(item_id, ordinal)
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_item_revisions_evidence
+        ON feedback_item_revisions(item_id, evidence_digest)
+        WHERE evidence_digest IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_item_revisions_item
+        ON feedback_item_revisions(item_id, ordinal DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_item_revisions_publication
+        ON feedback_item_revisions(publication_id)
+        WHERE publication_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS feedback_item_options (
+        revision_id   TEXT NOT NULL
+                      REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        option_key    TEXT NOT NULL CHECK(trim(option_key) != ''),
+        label         TEXT NOT NULL,
+        description   TEXT,
+        position      INTEGER NOT NULL CHECK(position >= 0),
+        PRIMARY KEY(revision_id, option_key),
+        UNIQUE(revision_id, position)
+      )`,
+      `CREATE TABLE IF NOT EXISTS feedback_publication_items (
+        id                TEXT PRIMARY KEY,
+        publication_id    TEXT NOT NULL
+                          REFERENCES feedback_publications(id) ON DELETE RESTRICT,
+        item_revision_id  TEXT NOT NULL
+                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        position          INTEGER CHECK(position IS NULL OR position >= 0),
+        seen_at           INTEGER NOT NULL,
+        UNIQUE(publication_id, item_revision_id)
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_publication_items_revision
+        ON feedback_publication_items(item_revision_id, seen_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS feedback_collection_events (
+        id                 TEXT PRIMARY KEY,
+        collection_id      TEXT NOT NULL
+                           REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        operation          TEXT NOT NULL
+                           CHECK(operation IN (
+                             'opened','submitted','expired','cancelled','closed'
+                           )),
+        previous_event_id  TEXT
+                           REFERENCES feedback_collection_events(id) ON DELETE RESTRICT,
+        actor_user_id      TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        metadata_json      TEXT NOT NULL DEFAULT '{}'
+                           CHECK(json_valid(metadata_json)
+                             AND json_type(metadata_json) = 'object'),
+        created_at         INTEGER NOT NULL
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_collection_event_successor
+        ON feedback_collection_events(collection_id, previous_event_id)
+        WHERE previous_event_id IS NOT NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_collection_events_head
+        ON feedback_collection_events(collection_id, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS feedback_item_events (
+        id                TEXT PRIMARY KEY,
+        item_id           TEXT NOT NULL
+                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id  TEXT NOT NULL
+                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        operation         TEXT NOT NULL CHECK(operation IN ('expired')),
+        actor_user_id     TEXT REFERENCES users(id) ON DELETE RESTRICT,
+        created_at        INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_item_events_revision
+        ON feedback_item_events(item_revision_id, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS feedback_response_events (
+        id                 TEXT PRIMARY KEY,
+        collection_id      TEXT NOT NULL
+                           REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        item_id            TEXT NOT NULL
+                           REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id   TEXT NOT NULL
+                           REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        operation          TEXT NOT NULL CHECK(operation IN ('set','retract')),
+        value_json         TEXT,
+        retracts_event_id  TEXT
+                           REFERENCES feedback_response_events(id) ON DELETE RESTRICT,
+        actor_user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at         INTEGER NOT NULL,
+        CHECK(
+          (operation = 'set'
+            AND value_json IS NOT NULL
+            AND json_valid(value_json)
+            AND json_type(value_json) = 'object'
+            AND retracts_event_id IS NULL)
+          OR
+          (operation = 'retract'
+            AND value_json IS NULL
+            AND retracts_event_id IS NOT NULL)
+        )
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_response_retraction
+        ON feedback_response_events(retracts_event_id)
+        WHERE operation = 'retract'`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_response_events_revision
+        ON feedback_response_events(item_revision_id, created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_response_events_collection_actor
+        ON feedback_response_events(collection_id, actor_user_id, created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS feedback_submissions (
+        id                         TEXT PRIMARY KEY,
+        collection_id              TEXT NOT NULL
+                                   REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        ordinal                    INTEGER NOT NULL CHECK(ordinal > 0),
+        supersedes_submission_id   TEXT
+                                   REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
+        lifecycle_event_id         TEXT NOT NULL UNIQUE
+                                   REFERENCES feedback_collection_events(id) ON DELETE RESTRICT,
+        actor_user_id              TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at                 INTEGER NOT NULL,
+        UNIQUE(collection_id, ordinal)
+      )`,
+      `CREATE UNIQUE INDEX IF NOT EXISTS uq_feedback_submission_superseded_once
+        ON feedback_submissions(supersedes_submission_id)
+        WHERE supersedes_submission_id IS NOT NULL`,
+      `CREATE TABLE IF NOT EXISTS feedback_submission_answers (
+        submission_id      TEXT NOT NULL
+                           REFERENCES feedback_submissions(id) ON DELETE RESTRICT,
+        item_id            TEXT NOT NULL
+                           REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id   TEXT NOT NULL
+                           REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        response_event_id  TEXT NOT NULL
+                           REFERENCES feedback_response_events(id) ON DELETE RESTRICT,
+        position           INTEGER NOT NULL DEFAULT 0 CHECK(position >= 0),
+        PRIMARY KEY(submission_id, item_id),
+        UNIQUE(submission_id, response_event_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS feedback_comments (
+        id                TEXT PRIMARY KEY,
+        collection_id     TEXT NOT NULL
+                          REFERENCES feedback_collections(id) ON DELETE RESTRICT,
+        item_id           TEXT NOT NULL
+                          REFERENCES feedback_items(id) ON DELETE RESTRICT,
+        item_revision_id  TEXT NOT NULL
+                          REFERENCES feedback_item_revisions(id) ON DELETE RESTRICT,
+        body              TEXT NOT NULL CHECK(trim(body) != ''),
+        actor_user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+        created_at        INTEGER NOT NULL
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_feedback_comments_item
+        ON feedback_comments(item_id, created_at)`
+    ]
   }
 ];
 
@@ -3582,6 +3858,9 @@ function applySchemaMigrations(db: Db, migrations: readonly Migration[]): void {
       }
       if (migration.version === 123) {
         ensureAuthRequestCanonicalChangeMessageColumn(db);
+      }
+      if (migration.version === 125) {
+        ensureAskCreateGlobalCapability(db);
       }
       for (const statement of migration.statements) {
         db.exec(statement);
@@ -3915,6 +4194,53 @@ export function migrate(db: Db): void {
       rebuildSpaceItemsWithFindingRefType(db);
     });
   }
+}
+
+function ensureAskCreateGlobalCapability(db: Db): void {
+  const definition = db.prepare(
+    "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'permission_grants'",
+  ).get() as { sql: string | null } | undefined;
+  if (!definition?.sql) {
+    throw new Error("Migration v125 requires permission_grants to exist");
+  }
+  if (definition.sql.includes("'ask.create'")) return;
+
+  db.exec(`
+    ALTER TABLE permission_grants RENAME TO permission_grants_v124;
+    CREATE TABLE permission_grants (
+      id            TEXT PRIMARY KEY,
+      subject_type  TEXT NOT NULL CHECK(subject_type IN ('user','group')),
+      subject_id    TEXT NOT NULL,
+      resource_type TEXT NOT NULL CHECK(resource_type IN ('project','global')),
+      resource_id   TEXT REFERENCES ledger_projects(id) ON DELETE CASCADE,
+      permission    TEXT NOT NULL,
+      created_at    INTEGER NOT NULL,
+      CHECK (
+        (resource_type = 'project' AND resource_id IS NOT NULL
+          AND permission IN ('read','write','admin')) OR
+        (resource_type = 'global' AND resource_id IS NULL
+          AND permission IN (
+            'approve_auth','spawn_console','change_settings','backup','open_path','ask.create'
+          ))
+      )
+    );
+    INSERT INTO permission_grants (
+      id, subject_type, subject_id, resource_type, resource_id, permission, created_at
+    )
+    SELECT id, subject_type, subject_id, resource_type, resource_id, permission, created_at
+      FROM permission_grants_v124;
+    DROP TABLE permission_grants_v124;
+    CREATE UNIQUE INDEX uq_permission_grants_project
+      ON permission_grants(subject_type, subject_id, resource_id, permission)
+      WHERE resource_type = 'project';
+    CREATE UNIQUE INDEX uq_permission_grants_global
+      ON permission_grants(subject_type, subject_id, permission)
+      WHERE resource_type = 'global';
+    CREATE INDEX idx_permission_grants_subject
+      ON permission_grants(subject_type, subject_id);
+    CREATE INDEX idx_permission_grants_resource
+      ON permission_grants(resource_type, resource_id);
+  `);
 }
 
 /**

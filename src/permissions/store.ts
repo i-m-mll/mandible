@@ -16,6 +16,7 @@ export const GLOBAL_CAPABILITIES = [
   "change_settings",
   "backup",
   "open_path",
+  "ask.create",
 ] as const;
 export type GlobalCapability = typeof GLOBAL_CAPABILITIES[number];
 export type PermissionSubjectType = "user" | "group";
