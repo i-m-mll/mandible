@@ -170,6 +170,14 @@ export const METADATA_BACKUP_TABLES = [
   // reproducible runtime state. Keep requests before their event children.
   "task_command_requests",
   "task_command_events",
+  // Managed reminders (issue e257e5c, migration 130). Stable tasks own one
+  // immutable revision; idempotency receipts, bounded inbox occurrences, and
+  // audit events are all durable and non-reproducible. Keep parents first.
+  "managed_tasks",
+  "managed_task_revisions",
+  "managed_task_create_requests",
+  "managed_task_occurrences",
+  "managed_task_events",
 ] as const;
 
 export type MetadataBackupTable = (typeof METADATA_BACKUP_TABLES)[number];
